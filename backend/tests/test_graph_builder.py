@@ -28,6 +28,7 @@ def _initial_state(symbol: str = "2330.TW") -> dict:
         "snapshot": None,
         "analysis": None,
         "cleaned_news": None,
+        "raw_news_items": None,
         "data_sufficient": False,
         "retry_count": 0,
         "errors": [],

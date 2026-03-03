@@ -19,6 +19,7 @@
 - **DoD**
   - CLI 可執行，回傳 `snapshot` JSON
   - 支援 `--symbol`
+- **完成記錄**：`YFinanceCrawler` + `StockSnapshot` 已實作，CLI 可執行
 
 ### P1-2 新聞清潔工（Cleaner Agent）
 - **目標**：輸入新聞內容，輸出乾淨 JSON
@@ -29,6 +30,7 @@
 - **DoD**
   - 支援 `--text` / `--file` / stdin
   - 任何輸入都能穩定輸出 schema
+- **完成記錄**：`FinancialNewsCleaner` 已實作，LLM + heuristic fallback，支援 `--text` / `--file` / stdin
 
 ### P1-3 Crawler + Cleaner 整合
 - **目標**：同一流程同時輸出股票快照與新聞清潔結果
@@ -37,6 +39,7 @@
   - `main.py` 增加 `--news-text` / `--news-file`
 - **DoD**
   - 單一指令可得到 `snapshot + analysis + cleaned_news`
+- **完成記錄**：`StockCrawlerAgent` 整合 `news_cleaner`，`main.py` 支援 `--news-text` / `--news-file`
 
 ---
 
@@ -60,6 +63,16 @@
   - 有明確缺失理由與重跑次數上限
 - **完成記錄**：judge_node 三條規則（snapshot 缺失、新聞過舊、數字不足）已實作，reason flags 加入 GraphState，測試覆蓋，2026-03-03
 
+### P2-4 將 Graph 接進 API
+- **目標**：讓 `/analyze` 真正走 LangGraph 回圈，而非舊的線性流程
+- **任務**
+  - `api.py` 改用 `build_graph` 取代 `StockCrawlerAgent`
+  - 對齊 `AnalyzeResponse` 回傳欄位（graph 最終 state → response）
+  - 更新 API 測試
+- **DoD**
+  - `POST /analyze` 觸發後，judge/fetch_news/retry 回圈實際執行
+  - 測試覆蓋（mock graph 或 mock 各節點依賴）
+
 ### P2-3 新聞資料源擴充（RSS）
 - **目標**：不只靠手動輸入新聞
 - **任務**
@@ -67,6 +80,7 @@
   - 標準化來源 metadata
 - **DoD**
   - 指定 symbol 可拉回至少 N 篇新聞
+- **完成記錄**：RssNewsClient（stdlib，無外部依賴）+ fetch_news_node + GraphState.raw_news_items 已實作，測試覆蓋（20 tests），2026-03-03
 
 ---
 

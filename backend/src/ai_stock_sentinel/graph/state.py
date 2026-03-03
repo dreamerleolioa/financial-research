@@ -9,6 +9,7 @@ class GraphState(TypedDict):
     snapshot: dict[str, Any] | None
     analysis: str | None
     cleaned_news: dict[str, Any] | None
+    raw_news_items: list[dict[str, Any]] | None
     data_sufficient: bool
     retry_count: int
     errors: list[dict[str, str]]

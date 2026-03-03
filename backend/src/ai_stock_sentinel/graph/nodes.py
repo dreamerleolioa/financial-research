@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
+from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import StockSnapshot
@@ -79,3 +80,31 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
     snapshot = StockSnapshot(**snapshot_dict)
     analysis = analyzer.analyze(snapshot)
     return {"analysis": analysis}
+
+
+def fetch_news_node(state: GraphState, *, rss_client: RssNewsClient) -> dict[str, Any]:
+    """透過 RSS 抓取新聞，回傳 raw_news_items 與 news_content（取第一篇標題+摘要）。"""
+    symbol = state["symbol"]
+    # 用股票代碼（去掉 .TW 後綴）作查詢詞，例如 "2330 台積電"
+    query = symbol.split(".")[0]
+    try:
+        items = rss_client.fetch_news(query=query)
+    except Exception as exc:
+        return {
+            "raw_news_items": [],
+            "errors": state["errors"] + [{"code": "RSS_FETCH_ERROR", "message": str(exc)}],
+        }
+
+    raw_dicts = [asdict(item) for item in items]
+
+    # 將最新一篇的 title + summary 合併成 news_content 供後續清潔
+    news_content: str | None = None
+    if items:
+        first = items[0]
+        parts = [p for p in [first.published_at, first.title, first.summary] if p]
+        news_content = "\n".join(parts)
+
+    return {
+        "raw_news_items": raw_dicts,
+        "news_content": news_content,
+    }

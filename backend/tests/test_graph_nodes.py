@@ -4,7 +4,8 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from unittest.mock import MagicMock
 
-from ai_stock_sentinel.graph.nodes import crawl_node, judge_node, analyze_node
+from ai_stock_sentinel.data_sources.rss_news_client import RawNewsItem
+from ai_stock_sentinel.graph.nodes import crawl_node, fetch_news_node, judge_node, analyze_node
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import StockSnapshot
 
@@ -31,6 +32,7 @@ def _base_state(**overrides) -> GraphState:
         "snapshot": None,
         "analysis": None,
         "cleaned_news": None,
+        "raw_news_items": None,
         "data_sufficient": False,
         "retry_count": 0,
         "errors": [],
@@ -153,3 +155,75 @@ def test_judge_node_sufficient_when_no_news_provided() -> None:
     state = _base_state(snapshot=_make_snapshot(), cleaned_news=None)
     result = judge_node(state)
     assert result["data_sufficient"] is True
+
+
+# ── fetch_news_node ──────────────────────────────────────────────────────────
+
+def _make_raw_news_item(**overrides) -> RawNewsItem:
+    defaults = dict(
+        source="google-news-rss",
+        url="https://example.com/news/1",
+        title="台積電 2 月營收年增 20%",
+        published_at="Mon, 03 Mar 2026 08:00:00 GMT",
+        summary="台積電公佈 2 月營收，年增 20%，優於市場預期。",
+    )
+    defaults.update(overrides)
+    return RawNewsItem(**defaults)
+
+
+def test_fetch_news_node_returns_raw_news_items() -> None:
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.return_value = [_make_raw_news_item()]
+
+    state = _base_state()
+    result = fetch_news_node(state, rss_client=mock_rss)
+
+    assert result["raw_news_items"] is not None
+    assert len(result["raw_news_items"]) == 1
+    assert result["raw_news_items"][0]["source"] == "google-news-rss"
+
+
+def test_fetch_news_node_sets_news_content_from_first_item() -> None:
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.return_value = [_make_raw_news_item()]
+
+    state = _base_state()
+    result = fetch_news_node(state, rss_client=mock_rss)
+
+    assert result["news_content"] is not None
+    assert "台積電" in result["news_content"]
+
+
+def test_fetch_news_node_returns_empty_list_on_no_results() -> None:
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.return_value = []
+
+    state = _base_state()
+    result = fetch_news_node(state, rss_client=mock_rss)
+
+    assert result["raw_news_items"] == []
+    assert result.get("news_content") is None
+
+
+def test_fetch_news_node_accumulates_errors_on_exception() -> None:
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.side_effect = RuntimeError("connection refused")
+
+    prior_errors = [{"code": "PRIOR", "message": "earlier error"}]
+    state = _base_state(errors=prior_errors)
+    result = fetch_news_node(state, rss_client=mock_rss)
+
+    assert result["raw_news_items"] == []
+    assert len(result["errors"]) == 2
+    assert result["errors"][1]["code"] == "RSS_FETCH_ERROR"
+    assert "connection refused" in result["errors"][1]["message"]
+
+
+def test_fetch_news_node_uses_symbol_prefix_as_query() -> None:
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.return_value = []
+
+    state = _base_state(symbol="2330.TW")
+    fetch_news_node(state, rss_client=mock_rss)
+
+    mock_rss.fetch_news.assert_called_once_with(query="2330")
