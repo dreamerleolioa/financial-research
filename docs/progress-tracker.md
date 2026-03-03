@@ -5,7 +5,7 @@
 ## 目前完成度（高層）
 
 - **Phase 1（MVP Backend）**：約 85%（核心流程可跑）
-- **Phase 2（LangGraph 回圈）**：約 30%（骨架可跑，judge 為 stub）
+- **Phase 2（LangGraph 回圈）**：約 60%（骨架 + judge 邏輯完成）
 - **Phase 3（分析能力強化）**：約 20%（有基礎清潔與情緒標籤）
 - **Phase 4（前端儀表板）**：約 35%（前端骨架與核心視覺元件已完成）
 
@@ -51,7 +51,7 @@
 ### Phase 2：LangGraph
 - [x] 建立 LangGraph 狀態機（GraphState + 節點 stub + builder）
 - [x] loop guard（max_retries）骨架
-- [ ] 完整性判斷節點（judge 邏輯填入）
+- [x] 完整性判斷節點（snapshot 缺失、新聞過舊、數字不足）
 - [ ] 新聞 RSS 自動抓取
 
 ### Phase 3：分析深化

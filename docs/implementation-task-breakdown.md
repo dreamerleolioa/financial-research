@@ -58,6 +58,7 @@
   - 產出 flags：`requires_news_refresh`, `requires_fundamental_update`
 - **DoD**
   - 有明確缺失理由與重跑次數上限
+- **完成記錄**：judge_node 三條規則（snapshot 缺失、新聞過舊、數字不足）已實作，reason flags 加入 GraphState，測試覆蓋，2026-03-03
 
 ### P2-3 新聞資料源擴充（RSS）
 - **目標**：不只靠手動輸入新聞
