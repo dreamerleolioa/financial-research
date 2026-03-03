@@ -12,3 +12,5 @@ class GraphState(TypedDict):
     data_sufficient: bool
     retry_count: int
     errors: list[dict[str, str]]
+    requires_news_refresh: bool
+    requires_fundamental_update: bool
