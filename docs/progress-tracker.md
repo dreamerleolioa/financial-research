@@ -5,7 +5,7 @@
 ## 目前完成度（高層）
 
 - **Phase 1（MVP Backend）**：約 85%（核心流程可跑）
-- **Phase 2（LangGraph 回圈）**：0%
+- **Phase 2（LangGraph 回圈）**：約 30%（骨架可跑，judge 為 stub）
 - **Phase 3（分析能力強化）**：約 20%（有基礎清潔與情緒標籤）
 - **Phase 4（前端儀表板）**：約 35%（前端骨架與核心視覺元件已完成）
 
@@ -30,6 +30,12 @@
 - [x] README（安裝、執行、參數、輸出）
 - [x] 技術架構需求文件
 - [x] 任務拆解文件（本次新增）
+- [x] 開發手冊新增「完成即補測試」規範
+- [x] 後端 API 技術規格文件（`docs/backend-api-technical-spec.md`）
+
+### API / 測試（本次新增）
+- [x] 新增 FastAPI `/health`、`/analyze`
+- [x] 新增 API 合約測試（健康檢查、成功路徑、驗證錯誤）
 
 ### 前端儀表板（基礎）
 - [x] React + TypeScript + Tailwind 專案初始化
@@ -43,8 +49,9 @@
 ## 進行中 / 待完成 ⏳
 
 ### Phase 2：LangGraph
-- [ ] 建立 LangGraph 狀態機
-- [ ] 完整性判斷節點與補抓回圈
+- [x] 建立 LangGraph 狀態機（GraphState + 節點 stub + builder）
+- [x] loop guard（max_retries）骨架
+- [ ] 完整性判斷節點（judge 邏輯填入）
 - [ ] 新聞 RSS 自動抓取
 
 ### Phase 3：分析深化
@@ -80,6 +87,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. 先導入 LangGraph，完成資料不足補抓回圈（Phase 2 核心）
-2. 補上 RSS 新聞抓取，降低手動貼新聞成本
-3. 初始化前端 React 骨架，只做 symbol 輸入 + 顯示 JSON 結果
+1. 完成 AnalyzeResponse v1 契約鎖定（補 `errors` 與欄位文件）
+2. 導入 LangGraph，完成資料不足補抓回圈（Phase 2 核心）
+3. 補上 RSS 新聞抓取，降低手動貼新聞成本
