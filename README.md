@@ -5,15 +5,17 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 ## 需求與架構文件
 
 - 技術架構需求文件：`docs/ai-stock-sentinel-architecture-spec.md`
+- 後端 API 技術規格：`docs/backend-api-technical-spec.md`
 - 實作任務拆解：`docs/implementation-task-breakdown.md`
 - 進度追蹤：`docs/progress-tracker.md`
+- 開發執行手冊：`docs/development-execution-playbook.md`
 
 ## 目前進度摘要
 
 - Phase 1（MVP Backend）：約 85%（可執行）
 - Phase 2（LangGraph 回圈）：0%
 - Phase 3（分析能力強化）：約 20%
-- Phase 4（前端儀表板）：0%
+- Phase 4（前端儀表板）：約 35%
 
 ## 專案目前內容
 
@@ -161,12 +163,40 @@ stdin：
 cat news.txt | ./venv/bin/python agent.py
 ```
 
+### 3) FastAPI 服務（新增）
+
+```bash
+cd backend
+make run-api
+```
+
+預設開啟：`http://127.0.0.1:8000`
+
+- `GET /health`
+- `POST /analyze`
+
+範例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/analyze \
+	-H "Content-Type: application/json" \
+	-d '{"symbol":"2330.TW","news_text":"2026-03-03 台積電 2 月營收 2,600 億元，年增 18.2%"}'
+```
+
+### 4) 執行測試（新增）
+
+```bash
+cd backend
+make test
+```
+
 ## 輸出格式
 
 Crawler Agent 輸出 JSON 範例欄位：
 - `snapshot`: 股票快照資料
 - `analysis`: 股票分析結果（LLM 或 fallback 訊息）
 - `cleaned_news`: 有提供新聞輸入時才會出現
+- `errors`: 錯誤陣列（每項含 `code`、`message`，正常為空陣列）
 
 Cleaner Agent 輸出 JSON 欄位固定為：
 - `date`
