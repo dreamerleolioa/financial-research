@@ -33,7 +33,7 @@ def _check_sufficiency(state: GraphState) -> tuple[bool, bool, bool]:
     requires_fundamental_update = False
 
     # 規則 1：snapshot 缺失
-    if not state["snapshot"]:
+    if state["snapshot"] is None:
         requires_fundamental_update = True
 
     # 規則 2 & 3：新聞相關（只在有提供新聞時才判斷）
