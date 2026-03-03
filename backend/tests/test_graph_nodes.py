@@ -38,7 +38,7 @@ def _base_state(**overrides) -> GraphState:
     return state
 
 
-def test_crawl_node_returns_snapshot(monkeypatch) -> None:
+def test_crawl_node_returns_snapshot() -> None:
     mock_crawler = MagicMock()
     mock_crawler.fetch_basic_snapshot.return_value = StockSnapshot(
         symbol="2330.TW",
@@ -67,7 +67,7 @@ def test_judge_node_stub_always_sufficient() -> None:
     assert result["data_sufficient"] is True
 
 
-def test_analyze_node_returns_analysis_string(monkeypatch) -> None:
+def test_analyze_node_returns_analysis_string() -> None:
     mock_analyzer = MagicMock()
     mock_analyzer.analyze.return_value = "分析結果"
 
@@ -75,3 +75,18 @@ def test_analyze_node_returns_analysis_string(monkeypatch) -> None:
     result = analyze_node(state, analyzer=mock_analyzer)
 
     assert result["analysis"] == "分析結果"
+
+
+def test_crawl_node_accumulates_errors_on_failure() -> None:
+    mock_crawler = MagicMock()
+    mock_crawler.fetch_basic_snapshot.side_effect = RuntimeError("network timeout")
+
+    prior_errors = [{"code": "PRIOR_ERROR", "message": "earlier error"}]
+    state = _base_state(errors=prior_errors)
+    result = crawl_node(state, crawler=mock_crawler)
+
+    assert result["snapshot"] is None
+    assert len(result["errors"]) == 2
+    assert result["errors"][0]["code"] == "PRIOR_ERROR"
+    assert result["errors"][1]["code"] == "CRAWL_ERROR"
+    assert "network timeout" in result["errors"][1]["message"]

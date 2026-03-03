@@ -6,6 +6,7 @@ from typing import Any
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
+from ai_stock_sentinel.models import StockSnapshot
 
 
 def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]:
@@ -27,9 +28,12 @@ def judge_node(state: GraphState) -> dict[str, Any]:
 
 def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any]:
     """執行分析，回傳 analysis 字串。"""
-    from ai_stock_sentinel.models import StockSnapshot
-
-    snapshot_dict = state["snapshot"] or {}
+    snapshot_dict = state["snapshot"]
+    if not snapshot_dict:
+        return {
+            "analysis": None,
+            "errors": state["errors"] + [{"code": "MISSING_SNAPSHOT", "message": "No snapshot available for analysis."}],
+        }
     snapshot = StockSnapshot(**snapshot_dict)
     analysis = analyzer.analyze(snapshot)
     return {"analysis": analysis}
