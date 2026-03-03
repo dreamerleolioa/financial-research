@@ -97,12 +97,19 @@
 - **任務**
   - 建立 Provider 抽象層：`InstitutionalFlowProvider`
   - 實作 `FinMindProvider`（Primary）
-  - 實作 `TwstockProvider` 或 `TwseOpenApiProvider`（Fallback）
+  - 實作 `TwseOpenApiProvider`（Fallback #1，上市優先）
+  - 實作 `TpexProvider`（Fallback #2，上櫃補齊）
+  - 在 Provider Router 內加入 `.TW/.TWO` 市場自動分流邏輯（`.TW`→TWSE，`.TWO`→TPEX）
+  - 固定資料源優先序：`FinMind -> TWSE OpenAPI -> TPEX`
+  - Provider 層強制 Schema Mapping（統一輸出欄位），並加入限流/欄位漂移防禦
   - 在 `backend/utils/` 新增驗證腳本，先驗證 `2330.TW` 能抓到三大法人欄位
+  - 補一個上櫃標的 smoke test（例：`6488.TWO`）驗證分流生效
   - 記錄資料源選擇依據與限制（更新頻率、限流、欄位完整度）
 - **DoD**
   - 可抓到 2330 最近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`
-  - Provider Router 可在 Primary 失敗時自動切換 Fallback
+  - 上市/上櫃路徑皆可運作（至少各 1 檔驗證）
+  - Provider Router 可在 Primary 失敗時依固定優先序自動切換 Fallback
+  - 不同資料源皆輸出一致 schema；欄位漂移不造成流程中斷
   - 確定採用的套件/API，記錄在進度追蹤文件
 
 ### P3-1 去情緒化分析流程

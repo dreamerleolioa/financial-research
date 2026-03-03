@@ -20,7 +20,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 |------|------|----------|
 | **消息面 (News)** | 去情緒化後的事實型新聞摘要 | Google News RSS、財經媒體 RSS |
 | **技術面 (Technical)** | MA5/20/60 均線、乖離率 (BIAS)、RSI、成交量變化 | yfinance + Pandas 計算 |
-| **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、融資融券消長 | 公開資訊觀測站 / 專用 API |
+| **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、融資融券消長 | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback） |
 
 建議以 **LangGraph（LangChain 延伸）** 作為 Agent 協作框架，以支援非線性流程與反饋迴圈。
 
@@ -93,7 +93,8 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
   - 三大法人買賣超：外資（FINI）、投信（SITC）、自營商（Dealer）
   - 融資餘額變化（Margin Balance Delta）
   - 融券餘額變化（Short Balance Delta）
-  - 資料源：公開資訊觀測站 OpenAPI 或 `twstock` 庫
+  - 資料源優先序：`FinMindProvider`（Primary）→ `TwseOpenApiProvider`（Fallback #1）→ `TpexProvider`（Fallback #2）
+  - 市場分流：`.TW`（上市）優先走 TWSE 路徑，`.TWO`（上櫃）優先走 TPEX 路徑
 
 ### 抓取工具建議
 
@@ -290,12 +291,24 @@ class InstitutionalFlowProvider(Protocol):
     ...
 ```
 
-**Provider 優先序（v1）**：
-1. `FinMindProvider`（Primary）：欄位完整、API 友善
-2. `TwstockProvider` / `TwseOpenApiProvider`（Fallback）：Primary 限流或失敗時自動切換
+**Provider 優先序（v2）**：
+1. `FinMindProvider`（Primary）：欄位完整（含三大法人 + 融資融券）
+2. `TwseOpenApiProvider`（Fallback #1）：官方權威來源，優先覆蓋上市標的
+3. `TpexProvider`（Fallback #2）：補齊上櫃標的
+
+**上市 / 上櫃分流規範**：
+- `symbol` 為 `.TW`：走上市路徑（TWSE provider chain）
+- `symbol` 為 `.TWO`：走上櫃路徑（TPEX provider chain）
+- 無後綴或未知後綴：先嘗試 FinMind，再依 mapping/metadata 推斷市場並套用對應 fallback
+
+**Defensive Programming（Provider 層強制）**：
+- 強制實作 Schema Mapping：不論來源欄位命名差異，輸出 JSON 結構必須一致
+- 限流（rate limit）需有可追蹤重試與降級策略，不得直接中斷分析主流程
+- 欄位漂移（field drift）需告警並保留核心欄位穩定輸出（缺漏欄位以預設值/nullable 表示）
 
 **最小可用驗收（MVP）**：
 - 可對 `2330.TW`（映射 `2330`）抓到近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`
+- 可對至少一檔上櫃標的（例：`6488.TWO`）完成路徑驗證
 - 失敗時回傳可追蹤錯誤碼（`INSTITUTIONAL_FETCH_ERROR`）且不中斷主流程
 
 **籌碼集中度判斷模型**：

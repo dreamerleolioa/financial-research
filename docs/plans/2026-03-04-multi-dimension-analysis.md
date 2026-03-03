@@ -17,41 +17,47 @@
 → [Low] D. 前端展示（若 JSON schema 穩定再做）
 ```
 
+### 執行原則（避免跨 Session 表現劣化）
+
+- 明日只追求 **Task A 完整交付**；B/C 只在 A 全部驗收通過後才啟動
+- 每個 Session 最多只承擔 **1 條主線 + 1 個可驗收輸出**（禁止同時跨 A/B/C）
+- 設定 Stop Rule：若 Session 2 結束時 A 尚未穩定，直接凍結 B/C，將剩餘工作順延
+- 每次暫停前必須回寫「交接快照」（見文末模板），確保下個 Session 無縫續作
+
+### 需求修訂定案（規劃師視角）
+
+- 資料源優先序：`FinMindProvider`（Primary）→ `TwseOpenApiProvider`（Fallback #1）→ `TpexProvider`（Fallback #2）
+- 上市/上櫃碎片化對策：`InstitutionalFlowProvider` 內部自動分流，`.TW` 走 TWSE，`.TWO` 走 TPEX
+- 防禦性編程：Provider 層強制 Schema Mapping，無論來源皆輸出一致 JSON；同時處理限流與欄位漂移
+
 ---
 
-## Session 拆分（建議 5 個 session）
+## Session 拆分（收斂版：建議 3 個 session）
 
 > 原則：每個 session 只處理一條主線，必須有可驗證輸出（程式或測試），避免跨太多模組導致收斂失敗。
 
-### Session 1（必做）｜Provider 抽象層 + 2330 實測
-- 範圍：Task A1 + A2（介面、router、primary/fallback 骨架）
-- 交付：可執行 `fetch_institutional_flow("2330.TW", days=5)`，即使 fallback 也要回資料或明確錯誤碼
-- 驗收：`backend/utils/` 驗證腳本跑通一次
+### Session 1（必做）｜Provider Router 骨架 + 單一路徑打通
+- 範圍：Task A1 + A2（介面、固定優先序、`.TW/.TWO` 分流骨架）
+- 交付：`2330.TW` 可跑到資料源呼叫與錯誤碼返回（可先接受部分欄位）
+- 驗收：可記錄實際命中的 provider 與 fallback 次序
 
-### Session 2｜Provider 正式化 + 測試
-- 範圍：Task A3 + A4（欄位標準化、異常處理、錯誤碼）
-- 交付：`foreign_buy/investment_trust_buy/dealer_buy/margin_delta` 穩定輸出
-- 驗收：provider 單元測試（正常路徑 + fallback 路徑）
+### Session 2（必做）｜Schema Mapping 正式化 + 雙市場驗收
+- 範圍：Task A3 + A4（統一欄位輸出、異常處理、驗證腳本）
+- 交付：`2330.TW` + `6488.TWO` 皆能輸出統一 schema（核心欄位齊）
+- 驗收：provider 測試覆蓋正常路徑 + fallback + 欄位漂移容錯
 
-### Session 3｜Preprocess Node + ContextGenerator
-- 範圍：Task B（`preprocess_node`、`generate_technical_context`）
-- 交付：`analyze_node` 可接收 `technical_context` + `institutional_context`
-- 驗收：BIAS/RSI 邊界值測試通過
+### Session 3（有餘裕才做）｜啟動 Task B（不碰 Task C）
+- 啟動條件：A-DoD 全部達成
+- 範圍：僅 `preprocess_node` 與 `generate_technical_context` 骨架
+- 交付：`analyze_node` 可接收 context 字串（先不要求完整敘事品質）
+- 驗收：至少 1 個 BIAS/RSI 邊界測試通過
 
-### Session 4｜Skeptic Prompt + Rule Score
-- 範圍：Task C（system prompt 與 `score_node`）
-- 交付：衝突規則 `-30 / +10` 生效，輸出 `cross_validation_note`
-- 驗收：至少 2 個衝突情境測試穩定通過
+> Task C（Skeptic Prompt + Rule Score）延後至下一工作日，避免明日跨太多認知上下文。
 
-> 開始 Session 4 前檢查（LLM 串接提醒）：
+> 開始 Task C 前檢查（LLM 串接提醒）：
 > - 向使用者確認/索取 `ANTHROPIC_API_KEY`（已放 `backend/.env`）
 > - 向使用者確認模型（預設 `claude-sonnet-4`）
 > - 向使用者確認偏好（品質/成本/平衡）、輸出格式（text/JSON）、timeout/retry
-
-### Session 5（可延後）｜前端串接
-- 範圍：Task D
-- 交付：前端顯示穩定 schema，不做額外 UI 擴張
-- 驗收：`/analyze` 欄位完整渲染
 
 ---
 
@@ -59,10 +65,10 @@
 
 若只有一天，建議只鎖定：
 
-1. 完成 Session 1（必做）
-2. 若有餘裕，再做 Session 2 的測試補強
+1. 完成 Session 1 + Session 2（Task A 全交付）
+2. 若有餘裕，只啟動 Session 3 骨架（Task B 部分）
 
-> 不建議明天同時跨到 Session 3/4，避免 context switch 過高導致交付不完整。
+> 不建議明天進入 Task C/D，避免 context switch 過高導致品質下滑。
 
 ---
 
@@ -70,20 +76,24 @@
 
 ### A1. 建立 Provider 抽象層
 - 新增 `InstitutionalFlowProvider` 介面
-- Router 支援多 Provider 依序嘗試
+- Router 支援多 Provider 依序嘗試與來源追蹤
+- 依 symbol suffix 自動分流：`.TW` 走上市路徑、`.TWO` 走上櫃路徑
 
 ### A2. 實作 Primary / Fallback
 - Primary：`FinMindProvider`
-- Fallback：`TwstockProvider` 或 `TwseOpenApiProvider`
-- 不可依賴單一資料源
+- Fallback #1：`TwseOpenApiProvider`（優先覆蓋上市標的）
+- Fallback #2：`TpexProvider`（處理上櫃標的，先完成可用骨架）
+- 不可依賴單一資料源，必須符合固定優先序：`FinMind -> TWSE Open API -> TPEX`
 
 ### A3. 實作 `fetch_institutional_flow`
 - 先鎖定 `2330.TW`（映射 `2330`）
+- 補充驗證 `6488.TWO`（上櫃路徑 smoke test）
 - 回傳欄位至少包含：
   - `foreign_buy`
   - `investment_trust_buy`
   - `dealer_buy`
   - `margin_delta`
+- Provider 層必做 Schema Mapping，確保所有來源輸出一致 JSON 格式
 
 ### A4. 新增驗證腳本
 - 在 `backend/utils/` 新增資料拉取驗證腳本
@@ -91,8 +101,10 @@
 
 ### A-DoD
 - `2330.TW` 可抓到近 5 日法人與融資欄位
-- Primary 失敗可自動切換 Fallback
+- `6488.TWO` 可通過上櫃路徑基本抓取（至少 1 次成功）
+- Primary 失敗可自動切換 Fallback（依固定優先序）
 - 錯誤時記錄 `INSTITUTIONAL_FETCH_ERROR` 且流程不中斷
+- 欄位漂移時不直接炸裂：未映射欄位需告警、已定義核心欄位仍保持穩定輸出
 
 ---
 
@@ -141,11 +153,12 @@
 
 ## 明日交付清單（最小可驗收）
 
-- Provider 抽象層 + `FinMindProvider` + 一個 fallback provider
-- `fetch_institutional_flow("2330.TW", days=5)` 可執行
-- `backend/utils/` 驗證腳本可輸出法人欄位
-- `generate_technical_context` 可產生技術與籌碼敘事
-- Skeptic Prompt + rule score 完成並可輸出矛盾報告欄位
+- Provider 抽象層 + `FinMindProvider` + `TwseOpenApiProvider` + `TpexProvider` 路由骨架
+- `fetch_institutional_flow("2330.TW", days=5)` 與 `fetch_institutional_flow("6488.TWO", days=5)` 可執行
+- Provider 層 Schema Mapping 生效（核心欄位統一）
+- `backend/utils/` 驗證腳本可輸出法人欄位與命中來源
+
+> `generate_technical_context` 與 Skeptic 規則算分不列入明日最小可驗收，避免目標膨脹。
 
 ---
 
@@ -153,3 +166,20 @@
 
 - 前端不阻擋明日主要交付；若時間緊，D 可延至後續工作日。
 - 若 FinMind 流量受限，優先保證 fallback 可運作，並在回應中標註資料來源。
+- TWSE/TPEX API 與欄位可能變動，明日實作以「Provider 內部 Schema Mapping + 明確告警」作為防禦性編程基線。
+
+### 跨 Session 交接快照（每次暫停必填）
+
+```markdown
+## Handoff Snapshot
+- 已完成：
+  - （例）Router 已支援 `.TW/.TWO` 分流
+- 進行中：
+  - （例）TPEX provider 欄位 mapping 尚缺 `margin_delta`
+- 阻塞點：
+  - （例）TWSE API 今日限流，需改走 fallback 驗證
+- 下一步（單一步驟）：
+  - （例）先補 `margin_delta` mapping，再跑 `6488.TWO` smoke test
+- 驗收證據：
+  - 測試/腳本輸出路徑與結果摘要
+```

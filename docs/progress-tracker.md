@@ -48,6 +48,18 @@
 
 ## 進行中 / 待完成 ⏳
 
+> 文件規則提醒：每次完成計劃中的任務，需當日回寫對應 `docs/plans/*.md`；若該需求尚無計劃文件，需先補產計劃文件再標記完成。
+
+### 本次需求變更（2026-03-03）
+
+- [x] 已同步更新需求文件與規劃文件：
+	- `docs/ai-stock-sentinel-architecture-spec.md`
+	- `docs/implementation-task-breakdown.md`
+	- `docs/plans/2026-03-04-multi-dimension-analysis.md`
+- [x] 資料源優先序定案：`FinMindProvider`（Primary）→ `TwseOpenApiProvider`（Fallback #1）→ `TpexProvider`（Fallback #2）
+- [x] 上市/上櫃碎片化對策定案：`InstitutionalFlowProvider` 內建 `.TW/.TWO` 自動分流（`.TW`→TWSE，`.TWO`→TPEX）
+- [x] 防禦性編程定案：Provider 層強制 Schema Mapping；需處理限流（rate limit）與欄位漂移（field drift），確保輸出 JSON schema 一致
+
 ### Phase 2：LangGraph
 - [x] 建立 LangGraph 狀態機（GraphState + 節點 stub + builder）
 - [x] loop guard（max_retries）骨架
@@ -107,6 +119,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. P3-0：先完成籌碼資料源確認（Provider abstraction + `fetch_institutional_flow("2330.TW", days=5)`）
-2. P3-2：完成 Preprocess Node（`generate_technical_context`、`quantify_to_narrative`）
-3. P3-3：完成 Skeptic Mode + rule-based score（`confidence_score` / `cross_validation_note`）
+1. P3-0：先完成 Provider Router 與固定優先序（`FinMind -> TWSE OpenAPI -> TPEX`），並落地 `.TW/.TWO` 自動分流
+2. P3-0：完成 Provider 層 Schema Mapping + 限流/欄位漂移防禦，驗證 `2330.TW` 與 `6488.TWO`
+3. P3-2 / P3-3：再推進 Preprocess Node 與 Skeptic Mode rule-based score（`confidence_score` / `cross_validation_note`）
