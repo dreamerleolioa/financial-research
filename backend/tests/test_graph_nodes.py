@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 from ai_stock_sentinel.graph.nodes import crawl_node, judge_node, analyze_node
@@ -33,6 +34,8 @@ def _base_state(**overrides) -> GraphState:
         "data_sufficient": False,
         "retry_count": 0,
         "errors": [],
+        "requires_news_refresh": False,
+        "requires_fundamental_update": False,
     }
     state.update(overrides)
     return state
@@ -90,3 +93,63 @@ def test_crawl_node_accumulates_errors_on_failure() -> None:
     assert result["errors"][0]["code"] == "PRIOR_ERROR"
     assert result["errors"][1]["code"] == "CRAWL_ERROR"
     assert "network timeout" in result["errors"][1]["message"]
+
+
+def _make_cleaned_news(
+    *,
+    date_str: str | None = None,
+    mentioned_numbers: list[str] | None = None,
+) -> dict:
+    today = date.today().isoformat()
+    return {
+        "date": date_str if date_str is not None else today,
+        "title": "台積電 2 月營收年增",
+        "mentioned_numbers": mentioned_numbers if mentioned_numbers is not None else ["2,600", "18.2%"],
+        "sentiment_label": "positive",
+    }
+
+
+def test_judge_node_sufficient_when_snapshot_and_fresh_news() -> None:
+    state = _base_state(
+        snapshot=_make_snapshot(),
+        cleaned_news=_make_cleaned_news(),
+    )
+    result = judge_node(state)
+    assert result["data_sufficient"] is True
+    assert result["requires_news_refresh"] is False
+    assert result["requires_fundamental_update"] is False
+
+
+def test_judge_node_insufficient_when_snapshot_missing() -> None:
+    state = _base_state(snapshot=None)
+    result = judge_node(state)
+    assert result["data_sufficient"] is False
+    assert result["requires_fundamental_update"] is True
+
+
+def test_judge_node_insufficient_when_news_stale() -> None:
+    stale_date = (date.today() - timedelta(days=8)).isoformat()
+    state = _base_state(
+        snapshot=_make_snapshot(),
+        cleaned_news=_make_cleaned_news(date_str=stale_date),
+    )
+    result = judge_node(state)
+    assert result["data_sufficient"] is False
+    assert result["requires_news_refresh"] is True
+
+
+def test_judge_node_insufficient_when_no_mentioned_numbers() -> None:
+    state = _base_state(
+        snapshot=_make_snapshot(),
+        cleaned_news=_make_cleaned_news(mentioned_numbers=[]),
+    )
+    result = judge_node(state)
+    assert result["data_sufficient"] is False
+    assert result["requires_news_refresh"] is True
+
+
+def test_judge_node_sufficient_when_no_news_provided() -> None:
+    """cleaned_news 為 None 時（未提供新聞），不因此判定為 insufficient。"""
+    state = _base_state(snapshot=_make_snapshot(), cleaned_news=None)
+    result = judge_node(state)
+    assert result["data_sufficient"] is True
