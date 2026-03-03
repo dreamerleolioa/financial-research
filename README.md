@@ -26,8 +26,8 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 ## 目前進度摘要
 
-- Phase 1（MVP Backend）：約 85%（可執行）
-- Phase 2（LangGraph 回圈）：0%
+- Phase 1（MVP Backend）：100%（技術債清理完成，CLI 改走 graph 流程）
+- Phase 2（LangGraph 回圈）：100%（骨架 + judge + RSS + clean + API 接入完成）
 - Phase 3（分析能力強化）：約 20%
 - Phase 4（前端儀表板）：約 35%
 
@@ -92,16 +92,28 @@ cd backend
 make install
 ```
 
-## 環境變數（可選）
+## 環境變數（LLM）
 
-啟用 LLM 功能時使用：
+啟用 Claude 功能時，請在 `backend/.env` 設定：
 
 ```bash
-export OPENAI_API_KEY="your_api_key"
-export OPENAI_MODEL="gpt-4o-mini"
+ANTHROPIC_API_KEY="your_api_key"
+LLM_PROVIDER="claude"
+CLAUDE_MODEL="claude-sonnet-4"
 ```
 
-若未設定 `OPENAI_API_KEY`，系統會自動 fallback：
+### 換電腦開發時要注意
+
+- `.env` 不會進版控（也不應進版控），所以在新電腦上**需要手動重建一份** `backend/.env`。
+- 建議直接複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
+
+### Claude API Key 取得方式
+
+1. 前往 `https://console.anthropic.com/`
+2. 登入後進入 **API Keys** 頁面
+3. 建立（Create Key）或使用既有 key，並立即複製保存
+
+若未設定 `ANTHROPIC_API_KEY`，系統會自動 fallback：
 - 股票分析：回傳提示訊息（不會中斷）
 - 新聞清潔：使用 heuristic 規則輸出 JSON
 

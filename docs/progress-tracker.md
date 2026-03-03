@@ -59,10 +59,25 @@
 ### Phase 1：技術債
 - [x] 移除 `StockCrawlerAgent` / `build_agent()`，CLI 改走 graph 流程（`agents/crawler_agent.py` 已移除，`main.py` 改用 `build_graph()`，測試覆蓋，2026-03-03）
 
-### Phase 3：分析深化
-- [ ] 事實萃取 + 情緒詞標記分離輸出
-- [ ] Tool Use（本益比位階、乖離率、YoY/MoM）
-- [ ] 信心分數與依據
+### Phase 3：分析深化（多維偵察升級）
+
+> 計劃文件：`docs/plans/2026-03-04-multi-dimension-analysis.md`
+
+- [ ] Task 1：新增 `TechnicalData`、`InstitutionalData`、`AnalysisDetail` Pydantic 模型（`models.py`）
+- [ ] Task 2：`YFinanceCrawler` 新增 `calculate_technical_indicators()`（Pandas：MA/BIAS/RSI/量比）
+- [ ] Task 3：新增 `data_sources/institutional_client.py`（法人買賣超、融資融券，含降級策略）
+- [ ] Task 4：`GraphState` 擴充 `technical`、`institutional`、`analysis_detail` 欄位
+- [ ] Task 5：`graph/nodes.py` 新增 `fetch_technical_node`、`fetch_institutional_node`；升級 `analyze_node`
+- [ ] Task 6：`graph/builder.py` 流程加入 `fetch_technical → fetch_institutional` 兩步
+- [ ] Task 7：`langchain_analyzer.py` 升級為三維交叉驗證 Prompt，輸出結構化 `AnalysisDetail`
+- [ ] Task 7.5：LLM Provider 串接（主用 Claude）
+	- [ ] 串接前提醒使用者提供：`ANTHROPIC_API_KEY`
+	- [ ] 串接前提醒使用者確認：模型名稱（預設 `claude-sonnet-4`）
+	- [ ] 串接前提醒使用者確認：成本/速度偏好（品質優先 / 成本優先 / 平衡）
+	- [ ] 串接前提醒使用者確認：輸出格式（純文字或 JSON）
+	- [ ] 串接前提醒使用者確認：失敗策略（timeout 與 retry 次數）
+- [ ] Task 8：`api.py` `AnalyzeResponse` 新增 `technical`、`institutional`、`analysis_detail`
+- [ ] Task 9：整合測試（`make test` 全通過，覆蓋降級路徑）
 
 ### Phase 4：前端
 - [ ] 串接後端 API（symbol -> 真實分析結果）
@@ -92,6 +107,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. P3-1：去情緒化分析流程（facts / emotional_terms / fact_only_summary）
-2. P4 前端串接後端 API（改為真實資料驅動）
-3. P3-2：Tool Use（本益比位階、乖離率、YoY/MoM）
+1. P3-0：先完成籌碼資料源確認（Provider abstraction + `fetch_institutional_flow("2330.TW", days=5)`）
+2. P3-2：完成 Preprocess Node（`generate_technical_context`、`quantify_to_narrative`）
+3. P3-3：完成 Skeptic Mode + rule-based score（`confidence_score` / `cross_validation_note`）

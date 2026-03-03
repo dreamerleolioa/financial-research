@@ -87,28 +87,81 @@
 
 ## Phase 3：分析能力強化
 
+> 本階段以三個分析模式為核心設計依據（完整規格見 [architecture-spec §3.2](ai-stock-sentinel-architecture-spec.md)）：
+> - **模式一**：交叉驗證邏輯（Cross-Verification）
+> - **模式二**：技術指標定性化（Quant to Qual）
+> - **模式三**：籌碼歸屬分析（Institutional Flow Profiling）
+
+### P3-0 籌碼資料源確認（前置、Blocking P3-3）
+- **目標**：確認三大法人 + 融資融券資料源可用性，解除 P3-3 的 blocking 依賴
+- **任務**
+  - 建立 Provider 抽象層：`InstitutionalFlowProvider`
+  - 實作 `FinMindProvider`（Primary）
+  - 實作 `TwstockProvider` 或 `TwseOpenApiProvider`（Fallback）
+  - 在 `backend/utils/` 新增驗證腳本，先驗證 `2330.TW` 能抓到三大法人欄位
+  - 記錄資料源選擇依據與限制（更新頻率、限流、欄位完整度）
+- **DoD**
+  - 可抓到 2330 最近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`
+  - Provider Router 可在 Primary 失敗時自動切換 Fallback
+  - 確定採用的套件/API，記錄在進度追蹤文件
+
 ### P3-1 去情緒化分析流程
-- **目標**：輸出「事實」與「情緒詞標記」
+- **目標**：輸出「事實」與「情緒詞標記」（對應模式一的新聞面訊號來源）
 - **任務**
   - 建立情緒詞字典（中英）
   - 抽取數字 + 情緒詞標記 + 事實敘述
+  - Cleaner 輸出需包含結構化 `sentiment_label`（`positive / negative / neutral`），供後續交叉驗證使用
 - **DoD**
-  - 回傳結構包含 `facts`, `emotional_terms`, `fact_only_summary`
+  - 回傳結構包含 `facts`, `emotional_terms`, `fact_only_summary`, `sentiment_label`
+  - `sentiment_label` 為明確分類值，不是自由文字
 
-### P3-2 Tool Use 計算工具
-- **目標**：Agent 可呼叫計算工具驗證指標
+### P3-2 Quant to Qual 預處理節點（模式二）
+- **目標**：在 LangGraph 流程中新增 `preprocess_node`，於 `analyze_node` 之前執行，將技術指標數值轉換為 LLM 可直接理解的敘事描述
 - **任務**
-  - 計算工具：本益比位階、乖離率、YoY/MoM
-  - 接入 Analysis Agent 的工具呼叫
+  - 實作 `generate_technical_context(df_price, inst_data)` 作為 ContextGenerator（純 rule-based）
+    - 產出 `technical_context`（技術面敘事）
+    - 產出 `institutional_context`（法人敘事）
+  - 實作 `quantify_to_narrative(technical: dict) -> str`（純 rule-based，不呼叫 LLM）
+    - 乖離率（BIAS）：定性為「短線弱勢 / 乖離過大 / 正常」
+    - RSI：定性為「超買 / 超賣 / 中性」
+    - 均線排列：定性為「多頭 / 空頭 / 糾結」
+    - 成交量變化：定性為「量能放大 / 萎縮 / 正常」
+  - 在 LangGraph builder 中插入 `preprocess_node`（位置：`calculate_indicators_node` → `preprocess_node` → `analyze_node`）
+  - Prompt template 改為接受敘事字串，移除直接傳入原始數字的欄位
 - **DoD**
-  - 至少 2 個指標可自動計算並附公式/輸入來源
+  - `quantify_to_narrative` 有獨立單元測試（覆蓋邊界值：BIAS <-5、>8；RSI <30、>70）
+  - LangGraph 流程跑完後，`analyze_node` 的 prompt context 中不含裸數值，只含定性描述
 
-### P3-3 信心分數
-- **目標**：讓輸出有可解釋置信度
+### P3-2b Tool Use 計算工具（原 P3-2）
+- **目標**：Agent 可呼叫計算工具驗證指標，確保數值來源可追溯
 - **任務**
-  - 設計 confidence 規則（資料完整度、來源品質、指標一致性）
+  - `calculate_technical_indicators(symbol, period)`：MA5/20/60、BIAS、RSI14、Volume Change
+  - `calculate_bias(close, ma)`：乖離率公式
+  - `estimate_pe_percentile(symbol, pe)`：本益比歷史百分位
+  - `calculate_growth_rate(current, previous)`：YoY / MoM
+  - 接入 Analysis Agent 的 tool call
 - **DoD**
-  - 輸出 `confidence_score`（0~100）與計分依據
+  - 至少 3 個工具有對應單元測試，含公式驗證
+
+### P3-3 籌碼歸屬分析 + 信心分數（模式一 + 模式三）
+- **前置依賴**：P3-0 完成（資料源確認）
+- **目標**：實作三維訊號交叉驗證，輸出有依據的信心分數
+- **任務**
+  - 實作 `fetch_institutional_flow(symbol, days)` 工具
+    - 輸出：`foreign_net_cumulative`, `trust_net_cumulative`, `dealer_net_cumulative`, `three_party_net`, `consecutive_buy_days`, `margin_balance_delta_pct`, `flow_label`
+    - `flow_label` 由 rule-based Python 決定，不由 LLM 判斷
+  - 實作 `adjust_confidence_by_divergence(base_score, news_sentiment, inst_flow, technical_signal)`
+    - 三維共振 → +15；利多不漲背離 → -30；散戶追高 → -15
+    - 利空不跌（新聞負向 + 技術偏強）→ +10
+    - 回傳 `(adjusted_score, cross_validation_note)`
+    - 純 Python，不呼叫 LLM
+  - 在 `analyze_node` 後新增 `score_node`，執行信心分數計算
+  - 更新 system prompt 為 Skeptic Mode：強制「提取 → 對照 → 衝突檢查 → 僅輸出事實與邏輯推論」
+  - `GraphState` 新增欄位：`institutional_flow_data`, `confidence_score`, `cross_validation_note`
+- **DoD**
+  - `adjust_confidence_by_divergence` 對三種背離情境均有測試
+  - `fetch_institutional_flow` 可抓到真實資料並輸出 `flow_label`
+  - 最終輸出包含 `confidence_score`（0~100）與 `cross_validation_note`（非空字串）
 
 ---
 
@@ -171,5 +224,9 @@
 
 1. 完成 P2-1 + P2-2（先有 LangGraph 回圈）
 2. 完成 P2-3（新聞來源自動化）
-3. 完成 P3-1 + P3-2 + P3-3（分析可用且可解釋）
-4. 完成 P4-1~P4-3（前端展示）
+3. **[High] 先做 P3-0**（Provider 抽象 + 2330.TW 實測，解除 P3-3 blocking）
+4. **[Medium] 完成 P3-2**（`preprocess_node` + `generate_technical_context` + `quantify_to_narrative`）
+5. **[Medium] 完成 P3-3**（Skeptic Prompt + 衝突規則算分 + `fetch_institutional_flow`）
+6. 完成 P3-1（Cleaner 輸出 `sentiment_label`）
+7. 完成 P3-2b（Tool Use 計算工具）
+8. **[Low] 完成 P4-1~P4-3**（前端展示）

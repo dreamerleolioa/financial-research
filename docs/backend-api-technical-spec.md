@@ -114,7 +114,7 @@ make run-api
   | `analysis_detail.technical_signal` | enum | `bullish` / `bearish` / `sideways` |
   | `analysis_detail.institutional_flow` | enum | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
   | `analysis_detail.cross_validation_note` | string | 三維交叉驗證結論簡述 |
-  | `analysis_detail.confidence_score` | int | 0–1001，反映三維訊號一致性 |
+  | `analysis_detail.confidence_score` | int | 0–100，反映三維訊號一致性 |
   | `cleaned_news` | object | 去情緒化後的新聞結構 |
   | `errors` | array | 錯誤碼陣列 |
 
@@ -141,7 +141,7 @@ make run-api
 - `CLEAN_ERROR`：`clean_node` 呼叫新聞清潔器失敗（LLM 或 heuristic 例外）
 - `TECHNICAL_CALC_ERROR`：`fetch_technical_node` 計算技術指標失敗（yfinance / Pandas 例外）
 - `INSTITUTIONAL_FETCH_ERROR`：`fetch_institutional_node` 抓取法人籌碼資料失敗（API 不可用或網路例外）
-- `CROSS_VALIDATION_ERROR`：`analyze_node` 執行多維交叉驗證通箇失敗
+- `CROSS_VALIDATION_ERROR`：`analyze_node` 執行多維交叉驗證失敗
 
 ---
 
