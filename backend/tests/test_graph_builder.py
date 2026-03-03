@@ -31,6 +31,8 @@ def _initial_state(symbol: str = "2330.TW") -> dict:
         "data_sufficient": False,
         "retry_count": 0,
         "errors": [],
+        "requires_news_refresh": False,
+        "requires_fundamental_update": False,
     }
 
 
