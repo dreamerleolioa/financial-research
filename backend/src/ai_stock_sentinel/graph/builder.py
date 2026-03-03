@@ -31,6 +31,7 @@ def build_graph(
     graph.add_node("analyze", partial(analyze_node, analyzer=analyzer))
 
     def _judge(state: GraphState) -> dict[str, Any]:
+        """呼叫 judge_node；若 _force_insufficient=True 則永遠回傳 insufficient（測試用）。"""
         if _force_insufficient:
             return {"data_sufficient": False}
         return judge_node(state)

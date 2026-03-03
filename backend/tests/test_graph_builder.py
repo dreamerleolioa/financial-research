@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from unittest.mock import MagicMock
 
 from ai_stock_sentinel.graph.builder import build_graph
