@@ -5,8 +5,9 @@ from typing import Any
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field
 
-from ai_stock_sentinel.agents.crawler_agent import StockCrawlerAgent
-from ai_stock_sentinel.main import build_agent
+from ai_stock_sentinel.graph.builder import build_graph
+from ai_stock_sentinel.graph.state import GraphState
+from ai_stock_sentinel.main import build_graph_deps
 
 
 class AnalyzeRequest(BaseModel):
@@ -26,8 +27,9 @@ class AnalyzeResponse(BaseModel):
     errors: list[ErrorDetail] = Field(default_factory=list)
 
 
-def get_agent() -> StockCrawlerAgent:
-    return build_agent()
+def get_graph():
+    crawler, analyzer, rss_client, news_cleaner = build_graph_deps()
+    return build_graph(crawler=crawler, analyzer=analyzer, rss_client=rss_client, news_cleaner=news_cleaner)
 
 
 app = FastAPI(title="AI Stock Sentinel API", version="v1")
@@ -41,10 +43,24 @@ def health() -> dict[str, str]:
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(
     payload: AnalyzeRequest,
-    agent: StockCrawlerAgent = Depends(get_agent),
+    graph=Depends(get_graph),
 ) -> AnalyzeResponse:
+    initial_state: GraphState = {
+        "symbol": payload.symbol,
+        "news_content": payload.news_text,
+        "snapshot": None,
+        "analysis": None,
+        "cleaned_news": None,
+        "raw_news_items": None,
+        "data_sufficient": False,
+        "retry_count": 0,
+        "errors": [],
+        "requires_news_refresh": False,
+        "requires_fundamental_update": False,
+    }
+
     try:
-        result = agent.run(symbol=payload.symbol, news_content=payload.news_text)
+        result: dict[str, Any] = graph.invoke(initial_state)
     except Exception as exc:
         return AnalyzeResponse(
             errors=[
@@ -57,13 +73,16 @@ def analyze(
 
     snapshot = result.get("snapshot")
     analysis = result.get("analysis")
-    response_errors: list[AnalyzeResponse.ErrorDetail] = []
+    response_errors: list[AnalyzeResponse.ErrorDetail] = [
+        AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
+        for e in result.get("errors", [])
+    ]
 
     if not isinstance(snapshot, dict):
         response_errors.append(
             AnalyzeResponse.ErrorDetail(
                 code="MISSING_SNAPSHOT",
-                message="Agent result missing valid snapshot payload.",
+                message="Graph result missing valid snapshot payload.",
             )
         )
         snapshot = {}
@@ -72,7 +91,7 @@ def analyze(
         response_errors.append(
             AnalyzeResponse.ErrorDetail(
                 code="MISSING_ANALYSIS",
-                message="Agent result missing valid analysis payload.",
+                message="Graph result missing valid analysis payload.",
             )
         )
         analysis = ""

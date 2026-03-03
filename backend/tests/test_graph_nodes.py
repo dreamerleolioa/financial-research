@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 from ai_stock_sentinel.data_sources.rss_news_client import RawNewsItem
-from ai_stock_sentinel.graph.nodes import crawl_node, fetch_news_node, judge_node, analyze_node
+from ai_stock_sentinel.graph.nodes import clean_node, crawl_node, fetch_news_node, judge_node, analyze_node
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import StockSnapshot
 
@@ -217,6 +217,47 @@ def test_fetch_news_node_accumulates_errors_on_exception() -> None:
     assert len(result["errors"]) == 2
     assert result["errors"][1]["code"] == "RSS_FETCH_ERROR"
     assert "connection refused" in result["errors"][1]["message"]
+
+
+# ── clean_node ───────────────────────────────────────────────────────────────
+
+def test_clean_node_produces_cleaned_news_from_news_content() -> None:
+    mock_cleaner = MagicMock()
+    mock_cleaner.clean.return_value = MagicMock(
+        model_dump=lambda: {
+            "date": "2026-03-03",
+            "title": "台積電 2 月營收年增",
+            "mentioned_numbers": ["2,600", "18.2%"],
+            "sentiment_label": "positive",
+        }
+    )
+
+    state = _base_state(news_content="2026-03-03 台積電 2 月營收 2,600 億元，年增 18.2%")
+    result = clean_node(state, news_cleaner=mock_cleaner)
+
+    assert result["cleaned_news"]["sentiment_label"] == "positive"
+    assert result["cleaned_news"]["mentioned_numbers"] == ["2,600", "18.2%"]
+
+
+def test_clean_node_skips_when_no_news_content() -> None:
+    mock_cleaner = MagicMock()
+
+    state = _base_state(news_content=None)
+    result = clean_node(state, news_cleaner=mock_cleaner)
+
+    mock_cleaner.clean.assert_not_called()
+    assert result.get("cleaned_news") is None
+
+
+def test_clean_node_accumulates_errors_on_exception() -> None:
+    mock_cleaner = MagicMock()
+    mock_cleaner.clean.side_effect = RuntimeError("LLM timeout")
+
+    state = _base_state(news_content="some news")
+    result = clean_node(state, news_cleaner=mock_cleaner)
+
+    assert result.get("cleaned_news") is None
+    assert any(e["code"] == "CLEAN_ERROR" for e in result["errors"])
 
 
 def test_fetch_news_node_uses_symbol_prefix_as_query() -> None:

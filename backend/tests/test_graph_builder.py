@@ -50,6 +50,33 @@ def test_graph_runs_and_returns_analysis() -> None:
     assert result["errors"] == []
 
 
+def test_graph_cleans_news_when_news_content_provided() -> None:
+    """news_content 有值時，graph 應呼叫 news_cleaner 並將結果寫入 cleaned_news。"""
+    mock_crawler = MagicMock()
+    mock_crawler.fetch_basic_snapshot.return_value = _make_stock_snapshot()
+    mock_analyzer = MagicMock()
+    mock_analyzer.analyze.return_value = "分析結果"
+    mock_cleaner = MagicMock()
+    mock_cleaner.clean.return_value = MagicMock(
+        model_dump=lambda: {
+            "date": "2026-03-03",
+            "title": "台積電",
+            "mentioned_numbers": ["2,600"],
+            "sentiment_label": "positive",
+        }
+    )
+
+    state = _initial_state()
+    state["news_content"] = "2026-03-03 台積電 2 月營收 2,600 億元"
+
+    graph = build_graph(crawler=mock_crawler, analyzer=mock_analyzer, news_cleaner=mock_cleaner)
+    result = graph.invoke(state)
+
+    assert result["cleaned_news"] is not None
+    assert result["cleaned_news"]["sentiment_label"] == "positive"
+    mock_cleaner.clean.assert_called_once()
+
+
 def test_graph_loop_guard_stops_after_max_retries() -> None:
     """Judge 永遠說 insufficient 時，graph 應在 max_retries 後停止並繼續執行 analyze。"""
     mock_crawler = MagicMock()

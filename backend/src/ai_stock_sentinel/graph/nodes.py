@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
+from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
@@ -80,6 +81,21 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
     snapshot = StockSnapshot(**snapshot_dict)
     analysis = analyzer.analyze(snapshot)
     return {"analysis": analysis}
+
+
+def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner) -> dict[str, Any]:
+    """將 news_content 清潔成結構化 cleaned_news；若無 news_content 則跳過。"""
+    news_content = state["news_content"]
+    if not news_content:
+        return {"cleaned_news": None}
+    try:
+        cleaned = news_cleaner.clean(news_content)
+        return {"cleaned_news": cleaned.model_dump()}
+    except Exception as exc:
+        return {
+            "cleaned_news": None,
+            "errors": state["errors"] + [{"code": "CLEAN_ERROR", "message": str(exc)}],
+        }
 
 
 def fetch_news_node(state: GraphState, *, rss_client: RssNewsClient) -> dict[str, Any]:

@@ -10,14 +10,16 @@ except ImportError:
     def load_dotenv() -> bool:
         return False
 
-from ai_stock_sentinel.agents.crawler_agent import StockCrawlerAgent
 from ai_stock_sentinel.analysis.langchain_analyzer import LangChainStockAnalyzer
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.config import load_settings
+from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
+from ai_stock_sentinel.graph.builder import build_graph
 
 
-def build_agent() -> StockCrawlerAgent:
+def build_graph_deps():
+    """Return (crawler, analyzer, rss_client, news_cleaner) ready to pass to build_graph()."""
     load_dotenv()
     settings = load_settings()
 
@@ -32,9 +34,10 @@ def build_agent() -> StockCrawlerAgent:
         )
 
     analyzer = LangChainStockAnalyzer(llm=llm)
-    news_cleaner = FinancialNewsCleaner(model=settings.openai_model)
     crawler = YFinanceCrawler()
-    return StockCrawlerAgent(crawler=crawler, analyzer=analyzer, news_cleaner=news_cleaner)
+    rss_client = RssNewsClient()
+    news_cleaner = FinancialNewsCleaner(model=settings.openai_model)
+    return crawler, analyzer, rss_client, news_cleaner
 
 
 def read_news_input(news_file: str | None, news_text: str | None) -> str | None:
@@ -56,9 +59,31 @@ def main() -> None:
     parser.add_argument("--news-text", type=str, help="直接傳入財經新聞內容")
     args = parser.parse_args()
 
-    agent = build_agent()
     news_content = read_news_input(news_file=args.news_file, news_text=args.news_text)
-    result = agent.run(symbol=args.symbol, news_content=news_content)
+
+    crawler, analyzer, rss_client, news_cleaner = build_graph_deps()
+    graph = build_graph(
+        crawler=crawler,
+        analyzer=analyzer,
+        rss_client=rss_client,
+        news_cleaner=news_cleaner,
+    )
+
+    initial_state = {
+        "symbol": args.symbol,
+        "news_content": news_content,
+        "snapshot": None,
+        "analysis": None,
+        "cleaned_news": None,
+        "raw_news_items": None,
+        "data_sufficient": False,
+        "retry_count": 0,
+        "errors": [],
+        "requires_news_refresh": False,
+        "requires_fundamental_update": False,
+    }
+
+    result = graph.invoke(initial_state)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

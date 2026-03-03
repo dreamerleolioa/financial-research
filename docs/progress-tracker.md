@@ -4,8 +4,8 @@
 
 ## 目前完成度（高層）
 
-- **Phase 1（MVP Backend）**：約 85%（核心流程可跑）
-- **Phase 2（LangGraph 回圈）**：約 80%（骨架 + judge 邏輯 + RSS 新聞抓取完成）
+- **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
+- **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：約 20%（有基礎清潔與情緒標籤）
 - **Phase 4（前端儀表板）**：約 35%（前端骨架與核心視覺元件已完成）
 
@@ -24,7 +24,7 @@
 - [x] Stock 分析介面（有 LLM 時分析，無金鑰 fallback）
 - [x] 財經新聞清潔器 schema（`date/title/mentioned_numbers/sentiment_label`）
 - [x] 新聞清潔器支援 `--text` / `--file` / stdin
-- [x] 新聞清潔已整合到 `StockCrawlerAgent`（輸出 `cleaned_news`）
+- [x] 新聞清潔已整合到 graph `clean_node`（輸出 `cleaned_news`；原 `StockCrawlerAgent` 已移除）
 
 ### 文件
 - [x] README（安裝、執行、參數、輸出）
@@ -53,7 +53,11 @@
 - [x] loop guard（max_retries）骨架
 - [x] 完整性判斷節點（snapshot 缺失、新聞過舊、數字不足）
 - [x] 新聞 RSS 自動抓取（RssNewsClient + fetch_news_node，無外部依賴）
-- [ ] **將 graph 接進 `/analyze` API**（目前 API 還是走舊的 StockCrawlerAgent 線性流程，judge/fetch_news/retry 回圈尚未在 API 請求中觸發）
+- [x] 將 graph 接進 `/analyze` API（`build_graph()` 取代 `StockCrawlerAgent`，judge/fetch_news/retry 回圈在 API 請求中真正執行，測試覆蓋，2026-03-03）
+- [x] 新聞清潔接進 graph（`clean_node` 插入 judge → analyze 之間，`cleaned_news` 路徑打通，測試覆蓋，2026-03-03）
+
+### Phase 1：技術債
+- [x] 移除 `StockCrawlerAgent` / `build_agent()`，CLI 改走 graph 流程（`agents/crawler_agent.py` 已移除，`main.py` 改用 `build_graph()`，測試覆蓋，2026-03-03）
 
 ### Phase 3：分析深化
 - [ ] 事實萃取 + 情緒詞標記分離輸出
@@ -88,6 +92,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. **P2-4（補）**：將 graph 接進 `/analyze` API，讓回圈真正在請求中運作
-2. P3-1：去情緒化分析流程（facts / emotional_terms / fact_only_summary）
-3. P4 前端串接後端 API（改為真實資料驅動）
+1. P3-1：去情緒化分析流程（facts / emotional_terms / fact_only_summary）
+2. P4 前端串接後端 API（改為真實資料驅動）
+3. P3-2：Tool Use（本益比位階、乖離率、YoY/MoM）

@@ -72,6 +72,7 @@
 - **DoD**
   - `POST /analyze` 觸發後，judge/fetch_news/retry 回圈實際執行
   - 測試覆蓋（mock graph 或 mock 各節點依賴）
+- **完成記錄**：`api.py` 改用 `get_graph` dependency（`build_graph_deps()` in `main.py`），`AnalyzeResponse` 欄位不含 `raw_news_items`，graph errors 傳遞到 response，測試 8 個（mock compiled graph），2026-03-03
 
 ### P2-3 新聞資料源擴充（RSS）
 - **目標**：不只靠手動輸入新聞
@@ -80,7 +81,7 @@
   - 標準化來源 metadata
 - **DoD**
   - 指定 symbol 可拉回至少 N 篇新聞
-- **完成記錄**：RssNewsClient（stdlib，無外部依賴）+ fetch_news_node + GraphState.raw_news_items 已實作，測試覆蓋（20 tests），2026-03-03
+- **完成記錄**：RssNewsClient（stdlib，無外部依賴）+ fetch_news_node + GraphState.raw_news_items 已實作，測試覆蓋（6 tests in test_rss_news_client.py + 5 fetch_news_node tests in test_graph_nodes.py），2026-03-03
 
 ---
 
