@@ -29,6 +29,9 @@
 - 資料源優先序：`FinMindProvider`（Primary）→ `TwseOpenApiProvider`（Fallback #1）→ `TpexProvider`（Fallback #2）
 - 上市/上櫃碎片化對策：`InstitutionalFlowProvider` 內部自動分流，`.TW` 走 TWSE，`.TWO` 走 TPEX
 - 防禦性編程：Provider 層強制 Schema Mapping，無論來源皆輸出一致 JSON；同時處理限流與欄位漂移
+- 技術位階補強：`calculate_technical_indicators` 增加 `high_20d` / `low_20d` 與支撐壓力位
+- 策略模板補強：輸出固定包含 `entry_zone`、`stop_loss`、`holding_period`
+- Schema 補強：`analysis_detail` 新增 `strategy_type`（短線／中線／防守觀望）
 
 ---
 
@@ -46,15 +49,15 @@
 - 交付：`2330.TW` + `6488.TWO` 皆能輸出統一 schema（核心欄位齊）
 - 驗收：provider 測試覆蓋正常路徑 + fallback + 欄位漂移容錯
 
-### Session 3（有餘裕才做）｜啟動 Task B（不碰 Task C）
+### Session 3（有餘裕才做）｜啟動 Task B（不碰 Task C 主體）
 - 啟動條件：A-DoD 全部達成
 - 範圍：僅 `preprocess_node` 與 `generate_technical_context` 骨架
 - 交付：`analyze_node` 可接收 context 字串（先不要求完整敘事品質）
 - 驗收：至少 1 個 BIAS/RSI 邊界測試通過
 
-> Task C（Skeptic Prompt + Rule Score）延後至下一工作日，避免明日跨太多認知上下文。
+> Task C（Skeptic Prompt + Rule Score）主體延後至下一工作日；但為滿足策略輸出需求，明日先完成 `Task C3` 最小骨架與測試。
 
-> 開始 Task C 前檢查（LLM 串接提醒）：
+> 開始 Task C1/C2 前檢查（LLM 串接提醒）：
 > - 向使用者確認/索取 `ANTHROPIC_API_KEY`（已放 `backend/.env`）
 > - 向使用者確認模型（預設 `claude-sonnet-4`）
 > - 向使用者確認偏好（品質/成本/平衡）、輸出格式（text/JSON）、timeout/retry
@@ -68,7 +71,7 @@
 1. 完成 Session 1 + Session 2（Task A 全交付）
 2. 若有餘裕，只啟動 Session 3 骨架（Task B 部分）
 
-> 不建議明天進入 Task C/D，避免 context switch 過高導致品質下滑。
+> 不建議明天進入 Task C 主體/D，避免 context switch 過高導致品質下滑；僅保留 `Task C3` 最小骨架與測試。
 
 ---
 
@@ -138,9 +141,21 @@
   - `[新聞=利空] + [股價不跌反漲]` → `confidence_score +10`，註記「利空不跌，籌碼轉強」
 - LLM 只負責輸出 `cross_validation_note` / `risks` 文案
 
+### C3. 策略建議模板（新增）
+- 以 Python rule-based 產出：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+- 映射規則：
+  - `short_term`（1-2 週）：新聞利多 + RSI 超賣反彈
+  - `mid_term`（1-3 個月）：法人吸籌 + 均線多頭排列
+  - `defensive_wait`：訊號衝突或高檔乖離過大
+- 價位規則：
+  - 入場：若 BIAS 偏高，改為「拉回 MA20 分批佈局」
+  - 停損：`近20日低點 - 3%` 或 `破 MA60` 觸發
+
 ### C-DoD
 - 至少 2 個衝突情境測試可重現分數變化
 - `/analyze` 回傳包含 `confidence_score` 與 `cross_validation_note`
+- `/analyze` 回傳包含 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+- 至少 2 個訊號組合測試可命中對應策略模板
 
 ---
 
@@ -157,8 +172,9 @@
 - `fetch_institutional_flow("2330.TW", days=5)` 與 `fetch_institutional_flow("6488.TWO", days=5)` 可執行
 - Provider 層 Schema Mapping 生效（核心欄位統一）
 - `backend/utils/` 驗證腳本可輸出法人欄位與命中來源
+- 技術指標可輸出 `high_20d` / `low_20d`（供策略模板計算）
 
-> `generate_technical_context` 與 Skeptic 規則算分不列入明日最小可驗收，避免目標膨脹。
+> `generate_technical_context` 與完整 Skeptic 文案可順延；但 `Task C3` 的策略模板欄位需至少完成骨架與測試。
 
 ---
 

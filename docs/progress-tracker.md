@@ -1,6 +1,6 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-03
+> 更新日期：2026-03-04
 
 ## 目前完成度（高層）
 
@@ -60,6 +60,13 @@
 - [x] 上市/上櫃碎片化對策定案：`InstitutionalFlowProvider` 內建 `.TW/.TWO` 自動分流（`.TW`→TWSE，`.TWO`→TPEX）
 - [x] 防禦性編程定案：Provider 層強制 Schema Mapping；需處理限流（rate limit）與欄位漂移（field drift），確保輸出 JSON schema 一致
 
+### 本次需求變更（2026-03-04）
+
+- [x] 規格補強定案：技術位階必須納入 `high_20d` / `low_20d` / `support_20d` / `resistance_20d`
+- [x] 策略欄位定案：`analysis_detail` 新增 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+- [x] 前端展示定案：`analysis_detail` 區塊新增「戰術行動（Action Plan）」卡片
+- [x] 明日計劃調整定案：Task C 新增子任務 `Task C3`（策略建議模板）
+
 ### Phase 2：LangGraph
 - [x] 建立 LangGraph 狀態機（GraphState + 節點 stub + builder）
 - [x] loop guard（max_retries）骨架
@@ -82,6 +89,8 @@
 - [ ] Task 5：`graph/nodes.py` 新增 `fetch_technical_node`、`fetch_institutional_node`；升級 `analyze_node`
 - [ ] Task 6：`graph/builder.py` 流程加入 `fetch_technical → fetch_institutional` 兩步
 - [ ] Task 7：`langchain_analyzer.py` 升級為三維交叉驗證 Prompt，輸出結構化 `AnalysisDetail`
+- [ ] Task 7.1：`AnalysisDetail` 新增 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+- [ ] Task 7.2：策略模板映射（短線/中線/防守觀望）與持股期間規則化
 - [ ] Task 7.5：LLM Provider 串接（主用 Claude）
 	- [ ] 串接前提醒使用者提供：`ANTHROPIC_API_KEY`
 	- [ ] 串接前提醒使用者確認：模型名稱（預設 `claude-sonnet-4`）
@@ -89,12 +98,15 @@
 	- [ ] 串接前提醒使用者確認：輸出格式（純文字或 JSON）
 	- [ ] 串接前提醒使用者確認：失敗策略（timeout 與 retry 次數）
 - [ ] Task 8：`api.py` `AnalyzeResponse` 新增 `technical`、`institutional`、`analysis_detail`
+- [ ] Task 8.1：`AnalyzeResponse.analysis_detail.action_plan` 子結構定義與回傳
 - [ ] Task 9：整合測試（`make test` 全通過，覆蓋降級路徑）
+- [ ] Task C3：實作策略建議模板（強制輸出 `strategy_type` / `entry_zone` / `stop_loss` / `holding_period`）
 
 ### Phase 4：前端
 - [ ] 串接後端 API（symbol -> 真實分析結果）
 - [ ] 元件改為真實資料驅動（非靜態假資料）
 - [ ] 補上錯誤狀態與載入狀態
+- [ ] `analysis_detail` 新增「戰術行動（Action Plan）」卡片（操作方向/建議區間/防守底線/預期動能）
 
 ---
 

@@ -1,9 +1,9 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-03-03  
-> 狀態：Draft v2  
+> 日期：2026-03-04  
+> 狀態：Draft v2.1  
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖  
-> 更新摘要：分析維度從單純「新聞去雜訊」擴展為「全方位數據偵察」
+> 更新摘要：分析維度從「全方位數據偵察」延伸到「可執行操作策略」（入手價／停損價／持股期間）
 
 ## 1. 目標與方向
 
@@ -86,6 +86,8 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
   - `BIAS`：乖離率，公式：`(Close - MAn) / MAn × 100`
   - `RSI14`：14 日相對強弱指標，使用 Wilder 平滑法
   - `Volume_Change`：今日成交量相較 MA5_Volume 的百分比變化
+  - `High20`、`Low20`：近 20 日高低點（支撐壓力位基礎）
+  - `Support_20d`、`Resistance_20d`：由近 20 日價量資料推導之支撐／壓力位
 
   > ⚠️ **嚴格規範**：所有數值必須由 Python 函式（pandas / ta-lib）實際計算，**禁止** LLM 自行推算或估計。
 
@@ -376,11 +378,15 @@ class InstitutionalFlowProvider(Protocol):
 
 - **技術指標計算工具** `calculate_technical_indicators(symbol, window)`
   - 輸入：yfinance OHLCV DataFrame
-  - 輸出：`{ ma5, ma20, ma60, bias_ma20, rsi14, volume_change_pct }`
+  - 輸出：`{ ma5, ma20, ma60, bias_ma20, rsi14, volume_change_pct, high_20d, low_20d, support_20d, resistance_20d }`
   - 實作：Pandas rolling mean + RSI Wilder 平滑法
 
 - **乖離率工具** `calculate_bias(close, ma)`
   - 公式：`(close - ma) / ma × 100`
+
+- **技術位階工具** `calculate_price_levels(symbol, window=20)`
+  - 輸出：`{ high_20d, low_20d, support_20d, resistance_20d }`
+  - 用途：提供入手區間與防守底線的硬數值，禁止 LLM 臆測
 
 - **本益比位階工具** `estimate_pe_percentile(symbol, pe)`
   - 與歷史 PE 分佈比較，回傳百分位
@@ -401,6 +407,16 @@ class InstitutionalFlowProvider(Protocol):
   "confidence_score": 78,
   "technical_signal": "bullish | bearish | sideways",
   "institutional_flow": "institutional_accumulation | retail_chasing | distribution | neutral",
+  "strategy_type": "short_term | mid_term | defensive_wait",
+  "entry_zone": "800-820",
+  "stop_loss": "780（破 MA60 或近20日低點-3%）",
+  "holding_period": "1-2 週 | 1-3 個月",
+  "action_plan": {
+    "action": "觀望 | 分批佈局 | 持股續抱",
+    "target_zone": "800-820",
+    "defense_line": "780",
+    "momentum_expectation": "強（法人集結中）"
+  },
   "cross_validation_note": "外資連買 3 日，與新聞利多訊號一致，信心分數維持高位",
   "risks": ["RSI 接近超買區間 (>70)，短線需注意回測"],
   "data_sources": ["google-news-rss", "yfinance", "twse-openapi"]
@@ -417,6 +433,16 @@ class InstitutionalFlowProvider(Protocol):
 > - `retail_chasing`（散戶追高）：融資大增，法人同步出貨
 > - `distribution`（主力出貨）：法人連賣，成交量放大
 > - `neutral`：訊號不明確
+
+> **`Strategy_Type`（新增）**
+> - `short_term`：短線策略（1-2 週），典型組合為「新聞利多 + RSI 超賣反彈」
+> - `mid_term`：中線策略（1-3 個月），典型組合為「法人持續吸籌 + 均線多頭排列」
+> - `defensive_wait`：訊號衝突或風險過高時採觀望
+
+> **策略價格規則（新增，rule-based）**
+> - `entry_zone`：若 BIAS 過高，建議「拉回 MA20 入手」；否則以 `support_20d ~ MA20` 組區間
+> - `stop_loss`：預設採 `近20日低點 × 0.97`，並加註 `破 MA60 停損`
+> - 上述欄位必須由 Python 工具先算出硬數值，再交由 LLM 做文字說明
 
 ---
 
@@ -438,6 +464,12 @@ class InstitutionalFlowProvider(Protocol):
 
 4. **分析路徑圖（流程事件）**
    - 例：「抓取新聞中 → 抽取數值完成 → 驗證歷史資料完成」
+
+5. **戰術行動（Action Plan）卡片**
+  - 操作方向：`觀望 / 分批佈局 / 持股續抱`
+  - 建議區間：由 `entry_zone` + `support_20d` / `resistance_20d` 組成
+  - 防守底線：`stop_loss`（例如「近 20 日低點 -3%」或「破 MA60」）
+  - 預期動能：依 `institutional_flow` 與 `technical_signal` 共振結果顯示
 
 ### 4.2 UX 要點
 
@@ -489,6 +521,13 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
     vol_ma5 = vol.rolling(5).mean().iloc[-1]
     volume_change_pct = (vol.iloc[-1] - vol_ma5) / vol_ma5 * 100
 
+    high_20d = df["High"].rolling(20).max().iloc[-1]
+    low_20d = df["Low"].rolling(20).min().iloc[-1]
+
+    # MVP 版位階：先以近 20 日高低點作為支撐/壓力位基準
+    support_20d = low_20d
+    resistance_20d = high_20d
+
     return {
         "ma5": round(float(ma5), 2),
         "ma20": round(float(ma20), 2),
@@ -496,6 +535,10 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
         "bias_ma20": round(float(bias_ma20), 2),
         "rsi14": round(float(rsi14), 2),
         "volume_change_pct": round(float(volume_change_pct), 2),
+        "high_20d": round(float(high_20d), 2),
+        "low_20d": round(float(low_20d), 2),
+        "support_20d": round(float(support_20d), 2),
+        "resistance_20d": round(float(resistance_20d), 2),
     }
 ```
 
@@ -527,6 +570,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 - 能輸入股票代碼並觸發完整分析流程
 - 當資料不足時，系統會自動補抓後再分析
 - **技術面**：必須包含由 Python 函式計算後的 MA5/20/60、BIAS、RSI14、成交量變化數值
+- **技術位階**：必須包含 `high_20d`、`low_20d`、`support_20d`、`resistance_20d`
 - **籌碼面**：必須包含三大法人合計買賣超方向及融資融券變化
 - **多維交叉驗證**：當新聞訊號與法人動向背離時，系統須在 `cross_validation_note` 中明確標記警示
 - 輸出必須包含：
@@ -534,6 +578,8 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
   - `sentiment_label`：positive / negative / neutral
   - `technical_signal`：bullish / bearish / sideways（必填）
   - `institutional_flow`：institutional_accumulation / retail_chasing / distribution / neutral（必填）
+  - `strategy_type`：short_term / mid_term / defensive_wait（必填）
+  - `entry_zone`、`stop_loss`、`holding_period`（必填）
   - `confidence_score`：0–100，反映三維訊號一致性
   - `cross_validation_note`：說明三維訊號的交叉驗證結論
   - `risks`：風險提示列表

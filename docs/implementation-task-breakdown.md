@@ -1,7 +1,7 @@
 # AI Stock Sentinel 實作任務拆解（Execution Plan）
 
-> 版本：v1  
-> 更新日期：2026-03-03
+> 版本：v1.1  
+> 更新日期：2026-03-04
 
 ## 0) 範圍說明
 
@@ -142,13 +142,15 @@
 ### P3-2b Tool Use 計算工具（原 P3-2）
 - **目標**：Agent 可呼叫計算工具驗證指標，確保數值來源可追溯
 - **任務**
-  - `calculate_technical_indicators(symbol, period)`：MA5/20/60、BIAS、RSI14、Volume Change
+  - `calculate_technical_indicators(symbol, period)`：MA5/20/60、BIAS、RSI14、Volume Change、20 日高低點
+  - `calculate_price_levels(symbol, window=20)`：`high_20d`、`low_20d`、`support_20d`、`resistance_20d`
   - `calculate_bias(close, ma)`：乖離率公式
   - `estimate_pe_percentile(symbol, pe)`：本益比歷史百分位
   - `calculate_growth_rate(current, previous)`：YoY / MoM
   - 接入 Analysis Agent 的 tool call
 - **DoD**
-  - 至少 3 個工具有對應單元測試，含公式驗證
+  - 至少 4 個工具有對應單元測試（含 `calculate_price_levels`）
+  - `entry_zone` 與 `stop_loss` 來源可追溯至工具輸出（不可由 LLM 自行生成數值）
 
 ### P3-3 籌碼歸屬分析 + 信心分數（模式一 + 模式三）
 - **前置依賴**：P3-0 完成（資料源確認）
@@ -163,12 +165,17 @@
     - 回傳 `(adjusted_score, cross_validation_note)`
     - 純 Python，不呼叫 LLM
   - 在 `analyze_node` 後新增 `score_node`，執行信心分數計算
+  - 新增 `strategy_template_node`（Task C3）：
+    - 根據 `technical_signal` + `institutional_flow` 產出 `strategy_type`
+    - 產出 `holding_period`（`1-2 週` / `1-3 個月`）
+    - 綁定 `entry_zone`、`stop_loss` 與 `action_plan.action`
   - 更新 system prompt 為 Skeptic Mode：強制「提取 → 對照 → 衝突檢查 → 僅輸出事實與邏輯推論」
   - `GraphState` 新增欄位：`institutional_flow_data`, `confidence_score`, `cross_validation_note`
 - **DoD**
   - `adjust_confidence_by_divergence` 對三種背離情境均有測試
   - `fetch_institutional_flow` 可抓到真實資料並輸出 `flow_label`
   - 最終輸出包含 `confidence_score`（0~100）與 `cross_validation_note`（非空字串）
+  - 最終輸出包含 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
 
 ---
 
@@ -199,6 +206,16 @@
 - **DoD**
   - 使用者可看懂結論來源與過程
 
+### P4-4 操作建議卡片（Action Plan）
+- **目標**：讓使用者輸入代碼後可直接看到可執行策略
+- **任務**
+  - 在 `analysis_detail` 區塊新增「戰術行動（Action Plan）」卡片
+  - 展示欄位：`action`、`target_zone`、`defense_line`、`momentum_expectation`
+  - 欄位來源必須對應後端 `analysis_detail`（不可前端硬編）
+- **DoD**
+  - 卡片可正確顯示「操作方向 / 建議區間 / 防守底線 / 預期動能」
+  - loading / error 狀態下顯示降級內容，不阻斷主頁
+
 ---
 
 ## Cross-cutting（跨階段）
@@ -224,6 +241,16 @@
 - **DoD**
   - 每個已完成任務都能對應到至少一個測試案例
   - CI/本地測試可驗證新增功能行為
+
+### C-5 策略模板（Task C3，新增）
+- **目標**：強制 AI 輸出具備防守思維的策略欄位，而非空泛建議
+- **任務**
+  - 建立策略模板對應表（`short_term` / `mid_term` / `defensive_wait`）
+  - 以 Python 規則綁定 `entry_zone`、`stop_loss`、`holding_period`
+  - Prompt 明確要求輸出「防守底線與觸發條件」（例如破 MA60）
+- **DoD**
+  - `analysis_detail` 固定帶出策略欄位且不為空
+  - 單元測試覆蓋至少 2 種訊號組合對應的策略模板
 
 ---
 
