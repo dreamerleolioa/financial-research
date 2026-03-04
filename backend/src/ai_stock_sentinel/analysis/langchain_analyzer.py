@@ -44,8 +44,45 @@ _HUMAN_PROMPT = """\
 
 
 class LangChainStockAnalyzer:
+    _COST_PER_MILLION_INPUT_TOKENS = 3.0  # USD, claude-sonnet-4
+    _COST_THRESHOLD_USD = 1.0
+
     def __init__(self, llm: Any | None = None) -> None:
         self.llm = llm
+
+    def _estimate_cost(
+        self,
+        snapshot: StockSnapshot,
+        *,
+        technical_context: str | None,
+        institutional_context: str | None,
+        confidence_score: int | None,
+        cross_validation_note: str | None,
+    ) -> None:
+        combined = "".join([
+            _SYSTEM_PROMPT,
+            str(snapshot.symbol),
+            str(snapshot.current_price),
+            str(snapshot.previous_close),
+            str(snapshot.day_open),
+            str(snapshot.day_high),
+            str(snapshot.day_low),
+            str(snapshot.volume),
+            str(snapshot.recent_closes),
+            technical_context or "",
+            institutional_context or "",
+            str(confidence_score if confidence_score is not None else 50),
+            cross_validation_note or "",
+        ])
+        estimated_tokens = len(combined) / 4
+        estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_INPUT_TOKENS
+
+        if estimated_cost > self._COST_THRESHOLD_USD:
+            raise ValueError(
+                f"估算 input token 數：{int(estimated_tokens):,}，"
+                f"預估費用：${estimated_cost:.4f} USD，"
+                f"超過安全門檻 ${self._COST_THRESHOLD_USD} USD，已中止 LLM 呼叫。"
+            )
 
     @staticmethod
     def _has_langchain() -> bool:
@@ -75,6 +112,14 @@ class LangChainStockAnalyzer:
                 "LLM 尚未設定（缺少 API Key 或模型），已保留 LangChain 分析介面。\n"
                 "你可以注入任何 BaseChatModel 來啟用自動分析。"
             )
+
+        self._estimate_cost(
+            snapshot,
+            technical_context=technical_context,
+            institutional_context=institutional_context,
+            confidence_score=confidence_score,
+            cross_validation_note=cross_validation_note,
+        )
 
         output_parsers = import_module("langchain_core.output_parsers")
         prompts = import_module("langchain_core.prompts")
