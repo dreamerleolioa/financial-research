@@ -125,7 +125,10 @@
   - 新增：`confidence_score`、`cross_validation_note`、`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
   - `initial_state` 補齊 Phase 3 全部欄位（api.py + main.py CLI 路徑）
   - 測試：`test_analyze_response_includes_strategy_fields` 通過
-- [ ] Task 9：整合測試（`make test` 全通過，覆蓋降級路徑）
+- [x] Task 9：整合測試（2026-03-04 Session 6）
+  - `test_graph_builder.py` `_initial_state()` 補齊 Phase 3 欄位
+  - `test_main.py` `required_keys` 補齊 Phase 3 欄位驗證
+  - `make test` → 132 passed
 - [x] Task C3（P3-C3）：策略建議模板（`analysis/strategy_generator.py`）（2026-03-04）
   - `generate_strategy(technical_context_data, inst_data)` 純 rule-based
   - 映射規則：`short_term`（利多+RSI<30）/ `mid_term`（法人吸籌+均線多頭）/ `defensive_wait`（訊號衝突/高乖離）
@@ -163,6 +166,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. **Task 7.5**：串接 LLM Provider（需確認 `ANTHROPIC_API_KEY`，模型 `claude-sonnet-4`），讓 `analyze_node` 真正呼叫 LLM 並回傳 `summary` / `risks`
-2. **Task 8**：`/analyze` API 回傳 `confidence_score` / `cross_validation_note` / `strategy_type` / `entry_zone` / `stop_loss` / `holding_period` 欄位
-3. **Task 9**：整合測試（`make test` 全通過，覆蓋降級路徑）
+1. **Phase 4 前端**：串接後端新欄位（`confidence_score` / `strategy_type` / `entry_zone` / `stop_loss` / `holding_period`），補 Action Plan 卡片
+2. **Task 7 剩餘**：`AnalysisDetail` 結構化輸出（JSON schema 而非純文字）
+3. **真實 LLM 端對端驗證**：用 `ANTHROPIC_API_KEY` 跑一次 `/analyze`，確認 `summary` / `risks` 回傳正確
