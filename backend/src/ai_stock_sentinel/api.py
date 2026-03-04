@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import asdict as _asdict, is_dataclass
 from typing import Any
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from ai_stock_sentinel.graph.builder import build_graph
@@ -18,6 +20,7 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     snapshot: dict[str, Any] = Field(default_factory=dict)
     analysis: str = ""
+    analysis_detail: dict[str, Any] | None = None
     cleaned_news: dict[str, Any] | None = None
     confidence_score: int | None = None
     cross_validation_note: str | None = None
@@ -40,6 +43,13 @@ def get_graph():
 
 app = FastAPI(title="AI Stock Sentinel API", version="v1")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -56,6 +66,7 @@ def analyze(
         "news_content": payload.news_text,
         "snapshot": None,
         "analysis": None,
+        "analysis_detail": None,
         "cleaned_news": None,
         "raw_news_items": None,
         "data_sufficient": False,
@@ -88,6 +99,13 @@ def analyze(
 
     snapshot = result.get("snapshot")
     analysis = result.get("analysis")
+    raw_detail = result.get("analysis_detail")
+    analysis_detail: dict[str, Any] | None = None
+    if raw_detail is not None:
+        if is_dataclass(raw_detail) and not isinstance(raw_detail, type):
+            analysis_detail = _asdict(raw_detail)
+        elif isinstance(raw_detail, dict):
+            analysis_detail = raw_detail
     response_errors: list[AnalyzeResponse.ErrorDetail] = [
         AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
         for e in result.get("errors", [])
@@ -114,6 +132,7 @@ def analyze(
     return AnalyzeResponse(
         snapshot=snapshot,
         analysis=analysis,
+        analysis_detail=analysis_detail,
         cleaned_news=result.get("cleaned_news"),
         confidence_score=result.get("confidence_score"),
         cross_validation_note=result.get("cross_validation_note"),

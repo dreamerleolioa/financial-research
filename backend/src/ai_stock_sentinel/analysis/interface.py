@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from ai_stock_sentinel.models import StockSnapshot
+from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
 
 
 class StockAnalyzer(Protocol):
@@ -12,5 +12,5 @@ class StockAnalyzer(Protocol):
         institutional_context: str | None = None,
         confidence_score: int | None = None,
         cross_validation_note: str | None = None,
-    ) -> str:
+    ) -> AnalysisDetail:
         ...

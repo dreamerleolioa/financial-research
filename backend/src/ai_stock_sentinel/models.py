@@ -1,5 +1,12 @@
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, field
+from typing import List, Literal
+
+
+@dataclass
+class AnalysisDetail:
+    summary: str
+    risks: list[str] = field(default_factory=list)
+    technical_signal: Literal["bullish", "bearish", "sideways"] = "sideways"
 
 
 @dataclass

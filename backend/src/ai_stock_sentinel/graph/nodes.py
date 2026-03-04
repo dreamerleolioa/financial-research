@@ -14,7 +14,7 @@ from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
-from ai_stock_sentinel.models import StockSnapshot
+from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
 
 
 def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]:
@@ -170,7 +170,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
 
 
 def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any]:
-    """執行分析，回傳 analysis 字串。
+    """執行分析，回傳 analysis_detail (AnalysisDetail) 與向後相容的 analysis (str)。
 
     傳入 technical_context、institutional_context、confidence_score、cross_validation_note
     供 Skeptic Mode prompt 使用；LLM 不得修改分數。
@@ -179,17 +179,21 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
     if not snapshot_dict:
         return {
             "analysis": None,
+            "analysis_detail": None,
             "errors": state["errors"] + [{"code": "MISSING_SNAPSHOT", "message": "No snapshot available for analysis."}],
         }
     snapshot = StockSnapshot(**snapshot_dict)
-    analysis = analyzer.analyze(
+    result = analyzer.analyze(
         snapshot,
         technical_context=state.get("technical_context"),
         institutional_context=state.get("institutional_context"),
         confidence_score=state.get("confidence_score"),
         cross_validation_note=state.get("cross_validation_note"),
     )
-    return {"analysis": analysis}
+    return {
+        "analysis": result.summary,
+        "analysis_detail": result,
+    }
 
 
 def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner) -> dict[str, Any]:

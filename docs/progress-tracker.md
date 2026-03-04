@@ -6,8 +6,8 @@
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
-- **Phase 3（分析能力強化）**：約 85%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位完成）
-- **Phase 4（前端儀表板）**：約 90%（API 串接、真實資料驅動、Action Plan 卡片、loading/error 狀態、LLM 分析報告卡片完成）
+- **Phase 3（分析能力強化）**：100%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位 + AnalysisDetail 結構化輸出 + code fence hotfix + Protocol 回傳型別對齊完成）
+- **Phase 4（前端儀表板）**：100%（API 串接、真實資料驅動、Action Plan 卡片、loading/error 狀態、LLM 分析報告卡片、analysis_detail 結構化顯示完成）
 
 ---
 
@@ -82,8 +82,8 @@
 
 > 計劃文件：`docs/plans/2026-03-04-multi-dimension-analysis.md`
 
-- [ ] Task 1：新增 `TechnicalData`、`InstitutionalData`、`AnalysisDetail` Pydantic 模型（`models.py`）
-- [ ] Task 2：`YFinanceCrawler` 新增 `calculate_technical_indicators()`（Pandas：MA/BIAS/RSI/量比）
+- ~~Task 1~~：`AnalysisDetail` 以 dataclass 形式交付（非 Pydantic）；`TechnicalData`/`InstitutionalData` 未獨立建立，改以 dict + Schema Mapping 方式實作於 Provider 層
+- ~~Task 2~~：技術指標以 `calc_bias` / `calc_rsi` / `ma` 獨立函式形式交付（`context_generator.py`），非 `YFinanceCrawler` 方法
 - [x] Task 3（P3-0 / Task A）：籌碼資料源 Provider 抽象層 + Router + Schema Mapping（2026-03-04）
   - `InstitutionalFlowProvider` 介面、`FinMindProvider`（Primary）、`TwseOpenApiProvider`（Fallback #1）、`TpexProvider`（Fallback #2）
   - Router 固定優先序（`FinMind → TWSE OpenAPI → TPEX`）+ `.TW/.TWO` 自動分流
@@ -111,9 +111,16 @@
   - `score_node` 新增（串接在 preprocess 後、analyze 前）
   - `builder.py` 更新：`preprocess → score → analyze → strategy → END`
   - 測試：11 個（4 主要情境 + 優先序 + clamp + custom base）；全套 128 passed
-- [ ] Task 7：`langchain_analyzer.py` 升級為三維交叉驗證 Prompt，輸出結構化 `AnalysisDetail`
-- [ ] Task 7.1：`AnalysisDetail` 新增 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
-- [ ] Task 7.2：策略模板映射（短線/中線/防守觀望）與持股期間規則化
+- [x] Task 7：LLM 結構化輸出（AnalysisDetail）（2026-03-04 Session 9）
+  - `AnalysisDetail` dataclass 新增至 `models.py`（`summary` / `risks` / `technical_signal`）
+  - `langchain_analyzer.py` System Prompt 改為要求輸出 JSON；`analyze()` 回傳 `AnalysisDetail`
+  - `_parse_analysis()` 靜態方法：`json.loads()` 解析；失敗 fallback 為 `AnalysisDetail(summary=raw, risks=[], technical_signal="sideways")`
+  - `GraphState` 新增 `analysis_detail` 欄位；`analyze_node` 寫入 `analysis_detail`（保留 `analysis=summary` 向後相容）
+  - `AnalyzeResponse` 新增 `analysis_detail: dict | None`；`api.py` 從 result 取值（dataclass → asdict 轉換）
+  - 前端 `App.tsx`：`AnalysisDetail` interface；LLM 分析報告卡片優先顯示 `analysis_detail`（summary + risks + technical_signal 標籤）；fallback 維持純文字
+  - 測試：新增 4 個（`_parse_analysis` 合法 JSON / 非 JSON fallback、analyze 端對端 mock、API analysis_detail 欄位）；全套 136 passed
+- ~~Task 7.1~~：策略欄位已由 rule-based `strategy_node` 獨立完成，整合無必要
+- ~~Task 7.2~~：同上
 - [x] Task 7.5：LLM Provider 串接（主用 Claude）（2026-03-04 Session 6）
   - `config.py` 新增 `anthropic_api_key` / `anthropic_model`（預設 `claude-sonnet-4`）
   - `build_graph_deps()` 優先使用 `ChatAnthropic`，無 key 或無套件則 fallback 至 OpenAI
@@ -155,6 +162,9 @@
 - [x] 前端顯示 `analysis` 文字（LLM 四步驟分析結果）（2026-03-04 Session 8）
   - 新增「LLM 分析報告」卡片於 Action Plan 上方
   - `analysis` 有值時 `<pre>` 顯示；空或 null 時顯示「本次無 LLM 分析結果。」
+- [x] 前端顯示 `analysis_detail` 結構化輸出（2026-03-04 Session 9）
+  - `analysis_detail` 存在時：顯示 `technical_signal` 標籤（看多/看空/盤整）、`summary` 段落、`risks` 條列
+  - `analysis_detail` 為 null 時 fallback 維持 `analysis` 純文字
 
 ---
 
@@ -179,6 +189,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. **Task 7 剩餘**：`AnalysisDetail` 結構化輸出（JSON schema 而非純文字），前端才能顯示分段的 `summary` / `risks`
-2. **config.py model name**：`claude-sonnet-4` → `claude-sonnet-4-5`（已修正）
-3. **下一里程碑**：Phase 3 分析深化完整驗收（Task 7 結構化輸出）
+1. **Phase 5 準備**：Docker / Railway 部署（Task 7.1/7.2 已取消，策略欄位由 `strategy_node` 獨立維護）
+2. **Phase 5 功能規劃**：監控告警 / 定時排程 / 多股票批次分析
+3. **下一里程碑**：Phase 5 規劃文件（`docs/plans/`）

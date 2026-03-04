@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from ai_stock_sentinel.models import AnalysisDetail
+
 
 class GraphState(TypedDict):
     symbol: str
@@ -24,3 +26,4 @@ class GraphState(TypedDict):
     holding_period: str | None
     confidence_score: int | None
     cross_validation_note: str | None
+    analysis_detail: AnalysisDetail | None

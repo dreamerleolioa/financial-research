@@ -201,6 +201,44 @@
 ### 跨 Session 交接快照（每次暫停必填）
 
 ```markdown
+## Handoff Snapshot — 2026-03-04 Session 9 結束
+
+- 已完成（本 Session）：
+  - [Phase 3 / Task 7] LLM 結構化輸出（AnalysisDetail）
+    - `models.py`：新增 `AnalysisDetail` dataclass（`summary: str`, `risks: list[str]`, `technical_signal: str`）
+    - `langchain_analyzer.py`：System Prompt 改為要求輸出 JSON（含格式範例）；`analyze()` 回傳 `AnalysisDetail`；新增 `_parse_analysis()` 靜態方法（json.loads + fallback）
+    - `graph/state.py`：新增 `analysis_detail: AnalysisDetail | None` 欄位
+    - `graph/nodes.py`：`analyze_node` 更新：AnalysisDetail → 存 `analysis_detail`；保留 `analysis=summary` 向後相容；舊式 str → `analysis_detail=None`
+    - `api.py`：`AnalyzeResponse` 新增 `analysis_detail: dict | None`；`initial_state` 補 `analysis_detail: None`；response building 加 dataclass→dict 轉換
+    - `frontend/src/App.tsx`：新增 `AnalysisDetail` interface；LLM 分析報告卡片優先顯示 `analysis_detail`（technical_signal 彩色標籤 + summary 段落 + risks 條列）；fallback 維持純文字
+  - 測試新增 4 個：
+    - `test_parse_analysis_returns_analysis_detail_on_valid_json`
+    - `test_parse_analysis_returns_fallback_on_invalid_json`
+    - `test_analyze_returns_analysis_detail_when_llm_returns_json`
+    - `test_analyze_response_includes_analysis_detail`
+  - 全套後端測試：136 passed（新增 4 個測試）
+
+- 進行中：
+  - 無
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. Phase 3 / Phase 4 全功能驗收（充值 Anthropic API 後測試實際 JSON 輸出）
+  2. Task 7.1 / 7.2：評估是否將 strategy 欄位整合進 AnalysisDetail（目前策略獨立在 strategy_node）
+  3. 部署準備（Docker / Railway）
+
+- 驗收證據：
+  - `backend/src/ai_stock_sentinel/models.py`：AnalysisDetail dataclass 存在
+  - `langchain_analyzer.analyze()` 回傳 AnalysisDetail
+  - `GraphState` 包含 `analysis_detail` 欄位
+  - `AnalyzeResponse` 包含 `analysis_detail` 欄位
+  - 前端：analysis_detail 存在時顯示結構化內容；null 時 fallback 純文字
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 136 passed
+```
+
+```markdown
 ## Handoff Snapshot — 2026-03-04 Session 8 結束
 
 - 已完成（本 Session）：
@@ -400,4 +438,31 @@
 - 驗收證據：
   - backend/tests/test_strategy_generator.py：23 passed
   - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 117 passed
+```
+
+```markdown
+## Handoff Snapshot — 2026-03-04 Session 10 結束（Task 10 收尾）
+
+- 已完成（本 Session）：
+  - [Task 10 / Hotfix] System Prompt `{{}}` escape — 修正 LangChain template 變數衝突
+  - [Task 10 / Hotfix] `_parse_analysis()` code fence 剝除 — 處理 LLM 回傳 ```json ... ``` 格式
+  - [Task 10 Step 1] 補 2 個 regression test（test_parse_analysis_handles_json_code_fence / test_parse_analysis_handles_plain_code_fence）
+  - [Task 10 Step 2] Task 7.1 / 7.2 標記取消（策略欄位已由 rule-based strategy_node 獨立完成）
+  - [Task 10 Step 3] `StockAnalyzer` Protocol `analyze()` 回傳型別更新為 `AnalysisDetail`（interface.py）
+  - [Task 10 Step 4] docs/progress-tracker.md：Phase 3 / Phase 4 標記 100%
+  - 全套測試：138 passed（136 + 2 新 regression tests）
+
+- 進行中：
+  - 無（全部 DoD 達成）
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. 部署準備：Docker / Railway（Phase 5）
+  2. Phase 5 規劃：監控告警 / 定時排程 / 多股票批次分析
+
+- 驗收證據：
+  - backend/tests/test_langchain_analyzer.py：8 passed（含 2 新 regression tests）
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 138 passed
 ```

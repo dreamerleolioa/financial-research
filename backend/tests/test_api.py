@@ -200,6 +200,34 @@ def test_analyze_graph_errors_propagated_to_response() -> None:
     assert "RSS_FETCH_ERROR" in error_codes
 
 
+def test_analyze_response_includes_analysis_detail() -> None:
+    """AnalyzeResponse 必須包含 analysis_detail 欄位（含 summary/risks/technical_signal）。"""
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "台積電股價穩定",
+            "analysis_detail": {
+                "summary": "台積電股價穩定，技術面偏多。",
+                "risks": ["外資動向不確定", "匯率風險"],
+                "technical_signal": "bullish",
+            },
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "analysis_detail" in body, "Missing 'analysis_detail' in response"
+    detail = body["analysis_detail"]
+    assert detail["summary"] == "台積電股價穩定，技術面偏多。"
+    assert detail["risks"] == ["外資動向不確定", "匯率風險"]
+    assert detail["technical_signal"] == "bullish"
+
+
 def test_analyze_response_includes_strategy_fields() -> None:
     """AnalyzeResponse 必須包含 strategy/confidence 欄位（值可為 None）。"""
     graph = _make_graph(

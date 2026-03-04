@@ -79,3 +79,91 @@ def test_cost_guard_error_message_contains_numbers():
     msg = str(exc_info.value)
     assert re.search(r'\d+', msg), f"No number found in error message: {msg}"
     assert "$" in msg, f"No dollar sign in error message: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# AnalysisDetail structured output tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_analysis_returns_analysis_detail_on_valid_json():
+    """_parse_analysis() with valid JSON returns AnalysisDetail with parsed fields."""
+    from ai_stock_sentinel.models import AnalysisDetail
+
+    json_response = '{"summary": "台積電股價穩定，技術面偏多。", "risks": ["外資動向不確定", "匯率風險"], "technical_signal": "bullish"}'
+    result = LangChainStockAnalyzer._parse_analysis(json_response)
+
+    assert isinstance(result, AnalysisDetail)
+    assert result.summary == "台積電股價穩定，技術面偏多。"
+    assert result.risks == ["外資動向不確定", "匯率風險"]
+    assert result.technical_signal == "bullish"
+
+
+def test_parse_analysis_returns_fallback_on_invalid_json():
+    """_parse_analysis() with non-JSON text falls back to AnalysisDetail with raw summary."""
+    from ai_stock_sentinel.models import AnalysisDetail
+
+    raw_text = "這是純文字分析結果，不是 JSON 格式。"
+    result = LangChainStockAnalyzer._parse_analysis(raw_text)
+
+    assert isinstance(result, AnalysisDetail)
+    assert result.summary == raw_text
+    assert result.risks == []
+    assert result.technical_signal == "sideways"
+
+
+def test_parse_analysis_handles_json_code_fence():
+    """_parse_analysis() with ```json ... ``` fence strips it and parses correctly."""
+    from ai_stock_sentinel.models import AnalysisDetail
+
+    fenced = '```json\n{"summary": "台積電穩健。", "risks": ["匯率風險"], "technical_signal": "bullish"}\n```'
+    result = LangChainStockAnalyzer._parse_analysis(fenced)
+
+    assert isinstance(result, AnalysisDetail)
+    assert result.summary == "台積電穩健。"
+    assert result.risks == ["匯率風險"]
+    assert result.technical_signal == "bullish"
+
+
+def test_parse_analysis_handles_plain_code_fence():
+    """_parse_analysis() with ``` ... ``` fence (no language tag) strips it and parses correctly."""
+    from ai_stock_sentinel.models import AnalysisDetail
+
+    fenced = '```\n{"summary": "盤整格局。", "risks": ["量能不足", "外資觀望"], "technical_signal": "sideways"}\n```'
+    result = LangChainStockAnalyzer._parse_analysis(fenced)
+
+    assert isinstance(result, AnalysisDetail)
+    assert result.summary == "盤整格局。"
+    assert result.risks == ["量能不足", "外資觀望"]
+    assert result.technical_signal == "sideways"
+
+
+def test_analyze_returns_analysis_detail_when_llm_returns_json():
+    """analyze() end-to-end: when chain returns JSON, result is AnalysisDetail."""
+    from unittest.mock import patch
+    from ai_stock_sentinel.models import AnalysisDetail
+
+    json_response = '{"summary": "台積電穩健。", "risks": ["匯率風險"], "technical_signal": "bullish"}'
+
+    analyzer = LangChainStockAnalyzer(llm=MagicMock())
+    snapshot = _make_snapshot()
+
+    with patch.object(LangChainStockAnalyzer, "_parse_analysis", return_value=AnalysisDetail(
+        summary="台積電穩健。",
+        risks=["匯率風險"],
+        technical_signal="bullish",
+    )) as mock_parse:
+        # Patch the chain so invoke returns the json string
+        mock_chain = MagicMock()
+        mock_chain.invoke.return_value = json_response
+
+        with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
+            mock_prompt = MagicMock()
+            mock_template.from_messages.return_value = mock_prompt
+            mock_prompt.__or__ = MagicMock(return_value=MagicMock(
+                __or__=MagicMock(return_value=mock_chain)
+            ))
+            result = analyzer.analyze(snapshot)
+
+    assert isinstance(result, AnalysisDetail)
+    assert result.technical_signal == "bullish"

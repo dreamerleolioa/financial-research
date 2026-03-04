@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from ai_stock_sentinel.graph.builder import build_graph
-from ai_stock_sentinel.models import StockSnapshot
+from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
 
 
 def _make_stock_snapshot() -> StockSnapshot:
@@ -50,7 +50,7 @@ def test_graph_runs_and_returns_analysis() -> None:
     mock_crawler = MagicMock()
     mock_crawler.fetch_basic_snapshot.return_value = _make_stock_snapshot()
     mock_analyzer = MagicMock()
-    mock_analyzer.analyze.return_value = "分析結果"
+    mock_analyzer.analyze.return_value = AnalysisDetail(summary="分析結果")
 
     graph = build_graph(crawler=mock_crawler, analyzer=mock_analyzer)
     result = graph.invoke(_initial_state())
@@ -64,7 +64,7 @@ def test_graph_cleans_news_when_news_content_provided() -> None:
     mock_crawler = MagicMock()
     mock_crawler.fetch_basic_snapshot.return_value = _make_stock_snapshot()
     mock_analyzer = MagicMock()
-    mock_analyzer.analyze.return_value = "分析結果"
+    mock_analyzer.analyze.return_value = AnalysisDetail(summary="分析結果")
     mock_cleaner = MagicMock()
     mock_cleaner.clean.return_value = MagicMock(
         model_dump=lambda: {
@@ -91,7 +91,7 @@ def test_graph_loop_guard_stops_after_max_retries() -> None:
     mock_crawler = MagicMock()
     mock_crawler.fetch_basic_snapshot.return_value = _make_stock_snapshot()
     mock_analyzer = MagicMock()
-    mock_analyzer.analyze.return_value = "分析"
+    mock_analyzer.analyze.return_value = AnalysisDetail(summary="分析")
 
     graph = build_graph(
         crawler=mock_crawler,

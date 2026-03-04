@@ -5,9 +5,16 @@ interface ErrorDetail {
   message: string
 }
 
+interface AnalysisDetail {
+  summary: string
+  risks: string[]
+  technical_signal: 'bullish' | 'bearish' | 'sideways'
+}
+
 interface AnalyzeResponse {
   snapshot: Record<string, unknown>
   analysis: string
+  analysis_detail: AnalysisDetail | null
   cleaned_news: Record<string, unknown> | null
   confidence_score: number | null
   cross_validation_note: string | null
@@ -22,6 +29,18 @@ const STRATEGY_LABEL: Record<string, string> = {
   short_term: '短線操作',
   mid_term: '中線佈局',
   defensive_wait: '防守觀望',
+}
+
+const SIGNAL_LABEL: Record<string, string> = {
+  bullish: '看多',
+  bearish: '看空',
+  sideways: '盤整',
+}
+
+const SIGNAL_CLASS: Record<string, string> = {
+  bullish: 'bg-emerald-100 text-emerald-800',
+  bearish: 'bg-red-100 text-red-800',
+  sideways: 'bg-slate-100 text-slate-700',
 }
 
 const ANALYSIS_PATH = [
@@ -59,6 +78,7 @@ function App() {
       setResult({
         snapshot: {},
         analysis: '',
+        analysis_detail: null,
         cleaned_news: null,
         confidence_score: null,
         cross_validation_note: null,
@@ -206,7 +226,28 @@ function App() {
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
           <h2 className="mb-3 text-sm font-semibold text-slate-800">LLM 分析報告</h2>
           {result ? (
-            result.analysis ? (
+            result.analysis_detail ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways}`}
+                  >
+                    {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? '盤整'}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-700 leading-relaxed">{result.analysis_detail.summary}</p>
+                {result.analysis_detail.risks.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 mb-1">風險提示</p>
+                    <ul className="list-disc list-inside space-y-1">
+                      {result.analysis_detail.risks.map((risk, i) => (
+                        <li key={i} className="text-sm text-slate-700">{risk}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : result.analysis ? (
               <pre className="whitespace-pre-wrap wrap-break-word text-sm text-slate-700 leading-relaxed">{result.analysis}</pre>
             ) : (
               <p className="text-sm text-slate-400">本次無 LLM 分析結果。</p>

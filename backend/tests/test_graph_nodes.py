@@ -73,13 +73,16 @@ def test_judge_node_stub_always_sufficient() -> None:
 
 
 def test_analyze_node_returns_analysis_string() -> None:
+    from ai_stock_sentinel.models import AnalysisDetail
+
     mock_analyzer = MagicMock()
-    mock_analyzer.analyze.return_value = "分析結果"
+    mock_analyzer.analyze.return_value = AnalysisDetail(summary="分析結果")
 
     state = _base_state(snapshot=_make_snapshot())
     result = analyze_node(state, analyzer=mock_analyzer)
 
     assert result["analysis"] == "分析結果"
+    assert isinstance(result["analysis_detail"], AnalysisDetail)
 
 
 def test_crawl_node_accumulates_errors_on_failure() -> None:

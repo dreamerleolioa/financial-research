@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from importlib import import_module
 from typing import Any
 
-from ai_stock_sentinel.models import StockSnapshot
+from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
 
 _SYSTEM_PROMPT = """\
 你是一位謹慎的台股研究助理，採用 Skeptic Mode（懷疑論模式）。
@@ -16,7 +17,13 @@ _SYSTEM_PROMPT = """\
 
 規範：
 - LLM 不得修改 confidence_score 或 cross_validation_note，這兩個欄位由 rule-based 計算已完成。
-- 輸出格式：summary（2-3 句）+ risks（條列式，至多 3 點）。
+- 輸出格式：必須輸出合法 JSON，格式如下：
+{{
+  "summary": "2-3 句事實型摘要",
+  "risks": ["風險點 1", "風險點 2"],
+  "technical_signal": "bullish|bearish|sideways"
+}}
+- 不得輸出 JSON 以外的任何文字。
 """
 
 _HUMAN_PROMPT = """\
@@ -100,17 +107,21 @@ class LangChainStockAnalyzer:
         institutional_context: str | None = None,
         confidence_score: int | None = None,
         cross_validation_note: str | None = None,
-    ) -> str:
+    ) -> AnalysisDetail:
         if not self._has_langchain():
-            return (
-                "LangChain 尚未安裝，已保留分析介面。\n"
-                "安裝 requirements 後可注入 BaseChatModel 啟用分析。"
+            return AnalysisDetail(
+                summary=(
+                    "LangChain 尚未安裝，已保留分析介面。\n"
+                    "安裝 requirements 後可注入 BaseChatModel 啟用分析。"
+                )
             )
 
         if self.llm is None:
-            return (
-                "LLM 尚未設定（缺少 API Key 或模型），已保留 LangChain 分析介面。\n"
-                "你可以注入任何 BaseChatModel 來啟用自動分析。"
+            return AnalysisDetail(
+                summary=(
+                    "LLM 尚未設定（缺少 API Key 或模型），已保留 LangChain 分析介面。\n"
+                    "你可以注入任何 BaseChatModel 來啟用自動分析。"
+                )
             )
 
         self._estimate_cost(
@@ -131,7 +142,7 @@ class LangChainStockAnalyzer:
             ("human", _HUMAN_PROMPT),
         ])
         chain = prompt | self.llm | StrOutputParser()
-        return chain.invoke(
+        raw = chain.invoke(
             {
                 "symbol": snapshot.symbol,
                 "current_price": snapshot.current_price,
@@ -147,3 +158,24 @@ class LangChainStockAnalyzer:
                 "cross_validation_note": cross_validation_note or "（無交叉驗證備注）",
             }
         )
+        return self._parse_analysis(raw)
+
+    @staticmethod
+    def _parse_analysis(raw: str) -> AnalysisDetail:
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            inner = lines[1:]
+            if inner and inner[-1].strip() == "```":
+                inner = inner[:-1]
+            text = "\n".join(inner).strip()
+        try:
+            data = json.loads(text)
+            return AnalysisDetail(
+                summary=str(data.get("summary", raw)),
+                risks=[str(r) for r in data.get("risks", [])[:3]],
+                technical_signal=str(data.get("technical_signal", "sideways")),
+            )
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return AnalysisDetail(summary=raw)

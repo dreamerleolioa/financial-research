@@ -61,13 +61,18 @@ backend/
 			strategy_generator.py
 		data_sources/
 			yfinance_client.py
+			rss_news_client.py
+			institutional_flow/
+				interface.py
+				router.py
+				finmind_provider.py
+				twse_provider.py
+				tpex_provider.py
+				tools.py
 		graph/
 			builder.py
 			nodes.py
 			state.py
-		institutional/
-			providers.py
-			tools.py
 		config.py
 		models.py
 		main.py
