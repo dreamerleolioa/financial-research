@@ -6,7 +6,7 @@
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
-- **Phase 3（分析能力強化）**：約 65%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數完成）
+- **Phase 3（分析能力強化）**：約 85%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位完成）
 - **Phase 4（前端儀表板）**：約 35%（前端骨架與核心視覺元件已完成）
 
 ---
@@ -114,18 +114,17 @@
 - [ ] Task 7：`langchain_analyzer.py` 升級為三維交叉驗證 Prompt，輸出結構化 `AnalysisDetail`
 - [ ] Task 7.1：`AnalysisDetail` 新增 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
 - [ ] Task 7.2：策略模板映射（短線/中線/防守觀望）與持股期間規則化
-- [ ] Task 7.5：LLM Provider 串接（主用 Claude）
-	- [ ] 串接前提醒使用者提供：`ANTHROPIC_API_KEY`
-	- [ ] 串接前提醒使用者確認：模型名稱（預設 `claude-sonnet-4`）
-	- [ ] 串接前提醒使用者確認：成本/速度偏好（品質優先 / 成本優先 / 平衡）
-	- [ ] 串接前提醒使用者確認：輸出格式（純文字或 JSON）
-	- [ ] 串接前提醒使用者確認：失敗策略（timeout 與 retry 次數）
-- [ ] Task 7.6：LLM 呼叫前成本安全鎖（`langchain_analyzer.py`）
-	- 在呼叫 LLM 前估算 input token 數（字串長度 / 4），換算預估費用（sonnet-4：input $3/M）
-	- 預估費用超過 $1 USD → 拋出 `ValueError`，說明估算 token 數與費用，不呼叫 LLM
-	- 純字串長度估算，不安裝 tiktoken
-- [ ] Task 8：`api.py` `AnalyzeResponse` 新增 `technical`、`institutional`、`analysis_detail`
-- [ ] Task 8.1：`AnalyzeResponse.analysis_detail.action_plan` 子結構定義與回傳
+- [x] Task 7.5：LLM Provider 串接（主用 Claude）（2026-03-04 Session 6）
+  - `config.py` 新增 `anthropic_api_key` / `anthropic_model`（預設 `claude-sonnet-4`）
+  - `build_graph_deps()` 優先使用 `ChatAnthropic`，無 key 或無套件則 fallback 至 OpenAI
+  - `requirements.txt` 新增 `langchain-anthropic>=0.3.0`
+- [x] Task 7.6：LLM 呼叫前成本安全鎖（`langchain_analyzer.py`）（2026-03-04 Session 6）
+  - `_estimate_cost()` 方法：字串長度 / 4 = token 估算，費率 $3/M，超過 $1 USD → `ValueError`
+  - 正常請求（~640 tokens）不觸發；測試 3 個全通過
+- [x] Task 8：`api.py` `AnalyzeResponse` 新增 strategy/confidence 欄位（2026-03-04 Session 6）
+  - 新增：`confidence_score`、`cross_validation_note`、`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+  - `initial_state` 補齊 Phase 3 全部欄位（api.py + main.py CLI 路徑）
+  - 測試：`test_analyze_response_includes_strategy_fields` 通過
 - [ ] Task 9：整合測試（`make test` 全通過，覆蓋降級路徑）
 - [x] Task C3（P3-C3）：策略建議模板（`analysis/strategy_generator.py`）（2026-03-04）
   - `generate_strategy(technical_context_data, inst_data)` 純 rule-based

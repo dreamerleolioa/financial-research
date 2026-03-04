@@ -234,6 +234,41 @@
 ```
 
 ```markdown
+## Handoff Snapshot — 2026-03-04 Session 6 結束
+
+- 已完成（本 Session）：
+  - [Task 7.6] analysis/langchain_analyzer.py：`_estimate_cost()` 成本安全鎖
+    - 字串長度 / 4 = token 估算，費率 $3/M tokens（claude-sonnet-4）
+    - 預估費用 > $1 USD → raise ValueError（含 token 數與費用）
+    - 新增 `backend/tests/test_langchain_analyzer.py`：3 個測試全通過
+  - [Task 7.5] config.py 新增 `anthropic_api_key` / `anthropic_model`（預設 claude-sonnet-4）
+    - `build_graph_deps()` 優先用 ChatAnthropic，ImportError 或無 key 則 fallback 至 OpenAI
+    - `requirements.txt` 新增 `langchain-anthropic>=0.3.0`（已安裝 1.3.4）
+  - [Task 8] api.py `AnalyzeResponse` 新增 6 個欄位：
+    - `confidence_score`、`cross_validation_note`、`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+    - `initial_state` 補齊 Phase 3 全部欄位（api.py + main.py CLI）
+    - 測試：`test_analyze_response_includes_strategy_fields` 通過
+  - 全套測試：132 passed
+
+- 進行中：
+  - 無（Session 6 目標全部達成）
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. Task 9：整合測試（`make test` 全通過，覆蓋降級路徑）
+  2. Phase 4 前端：串接後端新欄位（strategy / confidence），補 Action Plan 卡片
+  3. 可選：Task 7 其餘子任務（AnalysisDetail 結構化輸出）
+
+- 驗收證據：
+  - backend/tests/test_langchain_analyzer.py：3 passed
+  - backend/tests/test_api.py：新增 test_analyze_response_includes_strategy_fields
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 132 passed
+  - Commits：a1caed2（7.6）/ a63a722（7.5）/ 174f3e6（8）
+```
+
+```markdown
 ## Handoff Snapshot — 2026-03-04 Session 5 結束
 
 - 已完成（本 Session）：
