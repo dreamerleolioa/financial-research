@@ -134,12 +134,18 @@
 ### C1. 改寫 System Prompt
 - 強制流程：提取 → 對照 → 衝突檢查 → 只輸出事實與推論
 - 明確禁止補造資料與來源
+- prompt 可讀取 `confidence_score` 與 `cross_validation_note`（由前置 `score_node` 計算完畢）
 
 ### C2. 規則計分（Python）
-- 在 `score_node` 實作：
-  - `[新聞=利多] + [法人=大賣]` → `confidence_score -30`，註記「警惕利多出貨」
-  - `[新聞=利空] + [股價不跌反漲]` → `confidence_score +10`，註記「利空不跌，籌碼轉強」
-- LLM 只負責輸出 `cross_validation_note` / `risks` 文案
+- 在 `score_node` 實作 `adjust_confidence_by_divergence`：
+  - `base_score = 50`（中性基準），clamp 至 [0, 100]
+  - `sentiment=positive` + `flow_label=institutional_accumulation` + `technical=bullish` → +15，`"三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"`
+  - `sentiment=positive` + `flow_label=distribution` → -20，`"警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"`
+  - `flow_label=retail_chasing` → -15，`"散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"`
+  - `sentiment=negative` + `technical=bullish` → +10，`"利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"`
+- `cross_validation_note` 為 **rule-based 固定字串**，**不呼叫 LLM**
+- LLM 在 `analyze_node` 中讀取 `confidence_score` 與 `cross_validation_note`，用於生成 `risks` / `summary`，**不得修改分數**
+- Graph flow：`preprocess → score → analyze → strategy → END`（score 在 analyze 前）
 
 ### C3. 策略建議模板（新增）
 - 以 Python rule-based 產出：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
@@ -151,11 +157,19 @@
   - 入場：若 BIAS 偏高，改為「拉回 MA20 分批佈局」
   - 停損：`近20日低點 - 3%` 或 `破 MA60` 觸發
 
+### C4. LLM 呼叫前成本安全鎖（新增）
+- 位置：`LangChainStockAnalyzer.analyze()` 呼叫 LLM 前
+- 估算方式：將所有送入 prompt 的字串長度加總，除以 4 得到預估 input token 數（不安裝 tiktoken）
+- 費率：sonnet-4 input $3 / million tokens
+- 門檻：預估費用 > $1 USD → 拋出 `ValueError`，訊息包含估算 token 數與費用，不呼叫 LLM
+- 正常請求（~640 tokens ≈ $0.002）永遠不會觸發，只防止意外傳入超大字串
+
 ### C-DoD
 - 至少 2 個衝突情境測試可重現分數變化
 - `/analyze` 回傳包含 `confidence_score` 與 `cross_validation_note`
 - `/analyze` 回傳包含 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
 - 至少 2 個訊號組合測試可命中對應策略模板
+- 成本安全鎖：超過門檻時拋出 `ValueError`，正常請求不觸發
 
 ---
 
@@ -187,15 +201,99 @@
 ### 跨 Session 交接快照（每次暫停必填）
 
 ```markdown
-## Handoff Snapshot
+## Handoff Snapshot — 2026-03-04 Session 3 結束
+
 - 已完成：
-  - （例）Router 已支援 `.TW/.TWO` 分流
+  - [Task A / P3-0] InstitutionalFlowProvider 介面、Router（固定優先序 + .TW/.TWO 分流）
+  - [Task A / P3-0] FinMindProvider / TwseOpenApiProvider / TpexProvider 骨架 + Schema Mapping
+  - [Task A / P3-0] fetch_institutional_flow 工具函式（tools.py）
+  - [Task A / P3-0] 42 個 Provider 測試全通過（Router / fallback / twse_only / schema）
+  - [Task B / P3-2] analysis/context_generator.py：generate_technical_context（純 rule-based）
+    - 輸出 technical_context（BIAS/RSI/均線/量能敘事）、institutional_context（法人籌碼敘事）
+  - [Task B / P3-2] graph/state.py 新增：technical_context / institutional_context / institutional_flow
+  - [Task B / P3-2] graph/nodes.py 新增：preprocess_node（clean → preprocess → analyze）
+  - [Task B / P3-2] graph/builder.py 串接：clean → preprocess → analyze
+  - [Task B / P3-2] 29 個 ContextGenerator 測試全通過（BIAS/RSI 邊界值 + preprocess_node 整合）
+  - 全套測試：94 passed（含既有 65 + 新增 29）
+
 - 進行中：
-  - （例）TPEX provider 欄位 mapping 尚缺 `margin_delta`
+  - 無（Session 3 目標已全部達成）
+
 - 阻塞點：
-  - （例）TWSE API 今日限流，需改走 fallback 驗證
+  - 無
+
 - 下一步（單一步驟）：
-  - （例）先補 `margin_delta` mapping，再跑 `6488.TWO` smoke test
+  - Task C3：以 Python rule-based 實作策略建議模板
+    （strategy_type / entry_zone / stop_loss / holding_period，映射規則詳見計劃文件）
+  - 完成後才啟動 Task C1/C2（Skeptic Prompt + adjust_confidence_by_divergence）
+
 - 驗收證據：
-  - 測試/腳本輸出路徑與結果摘要
+  - backend/tests/test_institutional_flow.py：42 passed
+  - backend/tests/test_context_generator.py：29 passed
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 94 passed
+```
+
+```markdown
+## Handoff Snapshot — 2026-03-04 Session 5 結束
+
+- 已完成（本 Session）：
+  - [Task C2 / P3-C2] analysis/confidence_scorer.py：adjust_confidence_by_divergence（純 rule-based）
+    - 四規則優先序（三維共振+15 / 利多出貨-20 / 散戶追高-15 / 利空不跌+10），clamp [0,100]
+  - [Task C2] graph/state.py 新增：confidence_score / cross_validation_note
+  - [Task C2] graph/nodes.py 新增：score_node（preprocess 後、analyze 前）
+    - _derive_technical_signal 輔助函式（close>ma5>ma20 且 rsi∈[50,70] → bullish 等）
+  - [Task C2] graph/builder.py 更新：preprocess → score → analyze → strategy → END
+  - [Task C1 / P3-C1] langchain_analyzer.py 升級為 Skeptic Mode：
+    - 四步驟強制流程（提取→對照→衝突檢查→輸出事實與推論）
+    - analyze() 接收 technical_context / institutional_context / confidence_score / cross_validation_note
+  - [Task C1] analysis/interface.py StockAnalyzer Protocol 同步升級（四個 keyword-only 參數）
+  - [Task C1] graph/nodes.py analyze_node 從 state 取上述欄位傳入 analyzer.analyze()
+  - 11 個信心分數測試全通過；全套測試：128 passed（含既有 117 + 新增 11）
+
+- 進行中：
+  - 無（Task C1/C2 全部 DoD 已達成）
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. Task 7.5：串接 LLM Provider（ANTHROPIC_API_KEY 在 backend/.env，模型 claude-sonnet-4）
+     - 建立 anthropic langchain 整合，讓 analyze_node 真正呼叫 LLM 並回傳 summary / risks
+  2. Task 8：/analyze API 回傳 confidence_score / cross_validation_note / strategy_* 欄位
+  3. Task 9：整合測試（make test 全通過）
+
+- 驗收證據：
+  - backend/tests/test_confidence_scorer.py：11 passed
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 128 passed
+```
+
+```markdown
+## Handoff Snapshot — 2026-03-04 Session 4 結束
+
+- 已完成（本 Session）：
+  - [Task C3 / P3-C3] analysis/strategy_generator.py：generate_strategy（純 rule-based）
+    - 映射規則：short_term（利多+RSI<30）/ mid_term（法人吸籌+均線多頭排列）/ defensive_wait（訊號衝突/高乖離）
+    - 入場規則：BIAS>5% → 拉回 MA20 分批佈局；否則現價附近分批買進
+    - 停損規則：固定字串「近20日低點 - 3% 或跌破 MA60（取較寬者）」
+  - [Task C3] graph/state.py 新增：strategy_type / entry_zone / stop_loss / holding_period
+  - [Task C3] graph/nodes.py 新增：strategy_node（analyze → strategy → END）
+  - [Task C3] graph/builder.py 串接：analyze → strategy → END
+  - [Task C3] 技術指標輔助函式升為 public API（calc_bias / calc_rsi / ma），舊名保留別名
+  - [Task C3] 23 個策略測試全通過（訊號組合 + 優先序 + 邊界值 + None 安全）
+  - 全套測試：117 passed（含既有 94 + 新增 23）
+
+- 進行中：
+  - 無（Task C3 全部 DoD 已達成）
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. Task C1/C2：Skeptic Prompt + adjust_confidence_by_divergence（需確認 ANTHROPIC_API_KEY）
+  2. Task 7：升級 langchain_analyzer.py Prompt，接收 technical_context / institutional_context 敘事字串
+  3. Task 8：/analyze API 回傳 strategy 欄位
+
+- 驗收證據：
+  - backend/tests/test_strategy_generator.py：23 passed
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 117 passed
 ```

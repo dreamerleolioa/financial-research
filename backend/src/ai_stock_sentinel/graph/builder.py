@@ -9,7 +9,7 @@ from ai_stock_sentinel.analysis.interface import StockAnalyzer
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
-from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_news_node, judge_node
+from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_news_node, judge_node, preprocess_node, score_node, strategy_node
 from ai_stock_sentinel.graph.state import GraphState
 
 MAX_RETRIES = 3
@@ -38,8 +38,11 @@ def build_graph(
     # 節點
     graph.add_node("crawl", partial(crawl_node, crawler=crawler))
     graph.add_node("clean", partial(clean_node, news_cleaner=_news_cleaner))
+    graph.add_node("preprocess", preprocess_node)
+    graph.add_node("score", score_node)
     graph.add_node("analyze", partial(analyze_node, analyzer=analyzer))
     graph.add_node("fetch_news", partial(fetch_news_node, rss_client=_rss_client))
+    graph.add_node("strategy", strategy_node)
 
     def _judge(state: GraphState) -> dict[str, Any]:
         """呼叫 judge_node；若 _force_insufficient=True 則永遠回傳 insufficient（測試用）。"""
@@ -79,7 +82,10 @@ def build_graph(
     )
     graph.add_edge("fetch_news", "increment_retry")
     graph.add_edge("increment_retry", "crawl")
-    graph.add_edge("clean", "analyze")
-    graph.add_edge("analyze", END)
+    graph.add_edge("clean", "preprocess")
+    graph.add_edge("preprocess", "score")
+    graph.add_edge("score", "analyze")
+    graph.add_edge("analyze", "strategy")
+    graph.add_edge("strategy", END)
 
     return graph.compile()

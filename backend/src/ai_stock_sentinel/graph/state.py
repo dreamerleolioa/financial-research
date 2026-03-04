@@ -15,3 +15,12 @@ class GraphState(TypedDict):
     errors: list[dict[str, str]]
     requires_news_refresh: bool
     requires_fundamental_update: bool
+    technical_context: str | None
+    institutional_context: str | None
+    institutional_flow: dict[str, Any] | None
+    strategy_type: str | None
+    entry_zone: str | None
+    stop_loss: str | None
+    holding_period: str | None
+    confidence_score: int | None
+    cross_validation_note: str | None

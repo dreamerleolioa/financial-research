@@ -6,7 +6,7 @@
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
-- **Phase 3（分析能力強化）**：約 20%（有基礎清潔與情緒標籤）
+- **Phase 3（分析能力強化）**：約 65%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數完成）
 - **Phase 4（前端儀表板）**：約 35%（前端骨架與核心視覺元件已完成）
 
 ---
@@ -84,10 +84,33 @@
 
 - [ ] Task 1：新增 `TechnicalData`、`InstitutionalData`、`AnalysisDetail` Pydantic 模型（`models.py`）
 - [ ] Task 2：`YFinanceCrawler` 新增 `calculate_technical_indicators()`（Pandas：MA/BIAS/RSI/量比）
-- [ ] Task 3：新增 `data_sources/institutional_client.py`（法人買賣超、融資融券，含降級策略）
-- [ ] Task 4：`GraphState` 擴充 `technical`、`institutional`、`analysis_detail` 欄位
-- [ ] Task 5：`graph/nodes.py` 新增 `fetch_technical_node`、`fetch_institutional_node`；升級 `analyze_node`
-- [ ] Task 6：`graph/builder.py` 流程加入 `fetch_technical → fetch_institutional` 兩步
+- [x] Task 3（P3-0 / Task A）：籌碼資料源 Provider 抽象層 + Router + Schema Mapping（2026-03-04）
+  - `InstitutionalFlowProvider` 介面、`FinMindProvider`（Primary）、`TwseOpenApiProvider`（Fallback #1）、`TpexProvider`（Fallback #2）
+  - Router 固定優先序（`FinMind → TWSE OpenAPI → TPEX`）+ `.TW/.TWO` 自動分流
+  - Provider 層強制 Schema Mapping（統一 `InstitutionalFlowData` 輸出），欄位漂移告警
+  - `fetch_institutional_flow` 工具函式（`tools.py`）；全部 Provider 失敗回傳 `error` dict，不拋例外
+  - 測試：42 個（Router / Provider 介面 / Tool / Schema / fallback / twse_only 跳過邏輯）
+- [x] Task 4 部分（P3-2 / Task B）：`GraphState` 新增 `technical_context`、`institutional_context`、`institutional_flow` 欄位（2026-03-04）
+- [x] Task 5 部分（P3-2 / Task B）：新增 `preprocess_node`（`graph/nodes.py`）（2026-03-04）
+  - 從 `snapshot.recent_closes` 建立 df_price，呼叫 `generate_technical_context`
+  - 異常時記錄 `PREPROCESS_ERROR` 且流程不中斷
+- [x] Task 6 部分（P3-2 / Task B）：`graph/builder.py` 串接 `clean → preprocess → analyze`（2026-03-04）
+- [x] P3-2 ContextGenerator（`analysis/context_generator.py`）（2026-03-04）
+  - `generate_technical_context(df_price, inst_data)` 純 rule-based
+  - 產出 `technical_context`（BIAS/RSI/均線/量能敘事）與 `institutional_context`（法人籌碼敘事）
+  - 測試：29 個（BIAS/RSI 邊界值、敘事觸發條件、preprocess_node 整合）
+- [x] Task C1（P3-C1/C2）：Skeptic Mode Prompt 升級（`langchain_analyzer.py`）（2026-03-04）
+  - 四步驟強制流程（提取→對照→衝突檢查→輸出事實與推論）
+  - `analyze()` 新增 `technical_context` / `institutional_context` / `confidence_score` / `cross_validation_note` 參數
+  - `analyze_node` 從 state 取上述欄位傳入 analyzer
+  - `StockAnalyzer` Protocol 同步升級
+- [x] Task C2（P3-C1/C2）：信心分數計算（`analysis/confidence_scorer.py`）（2026-03-04）
+  - `adjust_confidence_by_divergence(base_score, news_sentiment, inst_flow, technical_signal)` 純 rule-based
+  - 四規則優先序（三維共振+15 / 利多出貨-20 / 散戶追高-15 / 利空不跌+10），clamp [0,100]
+  - `GraphState` 新增 `confidence_score` / `cross_validation_note` 欄位
+  - `score_node` 新增（串接在 preprocess 後、analyze 前）
+  - `builder.py` 更新：`preprocess → score → analyze → strategy → END`
+  - 測試：11 個（4 主要情境 + 優先序 + clamp + custom base）；全套 128 passed
 - [ ] Task 7：`langchain_analyzer.py` 升級為三維交叉驗證 Prompt，輸出結構化 `AnalysisDetail`
 - [ ] Task 7.1：`AnalysisDetail` 新增 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
 - [ ] Task 7.2：策略模板映射（短線/中線/防守觀望）與持股期間規則化
@@ -97,10 +120,20 @@
 	- [ ] 串接前提醒使用者確認：成本/速度偏好（品質優先 / 成本優先 / 平衡）
 	- [ ] 串接前提醒使用者確認：輸出格式（純文字或 JSON）
 	- [ ] 串接前提醒使用者確認：失敗策略（timeout 與 retry 次數）
+- [ ] Task 7.6：LLM 呼叫前成本安全鎖（`langchain_analyzer.py`）
+	- 在呼叫 LLM 前估算 input token 數（字串長度 / 4），換算預估費用（sonnet-4：input $3/M）
+	- 預估費用超過 $1 USD → 拋出 `ValueError`，說明估算 token 數與費用，不呼叫 LLM
+	- 純字串長度估算，不安裝 tiktoken
 - [ ] Task 8：`api.py` `AnalyzeResponse` 新增 `technical`、`institutional`、`analysis_detail`
 - [ ] Task 8.1：`AnalyzeResponse.analysis_detail.action_plan` 子結構定義與回傳
 - [ ] Task 9：整合測試（`make test` 全通過，覆蓋降級路徑）
-- [ ] Task C3：實作策略建議模板（強制輸出 `strategy_type` / `entry_zone` / `stop_loss` / `holding_period`）
+- [x] Task C3（P3-C3）：策略建議模板（`analysis/strategy_generator.py`）（2026-03-04）
+  - `generate_strategy(technical_context_data, inst_data)` 純 rule-based
+  - 映射規則：`short_term`（利多+RSI<30）/ `mid_term`（法人吸籌+均線多頭）/ `defensive_wait`（訊號衝突/高乖離）
+  - `GraphState` 新增 `strategy_type` / `entry_zone` / `stop_loss` / `holding_period` 欄位
+  - `graph/nodes.py` 新增 `strategy_node`；`builder.py` 串接 `analyze → strategy → END`
+  - 技術指標輔助函式升為 public API（`calc_bias` / `calc_rsi` / `ma`）
+  - 測試：23 個（全訊號組合 + 邊界值 + 優先序 + None 安全）；全套 117 passed
 
 ### Phase 4：前端
 - [ ] 串接後端 API（symbol -> 真實分析結果）
@@ -131,6 +164,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. P3-0：先完成 Provider Router 與固定優先序（`FinMind -> TWSE OpenAPI -> TPEX`），並落地 `.TW/.TWO` 自動分流
-2. P3-0：完成 Provider 層 Schema Mapping + 限流/欄位漂移防禦，驗證 `2330.TW` 與 `6488.TWO`
-3. P3-2 / P3-3：再推進 Preprocess Node 與 Skeptic Mode rule-based score（`confidence_score` / `cross_validation_note`）
+1. **Task 7.5**：串接 LLM Provider（需確認 `ANTHROPIC_API_KEY`，模型 `claude-sonnet-4`），讓 `analyze_node` 真正呼叫 LLM 並回傳 `summary` / `risks`
+2. **Task 8**：`/analyze` API 回傳 `confidence_score` / `cross_validation_note` / `strategy_type` / `entry_zone` / `stop_loss` / `holding_period` 欄位
+3. **Task 9**：整合測試（`make test` 全通過，覆蓋降級路徑）

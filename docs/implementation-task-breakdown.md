@@ -160,22 +160,20 @@
     - 輸出：`foreign_net_cumulative`, `trust_net_cumulative`, `dealer_net_cumulative`, `three_party_net`, `consecutive_buy_days`, `margin_balance_delta_pct`, `flow_label`
     - `flow_label` 由 rule-based Python 決定，不由 LLM 判斷
   - 實作 `adjust_confidence_by_divergence(base_score, news_sentiment, inst_flow, technical_signal)`
-    - 三維共振 → +15；利多不漲背離 → -30；散戶追高 → -15
-    - 利空不跌（新聞負向 + 技術偏強）→ +10
+    - `base_score` 從 **50**（中性基準）開始，clamp 至 [0, 100]
+    - 三維共振 → +15；利多出貨背離 → -20；散戶追高 → -15；利空不跌 → +10
     - 回傳 `(adjusted_score, cross_validation_note)`
-    - 純 Python，不呼叫 LLM
-  - 在 `analyze_node` 後新增 `score_node`，執行信心分數計算
-  - 新增 `strategy_template_node`（Task C3）：
-    - 根據 `technical_signal` + `institutional_flow` 產出 `strategy_type`
-    - 產出 `holding_period`（`1-2 週` / `1-3 個月`）
-    - 綁定 `entry_zone`、`stop_loss` 與 `action_plan.action`
+    - **純 Python，不呼叫 LLM**；`cross_validation_note` 為 rule-based 固定字串
+  - Graph flow：`preprocess → score → analyze → strategy → END`
+    - `score_node` 在 `analyze_node` **之前**執行，讓 LLM prompt 可讀取 `confidence_score` 與 `cross_validation_note`
+    - LLM 在 `analyze_node` 中讀取這兩個欄位，用於生成 `risks` / `summary`，**不得修改分數**
   - 更新 system prompt 為 Skeptic Mode：強制「提取 → 對照 → 衝突檢查 → 僅輸出事實與邏輯推論」
-  - `GraphState` 新增欄位：`institutional_flow_data`, `confidence_score`, `cross_validation_note`
+  - `GraphState` 新增欄位：`confidence_score`, `cross_validation_note`
 - **DoD**
-  - `adjust_confidence_by_divergence` 對三種背離情境均有測試
+  - `adjust_confidence_by_divergence` 對四種情境均有測試（共振 / 利多出貨 / 散戶追高 / 利空不跌）
   - `fetch_institutional_flow` 可抓到真實資料並輸出 `flow_label`
   - 最終輸出包含 `confidence_score`（0~100）與 `cross_validation_note`（非空字串）
-  - 最終輸出包含 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+  - 最終輸出包含 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`（Task C3 已完成）
 
 ---
 

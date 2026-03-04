@@ -176,26 +176,29 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 **信心分數調整規則（rule-based，非 LLM 計算）**：
 
 ```python
+BASE_CONFIDENCE = 50  # 中性基準分
+
 def adjust_confidence_by_divergence(
-    base_score: int,
+    base_score: int,           # 通常傳入 BASE_CONFIDENCE（50）
     news_sentiment: str,       # "positive" | "negative" | "neutral"
-    inst_flow: str,            # "accumulation" | "distribution" | "neutral"
-    technical_signal: str      # "bullish" | "bearish" | "sideways"
+    inst_flow: str,            # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral"
+    technical_signal: str,     # "bullish" | "bearish" | "sideways"
 ) -> tuple[int, str]:
     """
     根據三維訊號一致性調整信心分數。
     回傳 (adjusted_score, cross_validation_note)。
-    直接由 Python 計算，不依賴 LLM。
+    純 rule-based Python，不呼叫 LLM。
+    base_score 從 50 開始，clamp 至 [0, 100]。
     """
     note = ""
     adjustment = 0
 
     # 訊號共振：三維方向一致 → 加分
-    if news_sentiment == "positive" and inst_flow == "accumulation" and technical_signal == "bullish":
+    if news_sentiment == "positive" and inst_flow == "institutional_accumulation" and technical_signal == "bullish":
         adjustment = +15
         note = "三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"
 
-    # 利多不漲背離：新聞正面但法人出貨 → 大幅降分
+    # 利多出貨背離：新聞正面但法人出貨 → 降分
     elif news_sentiment == "positive" and inst_flow == "distribution":
         adjustment = -20
         note = "警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"
@@ -204,6 +207,11 @@ def adjust_confidence_by_divergence(
     elif inst_flow == "retail_chasing":
         adjustment = -15
         note = "散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"
+
+    # 利空不跌：新聞負向但技術偏強 → 小幅加分
+    elif news_sentiment == "negative" and technical_signal == "bullish":
+        adjustment = +10
+        note = "利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"
 
     adjusted = max(0, min(100, base_score + adjustment))
     return adjusted, note
@@ -352,8 +360,8 @@ class InstitutionalFlowProvider(Protocol):
 2. 識別並標記情緒化動詞（例如：崩盤、起飛、噴出），保留事實陳述
 3. 讀取 `preprocess_node` 轉換後的技術面敘述（如「股價低於月線 6%，處短線弱勢」），理解趨勢語義
 4. 讀取籌碼面 `flow_label` 與累計數值，判斷法人方向與散戶籌碼結構
-5. **執行多維交叉驗證**，但信心分數調整由 `adjust_confidence_by_divergence` Python 函式完成，LLM 只負責生成 `cross_validation_note` 的文字解釋
-6. 產出結論、風險、`Technical_Signal`、`Institutional_Flow`（信心分數已由前一步 rule-based 計算完畢）
+5. **讀取 `confidence_score` 與 `cross_validation_note`**（兩者皆由前置 `score_node` 的 rule-based Python 計算完畢，LLM 不得修改分數）；據此生成 `risks` / `summary` 文案
+6. 產出結論、風險、`Technical_Signal`、`Institutional_Flow`
 
 ### System Prompt：矛盾檢查（Skeptic Mode）
 
@@ -364,11 +372,19 @@ class InstitutionalFlowProvider(Protocol):
 3. 若訊號矛盾，必須標記衝突與風險
 4. 僅輸出事實與邏輯推論，不得臆測或補造來源
 
-**衝突規則（v1）**：
-- 若 `[新聞=利多]` 且 `[法人=大賣]`：`confidence_score -30`，註記「警惕利多出貨」
-- 若 `[新聞=利空]` 且 `[股價=不跌反漲]`：`confidence_score +10`，註記「利空不跌，籌碼轉強」
+**衝突規則（v2，定案）**：
 
-> 分數運算由 Python `score_node` 負責；LLM 僅負責生成可讀解釋（`cross_validation_note` / `risks`）。
+| 情境 | 條件 | 分數調整 | `cross_validation_note`（rule-based 固定字串） |
+|------|------|----------|------------------------------------------------|
+| 訊號共振 | `sentiment=positive` + `flow_label=institutional_accumulation` + `technical=bullish` | +15 | `"三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"` |
+| 利多出貨背離 | `sentiment=positive` + `flow_label=distribution` | -20 | `"警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"` |
+| 散戶追高危機 | `flow_label=retail_chasing` | -15 | `"散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"` |
+| 利空不跌 | `sentiment=negative` + `technical=bullish` | +10 | `"利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"` |
+
+> **架構決策**：`confidence_score` 從 **50** 開始（中性基準），clamp 至 [0, 100]。
+> `cross_validation_note` 由 `score_node` 的 **純 rule-based Python** 產生固定字串，**不呼叫 LLM**。
+> LLM 在 `analyze_node` 中可讀取 `confidence_score` 與 `cross_validation_note`，用於輸出 `risks` / `summary` 文案，但不得修改分數。
+> `score_node` 位置：`preprocess → score → analyze → strategy → END`（在 LLM 分析前執行，讓 prompt 可讀取信心分數）。
 
 > 註：若做正式上線，建議將「內部推理」與「對外輸出」分離，避免過度暴露模型中間推理內容。
 

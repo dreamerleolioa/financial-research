@@ -1,0 +1,203 @@
+"""generate_strategy 單元測試：純 rule-based 策略生成器。"""
+from __future__ import annotations
+
+import pytest
+
+from ai_stock_sentinel.analysis.strategy_generator import generate_strategy
+
+
+# ─── Strategy Type Tests ─────────────────────────────────────────────────────
+
+def test_short_term_positive_sentiment_rsi_oversold():
+    """正面情緒 + RSI 超賣 → short_term"""
+    tech = {"sentiment_label": "positive", "rsi": 25.0, "bias": 2.0}
+    inst = {"flow_label": "neutral"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "short_term"
+    assert result["holding_period"] == "1-2 週"
+
+
+def test_mid_term_institutional_accumulation_bullish_ma():
+    """法人吸籌 + 均線多頭排列 → mid_term"""
+    tech = {"sentiment_label": "neutral", "rsi": 55.0, "bias": 3.0,
+            "close": 105.0, "ma5": 103.0, "ma20": 100.0}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "mid_term"
+    assert result["holding_period"] == "1-3 個月"
+
+
+def test_defensive_wait_high_bias():
+    """BIAS > 10 → defensive_wait（優先規則）"""
+    tech = {"sentiment_label": "positive", "rsi": 55.0, "bias": 12.0}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "defensive_wait"
+    assert result["holding_period"] == "觀望"
+
+
+def test_defensive_wait_signal_conflict():
+    """正面情緒 + distribution 法人出貨 → 訊號衝突 → defensive_wait"""
+    tech = {"sentiment_label": "positive", "rsi": 25.0, "bias": 3.0}
+    inst = {"flow_label": "distribution"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "defensive_wait"
+
+
+def test_default_defensive_wait():
+    """無任何訊號時，預設 defensive_wait"""
+    result = generate_strategy({}, None)
+    assert result["strategy_type"] == "defensive_wait"
+
+
+# ─── Entry Zone Tests ─────────────────────────────────────────────────────────
+
+def test_entry_zone_high_bias():
+    """bias > 5 → 拉回 MA20 分批佈局"""
+    tech = {"sentiment_label": "neutral", "rsi": 50.0, "bias": 7.0}
+    result = generate_strategy(tech, None)
+    assert result["entry_zone"] == "拉回 MA20 分批佈局"
+
+
+def test_entry_zone_normal_bias():
+    """bias <= 5 → 現價附近分批買進"""
+    tech = {"sentiment_label": "neutral", "rsi": 50.0, "bias": 3.0}
+    result = generate_strategy(tech, None)
+    assert result["entry_zone"] == "現價附近分批買進"
+
+
+def test_entry_zone_no_bias():
+    """bias 為 None → 現價附近分批買進"""
+    tech = {"sentiment_label": "neutral", "rsi": 50.0}
+    result = generate_strategy(tech, None)
+    assert result["entry_zone"] == "現價附近分批買進"
+
+
+def test_entry_zone_bias_exactly_5():
+    """bias == 5 → 不超過 5，應為現價附近分批買進"""
+    tech = {"bias": 5.0}
+    result = generate_strategy(tech, None)
+    assert result["entry_zone"] == "現價附近分批買進"
+
+
+def test_entry_zone_bias_just_above_5():
+    """bias 剛好超過 5 → 拉回 MA20 分批佈局"""
+    tech = {"bias": 5.01}
+    result = generate_strategy(tech, None)
+    assert result["entry_zone"] == "拉回 MA20 分批佈局"
+
+
+# ─── Stop Loss Tests ──────────────────────────────────────────────────────────
+
+def test_stop_loss_always_present():
+    """stop_loss 永遠回傳包含關鍵字的字串"""
+    tech = {}
+    result = generate_strategy(tech, None)
+    assert "近20日低點" in result["stop_loss"]
+    assert "MA60" in result["stop_loss"]
+
+
+def test_stop_loss_constant_string():
+    """stop_loss 內容固定"""
+    result = generate_strategy({"sentiment_label": "positive", "rsi": 20.0}, None)
+    assert result["stop_loss"] == "近20日低點 - 3% 或跌破 MA60（取較寬者）"
+
+
+# ─── Return Structure Tests ───────────────────────────────────────────────────
+
+def test_result_has_all_required_keys():
+    """回傳 dict 必須包含所有必要 keys"""
+    result = generate_strategy({}, None)
+    assert "strategy_type" in result
+    assert "entry_zone" in result
+    assert "stop_loss" in result
+    assert "holding_period" in result
+
+
+def test_strategy_type_valid_values():
+    """strategy_type 只能是三個合法值之一"""
+    valid = {"short_term", "mid_term", "defensive_wait"}
+    assert generate_strategy({}, None)["strategy_type"] in valid
+    assert generate_strategy({"sentiment_label": "positive", "rsi": 20.0}, None)["strategy_type"] in valid
+    assert generate_strategy({"sentiment_label": "neutral", "close": 105.0, "ma5": 103.0, "ma20": 100.0},
+                             {"flow_label": "institutional_accumulation"})["strategy_type"] in valid
+
+
+# ─── Priority Order Tests ─────────────────────────────────────────────────────
+
+def test_defensive_wait_takes_priority_over_short_term():
+    """bias > 10 優先於 short_term（即使 RSI 超賣 + 正面情緒）"""
+    tech = {"sentiment_label": "positive", "rsi": 20.0, "bias": 15.0}
+    inst = {"flow_label": "neutral"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "defensive_wait"
+
+
+def test_defensive_wait_takes_priority_over_mid_term():
+    """訊號衝突優先於 mid_term"""
+    tech = {"sentiment_label": "positive", "rsi": 55.0, "bias": 3.0,
+            "close": 105.0, "ma5": 103.0, "ma20": 100.0}
+    inst = {"flow_label": "distribution"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "defensive_wait"
+
+
+def test_mid_term_requires_all_ma_conditions():
+    """mid_term 需要 close > ma5 > ma20；不符合則退回 defensive_wait"""
+    # close < ma5 → 均線空頭，不符合
+    tech = {"sentiment_label": "neutral", "rsi": 55.0, "bias": 3.0,
+            "close": 98.0, "ma5": 103.0, "ma20": 100.0}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] == "defensive_wait"
+
+
+def test_mid_term_with_none_ma_values():
+    """mid_term 需要 close/ma5/ma20 都不為 None；有 None 則略過條件"""
+    tech = {"sentiment_label": "neutral", "rsi": 55.0, "bias": 3.0,
+            "close": None, "ma5": None, "ma20": None}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    # MA 都為 None → 條件不成立 → defensive_wait
+    assert result["strategy_type"] == "defensive_wait"
+
+
+def test_short_term_requires_both_conditions():
+    """short_term 需要 positive + rsi < 30；缺一不可"""
+    # RSI 正常（不超賣）
+    tech = {"sentiment_label": "positive", "rsi": 50.0, "bias": 2.0}
+    inst = {"flow_label": "neutral"}
+    result = generate_strategy(tech, inst)
+    assert result["strategy_type"] != "short_term"
+
+    # 情緒中性
+    tech2 = {"sentiment_label": "neutral", "rsi": 20.0, "bias": 2.0}
+    result2 = generate_strategy(tech2, inst)
+    assert result2["strategy_type"] != "short_term"
+
+
+def test_inst_none_does_not_crash_mid_term_check():
+    """inst_data 為 None 時，mid_term 條件不滿足，回傳 defensive_wait"""
+    tech = {"sentiment_label": "neutral", "close": 105.0, "ma5": 103.0, "ma20": 100.0}
+    result = generate_strategy(tech, None)
+    assert result["strategy_type"] == "defensive_wait"
+
+
+# ─── Holding Period Mapping ───────────────────────────────────────────────────
+
+def test_holding_period_short_term():
+    tech = {"sentiment_label": "positive", "rsi": 25.0}
+    result = generate_strategy(tech, None)
+    assert result["holding_period"] == "1-2 週"
+
+
+def test_holding_period_mid_term():
+    tech = {"close": 105.0, "ma5": 103.0, "ma20": 100.0}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    assert result["holding_period"] == "1-3 個月"
+
+
+def test_holding_period_defensive_wait():
+    result = generate_strategy({}, None)
+    assert result["holding_period"] == "觀望"
