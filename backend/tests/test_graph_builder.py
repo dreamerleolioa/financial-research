@@ -34,6 +34,15 @@ def _initial_state(symbol: str = "2330.TW") -> dict:
         "errors": [],
         "requires_news_refresh": False,
         "requires_fundamental_update": False,
+        "technical_context": None,
+        "institutional_context": None,
+        "institutional_flow": None,
+        "strategy_type": None,
+        "entry_zone": None,
+        "stop_loss": None,
+        "holding_period": None,
+        "confidence_score": None,
+        "cross_validation_note": None,
     }
 
 

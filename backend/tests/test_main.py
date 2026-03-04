@@ -259,5 +259,8 @@ def test_main_initial_state_has_required_keys(capsys):
         "cleaned_news", "raw_news_items", "data_sufficient",
         "retry_count", "errors", "requires_news_refresh",
         "requires_fundamental_update",
+        "technical_context", "institutional_context", "institutional_flow",
+        "strategy_type", "entry_zone", "stop_loss", "holding_period",
+        "confidence_score", "cross_validation_note",
     }
     assert required_keys.issubset(state.keys())
