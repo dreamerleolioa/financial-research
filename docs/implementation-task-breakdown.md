@@ -186,6 +186,7 @@
   - 股票輸入框 + 查詢按鈕
 - **DoD**
   - 可輸入 symbol 並呼叫後端 API
+- **完成記錄**：React + TypeScript + Tailwind 骨架已建立，API 串接完成（2026-03-04 Session 7）
 
 ### P4-2 核心展示元件
 - **目標**：呈現 AI 分析價值
@@ -195,24 +196,27 @@
   - 分析路徑（step timeline）
 - **DoD**
   - 三個元件可顯示真實後端資料
+- **完成記錄**：信心指數圓弧改用 `confidence_score`（真實資料，動畫過渡）；快照資訊、cleaned_news 摘要改為真實資料驅動（2026-03-04 Session 7）
 
 ### P4-3 體驗優化
 - **目標**：提升可讀性與可追溯性
 - **任務**
-  - 顯示來源、時間戳
-  - 進度狀態（loading/step logs）
+  - loading 狀態（按鈕 disabled + 文字）
+  - error banner（errors[0] 顯示於頁面頂部）
 - **DoD**
-  - 使用者可看懂結論來源與過程
+  - loading / error 狀態正確顯示，不阻斷主頁
+- **完成記錄**：loading 狀態、紅色 error banner 均已實作（2026-03-04 Session 7）
 
 ### P4-4 操作建議卡片（Action Plan）
 - **目標**：讓使用者輸入代碼後可直接看到可執行策略
 - **任務**
-  - 在 `analysis_detail` 區塊新增「戰術行動（Action Plan）」卡片
-  - 展示欄位：`action`、`target_zone`、`defense_line`、`momentum_expectation`
-  - 欄位來源必須對應後端 `analysis_detail`（不可前端硬編）
+  - 在頁面底部新增全寬「戰術行動（Action Plan）」卡片
+  - 展示欄位：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
+  - `cross_validation_note` 顯示於信心指數卡片下方
 - **DoD**
-  - 卡片可正確顯示「操作方向 / 建議區間 / 防守底線 / 預期動能」
-  - loading / error 狀態下顯示降級內容，不阻斷主頁
+  - 卡片可正確顯示「策略方向 / 建議入場區間 / 防守底線 / 預期持股期間」
+  - null 值顯示 —，不崩潰
+- **完成記錄**：Action Plan 全寬 2×2 卡片、`cross_validation_note` 灰色小字均已實作（2026-03-04 Session 7）
 
 ---
 

@@ -7,7 +7,7 @@
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：約 85%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位完成）
-- **Phase 4（前端儀表板）**：約 35%（前端骨架與核心視覺元件已完成）
+- **Phase 4（前端儀表板）**：約 90%（API 串接、真實資料驅動、Action Plan 卡片、loading/error 狀態、LLM 分析報告卡片完成）
 
 ---
 
@@ -138,10 +138,23 @@
   - 測試：23 個（全訊號組合 + 邊界值 + 優先序 + None 安全）；全套 117 passed
 
 ### Phase 4：前端
-- [ ] 串接後端 API（symbol -> 真實分析結果）
-- [ ] 元件改為真實資料驅動（非靜態假資料）
-- [ ] 補上錯誤狀態與載入狀態
-- [ ] `analysis_detail` 新增「戰術行動（Action Plan）」卡片（操作方向/建議區間/防守底線/預期動能）
+- [x] 串接後端 API（symbol -> 真實分析結果）（2026-03-04 Session 7）
+  - `handleAnalyze()` 呼叫 `POST http://localhost:8000/analyze`，結果存入 React state
+  - 網路錯誤自動填入 `NETWORK_ERROR` ErrorDetail
+- [x] 元件改為真實資料驅動（非靜態假資料）（2026-03-04 Session 7）
+  - 信心指數圓弧改用 `confidence_score`（null 時顯示 `—`，有動畫過渡）
+  - 「原始新聞」欄改為「快照資訊」顯示 `symbol` / `current_price` / `volume`
+  - AI 萃取摘要改用 `cleaned_news`，null 時顯示提示文字
+- [x] 補上錯誤狀態與載入狀態（2026-03-04 Session 7）
+  - 按鈕 `disabled` + 顯示「分析中...」during loading
+  - `errors[0]` 存在時頁面頂部顯示紅色 banner（含 `code` + `message`）
+- [x] `analysis_detail` 新增「戰術行動（Action Plan）」卡片（2026-03-04 Session 7）
+  - 全寬卡片，2×2 grid：策略方向 / 建議入場區間 / 防守底線 / 預期持股期間
+  - `strategy_type` 對應中文標籤（short_term → 短線操作 等）
+  - `cross_validation_note` 顯示於信心指數卡片下方（灰色小字，null 則不顯示）
+- [x] 前端顯示 `analysis` 文字（LLM 四步驟分析結果）（2026-03-04 Session 8）
+  - 新增「LLM 分析報告」卡片於 Action Plan 上方
+  - `analysis` 有值時 `<pre>` 顯示；空或 null 時顯示「本次無 LLM 分析結果。」
 
 ---
 
@@ -166,6 +179,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. **Phase 4 前端**：串接後端新欄位（`confidence_score` / `strategy_type` / `entry_zone` / `stop_loss` / `holding_period`），補 Action Plan 卡片
-2. **Task 7 剩餘**：`AnalysisDetail` 結構化輸出（JSON schema 而非純文字）
-3. **真實 LLM 端對端驗證**：用 `ANTHROPIC_API_KEY` 跑一次 `/analyze`，確認 `summary` / `risks` 回傳正確
+1. **Task 7 剩餘**：`AnalysisDetail` 結構化輸出（JSON schema 而非純文字），前端才能顯示分段的 `summary` / `risks`
+2. **config.py model name**：`claude-sonnet-4` → `claude-sonnet-4-5`（已修正）
+3. **下一里程碑**：Phase 3 分析深化完整驗收（Task 7 結構化輸出）

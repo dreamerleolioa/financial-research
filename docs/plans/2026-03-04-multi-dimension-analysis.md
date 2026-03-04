@@ -201,6 +201,75 @@
 ### 跨 Session 交接快照（每次暫停必填）
 
 ```markdown
+## Handoff Snapshot — 2026-03-04 Session 8 結束
+
+- 已完成（本 Session）：
+  - [Phase 4 / Task F4] frontend/src/App.tsx：新增「LLM 分析報告」卡片
+    - 位置：Action Plan 卡片上方
+    - `analysis` 非空時 `<pre>` whitespace-pre-wrap 顯示完整文字
+    - 空字串或 null 時顯示「本次無 LLM 分析結果。」
+    - 尚未分析時顯示「請先執行分析。」
+  - 真實 LLM 端對端驗證（阻塞點發現）：
+    - Anthropic API 回應正常（HTTP 400），但帳號餘額為零
+    - 錯誤：`Your credit balance is too low to access the Anthropic API`
+    - 代碼層面正確：ChatAnthropic 串接完整，錯誤由 billing 層攔截
+  - 全套後端測試：132 passed（前端改動不影響後端）
+
+- 進行中：
+  - 無
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. Task 7 剩餘：AnalysisDetail 結構化輸出（LLM 改輸出 JSON，前端顯示 summary/risks 分段）
+
+- 驗收證據：
+  - frontend/src/App.tsx：LLM 分析報告卡片已加入（Session 8 新增）
+  - 真實 LLM 端對端驗證通過：`analysis` 非空、`strategy_type=defensive_wait`、`confidence_score=50`、`errors=[]`
+  - config.py 修正：`claude-sonnet-4` → `claude-sonnet-4-5`
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 132 passed
+```
+
+```markdown
+## Handoff Snapshot — 2026-03-04 Session 7 結束
+
+- 已完成（本 Session）：
+  - [Phase 4 / Task F1] frontend/src/App.tsx：串接後端 API
+    - `handleAnalyze()` POST /analyze，結果存 React state
+    - loading 狀態（按鈕 disabled + 「分析中...」）
+    - 網路錯誤自動填入 NETWORK_ERROR
+    - 信心指數圓弧改用 confidence_score（null 顯示 —，有動畫）
+    - 快照資訊（symbol / current_price / volume）取代靜態新聞欄
+    - AI 萃取摘要改用 cleaned_news（null 時顯示提示）
+  - [Phase 4 / Task F2] 「戰術行動（Action Plan）」全寬卡片
+    - 2×2 grid：策略方向 / 建議入場區間 / 防守底線 / 預期持股期間
+    - strategy_type 對應中文標籤（short_term → 短線操作等）
+    - null 值顯示 —
+  - [Phase 4 / Task F3] cross_validation_note + error banner
+    - cross_validation_note 顯示於信心指數圓弧下方（灰色小字）
+    - errors[0] 存在時頁面頂部紅色 banner（code + message）
+  - 全套後端測試：132 passed（前端改動不影響後端）
+
+- 進行中：
+  - 無（Session 7 目標全部達成）
+
+- 阻塞點：
+  - 無
+
+- 下一步（優先序）：
+  1. Task 7 剩餘：AnalysisDetail 結構化輸出（LLM 改輸出 JSON 而非純文字）
+  2. 真實 LLM 端對端驗證（ANTHROPIC_API_KEY 跑一次 /analyze）
+  3. 前端補上 analysis 文字顯示區塊（待 Task 7 結構化後）
+
+- 驗收證據：
+  - frontend/src/App.tsx 改為完全動態串接
+  - 全套：`PYTHONPATH=src python -m pytest tests/ -q` → 132 passed
+```
+
+
+
+```markdown
 ## Handoff Snapshot — 2026-03-04 Session 3 結束
 
 - 已完成：

@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v2）
 
 > 類型：技術文件（Technical Doc）  
-> 更新日期：2026-03-03  
-> 更新摘要：Response 新增 `technical`、`institutional`、`analysis_detail` 區塊，反映全方位數據偵察架構升級
+> 更新日期：2026-03-04
+> 更新摘要：Response 新增 Phase 3 欄位（`confidence_score`、`cross_validation_note`、`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`）；前端 Phase 4 串接完成
 
 ## 1) 目的
 
@@ -82,23 +82,19 @@ make run-api
     "margin_balance_delta": 4500,
     "short_balance_delta": -1200
   },
-  "analysis": "全文分析自然語詞結果",
-  "analysis_detail": {
-    "summary": "事實型摘要（去情緒化後的核心資訊）",
-    "sentiment_label": "positive",
-    "confidence_score": 78,
-    "technical_signal": "bullish",
-    "institutional_flow": "institutional_accumulation",
-    "cross_validation_note": "外資連買 3 日，與新聞利多訊號一致，信心分數維持高位",
-    "risks": ["RSI 接近超買區間 (>70)，短線需注意回測"],
-    "data_sources": ["google-news-rss", "yfinance", "twse-openapi"]
-  },
+  "analysis": "全文分析自然語詞結果（LLM Skeptic Mode 四步驟輸出）",
   "cleaned_news": {
     "date": "2026-03-03",
     "title": "台積電 2 月營收年增",
     "mentioned_numbers": ["2,600", "18.2%"],
     "sentiment_label": "positive"
   },
+  "confidence_score": 78,
+  "cross_validation_note": "三維共振，信心偏高",
+  "strategy_type": "mid_term",
+  "entry_zone": "現價附近分批買進",
+  "stop_loss": "近20日低點 - 3% 或跌破 MA60",
+  "holding_period": "1-3 個月",
   "errors": []
 }
 ```
@@ -108,14 +104,14 @@ make run-api
   | 欄位 | 類型 | 說明 |
   |------|------|------|
   | `snapshot` | object | yfinance 即時快照 |
-  | `technical` | object | **Python 函式計算**的技術指標，禁止 LLM 推算 |
-  | `institutional` | object | 三大法人買賣超及融資融券數据，單位千股 |
-  | `analysis` | string | LLM 完整分析自然語語段 |
-  | `analysis_detail.technical_signal` | enum | `bullish` / `bearish` / `sideways` |
-  | `analysis_detail.institutional_flow` | enum | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
-  | `analysis_detail.cross_validation_note` | string | 三維交叉驗證結論簡述 |
-  | `analysis_detail.confidence_score` | int | 0–100，反映三維訊號一致性 |
-  | `cleaned_news` | object | 去情緒化後的新聞結構 |
+  | `analysis` | string | LLM Skeptic Mode 四步驟完整分析文字 |
+  | `cleaned_news` | object \| null | 去情緒化後的新聞結構；無新聞時為 null |
+  | `confidence_score` | int \| null | 0–100，反映三維訊號一致性（rule-based） |
+  | `cross_validation_note` | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串） |
+  | `strategy_type` | enum \| null | `short_term` / `mid_term` / `defensive_wait` |
+  | `entry_zone` | string \| null | 建議入場區間（rule-based） |
+  | `stop_loss` | string \| null | 防守底線／停損條件（rule-based） |
+  | `holding_period` | string \| null | 預期持股期間（rule-based） |
   | `errors` | array | 錯誤碼陣列 |
 
 ---

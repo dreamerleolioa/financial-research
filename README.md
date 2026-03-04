@@ -28,8 +28,8 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 - Phase 1（MVP Backend）：100%（技術債清理完成，CLI 改走 graph 流程）
 - Phase 2（LangGraph 回圈）：100%（骨架 + judge + RSS + clean + API 接入完成）
-- Phase 3（分析能力強化）：約 20%
-- Phase 4（前端儀表板）：約 35%
+- Phase 3（分析能力強化）：約 85%（Provider 抽象層 + ContextGenerator + Skeptic Mode + 信心分數 + Anthropic LLM 串接完成）
+- Phase 4（前端儀表板）：約 90%（API 串接、Action Plan 卡片、LLM 分析報告卡片完成）
 
 ## 專案目前內容
 
@@ -52,17 +52,26 @@ backend/
 	requirements.txt
 	agent.py
 	src/ai_stock_sentinel/
-		agents/
-			crawler_agent.py
 		analysis/
 			interface.py
 			langchain_analyzer.py
 			news_cleaner.py
+			context_generator.py
+			confidence_scorer.py
+			strategy_generator.py
 		data_sources/
 			yfinance_client.py
+		graph/
+			builder.py
+			nodes.py
+			state.py
+		institutional/
+			providers.py
+			tools.py
 		config.py
 		models.py
 		main.py
+		api.py
 frontend/
 	package.json
 	vite.config.ts
@@ -98,8 +107,7 @@ make install
 
 ```bash
 ANTHROPIC_API_KEY="your_api_key"
-LLM_PROVIDER="claude"
-CLAUDE_MODEL="claude-sonnet-4"
+ANTHROPIC_MODEL="claude-sonnet-4-5"
 ```
 
 ### 換電腦開發時要注意
@@ -130,10 +138,14 @@ pnpm dev
 預設開啟：`http://localhost:5173`
 
 目前前端已包含：
-- 股票代碼輸入框（MVP）
-- 信心指數圓形元件
-- 雜訊過濾左右對照
+- 股票代碼輸入框 + 一鍵分析
+- 信心指數圓形元件（動態，含 cross_validation_note）
+- 快照資訊（symbol / current_price / volume）
+- AI 萃取純數據摘要（cleaned_news）
+- LLM 分析報告（四步驟全文）
+- 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間）
 - 分析路徑圖（step timeline）
+- 錯誤 banner + loading 狀態
 
 ### 1) Crawler Agent（股票 + 可選新聞清洗）
 
@@ -218,10 +230,16 @@ make test
 
 ## 輸出格式
 
-Crawler Agent 輸出 JSON 範例欄位：
-- `snapshot`: 股票快照資料
-- `analysis`: 股票分析結果（LLM 或 fallback 訊息）
-- `cleaned_news`: 有提供新聞輸入時才會出現
+POST `/analyze` 回傳 JSON 欄位：
+- `snapshot`: 股票快照（price / volume / recent_closes 等）
+- `analysis`: LLM 四步驟分析文字（Skeptic Mode）
+- `cleaned_news`: 結構化新聞摘要（有新聞輸入時才有值）
+- `confidence_score`: 信心分數 0–100（rule-based 計算）
+- `cross_validation_note`: 三維交叉驗證備注
+- `strategy_type`: 策略方向（`short_term` / `mid_term` / `defensive_wait`）
+- `entry_zone`: 建議入場區間
+- `stop_loss`: 防守底線（停損）
+- `holding_period`: 預期持股期間
 - `errors`: 錯誤陣列（每項含 `code`、`message`，正常為空陣列）
 
 Cleaner Agent 輸出 JSON 欄位固定為：
