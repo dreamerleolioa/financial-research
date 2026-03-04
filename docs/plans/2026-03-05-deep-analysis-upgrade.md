@@ -1,9 +1,16 @@
 # 計劃：Deep Analysis Upgrade（技術語義化 + 策略具體化）
 
 > 日期：2026-03-05
+> 狀態：歷史計劃（主要項目已完成，供回溯參考）
 > 目標：解決「技術名詞難懂」與「策略建議不夠具體」兩大痛點
 > 原則：完成即補測試（Code Complete ≠ Task Complete；需附對應測試與驗收證據）
 > 執行前提：Claude 額度於 18:00 重置後啟動 Session 1
+
+## 使用說明（避免排程混淆）
+
+- 本文件對應的核心任務（Provider Router、語義化 preprocess、策略模板、Action Plan 基礎呈現）已在後續開發中完成。
+- 若要規劃「下一步優化」，請優先執行：`docs/plans/2026-03-05-news-summary-quality.md`。
+- 本文件建議作為「設計脈絡與驗收思路」參考，不作為明日第一優先執行清單。
 
 ---
 
@@ -84,28 +91,76 @@
 
 ## Session 4：前端 UI 友善化（Action Plan 紅綠燈）
 
+> **架構決策（定案）**：燈號由後端 rule-based Python 計算並回傳 `action_plan_tag` 欄位，前端僅做 enum → emoji/文字的純顯示映射，不含任何條件判斷邏輯。
+
 ### 範圍
-- 在 Action Plan 卡片加入標籤：`🔵 中性 / 🔴 過熱 / 🟢 機會`
-- 依 `technical_signal` + `confidence_score`（與必要時 `institutional_flow`）映射顯示
+
+**後端（新增）**：
+- 在 `strategy_node`（或新增 `tag_node`）計算 `action_plan_tag`
+- 輸入：`technical` block 的 `rsi14`、`institutional_flow`（`flow_label`）、`confidence_score`
+- 輸出 enum：`opportunity` | `overheated` | `neutral`（前端映射：🟢 機會 / 🔴 過熱 / 🔵 中性）
+- 判斷規則（rule-based，固定優先序）：
+  - `opportunity`：`rsi14 < 30` + `flow_label = institutional_accumulation` + `confidence_score > 70`
+  - `overheated`：`rsi14 > 70` + `flow_label = distribution`
+  - `neutral`：其餘狀況（含任一條件不滿足）
+- `GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null`
+- `institutional_flow`（`flow_label`）需作為頂層欄位回傳至 API（目前埋在 `institutional` block，需提升為 `institutional_flow: str | null`）
+
+**前端（純顯示）**：
+- 在 Action Plan 卡片標題旁顯示對應標籤（enum → emoji + 中文）
+- `opportunity` → `🟢 機會`；`overheated` → `🔴 過熱`；`neutral` → `🔵 中性`
+- `action_plan_tag` 為 null 時不顯示標籤，不崩潰
 - 保持既有版面，不重構整體 UI
-- 以固定規則實作燈號映射：
-  - 🟢 機會：`rsi < 30` + `institutional_flow=institutional_accumulation` + `confidence_score > 70`
-  - 🔴 過熱/風險：`rsi > 70` + `institutional_flow=distribution`
-  - 🔵 中性：其餘狀況
 
 ### DoD（完成定義）
-- Action Plan 卡片可顯示紅綠燈標籤與對應文字
-- 標籤映射規則固定且可測試（非寫死單一案例）
-- 後端無資料時有明確 fallback 顯示（不造成 UI 崩潰）
+- `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python，有獨立單元測試
+- `AnalyzeResponse` 回傳 `action_plan_tag`（三值 enum + null）
+- 前端 Action Plan 卡片可正確顯示三種燈號（含 null fallback）
+- 後端無資料（`rsi14 = null` 或 `flow_label = null`）時安全降級回 `neutral`
 - 不影響既有分析報告、信心指數與錯誤訊息區塊
-- 前端燈號與後端語義敘事使用同一套 rule-based 輸出，不出現互相矛盾
+- 規則邏輯 100% 在後端，前端**不含**任何 `rsi14 < 30` 之類的條件判斷
 
 ### 預計測試案例
-- `test_action_plan_shows_green_for_bullish_high_confidence`
-- `test_action_plan_shows_red_for_overheated_signal`
-- `test_action_plan_shows_blue_for_sideways_or_low_conflict_signal`
-- `test_action_plan_tag_fallback_when_strategy_fields_missing`
-- `test_action_plan_tag_rule_matches_backend_semantic_output`
+- `test_calculate_action_plan_tag_returns_opportunity_when_all_conditions_met`
+- `test_calculate_action_plan_tag_returns_overheated_when_rsi_high_and_distribution`
+- `test_calculate_action_plan_tag_returns_neutral_for_partial_match`
+- `test_calculate_action_plan_tag_falls_back_to_neutral_when_inputs_none`
+- `test_api_response_includes_action_plan_tag_field`
+
+---
+
+## Session 5：信心分數可靠性優化（Confidence Score Reliability）
+
+> **問題背景**：多數查詢固定輸出 50（中性基準），核心原因為三個訊號同時退化為預設值：
+> 1. `_derive_technical_signal` 判斷 `bullish` 需三條件同時成立，條件過嚴，多數退化 `sideways`
+> 2. 機構 Provider 無 API key / 限流時 `flow_label` 固定 `neutral`
+> 3. 四條規則為精確命中才調分，三訊號均為 `neutral/sideways` 時 adjustment = 0
+
+### 範圍
+
+**後端**：
+- CS-1：`_derive_technical_signal` 改為多因子加權（RSI 位置 / BIAS / 均線排列各自獨立貢獻分量）
+- CS-2：`adjust_confidence_by_divergence` 改為多維加權模型（partial match 可得部分調分；引入 `rsi14`、`bias_ma20` 數值直接計算貢獻）
+- CS-3：機構資料缺失時以 `unknown` 旗標排除該維度，由剩餘維度計算（調整置信幅度，避免強拉分數至 50）
+- CS-4：回傳結構拆分 `data_confidence`（資料完整度，0–100）與 `signal_confidence`（訊號強度，0–100）；前端可顯示「資料不足」提示而非假裝中性
+
+**API / 前端**：
+- `AnalyzeResponse` 新增 `data_confidence: int | null`、`signal_confidence: int | null`
+- 前端信心指數卡片：`data_confidence < 60` 時卡片下方顯示「資料不足，分數僅供參考」灰色提示
+
+### DoD（完成定義）
+- 對技術指標方向明確的股票，分數應偏離 50（至少 ±10）
+- 機構資料缺失時分數不因此固定停在 50
+- `data_confidence` 與 `signal_confidence` 作為 API 新欄位穩定回傳
+- 既有四情境信心分數測試全數通過（回歸保護）
+- 新增規則覆蓋測試（partial match / 單維度可用 / None 安全）
+
+### 預計測試案例
+- `test_derive_technical_signal_bullish_with_partial_conditions`
+- `test_adjust_confidence_partial_match_gives_nonzero_adjustment`
+- `test_confidence_excludes_institutional_dimension_when_unknown`
+- `test_api_response_includes_data_confidence_and_signal_confidence`
+- 原有四情境全數保留（回歸）
 
 ---
 
@@ -121,3 +176,4 @@
 
 - 最低交付：Session 1 + Session 2 全完成（含測試）
 - 理想交付：Session 1~3 完成，Session 4 至少完成標籤映射與基本顯示
+- Session 5 可獨立排程，不 blocking Session 4；建議在新聞品質優化之後執行

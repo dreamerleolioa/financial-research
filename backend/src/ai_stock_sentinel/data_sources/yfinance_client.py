@@ -17,6 +17,16 @@ class YFinanceCrawler:
         if not history.empty and "Close" in history.columns:
             recent_closes = [float(value) for value in history["Close"].dropna().tolist()]
 
+        volume = int(getattr(info, "last_volume", 0) or 0)
+        volume_source = "realtime"
+        if volume <= 0 and not history.empty and "Volume" in history.columns:
+            volume_series = history["Volume"].dropna()
+            if not volume_series.empty:
+                volume = int(float(volume_series.iloc[-1]) or 0)
+                volume_source = "history_fallback"
+        if volume <= 0:
+            volume_source = "unavailable"
+
         return StockSnapshot(
             symbol=symbol,
             currency=str(getattr(info, "currency", "TWD") or "TWD"),
@@ -25,7 +35,8 @@ class YFinanceCrawler:
             day_open=float(getattr(info, "open", 0.0) or 0.0),
             day_high=float(getattr(info, "day_high", 0.0) or 0.0),
             day_low=float(getattr(info, "day_low", 0.0) or 0.0),
-            volume=int(getattr(info, "last_volume", 0) or 0),
+            volume=volume,
             recent_closes=recent_closes,
             fetched_at=datetime.now(timezone.utc).isoformat(),
+            volume_source=volume_source,
         )

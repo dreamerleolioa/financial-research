@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from ai_stock_sentinel.data_sources.rss_news_client import RawNewsItem, RssNewsClient
 
 
@@ -63,23 +65,32 @@ def test_parse_rss_returns_empty_on_invalid_xml() -> None:
 
 
 def test_fetch_news_returns_empty_on_url_error() -> None:
-    import urllib.error
-
     client = _make_client()
-    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")):
+    with patch("httpx.get", side_effect=httpx.HTTPError("timeout")):
         items = client.fetch_news(query="2330")
     assert items == []
 
 
 def test_fetch_news_calls_parse_with_response_body() -> None:
     client = _make_client()
-    mock_response = MagicMock()
-    mock_response.__enter__ = lambda s: s
-    mock_response.__exit__ = MagicMock(return_value=False)
-    mock_response.read.return_value = _SAMPLE_RSS
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock()
+    mock_response.content = _SAMPLE_RSS
 
-    with patch("urllib.request.urlopen", return_value=mock_response):
+    with patch("httpx.get", return_value=mock_response):
         items = client.fetch_news(query="TSMC", max_items=5)
 
     assert len(items) == 2
     assert items[0].title == "TSMC revenue up 20% YoY"
+
+
+def test_fetch_news_returns_empty_on_empty_response_body() -> None:
+    client = _make_client()
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock()
+    mock_response.content = b"  \n\t  "
+
+    with patch("httpx.get", return_value=mock_response):
+        items = client.fetch_news(query="TSMC", max_items=5)
+
+    assert items == []

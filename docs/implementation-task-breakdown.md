@@ -1,6 +1,6 @@
 # AI Stock Sentinel 實作任務拆解（Execution Plan）
 
-> 版本：v1.1  
+> 版本：v1.2  
 > 更新日期：2026-03-04
 
 ## 0) 範圍說明
@@ -218,6 +218,56 @@
   - null 值顯示 —，不崩潰
 - **完成記錄**：Action Plan 全寬 2×2 卡片、`cross_validation_note` 灰色小字均已實作（2026-03-04 Session 7）
 
+### P4-6 Action Plan 紅綠燈標籤（待排程）
+- **目標**：在 Action Plan 卡片加入燈號標籤，一眼判讀訊號強弱
+- **架構原則**：燈號由後端 rule-based Python 計算並回傳 `action_plan_tag`，前端**不含**任何條件判斷，僅做 enum → emoji/文字的純顯示
+- **後端任務**
+  - 實作 `calculate_action_plan_tag(rsi14, flow_label, confidence_score) -> str`（純 Python rule-based）
+  - 判斷規則（固定優先序）：`opportunity`（rsi14 < 30 + institutional_accumulation + confidence > 70）/ `overheated`（rsi14 > 70 + distribution）/ `neutral`（其餘）
+  - 任一輸入為 None 時安全降級回 `neutral`
+  - `GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null`
+  - 將 `flow_label` 作為頂層欄位 `institutional_flow` 提升至 API Response
+- **前端任務**
+  - Action Plan 卡片標題旁顯示燈號標籤（`opportunity` → 🟢 機會 / `overheated` → 🔴 過熱 / `neutral` → 🔵 中性）
+  - `action_plan_tag` 為 null 時不顯示標籤
+- **DoD**
+  - `calculate_action_plan_tag` 有獨立單元測試（三情境 + None 安全）
+  - API 穩定回傳 `action_plan_tag` 與 `institutional_flow`
+  - 前端可正確顯示三種燈號（含 null fallback 不崩潰）
+
+### P4-5 新聞摘要品質優化（規格補強，待排程）
+- **目標**：提升 `cleaned_news` 可用性與可信度，避免時間戳/日期碎片被誤當摘要重點
+- **任務**
+  - 在 `clean_node` 增加品質檢查規則：辨識並排除「標題為時間戳／URL／來源代碼」
+  - 日期標準化：優先輸出來源日期（ISO 8601 / RFC 2822），無法解析時標記 `DATE_UNKNOWN`
+  - 關鍵數字過濾：排除純日期碎片，保留財經語意數值（漲跌幅、金額、EPS、目標價、量價）
+  - 新增 `cleaned_news_quality` 欄位（`quality_score` + `quality_flags`）供 API 與前端使用
+  - 前端在低品質摘要顯示「摘要品質受限」提示，避免誤導
+- **DoD**
+  - 不再出現以純時間戳作為摘要標題
+  - `date=unknown` 時必有品質旗標，且 UI 顯示品質提示
+  - `mentioned_numbers` 中日期碎片比例明顯下降（由測試案例驗證）
+  - 新增單元測試（cleaner quality rules）與整合測試（API response quality flags）
+
+### P5-1 信心分數可靠性優化（Confidence Score Reliability）
+
+- **問題背景**：目前多數查詢固定輸出 50（中性基準），核心原因為：
+  1. `_derive_technical_signal` 判斷 `bullish` 過嚴（需三條件同時成立），多數退化 `sideways`
+  2. 籌碼 Provider 在無 API key / 限流時 `flow_label` 固定 `neutral`
+  3. 四條規則為精確命中才調分，三訊號均 `neutral/sideways` 時 adjustment = 0
+- **目標**：信心分數能反映實際技術面強弱，不再固定輸出 50
+- **任務**
+  - CS-1：`_derive_technical_signal` 改為多因子加權（RSI 位置 / BIAS / 均線排列各自獨立貢獻分量）
+  - CS-2：`adjust_confidence_by_divergence` 改為多維加權模型（partial match 可得部分調分；引入 `rsi14`、`bias_ma20` 數值直接計算貢獻）
+  - CS-3：機構資料缺失時以 `unknown` 旗標排除該維度，由剩餘維度計算（調整置信幅度，避免拉低分數）
+  - CS-4：回傳結構拆分 `data_confidence`（資料完整度）與 `signal_confidence`（訊號強度），前端可顯示資料不足提示
+  - CS-5：補齊單元測試（新規則覆蓋 + 回歸四原始情境）
+- **DoD**
+  - 對相同股票查詢，技術指標方向明確時分數應偏離 50（至少 ±10）
+  - 機構資料缺失時分數不因此固定停在 50
+  - `data_confidence` 與 `signal_confidence` 作為 API 新欄位回傳
+  - 既有信心分數四情境測試全數通過（回歸保護）
+
 ---
 
 ## Cross-cutting（跨階段）
@@ -266,3 +316,5 @@
 6. 完成 P3-1（Cleaner 輸出 `sentiment_label`）
 7. 完成 P3-2b（Tool Use 計算工具）
 8. **[Low] 完成 P4-1~P4-3**（前端展示）
+
+> 註：以上為歷史開發順序。依 2026-03-04 目前狀態（P1~P4-4 多數已完成），**下一步優先項目為 P4-5 新聞摘要品質優化**（`cleaned_news_quality`、日期/標題品質規則、前端低品質提示、測試補齊）。

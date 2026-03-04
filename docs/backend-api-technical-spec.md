@@ -91,10 +91,12 @@ make run-api
   },
   "confidence_score": 78,
   "cross_validation_note": "三維共振，信心偏高",
+  "institutional_flow": "institutional_accumulation",
   "strategy_type": "mid_term",
   "entry_zone": "現價附近分批買進",
   "stop_loss": "近20日低點 - 3% 或跌破 MA60",
   "holding_period": "1-3 個月",
+  "action_plan_tag": "opportunity",
   "errors": []
 }
 ```
@@ -112,6 +114,8 @@ make run-api
   | `entry_zone` | string \| null | 建議入場區間（rule-based） |
   | `stop_loss` | string \| null | 防守底線／停損條件（rule-based） |
   | `holding_period` | string \| null | 預期持股期間（rule-based） |
+  | `institutional_flow` | enum \| null | 籌碼歸屬標籤（rule-based）：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
+  | `action_plan_tag` | enum \| null | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射 |
   | `errors` | array | 錯誤碼陣列 |
 
 ---

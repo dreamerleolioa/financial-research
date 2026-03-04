@@ -21,3 +21,4 @@ class StockSnapshot:
     volume: int
     recent_closes: List[float]
     fetched_at: str
+    volume_source: str = "realtime"

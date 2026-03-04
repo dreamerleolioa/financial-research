@@ -3,7 +3,7 @@
 > 日期：2026-03-04  
 > 狀態：Draft v2.1  
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖  
-> 更新摘要：分析維度從「全方位數據偵察」延伸到「可執行操作策略」（入手價／停損價／持股期間），並新增技術術語語義化翻譯層
+> 更新摘要：分析維度從「全方位數據偵察」延伸到「可執行操作策略」（入手價／停損價／持股期間），新增技術術語語義化翻譯層，並補上新聞摘要品質門檻（Quality Gate）
 
 ## 1. 目標與方向
 
@@ -510,6 +510,16 @@ class InstitutionalFlowProvider(Protocol):
 }
 ```
 
+### 新聞摘要品質門檻（News Summary Quality Gate，新增）
+
+> 目的：避免新聞摘要出現「標題其實是時間戳」或「日期未知但未標示可信度」等低可用輸出。
+
+- `cleaned_news.title` 不得為純時間字串、純 URL、純來源代碼（例如僅 `Wed, 04 Mar ...`）
+- `cleaned_news.date` 應優先保留來源時間（ISO 8601 或 RFC 2822）；無法解析時允許 `unknown`，但必須標記品質旗標
+- `cleaned_news.mentioned_numbers` 需過濾與市場分析無關之雜訊數字（例如純日期碎片）
+- 新增 `cleaned_news_quality`（或同義欄位）以回傳 `quality_score`（0-100）與 `quality_flags`（如 `TITLE_IS_TIMESTAMP`、`DATE_UNKNOWN`、`NO_FINANCIAL_NUMBERS`）
+- 當品質旗標命中時，前端需以「摘要品質受限」提示，不得當成高可信重點摘要
+
 > **`Technical_Signal` 定義**
 > - `bullish`（多）：均線多頭排列（MA5 > MA20 > MA60）且 RSI 50~70
 > - `bearish`（空）：均線空頭排列或 RSI < 30
@@ -675,6 +685,11 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 - **技術位階**：必須包含 `high_20d`、`low_20d`、`support_20d`、`resistance_20d`
 - **籌碼面**：必須採 `FinMindProvider`（Primary）+ `TwseOpenApiProvider`（Fallback）雙軌策略，並包含三大法人合計買賣超方向及融資融券變化
 - **多維交叉驗證**：當新聞訊號與法人動向背離時，系統須在 `cross_validation_note` 中明確標記警示
+- **新聞摘要品質**：
+  - `cleaned_news.title` 必須是可讀的事件語句，不可為純時間戳/純 URL
+  - `cleaned_news.date` 若為 `unknown`，必須伴隨品質旗標（如 `DATE_UNKNOWN`）
+  - `mentioned_numbers` 需經過財經語意過濾，避免日期碎片主導摘要
+  - 當品質低於門檻（例如 `quality_score < 60`）時，前端需顯示「摘要品質受限」
 - 輸出必須包含：
   - `summary`：去情緒化事實型摘要
   - `sentiment_label`：positive / negative / neutral

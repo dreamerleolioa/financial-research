@@ -7,7 +7,7 @@
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：100%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位 + AnalysisDetail 結構化輸出 + code fence hotfix + Protocol 回傳型別對齊完成）
-- **Phase 4（前端儀表板）**：100%（API 串接、真實資料驅動、Action Plan 卡片、loading/error 狀態、LLM 分析報告卡片、analysis_detail 結構化顯示完成）
+- **Phase 4（前端儀表板）**：90%（核心功能完成；新聞摘要品質優化已列入下一輪修正計劃）
 
 ---
 
@@ -66,6 +66,8 @@
 - [x] 策略欄位定案：`analysis_detail` 新增 `strategy_type`、`entry_zone`、`stop_loss`、`holding_period`
 - [x] 前端展示定案：`analysis_detail` 區塊新增「戰術行動（Action Plan）」卡片
 - [x] 明日計劃調整定案：Task C 新增子任務 `Task C3`（策略建議模板）
+- [x] 需求補強定案：新增「新聞摘要品質門檻（Quality Gate）」避免時間戳/日期碎片誤導
+- [x] 規劃文件定案：新增新聞摘要品質修正計劃（`docs/plans/2026-03-05-news-summary-quality.md`）
 
 ### Phase 2：LangGraph
 - [x] 建立 LangGraph 狀態機（GraphState + 節點 stub + builder）
@@ -166,6 +168,42 @@
   - `analysis_detail` 存在時：顯示 `technical_signal` 標籤（看多/看空/盤整）、`summary` 段落、`risks` 條列
   - `analysis_detail` 為 null 時 fallback 維持 `analysis` 純文字
 
+### 下一輪修正（新聞摘要品質）
+
+> 計劃文件：`docs/plans/2026-03-05-news-summary-quality.md`
+
+- [ ] NQ-1：在 `clean_node` / Cleaner 增加 `title` 品質檢查（禁止純時間戳、純 URL；命中標記 `TITLE_LOW_QUALITY`）
+- [ ] NQ-2：日期正規化（優先 ISO 8601；失敗保留 `unknown` + 標記 `DATE_UNKNOWN`）
+- [ ] NQ-3：`mentioned_numbers` 新增財經語意過濾規則，降低日期碎片噪音（命中標記 `NO_FINANCIAL_NUMBERS`）
+- [ ] NQ-4：rule-based `quality_score`（0–100，clamp）+ API 回傳 `cleaned_news_quality`（`quality_score` / `quality_flags`）
+- [ ] NQ-5：前端低品質摘要提示（`quality_score < 60` 或 flags 非空 → 顯示「摘要品質受限」）
+- [ ] NQ-6：補齊單元測試（品質規則覆蓋）與整合測試（API 欄位格式驗證）
+
+### 下一輪修正（信心分數可靠性優化）
+
+> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 5）  
+> **問題根源（已確認）**：多數查詢固定回傳 50，因為三個輸入訊號同時退化為預設值：
+> 1. `technical_signal` 判斷 `bullish` 要求 `close > ma5 > ma20 AND 50 ≤ RSI ≤ 70` 同時成立，條件過嚴，多數情況退化為 `sideways`
+> 2. `institutional_flow.flow_label` 沒有 API key / 限流時固定回傳 `neutral`
+> 3. 四條規則為「精確命中」才調分，三個訊號均為 `neutral/sideways` 時 adjustment = 0
+
+- [ ] CS-1：`_derive_technical_signal` 拆解為多條件加權（放寬單一限制，RSI 位置 / BIAS / 均線排列各自獨立產出分量分數）
+- [ ] CS-2：四條 binary 規則改為多維加權模型（partial match 可得部分調分；並非只有「三維完全共振」才加分）
+- [ ] CS-3：機構資料缺失時不强制 `neutral`，改以 `unknown` 旗標排除機構維度，由剩餘兩維度計算分數（並調整分數置信幅度）
+- [ ] CS-4：信心分數定義 `data_confidence`（資料完整度，0–100）與 `signal_confidence`（訊號強度，0–100）分開回傳，前端可顯示「資料不足」提示而非固定 50
+- [ ] CS-5：補齊單元測試（新規則覆蓋 + 回歸既有四情境）
+
+### 下一輪修正（Action Plan 燈號）
+
+> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）  
+> 架構決策：燈號由**後端 rule-based Python 計算**並回傳 `action_plan_tag`；前端不含條件判斷，僅做 enum → emoji/文字顯示。
+
+- [ ] 後端：實作 `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python（`opportunity` / `overheated` / `neutral`；任一輸入為 None 則降級回 `neutral`）
+- [ ] 後端：`GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null` 與 `institutional_flow: str | null`
+- [ ] 後端：補齊單元測試（三情境 + None 安全 + API 欄位驗證）
+- [ ] 前端：Action Plan 卡片標題旁顯示燈號標籤（`opportunity` → 🟢 機會 / `overheated` → 🔴 過熱 / `neutral` → 🔵 中性）
+- [ ] 前端：`action_plan_tag` 為 null 時不顯示標籤，不崩潰
+
 ---
 
 ## 目前可用指令
@@ -189,6 +227,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. **Phase 5 準備**：Docker / Railway 部署（Task 7.1/7.2 已取消，策略欄位由 `strategy_node` 獨立維護）
-2. **Phase 5 功能規劃**：監控告警 / 定時排程 / 多股票批次分析
-3. **下一里程碑**：Phase 5 規劃文件（`docs/plans/`）
+1. **優先修正**：新聞摘要品質優化（依 `docs/plans/2026-03-05-news-summary-quality.md`）
+2. **Phase 5 準備**：Docker / Railway 部署（Task 7.1/7.2 已取消，策略欄位由 `strategy_node` 獨立維護）
+3. **Phase 5 功能規劃**：監控告警 / 定時排程 / 多股票批次分析

@@ -25,6 +25,13 @@ interface AnalyzeResponse {
   errors: ErrorDetail[]
 }
 
+interface CleanedNewsView {
+  date: string
+  title: string
+  mentioned_numbers: string[]
+  sentiment_label: 'positive' | 'neutral' | 'negative'
+}
+
 const STRATEGY_LABEL: Record<string, string> = {
   short_term: '短線操作',
   mid_term: '中線佈局',
@@ -43,6 +50,18 @@ const SIGNAL_CLASS: Record<string, string> = {
   sideways: 'bg-slate-100 text-slate-700',
 }
 
+const SENTIMENT_LABEL: Record<string, string> = {
+  positive: '偏正向',
+  neutral: '中性',
+  negative: '偏負向',
+}
+
+const SENTIMENT_CLASS: Record<string, string> = {
+  positive: 'bg-emerald-100 text-emerald-800',
+  neutral: 'bg-slate-100 text-slate-700',
+  negative: 'bg-rose-100 text-rose-800',
+}
+
 const ANALYSIS_PATH = [
   '接收查詢：輸入股票代碼',
   '抓取股價快照完成',
@@ -50,6 +69,56 @@ const ANALYSIS_PATH = [
   '提取關鍵數字與情緒標籤完成',
   '輸出分析結果',
 ]
+
+function formatVolume(value: unknown): string {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—'
+  }
+  return new Intl.NumberFormat('zh-TW').format(value)
+}
+
+function getTaiwanTickSize(price: number): number {
+  if (price < 10) return 0.01
+  if (price < 50) return 0.05
+  if (price < 100) return 0.1
+  if (price < 500) return 0.5
+  if (price < 1000) return 1
+  return 5
+}
+
+function decimalPlaces(step: number): number {
+  const stepText = step.toString()
+  const dotIndex = stepText.indexOf('.')
+  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1
+}
+
+function formatPrice(value: unknown, symbol?: unknown): string {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—'
+  }
+
+  const symbolText = typeof symbol === 'string' ? symbol.toUpperCase() : ''
+  const isTaiwanStock = symbolText.endsWith('.TW') || symbolText.endsWith('.TWO')
+
+  if (isTaiwanStock && value > 0) {
+    const tick = getTaiwanTickSize(value)
+    const normalized = Math.round((value + Number.EPSILON) / tick) * tick
+    const digits = decimalPlaces(tick)
+    return normalized.toFixed(digits)
+  }
+
+  return new Intl.NumberFormat('zh-TW', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  }).format(value)
+}
+
+function mapVolumeSource(value: unknown): string {
+  if (value === 'realtime') return '即時成交量'
+  if (value === 'history_fallback') return '歷史資料回填'
+  if (value === 'unavailable') return '暫無資料'
+  return '未知來源'
+}
 
 function App() {
   const [symbol, setSymbol] = useState('2330.TW')
@@ -95,6 +164,35 @@ function App() {
 
   const firstError = result?.errors?.[0]
   const snapshot = result?.snapshot ?? {}
+
+  const cleanedNewsView = useMemo<CleanedNewsView | null>(() => {
+    if (!result?.cleaned_news || typeof result.cleaned_news !== 'object') {
+      return null
+    }
+
+    const rawDate = result.cleaned_news.date
+    const rawTitle = result.cleaned_news.title
+    const rawNumbers = result.cleaned_news.mentioned_numbers
+    const rawSentiment = result.cleaned_news.sentiment_label
+
+    const date = typeof rawDate === 'string' ? rawDate : 'unknown'
+    const title = typeof rawTitle === 'string' ? rawTitle : 'unknown'
+    const mentioned_numbers = Array.isArray(rawNumbers)
+      ? rawNumbers.filter((value): value is string => typeof value === 'string')
+      : []
+
+    const sentiment_label: CleanedNewsView['sentiment_label'] =
+      rawSentiment === 'positive' || rawSentiment === 'neutral' || rawSentiment === 'negative'
+        ? rawSentiment
+        : 'neutral'
+
+    return {
+      date,
+      title,
+      mentioned_numbers,
+      sentiment_label,
+    }
+  }, [result?.cleaned_news])
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
@@ -191,15 +289,15 @@ function App() {
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-500">現價</dt>
-                  <dd className="font-medium">
-                    {snapshot.current_price != null ? `${snapshot.current_price}` : '—'}
-                  </dd>
+                  <dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-500">成交量</dt>
-                  <dd className="font-medium">
-                    {snapshot.volume != null ? `${snapshot.volume}` : '—'}
-                  </dd>
+                  <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">成交量來源</dt>
+                  <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
                 </div>
               </dl>
             ) : (
@@ -208,12 +306,34 @@ function App() {
           </article>
 
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="text-sm font-semibold text-slate-800">AI 萃取純數據摘要</h2>
+            <h2 className="text-sm font-semibold text-slate-800">新聞重點摘要</h2>
             {result ? (
-              result.cleaned_news ? (
-                <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">
-                  {JSON.stringify(result.cleaned_news, null, 2)}
-                </pre>
+              cleanedNewsView ? (
+                <div className="mt-3 space-y-3 text-sm text-slate-700">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-slate-500">日期：{cleanedNewsView.date === 'unknown' ? '未知' : cleanedNewsView.date}</p>
+                    <span
+                      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[cleanedNewsView.sentiment_label]}`}
+                    >
+                      {SENTIMENT_LABEL[cleanedNewsView.sentiment_label]}
+                    </span>
+                  </div>
+                  <p className="leading-relaxed">{cleanedNewsView.title}</p>
+                  <div>
+                    <p className="mb-1 text-xs font-medium text-slate-500">新聞提到的關鍵數字</p>
+                    {cleanedNewsView.mentioned_numbers.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {cleanedNewsView.mentioned_numbers.map((value, i) => (
+                          <span key={`${value}-${i}`} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                            {value}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400">本則新聞未擷取到關鍵數字。</p>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <p className="mt-3 text-sm text-slate-400">本次無新聞資料可萃取。</p>
               )
@@ -224,7 +344,7 @@ function App() {
         </section>
 
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <h2 className="mb-3 text-sm font-semibold text-slate-800">LLM 分析報告</h2>
+          <h2 className="mb-3 text-sm font-semibold text-slate-800">分析報告</h2>
           {result ? (
             result.analysis_detail ? (
               <div className="space-y-3">
@@ -250,7 +370,7 @@ function App() {
             ) : result.analysis ? (
               <pre className="whitespace-pre-wrap wrap-break-word text-sm text-slate-700 leading-relaxed">{result.analysis}</pre>
             ) : (
-              <p className="text-sm text-slate-400">本次無 LLM 分析結果。</p>
+              <p className="text-sm text-slate-400">本次無分析結果。</p>
             )
           ) : (
             <p className="text-sm text-slate-400">請先執行分析。</p>
@@ -258,7 +378,7 @@ function App() {
         </section>
 
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <h2 className="mb-4 text-sm font-semibold text-slate-800">戰術行動（Action Plan）</h2>
+          <h2 className="mb-4 text-sm font-semibold text-slate-800">投資策略</h2>
           {result ? (
             <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="rounded-lg bg-slate-50 p-3">

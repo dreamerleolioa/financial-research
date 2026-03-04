@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import urllib.error
-import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+
+import httpx
 
 
 @dataclass
@@ -27,11 +28,19 @@ class RssNewsClient:
 
     def fetch_news(self, query: str, max_items: int = 5) -> list[RawNewsItem]:
         """指定查詢字串，回傳至多 max_items 筆新聞。"""
-        url = self._rss_url_template.format(query=urllib.request.quote(query))
+        url = self._rss_url_template.format(query=urllib.parse.quote(query))
         try:
-            with urllib.request.urlopen(url, timeout=self._timeout) as resp:
-                raw_xml = resp.read()
-        except urllib.error.URLError:
+            response = httpx.get(
+                url,
+                timeout=self._timeout,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            raw_xml = response.content
+        except httpx.HTTPError:
+            return []
+
+        if not raw_xml.strip():
             return []
 
         return self._parse_rss(raw_xml, max_items=max_items)
