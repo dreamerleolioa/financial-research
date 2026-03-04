@@ -19,6 +19,12 @@ class AnalyzeResponse(BaseModel):
     snapshot: dict[str, Any] = Field(default_factory=dict)
     analysis: str = ""
     cleaned_news: dict[str, Any] | None = None
+    confidence_score: int | None = None
+    cross_validation_note: str | None = None
+    strategy_type: str | None = None
+    entry_zone: str | None = None
+    stop_loss: str | None = None
+    holding_period: str | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -57,6 +63,15 @@ def analyze(
         "errors": [],
         "requires_news_refresh": False,
         "requires_fundamental_update": False,
+        "technical_context": None,
+        "institutional_context": None,
+        "institutional_flow": None,
+        "strategy_type": None,
+        "entry_zone": None,
+        "stop_loss": None,
+        "holding_period": None,
+        "confidence_score": None,
+        "cross_validation_note": None,
     }
 
     try:
@@ -100,5 +115,11 @@ def analyze(
         snapshot=snapshot,
         analysis=analysis,
         cleaned_news=result.get("cleaned_news"),
+        confidence_score=result.get("confidence_score"),
+        cross_validation_note=result.get("cross_validation_note"),
+        strategy_type=result.get("strategy_type"),
+        entry_zone=result.get("entry_zone"),
+        stop_loss=result.get("stop_loss"),
+        holding_period=result.get("holding_period"),
         errors=response_errors,
     )

@@ -198,3 +198,32 @@ def test_analyze_graph_errors_propagated_to_response() -> None:
     body = response.json()
     error_codes = {item["code"] for item in body["errors"]}
     assert "RSS_FETCH_ERROR" in error_codes
+
+
+def test_analyze_response_includes_strategy_fields() -> None:
+    """AnalyzeResponse 必須包含 strategy/confidence 欄位（值可為 None）。"""
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+            "confidence_score": 65,
+            "cross_validation_note": "三維共振，信心偏高",
+            "strategy_type": "mid_term",
+            "entry_zone": "現價附近分批買進",
+            "stop_loss": "近20日低點 - 3% 或跌破 MA60",
+            "holding_period": "1-3 個月",
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    for field in ["confidence_score", "cross_validation_note", "strategy_type",
+                  "entry_zone", "stop_loss", "holding_period"]:
+        assert field in body, f"Missing field '{field}' in response"
+    assert body["confidence_score"] == 65
+    assert body["strategy_type"] == "mid_term"
