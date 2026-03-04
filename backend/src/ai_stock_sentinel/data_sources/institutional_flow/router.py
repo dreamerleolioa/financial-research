@@ -43,7 +43,7 @@ class InstitutionalFlowRouter:
     def providers(self) -> list[InstitutionalFlowProvider]:
         return list(self._providers)
 
-    def fetch_institutional_flow(self, symbol: str, days: int = 5) -> InstitutionalFlowData:
+    def fetch_institutional_flow(self, symbol: str, days: int = 60) -> InstitutionalFlowData:
         """
         依優先序嘗試 Provider，回傳第一個成功的結果。
         全部失敗時拋出 InstitutionalFlowError（錯誤碼 INSTITUTIONAL_FETCH_ERROR）。

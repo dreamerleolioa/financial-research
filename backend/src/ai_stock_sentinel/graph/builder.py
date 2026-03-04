@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any
+from typing import Any, Callable
 
 from langgraph.graph import END, StateGraph
 
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
+from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
-from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_news_node, judge_node, preprocess_node, score_node, strategy_node
+from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_institutional_node, fetch_news_node, judge_node, preprocess_node, score_node, strategy_node
 from ai_stock_sentinel.graph.state import GraphState
 
 MAX_RETRIES = 3
@@ -21,6 +22,7 @@ def build_graph(
     analyzer: StockAnalyzer,
     rss_client: RssNewsClient | None = None,
     news_cleaner: FinancialNewsCleaner | None = None,
+    institutional_fetcher: Callable[[str], dict[str, Any]] | None = None,
     max_retries: int = MAX_RETRIES,
     _force_insufficient: bool = False,
 ):
@@ -32,11 +34,13 @@ def build_graph(
     """
     _rss_client = rss_client or RssNewsClient()
     _news_cleaner = news_cleaner or FinancialNewsCleaner()
+    _institutional_fetcher = institutional_fetcher or fetch_institutional_flow
 
     graph = StateGraph(GraphState)
 
     # 節點
     graph.add_node("crawl", partial(crawl_node, crawler=crawler))
+    graph.add_node("fetch_institutional", partial(fetch_institutional_node, fetcher=_institutional_fetcher))
     graph.add_node("clean", partial(clean_node, news_cleaner=_news_cleaner))
     graph.add_node("preprocess", preprocess_node)
     graph.add_node("score", score_node)
@@ -60,7 +64,8 @@ def build_graph(
 
     # 邊
     graph.set_entry_point("crawl")
-    graph.add_edge("crawl", "judge")
+    graph.add_edge("crawl", "fetch_institutional")
+    graph.add_edge("fetch_institutional", "judge")
 
     def _route(state: GraphState) -> str:
         if state["data_sufficient"]:

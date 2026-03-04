@@ -86,6 +86,32 @@ def test_graph_cleans_news_when_news_content_provided() -> None:
     mock_cleaner.clean.assert_called_once()
 
 
+def test_graph_fetches_institutional_flow() -> None:
+    """graph 執行後，institutional_flow 應來自 fetcher 的回傳值。"""
+    mock_crawler = MagicMock()
+    mock_crawler.fetch_basic_snapshot.return_value = _make_stock_snapshot()
+    mock_analyzer = MagicMock()
+    mock_analyzer.analyze.return_value = AnalysisDetail(summary="分析結果")
+    mock_fetcher = MagicMock(return_value={
+        "symbol": "2330.TW",
+        "foreign_buy": 500.0,
+        "flow_label": "institutional_accumulation",
+        "source_provider": "twse",
+    })
+
+    graph = build_graph(
+        crawler=mock_crawler,
+        analyzer=mock_analyzer,
+        institutional_fetcher=mock_fetcher,
+        max_retries=0,
+    )
+    result = graph.invoke(_initial_state())
+
+    assert result["institutional_flow"] is not None
+    assert result["institutional_flow"]["flow_label"] == "institutional_accumulation"
+    assert any(call.args == ("2330.TW",) for call in mock_fetcher.mock_calls)
+
+
 def test_graph_loop_guard_stops_after_max_retries() -> None:
     """Judge 永遠說 insufficient 時，graph 應在 max_retries 後停止並繼續執行 analyze。"""
     mock_crawler = MagicMock()

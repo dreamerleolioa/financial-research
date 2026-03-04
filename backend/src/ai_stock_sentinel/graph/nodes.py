@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -15,6 +15,21 @@ from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
+
+
+def fetch_institutional_node(
+    state: GraphState,
+    *,
+    fetcher: Callable[[str], dict[str, Any]],
+) -> dict[str, Any]:
+    """呼叫 fetcher 取得籌碼資料，寫入 institutional_flow。
+
+    fetcher 為可呼叫物件，接受 symbol str，回傳 dict（成功）或含 'error' 鍵的 dict（失敗）。
+    失敗時仍寫入 institutional_flow（帶 error 欄位），流程不中斷。
+    """
+    symbol = state["symbol"]
+    flow = fetcher(symbol)
+    return {"institutional_flow": flow}
 
 
 def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]:
@@ -43,8 +58,15 @@ def _check_sufficiency(state: GraphState) -> tuple[bool, bool, bool]:
     if state["snapshot"] is None:
         requires_fundamental_update = True
 
-    # 規則 2 & 3：新聞相關（只在有提供新聞時才判斷）
+    # 規則 2 & 3：新聞相關
     cleaned_news = state["cleaned_news"]
+    news_content = state.get("news_content")
+
+    # 規則 2：完全沒有新聞資料（無清潔結果也無原文）
+    if cleaned_news is None and not news_content:
+        requires_news_refresh = True
+
+    # 規則 3 & 4：已有 cleaned_news 時，判斷新鮮度與數字完整性
     if cleaned_news is not None:
         # 規則 2：新聞過舊
         news_date_str = cleaned_news.get("date")
@@ -66,7 +88,7 @@ def _check_sufficiency(state: GraphState) -> tuple[bool, bool, bool]:
 
 
 def judge_node(state: GraphState) -> dict[str, Any]:
-    """判斷資料是否充分：snapshot 完整、新聞新鮮（≤7天）且含數字。"""
+    """判斷資料是否充分：snapshot 完整，且至少有可用新聞資料（原文或 cleaned_news）。"""
     data_sufficient, requires_news_refresh, requires_fundamental_update = _check_sufficiency(state)
     return {
         "data_sufficient": data_sufficient,

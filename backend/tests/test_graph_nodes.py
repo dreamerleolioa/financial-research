@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 from ai_stock_sentinel.data_sources.rss_news_client import RawNewsItem
-from ai_stock_sentinel.graph.nodes import clean_node, crawl_node, fetch_news_node, judge_node, analyze_node
+from ai_stock_sentinel.graph.nodes import clean_node, crawl_node, fetch_institutional_node, fetch_news_node, judge_node, analyze_node
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import StockSnapshot
 
@@ -64,12 +64,13 @@ def test_crawl_node_returns_snapshot() -> None:
     assert result["errors"] == []
 
 
-def test_judge_node_stub_always_sufficient() -> None:
+def test_judge_node_requires_news_when_none_available() -> None:
     state = _base_state(snapshot=_make_snapshot())
 
     result = judge_node(state)
 
-    assert result["data_sufficient"] is True
+    assert result["data_sufficient"] is False
+    assert result["requires_news_refresh"] is True
 
 
 def test_analyze_node_returns_analysis_string() -> None:
@@ -153,11 +154,24 @@ def test_judge_node_insufficient_when_no_mentioned_numbers() -> None:
     assert result["requires_news_refresh"] is True
 
 
-def test_judge_node_sufficient_when_no_news_provided() -> None:
-    """cleaned_news 為 None 時（未提供新聞），不因此判定為 insufficient。"""
+def test_judge_node_insufficient_when_no_news_provided() -> None:
+    """未提供新聞（cleaned_news/news_content 皆無）時，應要求 refresh。"""
     state = _base_state(snapshot=_make_snapshot(), cleaned_news=None)
     result = judge_node(state)
+    assert result["data_sufficient"] is False
+    assert result["requires_news_refresh"] is True
+
+
+def test_judge_node_sufficient_when_news_content_provided_without_cleaned_news() -> None:
+    """有 news_content 但尚未 cleaned 時，允許進到 clean_node。"""
+    state = _base_state(
+        snapshot=_make_snapshot(),
+        cleaned_news=None,
+        news_content="2026-03-04 台股焦點新聞",
+    )
+    result = judge_node(state)
     assert result["data_sufficient"] is True
+    assert result["requires_news_refresh"] is False
 
 
 # ── fetch_news_node ──────────────────────────────────────────────────────────
@@ -271,3 +285,42 @@ def test_fetch_news_node_uses_symbol_prefix_as_query() -> None:
     fetch_news_node(state, rss_client=mock_rss)
 
     mock_rss.fetch_news.assert_called_once_with(query="2330")
+
+
+# ── fetch_institutional_node ─────────────────────────────────────────────────
+
+def test_fetch_institutional_node_writes_flow_to_state() -> None:
+    """成功時，institutional_flow 應被寫入 state。"""
+    mock_flow_data = {
+        "symbol": "2330.TW",
+        "foreign_buy": 1000.0,
+        "investment_trust_buy": 200.0,
+        "dealer_buy": 50.0,
+        "margin_delta": None,
+        "flow_label": "institutional_accumulation",
+        "source_provider": "twse",
+    }
+    mock_fetcher = MagicMock(return_value=mock_flow_data)
+
+    state = _base_state(snapshot=_make_snapshot())
+    result = fetch_institutional_node(state, fetcher=mock_fetcher)
+
+    assert result["institutional_flow"] is not None
+    assert result["institutional_flow"]["flow_label"] == "institutional_accumulation"
+    mock_fetcher.assert_called_once_with("2330.TW")
+
+
+def test_fetch_institutional_node_stores_error_dict_on_failure() -> None:
+    """fetcher 失敗回傳 error dict 時，仍寫入 institutional_flow，流程不中斷。"""
+    mock_flow_data = {
+        "symbol": "2330.TW",
+        "error": "INSTITUTIONAL_FETCH_ERROR",
+        "error_message": "all providers failed",
+    }
+    mock_fetcher = MagicMock(return_value=mock_flow_data)
+
+    state = _base_state(snapshot=_make_snapshot())
+    result = fetch_institutional_node(state, fetcher=mock_fetcher)
+
+    assert result["institutional_flow"]["error"] == "INSTITUTIONAL_FETCH_ERROR"
+    assert result.get("errors", []) == []  # 不額外累積 errors，flow 本身帶 error 欄位

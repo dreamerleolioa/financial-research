@@ -106,7 +106,7 @@
   - 補一個上櫃標的 smoke test（例：`6488.TWO`）驗證分流生效
   - 記錄資料源選擇依據與限制（更新頻率、限流、欄位完整度）
 - **DoD**
-  - 可抓到 2330 最近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`
+  - 可抓到 2330 最近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`（僅 smoke test；正式分析視窗至少 `days>=20`，建議 `days=60`）
   - 上市/上櫃路徑皆可運作（至少各 1 檔驗證）
   - Provider Router 可在 Primary 失敗時依固定優先序自動切換 Fallback
   - 不同資料源皆輸出一致 schema；欄位漂移不造成流程中斷

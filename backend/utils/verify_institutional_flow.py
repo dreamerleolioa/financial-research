@@ -6,7 +6,7 @@
     cd backend
     python utils/verify_institutional_flow.py
     python utils/verify_institutional_flow.py --symbol 6488.TWO
-    python utils/verify_institutional_flow.py --symbol 2330.TW --days 3
+    python utils/verify_institutional_flow.py --symbol 2330.TW --days 5  # smoke test
 
 環境變數：
     FINMIND_API_TOKEN：FinMind API Token（選填，免費方案有限流）
@@ -91,7 +91,7 @@ def verify_symbol(symbol: str, days: int, router: InstitutionalFlowRouter) -> bo
 def main() -> None:
     parser = argparse.ArgumentParser(description="驗證法人籌碼資料源")
     parser.add_argument("--symbol", default=None, help="指定單一股票代碼（預設跑 2330.TW + 6488.TWO）")
-    parser.add_argument("--days", type=int, default=5, help="回溯天數（預設 5）")
+    parser.add_argument("--days", type=int, default=60, help="回溯天數（預設 60；5 建議僅 smoke test）")
     args = parser.parse_args()
 
     router = _build_router()

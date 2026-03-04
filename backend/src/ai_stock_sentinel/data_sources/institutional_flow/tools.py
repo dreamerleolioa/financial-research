@@ -4,7 +4,7 @@ fetch_institutional_flow：高階工具函式，封裝 Router 邏輯，供 LangG
 使用方式：
     from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 
-    data = fetch_institutional_flow("2330.TW", days=5)
+    data = fetch_institutional_flow("2330.TW", days=60)
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def set_router(router: InstitutionalFlowRouter) -> None:
 
 def fetch_institutional_flow(
     symbol: str,
-    days: int = 5,
+    days: int = 60,
     *,
     router: InstitutionalFlowRouter | None = None,
 ) -> dict[str, Any]:
@@ -62,7 +62,7 @@ def fetch_institutional_flow(
 
     Args:
         symbol: 股票代碼（例如 '2330.TW'、'6488.TWO'）
-        days: 回溯天數（預設 5）
+        days: 回溯天數（預設 60；`days=5` 建議僅用於資料源 smoke test）
         router: 若傳入則使用指定 Router（測試/自訂用）
 
     Returns:

@@ -3,7 +3,7 @@
 > 日期：2026-03-04  
 > 狀態：Draft v2.1  
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖  
-> 更新摘要：分析維度從「全方位數據偵察」延伸到「可執行操作策略」（入手價／停損價／持股期間）
+> 更新摘要：分析維度從「全方位數據偵察」延伸到「可執行操作策略」（入手價／停損價／持股期間），並新增技術術語語義化翻譯層
 
 ## 1. 目標與方向
 
@@ -43,7 +43,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
   - 產出：可供分析的乾淨 JSON
 
 - **Analysis Layer**
-  - 責任：事實萃取、情緒字眼標記、指標計算、結論生成
+  - 責任：事實萃取、情緒字眼標記、指標計算、結論生成、語義化翻譯（術語→直白中文）
   - 產出：可解釋分析結果（含信心分數與依據）
 
 - **API Layer（Python FastAPI / Node BFF）**
@@ -164,6 +164,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 - `news_sentiment` 由 Cleaner 結構化輸出（`sentiment_label: positive / negative / neutral`），**不由 LLM 在分析時自行判斷**
 - `institutional_flow` 由籌碼工具計算（`foreign_net_cumulative` 的正負與連續天數）
 - Prompt 接收的是已結構化的結論欄位，LLM 只負責邏輯推理，不負責數值判斷
+- Action Plan 欄位（`entry_zone` / `stop_loss` / `holding_period`）必須由 Python 先計算出具體價位或價位區間，LLM 僅做語句整理
 
 **典型衝突情境（訊號背離）**：
 
@@ -219,7 +220,7 @@ def adjust_confidence_by_divergence(
 
 ---
 
-### 分析模式二：技術指標定性化（Quant to Qual）
+### 分析模式二：技術指標定性化與語義化翻譯層（Quant to Qual + Semantic Translation）
 
 > 在呼叫 LLM 分析前，必須先透過 `preprocess_node` 將數值轉換為「敘事背景」。
 
@@ -232,10 +233,34 @@ def adjust_confidence_by_divergence(
 - 同時產生 `technical_context` 與 `institutional_context`
 - 由 Python rule-based 生成「敘事背景」，禁止呼叫 LLM
 
+**語義化翻譯層（新增硬需求）**：
+- 目的：將 RSI、BIAS、MA、Institutional Flow 等術語映射為投資者可讀的直白中文
+- 實作位置：`preprocess_node` 內的 `quantify_to_narrative()`，先做 mapping 再產生敘事
+- 規範：映射表由 Python 常數管理（可測試、可版本化），禁止在 Prompt 內臨時翻譯
+- 規範：語義判斷閾值（如 RSI 超買/超賣、BIAS 過熱/過冷）必須由 Python rule-based 固定，禁止 LLM 動態改寫
+- 規範：前端紅綠燈與報告敘事必須共用同一組 Python 規則輸出，避免 UI 與報告語義衝突
+
+| 技術術語 | 中文語義標籤（對外） |
+|----------|----------------------|
+| RSI | 買賣氣場（動能強弱） |
+| BIAS | 股價位階（月線距離） |
+| MA5/20/60 | 平均成本帶（短中長均線） |
+| Institutional Flow | 法人資金流向 |
+
 ```python
+TERM_ALIAS = {
+  "rsi14": "買賣氣場（RSI）",
+  "bias_ma20": "股價位階（BIAS）",
+  "ma5": "短線平均成本（MA5）",
+  "ma20": "月線平均成本（MA20）",
+  "ma60": "季線平均成本（MA60）",
+  "institutional_flow": "法人資金流向",
+}
+
 def quantify_to_narrative(technical: dict) -> str:
     """
-    將技術指標數值轉換為 LLM 可直接理解的敘事描述。
+  將技術指標數值轉換為 LLM 可直接理解的敘事描述，
+  並附上語義化中文標籤（術語翻譯層）。
     純 rule-based，100% 可測試，不依賴 LLM。
     """
     lines = []
@@ -243,20 +268,20 @@ def quantify_to_narrative(technical: dict) -> str:
     # 乖離率（BIAS）
     bias = technical.get("bias_ma20", 0)
     if bias < -5:
-        lines.append(f"股價低於月線（MA20）{abs(bias):.1f}%，處短線弱勢格局，乖離率偏大，存在超賣反彈期待")
+        lines.append(f"{TERM_ALIAS['bias_ma20']}：股價低於月線（MA20）{abs(bias):.1f}%，處短線弱勢格局，乖離率偏大，存在超賣反彈期待")
     elif bias > 8:
-        lines.append(f"股價高於月線（MA20）{bias:.1f}%，乖離率偏高，注意短線回調風險")
+        lines.append(f"{TERM_ALIAS['bias_ma20']}：股價高於月線（MA20）{bias:.1f}%，乖離率偏高，注意短線回調風險")
     else:
-        lines.append(f"股價與月線（MA20）乖離率 {bias:.1f}%，屬正常區間")
+        lines.append(f"{TERM_ALIAS['bias_ma20']}：股價與月線（MA20）乖離率 {bias:.1f}%，屬正常區間")
 
     # RSI
     rsi = technical.get("rsi14", 50)
     if rsi > 70:
-        lines.append(f"RSI14 為 {rsi:.1f}，進入超買區間（>70），短線動能可能趨緩")
+        lines.append(f"{TERM_ALIAS['rsi14']}：{rsi:.1f}，進入超買區間（>70），短線動能可能趨緩")
     elif rsi < 30:
-        lines.append(f"RSI14 為 {rsi:.1f}，進入超賣區間（<30），短線存在反彈訊號")
+        lines.append(f"{TERM_ALIAS['rsi14']}：{rsi:.1f}，進入超賣區間（<30），短線存在反彈訊號")
     else:
-        lines.append(f"RSI14 為 {rsi:.1f}，處於中性區間（30~70）")
+        lines.append(f"{TERM_ALIAS['rsi14']}：{rsi:.1f}，處於中性區間（30~70）")
 
     # 均線多空排列
     ma5 = technical.get("ma5", 0)
@@ -285,7 +310,7 @@ def quantify_to_narrative(technical: dict) -> str:
 
 > 教 AI 識別「誰」在影響股價，並判斷籌碼結構健康度。
 
-**⚠️ 前置條件**：此模式依賴三大法人每日買賣超資料（`foreign_net`、`trust_net`、`dealer_net`）與融資融券餘額，**需先確認資料源可用性**（建議 `twstock` 或公開資訊觀測站 OpenAPI），確認後方可實作。
+**⚠️ 前置條件**：此模式依賴三大法人每日買賣超資料（`foreign_net`、`trust_net`、`dealer_net`）與融資融券餘額，正式採用雙軌策略：`FinMindProvider` 為主來源，`TwseOpenApiProvider` 為官方備援（上櫃由 `TpexProvider` 補齊）。
 
 ### 籌碼資料源策略（Provider Abstraction）
 
@@ -317,9 +342,10 @@ class InstitutionalFlowProvider(Protocol):
 - 欄位漂移（field drift）需告警並保留核心欄位穩定輸出（缺漏欄位以預設值/nullable 表示）
 
 **最小可用驗收（MVP）**：
-- 可對 `2330.TW`（映射 `2330`）抓到近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`
+- 可對 `2330.TW`（映射 `2330`）抓到近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`（僅連通性驗收）
 - 可對至少一檔上櫃標的（例：`6488.TWO`）完成路徑驗證
 - 失敗時回傳可追蹤錯誤碼（`INSTITUTIONAL_FETCH_ERROR`）且不中斷主流程
+- 正式分析（flow_label / confidence / strategy）需使用至少 20 日資料視窗，建議 60 日
 
 **籌碼集中度判斷模型**：
 
@@ -336,7 +362,7 @@ class InstitutionalFlowProvider(Protocol):
 ```json
 {
   "symbol": "2330.TW",
-  "period_days": 5,
+  "period_days": 60,
   "foreign_net_cumulative": 15200,
   "trust_net_cumulative": -3100,
   "dealer_net_cumulative": 800,
@@ -412,6 +438,7 @@ class InstitutionalFlowProvider(Protocol):
 
 - **法人籌碼查詢工具** `fetch_institutional_flow(symbol, days)`
   - 輸入：股票代碼、回溯天數
+  - 視窗建議：`days=5` 用於資料源 smoke test；正式分析至少 `days>=20`，建議 `days=60`
   - 輸出：`{ foreign_net_cumulative, trust_net_cumulative, margin_balance_delta }`
 
 ### 輸出結構（升級後）
@@ -424,8 +451,8 @@ class InstitutionalFlowProvider(Protocol):
   "technical_signal": "bullish | bearish | sideways",
   "institutional_flow": "institutional_accumulation | retail_chasing | distribution | neutral",
   "strategy_type": "short_term | mid_term | defensive_wait",
-  "entry_zone": "800-820",
-  "stop_loss": "780（破 MA60 或近20日低點-3%）",
+  "entry_zone": "892.0-905.0（support_20d ~ MA20）",
+  "stop_loss": "865.4（近20日低點892.2 × 0.97，或跌破 MA60=870.0）",
   "holding_period": "1-2 週 | 1-3 個月",
   "action_plan": {
     "action": "觀望 | 分批佈局 | 持股續抱",
@@ -436,6 +463,50 @@ class InstitutionalFlowProvider(Protocol):
   "cross_validation_note": "外資連買 3 日，與新聞利多訊號一致，信心分數維持高位",
   "risks": ["RSI 接近超買區間 (>70)，短線需注意回測"],
   "data_sources": ["google-news-rss", "yfinance", "twse-openapi"]
+}
+```
+
+### JSON Schema 範例（AnalyzeResponse 重點欄位）
+
+```json
+{
+  "type": "object",
+  "required": [
+    "summary",
+    "sentiment_label",
+    "confidence_score",
+    "technical_signal",
+    "institutional_flow",
+    "strategy_type",
+    "entry_zone",
+    "stop_loss",
+    "holding_period",
+    "cross_validation_note",
+    "risks",
+    "data_sources"
+  ],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1 },
+    "sentiment_label": { "enum": ["positive", "negative", "neutral"] },
+    "confidence_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "technical_signal": { "enum": ["bullish", "bearish", "sideways"] },
+    "institutional_flow": {
+      "enum": ["institutional_accumulation", "retail_chasing", "distribution", "neutral"]
+    },
+    "strategy_type": { "enum": ["short_term", "mid_term", "defensive_wait"] },
+    "entry_zone": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d+)?-\\d+(\\.\\d+)?（.+）$"
+    },
+    "stop_loss": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d+)?（.+）$"
+    },
+    "holding_period": { "type": "string", "minLength": 2 },
+    "cross_validation_note": { "type": "string", "minLength": 1 },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "data_sources": { "type": "array", "items": { "type": "string" } }
+  }
 }
 ```
 
@@ -456,8 +527,9 @@ class InstitutionalFlowProvider(Protocol):
 > - `defensive_wait`：訊號衝突或風險過高時採觀望
 
 > **策略價格規則（新增，rule-based）**
-> - `entry_zone`：若 BIAS 過高，建議「拉回 MA20 入手」；否則以 `support_20d ~ MA20` 組區間
-> - `stop_loss`：預設採 `近20日低點 × 0.97`，並加註 `破 MA60 停損`
+> - `entry_zone`：若 BIAS 過高，建議「拉回 MA20 入手」；否則以 `support_20d ~ MA20` 組區間，輸出必須為具體數值區間（例：`892.0-905.0`）
+> - `stop_loss`：預設採 `近20日低點 × 0.97`，並加註 `破 MA60 停損`，輸出必須為具體價位（例：`865.4`）
+> - `holding_period`：依 `strategy_type` 輸出可執行時間窗（例：`7-10 交易日`、`4-8 週`），不可只寫「短期/中期」
 > - 上述欄位必須由 Python 工具先算出硬數值，再交由 LLM 做文字說明
 
 ---
@@ -492,6 +564,13 @@ class InstitutionalFlowProvider(Protocol):
 - 顯示資料來源與時間戳
 - 明確標示「推論」與「事實」區塊
 - 長流程分析需有進度狀態（loading / step logs）
+
+**紅綠燈標籤定義（新增）**：
+- 🟢 機會：`rsi < 30` 且 `institutional_flow = institutional_accumulation` 且 `confidence_score > 70`
+- 🔴 過熱/風險：`rsi > 70` 且 `institutional_flow = distribution`
+- 🔵 中性：其餘狀況
+
+> 上述燈號判斷由 Python rule-based 產生，前端僅做顯示。
 
 ---
 
@@ -567,17 +646,23 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 - yfinance 抓取股票快照
 - 新聞清潔 JSON（date/title/numbers/sentiment）
 
-### Phase 2（下一步）
+### Phase 2（已完成）
 
 - 導入 LangGraph，建立「資料不足→補抓」回圈
 - 加入新聞 RSS 抓取
 - 加入計算工具（本益比位階、乖離率）
 
-### Phase 3（前端）
+### Phase 3（已完成：前端初步串接）
 
 - React 輸入框 + 分析結果頁
 - 信心指數與雜訊對比元件
 - Agent 分析路徑可視化
+
+### Phase 4（下一步：深度分析升級）
+
+- 技術術語語義化翻譯層（RSI/BIAS/MA/Institutional Flow）
+- Action Plan 強制輸出具體價位（entry/stop/holding）
+- 籌碼資料雙軌穩定化（FinMind Primary + TWSE OpenAPI Fallback）
 
 ---
 
@@ -586,8 +671,9 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 - 能輸入股票代碼並觸發完整分析流程
 - 當資料不足時，系統會自動補抓後再分析
 - **技術面**：必須包含由 Python 函式計算後的 MA5/20/60、BIAS、RSI14、成交量變化數值
+- **語義化翻譯層**：必須將 RSI、BIAS、MA、Institutional Flow 映射為直白中文敘事（由 `preprocess_node` rule-based 產生）
 - **技術位階**：必須包含 `high_20d`、`low_20d`、`support_20d`、`resistance_20d`
-- **籌碼面**：必須包含三大法人合計買賣超方向及融資融券變化
+- **籌碼面**：必須採 `FinMindProvider`（Primary）+ `TwseOpenApiProvider`（Fallback）雙軌策略，並包含三大法人合計買賣超方向及融資融券變化
 - **多維交叉驗證**：當新聞訊號與法人動向背離時，系統須在 `cross_validation_note` 中明確標記警示
 - 輸出必須包含：
   - `summary`：去情緒化事實型摘要
@@ -595,7 +681,9 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
   - `technical_signal`：bullish / bearish / sideways（必填）
   - `institutional_flow`：institutional_accumulation / retail_chasing / distribution / neutral（必填）
   - `strategy_type`：short_term / mid_term / defensive_wait（必填）
-  - `entry_zone`、`stop_loss`、`holding_period`（必填）
+  - `entry_zone`（必填，具體價格區間）
+  - `stop_loss`（必填，具體停損價位，例：近20日低點 -3%）
+  - `holding_period`（必填，具體時間窗）
   - `confidence_score`：0–100，反映三維訊號一致性
   - `cross_validation_note`：說明三維訊號的交叉驗證結論
   - `risks`：風險提示列表

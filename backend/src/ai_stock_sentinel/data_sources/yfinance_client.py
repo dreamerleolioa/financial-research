@@ -11,11 +11,11 @@ class YFinanceCrawler:
     def fetch_basic_snapshot(self, symbol: str = "2330.TW") -> StockSnapshot:
         ticker = yf.Ticker(symbol)
         info = ticker.fast_info
-        history = ticker.history(period="5d", interval="1d")
+        history = ticker.history(period="3mo", interval="1d")
 
         recent_closes = []
         if not history.empty and "Close" in history.columns:
-            recent_closes = [float(value) for value in history["Close"].dropna().tolist()[-5:]]
+            recent_closes = [float(value) for value in history["Close"].dropna().tolist()]
 
         return StockSnapshot(
             symbol=symbol,
