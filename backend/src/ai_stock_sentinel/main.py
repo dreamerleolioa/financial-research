@@ -24,7 +24,21 @@ def build_graph_deps():
     settings = load_settings()
 
     llm = None
-    if settings.openai_api_key:
+
+    # 優先用 Anthropic
+    if settings.anthropic_api_key:
+        try:
+            from langchain_anthropic import ChatAnthropic
+            llm = ChatAnthropic(
+                api_key=settings.anthropic_api_key,
+                model=settings.anthropic_model,
+                temperature=0.2,
+            )
+        except ImportError:
+            pass  # langchain-anthropic 未安裝，繼續嘗試 OpenAI
+
+    # Fallback 到 OpenAI
+    if llm is None and settings.openai_api_key:
         from langchain_openai import ChatOpenAI
 
         llm = ChatOpenAI(
@@ -36,7 +50,8 @@ def build_graph_deps():
     analyzer = LangChainStockAnalyzer(llm=llm)
     crawler = YFinanceCrawler()
     rss_client = RssNewsClient()
-    news_cleaner = FinancialNewsCleaner(model=settings.openai_model)
+    model_name = settings.anthropic_model if settings.anthropic_api_key else settings.openai_model
+    news_cleaner = FinancialNewsCleaner(model=model_name)
     return crawler, analyzer, rss_client, news_cleaner
 
 
