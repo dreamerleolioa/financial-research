@@ -11,11 +11,24 @@ interface AnalysisDetail {
   technical_signal: 'bullish' | 'bearish' | 'sideways'
 }
 
+interface CleanedNewsQuality {
+  quality_score: number
+  quality_flags: string[]
+}
+
+interface NewsDisplay {
+  title: string
+  date: string | null
+  source_url: string | null
+}
+
 interface AnalyzeResponse {
   snapshot: Record<string, unknown>
   analysis: string
   analysis_detail: AnalysisDetail | null
   cleaned_news: Record<string, unknown> | null
+  cleaned_news_quality: CleanedNewsQuality | null
+  news_display: NewsDisplay | null
   confidence_score: number | null
   cross_validation_note: string | null
   strategy_type: 'short_term' | 'mid_term' | 'defensive_wait' | null
@@ -23,13 +36,6 @@ interface AnalyzeResponse {
   stop_loss: string | null
   holding_period: string | null
   errors: ErrorDetail[]
-}
-
-interface CleanedNewsView {
-  date: string
-  title: string
-  mentioned_numbers: string[]
-  sentiment_label: 'positive' | 'neutral' | 'negative'
 }
 
 const STRATEGY_LABEL: Record<string, string> = {
@@ -149,6 +155,8 @@ function App() {
         analysis: '',
         analysis_detail: null,
         cleaned_news: null,
+        cleaned_news_quality: null,
+        news_display: null,
         confidence_score: null,
         cross_validation_note: null,
         strategy_type: null,
@@ -164,35 +172,6 @@ function App() {
 
   const firstError = result?.errors?.[0]
   const snapshot = result?.snapshot ?? {}
-
-  const cleanedNewsView = useMemo<CleanedNewsView | null>(() => {
-    if (!result?.cleaned_news || typeof result.cleaned_news !== 'object') {
-      return null
-    }
-
-    const rawDate = result.cleaned_news.date
-    const rawTitle = result.cleaned_news.title
-    const rawNumbers = result.cleaned_news.mentioned_numbers
-    const rawSentiment = result.cleaned_news.sentiment_label
-
-    const date = typeof rawDate === 'string' ? rawDate : 'unknown'
-    const title = typeof rawTitle === 'string' ? rawTitle : 'unknown'
-    const mentioned_numbers = Array.isArray(rawNumbers)
-      ? rawNumbers.filter((value): value is string => typeof value === 'string')
-      : []
-
-    const sentiment_label: CleanedNewsView['sentiment_label'] =
-      rawSentiment === 'positive' || rawSentiment === 'neutral' || rawSentiment === 'negative'
-        ? rawSentiment
-        : 'neutral'
-
-    return {
-      date,
-      title,
-      mentioned_numbers,
-      sentiment_label,
-    }
-  }, [result?.cleaned_news])
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
@@ -307,32 +286,45 @@ function App() {
 
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
             <h2 className="text-sm font-semibold text-slate-800">新聞重點摘要</h2>
+            {result?.cleaned_news_quality != null &&
+              (result.cleaned_news_quality.quality_score < 60 ||
+                result.cleaned_news_quality.quality_flags.length > 0) && (
+                <p className="mt-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-500">
+                  摘要品質受限
+                </p>
+              )}
             {result ? (
-              cleanedNewsView ? (
-                <div className="mt-3 space-y-3 text-sm text-slate-700">
+              result.news_display ? (
+                <div className="mt-3 space-y-2 text-sm text-slate-700">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs text-slate-500">日期：{cleanedNewsView.date === 'unknown' ? '未知' : cleanedNewsView.date}</p>
-                    <span
-                      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[cleanedNewsView.sentiment_label]}`}
-                    >
-                      {SENTIMENT_LABEL[cleanedNewsView.sentiment_label]}
-                    </span>
-                  </div>
-                  <p className="leading-relaxed">{cleanedNewsView.title}</p>
-                  <div>
-                    <p className="mb-1 text-xs font-medium text-slate-500">新聞提到的關鍵數字</p>
-                    {cleanedNewsView.mentioned_numbers.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {cleanedNewsView.mentioned_numbers.map((value, i) => (
-                          <span key={`${value}-${i}`} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
-                            {value}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-400">本則新聞未擷取到關鍵數字。</p>
+                    <p className="text-xs text-slate-500">
+                      日期：{result.news_display.date ?? '未知'}
+                    </p>
+                    {result.cleaned_news && (
+                      <span
+                        className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          SENTIMENT_CLASS[
+                            (result.cleaned_news.sentiment_label as string) ?? 'neutral'
+                          ] ?? SENTIMENT_CLASS.neutral
+                        }`}
+                      >
+                        {SENTIMENT_LABEL[
+                          (result.cleaned_news.sentiment_label as string) ?? 'neutral'
+                        ] ?? '中性'}
+                      </span>
                     )}
                   </div>
+                  <p className="leading-relaxed">{result.news_display.title}</p>
+                  {result.news_display.source_url && (
+                    <a
+                      href={result.news_display.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block text-xs text-indigo-600 hover:underline"
+                    >
+                      查看原文 →
+                    </a>
+                  )}
                 </div>
               ) : (
                 <p className="mt-3 text-sm text-slate-400">本次無新聞資料可萃取。</p>
