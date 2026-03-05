@@ -214,6 +214,15 @@
 - [ ] CS-4：信心分數定義 `data_confidence`（資料完整度，0–100）與 `signal_confidence`（訊號強度，0–100）分開回傳，前端可顯示「資料不足」提示而非固定 50
 - [ ] CS-5：補齊單元測試（新規則覆蓋 + 回歸既有四情境）
 
+### 後續優化（多篇新聞情緒彙整）
+
+> **背景**：目前 `fetch_news_node` 抓回多篇但只取第一篇組 `news_content` 送 LLM 清潔，情緒標籤代表性不足。新聞雖為落後指標，但多篇彙整後的市場情緒仍有參考價值。
+
+- [ ] `fetch_news_node` 改取前 N 篇（建議 3~5 篇）組成多段 `news_content`，每篇以結構化標籤分隔
+- [ ] `clean_node` / `FinancialNewsCleaner` 支援多篇輸入，輸出彙整後的 `sentiment_label`（majority vote 或加權）
+- [ ] `news_display` 改為陣列（`news_display_items: list[NewsDisplay]`），前端顯示多篇標題+連結
+- [ ] 補齊相關測試與 API 欄位更新
+
 ### 下一輪修正（Action Plan 燈號）
 
 > 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）  
