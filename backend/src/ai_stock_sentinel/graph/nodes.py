@@ -165,11 +165,11 @@ def score_node(state: GraphState) -> dict[str, Any]:
     if cleaned_news:
         news_sentiment = cleaned_news.get("sentiment_label") or "neutral"
 
-    # flow_label
+    # flow_label — 無 API key 時 inst_flow_data 含 'error' 鍵，視為 unknown
     inst_flow_data = state.get("institutional_flow")
-    inst_flow: str = "neutral"
-    if inst_flow_data:
-        inst_flow = inst_flow_data.get("flow_label") or "neutral"
+    inst_flow: str = "unknown"
+    if inst_flow_data and not inst_flow_data.get("error"):
+        inst_flow = inst_flow_data.get("flow_label") or "unknown"
 
     # technical_signal
     snapshot = state.get("snapshot")

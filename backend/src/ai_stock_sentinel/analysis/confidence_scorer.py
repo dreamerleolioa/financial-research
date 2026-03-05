@@ -69,6 +69,7 @@ _INST_FLOW_SCORES = {
     "distribution": -10,
     "retail_chasing": -8,
     "neutral": 0,
+    "unknown": 0,  # 資料缺失時不貢獻分數，亦不觸發特殊情境
 }
 
 # Technical signal 分數對照

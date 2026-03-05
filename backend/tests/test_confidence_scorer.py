@@ -224,6 +224,37 @@ def test_weighted_retail_chasing_still_negative():
     assert score < 50
 
 
+# ─── unknown inst flow (CS-3) ─────────────────────────────────────────────────
+
+def test_unknown_inst_flow_excluded_from_score():
+    """inst_flow=unknown 不貢獻調分，由其他兩維計算"""
+    score_unknown, _ = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="unknown",
+        technical_signal="bullish",
+    )
+    score_neutral, _ = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="neutral",
+        technical_signal="bullish",
+    )
+    # unknown 與 neutral 行為應相同（均不觸發 inst 分數）
+    assert score_unknown == score_neutral
+
+
+def test_unknown_inst_no_three_resonance():
+    """inst_flow=unknown 即使 sentiment=positive + tech=bullish，不觸發三維共振"""
+    score, note = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="unknown",
+        technical_signal="bullish",
+    )
+    assert "三維訊號共振" not in note
+
+
 # ─── derive_technical_score ───────────────────────────────────────────────────
 
 def test_technical_score_insufficient_data():
