@@ -255,6 +255,20 @@ def test_unknown_inst_no_three_resonance():
     assert "三維訊號共振" not in note
 
 
+def test_score_node_inst_error_key_treated_as_unknown():
+    """score_node：institutional_flow 含 error 鍵時，inst_flow 應視為 unknown（不觸發三維共振）"""
+    from ai_stock_sentinel.graph.nodes import score_node
+    state = {
+        "institutional_flow": {"error": "NO_API_KEY"},
+        "cleaned_news": {"sentiment_label": "positive"},
+        "snapshot": {"recent_closes": list(range(80, 106))},  # 26 根遞增
+        "errors": [],
+    }
+    result = score_node(state)
+    # error → unknown → 不觸發三維共振
+    assert "三維訊號共振" not in result.get("cross_validation_note", "")
+
+
 # ─── derive_technical_score ───────────────────────────────────────────────────
 
 def test_technical_score_insufficient_data():
