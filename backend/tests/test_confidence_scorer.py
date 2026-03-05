@@ -185,8 +185,9 @@ def test_technical_score_neutral():
 
 
 def test_technical_score_partial_bullish():
-    """RSI 多頭 + bias 中性：score=+2 → 63"""
+    """只有 RSI 多頭，bias=0 不觸發加分，MA 全平中性：score=+1 → 57"""
     closes = [100.0] * 21
     result = derive_technical_score(closes, rsi=55.0, bias=0.0)
-    # score=+1（RSI）+1（bias 接近均線）= +2 → 50 + 2*(20/3) ≈ 63
-    assert 50 < result < 70
+    # RSI=55 → +1；bias=0.0 不滿足 0 < bias <= 5 → 0；MA 全平 → 0；總分 +1
+    # round(50 + 1 * (20/3)) = round(56.67) = 57
+    assert result == 57
