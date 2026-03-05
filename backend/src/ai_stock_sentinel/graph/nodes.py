@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, adjust_confidence_by_divergence
+from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
@@ -179,7 +179,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
         closes = [float(v) for v in raw_closes if v is not None]
     technical_signal = _derive_technical_signal(closes)
 
-    confidence_score, cross_validation_note = adjust_confidence_by_divergence(
+    result_dict = compute_confidence(
         BASE_CONFIDENCE,
         news_sentiment=news_sentiment,
         inst_flow=inst_flow,
@@ -187,8 +187,10 @@ def score_node(state: GraphState) -> dict[str, Any]:
     )
 
     return {
-        "confidence_score": confidence_score,
-        "cross_validation_note": cross_validation_note,
+        "confidence_score": result_dict["signal_confidence"],  # 向後相容
+        "signal_confidence": result_dict["signal_confidence"],
+        "data_confidence": result_dict["data_confidence"],
+        "cross_validation_note": result_dict["cross_validation_note"],
     }
 
 

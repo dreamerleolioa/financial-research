@@ -306,3 +306,44 @@ def test_technical_score_partial_bullish():
     # RSI=55 → +1；bias=0.0 不滿足 0 < bias <= 5 → 0；MA 全平 → 0；總分 +1
     # round(50 + 1 * (20/3)) = round(56.67) = 57
     assert result == 57
+
+
+# ─── compute_confidence (CS-4) ───────────────────────────────────────────────
+
+from ai_stock_sentinel.analysis.confidence_scorer import compute_confidence
+
+
+def test_compute_confidence_all_available():
+    """三維均有資料 → data_confidence=100"""
+    result = compute_confidence(
+        50,
+        news_sentiment="positive",
+        inst_flow="institutional_accumulation",
+        technical_signal="bullish",
+    )
+    assert result["data_confidence"] == 100
+    assert result["signal_confidence"] == 70  # 三維共振
+    assert "三維訊號共振" in result["cross_validation_note"]
+
+
+def test_compute_confidence_only_inst_missing():
+    """inst=unknown → data_confidence=67（兩維可用）"""
+    result = compute_confidence(
+        50,
+        news_sentiment="positive",
+        inst_flow="unknown",
+        technical_signal="bullish",
+    )
+    assert result["data_confidence"] == 67
+
+
+def test_compute_confidence_all_neutral():
+    """三維均中性/退化 → data_confidence=0"""
+    result = compute_confidence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="neutral",
+        technical_signal="sideways",
+    )
+    assert result["data_confidence"] == 0
+    assert result["signal_confidence"] == 50

@@ -30,6 +30,8 @@ class AnalyzeResponse(BaseModel):
     holding_period: str | None = None
     cleaned_news_quality: dict[str, Any] | None = None
     news_display: dict[str, Any] | None = None
+    data_confidence: int | None = None
+    signal_confidence: int | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -87,6 +89,8 @@ def analyze(
         "cross_validation_note": None,
         "cleaned_news_quality": None,
         "news_display": None,
+        "data_confidence": None,
+        "signal_confidence": None,
     }
 
     try:
@@ -146,5 +150,7 @@ def analyze(
         entry_zone=result.get("entry_zone"),
         stop_loss=result.get("stop_loss"),
         holding_period=result.get("holding_period"),
+        data_confidence=result.get("data_confidence"),
+        signal_confidence=result.get("signal_confidence"),
         errors=response_errors,
     )

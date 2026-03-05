@@ -129,3 +129,39 @@ def adjust_confidence_by_divergence(
 
     score = max(0, min(100, base_score + adjustment))
     return score, note
+
+
+def compute_confidence(
+    base_score: int,
+    news_sentiment: str,   # "positive" | "negative" | "neutral" | "unknown"
+    inst_flow: str,        # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral" | "unknown"
+    technical_signal: str, # "bullish" | "bearish" | "sideways" | "unknown"
+) -> dict[str, int | str]:
+    """計算 data_confidence、signal_confidence 與 cross_validation_note。
+
+    Returns:
+        {
+            "data_confidence": int,      # 資料完整度 0-100
+            "signal_confidence": int,    # 訊號強度 0-100（= 舊 confidence_score）
+            "cross_validation_note": str,
+        }
+    """
+    available = sum([
+        news_sentiment not in ("neutral",),
+        inst_flow not in ("neutral", "unknown"),
+        technical_signal not in ("sideways", "unknown"),
+    ])
+    data_confidence = round(available / 3 * 100)
+
+    signal_confidence, note = adjust_confidence_by_divergence(
+        base_score,
+        news_sentiment=news_sentiment,
+        inst_flow=inst_flow,
+        technical_signal=technical_signal,
+    )
+
+    return {
+        "data_confidence": data_confidence,
+        "signal_confidence": signal_confidence,
+        "cross_validation_note": note,
+    }
