@@ -12,52 +12,52 @@ BASE = 50
 # ─── 四個主要情境 ──────────────────────────────────────────────────────────────
 
 def test_three_dimensional_resonance():
-    """三維共振：sentiment=positive + flow=institutional_accumulation + technical=bullish → +15"""
+    """三維共振：sentiment=positive + flow=institutional_accumulation + technical=bullish → +20"""
     score, note = adjust_confidence_by_divergence(
         BASE,
         news_sentiment="positive",
         inst_flow="institutional_accumulation",
         technical_signal="bullish",
     )
-    assert score == 65
+    assert score == 70
     assert "三維訊號共振" in note
     assert "法人買超" in note
 
 
 def test_bullish_news_with_distribution():
-    """利多出貨：sentiment=positive + flow=distribution → -20"""
+    """利多出貨：sentiment=positive + flow=distribution → -12"""
     score, note = adjust_confidence_by_divergence(
         BASE,
         news_sentiment="positive",
         inst_flow="distribution",
         technical_signal="sideways",
     )
-    assert score == 30
+    assert score == 38
     assert "警示" in note
     assert "出貨" in note
 
 
 def test_retail_chasing():
-    """散戶追高：flow=retail_chasing → -15"""
+    """散戶追高：flow=retail_chasing + technical=bullish → -3"""
     score, note = adjust_confidence_by_divergence(
         BASE,
         news_sentiment="neutral",
         inst_flow="retail_chasing",
         technical_signal="bullish",
     )
-    assert score == 35
+    assert score == 47
     assert "散戶追高" in note
 
 
 def test_bearish_news_but_price_holds():
-    """利空不跌：sentiment=negative + technical=bullish → +10"""
+    """利空不跌：sentiment=negative + technical=bullish → 0"""
     score, note = adjust_confidence_by_divergence(
         BASE,
         news_sentiment="negative",
         inst_flow="neutral",
         technical_signal="bullish",
     )
-    assert score == 60
+    assert score == 50
     assert "利空不跌" in note
 
 
@@ -86,8 +86,8 @@ def test_priority_three_resonance_over_retail_chasing():
         inst_flow="retail_chasing",
         technical_signal="bullish",
     )
-    # retail_chasing 規則：-15
-    assert score == 35
+    # positive(+5) + retail_chasing(-8) + bullish(+5) = +2 → 52
+    assert score == 52
     assert "散戶追高" in note
 
 
@@ -100,7 +100,8 @@ def test_priority_distribution_over_bearish_not_dropping():
         inst_flow="distribution",
         technical_signal="bullish",  # 即便技術偏多，仍走利多出貨規則
     )
-    assert score == 30
+    # positive(+5) + distribution(-10) + bullish(+5) + penalty(-7) = -7 → 43
+    assert score == 43
     assert "警示" in note
 
 
@@ -109,7 +110,7 @@ def test_priority_distribution_over_bearish_not_dropping():
 def test_clamp_upper_bound():
     """超過 100 → 夾在 100"""
     score, _ = adjust_confidence_by_divergence(
-        95,  # 95 + 15 = 110 → clamp 100
+        95,  # 95 + (5+7+5+3) = 95 + 20 = 115 → clamp 100
         news_sentiment="positive",
         inst_flow="institutional_accumulation",
         technical_signal="bullish",
@@ -120,7 +121,7 @@ def test_clamp_upper_bound():
 def test_clamp_lower_bound():
     """低於 0 → 夾在 0"""
     score, _ = adjust_confidence_by_divergence(
-        10,  # 10 - 20 = -10 → clamp 0
+        10,  # 10 + (5-10+0-7) = 10 - 12 = -2 → clamp 0
         news_sentiment="positive",
         inst_flow="distribution",
         technical_signal="sideways",
@@ -138,20 +139,88 @@ def test_custom_base_score():
         inst_flow="neutral",
         technical_signal="bullish",
     )
-    assert score == 80  # 70 + 10
+    # negative(-5) + neutral(0) + bullish(+5) = 0 → 70 + 0 = 70
+    assert score == 70
     assert "利空不跌" in note
 
 
 def test_base_score_50_default_neutral():
-    """base=50 + 無規則 → 50"""
+    """base=50 + neutral + neutral + bearish → 45"""
     score, note = adjust_confidence_by_divergence(
         50,
         news_sentiment="neutral",
         inst_flow="neutral",
         technical_signal="bearish",
     )
-    assert score == 50
+    # neutral(0) + neutral(0) + bearish(-5) = -5 → 45
+    assert score == 45
     assert note == ""
+
+
+# ─── 多維加權調分 ──────────────────────────────────────────────────────────────
+
+def test_weighted_partial_positive_sentiment_only():
+    """只有 sentiment=positive，inst=neutral，tech=sideways → 小幅加分"""
+    score, note = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="neutral",
+        technical_signal="sideways",
+    )
+    assert score > 50
+    assert score <= 60
+
+
+def test_weighted_partial_inst_accumulation_only():
+    """只有 inst=institutional_accumulation，其他 neutral → 小幅加分"""
+    score, note = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="institutional_accumulation",
+        technical_signal="sideways",
+    )
+    assert score > 50
+
+
+def test_weighted_three_resonance_still_highest():
+    """三維共振仍然是最高調分（>= 60）"""
+    score_resonance, _ = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="institutional_accumulation",
+        technical_signal="bullish",
+    )
+    score_partial, _ = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="neutral",
+        technical_signal="bullish",
+    )
+    assert score_resonance >= score_partial
+    assert score_resonance >= 60
+
+
+def test_weighted_distribution_still_negative():
+    """利多出貨（positive + distribution）仍然是負調分"""
+    score, note = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="distribution",
+        technical_signal="sideways",
+    )
+    assert score < 50
+    assert "出貨" in note or "警示" in note
+
+
+def test_weighted_retail_chasing_still_negative():
+    """散戶追高仍然是負調分"""
+    score, note = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="retail_chasing",
+        technical_signal="sideways",
+    )
+    assert score < 50
 
 
 # ─── derive_technical_score ───────────────────────────────────────────────────

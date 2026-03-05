@@ -56,46 +56,74 @@ def derive_technical_score(
     return round(50 + clamped * (20 / 3))
 
 
+# Sentiment 分數對照
+_SENTIMENT_SCORES = {
+    "positive": +5,
+    "negative": -5,
+    "neutral": 0,
+}
+
+# Inst flow 分數對照
+_INST_FLOW_SCORES = {
+    "institutional_accumulation": +7,
+    "distribution": -10,
+    "retail_chasing": -8,
+    "neutral": 0,
+}
+
+# Technical signal 分數對照
+_TECH_SIGNAL_SCORES = {
+    "bullish": +5,
+    "bearish": -5,
+    "sideways": 0,
+}
+
+# 三維共振 bonus
+_THREE_RESONANCE_BONUS = +3
+
+# 利多出貨 penalty（positive + distribution 的額外懲罰）
+_BULLISH_DISTRIBUTION_PENALTY = -7
+
+
 def adjust_confidence_by_divergence(
     base_score: int,
     news_sentiment: str,    # "positive" | "negative" | "neutral"
     inst_flow: str,         # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral"
     technical_signal: str,  # "bullish" | "bearish" | "sideways"
 ) -> tuple[int, str]:
-    """純 rule-based，不呼叫 LLM。回傳 (adjusted_score, cross_validation_note)。
+    """多維加權模型。回傳 (adjusted_score, cross_validation_note)。
 
-    規則優先序（第一個符合的勝出）：
-    1. 三維共振：sentiment=positive + inst_flow=institutional_accumulation + technical=bullish → +15
-    2. 利多出貨：sentiment=positive + inst_flow=distribution → -20
-    3. 散戶追高：inst_flow=retail_chasing → -15
-    4. 利空不跌：sentiment=negative + technical=bullish → +10
-    5. 預設：adjustment=0，note=""
+    各維度獨立評分，加總後套用特殊情境加成/懲罰：
+    - 三維共振（positive + institutional_accumulation + bullish）→ 額外 +3
+    - 利多出貨（positive + distribution）→ 額外 -7
     """
-    adjustment = 0
+    s = _SENTIMENT_SCORES.get(news_sentiment, 0)
+    i = _INST_FLOW_SCORES.get(inst_flow, 0)
+    t = _TECH_SIGNAL_SCORES.get(technical_signal, 0)
+    adjustment = s + i + t
+
     note = ""
 
-    # 規則 1：三維共振
+    # 特殊情境：三維共振
     if (
         news_sentiment == "positive"
         and inst_flow == "institutional_accumulation"
         and technical_signal == "bullish"
     ):
-        adjustment = 15
+        adjustment += _THREE_RESONANCE_BONUS
         note = "三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"
 
-    # 規則 2：利多出貨
+    # 特殊情境：利多出貨（加額外懲罰）
     elif news_sentiment == "positive" and inst_flow == "distribution":
-        adjustment = -20
+        adjustment += _BULLISH_DISTRIBUTION_PENALTY
         note = "警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"
 
-    # 規則 3：散戶追高
+    # 散戶追高提示
     elif inst_flow == "retail_chasing":
-        adjustment = -15
         note = "散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"
 
-    # 規則 4：利空不跌
+    # 利空不跌提示
     elif news_sentiment == "negative" and technical_signal == "bullish":
-        adjustment = 10
         note = "利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"
 
     score = max(0, min(100, base_score + adjustment))
