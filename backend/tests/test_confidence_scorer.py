@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from ai_stock_sentinel.analysis.confidence_scorer import adjust_confidence_by_divergence
+from ai_stock_sentinel.analysis.confidence_scorer import derive_technical_score
 
 BASE = 50
 
@@ -151,3 +152,41 @@ def test_base_score_50_default_neutral():
     )
     assert score == 50
     assert note == ""
+
+
+# ─── derive_technical_score ───────────────────────────────────────────────────
+
+def test_technical_score_insufficient_data():
+    """資料不足（< 20 根）回傳 50"""
+    assert derive_technical_score([100.0] * 15, rsi=60.0, bias=0.0) == 50
+
+
+def test_technical_score_all_bullish():
+    """三個訊號全多頭：score=+3 → 70"""
+    closes = list(range(80, 101))  # 21 根，遞增排列，ma5 > ma20
+    # rsi=60 → +1, bias=2.0 → +1, ma多頭排列 → +1
+    result = derive_technical_score(closes, rsi=60.0, bias=2.0)
+    assert result == 70
+
+
+def test_technical_score_all_bearish():
+    """三個訊號全空頭：score=-3 → 30"""
+    closes = list(range(120, 99, -1))  # 21 根，遞減
+    # rsi=25 → -1, bias=-12 → -1, ma空頭排列 → -1
+    result = derive_technical_score(closes, rsi=25.0, bias=-12.0)
+    assert result == 30
+
+
+def test_technical_score_neutral():
+    """三個訊號中性：score=0 → 50"""
+    closes = [100.0] * 21  # 全平，ma5=ma20=close
+    result = derive_technical_score(closes, rsi=45.0, bias=0.0)
+    assert result == 50
+
+
+def test_technical_score_partial_bullish():
+    """RSI 多頭 + bias 中性：score=+2 → 63"""
+    closes = [100.0] * 21
+    result = derive_technical_score(closes, rsi=55.0, bias=0.0)
+    # score=+1（RSI）+1（bias 接近均線）= +2 → 50 + 2*(20/3) ≈ 63
+    assert 50 < result < 70
