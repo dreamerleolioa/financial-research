@@ -1,13 +1,13 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-04
+> 更新日期：2026-03-05
 
 ## 目前完成度（高層）
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：100%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位 + AnalysisDetail 結構化輸出 + code fence hotfix + Protocol 回傳型別對齊完成）
-- **Phase 4（前端儀表板）**：90%（核心功能完成；新聞摘要品質優化已列入下一輪修正計劃）
+- **Phase 4（前端儀表板）**：95%（核心功能完成；新聞顯示資料拆分已完成）
 
 ---
 
@@ -68,6 +68,17 @@
 - [x] 明日計劃調整定案：Task C 新增子任務 `Task C3`（策略建議模板）
 - [x] 需求補強定案：新增「新聞摘要品質門檻（Quality Gate）」避免時間戳/日期碎片誤導
 - [x] 規劃文件定案：新增新聞摘要品質修正計劃（`docs/plans/2026-03-05-news-summary-quality.md`）
+
+### 本次需求變更（2026-03-05）
+
+- [x] 決策定案：`cleaned_news` 拆分為兩份資料
+  - `cleaned_news`（保留）：供 LLM pipeline 消費（`sentiment_label`、`mentioned_numbers` 等）
+  - `news_display`（新增）：供前端顯示，含乾淨 RSS 標題、ISO 日期、來源 URL
+- [x] 前端顯示決策定案：新聞卡片移除 `mentioned_numbers` chips（對使用者無顯示價值）
+- [x] 規劃文件定案：新增 `docs/plans/2026-03-05-news-display-split.md`
+- [x] 治本修正完成：`fetch_news_node` 改用結構化格式組 `news_content`（標題:/摘要: 標籤），防止 LLM 把時間戳誤識為標題
+- [x] 治標修正完成：`quality_gate_node` 偵測 `TITLE_LOW_QUALITY` 時，從 `raw_news_items` 回填 RSS 原始標題到 `cleaned_news`
+- [x] 新聞摘要品質優化（NQ-1 ~ NQ-6）：全部完成（198 tests passed）
 
 ### Phase 2：LangGraph
 - [x] 建立 LangGraph 狀態機（GraphState + 節點 stub + builder）
@@ -172,12 +183,22 @@
 
 > 計劃文件：`docs/plans/2026-03-05-news-summary-quality.md`
 
-- [ ] NQ-1：在 `clean_node` / Cleaner 增加 `title` 品質檢查（禁止純時間戳、純 URL；命中標記 `TITLE_LOW_QUALITY`）
-- [ ] NQ-2：日期正規化（優先 ISO 8601；失敗保留 `unknown` + 標記 `DATE_UNKNOWN`）
-- [ ] NQ-3：`mentioned_numbers` 新增財經語意過濾規則，降低日期碎片噪音（命中標記 `NO_FINANCIAL_NUMBERS`）
-- [ ] NQ-4：rule-based `quality_score`（0–100，clamp）+ API 回傳 `cleaned_news_quality`（`quality_score` / `quality_flags`）
-- [ ] NQ-5：前端低品質摘要提示（`quality_score < 60` 或 flags 非空 → 顯示「摘要品質受限」）
-- [ ] NQ-6：補齊單元測試（品質規則覆蓋）與整合測試（API 欄位格式驗證）
+- [x] NQ-1：在 `clean_node` / Cleaner 增加 `title` 品質檢查（禁止純時間戳、純 URL；命中標記 `TITLE_LOW_QUALITY`）
+- [x] NQ-2：日期正規化（優先 ISO 8601；失敗保留 `unknown` + 標記 `DATE_UNKNOWN`）
+- [x] NQ-3：`mentioned_numbers` 新增財經語意過濾規則，降低日期碎片噪音（命中標記 `NO_FINANCIAL_NUMBERS`）
+- [x] NQ-4：rule-based `quality_score`（0–100，clamp）+ API 回傳 `cleaned_news_quality`（`quality_score` / `quality_flags`）
+- [x] NQ-5：前端低品質摘要提示（`quality_score < 60` 或 flags 非空 → 顯示「摘要品質受限」）
+- [x] NQ-6：補齊單元測試（品質規則覆蓋）與整合測試（API 欄位格式驗證）
+
+### 下一輪修正（新聞顯示資料拆分）
+
+> 計劃文件：`docs/plans/2026-03-05-news-display-split.md`
+
+- [x] ND-1：`GraphState` 新增 `news_display` 欄位（`title: str`、`date: str | null`、`source_url: str | null`）
+- [x] ND-2：`quality_gate_node` 從 `raw_news_items[0]` 組出 `news_display`（含 RFC 2822 → ISO 日期正規化）
+- [x] ND-3：`api.py` `AnalyzeResponse` 新增 `news_display` 欄位並回傳
+- [x] ND-4：前端改讀 `news_display` 渲染新聞卡片（標題、日期、查看原文連結），移除 `mentioned_numbers` chips
+- [x] ND-5：補齊測試（state 欄位、node 輸出、API 欄位）（205 tests passed）
 
 ### 下一輪修正（信心分數可靠性優化）
 
@@ -227,6 +248,6 @@ cd backend
 
 ## 下一步建議（Top 3）
 
-1. **優先修正**：新聞摘要品質優化（依 `docs/plans/2026-03-05-news-summary-quality.md`）
-2. **Phase 5 準備**：Docker / Railway 部署（Task 7.1/7.2 已取消，策略欄位由 `strategy_node` 獨立維護）
-3. **Phase 5 功能規劃**：監控告警 / 定時排程 / 多股票批次分析
+1. **優先執行**：信心分數可靠性優化（CS-1 ~ CS-5，依 `docs/plans/2026-03-05-deep-analysis-upgrade.md`）
+2. **後續**：Action Plan 燈號（後端 rule-based + 前端顯示）
+3. **後續**：Phase 5 準備 — Docker / Railway 部署
