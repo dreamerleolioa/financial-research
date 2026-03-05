@@ -1,379 +1,38 @@
-# 計劃：規格缺口修補（Spec Gap Fix）
+# 計劃：規格缺口修補 Day 2（Spec Gap Fix - Day 2）
 
-> 日期：2026-03-06
-> 狀態：已拆分為兩份子文件（見下方）
-> 目的：修補 2026-03-05 規格對比發現的四大缺口、一個已排入待辦的前端提示，以及 2026-03-05 文件比對追加的兩個邏輯缺口
+> 日期：2026-03-07
+> 狀態：待執行
+> 目的：完成剩餘五個 Session 的規格缺口修補（Session 3–7）
 > 追蹤文件：`docs/progress-tracker.md` → 「待優化缺口（2026-03-05 規格對比發現）」、「下一輪修正（LLM Prompt 缺少消息面輸入）」、「下一輪修正（data_confidence 語義修正）」
 > 原則：完成即補測試（Code Complete ≠ Task Complete；需附對應測試與驗收證據）
-
-## ⚠️ 此文件已拆分，請改用以下子文件執行
-
-| 日期 | 文件 | 涵蓋 Session |
-|------|------|-------------|
-| 2026-03-06 | `docs/plans/2026-03-06-spec-gap-fix-day1.md` | Session 1（技術位階）、Session 2（Action Plan 燈號） |
-| 2026-03-07 | `docs/plans/2026-03-07-spec-gap-fix-day2.md` | Session 3（API 欄位）、Session 4（前端提示）、Session 5（LLM 消息面）、Session 6（data_confidence）、Session 7（DATE_UNKNOWN） |
-
-本文件保留完整規格供參考，但執行時請以上述子文件為主。
-
----
+> 前置文件：`docs/plans/2026-03-06-spec-gap-fix-day1.md`（Session 1、2 必須已完成）
 
 ---
 
 ## 背景說明（給無脈絡的工程師）
 
-本次修補源自對架構規格文件（`ai-stock-sentinel-architecture-spec.md`）與後端程式碼的全面比對，發現下列差距：
+本文件接續 Day 1 的工作，Day 1 已完成：
+- Session 1：技術位階指標（`high_20d / low_20d / support_20d / resistance_20d`）
+- Session 2：Action Plan 燈號（`action_plan_tag`、`institutional_flow_label`）
 
-1. **技術位階指標缺失**：架構規格要求 `high_20d / low_20d / support_20d / resistance_20d`，但 `StockSnapshot` / `context_generator` / `strategy_generator` 均未實作。目前 `entry_zone` / `stop_loss` 僅輸出描述性文字，缺乏實際價格。
-2. **Action Plan 燈號未實作**：架構規格要求後端計算 `action_plan_tag`（機會 / 過熱 / 中性），前端僅做 enum → 顯示映射。
+Day 2 修補的剩餘缺口：
+
 3. **AnalyzeResponse 缺多個頂層欄位**：`sentiment_label`、`action_plan`（完整字典）、`data_sources`、`institutional_flow_label` 均未出現在 API 回應頂層。
 4. **AnalysisDetail 結構薄弱**：目前只有 `summary / risks / technical_signal`，缺少 `institutional_flow` 與 `sentiment_label`。
 5. **前端 data_confidence 提示**：後端已回傳 `data_confidence`，但前端尚未在信心指數卡片顯示「資料不足」提示。
-6. **LLM Prompt 缺少消息面輸入**：`_HUMAN_PROMPT` 沒有傳入 `cleaned_news`，LLM 看不到消息面資料，Skeptic Mode 步驟一「提取新聞數值」形同空轉。
-7. **`data_confidence` 語義偏差**：`neutral` 情緒被計為資料缺失，`sideways` 技術訊號也被計為資料不足；實際量的是訊號偏向廣度，非資料取得完整度。
-
-**執行順序依據**：先穩定後端資料計算（Session 1）→ 再補燈號邏輯（Session 2）→ 再收尾 API 結構（Session 3）→ 前端提示（Session 4）→ LLM 三維輸入（Session 5）→ data_confidence 語義（Session 6）。
-
----
-
-## Session 1：技術位階指標（Support / Resistance）
-
-> **複雜度**：高（跨 `yfinance_client` → `context_generator` → `strategy_generator` → `GraphState`）  
-> **對應計劃**：`docs/plans/2026-03-05-deep-analysis-upgrade.md` Session 3
-
-### 範圍
-
-**後端**：
-
-- `yfinance_client.py` `StockSnapshot` 新增四個計算欄位：`high_20d`、`low_20d`、`support_20d`、`resistance_20d`
-- `context_generator.py` `generate_technical_context()` 新增支撐/壓力位敘事段落
-- `strategy_generator.py` `entry_zone` / `stop_loss` 改以實際價格計算（非描述性文字）
-- `graph/state.py` `GraphState` 新增四個選填欄位
-- **Fallback 行為**：`low_20d` / `ma60` 不可用時，`entry_zone` 回傳 `"資料不足，建議參考現價 +/- 5%"`，`cross_validation_note` 或 `risks` 標注「20日位階資料不足」；禁止虛構數值
-
-### 詳細任務
-
-#### T1-1：`StockSnapshot` 補齊位階欄位
-
-**檔案**：`backend/src/ai_stock_sentinel/data_sources/yfinance_client.py`
-
-```python
-@dataclass
-class StockSnapshot:
-    # ... 既有欄位 ...
-    high_20d: float | None = None       # 近 20 日最高價
-    low_20d: float | None = None        # 近 20 日最低價
-    support_20d: float | None = None    # 近 20 日支撐位（近 20 日最低收盤 × 0.99）
-    resistance_20d: float | None = None # 近 20 日壓力位（近 20 日最高收盤 × 1.01）
-```
-
-計算方式（使用現有 `recent_closes`）：
-- `high_20d`：`max(recent_closes[-20:])`
-- `low_20d`：`min(recent_closes[-20:])`
-- `support_20d`：`low_20d * 0.99`（保守緩衝 1%）
-- `resistance_20d`：`high_20d * 1.01`（保守緩衝 1%）
-- 若 `recent_closes` 少於 20 筆，使用全部資料；少於 2 筆則保留 `None`
-
-> ⚠️ **MA60 資料量前提**：`stop_loss` 計算需要 `ma60`，而 `ma60` 需要至少 60 筆收盤資料。
-> 必須確認 `yfinance_client.py` 的 `fetch_basic_snapshot()` 所用 `period` 足以涵蓋 60 個交易日（建議 `period="6mo"` 或 `period="3mo"` 確認約有 60+ 筆）。
-> 若 `recent_closes` 不足 60 筆，`ma60` 將為 `None`，T1-5 的 `stop_loss` 會自動走 `only low_20d` 或 fallback 分支——這是預期行為，但需在實作前確認 period 設定，避免不必要的 fallback。
-
-#### T1-2：`GraphState` 補欄位
-
-**檔案**：`backend/src/ai_stock_sentinel/graph/state.py`
-
-新增：
-```python
-high_20d: float | None
-low_20d: float | None
-support_20d: float | None
-resistance_20d: float | None
-```
-
-#### T1-3：`preprocess_node` 將位階欄位寫入 state
-
-**檔案**：`backend/src/ai_stock_sentinel/graph/nodes.py`，`preprocess_node` 函式
-
-從 `state["snapshot"]` 取出 `high_20d`、`low_20d`、`support_20d`、`resistance_20d`，寫入 `return dict`。
-
-#### T1-4：`generate_technical_context` 加入支撐壓力位敘事
-
-**檔案**：`backend/src/ai_stock_sentinel/analysis/context_generator.py`
-
-新增 `_price_level_narrative(close, support, resistance, high_20d, low_20d)` 函式：
-
-```python
-def _price_level_narrative(
-    close: float | None,
-    support: float | None,
-    resistance: float | None,
-    high_20d: float | None,
-    low_20d: float | None,
-) -> str:
-    if None in (close, support, resistance):
-        return "近20日支撐壓力位資料不足，無法判斷位階。"
-    lines = [
-        f"近20日高點：{high_20d:.1f}，低點：{low_20d:.1f}",
-        f"支撐參考位：{support:.1f}（近20日低點 -1%）",
-        f"壓力參考位：{resistance:.1f}（近20日高點 +1%）",
-    ]
-    if close <= support * 1.02:
-        lines.append("現價接近支撐位，下檔空間有限，可留意反彈機會。")
-    elif close >= resistance * 0.98:
-        lines.append("現價接近壓力位，上漲動能需確認突破，注意回測風險。")
-    else:
-        lines.append("現價處於支撐與壓力之間，位階中立。")
-    return "\n".join(lines)
-```
-
-`generate_technical_context` 的回傳 `technical_context` 字串末尾附加此段落。
-
-#### T1-5：`strategy_generator.py` 改用實際價格
-
-**檔案**：`backend/src/ai_stock_sentinel/analysis/strategy_generator.py`
-
-修改 `generate_strategy` 簽名，新增 `close`、`support_20d`、`resistance_20d`、`low_20d`、`ma60` 欄位讀取：
-
-- `entry_zone`：
-  - 若 `support_20d` 與 `ma20` 均可用：`f"{support_20d:.1f}–{ma20:.1f}（support_20d ~ MA20）"`
-  - 若 BIAS > 5% 且資料可用：`f"拉回 MA20（{ma20:.1f}）附近分批佈局"`
-  - Fallback：`"資料不足，建議參考現價 +/- 5%"`
-
-- `stop_loss`：
-  - 若 `low_20d` 與 `ma60` 均可用：`f"{low_20d * 0.97:.1f}（近20日低點×0.97）或跌破 MA60（{ma60:.1f}），取較寬者"`
-  - 若只有 `low_20d`：`f"{low_20d * 0.97:.1f}（近20日低點×0.97）"`
-  - Fallback：`"近20日低點 - 3%（位階資料不足，以描述性規則代替）"`
-
-#### T1-6：`api.py` `initial_state` 補欄位
-
-`initial_state` 補上四個 `None`：`high_20d`, `low_20d`, `support_20d`, `resistance_20d`。
-
-### DoD（完成定義）
-
-- `StockSnapshot` 包含四個位階欄位，測試確認計算結果
-- `strategy_node` 輸出的 `entry_zone` 包含具體數值（含 `support_20d` 或現價）
-- `strategy_node` 輸出的 `stop_loss` 包含具體數值（含 `low_20d * 0.97` 或 MA60）
-- `recent_closes` 資料不足（< 2 筆）時，安全降級，不崩潰，`entry_zone` 輸出 fallback 字串
-- 新增測試全數通過；既有策略測試不破壞（回歸）
-
-### 預計測試案例
-
-- `test_stock_snapshot_computes_high_low_support_resistance_from_closes`
-- `test_stock_snapshot_price_levels_none_when_insufficient_data`
-- `test_generate_technical_context_includes_price_level_narrative`
-- `test_strategy_entry_zone_contains_numeric_price_from_support_20d`
-- `test_strategy_stop_loss_contains_numeric_price_from_low_20d`
-- `test_strategy_fallback_uses_descriptive_text_when_price_levels_missing`
-- `test_strategy_fallback_when_low20d_unavailable_uses_close_plus_minus_5pct`
-
-### 執行 Prompt（Session 1）
-
-```
-請幫我實作 Session 1 的技術位階指標（Support / Resistance）：
-
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 1 詳細任務（T1-1 ~ T1-6）
-
-執行順序：
-1. T1-1：yfinance_client.py StockSnapshot 補齊 high_20d / low_20d / support_20d / resistance_20d 計算
-2. T1-2：graph/state.py GraphState 新增四個選填欄位
-3. T1-3：nodes.py preprocess_node 將位階欄位從 snapshot 寫入 state
-4. T1-4：context_generator.py 新增 _price_level_narrative()，整合進 generate_technical_context
-5. T1-5：strategy_generator.py entry_zone / stop_loss 改以實際價格計算，補 fallback 行為
-6. T1-6：api.py initial_state 補欄位
-
-每步完成後補對應單元測試，最後執行 make test 確認全套通過。
-
-⚠️ 禁止 LLM 自行估算價格；所有數值必須由 Python 計算後傳入。
-⚠️ 資料不足時必須安全降級，不得拋例外中斷流程。
-```
-
----
-
-## Session 2：Action Plan 燈號
-
-> **複雜度**：中（純新增，不修改既有邏輯）  
-> **對應計劃**：`docs/plans/2026-03-05-deep-analysis-upgrade.md` Session 4
-
-### 範圍
-
-**後端**：
-- 新增 `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python 函式
-- `graph/state.py` 新增 `action_plan_tag` 欄位
-- `graph/nodes.py` `strategy_node` 或新增 `tag_node` 計算並寫入
-- `api.py` `AnalyzeResponse` 新增 `action_plan_tag: str | null`
-- 同步補齊頂層 `institutional_flow_label: str | null`（從 `institutional_flow.flow_label` 浮出，`action_plan_tag` 計算也依賴此值）
-
-**前端**：
-- Action Plan 卡片標題旁顯示燈號標籤
-- `action_plan_tag` 為 null 時不顯示，不崩潰
-
-### 詳細任務
-
-#### T2-0：`GraphState` 新增 `rsi14` 欄位 + `preprocess_node` 寫入（T2-3 前提）
-
-> ⚠️ **此任務是 T2-3 的強依賴前提**，必須先完成。
-
-**問題**：`rsi14` 目前僅以文字形式存在於 `technical_context` 敘事字串內（由 `_rsi_narrative()` 嵌入），並無獨立浮點數欄位。`strategy_node` 若直接從字串反解，屬脆弱的 implementation detail。
-
-**解法**：在 `preprocess_node` 計算完 `rsi14` 後，同時將數值寫入 `GraphState`，使 `strategy_node` 可透過 `state["rsi14"]` 直接讀取，進行 `rsi14 < 30` / `rsi14 > 70` 的硬邏輯判斷。
-
-**檔案**：`backend/src/ai_stock_sentinel/graph/state.py`
-
-```python
-rsi14: float | None
-```
-
-**檔案**：`backend/src/ai_stock_sentinel/graph/nodes.py`，`preprocess_node` 函式
-
-在既有敘事生成後，額外寫入：
-
-```python
-# rsi14 數值獨立寫入 state，供 strategy_node 燈號判斷使用
-rsi14_val: float | None = None
-if len(df_price) >= 14:
-    rsi14_val = float(calc_rsi(df_price["close"].tolist()))
-return {
-    ...,
-    "rsi14": rsi14_val,
-}
-```
-
-> `calc_rsi` 已為 public 函式（`context_generator.py`），直接引用即可，不重複實作。
-
----
-
-#### T2-1：新增 `calculate_action_plan_tag`
-
-**檔案**：`backend/src/ai_stock_sentinel/analysis/strategy_generator.py`（或新建 `action_plan_tagger.py`）
-
-```python
-def calculate_action_plan_tag(
-    rsi14: float | None,
-    flow_label: str | None,
-    confidence_score: int | None,
-) -> str:
-    """
-    純 rule-based，依固定優先序判斷行動建議燈號。
-    任一輸入為 None → 降級為 "neutral"。
-
-    opportunity：rsi14 < 30 AND flow_label = "institutional_accumulation" AND confidence_score > 70
-    overheated ：rsi14 > 70 AND flow_label = "distribution"
-    neutral    ：其餘（含部分命中）
-    """
-    if rsi14 is None or flow_label is None or confidence_score is None:
-        return "neutral"
-    if rsi14 < 30 and flow_label == "institutional_accumulation" and confidence_score > 70:
-        return "opportunity"
-    if rsi14 > 70 and flow_label == "distribution":
-        return "overheated"
-    return "neutral"
-```
-
-#### T2-2：`GraphState` / `initial_state` 補欄位
-
-**檔案**：`graph/state.py` 新增 `action_plan_tag: str | None`（`rsi14: float | None` 已在 T2-0 加入）  
-**檔案**：`api.py` `initial_state` 補 `action_plan_tag: None`、`rsi14: None`
-
-#### T2-3：`strategy_node` 計算並寫入 `action_plan_tag`
-
-**檔案**：`backend/src/ai_stock_sentinel/graph/nodes.py`，`strategy_node` 函式末尾
-
-前提：`rsi14` 已由 T2-0 寫入 `GraphState`，直接讀取 `state.get("rsi14")`。
-
-```python
-rsi14 = state.get("rsi14")
-flow_label = (state.get("institutional_flow") or {}).get("flow_label")
-action_plan_tag = calculate_action_plan_tag(
-    rsi14=rsi14,
-    flow_label=flow_label,
-    confidence_score=state.get("confidence_score"),
-)
-```
-
-#### T2-4：`AnalyzeResponse` 新增欄位
-
-**檔案**：`api.py`
-
-```python
-action_plan_tag: str | None = None
-institutional_flow_label: str | None = None  # flow_label 浮出
-```
-
-response 建構時從 `result` 讀取：
-```python
-action_plan_tag=result.get("action_plan_tag"),
-institutional_flow_label=(
-    result.get("institutional_flow", {}).get("flow_label")
-    if result.get("institutional_flow") and not result["institutional_flow"].get("error")
-    else None
-),
-```
-
-#### T2-5：前端顯示燈號
-
-**檔案**：`frontend/src/App.tsx`
-
-在 Action Plan 卡片標題旁新增 tag badge：
-
-```tsx
-const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: string }> = {
-  opportunity: { emoji: "🟢", label: "機會", color: "text-green-600" },
-  overheated:  { emoji: "🔴", label: "過熱", color: "text-red-600" },
-  neutral:     { emoji: "🔵", label: "中性", color: "text-blue-500" },
-};
-
-// 卡片標題旁，action_plan_tag 有值才顯示
-{result.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
-  <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
-    {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
-  </span>
-)}
-```
-
-### DoD（完成定義）
-
-- `calculate_action_plan_tag` 三情境（opportunity / overheated / neutral）各有單元測試
-- None 安全：任一輸入為 null 時回傳 `"neutral"`，不崩潰
-- `/analyze` 回傳 `action_plan_tag` 與 `institutional_flow_label` 欄位
-- 前端 Action Plan 卡片正確顯示三種燈號；null 時不顯示標籤，不崩潰
-- 既有測試全數通過
-
-### 預計測試案例
-
-- `test_preprocess_node_writes_rsi14_float_to_state`
-- `test_preprocess_node_rsi14_is_none_when_insufficient_data`
-- `test_calculate_action_plan_tag_returns_opportunity_when_all_conditions_met`
-- `test_calculate_action_plan_tag_returns_overheated_when_rsi_high_and_distribution`
-- `test_calculate_action_plan_tag_returns_neutral_for_partial_match`
-- `test_calculate_action_plan_tag_falls_back_to_neutral_when_any_input_none`
-- `test_api_response_includes_action_plan_tag_field`
-- `test_api_response_includes_institutional_flow_label_field`
-
-### 執行 Prompt（Session 2）
-
-```
-請幫我實作 Session 2 的 Action Plan 燈號：
-
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 2 詳細任務（T2-0 ~ T2-5）
-
-執行順序：
-0. T2-0：graph/state.py 新增 rsi14: float | None 欄位；preprocess_node 計算後寫入數值（為 T2-3 提供乾淨的浮點數，不從敘事字串反解）
-1. T2-1：新增 calculate_action_plan_tag() 純 Python rule-based 函式（三情境 + None 安全降級）
-2. T2-2：graph/state.py 新增 action_plan_tag 欄位；api.py initial_state 補 None
-3. T2-3：strategy_node 從 state["rsi14"] 直接讀取浮點數，計算 action_plan_tag 並寫入 state
-4. T2-4：AnalyzeResponse 新增 action_plan_tag 與 institutional_flow_label 兩個頂層欄位
-5. T2-5：前端 App.tsx Action Plan 卡片標題旁加入燈號 badge
-
-每步完成後補對應單元測試，最後執行 make test 確認全套通過。
-
-⚠️ 燈號判斷邏輯 100% 在後端，前端僅做 enum → emoji/文字映射，不含 rsi14 < 30 等條件判斷。
-⚠️ action_plan_tag 為 null 時前端不顯示，不崩潰。
-```
+6. **LLM Prompt 缺少消息面輸入**：`_HUMAN_PROMPT` 沒有傳入 `cleaned_news`，LLM 看不到消息面資料。
+7. **`data_confidence` 語義偏差**：`neutral` 情緒被計為資料缺失，`sideways` 技術訊號也被計為資料不足。
+8. **DATE_UNKNOWN 信心分數懲罰**：日期未知新聞應額外扣 -3 分並追加提示。
+
+**Day 2 執行順序**：
+- Session 3（依賴 Day 1 Session 2 完成）→ Session 4、5、6、7（互相獨立，可穿插或並行）
 
 ---
 
 ## Session 3：AnalyzeResponse 欄位完整性 + AnalysisDetail 結構強化
 
-> **複雜度**：中（多個小改動，需確保不破壞現有測試）  
+> **複雜度**：中（多個小改動，需確保不破壞現有測試）
+> **前提**：Day 1 Session 2 已完成（`institutional_flow_label` 已由 Session 2 處理，此 Session 補齊其餘欄位）
 > **對應缺口**：缺口 2（AnalyzeResponse）+ 缺口 3（AnalysisDetail）
 
 ### 範圍
@@ -517,7 +176,7 @@ System Prompt 的 JSON schema 範例補上兩個欄位，並說明：
 ```
 請幫我實作 Session 3 的 AnalyzeResponse 欄位完整性 + AnalysisDetail 結構強化：
 
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 3 詳細任務（T3-1 ~ T3-5）
+參考文件：docs/plans/2026-03-07-spec-gap-fix-day2.md 的 Session 3 詳細任務（T3-1 ~ T3-5）
 
 執行順序：
 1. T3-1：api.py AnalyzeResponse 新增頂層 sentiment_label（從 cleaned_news 浮出）
@@ -537,6 +196,7 @@ System Prompt 的 JSON schema 範例補上兩個欄位，並說明：
 ## Session 4：前端 data_confidence 提示
 
 > **複雜度**：低（純前端，限一個元件）
+> **獨立性**：與 Session 3、5、6、7 無相依，可任意穿插執行
 > **對應缺口**：Phase 4 前端待辦
 
 ### 範圍
@@ -574,7 +234,7 @@ System Prompt 的 JSON schema 範例補上兩個欄位，並說明：
 ```
 請幫我實作 Session 4 的前端 data_confidence 提示：
 
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 4 詳細任務（T4-1）
+參考文件：docs/plans/2026-03-07-spec-gap-fix-day2.md 的 Session 4 詳細任務（T4-1）
 
 工作：
 - 在 frontend/src/App.tsx 信心指數卡片中，cross_validation_note 之後加入 data_confidence 提示
@@ -589,8 +249,9 @@ System Prompt 的 JSON schema 範例補上兩個欄位，並說明：
 
 ## Session 5：LLM Prompt 補齊消息面輸入
 
-> **複雜度**：低（修改一個函式簽名 + Prompt + analyze_node）  
-> **問題根源**：`langchain_analyzer.py` 的 `_HUMAN_PROMPT` 未傳入 `cleaned_news`，LLM 看不到任何消息面資料，架構規格要求的三維輸入（消息面 + 技術面 + 籌碼面）實際上只有兩維。  
+> **複雜度**：低（修改一個函式簽名 + Prompt + analyze_node）
+> **獨立性**：與 Session 3、4、6、7 無相依，可任意穿插執行
+> **問題根源**：`langchain_analyzer.py` 的 `_HUMAN_PROMPT` 未傳入 `cleaned_news`，LLM 看不到任何消息面資料，架構規格要求的三維輸入（消息面 + 技術面 + 籌碼面）實際上只有兩維。
 > **重要限制**：消息面來源為 **Google News RSS**，內容是市場事件標題與短摘要，**不保證含有財報數字**（EPS / 營收等）。LLM 應識別的是事件語義與情緒傾向，而非期待提取結構化財務數值。
 
 ### 範圍
@@ -685,7 +346,7 @@ result = analyzer.analyze(
 ```
 請幫我實作 Session 5 的 LLM Prompt 消息面輸入補齊：
 
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 5 詳細任務（T5-1 ~ T5-4）
+參考文件：docs/plans/2026-03-07-spec-gap-fix-day2.md 的 Session 5 詳細任務（T5-1 ~ T5-4）
 
 執行順序：
 1. T5-1：langchain_analyzer.py _HUMAN_PROMPT 新增【消息面摘要】段落（{news_summary}，None 時顯示預設文字）
@@ -703,7 +364,8 @@ result = analyzer.analyze(
 
 ## Session 6：data_confidence 語義修正
 
-> **複雜度**：低（修改一個函式 + 補測試）  
+> **複雜度**：低（修改一個函式 + 補測試）
+> **獨立性**：與 Session 3、4、5、7 無相依，可任意穿插執行
 > **問題根源**：`compute_confidence()` 把 `neutral` 情緒與 `sideways` 技術訊號計為「資料缺失」，但兩者是合法的輸出值。目前 `data_confidence` 量的是「訊號偏向廣度」（幾個維度有偏多/偏空），不是「資料取得完整度」（幾個維度成功取得資料）。
 
 ### 範圍
@@ -772,7 +434,7 @@ data_confidence = round(data_available / 3 * 100)
 ```
 請幫我實作 Session 6 的 data_confidence 語義修正：
 
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 6 詳細任務（T6-1 ~ T6-2）
+參考文件：docs/plans/2026-03-07-spec-gap-fix-day2.md 的 Session 6 詳細任務（T6-1 ~ T6-2）
 
 工作：
 1. T6-1：confidence_scorer.py compute_confidence() 修正資料完整度計算邏輯
@@ -791,6 +453,7 @@ data_confidence = round(data_available / 3 * 100)
 ## Session 7：DATE_UNKNOWN 信心分數懲罰
 
 > **複雜度**：低（純新增，修改一個函式 + 補測試）
+> **獨立性**：與 Session 3、4、5、6 無相依，可任意穿插執行
 > **對應規格**：`docs/ai-stock-sentinel-architecture-spec.md` v2.4，新聞摘要品質門檻段落
 
 ### 背景
@@ -877,7 +540,7 @@ if date_unknown:
 ```
 請幫我實作 Session 7 的 DATE_UNKNOWN 信心分數懲罰：
 
-參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 7 詳細任務（T7-1 ~ T7-3）
+參考文件：docs/plans/2026-03-07-spec-gap-fix-day2.md 的 Session 7 詳細任務（T7-1 ~ T7-3）
 架構規格：docs/ai-stock-sentinel-architecture-spec.md v2.4，新聞摘要品質門檻段落
 
 執行順序：
@@ -893,40 +556,22 @@ if date_unknown:
 
 ---
 
-## 執行節奏建議
-
-```
-Session 1（高複雜）→ Session 2（中）→ Session 3（中）→ Session 4（低）→ Session 5（低）→ Session 6（低）→ Session 7（低）
-```
-
-- Session 1 完成才啟動 Session 2（Session 2 依賴 `rsi14` 是否從 state 可讀）
-- Session 2 完成才啟動 Session 3（Session 3 補充 `institutional_flow_label` 時已由 Session 2 處理）
-- Session 4 獨立，可提前至任意 Session 後執行
-- Session 5、Session 6、Session 7 互相獨立，可並行或穿插執行
-
-每個 Session 結束前必做：
-1. `make test` 全數通過
-2. 回寫 Handoff Snapshot（已完成、阻塞點、下一 Session 前提）
-
----
-
-## 驗收標準（整體）
+## 驗收標準（Day 2）
 
 - `make test` 全數通過（含所有新增測試）
-- `/analyze` 回傳：`action_plan_tag`、`institutional_flow_label`、`sentiment_label`、`action_plan`、`data_sources`
-- 策略輸出：`entry_zone` 包含具體價格數值（非純描述性文字）
-- 前端：Action Plan 卡片顯示燈號；`data_confidence < 60` 時信心指數卡片顯示資料不足提示
+- `/analyze` 回傳：`sentiment_label`、`action_plan`（dict）、`data_sources`（list）
+- 前端：`data_confidence < 60` 時信心指數卡片顯示資料不足提示
 - LLM Prompt 包含 `【消息面摘要】` 段落；`cleaned_news` 為 None 時顯示預設占位文字，不崩潰
 - `data_confidence` 正確反映「資料取得完整度」：`neutral` 情緒 / `sideways` 技術訊號不降低分數，僅 `unknown` 才計為未取得
 - `DATE_UNKNOWN` 旗標存在時 `signal_confidence` 自動 -3，`cross_validation_note` 末尾追加時效性未驗證提示；`data_confidence` 不受影響
 
 ---
 
-## 最終步驟：Spec Review
+## 最終步驟：Spec Review（Day 2 結束後）
 
 所有 Session 完成後，對照 `docs/ai-stock-sentinel-architecture-spec.md` 與 `docs/progress-tracker.md`，確認：
 
-1. 本計劃修補的六大缺口均已正確實作，與架構規格描述一致
+1. 本計劃修補的七大缺口均已正確實作，與架構規格描述一致
 2. 未引入新的規格缺口（特別是跨 Session 的欄位變動）
 3. 若發現新缺口，補記至 `progress-tracker.md` 的「待優化缺口」區塊，並決定是否需新建計劃文件
 
@@ -935,7 +580,7 @@ Session 1（高複雜）→ Session 2（中）→ Session 3（中）→ Session 
 ## Handoff Snapshot 模板（每 Session 結束填寫）
 
 ```markdown
-## Handoff Snapshot — 2026-03-06 Session N 結束
+## Handoff Snapshot — 2026-03-07 Session N 結束
 
 - 已完成（本 Session）：
   -

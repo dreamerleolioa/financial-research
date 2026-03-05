@@ -98,9 +98,24 @@ make run-api
     "quality_score": 100,
     "quality_flags": []
   },
+  "data_confidence": 67,
+  "signal_confidence": 72,
   "confidence_score": 78,
   "cross_validation_note": "三維共振，信心偏高",
-  "institutional_flow": "institutional_accumulation",
+  "analysis_detail": {
+    "summary": "台積電法人持續買超，RSI 動能尚未過熱，多頭格局延續。",
+    "risks": ["短線乖離偏高，留意拉回壓力"],
+    "technical_signal": "bullish"
+  },
+  "sentiment_label": "positive",
+  "action_plan": {
+    "action": "分批買進",
+    "target_zone": "900.0–915.0（support_20d ~ MA20）",
+    "defense_line": "880.5（近20日低點×0.97）或跌破 MA60",
+    "momentum_expectation": "法人持續買超，技術面健康，動能延續"
+  },
+  "data_sources": ["google-news-rss", "yfinance", "twse-openapi"],
+  "institutional_flow_label": "institutional_accumulation",
   "strategy_type": "mid_term",
   "entry_zone": "現價附近分批買進",
   "stop_loss": "近20日低點 - 3% 或跌破 MA60",
@@ -119,15 +134,27 @@ make run-api
   | `cleaned_news` | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null |
   | `news_display` | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null |
   | `cleaned_news_quality` | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null |
-  | `confidence_score` | int \| null | 0–100，反映三維訊號一致性（rule-based） |
+  | `data_confidence` | int \| null | 0–100，資料完整度（成功取得的維度數量，CS-4 新增） |
+  | `signal_confidence` | int \| null | 0–100，訊號強度（CS-4 新增；`confidence_score` 為向後相容別名） |
+  | `confidence_score` | int \| null | 0–100，反映三維訊號一致性（= `signal_confidence`，向後相容） |
   | `cross_validation_note` | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串） |
   | `strategy_type` | enum \| null | `short_term` / `mid_term` / `defensive_wait` |
   | `entry_zone` | string \| null | 建議入場區間（rule-based） |
   | `stop_loss` | string \| null | 防守底線／停損條件（rule-based） |
   | `holding_period` | string \| null | 預期持股期間（rule-based） |
-  | `institutional_flow` | enum \| null | 籌碼歸屬標籤（rule-based）：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
-  | `action_plan_tag` | enum \| null | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射 |
+  | `analysis_detail` | object \| null | LLM 結構化分析輸出（`summary` / `risks` / `technical_signal`），Task 7 新增 |
+  | `sentiment_label` | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`；⚠️ **計劃中（Day 2 Session 3，尚未實作）** |
+  | `action_plan` | object \| null | rule-based 戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）；⚠️ **計劃中（Day 2 Session 3，尚未實作）** |
+  | `data_sources` | array | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）；⚠️ **計劃中（Day 2 Session 3，尚未實作）** |
+  | `institutional_flow_label` | enum \| null | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`；⚠️ **計劃中（Day 1 Session 2，尚未實作）** |
+  | `action_plan_tag` | enum \| null | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射；⚠️ **計劃中（Day 1 Session 2，尚未實作）** |
   | `errors` | array | 錯誤碼陣列 |
+
+> ⚠️ **計劃中欄位（尚未實作）**：
+> - `action_plan_tag`、`institutional_flow_label`：對應 `docs/plans/2026-03-06-spec-gap-fix-day1.md` Day 1 Session 2
+> - `sentiment_label`（頂層）、`action_plan`（dict）、`data_sources`：對應 `docs/plans/2026-03-07-spec-gap-fix-day2.md` Day 2 Session 3
+> Response example 中的值為規格目標，非目前實際回傳。
+> ⚠️ **即將變更**：`news_display`（單筆 object）計劃升級為 `news_display_items`（陣列，最多 5 筆），對應 NM-3~NM-5（`docs/plans/2026-03-06-news-scope-and-display-items.md`）。
 
 ---
 

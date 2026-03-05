@@ -191,6 +191,11 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 
 **信心分數拆分（CS-4）**：
 - `data_confidence`：資料完整度（0 / 33 / 67 / 100），依三個維度有無有效值計算
+  > **有效值定義**（Session 6 定案）：
+  > - 新聞維度：`news_sentiment` 有任何值（含 `neutral`）→ 視為有新聞資料；`neutral` 表示情緒中性，不代表資料未取得
+  > - 技術維度：`technical_signal` 有任何值（含 `sideways`）→ 視為有技術資料；`sideways` 是合法計算結果
+  > - 籌碼維度：`inst_flow != "unknown"` → 視為有籌碼資料（`unknown` 代表所有 Provider 失敗）
+  > 簡言之：`data_confidence` 量的是「資料取得完整度」，不是「訊號偏向廣度」。
 - `signal_confidence`：訊號強度（即舊 `confidence_score`），由 `adjust_confidence_by_divergence()` 計算
 - `confidence_score`：保留為 `signal_confidence` 的別名，向後相容
 - 整合入口：`compute_confidence(base_score, news_sentiment, inst_flow, technical_signal) -> dict`
@@ -340,6 +345,7 @@ class InstitutionalFlowProvider(Protocol):
 > `cross_validation_note` 由 `score_node` 的 **純 rule-based Python** 產生固定字串，**不呼叫 LLM**。
 > LLM 在 `analyze_node` 中可讀取 `confidence_score` 與 `cross_validation_note`，用於輸出 `risks` / `summary` 文案，但不得修改分數。
 > `score_node` 位置：`preprocess → score → analyze → strategy → END`（在 LLM 分析前執行，讓 prompt 可讀取信心分數）。
+> **`rsi14` 獨立 GraphState 欄位（T2-0）**：`rsi14: float | None` 除了嵌入 `technical_context` 敘事字串外，必須同時以獨立欄位寫入 `GraphState`，供 `strategy_node` 的 `calculate_action_plan_tag()` 直接讀取進行硬邏輯判斷（`rsi14 < 30` / `rsi14 > 70`）。不得從 narrative 字串反解數值。
 
 > 註：若做正式上線，建議將「內部推理」與「對外輸出」分離，避免過度暴露模型中間推理內容。
 
@@ -613,6 +619,27 @@ class InstitutionalFlowProvider(Protocol):
 - 🔵 中性：其餘狀況
 
 > 上述燈號判斷由 Python rule-based 產生，前端僅做顯示。
+
+**`calculate_action_plan_tag()` 實作規範**：
+```python
+def calculate_action_plan_tag(
+    rsi14: float | None,
+    flow_label: str | None,
+    confidence_score: int | None,
+) -> str:  # "opportunity" | "overheated" | "neutral"
+```
+- 任一輸入為 `None` → 直接回傳 `"neutral"`（安全降級）
+- 🟢 `opportunity`：`rsi14 < 30` 且 `flow_label == "institutional_accumulation"` 且 `confidence_score > 70`
+- 🔴 `overheated`：`rsi14 > 70` 且 `flow_label == "distribution"`
+- 🔵 `neutral`：其餘情況
+- 此函式為純 rule-based Python，**不呼叫 LLM**；建議放在 `analysis/strategy_generator.py`
+
+**`generate_action_plan()` 實作規範**：
+- 獨立於 `generate_strategy()` 的 rule-based 函式，輸出 `action_plan` dict
+- 輸入：`strategy_type`、`entry_zone`、`stop_loss`、`flow_label`、`confidence_score`
+- 輸出：`{ action, target_zone, defense_line, momentum_expectation }`
+- `strategy_type == "defensive_wait"` → `action = "觀望"`
+- **不呼叫 LLM**；建議放在 `analysis/strategy_generator.py`
 
 ---
 

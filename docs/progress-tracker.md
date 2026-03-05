@@ -178,7 +178,7 @@
 - [x] 前端顯示 `analysis_detail` 結構化輸出（2026-03-04 Session 9）
   - `analysis_detail` 存在時：顯示 `technical_signal` 標籤（看多/看空/盤整）、`summary` 段落、`risks` 條列
   - `analysis_detail` 為 null 時 fallback 維持 `analysis` 純文字
-- [ ] 信心指數卡片：`data_confidence < 60` 時卡片下方顯示「資料不足，分數僅供參考」灰色提示（`data_confidence` 已由後端回傳，僅需前端讀取判斷）（計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 4）
+- [ ] 信心指數卡片：`data_confidence < 60` 時卡片下方顯示「資料不足，分數僅供參考」灰色提示（`data_confidence` 已由後端回傳，僅需前端讀取判斷）（計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 4）
 
 ### 下一輪修正（新聞摘要品質）
 
@@ -217,12 +217,13 @@
 
 ### 下一輪修正（Action Plan 燈號）
 
-> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）；實作計劃：`docs/plans/2026-03-06-spec-gap-fix.md` Session 2  
+> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）；實作計劃：`docs/plans/2026-03-06-spec-gap-fix-day1.md` Session 2  
 > 架構決策：燈號由**後端 rule-based Python 計算**並回傳 `action_plan_tag`；前端不含條件判斷，僅做 enum → emoji/文字顯示。
 
+- [ ] **T2-0（前提）**：`GraphState` 新增 `rsi14: float | None` 獨立欄位；`preprocess_node` 計算後同步寫入 state（供燈號判斷用，不從 narrative 字串反解）
 - [ ] 後端：實作 `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python（`opportunity` / `overheated` / `neutral`；任一輸入為 None 則降級回 `neutral`）
-- [ ] 後端：`GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null` 與 `institutional_flow: str | null`
-- [ ] 後端：補齊單元測試（三情境 + None 安全 + API 欄位驗證）
+- [ ] 後端：`GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null` 與 `institutional_flow_label: str | null`
+- [ ] 後端：補齊單元測試（三情境 + None 安全 + `rsi14` float 寫入驗證 + API 欄位驗證）
 - [ ] 前端：Action Plan 卡片標題旁顯示燈號標籤（`opportunity` → 🟢 機會 / `overheated` → 🔴 過熱 / `neutral` → 🔵 中性）
 - [ ] 前端：`action_plan_tag` 為 null 時不顯示標籤，不崩潰
 
@@ -239,10 +240,10 @@
 ### 下一輪修正（data_confidence 語義修正）
 
 > **發現時間**：2026-03-05 規格比對  
-> **問題**：`compute_confidence()` 把 `news_sentiment="neutral"` 計為「資料缺失」，但 `neutral` 是 LLM 合法回傳的情緒標籤（表示有抓到新聞，只是情緒中性）。同理 `technical_signal="sideways"` 也是成功計算的結果，不代表資料不足。目前 `data_confidence` 實際量的是「訊號偏多/偏空的維度數」，而不是「資料成功取得的維度數」，語義與規格不符。
+> **問題**：`compute_confidence()` 把 `news_sentiment="neutral"` 計為「資料缺失」，但 `neutral` 是 LLM 合法回傳的情緒標籤（表示有抓到新聞，只是情緒中性）。同理 `technical_signal="sideways"` 也是成功計算的結果，不代表資料不足。目前 `data_confidence` 實際量的是「訊號偏多/偏空的維度數」，而不是「資料成功取得的維度數」，語義與規格不符。  
+> **決策定案**（`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 6）：只修正邏輯，欄位名稱維持 `data_confidence`，不改名。
 
 - [ ] `compute_confidence()` 修正「資料完整度」判斷邏輯：以資料是否成功取得為準（`inst_flow != "unknown"` 視為有籌碼資料、`news_sentiment` 只要有值皆視為有新聞資料、`closes` 有足夠筆數視為有技術資料）
-- [ ] 或考慮將現有邏輯欄位改名為 `signal_breadth`（訊號廣度），並新增真正的 `data_confidence`（資料完整度）
 - [ ] 補齊測試（neutral 情緒 → data_confidence 不應為 0 或 33）
 
 ### 待優化缺口（2026-03-05 規格對比發現）
@@ -252,7 +253,7 @@
 #### 1. 技術位階指標（Support / Resistance）
 
 > 規格要求 `calculate_price_levels()` 輸出 `high_20d`, `low_20d`, `support_20d`, `resistance_20d`，目前均未實作。  
-> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 1
+> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix-day1.md` Session 1
 
 - [ ] `yfinance_client.py` `StockSnapshot` 補齊 `high_20d` / `low_20d` / `support_20d` / `resistance_20d` 欄位計算（近 20 日高低點 + 均量加權支撐壓力位）
 - [ ] `context_generator.py` `generate_technical_context()` 加入支撐/壓力位敘事段落
@@ -264,23 +265,32 @@
 #### 2. AnalyzeResponse 欄位完整性
 
 > 規格輸出結構含多個頂層欄位，目前 API 回應缺漏。  
-> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+> 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 3  
+> **前提**：Day 1 Session 2 已完成（`institutional_flow_label` 由 Session 2 處理；此 Session 補齊其餘欄位）
 
 - [ ] `AnalyzeResponse` 新增頂層 `sentiment_label: str | null`（從 `cleaned_news.sentiment_label` 浮出，供前端直接讀取）
-- [ ] `AnalyzeResponse` 新增 `action_plan: dict | null`（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）；由後端 rule-based 計算，不呼叫 LLM
+- [ ] `strategy_generator.py` 新增 `generate_action_plan()` rule-based 函式（純 Python，不呼叫 LLM）；`GraphState` 新增 `action_plan: dict | None`；`strategy_node` 計算並寫入
+- [ ] `AnalyzeResponse` 新增 `action_plan: dict | null`（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）
 - [ ] `AnalyzeResponse` 新增 `data_sources: list[str]`（如 `["google-news-rss", "yfinance", "twse-openapi"]`；依實際抓取成功的來源動態填入）
-- [ ] `AnalyzeResponse` 新增頂層 `institutional_flow_label: str | null`（`flow_label` 浮出，供前端色碼顯示）
 
 #### 3. AnalysisDetail 結構強化
 
 > 目前 `AnalysisDetail` 只含 `summary` / `risks` / `technical_signal`，規格輸出尚有其他欄位。  
-> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+> 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 3
 
 - [ ] `AnalysisDetail` 新增 `institutional_flow: str | null`（籌碼標籤，與頂層欄位一致）
 - [ ] `AnalysisDetail` 新增 `sentiment_label: str | null`（新聞情緒標籤）
 - [ ] LLM System Prompt 同步更新，要求輸出上述欄位（純展示用；LLM 不得修改 `confidence_score`）
 
-#### 4. 基本面 / 估值工具（低優先）
+#### 4. DATE_UNKNOWN 信心分數懲罰
+
+> 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 7
+
+- [ ] `confidence_scorer.py`：`quality_flags` 含 `DATE_UNKNOWN` 時額外扣 -3 分（clamp 保護）
+- [ ] `cross_validation_note` 追加「⚠️ 新聞日期未知，消息面可靠性下降」提示
+- [ ] 補齊測試（含/不含 `DATE_UNKNOWN` 兩情境）
+
+#### 5. 基本面 / 估值工具（低優先）
 
 > 規格 Tool Use 章節列出下列工具，目前完全未實作；屬進階功能，優先序低。
 
@@ -326,11 +336,19 @@ cd backend
 
 ---
 
-## 下一步建議（Top 6）
+## 下一步建議（按計劃文件順序）
 
-1. **優先執行**：消息面職責邊界 + 多筆新聞列表（NM-1 ~ NM-7），依 `docs/plans/2026-03-06-news-scope-and-display-items.md`
-2. **接續**：前端信心指數卡片 `data_confidence < 60` 提示（`docs/plans/2026-03-06-spec-gap-fix.md` Session 4）— 後端已回傳 `data_confidence`，僅需前端讀取判斷
-3. **接續**：技術位階指標（Support/Resistance）— `yfinance_client` 補齊 `high_20d/low_20d/support_20d/resistance_20d`，依 `docs/plans/2026-03-06-spec-gap-fix.md` Session 1
-4. **接續**：Action Plan 燈號（後端 rule-based + 前端顯示），依 `docs/plans/2026-03-06-spec-gap-fix.md` Session 2
-5. **接續**：`AnalyzeResponse` 欄位完整性（`sentiment_label` / `action_plan` / `data_sources`），依 `docs/plans/2026-03-06-spec-gap-fix.md` Session 3
-6. **長期**：Phase 5 準備 — Docker / Railway 部署；基本面/估值工具（`estimate_pe_percentile`）
+### Day 1（`docs/plans/2026-03-06-spec-gap-fix-day1.md`）
+1. **Session 1**：技術位階指標（T1-1 ~ T1-6）— `yfinance_client` 補齊 `high_20d/low_20d/support_20d/resistance_20d`，`context_generator` 加敘事，`strategy_generator` 改用實際價格
+2. **Session 2**：Action Plan 燈號（T2-0 ~ T2-5）— 先補 `rsi14` 獨立欄位（T2-0），再實作 `calculate_action_plan_tag()`，最後前端顯示
+
+### Day 2（`docs/plans/2026-03-07-spec-gap-fix-day2.md`，依賴 Day 1 完成）
+3. **Session 3**：AnalyzeResponse 欄位完整性 + AnalysisDetail 結構強化（T3-1 ~ T3-5）
+4. **Session 4**：前端 `data_confidence < 60` 提示（T4-1）— 可與其他 Session 並行
+5. **Session 5**：LLM Prompt 補齊消息面輸入（T5-1 ~ T5-4）— 可與其他 Session 並行
+6. **Session 6**：`data_confidence` 語義修正（T6-1）— 可與其他 Session 並行
+7. **Session 7**：DATE_UNKNOWN 信心分數懲罰 — 可與其他 Session 並行
+
+### 其他待辦（可穿插）
+- 消息面職責邊界 + 多筆新聞列表（NM-1 ~ NM-7），依 `docs/plans/2026-03-06-news-scope-and-display-items.md`
+- **長期**：Phase 5 準備 — Docker / Railway 部署；基本面/估值工具（`estimate_pe_percentile`）

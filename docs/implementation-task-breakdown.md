@@ -248,6 +248,7 @@
   - `date=unknown` 時必有品質旗標，且 UI 顯示品質提示
   - `mentioned_numbers` 中日期碎片比例明顯下降（由測試案例驗證）
   - 新增單元測試（cleaner quality rules）與整合測試（API response quality flags）
+- **完成記錄**：NQ-1~NQ-6 全數完成（2026-03-05）；`news_display` 拆分 ND-1~ND-5 同步完成（`GraphState` 新增 `news_display` 欄位、`quality_gate_node` RFC 2822→ISO 日期正規化、`api.py` 新增 `news_display` 欄位、前端改讀 `news_display` 渲染新聞卡片並移除 `mentioned_numbers` chips）；205 tests passed
 
 ### P5-1 信心分數可靠性優化（Confidence Score Reliability）
 
@@ -267,6 +268,109 @@
   - 機構資料缺失時分數不因此固定停在 50
   - `data_confidence` 與 `signal_confidence` 作為 API 新欄位回傳
   - 既有信心分數四情境測試全數通過（回歸保護）
+- **完成記錄**：CS-1~CS-5 全數完成（2026-03-05）；`derive_technical_score()` 多因子加權取代 AND 條件；`compute_confidence()` 整合回傳 `data_confidence`/`signal_confidence`；`score_node` 全面整合；229 tests passed
+
+### P4-7 信心指數資料不足提示（前端）
+
+- **目標**：`data_confidence < 60` 時在信心指數卡片下方顯示「資料不足，分數僅供參考」灰色提示
+- **任務**
+  - 前端讀取 API 回傳的 `data_confidence` 欄位（後端已實作，CS-4）
+  - `data_confidence < 60` 時卡片下方顯示灰色提示文字
+  - `data_confidence` 為 null 時不顯示，不崩潰
+- **DoD**
+  - 提示文字正確出現於信心指數卡片下方
+  - null 安全，不崩潰
+- 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 4
+
+### P4-8 消息面職責邊界 + 多筆新聞列表
+
+- **目標**：修正消息面職責定義（新聞僅負責情緒訊號，不負責財務數字）；`news_display` 升級為最多 5 筆陣列
+- **架構原則**：新聞（消息面）負責市場情緒訊號（法說會、政策、法人評等），財務數字（EPS/營收/毛利率）屬基本面，不應由 Quality Gate 扣分
+- **後端任務**
+  - NM-1：`NO_FINANCIAL_NUMBERS` flag 計分貢獻改為 0（旗標保留但不扣 `quality_score`）
+  - NM-2：LLM System Prompt 移除「從新聞提取財務數字」要求，聚焦事件情緒語義
+  - NM-3：`GraphState` `news_display` → `news_display_items: list[dict]`
+  - NM-4：`quality_gate_node` 迭代 `raw_news_items[:5]`，產出 `news_display_items` 陣列
+  - NM-5：`api.py` `AnalyzeResponse` 欄位更新（`news_display` → `news_display_items`）
+  - NM-7：補齊測試（state 欄位、node 輸出、API 欄位、quality_score 計分）
+- **前端任務**
+  - NM-6：新聞卡片改為多筆列表，每筆可點擊連結 + 公開資訊觀測站提示
+- **DoD**
+  - `news_display_items` 為陣列，最多 5 筆，每筆含 `title`/`date`/`source_url`
+  - `NO_FINANCIAL_NUMBERS` 旗標保留但不扣 `quality_score`
+  - 前端正確顯示多筆新聞連結（含 null 安全）
+  - 補齊測試（7 個子任務均有對應測試案例）
+- 計劃文件：`docs/plans/2026-03-06-news-scope-and-display-items.md`
+
+---
+
+## 補強任務（Spec Gap Fix + 邏輯缺口）
+
+> 來源：2026-03-05 規格對比發現 + 邏輯缺口追蹤  
+> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md`
+
+### SG-1 技術位階指標（Support / Resistance）
+
+- **目標**：補齊 `high_20d` / `low_20d` / `support_20d` / `resistance_20d`，讓 `entry_zone` / `stop_loss` 輸出實際價格而非描述性文字
+- **任務**
+  - `yfinance_client.py` `StockSnapshot` 新增四個計算欄位（近 20 日最高/低點、均量加權支撐/壓力位）
+  - `context_generator.py` `generate_technical_context()` 新增支撐/壓力位敘事段落
+  - `strategy_generator.py` `entry_zone` / `stop_loss` 改為以實際價格計算
+  - `GraphState` 新增四個選填欄位
+  - **Fallback**：`low_20d` / `ma60` 不可用時，`entry_zone` 回傳 `"資料不足，建議參考現價 +/- 5%"`；禁止虛構數值
+- **DoD**
+  - `entry_zone` 輸出含實際價格數值或說明 fallback 原因，不再輸出純描述性文字
+  - 補齊測試（含 fallback 安全測試）
+- 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 1
+
+### SG-3 AnalyzeResponse 欄位完整性
+
+- **目標**：補齊多個規格要求的頂層欄位
+- **任務**
+  - `AnalyzeResponse` 新增 `sentiment_label: str | null`（從 `cleaned_news.sentiment_label` 浮出）
+  - `AnalyzeResponse` 新增 `data_sources: list[str]`（依實際成功抓取的來源動態填入）
+  - `AnalyzeResponse` 新增 `action_plan: dict | null`（rule-based 計算，含 `action`/`target_zone`/`defense_line`/`momentum_expectation`）
+- **DoD**
+  - API 穩定回傳上述三個欄位
+  - 補齊測試
+- 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+
+### SG-4 AnalysisDetail 結構強化
+
+- **目標**：`AnalysisDetail` 新增 `institutional_flow` 與 `sentiment_label` 欄位，與規格保持一致
+- **任務**
+  - `AnalysisDetail` dataclass 新增 `institutional_flow: str | None` 與 `sentiment_label: str | None`
+  - LLM System Prompt 同步更新，要求輸出上述欄位（展示用，LLM 不得修改 `confidence_score`）
+- **DoD**
+  - `analysis_detail` JSON 含 `institutional_flow` 與 `sentiment_label` 欄位
+  - 補齊測試
+- 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+
+### SG-5 LLM Prompt 三維消息面輸入
+
+- **目標**：補齊 `langchain_analyzer.py` `_HUMAN_PROMPT` 缺少消息面資料的缺口，讓 Skeptic Mode 四步驟處理真正三維輸入
+- **任務**
+  - `_HUMAN_PROMPT` 加入 `{news_summary}` 欄位（取 `cleaned_news.title` + `mentioned_numbers` 或 `news_content` 原文）
+  - `analyze()` 簽名新增 `news_summary: str | None = None` 參數
+  - `analyze_node` 從 `state["cleaned_news"]` 組合後傳入
+  - 補齊測試（含有/無 `cleaned_news` 兩情境）
+- **DoD**
+  - LLM prompt 包含三維輸入（技術面敘述 + 籌碼 JSON + 新聞摘要）
+  - 補齊測試
+- 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 5
+
+### SG-6 `data_confidence` 語義修正
+
+- **問題**：`compute_confidence()` 把 `news_sentiment="neutral"` 與 `technical_signal="sideways"` 計為資料缺失，但這兩者是成功計算後的合法輸出值，不代表資料不足
+- **目標**：修正 `data_confidence` 語義，改為「是否成功取得資料」而非「訊號是否有方向」
+- **任務**
+  - 修正判斷邏輯：`inst_flow != "unknown"` → 有籌碼資料；`news_sentiment` 有值（含 `neutral`）→ 有新聞資料；`closes` 足夠筆數 → 有技術資料
+  - 或考慮現有邏輯改名 `signal_breadth`，新增真正的 `data_confidence`
+  - 補齊測試（`neutral` 情緒 → `data_confidence` 不應為 0 或 33）
+- **DoD**
+  - `data_confidence` 語義與規格一致：反映資料完整度而非訊號方向
+  - 補齊測試（回歸保護）
+- 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 6
 
 ---
 
@@ -317,4 +421,4 @@
 7. 完成 P3-2b（Tool Use 計算工具）
 8. **[Low] 完成 P4-1~P4-3**（前端展示）
 
-> 註：以上為歷史開發順序。依 2026-03-04 目前狀態（P1~P4-4 多數已完成），**下一步優先項目為 P4-5 新聞摘要品質優化**（`cleaned_news_quality`、日期/標題品質規則、前端低品質提示、測試補齊）。
+> 註：以上為歷史開發順序。依 2026-03-05 目前狀態（P1~P5-1 + P4-5 NQ/ND 全數完成，229 tests passed），**下一步建議執行順序為：P4-8（消息面職責界定 + 多筆新聞）→ P4-7（data_confidence 前端提示）→ SG-1（技術位階指標）→ P4-6（Action Plan 燈號）→ SG-3（AnalyzeResponse 欄位）→ SG-5（LLM Prompt 三維輸入）→ SG-6（data_confidence 語義修正）**。

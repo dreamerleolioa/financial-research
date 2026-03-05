@@ -15,6 +15,18 @@
 - 前端已有儀表板骨架，但目前仍以靜態資料為主。
 - 建議優先序：API 契約 → LangGraph 回圈 → RSS 資料源 → 分析深化 → 前端真資料串接。
 
+### 最新狀態（2026-03-05 更新）
+
+- Phase 1（MVP Backend）：**100%**（技術債清理完成）
+- Phase 2（LangGraph 回圈）：**100%**（骨架 + judge + RSS 抓取 + Graph 接進 API 完成）
+- Phase 3（分析能力強化）：**100%**（Provider 抽象 + 信心分數 + Skeptic Mode + LLM 串接 + 策略模板完成）
+- Phase 4（前端儀表板）：**95%**（核心功能完成；多筆新聞列表 / 技術位階 / Action Plan 燈號待實作）
+
+詳細進度見 `docs/progress-tracker.md`；待執行任務依序見：
+- `docs/plans/2026-03-06-spec-gap-fix-day1.md`（Session 1：技術位階指標、Session 2：Action Plan 燈號）
+- `docs/plans/2026-03-07-spec-gap-fix-day2.md`（Session 3–7：API 欄位、前端提示、LLM 消息面、data_confidence 語義、DATE_UNKNOWN 懲罰）
+- `docs/plans/2026-03-06-news-scope-and-display-items.md`（NM-1~NM-7：消息面職責 + 多筆新聞列表）
+
 ---
 
 ## 2) 開發原則與週節奏
