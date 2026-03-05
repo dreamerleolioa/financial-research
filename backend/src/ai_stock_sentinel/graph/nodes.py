@@ -7,6 +7,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, adjust_confidence_by_divergence
+from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
 from ai_stock_sentinel.analysis.strategy_generator import generate_strategy
@@ -233,6 +234,65 @@ def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner) -> dict
         }
 
 
+def quality_gate_node(state: GraphState) -> dict[str, Any]:
+    """對 cleaned_news 執行四項品質規則，產出 cleaned_news_quality。
+
+    - check_title → TITLE_LOW_QUALITY
+    - normalize_date → DATE_UNKNOWN
+    - filter_numbers → NO_FINANCIAL_NUMBERS
+    - compute_quality → quality_score (0-100)
+    """
+    cleaned = state.get("cleaned_news")
+    if not cleaned:
+        return {"cleaned_news_quality": None}
+
+    flags: list[str] = []
+
+    title_result = QualityGate.check_title(cleaned.get("title", ""))
+    flags.extend(title_result.flags)
+
+    date_result = QualityGate.normalize_date(cleaned.get("date", ""))
+    flags.extend(date_result.flags)
+
+    numbers_result = QualityGate.filter_numbers(cleaned.get("mentioned_numbers", []))
+    flags.extend(numbers_result.flags)
+
+    score_result = QualityGate.compute_quality(flags)
+
+    result: dict[str, Any] = {
+        "cleaned_news_quality": {
+            "quality_score": score_result.quality_score,
+            "quality_flags": score_result.quality_flags,
+        }
+    }
+
+    # 治標：TITLE_LOW_QUALITY 時從 raw_news_items 回填原始 RSS 標題
+    if "TITLE_LOW_QUALITY" in flags:
+        raw_items = state.get("raw_news_items") or []
+        if raw_items:
+            fallback_title = raw_items[0].get("title", "")
+            if fallback_title:
+                result["cleaned_news"] = {**cleaned, "title": fallback_title}
+
+    # 產出 news_display（供前端顯示，不污染 cleaned_news）
+    news_display: dict[str, Any] | None = None
+    raw_items = state.get("raw_news_items") or []
+    if cleaned and raw_items:
+        first_raw = raw_items[0]
+        # 日期正規化：unknown → None
+        normalized_date = date_result.date
+        display_date: str | None = normalized_date if normalized_date != "unknown" else None
+        news_display = {
+            "title": first_raw.get("title", ""),
+            "date": display_date,
+            "source_url": first_raw.get("url") or None,
+        }
+
+    result["news_display"] = news_display
+
+    return result
+
+
 def fetch_news_node(state: GraphState, *, rss_client: RssNewsClient) -> dict[str, Any]:
     """透過 RSS 抓取新聞，回傳 raw_news_items 與 news_content（取第一篇標題+摘要）。"""
     symbol = state["symbol"]
@@ -248,12 +308,19 @@ def fetch_news_node(state: GraphState, *, rss_client: RssNewsClient) -> dict[str
 
     raw_dicts = [asdict(item) for item in items]
 
-    # 將最新一篇的 title + summary 合併成 news_content 供後續清潔
+    # 將最新一篇組成結構化 news_content 供後續清潔
+    # 用明確欄位標籤，避免 LLM 把時間戳誤識為標題
     news_content: str | None = None
     if items:
         first = items[0]
-        parts = [p for p in [first.published_at, first.title, first.summary] if p]
-        news_content = "\n".join(parts)
+        parts: list[str] = []
+        if first.published_at:
+            parts.append(f"日期: {first.published_at}")
+        if first.title:
+            parts.append(f"標題: {first.title}")
+        if first.summary:
+            parts.append(f"摘要: {first.summary}")
+        news_content = "\n".join(parts) if parts else None
 
     return {
         "raw_news_items": raw_dicts,

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 from ai_stock_sentinel.data_sources.rss_news_client import RawNewsItem
-from ai_stock_sentinel.graph.nodes import clean_node, crawl_node, fetch_institutional_node, fetch_news_node, judge_node, analyze_node
+from ai_stock_sentinel.graph.nodes import clean_node, crawl_node, fetch_institutional_node, fetch_news_node, judge_node, analyze_node, quality_gate_node
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import StockSnapshot
 
@@ -31,13 +31,25 @@ def _base_state(**overrides) -> GraphState:
         "news_content": None,
         "snapshot": None,
         "analysis": None,
+        "analysis_detail": None,
         "cleaned_news": None,
+        "cleaned_news_quality": None,
+        "news_display": None,
         "raw_news_items": None,
         "data_sufficient": False,
         "retry_count": 0,
         "errors": [],
         "requires_news_refresh": False,
         "requires_fundamental_update": False,
+        "technical_context": None,
+        "institutional_context": None,
+        "institutional_flow": None,
+        "strategy_type": None,
+        "entry_zone": None,
+        "stop_loss": None,
+        "holding_period": None,
+        "confidence_score": None,
+        "cross_validation_note": None,
     }
     state.update(overrides)
     return state
@@ -277,6 +289,41 @@ def test_clean_node_accumulates_errors_on_exception() -> None:
     assert any(e["code"] == "CLEAN_ERROR" for e in result["errors"])
 
 
+def test_fetch_news_node_news_content_does_not_include_timestamp_as_first_line() -> None:
+    """news_content 不應以時間戳作為第一行，以免 LLM 把時間戳當標題。"""
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.return_value = [_make_raw_news_item()]
+
+    state = _base_state()
+    result = fetch_news_node(state, rss_client=mock_rss)
+
+    news_content = result["news_content"]
+    assert news_content is not None
+    first_line = news_content.splitlines()[0]
+    # 第一行不應是純時間戳（RFC 2822 格式）
+    assert not first_line.startswith("Mon,")
+    assert not first_line.startswith("Tue,")
+    assert not first_line.startswith("Wed,")
+    assert not first_line.startswith("Thu,")
+    assert not first_line.startswith("Fri,")
+    assert not first_line.startswith("Sat,")
+    assert not first_line.startswith("Sun,")
+
+
+def test_fetch_news_node_news_content_has_structured_labels() -> None:
+    """news_content 應以標記欄位（標題:/摘要:）格式輸出，讓 LLM 明確識別語意。"""
+    mock_rss = MagicMock()
+    mock_rss.fetch_news.return_value = [_make_raw_news_item()]
+
+    state = _base_state()
+    result = fetch_news_node(state, rss_client=mock_rss)
+
+    news_content = result["news_content"]
+    assert news_content is not None
+    assert "標題:" in news_content
+    assert "摘要:" in news_content
+
+
 def test_fetch_news_node_uses_symbol_prefix_as_query() -> None:
     mock_rss = MagicMock()
     mock_rss.fetch_news.return_value = []
@@ -324,3 +371,208 @@ def test_fetch_institutional_node_stores_error_dict_on_failure() -> None:
 
     assert result["institutional_flow"]["error"] == "INSTITUTIONAL_FETCH_ERROR"
     assert result.get("errors", []) == []  # 不額外累積 errors，flow 本身帶 error 欄位
+
+
+# ── quality_gate_node ─────────────────────────────────────────────────────────
+
+def test_quality_gate_node_returns_quality_dict_for_valid_news() -> None:
+    """有效的 cleaned_news 應產出 quality_score 與 quality_flags。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "台積電 2 月營收年增 18.2%",
+            "mentioned_numbers": ["2,600", "18.2%"],
+            "sentiment_label": "positive",
+        }
+    )
+    result = quality_gate_node(state)
+
+    quality = result["cleaned_news_quality"]
+    assert quality is not None
+    assert "quality_score" in quality
+    assert "quality_flags" in quality
+    assert quality["quality_score"] == 100  # 全部欄位都正常，無扣分
+
+
+def test_quality_gate_node_flags_timestamp_title() -> None:
+    """時間戳標題應觸發 TITLE_LOW_QUALITY 並扣分 35。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "Mon, 03 Mar 2026 08:00:00",
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "positive",
+        }
+    )
+    result = quality_gate_node(state)
+
+    quality = result["cleaned_news_quality"]
+    assert "TITLE_LOW_QUALITY" in quality["quality_flags"]
+    assert quality["quality_score"] == 65  # 100 - 35
+
+
+def test_quality_gate_node_flags_unknown_date() -> None:
+    """date=unknown 應觸發 DATE_UNKNOWN 並扣分 15。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "unknown",
+            "title": "台積電 2 月營收年增",
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "neutral",
+        }
+    )
+    result = quality_gate_node(state)
+
+    quality = result["cleaned_news_quality"]
+    assert "DATE_UNKNOWN" in quality["quality_flags"]
+    assert quality["quality_score"] == 85  # 100 - 15
+
+
+def test_quality_gate_node_flags_no_financial_numbers() -> None:
+    """純日期碎片的 mentioned_numbers 應觸發 NO_FINANCIAL_NUMBERS 並扣分 20。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "台積電 2 月營收年增",
+            "mentioned_numbers": ["2026", "03"],
+            "sentiment_label": "neutral",
+        }
+    )
+    result = quality_gate_node(state)
+
+    quality = result["cleaned_news_quality"]
+    assert "NO_FINANCIAL_NUMBERS" in quality["quality_flags"]
+    assert quality["quality_score"] == 80  # 100 - 20
+
+
+def test_quality_gate_node_returns_none_when_no_cleaned_news() -> None:
+    """cleaned_news 為 None 時，cleaned_news_quality 應為 None。"""
+    state = _base_state(cleaned_news=None)
+    result = quality_gate_node(state)
+
+    assert result["cleaned_news_quality"] is None
+
+
+def test_quality_gate_node_backfills_title_from_raw_news_when_timestamp() -> None:
+    """TITLE_LOW_QUALITY 時，應從 raw_news_items[0].title 回填 cleaned_news.title。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "Wed, 04 Mar 2026 23:02:08 GMT",
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=[
+            asdict(_make_raw_news_item(title="台積電 2 月營收年增 20%"))
+        ],
+    )
+    result = quality_gate_node(state)
+
+    assert result["cleaned_news"]["title"] == "台積電 2 月營收年增 20%"
+
+
+def test_quality_gate_node_does_not_backfill_title_when_quality_ok() -> None:
+    """標題正常時，cleaned_news.title 不應被改動。"""
+    original_title = "台積電 2 月營收年增 20%"
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": original_title,
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "positive",
+        },
+        raw_news_items=[
+            asdict(_make_raw_news_item(title="其他標題"))
+        ],
+    )
+    result = quality_gate_node(state)
+
+    # 無 TITLE_LOW_QUALITY，cleaned_news 應維持原標題（或不在回傳中）
+    cleaned = result.get("cleaned_news")
+    if cleaned is not None:
+        assert cleaned["title"] == original_title
+
+
+def test_quality_gate_node_does_not_backfill_when_no_raw_news() -> None:
+    """TITLE_LOW_QUALITY 但無 raw_news_items 時，不應報錯，cleaned_news.title 維持原值。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "Wed, 04 Mar 2026 23:02:08 GMT",
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=None,
+    )
+    result = quality_gate_node(state)
+
+    # 不應拋出例外，cleaned_news 維持原時間戳標題
+    cleaned = result.get("cleaned_news")
+    if cleaned is not None:
+        assert cleaned["title"] == "Wed, 04 Mar 2026 23:02:08 GMT"
+
+
+def test_quality_gate_node_produces_news_display() -> None:
+    """quality_gate_node 應產出 news_display，含乾淨標題、正規化日期、來源 URL。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "Mon, 03 Mar 2026 08:00:00 GMT",
+            "title": "Wed, 04 Mar 2026 23:02:08 GMT",
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=[
+            asdict(_make_raw_news_item(
+                title="台積電 2 月營收年增 20%",
+                url="https://example.com/news/1",
+                published_at="Mon, 03 Mar 2026 08:00:00 GMT",
+            ))
+        ],
+    )
+    result = quality_gate_node(state)
+
+    display = result["news_display"]
+    assert display is not None
+    assert display["title"] == "台積電 2 月營收年增 20%"
+    assert display["date"] == "2026-03-03"   # RFC 2822 → ISO
+    assert display["source_url"] == "https://example.com/news/1"
+
+
+def test_quality_gate_node_news_display_date_none_when_unknown() -> None:
+    """cleaned_news.date=unknown 時，news_display.date 應為 None。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "unknown",
+            "title": "台積電公告",
+            "mentioned_numbers": [],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=[asdict(_make_raw_news_item())],
+    )
+    result = quality_gate_node(state)
+
+    assert result["news_display"]["date"] is None
+
+
+def test_quality_gate_node_news_display_none_when_no_cleaned_news() -> None:
+    """cleaned_news 為 None 時，news_display 也應為 None。"""
+    state = _base_state(cleaned_news=None)
+    result = quality_gate_node(state)
+
+    assert result.get("news_display") is None
+
+
+def test_quality_gate_node_news_display_none_when_no_raw_news_items() -> None:
+    """raw_news_items 為空時，news_display 應為 None（無來源可取）。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "台積電公告",
+            "mentioned_numbers": [],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=None,
+    )
+    result = quality_gate_node(state)
+
+    assert result.get("news_display") is None
