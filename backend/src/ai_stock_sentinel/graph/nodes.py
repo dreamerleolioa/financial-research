@@ -157,7 +157,11 @@ def score_node(state: GraphState) -> dict[str, Any]:
     - state["institutional_flow"]["flow_label"]
     - 由 recent_closes 推導的 technical_signal
 
-    輸出：{"confidence_score": int, "cross_validation_note": str}
+    輸出：
+    - confidence_score: int（= signal_confidence，向後相容別名）
+    - signal_confidence: int
+    - data_confidence: int
+    - cross_validation_note: str
     """
     # sentiment_label
     cleaned_news = state.get("cleaned_news")

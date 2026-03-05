@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from ai_stock_sentinel.analysis.confidence_scorer import adjust_confidence_by_divergence
+from ai_stock_sentinel.analysis.confidence_scorer import compute_confidence
 from ai_stock_sentinel.analysis.confidence_scorer import derive_technical_score
 
 BASE = 50
@@ -310,8 +311,6 @@ def test_technical_score_partial_bullish():
 
 # ─── compute_confidence (CS-4) ───────────────────────────────────────────────
 
-from ai_stock_sentinel.analysis.confidence_scorer import compute_confidence
-
 
 def test_compute_confidence_all_available():
     """三維均有資料 → data_confidence=100"""
@@ -334,7 +333,7 @@ def test_compute_confidence_only_inst_missing():
         inst_flow="unknown",
         technical_signal="bullish",
     )
-    assert result["data_confidence"] == 67
+    assert result["data_confidence"] == 67  # round(2/3 * 100)
 
 
 def test_compute_confidence_all_neutral():
