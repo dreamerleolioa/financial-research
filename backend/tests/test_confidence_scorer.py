@@ -172,14 +172,15 @@ def test_weighted_partial_positive_sentiment_only():
 
 
 def test_weighted_partial_inst_accumulation_only():
-    """只有 inst=institutional_accumulation，其他 neutral → 小幅加分"""
+    """只有 inst=institutional_accumulation，其他 neutral → +7 → 57"""
     score, note = adjust_confidence_by_divergence(
         50,
         news_sentiment="neutral",
         inst_flow="institutional_accumulation",
         technical_signal="sideways",
     )
-    assert score > 50
+    # neutral(0) + institutional_accumulation(+7) + sideways(0) = +7
+    assert score == 57
 
 
 def test_weighted_three_resonance_still_highest():
