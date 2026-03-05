@@ -18,7 +18,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 
 | 維度 | 說明 | 資料來源 |
 |------|------|----------|
-| **消息面 (News)** | 去情緒化後的事實型新聞摘要 | Google News RSS、財經媒體 RSS |
+| **消息面 (News)** | 影響市場情緒的事件訊號（法說會、政策、產業動態、法人評等調整等），**不涵蓋公司財務數字**（財報數字屬於基本面，需另從財報資料源取得） | Google News RSS、財經媒體 RSS |
 | **技術面 (Technical)** | MA5/20/60 均線、乖離率 (BIAS)、RSI、成交量變化 | yfinance + Pandas 計算 |
 | **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、融資融券消長 | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback） |
 
@@ -80,6 +80,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 - **即時新聞（消息面）**
   - Google News RSS
   - 指定財經媒體 RSS / API
+  - **範疇限定**：聚焦影響市場情緒的事件（法說會、政策、產業趨勢、供應鏈、法人評等、重大人事、總經事件等），**不負責提供公司財務數字**（EPS、營收、毛利率等屬於基本面，應從公開資訊觀測站/財報資料源取得）
 
 - **技術面指標**（由 `yfinance` 拉取 OHLCV 後，以 **Pandas** 計算）
   - `MA5`、`MA20`、`MA60`：收盤價簡單移動平均
@@ -176,47 +177,28 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 
 **信心分數調整規則（rule-based，非 LLM 計算）**：
 
-```python
-BASE_CONFIDENCE = 50  # 中性基準分
+> ⚠️ **v2 架構（CS-1/CS-2，2026-03-05 升級）**：已改為多維獨立加權模型，下方 if-elif 範例為舊版概念說明，**實際實作見 `analysis/confidence_scorer.py`**。
 
-def adjust_confidence_by_divergence(
-    base_score: int,           # 通常傳入 BASE_CONFIDENCE（50）
-    news_sentiment: str,       # "positive" | "negative" | "neutral"
-    inst_flow: str,            # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral"
-    technical_signal: str,     # "bullish" | "bearish" | "sideways"
-) -> tuple[int, str]:
-    """
-    根據三維訊號一致性調整信心分數。
-    回傳 (adjusted_score, cross_validation_note)。
-    純 rule-based Python，不呼叫 LLM。
-    base_score 從 50 開始，clamp 至 [0, 100]。
-    """
-    note = ""
-    adjustment = 0
+各維度獨立評分後加總，再套用特殊情境加成：
 
-    # 訊號共振：三維方向一致 → 加分
-    if news_sentiment == "positive" and inst_flow == "institutional_accumulation" and technical_signal == "bullish":
-        adjustment = +15
-        note = "三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"
+| 維度 | 值 | 分數 |
+|------|----|------|
+| `news_sentiment` | positive / negative / neutral | +5 / -5 / 0 |
+| `inst_flow` | institutional_accumulation / distribution / retail_chasing / neutral / unknown | +7 / -10 / -8 / 0 / 0 |
+| `technical_signal` | bullish / bearish / sideways | +5 / -5 / 0 |
+| 特殊：三維共振 | positive + accumulation + bullish | 額外 +3 |
+| 特殊：利多出貨 | positive + distribution | 額外 -7 |
 
-    # 利多出貨背離：新聞正面但法人出貨 → 降分
-    elif news_sentiment == "positive" and inst_flow == "distribution":
-        adjustment = -20
-        note = "警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"
+`cross_validation_note` 仍由固定字串對應情境產生；三維共振、利多出貨、散戶追高、利空不跌四情境的文案不變。`inst_flow = "unknown"`（Provider 全部失敗）時分數不貢獻，亦不觸發特殊情境。
 
-    # 散戶追高危機：融資暴增 + 法人出貨
-    elif inst_flow == "retail_chasing":
-        adjustment = -15
-        note = "散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"
+**信心分數拆分（CS-4）**：
+- `data_confidence`：資料完整度（0 / 33 / 67 / 100），依三個維度有無有效值計算
+- `signal_confidence`：訊號強度（即舊 `confidence_score`），由 `adjust_confidence_by_divergence()` 計算
+- `confidence_score`：保留為 `signal_confidence` 的別名，向後相容
+- 整合入口：`compute_confidence(base_score, news_sentiment, inst_flow, technical_signal) -> dict`
 
-    # 利空不跌：新聞負向但技術偏強 → 小幅加分
-    elif news_sentiment == "negative" and technical_signal == "bullish":
-        adjustment = +10
-        note = "利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"
-
-    adjusted = max(0, min(100, base_score + adjustment))
-    return adjusted, note
-```
+**技術面加權分數（CS-1）**：
+- `derive_technical_score(closes, rsi, bias) -> int`：RSI / BIAS / MA 排列各自獨立加權，總分映射至 [30, 70]，資料不足回傳 50
 
 ---
 
@@ -233,12 +215,12 @@ def adjust_confidence_by_divergence(
 - 同時產生 `technical_context` 與 `institutional_context`
 - 由 Python rule-based 生成「敘事背景」，禁止呼叫 LLM
 
-**語義化翻譯層（新增硬需求）**：
+**語義化翻譯層（已實作）**：
 - 目的：將 RSI、BIAS、MA、Institutional Flow 等術語映射為投資者可讀的直白中文
-- 實作位置：`preprocess_node` 內的 `quantify_to_narrative()`，先做 mapping 再產生敘事
-- 規範：映射表由 Python 常數管理（可測試、可版本化），禁止在 Prompt 內臨時翻譯
-- 規範：語義判斷閾值（如 RSI 超買/超賣、BIAS 過熱/過冷）必須由 Python rule-based 固定，禁止 LLM 動態改寫
-- 規範：前端紅綠燈與報告敘事必須共用同一組 Python 規則輸出，避免 UI 與報告語義衝突
+- 實作位置：`analysis/context_generator.py`，`generate_technical_context(df_price, inst_data)` 為主入口
+- 規範：語義判斷閾值由 Python rule-based 固定，禁止 LLM 動態改寫
+
+> ⚠️ **實作說明（2026-03-05）**：規格原本規劃 `quantify_to_narrative()` 單一函式與 `TERM_ALIAS` 常數，實際落地改為多個獨立 helper：`_bias_narrative()`、`_rsi_narrative()`、`_ma_narrative()`、`_volume_narrative()`、`_inst_narrative()`，統一由 `generate_technical_context()` 協調呼叫。`TERM_ALIAS` 常數未採用，閾值判斷與敘事字串直接內嵌於各 helper。功能等價，可測試性相同。
 
 | 技術術語 | 中文語義標籤（對外） |
 |----------|----------------------|
@@ -246,63 +228,6 @@ def adjust_confidence_by_divergence(
 | BIAS | 股價位階（月線距離） |
 | MA5/20/60 | 平均成本帶（短中長均線） |
 | Institutional Flow | 法人資金流向 |
-
-```python
-TERM_ALIAS = {
-  "rsi14": "買賣氣場（RSI）",
-  "bias_ma20": "股價位階（BIAS）",
-  "ma5": "短線平均成本（MA5）",
-  "ma20": "月線平均成本（MA20）",
-  "ma60": "季線平均成本（MA60）",
-  "institutional_flow": "法人資金流向",
-}
-
-def quantify_to_narrative(technical: dict) -> str:
-    """
-  將技術指標數值轉換為 LLM 可直接理解的敘事描述，
-  並附上語義化中文標籤（術語翻譯層）。
-    純 rule-based，100% 可測試，不依賴 LLM。
-    """
-    lines = []
-
-    # 乖離率（BIAS）
-    bias = technical.get("bias_ma20", 0)
-    if bias < -5:
-        lines.append(f"{TERM_ALIAS['bias_ma20']}：股價低於月線（MA20）{abs(bias):.1f}%，處短線弱勢格局，乖離率偏大，存在超賣反彈期待")
-    elif bias > 8:
-        lines.append(f"{TERM_ALIAS['bias_ma20']}：股價高於月線（MA20）{bias:.1f}%，乖離率偏高，注意短線回調風險")
-    else:
-        lines.append(f"{TERM_ALIAS['bias_ma20']}：股價與月線（MA20）乖離率 {bias:.1f}%，屬正常區間")
-
-    # RSI
-    rsi = technical.get("rsi14", 50)
-    if rsi > 70:
-        lines.append(f"{TERM_ALIAS['rsi14']}：{rsi:.1f}，進入超買區間（>70），短線動能可能趨緩")
-    elif rsi < 30:
-        lines.append(f"{TERM_ALIAS['rsi14']}：{rsi:.1f}，進入超賣區間（<30），短線存在反彈訊號")
-    else:
-        lines.append(f"{TERM_ALIAS['rsi14']}：{rsi:.1f}，處於中性區間（30~70）")
-
-    # 均線多空排列
-    ma5 = technical.get("ma5", 0)
-    ma20 = technical.get("ma20", 0)
-    ma60 = technical.get("ma60", 0)
-    if ma5 > ma20 > ma60:
-        lines.append("均線呈多頭排列（MA5 > MA20 > MA60），中長線趨勢向上")
-    elif ma5 < ma20 < ma60:
-        lines.append("均線呈空頭排列（MA5 < MA20 < MA60），中長線趨勢向下")
-    else:
-        lines.append("均線糾結中，趨勢方向尚不明確")
-
-    # 成交量
-    vol_chg = technical.get("volume_change_pct", 0)
-    if vol_chg > 50:
-        lines.append(f"今日成交量較五日均量放大 {vol_chg:.0f}%，量能顯著放大，需留意是否為主力異動")
-    elif vol_chg < -30:
-        lines.append(f"今日成交量較五日均量萎縮 {abs(vol_chg):.0f}%，市場觀望情緒濃厚")
-
-    return "\n".join(lines)
-```
 
 ---
 
@@ -380,9 +305,12 @@ class InstitutionalFlowProvider(Protocol):
 
 輸入：清潔後新聞 ＋ **定性化技術面敘述**（由 `quantify_to_narrative` 轉換後）＋ 籌碼 JSON（全由 Python 函式計算後傳入）
 
+> ⚠️ **資料來源說明（重要）**：「清潔後新聞」來自 **Google News RSS**，其職責是捕捉**影響市場情緒的事件訊號**，包括：法說會動態、政策消息、產業競爭格局變化、供應鏈事件、法人評等調整、重大人事異動、總體經濟事件等。
+> **新聞維度不負責財務數字分析**：EPS、營收、毛利率等財報數字屬於「基本面」維度，需從公開資訊觀測站或財報資料源取得（目前尚未實作）。若 RSS 新聞標題中**碰巧含有財務數字**（如「Q1 營收年增 20%」），可供參考，但此為附帶資訊，**不得將新聞當成財報資料源使用**，也不應以「新聞中沒有財務數字」作為降低信心分數的理由。
+
 處理步驟：
 
-1. 提取新聞中所有提及數值（營收、EPS、毛利率、目標價、漲跌幅等）
+1. 識別新聞標題的核心事件語義（發生什麼事），標記情緒傾向（`sentiment_label`：positive / negative / neutral）；新聞的核心貢獻是**市場情緒訊號**，判斷依據為事件本身的性質（政策利多/利空、法人調降/調升評等、供應鏈正面/負面消息等），**不依賴財務數字的有無**
 2. 識別並標記情緒化動詞（例如：崩盤、起飛、噴出），保留事實陳述
 3. 讀取 `preprocess_node` 轉換後的技術面敘述（如「股價低於月線 6%，處短線弱勢」），理解趨勢語義
 4. 讀取籌碼面 `flow_label` 與累計數值，判斷法人方向與散戶籌碼結構
@@ -400,12 +328,14 @@ class InstitutionalFlowProvider(Protocol):
 
 **衝突規則（v2，定案）**：
 
-| 情境 | 條件 | 分數調整 | `cross_validation_note`（rule-based 固定字串） |
+> 分數調整 = 各維度 lookup 分數加總 + 特殊情境 bonus/penalty。各維度基礎對照：`sentiment` positive/negative/neutral = +5/-5/0；`inst_flow` institutional_accumulation/distribution/retail_chasing/neutral/unknown = +7/-10/-8/0/0；`technical_signal` bullish/bearish/sideways = +5/-5/0。
+
+| 情境 | 條件 | 分數調整（加總） | `cross_validation_note`（rule-based 固定字串） |
 |------|------|----------|------------------------------------------------|
-| 訊號共振 | `sentiment=positive` + `flow_label=institutional_accumulation` + `technical=bullish` | +15 | `"三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"` |
-| 利多出貨背離 | `sentiment=positive` + `flow_label=distribution` | -20 | `"警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"` |
-| 散戶追高危機 | `flow_label=retail_chasing` | -15 | `"散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"` |
-| 利空不跌 | `sentiment=negative` + `technical=bullish` | +10 | `"利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"` |
+| 訊號共振 | `sentiment=positive` + `flow_label=institutional_accumulation` + `technical=bullish` | **+20**（+5+7+5 + bonus +3） | `"三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"` |
+| 利多出貨背離 | `sentiment=positive` + `flow_label=distribution`（技術中性） | **-12**（+5-10+0 + extra -7） | `"警示：市場消息正面但法人同步出貨，疑似趁消息出貨，建議保守觀察"` |
+| 散戶追高危機 | `flow_label=retail_chasing`（其餘中性） | **-8**（-8） | `"散戶追高風險：融資餘額異常激增，法人同步減碼，籌碼結構偏不健康"` |
+| 利空不跌 | `sentiment=negative` + `technical=bullish`（籌碼中性） | **0**（-5+5；僅觸發 note） | `"利空不跌訊號：股價守穩支撐且技術偏強，逆勢佈局機會，需觀察持續性"` |
 
 > **架構決策**：`confidence_score` 從 **50** 開始（中性基準），clamp 至 [0, 100]。
 > `cross_validation_note` 由 `score_node` 的 **純 rule-based Python** 產生固定字串，**不呼叫 LLM**。
@@ -526,29 +456,38 @@ class InstitutionalFlowProvider(Protocol):
 
 **設計決策：**
 - `cleaned_news`（保留）：專供 LLM pipeline 消費，含 `sentiment_label`、`mentioned_numbers`
-- `news_display`（新增）：專供前端顯示，從 `raw_news_items[0]` 直接取 RSS 原始欄位，不經 LLM 清潔
+- `news_display_items`（新增）：**陣列**，專供前端顯示近期新聞列表，每筆從 `raw_news_items` 直接取 RSS 原始欄位，不經 LLM 清潔
 
-**`news_display` 欄位規格：**
+**`news_display_items` 欄位規格：**
 
 ```json
-{
-  "title": "台積電 Q1 法說會重點整理",
-  "date": "2026-03-05",
-  "source_url": "https://news.example.com/..."
-}
+[
+  {
+    "title": "台積電 Q1 法說會重點整理",
+    "date": "2026-03-05",
+    "source_url": "https://news.example.com/..."
+  },
+  {
+    "title": "外資連三日買超台積電",
+    "date": "2026-03-04",
+    "source_url": "https://news.example.com/..."
+  }
+]
 ```
 
 | 欄位 | 來源 | 說明 |
 |------|------|------|
-| `title` | `raw_news_items[0].title` | RSS 原始標題，不經 LLM 清潔 |
-| `date` | `cleaned_news.date` via `QualityGate.normalize_date` | RFC 2822 → ISO 8601；`unknown` → `null` |
-| `source_url` | `raw_news_items[0].url` | RSS 原始連結 |
+| `title` | `raw_news_items[i].title` | RSS 原始標題，不經 LLM 清潔 |
+| `date` | `raw_news_items[i].pub_date` via `QualityGate.normalize_date` | RFC 2822 → ISO 8601；`unknown` → `null` |
+| `source_url` | `raw_news_items[i].url` | RSS 原始連結，供使用者點擊跳轉 |
+
+> **筆數建議**：預設輸出最多 5 筆，依 `raw_news_items` 實際數量而定，確保前端有足夠近期新聞可瀏覽。
 
 **產出節點：** `quality_gate_node`（在 `clean_node` 之後執行，`raw_news_items` 仍在 state 中）
 
 **前端渲染規則：**
-- 新聞標題、日期、「查看原文」連結 → 讀 `news_display`
-- 情緒 badge → 讀 `cleaned_news.sentiment_label`
+- 新聞標題、日期、「查看原文」連結 → 讀 `news_display_items`（每筆渲染為可點擊連結，`source_url` 以新分頁開啟）
+- 情緒 badge → 讀 `cleaned_news.sentiment_label`（僅標示在第一筆或整體情緒旗標）
 - `mentioned_numbers` chips → 移除（對使用者無顯示價值）
 - 品質受限提示 → 讀 `cleaned_news_quality`
 
@@ -562,10 +501,13 @@ class InstitutionalFlowProvider(Protocol):
 摘要: 台積電公佈 2 月營收，年增 20%，優於市場預期。
 ```
 
-> **`Technical_Signal` 定義**
-> - `bullish`（多）：均線多頭排列（MA5 > MA20 > MA60）且 RSI 50~70
-> - `bearish`（空）：均線空頭排列或 RSI < 30
-> - `sideways`（盤整）：均線糾結或 RSI 40~60 無明確方向
+> **`Technical_Signal` 定義（v2，CS-5，2026-03-05 升級）**
+> 改為 `derive_technical_score()` 加權模型，舊多 AND 條件已廢除：
+> - `bullish`（多）：`derive_technical_score()` 回傳 `score >= 60`（RSI / BIAS / MA 排列三維加權總分偏多）
+> - `bearish`（空）：`score <= 40`（三維加權總分偏空）
+> - `sideways`（盤整）：`40 < score < 60`（訊號不明確）
+>
+> `derive_technical_score()` 詳見 `analysis/confidence_scorer.py`：RSI ≥ 50 → +1、BIAS 0~5% → +1（>10% 或 <-10% → -1）、close > ma5 > ma20 → +1（ma5 < ma20 → -1）；總分 [-3, +3] 映射至 [30, 70]。
 
 > **`Institutional_Flow` 定義**
 > - `institutional_accumulation`（大戶吸籌）：三大法人合計買超，融券增加（放空減少）
@@ -598,11 +540,17 @@ class InstitutionalFlowProvider(Protocol):
 2. **信心指數元件**
    - 圓形進度條顯示 AI confidence（0~100）
 
-3. **雜訊過濾對比視窗**
-   - 左：原始新聞
-   - 右：純數據摘要（JSON / 條列）
+3. **近期新聞列表**
+   - 顯示最多 5 筆近期新聞，資料來自 `news_display_items`
+   - 每筆顯示：標題（可點擊連結，開新分頁）、發布日期
+   - 整體情緒 badge（positive / negative / neutral）顯示於列表標題旁
+   - 標示「以上新聞為市場情緒參考，財報數字請參閱公開資訊觀測站」
 
-4. **分析路徑圖（流程事件）**
+4. **雜訊過濾對比視窗**
+   - 左：AI 消息面情緒摘要（`cleaned_news.sentiment_label` + `summary`）
+   - 右：技術面與籌碼面數據條列
+
+5. **分析路徑圖（流程事件）**
    - 例：「抓取新聞中 → 抽取數值完成 → 驗證歷史資料完成」
 
 5. **戰術行動（Action Plan）卡片**

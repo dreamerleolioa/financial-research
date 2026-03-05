@@ -1,6 +1,6 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-05
+> 更新日期：2026-03-05（CS-1~CS-5 完成，229 tests passed）
 
 ## 目前完成度（高層）
 
@@ -178,6 +178,7 @@
 - [x] 前端顯示 `analysis_detail` 結構化輸出（2026-03-04 Session 9）
   - `analysis_detail` 存在時：顯示 `technical_signal` 標籤（看多/看空/盤整）、`summary` 段落、`risks` 條列
   - `analysis_detail` 為 null 時 fallback 維持 `analysis` 純文字
+- [ ] 信心指數卡片：`data_confidence < 60` 時卡片下方顯示「資料不足，分數僅供參考」灰色提示（`data_confidence` 已由後端回傳，僅需前端讀取判斷）（計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 4）
 
 ### 下一輪修正（新聞摘要品質）
 
@@ -211,12 +212,12 @@
 - [x] CS-1：`derive_technical_score()` 新函式，RSI/BIAS/均線排列各自獨立加權（[30,70] 映射）；5 新測試（2026-03-05）
 - [x] CS-2：`adjust_confidence_by_divergence()` 改為多維加權模型，lookup table 取代 if-elif；partial match 可得部分調分；21→28 tests（2026-03-05）
 - [x] CS-3：機構資料含 `error` 鍵時 `score_node` 改標記為 `"unknown"`，`_INST_FLOW_SCORES` 顯式加入 `"unknown": 0`；score_node 整合測試補齊（2026-03-05）
-- [ ] CS-4：信心分數定義 `data_confidence`（資料完整度，0–100）與 `signal_confidence`（訊號強度，0–100）分開回傳，前端可顯示「資料不足」提示而非固定 50
-- [ ] CS-5：整合 `derive_technical_score` 進 `_derive_technical_signal`；補齊完整測試覆蓋
+- [x] CS-4：`compute_confidence()` 整合回傳 `data_confidence`（資料完整度）與 `signal_confidence`（訊號強度）；`GraphState` / `AnalyzeResponse` 補齊兩欄位；`confidence_score` 保留為 `signal_confidence` 別名向後相容（2026-03-05）
+- [x] CS-5：`_derive_technical_signal()` 改呼叫 `derive_technical_score()` 加權函式，廢除舊式多 AND 條件判斷；`score_node` 全面整合（2026-03-05）
 
 ### 下一輪修正（Action Plan 燈號）
 
-> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）  
+> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）；實作計劃：`docs/plans/2026-03-06-spec-gap-fix.md` Session 2  
 > 架構決策：燈號由**後端 rule-based Python 計算**並回傳 `action_plan_tag`；前端不含條件判斷，僅做 enum → emoji/文字顯示。
 
 - [ ] 後端：實作 `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python（`opportunity` / `overheated` / `neutral`；任一輸入為 None 則降級回 `neutral`）
@@ -225,14 +226,84 @@
 - [ ] 前端：Action Plan 卡片標題旁顯示燈號標籤（`opportunity` → 🟢 機會 / `overheated` → 🔴 過熱 / `neutral` → 🔵 中性）
 - [ ] 前端：`action_plan_tag` 為 null 時不顯示標籤，不崩潰
 
-### 後續優化（多篇新聞情緒彙整）
+### 下一輪修正（LLM Prompt 缺少消息面輸入）
 
-> **背景**：目前 `fetch_news_node` 抓回多篇但只取第一篇組 `news_content` 送 LLM 清潔，情緒標籤代表性不足。新聞雖為落後指標，但多篇彙整後的市場情緒仍有參考價值。
+> **發現時間**：2026-03-05 規格比對  
+> **問題**：`langchain_analyzer.py` 的 `_HUMAN_PROMPT` 沒有傳入 `cleaned_news` 或新聞原文，LLM 在 Skeptic Mode 步驟一「提取新聞數值」時看不到任何消息面資料，架構規格要求的「清潔後新聞 ＋ 技術面敘述 ＋ 籌碼 JSON」三維輸入實際只有兩維。
 
-- [ ] `fetch_news_node` 改取前 N 篇（建議 3~5 篇）組成多段 `news_content`，每篇以結構化標籤分隔
-- [ ] `clean_node` / `FinancialNewsCleaner` 支援多篇輸入，輸出彙整後的 `sentiment_label`（majority vote 或加權）
-- [ ] `news_display` 改為陣列（`news_display_items: list[NewsDisplay]`），前端顯示多篇標題+連結
-- [ ] 補齊相關測試與 API 欄位更新
+- [ ] `langchain_analyzer.py` `_HUMAN_PROMPT` 加入 `{news_summary}` 欄位（取 `cleaned_news.title` + `cleaned_news.mentioned_numbers` 摘要，或直接傳 `news_content` 原文）
+- [ ] `analyze()` 簽名新增 `news_summary: str | None = None` 參數
+- [ ] `analyze_node` 從 `state["cleaned_news"]` 組合後傳入
+- [ ] 補齊測試（含有/無 cleaned_news 兩情境）
+
+### 下一輪修正（data_confidence 語義修正）
+
+> **發現時間**：2026-03-05 規格比對  
+> **問題**：`compute_confidence()` 把 `news_sentiment="neutral"` 計為「資料缺失」，但 `neutral` 是 LLM 合法回傳的情緒標籤（表示有抓到新聞，只是情緒中性）。同理 `technical_signal="sideways"` 也是成功計算的結果，不代表資料不足。目前 `data_confidence` 實際量的是「訊號偏多/偏空的維度數」，而不是「資料成功取得的維度數」，語義與規格不符。
+
+- [ ] `compute_confidence()` 修正「資料完整度」判斷邏輯：以資料是否成功取得為準（`inst_flow != "unknown"` 視為有籌碼資料、`news_sentiment` 只要有值皆視為有新聞資料、`closes` 有足夠筆數視為有技術資料）
+- [ ] 或考慮將現有邏輯欄位改名為 `signal_breadth`（訊號廣度），並新增真正的 `data_confidence`（資料完整度）
+- [ ] 補齊測試（neutral 情緒 → data_confidence 不應為 0 或 33）
+
+### 待優化缺口（2026-03-05 規格對比發現）
+
+> **背景**：2026-03-05 對後端程式碼與 `ai-stock-sentinel-architecture-spec.md` 進行全面比對，發現下列四大缺口尚未實作。
+
+#### 1. 技術位階指標（Support / Resistance）
+
+> 規格要求 `calculate_price_levels()` 輸出 `high_20d`, `low_20d`, `support_20d`, `resistance_20d`，目前均未實作。  
+> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 1
+
+- [ ] `yfinance_client.py` `StockSnapshot` 補齊 `high_20d` / `low_20d` / `support_20d` / `resistance_20d` 欄位計算（近 20 日高低點 + 均量加權支撐壓力位）
+- [ ] `context_generator.py` `generate_technical_context()` 加入支撐/壓力位敘事段落
+- [ ] `strategy_generator.py` `entry_zone` / `stop_loss` 改以實際價格計算（如 `"892.0-905.0（support_20d ~ MA20）"` / `"865.4（近20日低點×0.97 或 MA60）"`）
+- [ ] `GraphState` 新增 `support_20d` / `resistance_20d` / `high_20d` / `low_20d` 選填欄位
+- [ ] **位階資料缺失 fallback**：`low_20d` / `ma60` 不可用時，`entry_zone` 回傳 `"資料不足，建議參考現價 +/- 5%"`，並在 `risks` 或 `cross_validation_note` 標註「20日位階資料不足」；不允許虛構數值
+- [ ] 補齊測試（含 `test_strategy_template_contains_numeric_entry_zone`、`test_strategy_generation_fails_safe_when_price_levels_missing`、`test_strategy_fallback_uses_close_plus_minus_5pct_when_low20d_unavailable`）
+
+#### 2. AnalyzeResponse 欄位完整性
+
+> 規格輸出結構含多個頂層欄位，目前 API 回應缺漏。  
+> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+
+- [ ] `AnalyzeResponse` 新增頂層 `sentiment_label: str | null`（從 `cleaned_news.sentiment_label` 浮出，供前端直接讀取）
+- [ ] `AnalyzeResponse` 新增 `action_plan: dict | null`（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）；由後端 rule-based 計算，不呼叫 LLM
+- [ ] `AnalyzeResponse` 新增 `data_sources: list[str]`（如 `["google-news-rss", "yfinance", "twse-openapi"]`；依實際抓取成功的來源動態填入）
+- [ ] `AnalyzeResponse` 新增頂層 `institutional_flow_label: str | null`（`flow_label` 浮出，供前端色碼顯示）
+
+#### 3. AnalysisDetail 結構強化
+
+> 目前 `AnalysisDetail` 只含 `summary` / `risks` / `technical_signal`，規格輸出尚有其他欄位。  
+> 計劃文件：`docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+
+- [ ] `AnalysisDetail` 新增 `institutional_flow: str | null`（籌碼標籤，與頂層欄位一致）
+- [ ] `AnalysisDetail` 新增 `sentiment_label: str | null`（新聞情緒標籤）
+- [ ] LLM System Prompt 同步更新，要求輸出上述欄位（純展示用；LLM 不得修改 `confidence_score`）
+
+#### 4. 基本面 / 估值工具（低優先）
+
+> 規格 Tool Use 章節列出下列工具，目前完全未實作；屬進階功能，優先序低。
+
+- [ ] `estimate_pe_percentile(symbol, pe)` — 與歷史 PE 分佈比較，回傳百分位
+- [ ] `calculate_growth_rate(current, previous)` — YoY / MoM 標準化計算
+- [ ] `StockSnapshot` / `GraphState` 補齊 `fundamentals` 資料段（財報、EPS、P/E 等），需研究穩定資料源
+
+---
+
+### 下一輪修正（消息面職責邊界 + 多筆新聞列表）
+
+> 計劃文件：`docs/plans/2026-03-06-news-scope-and-display-items.md`
+> **背景**：
+> 1. 規格釐清：新聞（消息面）僅負責市場情緒訊號（法說會、政策、法人評等等），不負責財務數字（EPS/營收/毛利率屬基本面）；對應調整 quality_score 計分與 LLM Prompt
+> 2. `news_display`（單筆）升級為 `news_display_items`（最多 5 筆陣列），前端可展示多筆近期新聞連結
+
+- [ ] NM-1：`NO_FINANCIAL_NUMBERS` flag 計分貢獻改為 0，旗標保留但不扣 quality_score
+- [ ] NM-2：LLM System Prompt 移除「從新聞提取財務數字」要求，改為聚焦事件情緒語義
+- [ ] NM-3：`GraphState` `news_display` → `news_display_items: list[dict]`
+- [ ] NM-4：`quality_gate_node` 迭代 `raw_news_items[:5]`，產出 `news_display_items` 陣列
+- [ ] NM-5：`api.py` `AnalyzeResponse` 欄位更新（`news_display_items`）
+- [ ] NM-6：前端新聞卡片改為多筆列表，每筆可點擊連結 + 公開資訊觀測站提示
+- [ ] NM-7：補齊測試（state 欄位、node 輸出、API 欄位、quality_score 計分）
 
 ---
 
@@ -255,8 +326,11 @@ cd backend
 
 ---
 
-## 下一步建議（Top 3）
+## 下一步建議（Top 6）
 
-1. **優先執行**：信心分數可靠性優化（CS-1 ~ CS-5，依 `docs/plans/2026-03-05-deep-analysis-upgrade.md`）
-2. **後續**：Action Plan 燈號（後端 rule-based + 前端顯示）
-3. **後續**：Phase 5 準備 — Docker / Railway 部署
+1. **優先執行**：消息面職責邊界 + 多筆新聞列表（NM-1 ~ NM-7），依 `docs/plans/2026-03-06-news-scope-and-display-items.md`
+2. **接續**：前端信心指數卡片 `data_confidence < 60` 提示（`docs/plans/2026-03-06-spec-gap-fix.md` Session 4）— 後端已回傳 `data_confidence`，僅需前端讀取判斷
+3. **接續**：技術位階指標（Support/Resistance）— `yfinance_client` 補齊 `high_20d/low_20d/support_20d/resistance_20d`，依 `docs/plans/2026-03-06-spec-gap-fix.md` Session 1
+4. **接續**：Action Plan 燈號（後端 rule-based + 前端顯示），依 `docs/plans/2026-03-06-spec-gap-fix.md` Session 2
+5. **接續**：`AnalyzeResponse` 欄位完整性（`sentiment_label` / `action_plan` / `data_sources`），依 `docs/plans/2026-03-06-spec-gap-fix.md` Session 3
+6. **長期**：Phase 5 準備 — Docker / Railway 部署；基本面/估值工具（`estimate_pe_percentile`）
