@@ -255,3 +255,113 @@ def test_analyze_response_includes_strategy_fields() -> None:
         assert field in body, f"Missing field '{field}' in response"
     assert body["confidence_score"] == 65
     assert body["strategy_type"] == "mid_term"
+
+
+# ---------------------------------------------------------------------------
+# NQ-5: cleaned_news_quality in API response
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_response_has_cleaned_news_quality_field() -> None:
+    """AnalyzeResponse 必須包含 cleaned_news_quality 欄位（值可為 None）。"""
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "cleaned_news_quality" in body, "Missing 'cleaned_news_quality' in response"
+
+
+def test_analyze_response_cleaned_news_quality_contains_score_and_flags() -> None:
+    """當 cleaned_news_quality 非 None 時，必須包含 quality_score 與 quality_flags。"""
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "cleaned_news_quality": {
+                "quality_score": 65,
+                "quality_flags": ["DATE_UNKNOWN"],
+            },
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    quality = body["cleaned_news_quality"]
+    assert quality is not None
+    assert quality["quality_score"] == 65
+    assert quality["quality_flags"] == ["DATE_UNKNOWN"]
+
+
+def test_analyze_response_cleaned_news_quality_none_when_absent() -> None:
+    """graph 未回傳 cleaned_news_quality 時，欄位應為 None。"""
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cleaned_news_quality"] is None
+
+
+def test_analyze_response_has_news_display_field() -> None:
+    """AnalyzeResponse 必須包含 news_display 欄位（值可為 None）。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert "news_display" in response.json()
+
+
+def test_analyze_response_news_display_contains_expected_fields() -> None:
+    """news_display 非 None 時，應包含 title、date、source_url。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "news_display": {
+            "title": "台積電 Q1 法說會",
+            "date": "2026-03-05",
+            "source_url": "https://example.com/news/1",
+        },
+        "errors": [],
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    display = body["news_display"]
+    assert display["title"] == "台積電 Q1 法說會"
+    assert display["date"] == "2026-03-05"
+    assert display["source_url"] == "https://example.com/news/1"

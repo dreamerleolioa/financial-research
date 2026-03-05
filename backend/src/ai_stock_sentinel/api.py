@@ -28,6 +28,8 @@ class AnalyzeResponse(BaseModel):
     entry_zone: str | None = None
     stop_loss: str | None = None
     holding_period: str | None = None
+    cleaned_news_quality: dict[str, Any] | None = None
+    news_display: dict[str, Any] | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -83,6 +85,8 @@ def analyze(
         "holding_period": None,
         "confidence_score": None,
         "cross_validation_note": None,
+        "cleaned_news_quality": None,
+        "news_display": None,
     }
 
     try:
@@ -134,6 +138,8 @@ def analyze(
         analysis=analysis,
         analysis_detail=analysis_detail,
         cleaned_news=result.get("cleaned_news"),
+        cleaned_news_quality=result.get("cleaned_news_quality"),
+        news_display=result.get("news_display"),
         confidence_score=result.get("confidence_score"),
         cross_validation_note=result.get("cross_validation_note"),
         strategy_type=result.get("strategy_type"),
