@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence
+from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence, derive_technical_score
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
@@ -133,19 +133,20 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
 
 
 def _derive_technical_signal(closes: list[float]) -> str:
-    """由 close/ma5/ma20/RSI 推導 technical_signal。"""
+    """由 close/ma5/ma20/RSI/BIAS 推導 technical_signal（多條件加權）。"""
     if len(closes) < 20:
         return "sideways"
     close = closes[-1]
-    ma5 = calc_ma(closes, 5)
     ma20 = calc_ma(closes, 20)
     rsi = calc_rsi(closes, period=14)
+    bias = calc_bias(close, ma20) if ma20 is not None else None
 
-    if ma5 is not None and ma20 is not None and rsi is not None:
-        if close > ma5 > ma20 and 50 <= rsi <= 70:
-            return "bullish"
-        if (ma5 is not None and ma20 is not None and ma5 < ma20) or (rsi is not None and rsi < 30):
-            return "bearish"
+    tech_score = derive_technical_score(closes, rsi=rsi, bias=bias)
+
+    if tech_score >= 60:
+        return "bullish"
+    if tech_score <= 40:
+        return "bearish"
     return "sideways"
 
 
