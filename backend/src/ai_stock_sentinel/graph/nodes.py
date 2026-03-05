@@ -143,9 +143,9 @@ def _derive_technical_signal(closes: list[float]) -> str:
 
     tech_score = derive_technical_score(closes, rsi=rsi, bias=bias)
 
-    if tech_score >= 60:  # score >= 60 → net +1 or more in weighted model
+    if tech_score >= 60:  # score >= 60 → net +2 or +3 in weighted model (majority bullish)
         return "bullish"
-    if tech_score <= 40:  # score <= 40 → net -1 or less in weighted model
+    if tech_score <= 40:  # score <= 40 → net -2 or -3 in weighted model (majority bearish)
         return "bearish"
     return "sideways"
 
