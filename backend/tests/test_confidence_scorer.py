@@ -346,3 +346,22 @@ def test_compute_confidence_all_neutral():
     )
     assert result["data_confidence"] == 0
     assert result["signal_confidence"] == 50
+
+
+def test_compute_confidence_one_signal_available():
+    """只有 technical 有方向，其餘中性 → data_confidence=33"""
+    result = compute_confidence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="unknown",
+        technical_signal="bullish",
+    )
+    assert result["data_confidence"] == 33  # round(1/3 * 100)
+
+
+def test_derive_technical_score_rsi_none():
+    """RSI=None 時仍可計算其他維度（MA + BIAS）"""
+    closes = [100.0] * 21
+    result = derive_technical_score(closes, rsi=None, bias=2.0)
+    assert isinstance(result, int)
+    assert 0 <= result <= 100
