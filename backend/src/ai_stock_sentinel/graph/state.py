@@ -27,3 +27,5 @@ class GraphState(TypedDict):
     confidence_score: int | None
     cross_validation_note: str | None
     analysis_detail: AnalysisDetail | None
+    cleaned_news_quality: dict[str, Any] | None
+    news_display: dict[str, Any] | None

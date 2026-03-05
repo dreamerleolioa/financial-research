@@ -56,3 +56,10 @@ def test_graph_state_includes_raw_news_items() -> None:
     }
     assert state["raw_news_items"] is not None
     assert len(state["raw_news_items"]) == 1
+
+
+def test_graph_state_has_news_display_field() -> None:
+    """GraphState 必須包含 news_display 欄位。"""
+    import typing
+    hints = typing.get_type_hints(GraphState)
+    assert "news_display" in hints
