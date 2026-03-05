@@ -208,11 +208,11 @@
 > 2. `institutional_flow.flow_label` 沒有 API key / 限流時固定回傳 `neutral`
 > 3. 四條規則為「精確命中」才調分，三個訊號均為 `neutral/sideways` 時 adjustment = 0
 
-- [ ] CS-1：`_derive_technical_signal` 拆解為多條件加權（放寬單一限制，RSI 位置 / BIAS / 均線排列各自獨立產出分量分數）
-- [ ] CS-2：四條 binary 規則改為多維加權模型（partial match 可得部分調分；並非只有「三維完全共振」才加分）
-- [ ] CS-3：機構資料缺失時不强制 `neutral`，改以 `unknown` 旗標排除機構維度，由剩餘兩維度計算分數（並調整分數置信幅度）
+- [x] CS-1：`derive_technical_score()` 新函式，RSI/BIAS/均線排列各自獨立加權（[30,70] 映射）；5 新測試（2026-03-05）
+- [x] CS-2：`adjust_confidence_by_divergence()` 改為多維加權模型，lookup table 取代 if-elif；partial match 可得部分調分；21→28 tests（2026-03-05）
+- [x] CS-3：機構資料含 `error` 鍵時 `score_node` 改標記為 `"unknown"`，`_INST_FLOW_SCORES` 顯式加入 `"unknown": 0`；score_node 整合測試補齊（2026-03-05）
 - [ ] CS-4：信心分數定義 `data_confidence`（資料完整度，0–100）與 `signal_confidence`（訊號強度，0–100）分開回傳，前端可顯示「資料不足」提示而非固定 50
-- [ ] CS-5：補齊單元測試（新規則覆蓋 + 回歸既有四情境）
+- [ ] CS-5：整合 `derive_technical_score` 進 `_derive_technical_signal`；補齊完整測試覆蓋
 
 ### 下一輪修正（Action Plan 燈號）
 
