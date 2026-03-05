@@ -1,9 +1,9 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-03-05
-> 狀態：Draft v2.2
+> 日期：2026-03-06
+> 狀態：Draft v2.4
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖
-> 更新摘要：新增 `news_display` 欄位設計（新聞顯示與 LLM 消費資料拆分）；`fetch_news_node` 改用結構化格式；`quality_gate_node` 新增 `news_display` 產出邏輯
+> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則
 
 ## 1. 目標與方向
 
@@ -80,7 +80,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 - **即時新聞（消息面）**
   - Google News RSS
   - 指定財經媒體 RSS / API
-  - **範疇限定**：聚焦影響市場情緒的事件（法說會、政策、產業趨勢、供應鏈、法人評等、重大人事、總經事件等），**不負責提供公司財務數字**（EPS、營收、毛利率等屬於基本面，應從公開資訊觀測站/財報資料源取得）
+  - **範疇限定**：詳見第 1.1 節消息面職責定義——聚焦市場情緒事件訊號，不負責財務數字
 
 - **技術面指標**（由 `yfinance` 拉取 OHLCV 後，以 **Pandas** 計算）
   - `MA5`、`MA20`、`MA60`：收盤價簡單移動平均
@@ -172,14 +172,12 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 | 情境名稱 | 描述 | 處理邏輯 |
 |----------|------|----------|
 | 利多不漲（Bullish Divergence） | 新聞極度樂觀（如營收創高）＋ 外資/投信連續大賣 ＋ 技術面高檔長上影線 | 信心分數大幅調降；`cross_validation_note` 標記「基本面利多疑已反映，法人趁利多出貨，建議轉保守觀察」 |
-| 利空不跌（Bearish Divergence） | 新聞負面 ＋ 股價守穩關鍵支撐 ＋ 大法人低調承接 | 信心分數小幅上調；標記「逆勢佈局信號，需觀察是否持續」 |
+| 利空不跌（Bearish Divergence） | 新聞負面 ＋ 股價守穩關鍵支撐 ＋ 大法人低調承接 | 分數維持中性（0 調整量）；觸發警示 note「逆勢佈局訊號，需觀察持續性」，不上調分數（守穩支撐為觀察訊號而非確認訊號） |
 | 訊號共振（Alignment） | 三維方向一致（例：利多 ＋ 外資連買 ＋ RSI 健康） | 信心分數正常或上調；標記「多方共振，訊號可信度高」 |
 
 **信心分數調整規則（rule-based，非 LLM 計算）**：
 
-> ⚠️ **v2 架構（CS-1/CS-2，2026-03-05 升級）**：已改為多維獨立加權模型，下方 if-elif 範例為舊版概念說明，**實際實作見 `analysis/confidence_scorer.py`**。
-
-各維度獨立評分後加總，再套用特殊情境加成：
+各維度獨立評分後加總，再套用特殊情境加成（實作見 `analysis/confidence_scorer.py`）：
 
 | 維度 | 值 | 分數 |
 |------|----|------|
@@ -274,11 +272,13 @@ class InstitutionalFlowProvider(Protocol):
 
 **籌碼集中度判斷模型**：
 
+> 信心分數調整值以下方「信心分數調整規則（v2 定案）」表格為準（+7 / -10 / -8）。本表僅描述狀態判斷觸發條件與 AI 解讀方向。
+
 | 指標 | 資料來源 | 狀態判斷 | AI 解讀方向 |
 |------|----------|----------|-------------|
-| 三大法人合計連續買超（≥3 日） | TWSE OpenAPI | `institutional_accumulation` | 強力多頭支撐，信心分數 +15~+20 |
-| 外資單日大賣超（超過近 5 日均值 2 倍） | TWSE OpenAPI | `distribution` risk | 主力出貨警示，信心分數 −15 |
-| 融資餘額單日增幅 >5%（相對近 10 日均值） | TWSE OpenAPI | `retail_chasing` risk | 散戶追高，籌碼混亂，信心分數 −10 |
+| 三大法人合計連續買超（≥3 日） | TWSE OpenAPI | `institutional_accumulation` | 強力多頭支撐 |
+| 外資單日大賣超（超過近 5 日均值 2 倍） | TWSE OpenAPI | `distribution` risk | 主力出貨警示 |
+| 融資餘額單日增幅 >5%（相對近 10 日均值） | TWSE OpenAPI | `retail_chasing` risk | 散戶追高，籌碼混亂 |
 | 融資餘額持續下降 ＋ 股價上漲 | TWSE OpenAPI | 籌碼沉澱 | 健康換手，`institutional_accumulation` 加成 |
 | 成交量 > 月均量 50% ＋ 股價平漲 | yfinance | 量價平量增 | 底部換手或有人墊高成本，需搭配法人方向判斷 |
 
@@ -305,12 +305,11 @@ class InstitutionalFlowProvider(Protocol):
 
 輸入：清潔後新聞 ＋ **定性化技術面敘述**（由 `quantify_to_narrative` 轉換後）＋ 籌碼 JSON（全由 Python 函式計算後傳入）
 
-> ⚠️ **資料來源說明（重要）**：「清潔後新聞」來自 **Google News RSS**，其職責是捕捉**影響市場情緒的事件訊號**，包括：法說會動態、政策消息、產業競爭格局變化、供應鏈事件、法人評等調整、重大人事異動、總體經濟事件等。
-> **新聞維度不負責財務數字分析**：EPS、營收、毛利率等財報數字屬於「基本面」維度，需從公開資訊觀測站或財報資料源取得（目前尚未實作）。若 RSS 新聞標題中**碰巧含有財務數字**（如「Q1 營收年增 20%」），可供參考，但此為附帶資訊，**不得將新聞當成財報資料源使用**，也不應以「新聞中沒有財務數字」作為降低信心分數的理由。
+> **消息面職責**：詳見第 1.1 節。新聞維度聚焦市場情緒事件訊號，不負責財務數字（財報數字屬基本面，目前尚未實作）。若 RSS 新聞碰巧含有財務數字，可作附帶參考，但不得以「新聞中沒有財務數字」作為降低信心分數的理由。
 
 處理步驟：
 
-1. 識別新聞標題的核心事件語義（發生什麼事），標記情緒傾向（`sentiment_label`：positive / negative / neutral）；新聞的核心貢獻是**市場情緒訊號**，判斷依據為事件本身的性質（政策利多/利空、法人調降/調升評等、供應鏈正面/負面消息等），**不依賴財務數字的有無**
+1. 讀取 `cleaned_news.sentiment_label`（由 Cleaner 在 `clean_node` 已計算完畢，**LLM 不重新判斷**），理解消息面情緒傾向；新聞的核心貢獻是**市場情緒訊號**，判斷依據為事件本身的性質（政策利多/利空、法人調降/調升評等、供應鏈正面/負面消息等）
 2. 識別並標記情緒化動詞（例如：崩盤、起飛、噴出），保留事實陳述
 3. 讀取 `preprocess_node` 轉換後的技術面敘述（如「股價低於月線 6%，處短線弱勢」），理解趨勢語義
 4. 讀取籌碼面 `flow_label` 與累計數值，判斷法人方向與散戶籌碼結構
@@ -321,7 +320,7 @@ class InstitutionalFlowProvider(Protocol):
 
 `analyze_node` 的 system prompt 必須強制執行下列流程：
 
-1. 從新聞提取情感標籤（Sentiment）
+1. 讀取已提供的 `sentiment_label`（由 Cleaner 計算，**不重新判斷**），理解消息面情緒
 2. 與 `technical_context` / `institutional_context` 逐項對照
 3. 若訊號矛盾，必須標記衝突與風險
 4. 僅輸出事實與邏輯推論，不得臆測或補造來源
@@ -359,6 +358,11 @@ class InstitutionalFlowProvider(Protocol):
 - **技術位階工具** `calculate_price_levels(symbol, window=20)`
   - 輸出：`{ high_20d, low_20d, support_20d, resistance_20d }`
   - 用途：提供入手區間與防守底線的硬數值，禁止 LLM 臆測
+  - **位階敘事判斷邊界**（`_price_level_narrative` 規範）：
+    - 「接近支撐位」：`close <= support_20d * 1.02`（含等於，2% 緩衝）
+    - 「接近壓力位」：`close >= resistance_20d * 0.98`（含等於，2% 緩衝）
+    - 兩者皆不命中：輸出「現價處於支撐與壓力之間，位階中立」
+    - 使用 `<=` / `>=` 確保收盤剛好等於支撐/壓力位時行為確定（算「有撐/有壓」，不落入中立）
 
 - **本益比位階工具** `estimate_pe_percentile(symbol, pe)`
   - 與歷史 PE 分佈比較，回傳百分位
@@ -421,7 +425,7 @@ class InstitutionalFlowProvider(Protocol):
     "confidence_score": { "type": "integer", "minimum": 0, "maximum": 100 },
     "technical_signal": { "enum": ["bullish", "bearish", "sideways"] },
     "institutional_flow": {
-      "enum": ["institutional_accumulation", "retail_chasing", "distribution", "neutral"]
+      "enum": ["institutional_accumulation", "retail_chasing", "distribution", "neutral", "unknown"]
     },
     "strategy_type": { "enum": ["short_term", "mid_term", "defensive_wait"] },
     "entry_zone": {
@@ -432,10 +436,38 @@ class InstitutionalFlowProvider(Protocol):
       "type": "string",
       "pattern": "^\\d+(\\.\\d+)?（.+）$"
     },
-    "holding_period": { "type": "string", "minLength": 2 },
+    "holding_period": {
+      "type": "string",
+      "minLength": 2,
+      "pattern": "\\d",
+      "description": "必須包含具體數字範圍（如「7-10 交易日」、「4-8 週」），不接受純文字如「短期」"
+    },
+    "action_plan": {
+      "type": ["object", "null"],
+      "description": "選填（optional）。strategy 計算失敗或資料不足時為 null",
+      "properties": {
+        "action": { "type": "string" },
+        "target_zone": { "type": "string" },
+        "defense_line": { "type": "string" },
+        "momentum_expectation": { "type": "string" }
+      }
+    },
     "cross_validation_note": { "type": "string", "minLength": 1 },
     "risks": { "type": "array", "items": { "type": "string" } },
-    "data_sources": { "type": "array", "items": { "type": "string" } }
+    "data_sources": { "type": "array", "items": { "type": "string" } },
+    "news_display_items": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "最多 5 筆近期新聞，供前端顯示，每筆直接取 RSS 原始欄位",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "date": { "type": ["string", "null"] },
+          "source_url": { "type": ["string", "null"] }
+        }
+      }
+    }
   }
 }
 ```
@@ -449,6 +481,14 @@ class InstitutionalFlowProvider(Protocol):
 - `cleaned_news.mentioned_numbers` 需過濾與市場分析無關之雜訊數字（例如純日期碎片）
 - 新增 `cleaned_news_quality`（或同義欄位）以回傳 `quality_score`（0-100）與 `quality_flags`（如 `TITLE_LOW_QUALITY`、`DATE_UNKNOWN`、`NO_FINANCIAL_NUMBERS`）
 - 當品質旗標命中時，前端需以「摘要品質受限」提示，不得當成高可信重點摘要
+
+**`DATE_UNKNOWN` 信心分數懲罰規則（rule-based，在 `score_node` 執行）**：
+
+- 當 `quality_flags` 含有 `DATE_UNKNOWN` 時，`signal_confidence` 額外 **-3**
+- 理由：日期未知的新聞時效性無法驗證，可能為過期資訊，應主動降低訊號可信度
+- 同時在 `cross_validation_note` 末尾追加固定字串：`「（注意：新聞日期不明，時效性未驗證）」`
+- 此懲罰不影響 `data_confidence`（日期格式問題不等於資料維度未取得）
+- 執行位置：`score_node` 的 rule-based Python，在各維度加總後、clamp 前套用
 
 ### 新聞資料拆分設計（News Display Split，新增）
 
@@ -506,8 +546,10 @@ class InstitutionalFlowProvider(Protocol):
 > - `bullish`（多）：`derive_technical_score()` 回傳 `score >= 60`（RSI / BIAS / MA 排列三維加權總分偏多）
 > - `bearish`（空）：`score <= 40`（三維加權總分偏空）
 > - `sideways`（盤整）：`40 < score < 60`（訊號不明確）
+> - **`unknown` 不存在**：資料不足時 `derive_technical_score()` 回傳 50，降級為 `sideways`；`technical_signal` 不輸出 `unknown`，`data_confidence` 計算亦不需判斷此值
 >
 > `derive_technical_score()` 詳見 `analysis/confidence_scorer.py`：RSI ≥ 50 → +1、BIAS 0~5% → +1（>10% 或 <-10% → -1）、close > ma5 > ma20 → +1（ma5 < ma20 → -1）；總分 [-3, +3] 映射至 [30, 70]。
+> 因 raw 為整數，映射後的值不為整數（raw=+1 → 56.7、raw=+2 → 63.3），實際觸發邊界為：raw ≥ +2（mapped ≈ 63）→ bullish，raw ≤ -2（mapped ≈ 37）→ bearish，raw = ±1（mapped ≈ 57 / 43）→ sideways。文件閾值（60 / 40）為保守設計，不存在剛好等於 60 / 40 的情境。
 
 > **`Institutional_Flow` 定義**
 > - `institutional_accumulation`（大戶吸籌）：三大法人合計買超，融券增加（放空減少）
@@ -553,7 +595,7 @@ class InstitutionalFlowProvider(Protocol):
 5. **分析路徑圖（流程事件）**
    - 例：「抓取新聞中 → 抽取數值完成 → 驗證歷史資料完成」
 
-5. **戰術行動（Action Plan）卡片**
+6. **戰術行動（Action Plan）卡片**
   - 操作方向：`觀望 / 分批佈局 / 持股續抱`
   - 建議區間：由 `entry_zone` + `support_20d` / `resistance_20d` 組成
   - 防守底線：`stop_loss`（例如「近 20 日低點 -3%」或「破 MA60」）
@@ -581,7 +623,7 @@ class InstitutionalFlowProvider(Protocol):
   - `yfinance`：拉取 OHLCV 歷史行情、即時報價
   - `pandas`：計算技術指標（rolling mean、pct_change、自定義 RSI）
   - `ta` / `pandas-ta`（可選）：封裝常用技術分析計算，避免重複造輪
-  - `twstock`（可選）：台股三大法人、融資融券資料抓取
+  - `twstock`（已評估，功能已由 FinMind + TWSE OpenAPI 三軌策略取代，不採用）
 - **Crawler**：Firecrawl / Browserbase（擇一先導入）
 - **Frontend**：React, Tailwind CSS, TypeScript
 - **Storage（可選）**：PostgreSQL / SQLite（MVP 可先檔案化）

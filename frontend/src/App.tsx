@@ -177,7 +177,7 @@ function App() {
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-6">
         <header className="flex flex-col gap-2">
-          <h1 className="text-2xl font-semibold md:text-3xl">AI Stock Sentinel Dashboard</h1>
+          <h1 className="text-2xl font-semibold md:text-3xl">個股分析儀表板</h1>
           <p className="text-sm text-slate-600">輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。</p>
         </header>
 

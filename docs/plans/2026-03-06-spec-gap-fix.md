@@ -673,10 +673,15 @@ available = sum([
 # - 新聞：有任何 sentiment_label（含 neutral）視為有資料
 # - 籌碼：flow_label 非 "unknown"（含 neutral）視為有資料
 # - 技術：technical_signal 非 "unknown"（含 sideways）視為有資料
+#
+# 注意：架構規格（v2.4）明確定義 technical_signal 不輸出 "unknown"
+#（資料不足時降級為 "sideways"），因此 technical_signal != "unknown"
+# 在現行架構永遠為 True，但保留此判斷作為防禦性設計，
+# 避免未來若新增 unknown 值時靜默影響 data_confidence 計算。
 data_available = sum([
     news_sentiment != "unknown",           # neutral 也算有取得
     inst_flow != "unknown",               # neutral 也算有取得
-    technical_signal != "unknown",        # sideways 也算有取得
+    technical_signal != "unknown",        # sideways 也算有取得；現行架構不會出現 unknown
 ])
 data_confidence = round(data_available / 3 * 100)
 ```
@@ -724,16 +729,114 @@ data_confidence = round(data_available / 3 * 100)
 
 ---
 
+## Session 7：DATE_UNKNOWN 信心分數懲罰
+
+> **複雜度**：低（純新增，修改一個函式 + 補測試）
+> **對應規格**：`docs/ai-stock-sentinel-architecture-spec.md` v2.4，新聞摘要品質門檻段落
+
+### 背景
+
+架構規格 v2.4 新增：日期未知的新聞（`DATE_UNKNOWN` 旗標）時效性無法驗證，應在 `score_node` 的 rule-based Python 對 `signal_confidence` 額外扣 -3，並在 `cross_validation_note` 追加固定提示。
+
+### 範圍
+
+- `analysis/confidence_scorer.py`：`compute_confidence()` 新增 `date_unknown` 參數，在各維度加總後、clamp 前套用 -3
+- `graph/nodes.py`：`score_node` 從 `state["cleaned_news_quality"]` 讀取 `quality_flags`，判斷是否含 `DATE_UNKNOWN`，傳入 `compute_confidence()`
+- `cross_validation_note` 追加邏輯：由 `score_node` 在 rule-based 字串後附加固定字串
+
+### 詳細任務
+
+#### T7-1：`compute_confidence()` 新增 `date_unknown` 參數
+
+**檔案**：`backend/src/ai_stock_sentinel/analysis/confidence_scorer.py`
+
+```python
+def compute_confidence(
+    base_score: int,
+    news_sentiment: str,
+    inst_flow: str,
+    technical_signal: str,
+    date_unknown: bool = False,   # 新增
+) -> dict:
+    ...
+    # 各維度加總後、clamp 前
+    if date_unknown:
+        score -= 3
+    score = max(0, min(100, score))
+    ...
+```
+
+#### T7-2：`score_node` 讀取 `quality_flags` 並傳入
+
+**檔案**：`backend/src/ai_stock_sentinel/graph/nodes.py`，`score_node`
+
+```python
+quality = state.get("cleaned_news_quality") or {}
+flags = quality.get("quality_flags") or []
+date_unknown = "DATE_UNKNOWN" in flags
+
+result = compute_confidence(
+    base_score=50,
+    news_sentiment=...,
+    inst_flow=...,
+    technical_signal=...,
+    date_unknown=date_unknown,
+)
+```
+
+若 `date_unknown` 為 True，在 `cross_validation_note` 末尾追加：`「（注意：新聞日期不明，時效性未驗證）」`
+
+#### T7-3：`cleaned_news_quality` 需在 `GraphState` 可讀
+
+確認 `GraphState` 有 `cleaned_news_quality` 欄位（`quality_gate_node` 應已寫入）；若無，補至 `state.py`。
+
+### DoD（完成定義）
+
+- `DATE_UNKNOWN` 存在時 `signal_confidence` 比無旗標低 3 分
+- `DATE_UNKNOWN` 不影響 `data_confidence`
+- `cross_validation_note` 末尾出現提示字串
+- `cleaned_news_quality` 為 None 或 `quality_flags` 為空時安全降級，不崩潰
+- `make test` 全數通過
+
+### 預計測試案例
+
+- `test_date_unknown_flag_reduces_signal_confidence_by_3`
+- `test_date_unknown_does_not_affect_data_confidence`
+- `test_date_unknown_appends_note_to_cross_validation_note`
+- `test_no_penalty_when_quality_flags_empty`
+- `test_no_penalty_when_cleaned_news_quality_is_none`
+
+### 執行 Prompt（Session 7）
+
+```
+請幫我實作 Session 7 的 DATE_UNKNOWN 信心分數懲罰：
+
+參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 7 詳細任務（T7-1 ~ T7-3）
+架構規格：docs/ai-stock-sentinel-architecture-spec.md v2.4，新聞摘要品質門檻段落
+
+執行順序：
+1. T7-1：confidence_scorer.py compute_confidence() 新增 date_unknown 參數，在 clamp 前扣 3 分
+2. T7-2：score_node 從 state["cleaned_news_quality"]["quality_flags"] 讀取 DATE_UNKNOWN，傳入 compute_confidence()；date_unknown=True 時在 cross_validation_note 末尾追加固定字串
+3. T7-3：確認 GraphState 有 cleaned_news_quality 欄位，不足則補
+
+補齊測試（至少 5 個），最後執行 make test 確認全套通過。
+
+⚠️ 此懲罰針對 signal_confidence，不影響 data_confidence。
+⚠️ cleaned_news_quality 為 None 時安全降級，不崩潰。
+```
+
+---
+
 ## 執行節奏建議
 
 ```
-Session 1（高複雜）→ Session 2（中）→ Session 3（中）→ Session 4（低）→ Session 5（低）→ Session 6（低）
+Session 1（高複雜）→ Session 2（中）→ Session 3（中）→ Session 4（低）→ Session 5（低）→ Session 6（低）→ Session 7（低）
 ```
 
 - Session 1 完成才啟動 Session 2（Session 2 依賴 `rsi14` 是否從 state 可讀）
 - Session 2 完成才啟動 Session 3（Session 3 補充 `institutional_flow_label` 時已由 Session 2 處理）
 - Session 4 獨立，可提前至任意 Session 後執行
-- Session 5、Session 6 互相獨立，可並行或穿插執行
+- Session 5、Session 6、Session 7 互相獨立，可並行或穿插執行
 
 每個 Session 結束前必做：
 1. `make test` 全數通過
@@ -749,6 +852,17 @@ Session 1（高複雜）→ Session 2（中）→ Session 3（中）→ Session 
 - 前端：Action Plan 卡片顯示燈號；`data_confidence < 60` 時信心指數卡片顯示資料不足提示
 - LLM Prompt 包含 `【消息面摘要】` 段落；`cleaned_news` 為 None 時顯示預設占位文字，不崩潰
 - `data_confidence` 正確反映「資料取得完整度」：`neutral` 情緒 / `sideways` 技術訊號不降低分數，僅 `unknown` 才計為未取得
+- `DATE_UNKNOWN` 旗標存在時 `signal_confidence` 自動 -3，`cross_validation_note` 末尾追加時效性未驗證提示；`data_confidence` 不受影響
+
+---
+
+## 最終步驟：Spec Review
+
+所有 Session 完成後，對照 `docs/ai-stock-sentinel-architecture-spec.md` 與 `docs/progress-tracker.md`，確認：
+
+1. 本計劃修補的六大缺口均已正確實作，與架構規格描述一致
+2. 未引入新的規格缺口（特別是跨 Session 的欄位變動）
+3. 若發現新缺口，補記至 `progress-tracker.md` 的「待優化缺口」區塊，並決定是否需新建計劃文件
 
 ---
 
