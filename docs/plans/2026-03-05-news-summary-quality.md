@@ -81,3 +81,45 @@
 2. API response 擴充
 3. 前端提示整合（NQ-5）
 4. 測試補齊（NQ-6）
+
+---
+
+## 交接快照（2026-03-05）
+
+### 完成狀態：全部 NQ-1 ~ NQ-6 完成
+
+### 新增檔案
+- `backend/src/ai_stock_sentinel/analysis/quality_gate.py`
+  — 提供 `QualityGate` 靜態方法：`check_title`, `normalize_date`, `filter_numbers`, `compute_quality`
+  — 輸出 `QualityResult` dataclass（含 flags、date、numbers、quality_score、quality_flags）
+
+### 修改檔案
+- `backend/src/ai_stock_sentinel/graph/state.py`
+  — `GraphState` 新增 `cleaned_news_quality: dict[str, Any] | None`
+- `backend/src/ai_stock_sentinel/api.py`
+  — `AnalyzeResponse` 新增 `cleaned_news_quality: dict[str, Any] | None`
+  — `initial_state` 補齊 `cleaned_news_quality: None`
+  — `AnalyzeResponse(...)` 建構子補齊 `cleaned_news_quality=result.get("cleaned_news_quality")`
+- `frontend/src/App.tsx`
+  — 新增 `CleanedNewsQuality` interface
+  — `AnalyzeResponse` 新增 `cleaned_news_quality: CleanedNewsQuality | null`
+  — 網路錯誤 fallback 補齊 `cleaned_news_quality: null`
+  — 新聞重點摘要卡片：`quality_score < 60` 或 `quality_flags` 非空時顯示灰色「摘要品質受限」提示
+
+### 新增測試
+- `backend/tests/test_news_quality_gate.py`（33 tests）
+  — NQ-1：8 cases（時間戳、URL、代碼、正常標題）
+  — NQ-2：7 cases（ISO、RFC 2822、unknown、empty）
+  — NQ-3：10 cases（年份過濾、百分比保留、空 list flag）
+  — NQ-4：8 cases（扣分規則、clamp、flags 保留）
+- `backend/tests/test_api.py`（+3 tests）
+  — cleaned_news_quality 欄位存在、含 score/flags、absent 時為 None
+
+### 測試結果
+- 執行前：141 passed
+- 執行後：182 passed（+41）
+
+### 後續注意事項
+- `quality_gate` 目前為純 rule-based；若需 LLM 輔助品質評估，可在 `QualityGate` 加 `async` 方法
+- 圖節點尚未自動呼叫 `QualityGate`；可在 `news_cleaner_node` 後接一個 `quality_gate_node`，將結果寫入 `cleaned_news_quality`
+- 前端目前讀取 API 回傳的 `cleaned_news_quality`，不在前端重新計算

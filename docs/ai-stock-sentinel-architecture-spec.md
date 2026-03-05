@@ -1,9 +1,9 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-03-04  
-> 狀態：Draft v2.1  
-> 目的：將產品需求大綱轉為可落地的工程實作藍圖  
-> 更新摘要：分析維度從「全方位數據偵察」延伸到「可執行操作策略」（入手價／停損價／持股期間），新增技術術語語義化翻譯層，並補上新聞摘要品質門檻（Quality Gate）
+> 日期：2026-03-05
+> 狀態：Draft v2.2
+> 目的：將產品需求大綱轉為可落地的工程實作藍圖
+> 更新摘要：新增 `news_display` 欄位設計（新聞顯示與 LLM 消費資料拆分）；`fetch_news_node` 改用結構化格式；`quality_gate_node` 新增 `news_display` 產出邏輯
 
 ## 1. 目標與方向
 
@@ -510,15 +510,57 @@ class InstitutionalFlowProvider(Protocol):
 }
 ```
 
-### 新聞摘要品質門檻（News Summary Quality Gate，新增）
+### 新聞摘要品質門檻（News Summary Quality Gate）
 
 > 目的：避免新聞摘要出現「標題其實是時間戳」或「日期未知但未標示可信度」等低可用輸出。
 
 - `cleaned_news.title` 不得為純時間字串、純 URL、純來源代碼（例如僅 `Wed, 04 Mar ...`）
 - `cleaned_news.date` 應優先保留來源時間（ISO 8601 或 RFC 2822）；無法解析時允許 `unknown`，但必須標記品質旗標
 - `cleaned_news.mentioned_numbers` 需過濾與市場分析無關之雜訊數字（例如純日期碎片）
-- 新增 `cleaned_news_quality`（或同義欄位）以回傳 `quality_score`（0-100）與 `quality_flags`（如 `TITLE_IS_TIMESTAMP`、`DATE_UNKNOWN`、`NO_FINANCIAL_NUMBERS`）
+- 新增 `cleaned_news_quality`（或同義欄位）以回傳 `quality_score`（0-100）與 `quality_flags`（如 `TITLE_LOW_QUALITY`、`DATE_UNKNOWN`、`NO_FINANCIAL_NUMBERS`）
 - 當品質旗標命中時，前端需以「摘要品質受限」提示，不得當成高可信重點摘要
+
+### 新聞資料拆分設計（News Display Split，新增）
+
+> 問題根源：`cleaned_news` 同時服務兩個目的（LLM pipeline 消費 + 前端顯示），造成標題/日期欄位因 LLM 清潔品質而呈現不可讀的時間戳或結構化前綴。
+
+**設計決策：**
+- `cleaned_news`（保留）：專供 LLM pipeline 消費，含 `sentiment_label`、`mentioned_numbers`
+- `news_display`（新增）：專供前端顯示，從 `raw_news_items[0]` 直接取 RSS 原始欄位，不經 LLM 清潔
+
+**`news_display` 欄位規格：**
+
+```json
+{
+  "title": "台積電 Q1 法說會重點整理",
+  "date": "2026-03-05",
+  "source_url": "https://news.example.com/..."
+}
+```
+
+| 欄位 | 來源 | 說明 |
+|------|------|------|
+| `title` | `raw_news_items[0].title` | RSS 原始標題，不經 LLM 清潔 |
+| `date` | `cleaned_news.date` via `QualityGate.normalize_date` | RFC 2822 → ISO 8601；`unknown` → `null` |
+| `source_url` | `raw_news_items[0].url` | RSS 原始連結 |
+
+**產出節點：** `quality_gate_node`（在 `clean_node` 之後執行，`raw_news_items` 仍在 state 中）
+
+**前端渲染規則：**
+- 新聞標題、日期、「查看原文」連結 → 讀 `news_display`
+- 情緒 badge → 讀 `cleaned_news.sentiment_label`
+- `mentioned_numbers` chips → 移除（對使用者無顯示價值）
+- 品質受限提示 → 讀 `cleaned_news_quality`
+
+**`fetch_news_node` 結構化輸出（同步修正）：**
+
+`news_content` 改用明確欄位標籤格式，避免 LLM 把時間戳誤識為標題：
+
+```
+日期: Mon, 03 Mar 2026 08:00:00 GMT
+標題: 台積電 2 月營收年增 20%
+摘要: 台積電公佈 2 月營收，年增 20%，優於市場預期。
+```
 
 > **`Technical_Signal` 定義**
 > - `bullish`（多）：均線多頭排列（MA5 > MA20 > MA60）且 RSI 50~70

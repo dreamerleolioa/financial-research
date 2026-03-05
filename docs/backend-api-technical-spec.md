@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v2）
 
-> 類型：技術文件（Technical Doc）  
-> 更新日期：2026-03-04
-> 更新摘要：Response 新增 Phase 3 欄位（`confidence_score`、`cross_validation_note`、`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`）；前端 Phase 4 串接完成
+> 類型：技術文件（Technical Doc）
+> 更新日期：2026-03-05
+> 更新摘要：新增 `news_display` 欄位（新聞顯示資料，含乾淨標題/日期/來源 URL）；新增 `cleaned_news_quality` 欄位；`cleaned_news` 角色重新定義為 LLM pipeline 專用
 
 ## 1) 目的
 
@@ -89,6 +89,15 @@ make run-api
     "mentioned_numbers": ["2,600", "18.2%"],
     "sentiment_label": "positive"
   },
+  "news_display": {
+    "title": "台積電 2 月營收年增 20%",
+    "date": "2026-03-03",
+    "source_url": "https://news.google.com/..."
+  },
+  "cleaned_news_quality": {
+    "quality_score": 100,
+    "quality_flags": []
+  },
   "confidence_score": 78,
   "cross_validation_note": "三維共振，信心偏高",
   "institutional_flow": "institutional_accumulation",
@@ -107,7 +116,9 @@ make run-api
   |------|------|------|
   | `snapshot` | object | yfinance 即時快照 |
   | `analysis` | string | LLM Skeptic Mode 四步驟完整分析文字 |
-  | `cleaned_news` | object \| null | 去情緒化後的新聞結構；無新聞時為 null |
+  | `cleaned_news` | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null |
+  | `news_display` | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null |
+  | `cleaned_news_quality` | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null |
   | `confidence_score` | int \| null | 0–100，反映三維訊號一致性（rule-based） |
   | `cross_validation_note` | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串） |
   | `strategy_type` | enum \| null | `short_term` / `mid_term` / `defensive_wait` |

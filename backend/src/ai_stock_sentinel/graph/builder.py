@@ -10,7 +10,7 @@ from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
-from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_institutional_node, fetch_news_node, judge_node, preprocess_node, score_node, strategy_node
+from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_institutional_node, fetch_news_node, judge_node, preprocess_node, quality_gate_node, score_node, strategy_node
 from ai_stock_sentinel.graph.state import GraphState
 
 MAX_RETRIES = 3
@@ -42,6 +42,7 @@ def build_graph(
     graph.add_node("crawl", partial(crawl_node, crawler=crawler))
     graph.add_node("fetch_institutional", partial(fetch_institutional_node, fetcher=_institutional_fetcher))
     graph.add_node("clean", partial(clean_node, news_cleaner=_news_cleaner))
+    graph.add_node("quality_gate", quality_gate_node)
     graph.add_node("preprocess", preprocess_node)
     graph.add_node("score", score_node)
     graph.add_node("analyze", partial(analyze_node, analyzer=analyzer))
@@ -87,7 +88,8 @@ def build_graph(
     )
     graph.add_edge("fetch_news", "increment_retry")
     graph.add_edge("increment_retry", "crawl")
-    graph.add_edge("clean", "preprocess")
+    graph.add_edge("clean", "quality_gate")
+    graph.add_edge("quality_gate", "preprocess")
     graph.add_edge("preprocess", "score")
     graph.add_edge("score", "analyze")
     graph.add_edge("analyze", "strategy")
