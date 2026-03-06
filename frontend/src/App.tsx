@@ -42,6 +42,8 @@ interface AnalyzeResponse {
   entry_zone: string | null
   stop_loss: string | null
   holding_period: string | null
+  action_plan_tag: 'opportunity' | 'overheated' | 'neutral' | null
+  institutional_flow_label: string | null
   errors: ErrorDetail[]
 }
 
@@ -73,6 +75,12 @@ const SENTIMENT_CLASS: Record<string, string> = {
   positive: 'bg-emerald-100 text-emerald-800',
   neutral: 'bg-slate-100 text-slate-700',
   negative: 'bg-rose-100 text-rose-800',
+}
+
+const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: string }> = {
+  opportunity: { emoji: '🟢', label: '機會', color: 'text-green-600' },
+  overheated: { emoji: '🔴', label: '過熱', color: 'text-red-600' },
+  neutral: { emoji: '🔵', label: '中性', color: 'text-blue-500' },
 }
 
 const ANALYSIS_PATH = [
@@ -171,6 +179,8 @@ function App() {
         entry_zone: null,
         stop_loss: null,
         holding_period: null,
+        action_plan_tag: null,
+        institutional_flow_label: null,
         errors: [{ code: 'NETWORK_ERROR', message: '無法連線後端，請確認伺服器已啟動。' }],
       })
     } finally {
@@ -295,15 +305,15 @@ function App() {
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
-              {result?.cleaned_news?.sentiment_label && (
-                <span
-                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                    SENTIMENT_CLASS[String(result.cleaned_news.sentiment_label)] ?? SENTIMENT_CLASS.neutral
-                  }`}
-                >
-                  {SENTIMENT_LABEL[String(result.cleaned_news.sentiment_label)] ?? '中性'}
-                </span>
-              )}
+              {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === 'string' && (
+                  <span
+                    className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                      SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
+                    }`}
+                  >
+                    {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? '中性'}
+                  </span>
+                )}
             </div>
 
             {result?.cleaned_news_quality != null &&
@@ -393,7 +403,14 @@ function App() {
         </section>
 
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <h2 className="mb-4 text-sm font-semibold text-slate-800">投資策略</h2>
+          <div className="mb-4 flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-slate-800">投資策略</h2>
+            {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
+              <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
+                {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
+              </span>
+            )}
+          </div>
           {result ? (
             <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="rounded-lg bg-slate-50 p-3">

@@ -10,7 +10,7 @@ from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, comput
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
-from ai_stock_sentinel.analysis.strategy_generator import generate_strategy
+from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_tag, generate_strategy
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
@@ -118,7 +118,14 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
     inst_data: dict[str, Any] | None = state.get("institutional_flow")  # type: ignore[assignment]
 
     try:
-        technical_context, institutional_context = generate_technical_context(df_price, inst_data)
+        technical_context, institutional_context = generate_technical_context(
+            df_price,
+            inst_data,
+            support_20d=snapshot.get("support_20d"),
+            resistance_20d=snapshot.get("resistance_20d"),
+            high_20d=snapshot.get("high_20d"),
+            low_20d=snapshot.get("low_20d"),
+        )
     except Exception as exc:
         return {
             "technical_context": f"技術敘事產出失敗：{exc}",
@@ -126,9 +133,20 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
             "errors": state["errors"] + [{"code": "PREPROCESS_ERROR", "message": str(exc)}],
         }
 
+    # rsi14 數值獨立寫入 state，供 strategy_node 燈號判斷使用
+    closes_list = [float(v) for v in recent_closes if v is not None]
+    rsi14_val: float | None = None
+    if len(closes_list) >= 15:
+        rsi14_val = calc_rsi(closes_list, period=14)
+
     return {
         "technical_context": technical_context,
         "institutional_context": institutional_context,
+        "high_20d": snapshot.get("high_20d"),
+        "low_20d": snapshot.get("low_20d"),
+        "support_20d": snapshot.get("support_20d"),
+        "resistance_20d": snapshot.get("resistance_20d"),
+        "rsi14": rsi14_val,
     }
 
 
@@ -363,6 +381,7 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     close: float | None = closes[-1] if closes else None
     ma5: float | None = calc_ma(closes, 5)
     ma20: float | None = calc_ma(closes, 20)
+    ma60: float | None = calc_ma(closes, 60)
     bias: float | None = calc_bias(close, ma20) if close is not None and ma20 is not None else None
     rsi: float | None = calc_rsi(closes, period=14) if closes else None
 
@@ -381,14 +400,27 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "close": close,
         "ma5": ma5,
         "ma20": ma20,
+        "ma60": ma60,
+        "support_20d": state.get("support_20d"),
+        "low_20d": state.get("low_20d"),
         "sentiment_label": sentiment_label,
     }
 
     strategy = generate_strategy(technical_context_data, inst_data)
+
+    # 計算 action_plan_tag（燈號）：使用 state 中已計算的 rsi14 和 confidence_score
+    rsi14_val: float | None = state.get("rsi14")  # type: ignore[assignment]
+    flow_label_for_tag: str | None = (inst_data or {}).get("flow_label") if inst_data else None
+    action_plan_tag = calculate_action_plan_tag(
+        rsi14=rsi14_val,
+        flow_label=flow_label_for_tag,
+        confidence_score=state.get("confidence_score"),
+    )
 
     return {
         "strategy_type": strategy["strategy_type"],
         "entry_zone": strategy["entry_zone"],
         "stop_loss": strategy["stop_loss"],
         "holding_period": strategy["holding_period"],
+        "action_plan_tag": action_plan_tag,
     }

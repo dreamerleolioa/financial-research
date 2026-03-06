@@ -32,3 +32,9 @@ class GraphState(TypedDict):
     news_display_items: list[dict[str, Any]]
     data_confidence: int | None
     signal_confidence: int | None
+    high_20d: float | None
+    low_20d: float | None
+    support_20d: float | None
+    resistance_20d: float | None
+    rsi14: float | None
+    action_plan_tag: str | None

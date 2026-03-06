@@ -1,7 +1,7 @@
 # 計劃：規格缺口修補 Day 1（Spec Gap Fix - Day 1）
 
 > 日期：2026-03-06
-> 狀態：待執行
+> 狀態：已完成（2026-03-06）
 > 目的：修補技術位階指標缺失（Session 1）與 Action Plan 燈號缺失（Session 2）
 > 追蹤文件：`docs/progress-tracker.md` → 「待優化缺口（2026-03-05 規格對比發現）」
 > 原則：完成即補測試（Code Complete ≠ Task Complete；需附對應測試與驗收證據）
@@ -41,7 +41,7 @@ Session 2 依賴 Session 1 完成後 `GraphState` 中 `rsi14` 欄位的可讀性
 
 #### T1-1：`StockSnapshot` 補齊位階欄位
 
-**檔案**：`backend/src/ai_stock_sentinel/data_sources/yfinance_client.py`
+**檔案**：`backend/src/ai_stock_sentinel/models.py`（⚠️ 實際實作位置與原計劃不同；`StockSnapshot` 定義在 `models.py`，欄位與計算邏輯一併放此，`yfinance_client.py` 僅負責抓取原始 `recent_closes`）
 
 ```python
 @dataclass
@@ -217,8 +217,8 @@ rsi14: float | None
 ```python
 # rsi14 數值獨立寫入 state，供 strategy_node 燈號判斷使用
 rsi14_val: float | None = None
-if len(df_price) >= 14:
-    rsi14_val = float(calc_rsi(df_price["close"].tolist()))
+if len(closes_list) >= 15:  # RSI14 需要 15 個資料點（14 期差值）
+    rsi14_val = calc_rsi(closes_list, period=14)
 return {
     ...,
     "rsi14": rsi14_val,
@@ -368,23 +368,30 @@ const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: stri
 
 ---
 
-## Handoff Snapshot 模板（每 Session 結束填寫）
+## Handoff Snapshot — 2026-03-06 Day 1 結束
 
-```markdown
-## Handoff Snapshot — 2026-03-06 Session N 結束
+- 已完成（Session 1）：
+  - `StockSnapshot.__post_init__` 自動計算 `high_20d / low_20d / support_20d / resistance_20d`
+  - `GraphState` 新增四個位階欄位 + `rsi14` + `action_plan_tag`
+  - `preprocess_node` 將位階欄位與 `rsi14` 寫入 state
+  - `context_generator.py` 新增 `_price_level_narrative()`，整合進 `generate_technical_context`
+  - `strategy_generator.py` `entry_zone` / `stop_loss` 改以實際價格計算（`support_20d`、`low_20d`、`ma60`）
+  - `api.py` `initial_state` 補六個欄位
 
-- 已完成（本 Session）：
-  -
+- 已完成（Session 2）：
+  - `calculate_action_plan_tag()` 純 rule-based 函式（三情境 + None 安全降級）
+  - `strategy_node` 從 `state["rsi14"]` 讀取浮點數，計算 `action_plan_tag` 並寫入 state
+  - `AnalyzeResponse` 新增 `action_plan_tag` 與 `institutional_flow_label` 頂層欄位
+  - 前端 `App.tsx` Action Plan 卡片標題旁加入燈號 badge（`ACTION_TAG_MAP`）
 
 - 進行中：
   - 無
 
 - 阻塞點：
-  -
+  - 無
 
 - 下一步（優先序）：
-  1.
+  1. Day 2：`docs/plans/2026-03-07-spec-gap-fix-day2.md`（Session 3 ~ 7）
 
 - 驗收證據：
-  - make test → N passed
-```
+  - make test → 263 passed

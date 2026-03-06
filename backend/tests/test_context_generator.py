@@ -8,6 +8,7 @@ from ai_stock_sentinel.analysis.context_generator import (
     _calc_bias,
     _calc_rsi,
     _ma,
+    _price_level_narrative,
     generate_technical_context,
 )
 
@@ -256,6 +257,26 @@ class TestPreprocessNode:
 
         assert "缺少" in result["technical_context"]
 
+    def test_preprocess_node_writes_price_level_fields_to_state(self):
+        """preprocess_node 應將 high_20d / low_20d / support_20d / resistance_20d 寫入 state。"""
+        from ai_stock_sentinel.graph.nodes import preprocess_node
+        # 25 筆資料，最後 20 筆 min=95, max=114
+        closes = [float(90 + i) for i in range(25)]
+        snapshot = {
+            "symbol": "2330.TW",
+            "recent_closes": closes,
+            "high_20d": 114.0,
+            "low_20d": 95.0,
+            "support_20d": 95.0 * 0.99,
+            "resistance_20d": 114.0 * 1.01,
+        }
+        state = self._base_state(snapshot=snapshot)
+        result = preprocess_node(state)
+        assert result["high_20d"] == 114.0
+        assert result["low_20d"] == 95.0
+        assert result["support_20d"] == pytest.approx(95.0 * 0.99)
+        assert result["resistance_20d"] == pytest.approx(114.0 * 1.01)
+
     def test_preprocess_node_with_inst_flow(self):
         from ai_stock_sentinel.graph.nodes import preprocess_node
 
@@ -274,3 +295,64 @@ class TestPreprocessNode:
 
         assert "外資" in result["institutional_context"]
         assert "法人" in result["institutional_context"]
+
+
+# ─── _price_level_narrative 測試 ─────────────────────────────────────────────
+
+class TestPriceLevelNarrative:
+    def test_returns_fallback_when_any_input_none(self):
+        result = _price_level_narrative(close=None, support=95.0, resistance=115.0, high_20d=114.0, low_20d=96.0)
+        assert "不足" in result
+
+    def test_near_support_shows_support_note(self):
+        """現價接近支撐位（<= support * 1.02）→ 顯示反彈機會提示。"""
+        result = _price_level_narrative(
+            close=95.0, support=94.0, resistance=115.5, high_20d=114.0, low_20d=95.0
+        )
+        assert "支撐" in result
+        assert "反彈" in result
+
+    def test_near_resistance_shows_resistance_note(self):
+        """現價接近壓力位（>= resistance * 0.98）→ 顯示回測風險提示。"""
+        result = _price_level_narrative(
+            close=115.0, support=94.0, resistance=115.5, high_20d=114.0, low_20d=95.0
+        )
+        assert "壓力" in result or "突破" in result
+
+    def test_neutral_zone_shows_neutral_note(self):
+        """現價處於支撐與壓力之間 → 顯示中立。"""
+        result = _price_level_narrative(
+            close=104.0, support=90.0, resistance=120.0, high_20d=119.0, low_20d=91.0
+        )
+        assert "中立" in result
+
+    def test_contains_high_low_numbers(self):
+        """敘事字串應包含 high_20d 與 low_20d 的數值。"""
+        result = _price_level_narrative(
+            close=104.0, support=90.9, resistance=120.0, high_20d=119.0, low_20d=91.0
+        )
+        assert "119.0" in result
+        assert "91.0" in result
+
+
+class TestGenerateTechnicalContextWithPriceLevels:
+    def test_includes_price_level_narrative_when_provided(self):
+        """傳入 support_20d / resistance_20d 時，技術敘事應包含支撐壓力位段落。"""
+        closes = [float(90 + i) for i in range(25)]
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(
+            df, None,
+            support_20d=94.05,
+            resistance_20d=115.14,
+            high_20d=114.0,
+            low_20d=95.0,
+        )
+        assert "支撐" in tc
+        assert "壓力" in tc
+
+    def test_includes_fallback_when_no_price_levels(self):
+        """未傳入 support_20d / resistance_20d → 敘事顯示資料不足。"""
+        closes = [100.0] * 25
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df, None)
+        assert "支撐壓力位" in tc and "不足" in tc

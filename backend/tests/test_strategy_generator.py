@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from ai_stock_sentinel.analysis.strategy_generator import generate_strategy
+from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_tag, generate_strategy
 
 
 # ─── Strategy Type Tests ─────────────────────────────────────────────────────
@@ -52,55 +52,77 @@ def test_default_defensive_wait():
 
 # ─── Entry Zone Tests ─────────────────────────────────────────────────────────
 
-def test_entry_zone_high_bias():
-    """bias > 5 → 拉回 MA20 分批佈局"""
-    tech = {"sentiment_label": "neutral", "rsi": 50.0, "bias": 7.0}
+def test_entry_zone_high_bias_with_ma20():
+    """bias > 5 且有 ma20 → 拉回 MA20（數值）附近分批佈局"""
+    tech = {"sentiment_label": "neutral", "rsi": 50.0, "bias": 7.0, "ma20": 100.0}
     result = generate_strategy(tech, None)
-    assert result["entry_zone"] == "拉回 MA20 分批佈局"
+    assert "MA20" in result["entry_zone"]
+    assert "100.0" in result["entry_zone"]
 
 
-def test_entry_zone_normal_bias():
-    """bias <= 5 → 現價附近分批買進"""
+def test_entry_zone_with_support_20d_and_ma20():
+    """support_20d 與 ma20 均可用且 bias <= 5 → 顯示數值區間"""
+    tech = {"bias": 3.0, "support_20d": 95.0, "ma20": 100.0}
+    result = generate_strategy(tech, None)
+    assert "95.0" in result["entry_zone"]
+    assert "100.0" in result["entry_zone"]
+
+
+def test_entry_zone_fallback_when_no_price_data():
+    """無 support_20d 也無 ma20 → fallback 提示"""
     tech = {"sentiment_label": "neutral", "rsi": 50.0, "bias": 3.0}
     result = generate_strategy(tech, None)
-    assert result["entry_zone"] == "現價附近分批買進"
+    assert "資料不足" in result["entry_zone"] or "現價" in result["entry_zone"]
 
 
-def test_entry_zone_no_bias():
-    """bias 為 None → 現價附近分批買進"""
+def test_entry_zone_no_bias_no_price_data():
+    """bias 為 None 且無 support_20d/ma20 → fallback"""
     tech = {"sentiment_label": "neutral", "rsi": 50.0}
     result = generate_strategy(tech, None)
-    assert result["entry_zone"] == "現價附近分批買進"
+    assert isinstance(result["entry_zone"], str)
+    assert len(result["entry_zone"]) > 0
 
 
-def test_entry_zone_bias_exactly_5():
-    """bias == 5 → 不超過 5，應為現價附近分批買進"""
-    tech = {"bias": 5.0}
+def test_entry_zone_bias_just_above_5_with_ma20():
+    """bias 剛好超過 5 且有 ma20 → 顯示 MA20 數值"""
+    tech = {"bias": 5.01, "ma20": 100.0}
     result = generate_strategy(tech, None)
-    assert result["entry_zone"] == "現價附近分批買進"
-
-
-def test_entry_zone_bias_just_above_5():
-    """bias 剛好超過 5 → 拉回 MA20 分批佈局"""
-    tech = {"bias": 5.01}
-    result = generate_strategy(tech, None)
-    assert result["entry_zone"] == "拉回 MA20 分批佈局"
+    assert "MA20" in result["entry_zone"]
 
 
 # ─── Stop Loss Tests ──────────────────────────────────────────────────────────
 
-def test_stop_loss_always_present():
-    """stop_loss 永遠回傳包含關鍵字的字串"""
-    tech = {}
+def test_stop_loss_with_low20d_and_ma60():
+    """low_20d 與 ma60 均可用 → stop_loss 包含實際數值"""
+    tech = {"low_20d": 100.0, "ma60": 95.0}
     result = generate_strategy(tech, None)
-    assert "近20日低點" in result["stop_loss"]
+    assert "97.0" in result["stop_loss"]
+    assert "95.0" in result["stop_loss"]
     assert "MA60" in result["stop_loss"]
 
 
-def test_stop_loss_constant_string():
-    """stop_loss 內容固定"""
-    result = generate_strategy({"sentiment_label": "positive", "rsi": 20.0}, None)
-    assert result["stop_loss"] == "近20日低點 - 3% 或跌破 MA60（取較寬者）"
+def test_stop_loss_with_only_low20d():
+    """只有 low_20d → stop_loss 包含 low_20d × 0.97，不含 MA60"""
+    tech = {"low_20d": 100.0}
+    result = generate_strategy(tech, None)
+    assert "97.0" in result["stop_loss"]
+    assert "MA60" not in result["stop_loss"]
+
+
+def test_stop_loss_fallback_when_no_price_data():
+    """無 low_20d → fallback 描述性字串"""
+    tech = {}
+    result = generate_strategy(tech, None)
+    assert "近20日低點" in result["stop_loss"]
+    assert "資料不足" in result["stop_loss"]
+
+
+def test_stop_loss_always_present():
+    """stop_loss 永遠回傳非空字串"""
+    tech = {}
+    result = generate_strategy(tech, None)
+    assert isinstance(result["stop_loss"], str)
+    assert len(result["stop_loss"]) > 0
 
 
 # ─── Return Structure Tests ───────────────────────────────────────────────────
@@ -201,3 +223,44 @@ def test_holding_period_mid_term():
 def test_holding_period_defensive_wait():
     result = generate_strategy({}, None)
     assert result["holding_period"] == "觀望"
+
+
+# ─── calculate_action_plan_tag 測試 ───────────────────────────────────────────
+
+def test_calculate_action_plan_tag_returns_opportunity_when_all_conditions_met():
+    """rsi14 < 30 + institutional_accumulation + confidence > 70 → opportunity"""
+    tag = calculate_action_plan_tag(rsi14=25.0, flow_label="institutional_accumulation", confidence_score=80)
+    assert tag == "opportunity"
+
+
+def test_calculate_action_plan_tag_returns_overheated_when_rsi_high_and_distribution():
+    """rsi14 > 70 + distribution → overheated"""
+    tag = calculate_action_plan_tag(rsi14=75.0, flow_label="distribution", confidence_score=50)
+    assert tag == "overheated"
+
+
+def test_calculate_action_plan_tag_returns_neutral_for_partial_match():
+    """rsi14 < 30 但 flow_label 不是 institutional_accumulation → neutral"""
+    tag = calculate_action_plan_tag(rsi14=25.0, flow_label="neutral", confidence_score=80)
+    assert tag == "neutral"
+
+
+def test_calculate_action_plan_tag_falls_back_to_neutral_when_rsi14_none():
+    tag = calculate_action_plan_tag(rsi14=None, flow_label="institutional_accumulation", confidence_score=80)
+    assert tag == "neutral"
+
+
+def test_calculate_action_plan_tag_falls_back_to_neutral_when_flow_label_none():
+    tag = calculate_action_plan_tag(rsi14=25.0, flow_label=None, confidence_score=80)
+    assert tag == "neutral"
+
+
+def test_calculate_action_plan_tag_falls_back_to_neutral_when_confidence_none():
+    tag = calculate_action_plan_tag(rsi14=25.0, flow_label="institutional_accumulation", confidence_score=None)
+    assert tag == "neutral"
+
+
+def test_calculate_action_plan_tag_opportunity_requires_confidence_above_70():
+    """confidence_score == 70（非 > 70）→ neutral"""
+    tag = calculate_action_plan_tag(rsi14=25.0, flow_label="institutional_accumulation", confidence_score=70)
+    assert tag == "neutral"

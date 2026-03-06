@@ -33,6 +33,8 @@ class AnalyzeResponse(BaseModel):
     news_display_items: list[dict[str, Any]] = Field(default_factory=list)
     data_confidence: int | None = None
     signal_confidence: int | None = None
+    action_plan_tag: str | None = None
+    institutional_flow_label: str | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -93,6 +95,12 @@ def analyze(
         "news_display_items": [],
         "data_confidence": None,
         "signal_confidence": None,
+        "high_20d": None,
+        "low_20d": None,
+        "support_20d": None,
+        "resistance_20d": None,
+        "rsi14": None,
+        "action_plan_tag": None,
     }
 
     try:
@@ -139,6 +147,11 @@ def analyze(
         )
         analysis = ""
 
+    inst_flow = result.get("institutional_flow")
+    institutional_flow_label: str | None = None
+    if inst_flow and not inst_flow.get("error"):
+        institutional_flow_label = inst_flow.get("flow_label")
+
     return AnalyzeResponse(
         snapshot=snapshot,
         analysis=analysis,
@@ -155,5 +168,7 @@ def analyze(
         holding_period=result.get("holding_period"),
         data_confidence=result.get("data_confidence"),
         signal_confidence=result.get("signal_confidence"),
+        action_plan_tag=result.get("action_plan_tag"),
+        institutional_flow_label=institutional_flow_label,
         errors=response_errors,
     )

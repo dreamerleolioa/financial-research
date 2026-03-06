@@ -641,3 +641,44 @@ def test_quality_gate_node_news_display_items_empty_when_no_raw() -> None:
     )
     result = quality_gate_node(state)
     assert result["news_display_items"] == []
+
+
+# ── preprocess_node rsi14 ─────────────────────────────────────────────────────
+
+def test_preprocess_node_writes_rsi14_float_to_state() -> None:
+    """25 筆以上資料 → preprocess_node 應計算 rsi14 並寫入 state。"""
+    from ai_stock_sentinel.graph.nodes import preprocess_node
+    closes = [float(90 + i) for i in range(25)]  # 25 筆遞增
+    snapshot = {"symbol": "2330.TW", "recent_closes": closes}
+    state = _base_state(snapshot=snapshot)
+    result = preprocess_node(state)
+    assert result["rsi14"] is not None
+    assert isinstance(result["rsi14"], float)
+    assert 0.0 <= result["rsi14"] <= 100.0
+
+
+def test_preprocess_node_rsi14_is_none_when_insufficient_data() -> None:
+    """少於 15 筆資料 → rsi14 應為 None。"""
+    from ai_stock_sentinel.graph.nodes import preprocess_node
+    closes = [100.0] * 14  # 只有 14 筆，不足 15
+    snapshot = {"symbol": "2330.TW", "recent_closes": closes}
+    state = _base_state(snapshot=snapshot)
+    result = preprocess_node(state)
+    assert result["rsi14"] is None
+
+
+# ── strategy_node action_plan_tag ─────────────────────────────────────────────
+
+def test_strategy_node_returns_action_plan_tag() -> None:
+    """strategy_node 應回傳 action_plan_tag 欄位。"""
+    from ai_stock_sentinel.graph.nodes import strategy_node
+    closes = [float(90 + i) for i in range(25)]
+    state = _base_state(
+        snapshot={"recent_closes": closes},
+        rsi14=25.0,
+        confidence_score=80,
+        institutional_flow={"flow_label": "institutional_accumulation"},
+    )
+    result = strategy_node(state)
+    assert "action_plan_tag" in result
+    assert result["action_plan_tag"] in ("opportunity", "overheated", "neutral")

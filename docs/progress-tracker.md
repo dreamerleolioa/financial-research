@@ -1,13 +1,13 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-05（CS-1~CS-5 完成，229 tests passed）
+> 更新日期：2026-03-06（Day 1 完成，263 tests passed）
 
 ## 目前完成度（高層）
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：100%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位 + AnalysisDetail 結構化輸出 + code fence hotfix + Protocol 回傳型別對齊完成）
-- **Phase 4（前端儀表板）**：95%（核心功能完成；新聞顯示資料拆分已完成）
+- **Phase 4（前端儀表板）**：97%（核心功能完成；Action Plan 燈號 badge 已完成；`data_confidence < 60` 提示待 Day 2 Session 4 完成）
 
 ---
 
@@ -217,15 +217,16 @@
 
 ### 下一輪修正（Action Plan 燈號）
 
-> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）；實作計劃：`docs/plans/2026-03-06-spec-gap-fix-day1.md` Session 2  
+> 計劃文件：`docs/plans/2026-03-05-deep-analysis-upgrade.md`（Session 4）；實作計劃：`docs/plans/2026-03-06-spec-gap-fix-day1.md` Session 2
 > 架構決策：燈號由**後端 rule-based Python 計算**並回傳 `action_plan_tag`；前端不含條件判斷，僅做 enum → emoji/文字顯示。
+> 完成日期：2026-03-06（263 tests passed）
 
-- [ ] **T2-0（前提）**：`GraphState` 新增 `rsi14: float | None` 獨立欄位；`preprocess_node` 計算後同步寫入 state（供燈號判斷用，不從 narrative 字串反解）
-- [ ] 後端：實作 `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python（`opportunity` / `overheated` / `neutral`；任一輸入為 None 則降級回 `neutral`）
-- [ ] 後端：`GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null` 與 `institutional_flow_label: str | null`
-- [ ] 後端：補齊單元測試（三情境 + None 安全 + `rsi14` float 寫入驗證 + API 欄位驗證）
-- [ ] 前端：Action Plan 卡片標題旁顯示燈號標籤（`opportunity` → 🟢 機會 / `overheated` → 🔴 過熱 / `neutral` → 🔵 中性）
-- [ ] 前端：`action_plan_tag` 為 null 時不顯示標籤，不崩潰
+- [x] **T2-0（前提）**：`GraphState` 新增 `rsi14: float | None` 獨立欄位；`preprocess_node` 計算後同步寫入 state（供燈號判斷用，不從 narrative 字串反解）
+- [x] 後端：實作 `calculate_action_plan_tag(rsi14, flow_label, confidence_score)` 純 Python（`opportunity` / `overheated` / `neutral`；任一輸入為 None 則降級回 `neutral`）
+- [x] 後端：`GraphState` 新增 `action_plan_tag` 欄位；`AnalyzeResponse` 新增 `action_plan_tag: str | null` 與 `institutional_flow_label: str | null`
+- [x] 後端：補齊單元測試（三情境 + None 安全 + `rsi14` float 寫入驗證 + API 欄位驗證）
+- [x] 前端：Action Plan 卡片標題旁顯示燈號標籤（`opportunity` → 🟢 機會 / `overheated` → 🔴 過熱 / `neutral` → 🔵 中性）
+- [x] 前端：`action_plan_tag` 為 null 時不顯示標籤，不崩潰
 
 ### 下一輪修正（LLM Prompt 缺少消息面輸入）
 
@@ -252,15 +253,17 @@
 
 #### 1. 技術位階指標（Support / Resistance）
 
-> 規格要求 `calculate_price_levels()` 輸出 `high_20d`, `low_20d`, `support_20d`, `resistance_20d`，目前均未實作。  
+> 規格要求 `calculate_price_levels()` 輸出 `high_20d`, `low_20d`, `support_20d`, `resistance_20d`，目前均未實作。
 > 計劃文件：`docs/plans/2026-03-06-spec-gap-fix-day1.md` Session 1
+> 完成日期：2026-03-06（263 tests passed）
+> 實作備注：`StockSnapshot` 的四個位階欄位與 `__post_init__` 計算邏輯實作於 `models.py`（非計劃原定的 `yfinance_client.py`），架構上更合理。
 
-- [ ] `yfinance_client.py` `StockSnapshot` 補齊 `high_20d` / `low_20d` / `support_20d` / `resistance_20d` 欄位計算（近 20 日高低點 + 均量加權支撐壓力位）
-- [ ] `context_generator.py` `generate_technical_context()` 加入支撐/壓力位敘事段落
-- [ ] `strategy_generator.py` `entry_zone` / `stop_loss` 改以實際價格計算（如 `"892.0-905.0（support_20d ~ MA20）"` / `"865.4（近20日低點×0.97 或 MA60）"`）
-- [ ] `GraphState` 新增 `support_20d` / `resistance_20d` / `high_20d` / `low_20d` 選填欄位
-- [ ] **位階資料缺失 fallback**：`low_20d` / `ma60` 不可用時，`entry_zone` 回傳 `"資料不足，建議參考現價 +/- 5%"`，並在 `risks` 或 `cross_validation_note` 標註「20日位階資料不足」；不允許虛構數值
-- [ ] 補齊測試（含 `test_strategy_template_contains_numeric_entry_zone`、`test_strategy_generation_fails_safe_when_price_levels_missing`、`test_strategy_fallback_uses_close_plus_minus_5pct_when_low20d_unavailable`）
+- [x] `models.py` `StockSnapshot` 補齊 `high_20d` / `low_20d` / `support_20d` / `resistance_20d` 欄位計算（`__post_init__` 自動計算，近 20 日高低點 × 0.99/1.01）
+- [x] `context_generator.py` `generate_technical_context()` 加入支撐/壓力位敘事段落（新增 `_price_level_narrative()`）
+- [x] `strategy_generator.py` `entry_zone` / `stop_loss` 改以實際價格計算（如 `"892.0-905.0（support_20d ~ MA20）"` / `"865.4（近20日低點×0.97 或 MA60）"`）
+- [x] `GraphState` 新增 `support_20d` / `resistance_20d` / `high_20d` / `low_20d` 選填欄位
+- [x] **位階資料缺失 fallback**：`low_20d` / `ma60` 不可用時，`entry_zone` 回傳 `"資料不足，建議參考現價 +/- 5%"`；不允許虛構數值
+- [x] 補齊測試（含 `test_strategy_template_contains_numeric_entry_zone`、`test_strategy_generation_fails_safe_when_price_levels_missing`、`test_strategy_fallback_uses_close_plus_minus_5pct_when_low20d_unavailable`）
 
 #### 2. AnalyzeResponse 欄位完整性
 

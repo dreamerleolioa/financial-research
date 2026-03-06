@@ -365,3 +365,84 @@ def test_analyze_response_news_display_contains_expected_fields() -> None:
     assert display["title"] == "台積電 Q1 法說會"
     assert display["date"] == "2026-03-05"
     assert display["source_url"] == "https://example.com/news/1"
+
+
+# ---------------------------------------------------------------------------
+# Session 2: action_plan_tag & institutional_flow_label
+# ---------------------------------------------------------------------------
+
+
+def test_api_response_includes_action_plan_tag_field() -> None:
+    """AnalyzeResponse 必須包含 action_plan_tag 欄位。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "action_plan_tag": "opportunity",
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "action_plan_tag" in body
+    assert body["action_plan_tag"] == "opportunity"
+
+
+def test_api_response_action_plan_tag_none_when_absent() -> None:
+    """graph 未回傳 action_plan_tag 時，欄位應為 None。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert response.json()["action_plan_tag"] is None
+
+
+def test_api_response_includes_institutional_flow_label_field() -> None:
+    """institutional_flow 有 flow_label 且無 error 時，institutional_flow_label 應浮出。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": {
+            "flow_label": "institutional_accumulation",
+            "foreign_buy": 1000.0,
+        },
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "institutional_flow_label" in body
+    assert body["institutional_flow_label"] == "institutional_accumulation"
+
+
+def test_api_response_institutional_flow_label_none_when_error() -> None:
+    """institutional_flow 含 error 欄位時，institutional_flow_label 應為 None。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": {
+            "error": "INSTITUTIONAL_FETCH_ERROR",
+        },
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert response.json()["institutional_flow_label"] is None

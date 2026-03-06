@@ -19,10 +19,6 @@ _HOLDING_PERIOD_MAP: dict[str, str] = {
     STRATEGY_DEFENSIVE_WAIT: "觀望",
 }
 
-# 停損描述（固定字串）
-_STOP_LOSS = "近20日低點 - 3% 或跌破 MA60（取較寬者）"
-
-
 def generate_strategy(
     technical_context_data: dict[str, Any],
     inst_data: dict[str, Any] | None,
@@ -36,6 +32,9 @@ def generate_strategy(
             - close: float | None — 最新收盤價
             - ma5: float | None
             - ma20: float | None
+            - ma60: float | None
+            - support_20d: float | None — 近20日支撐位
+            - low_20d: float | None — 近20日最低收盤價
             - sentiment_label: str | None — "positive"/"negative"/"neutral"/None
         inst_data: 籌碼 dict，key 包含 flow_label 等，或 None。
 
@@ -51,6 +50,9 @@ def generate_strategy(
     close: float | None = technical_context_data.get("close")
     ma5: float | None = technical_context_data.get("ma5")
     ma20: float | None = technical_context_data.get("ma20")
+    ma60: float | None = technical_context_data.get("ma60")
+    support_20d: float | None = technical_context_data.get("support_20d")
+    low_20d: float | None = technical_context_data.get("low_20d")
     sentiment_label: str | None = technical_context_data.get("sentiment_label")
 
     flow_label: str | None = inst_data.get("flow_label") if inst_data else None
@@ -65,13 +67,14 @@ def generate_strategy(
         flow_label=flow_label,
     )
 
-    entry_zone = _determine_entry_zone(bias=bias)
+    entry_zone = _determine_entry_zone(bias=bias, support_20d=support_20d, ma20=ma20)
+    stop_loss = _determine_stop_loss(low_20d=low_20d, ma60=ma60)
     holding_period = _HOLDING_PERIOD_MAP[strategy_type]
 
     return {
         "strategy_type": strategy_type,
         "entry_zone": entry_zone,
-        "stop_loss": _STOP_LOSS,
+        "stop_loss": stop_loss,
         "holding_period": holding_period,
     }
 
@@ -123,8 +126,56 @@ def _is_bullish_ma_alignment(
     return close > ma5 > ma20
 
 
-def _determine_entry_zone(*, bias: float | None) -> str:
-    """依 bias 決定進場區間描述。"""
+def _determine_entry_zone(
+    *,
+    bias: float | None,
+    support_20d: float | None = None,
+    ma20: float | None = None,
+) -> str:
+    """依 support_20d / ma20 / bias 決定進場區間，優先使用實際價格。"""
+    if support_20d is not None and ma20 is not None:
+        if bias is not None and bias > 5:
+            return f"拉回 MA20（{ma20:.1f}）附近分批佈局"
+        return f"{support_20d:.1f}–{ma20:.1f}（support_20d ~ MA20）"
+    if ma20 is not None and bias is not None and bias > 5:
+        return f"拉回 MA20（{ma20:.1f}）附近分批佈局"
     if bias is not None and bias > 5:
         return "拉回 MA20 分批佈局"
+    if support_20d is None and ma20 is None:
+        return "資料不足，建議參考現價 +/- 5%"
     return "現價附近分批買進"
+
+
+def _determine_stop_loss(
+    *,
+    low_20d: float | None,
+    ma60: float | None,
+) -> str:
+    """依 low_20d / ma60 決定停損位，優先使用實際價格。"""
+    if low_20d is not None and ma60 is not None:
+        return f"{low_20d * 0.97:.1f}（近20日低點×0.97）或跌破 MA60（{ma60:.1f}），取較寬者"
+    if low_20d is not None:
+        return f"{low_20d * 0.97:.1f}（近20日低點×0.97）"
+    return "近20日低點 - 3%（位階資料不足，以描述性規則代替）"
+
+
+def calculate_action_plan_tag(
+    rsi14: float | None,
+    flow_label: str | None,
+    confidence_score: int | None,
+) -> str:
+    """純 rule-based，依固定優先序判斷行動建議燈號。
+
+    任一輸入為 None → 降級為 "neutral"。
+
+    opportunity：rsi14 < 30 AND flow_label = "institutional_accumulation" AND confidence_score > 70
+    overheated ：rsi14 > 70 AND flow_label = "distribution"
+    neutral    ：其餘（含部分命中）
+    """
+    if rsi14 is None or flow_label is None or confidence_score is None:
+        return "neutral"
+    if rsi14 < 30 and flow_label == "institutional_accumulation" and confidence_score > 70:
+        return "opportunity"
+    if rsi14 > 70 and flow_label == "distribution":
+        return "overheated"
+    return "neutral"

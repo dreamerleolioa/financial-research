@@ -188,11 +188,42 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
     return summary
 
 
+# ─── 支撐壓力位敘事 ──────────────────────────────────────────────────────────
+
+def _price_level_narrative(
+    close: float | None,
+    support: float | None,
+    resistance: float | None,
+    high_20d: float | None,
+    low_20d: float | None,
+) -> str:
+    if None in (close, support, resistance):
+        return "近20日支撐壓力位資料不足，無法判斷位階。"
+    lines = [
+        f"近20日高點：{high_20d:.1f}，低點：{low_20d:.1f}",
+        f"支撐參考位：{support:.1f}（近20日低點 -1%）",
+        f"壓力參考位：{resistance:.1f}（近20日高點 +1%）",
+    ]
+    assert close is not None and support is not None and resistance is not None
+    if close <= support * 1.02:
+        lines.append("現價接近支撐位，下檔空間有限，可留意反彈機會。")
+    elif close >= resistance * 0.98:
+        lines.append("現價接近壓力位，上漲動能需確認突破，注意回測風險。")
+    else:
+        lines.append("現價處於支撐與壓力之間，位階中立。")
+    return "\n".join(lines)
+
+
 # ─── 主入口 ─────────────────────────────────────────────────────────────────
 
 def generate_technical_context(
     df_price: pd.DataFrame,
     inst_data: dict[str, Any] | None = None,
+    *,
+    support_20d: float | None = None,
+    resistance_20d: float | None = None,
+    high_20d: float | None = None,
+    low_20d: float | None = None,
 ) -> tuple[str, str]:
     """
     將價格 DataFrame 與籌碼 dict 轉換為敘事字串。
@@ -235,6 +266,14 @@ def generate_technical_context(
         f"【量能】{_volume_narrative(volumes) if volumes else '無成交量資料。'}",
     ]
     technical = " ".join(lines)
+    price_level = _price_level_narrative(
+        close=close if closes else None,
+        support=support_20d,
+        resistance=resistance_20d,
+        high_20d=high_20d,
+        low_20d=low_20d,
+    )
+    technical = technical + "\n【支撐壓力位】" + price_level
 
     institutional = _inst_narrative(inst_data or {})
     return technical, institutional
