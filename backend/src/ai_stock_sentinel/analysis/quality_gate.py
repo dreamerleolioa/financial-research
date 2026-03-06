@@ -200,7 +200,7 @@ class QualityGate:
         _DEDUCTIONS: dict[str, int] = {
             "TITLE_LOW_QUALITY": 35,
             "DATE_UNKNOWN": 15,
-            "NO_FINANCIAL_NUMBERS": 20,
+            "NO_FINANCIAL_NUMBERS": 0,  # news is not expected to have financial numbers
         }
         score = 100
         for flag in flags:

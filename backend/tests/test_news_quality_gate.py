@@ -169,16 +169,18 @@ class TestQualityScore:
         result = QualityGate.compute_quality(flags=["DATE_UNKNOWN"])
         assert result.quality_score == 85
 
-    def test_no_financial_numbers_deducts_20(self):
+    def test_no_financial_numbers_does_not_deduct(self):
+        # NO_FINANCIAL_NUMBERS is tracked but carries 0 deduction:
+        # news is not expected to contain financial numbers.
         result = QualityGate.compute_quality(flags=["NO_FINANCIAL_NUMBERS"])
-        assert result.quality_score == 80
+        assert result.quality_score == 100
 
-    def test_all_three_flags_give_score_30(self):
+    def test_all_three_flags_give_score_50(self):
         result = QualityGate.compute_quality(
             flags=["TITLE_LOW_QUALITY", "DATE_UNKNOWN", "NO_FINANCIAL_NUMBERS"]
         )
-        # 100 - 35 - 15 - 20 = 30
-        assert result.quality_score == 30
+        # 100 - 35 - 15 - 0 = 50
+        assert result.quality_score == 50
 
     def test_score_never_goes_below_zero(self):
         # Feed many flags (hypothetical future flags) — score must clamp at 0
@@ -235,14 +237,14 @@ class TestQualityGatePipeline:
         assert "TITLE_LOW_QUALITY" in result["quality_flags"]
         assert "DATE_UNKNOWN" in result["quality_flags"]
 
-    def test_all_three_flags_score_30(self):
+    def test_all_three_flags_score_50(self):
         result = self._run_pipeline(
             title="Mon, 03 Mar 2026 08:00:00",
             date="unknown",
             numbers=["2026", "03"],
         )
-        # -35 -15 -20 = 30
-        assert result["quality_score"] == 30
+        # 100 - 35 (TITLE) - 15 (DATE) - 0 (NO_FINANCIAL_NUMBERS) = 50
+        assert result["quality_score"] == 50
         assert len(result["quality_flags"]) == 3
 
     def test_rfc2822_date_is_normalized_no_flag(self):
@@ -253,3 +255,30 @@ class TestQualityGatePipeline:
         )
         assert "DATE_UNKNOWN" not in result["quality_flags"]
         assert result["quality_score"] == 100
+
+
+# ---------------------------------------------------------------------------
+# NM-1: NO_FINANCIAL_NUMBERS should not penalize quality_score
+# ---------------------------------------------------------------------------
+
+
+def test_quality_score_not_penalized_for_no_financial_numbers() -> None:
+    """
+    新聞標題事件語義清晰、日期有效，即使 mentioned_numbers 為空，
+    quality_score 也不應低於 60。
+    新聞僅負責市場情緒；財務數字缺席不代表品質低劣。
+    """
+    gate_result = QualityGate.compute_quality(["NO_FINANCIAL_NUMBERS"])
+    assert gate_result.quality_score >= 60
+    assert "NO_FINANCIAL_NUMBERS" in gate_result.quality_flags  # 旗標仍保留
+
+
+def test_quality_score_not_penalized_pipeline_no_financial_numbers() -> None:
+    """Pipeline 中無財務數字但事件語義清晰，quality_score 不應低於 60。"""
+    flags: list[str] = []
+    flags.extend(QualityGate.check_title("台積電宣布擴大日本熊本廠投資").flags)
+    flags.extend(QualityGate.normalize_date("2026-03-05").flags)
+    flags.extend(QualityGate.filter_numbers([]).flags)
+    result = QualityGate.compute_quality(flags)
+    assert result.quality_score >= 60
+    assert "NO_FINANCIAL_NUMBERS" in result.quality_flags
