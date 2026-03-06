@@ -22,6 +22,12 @@ interface NewsDisplay {
   source_url: string | null
 }
 
+interface NewsDisplayItem {
+  title: string
+  date: string | null
+  source_url: string | null
+}
+
 interface AnalyzeResponse {
   snapshot: Record<string, unknown>
   analysis: string
@@ -29,6 +35,7 @@ interface AnalyzeResponse {
   cleaned_news: Record<string, unknown> | null
   cleaned_news_quality: CleanedNewsQuality | null
   news_display: NewsDisplay | null
+  news_display_items: NewsDisplayItem[]
   confidence_score: number | null
   cross_validation_note: string | null
   strategy_type: 'short_term' | 'mid_term' | 'defensive_wait' | null
@@ -157,6 +164,7 @@ function App() {
         cleaned_news: null,
         cleaned_news_quality: null,
         news_display: null,
+        news_display_items: [],
         confidence_score: null,
         cross_validation_note: null,
         strategy_type: null,
@@ -285,7 +293,19 @@ function App() {
           </article>
 
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="text-sm font-semibold text-slate-800">新聞重點摘要</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
+              {result?.cleaned_news?.sentiment_label && (
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                    SENTIMENT_CLASS[String(result.cleaned_news.sentiment_label)] ?? SENTIMENT_CLASS.neutral
+                  }`}
+                >
+                  {SENTIMENT_LABEL[String(result.cleaned_news.sentiment_label)] ?? '中性'}
+                </span>
+              )}
+            </div>
+
             {result?.cleaned_news_quality != null &&
               (result.cleaned_news_quality.quality_score < 60 ||
                 result.cleaned_news_quality.quality_flags.length > 0) && (
@@ -293,45 +313,48 @@ function App() {
                   摘要品質受限
                 </p>
               )}
+
             {result ? (
-              result.news_display ? (
-                <div className="mt-3 space-y-2 text-sm text-slate-700">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs text-slate-500">
-                      日期：{result.news_display.date ?? '未知'}
-                    </p>
-                    {result.cleaned_news && (
-                      <span
-                        className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                          SENTIMENT_CLASS[
-                            (result.cleaned_news.sentiment_label as string) ?? 'neutral'
-                          ] ?? SENTIMENT_CLASS.neutral
-                        }`}
-                      >
-                        {SENTIMENT_LABEL[
-                          (result.cleaned_news.sentiment_label as string) ?? 'neutral'
-                        ] ?? '中性'}
-                      </span>
-                    )}
-                  </div>
-                  <p className="leading-relaxed">{result.news_display.title}</p>
-                  {result.news_display.source_url && (
-                    <a
-                      href={result.news_display.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block text-xs text-indigo-600 hover:underline"
-                    >
-                      查看原文 →
-                    </a>
-                  )}
-                </div>
+              result.news_display_items.length > 0 ? (
+                <ul className="mt-3 divide-y divide-slate-100">
+                  {result.news_display_items.map((item, idx) => (
+                    <li key={idx} className="py-2.5">
+                      {item.source_url ? (
+                        <a
+                          href={item.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-sm text-slate-800 hover:text-indigo-600 hover:underline"
+                        >
+                          {item.title}
+                        </a>
+                      ) : (
+                        <p className="text-sm text-slate-800">{item.title}</p>
+                      )}
+                      {item.date && (
+                        <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               ) : (
-                <p className="mt-3 text-sm text-slate-400">本次無新聞資料可萃取。</p>
+                <p className="mt-3 text-sm text-slate-400">本次無新聞資料。</p>
               )
             ) : (
               <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
             )}
+
+            <p className="mt-3 text-xs text-slate-400">
+              以上為市場情緒參考新聞。財報數字請參閱
+              <a
+                href="https://mops.twse.com.tw"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-0.5 text-indigo-500 hover:underline"
+              >
+                公開資訊觀測站
+              </a>。
+            </p>
           </article>
         </section>
 
