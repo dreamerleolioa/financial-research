@@ -138,6 +138,15 @@ def test_parse_analysis_handles_plain_code_fence():
     assert result.technical_signal == "sideways"
 
 
+def test_system_prompt_does_not_require_financial_number_extraction() -> None:
+    """System Prompt 不應要求 LLM 從新聞提取財務數字。"""
+    import ai_stock_sentinel.analysis.langchain_analyzer as mod
+    prompt = mod._SYSTEM_PROMPT
+    forbidden = ["提取關鍵數值", "EPS", "毛利率", "財報"]
+    for term in forbidden:
+        assert term not in prompt, f"System Prompt 不應包含財報相關指令：{term!r}"
+
+
 def test_analyze_returns_analysis_detail_when_llm_returns_json():
     """analyze() end-to-end: when chain returns JSON, result is AnalysisDetail."""
     from unittest.mock import patch
