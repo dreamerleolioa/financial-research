@@ -1,13 +1,13 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-06（Day 1 完成，263 tests passed）
+> 更新日期：2026-03-07（Day 2 完成，295 tests passed）
 
 ## 目前完成度（高層）
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：100%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位 + AnalysisDetail 結構化輸出 + code fence hotfix + Protocol 回傳型別對齊完成）
-- **Phase 4（前端儀表板）**：97%（核心功能完成；Action Plan 燈號 badge 已完成；`data_confidence < 60` 提示待 Day 2 Session 4 完成）
+- **Phase 4（前端儀表板）**：100%（核心功能完成；Action Plan 燈號 badge；data_confidence 提示完成）
 
 ---
 
@@ -178,7 +178,7 @@
 - [x] 前端顯示 `analysis_detail` 結構化輸出（2026-03-04 Session 9）
   - `analysis_detail` 存在時：顯示 `technical_signal` 標籤（看多/看空/盤整）、`summary` 段落、`risks` 條列
   - `analysis_detail` 為 null 時 fallback 維持 `analysis` 純文字
-- [ ] 信心指數卡片：`data_confidence < 60` 時卡片下方顯示「資料不足，分數僅供參考」灰色提示（`data_confidence` 已由後端回傳，僅需前端讀取判斷）（計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 4）
+- [x] 信心指數卡片：`data_confidence < 60` 時卡片下方顯示「資料不足，分數僅供參考」灰色提示（計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 4）（2026-03-07）
 
 ### 下一輪修正（新聞摘要品質）
 
@@ -230,22 +230,21 @@
 
 ### 下一輪修正（LLM Prompt 缺少消息面輸入）
 
-> **發現時間**：2026-03-05 規格比對  
-> **問題**：`langchain_analyzer.py` 的 `_HUMAN_PROMPT` 沒有傳入 `cleaned_news` 或新聞原文，LLM 在 Skeptic Mode 步驟一「提取新聞數值」時看不到任何消息面資料，架構規格要求的「清潔後新聞 ＋ 技術面敘述 ＋ 籌碼 JSON」三維輸入實際只有兩維。
+> **發現時間**：2026-03-05 規格比對
+> **完成日期**：2026-03-07（295 tests passed）計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 5
 
-- [ ] `langchain_analyzer.py` `_HUMAN_PROMPT` 加入 `{news_summary}` 欄位（取 `cleaned_news.title` + `cleaned_news.mentioned_numbers` 摘要，或直接傳 `news_content` 原文）
-- [ ] `analyze()` 簽名新增 `news_summary: str | None = None` 參數
-- [ ] `analyze_node` 從 `state["cleaned_news"]` 組合後傳入
-- [ ] 補齊測試（含有/無 cleaned_news 兩情境）
+- [x] `langchain_analyzer.py` `_HUMAN_PROMPT` 加入 `{news_summary}` 欄位（取 `cleaned_news.title` + `mentioned_numbers` + `sentiment_label`）
+- [x] `analyze()` 簽名新增 `news_summary: str | None = None` 參數；`_estimate_cost()` 納入長度估算
+- [x] `analyze_node` 從 `state["cleaned_news"]` 組合後傳入；None 時顯示「（本次無新聞摘要）」
+- [x] `StockAnalyzer` Protocol 同步更新；補齊測試（含有/無 cleaned_news 兩情境）
 
 ### 下一輪修正（data_confidence 語義修正）
 
-> **發現時間**：2026-03-05 規格比對  
-> **問題**：`compute_confidence()` 把 `news_sentiment="neutral"` 計為「資料缺失」，但 `neutral` 是 LLM 合法回傳的情緒標籤（表示有抓到新聞，只是情緒中性）。同理 `technical_signal="sideways"` 也是成功計算的結果，不代表資料不足。目前 `data_confidence` 實際量的是「訊號偏多/偏空的維度數」，而不是「資料成功取得的維度數」，語義與規格不符。  
-> **決策定案**（`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 6）：只修正邏輯，欄位名稱維持 `data_confidence`，不改名。
+> **發現時間**：2026-03-05 規格比對
+> **完成日期**：2026-03-07（295 tests passed）計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 6
 
-- [ ] `compute_confidence()` 修正「資料完整度」判斷邏輯：以資料是否成功取得為準（`inst_flow != "unknown"` 視為有籌碼資料、`news_sentiment` 只要有值皆視為有新聞資料、`closes` 有足夠筆數視為有技術資料）
-- [ ] 補齊測試（neutral 情緒 → data_confidence 不應為 0 或 33）
+- [x] `compute_confidence()` 修正「資料完整度」判斷邏輯：neutral/sideways 均視為有取得，只有 unknown 才計為未取得
+- [x] 補齊測試（neutral 情緒 → data_confidence=100；sideways 技術 → data_confidence 不降低）
 
 ### 待優化缺口（2026-03-05 規格對比發現）
 
@@ -267,31 +266,34 @@
 
 #### 2. AnalyzeResponse 欄位完整性
 
-> 規格輸出結構含多個頂層欄位，目前 API 回應缺漏。  
-> 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 3  
-> **前提**：Day 1 Session 2 已完成（`institutional_flow_label` 由 Session 2 處理；此 Session 補齊其餘欄位）
+> 規格輸出結構含多個頂層欄位，目前 API 回應缺漏。
+> 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 3
+> **完成日期**：2026-03-07（295 tests passed）
 
-- [ ] `AnalyzeResponse` 新增頂層 `sentiment_label: str | null`（從 `cleaned_news.sentiment_label` 浮出，供前端直接讀取）
-- [ ] `strategy_generator.py` 新增 `generate_action_plan()` rule-based 函式（純 Python，不呼叫 LLM）；`GraphState` 新增 `action_plan: dict | None`；`strategy_node` 計算並寫入
-- [ ] `AnalyzeResponse` 新增 `action_plan: dict | null`（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）
-- [ ] `AnalyzeResponse` 新增 `data_sources: list[str]`（如 `["google-news-rss", "yfinance", "twse-openapi"]`；依實際抓取成功的來源動態填入）
+- [x] `AnalyzeResponse` 新增頂層 `sentiment_label: str | null`（從 `cleaned_news.sentiment_label` 浮出）
+- [x] `strategy_generator.py` 新增 `generate_action_plan()` rule-based 函式；`GraphState` 新增 `action_plan: dict | None`；`strategy_node` 計算並寫入
+- [x] `AnalyzeResponse` 新增 `action_plan: dict | null`（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）
+- [x] `AnalyzeResponse` 新增 `data_sources: list[str]`（依實際抓取成功的來源動態填入）
 
 #### 3. AnalysisDetail 結構強化
 
-> 目前 `AnalysisDetail` 只含 `summary` / `risks` / `technical_signal`，規格輸出尚有其他欄位。  
+> 目前 `AnalysisDetail` 只含 `summary` / `risks` / `technical_signal`，規格輸出尚有其他欄位。
 > 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 3
+> **完成日期**：2026-03-07（295 tests passed）
 
-- [ ] `AnalysisDetail` 新增 `institutional_flow: str | null`（籌碼標籤，與頂層欄位一致）
-- [ ] `AnalysisDetail` 新增 `sentiment_label: str | null`（新聞情緒標籤）
-- [ ] LLM System Prompt 同步更新，要求輸出上述欄位（純展示用；LLM 不得修改 `confidence_score`）
+- [x] `AnalysisDetail` 新增 `institutional_flow: str | None`（預設 None，向後相容）
+- [x] `AnalysisDetail` 新增 `sentiment_label: str | None`（預設 None，向後相容）
+- [x] LLM System Prompt 同步更新；`_parse_analysis()` None-safe
 
 #### 4. DATE_UNKNOWN 信心分數懲罰
 
 > 計劃文件：`docs/plans/2026-03-07-spec-gap-fix-day2.md` Session 7
+> **完成日期**：2026-03-07（295 tests passed）
 
-- [ ] `confidence_scorer.py`：`quality_flags` 含 `DATE_UNKNOWN` 時額外扣 -3 分（clamp 保護）
-- [ ] `cross_validation_note` 追加「⚠️ 新聞日期未知，消息面可靠性下降」提示
-- [ ] 補齊測試（含/不含 `DATE_UNKNOWN` 兩情境）
+- [x] `compute_confidence()` 新增 `date_unknown` 參數，在 clamp 前扣 -3 分（僅影響 signal_confidence）
+- [x] `score_node` 從 `cleaned_news_quality.quality_flags` 讀取 `DATE_UNKNOWN` 並傳入
+- [x] `cross_validation_note` 末尾追加「（注意：新聞日期不明，時效性未驗證）」（追加不覆蓋）
+- [x] 補齊測試（含/不含 `DATE_UNKNOWN` 兩情境；None-safe）
 
 #### 5. 基本面 / 估值工具（低優先）
 
