@@ -38,3 +38,4 @@ class GraphState(TypedDict):
     resistance_20d: float | None
     rsi14: float | None
     action_plan_tag: str | None
+    action_plan: dict[str, Any] | None

@@ -136,8 +136,16 @@ def compute_confidence(
     news_sentiment: str,   # "positive" | "negative" | "neutral" | "unknown"
     inst_flow: str,        # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral" | "unknown"
     technical_signal: str, # "bullish" | "bearish" | "sideways" | "unknown"
+    date_unknown: bool = False,  # DATE_UNKNOWN 旗標：日期未知時額外扣 -3 分
 ) -> dict[str, int | str]:
     """計算 data_confidence、signal_confidence 與 cross_validation_note。
+
+    data_confidence 代表資料成功取得的維度比例（0 / 33 / 67 / 100）。
+    只有 unknown 才視為未取得資料；neutral（新聞/籌碼）與 sideways（技術）均算有取得。
+
+    注意：架構規格（v2.4）定義 technical_signal 不輸出 "unknown"（不足時降級為 "sideways"），
+    因此 technical_signal != "unknown" 在現行架構永遠為 True，
+    但保留此判斷作為防禦性設計，避免未來若新增 unknown 值時靜默影響計算。
 
     Returns:
         {
@@ -146,12 +154,13 @@ def compute_confidence(
             "cross_validation_note": str,
         }
     """
-    available = sum([
-        news_sentiment not in ("neutral",),
-        inst_flow not in ("neutral", "unknown"),
-        technical_signal not in ("sideways", "unknown"),
+    # 資料完整度：只判斷「資料是否成功取得」，neutral/sideways 均算有取得
+    data_available = sum([
+        news_sentiment != "unknown",           # neutral 也算有取得
+        inst_flow != "unknown",               # neutral 也算有取得
+        technical_signal != "unknown",        # sideways 也算有取得；現行架構不會出現 unknown
     ])
-    data_confidence = round(available / 3 * 100)
+    data_confidence = round(data_available / 3 * 100)
 
     signal_confidence, note = adjust_confidence_by_divergence(
         base_score,
@@ -159,6 +168,10 @@ def compute_confidence(
         inst_flow=inst_flow,
         technical_signal=technical_signal,
     )
+
+    # DATE_UNKNOWN 懲罰：在各維度加總後、clamp 前扣 -3（僅影響 signal_confidence）
+    if date_unknown:
+        signal_confidence = max(0, min(100, signal_confidence - 3))
 
     return {
         "data_confidence": data_confidence,

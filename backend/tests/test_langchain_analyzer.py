@@ -31,6 +31,7 @@ def test_cost_guard_does_not_trigger_for_normal_request():
     try:
         analyzer._estimate_cost(
             snapshot=snapshot,
+            news_summary=None,
             technical_context="BIAS 正常，RSI 55。",
             institutional_context="法人小量買超。",
             confidence_score=60,
@@ -49,6 +50,7 @@ def test_cost_guard_triggers_for_oversized_prompt():
     with pytest.raises(ValueError) as exc_info:
         analyzer._estimate_cost(
             snapshot=snapshot,
+            news_summary=None,
             technical_context=huge_text,
             institutional_context="正常。",
             confidence_score=50,
@@ -70,6 +72,7 @@ def test_cost_guard_error_message_contains_numbers():
     with pytest.raises(ValueError) as exc_info:
         analyzer._estimate_cost(
             snapshot=snapshot,
+            news_summary=None,
             technical_context=huge_text,
             institutional_context="",
             confidence_score=50,
@@ -176,3 +179,165 @@ def test_analyze_returns_analysis_detail_when_llm_returns_json():
 
     assert isinstance(result, AnalysisDetail)
     assert result.technical_signal == "bullish"
+
+
+# ---------------------------------------------------------------------------
+# Session 3: AnalysisDetail new fields + _parse_analysis None-safe
+# ---------------------------------------------------------------------------
+
+from ai_stock_sentinel.models import AnalysisDetail as _AnalysisDetail
+
+
+def test_analysis_detail_has_institutional_flow_and_sentiment_label_fields():
+    """AnalysisDetail 應包含 institutional_flow 與 sentiment_label 欄位，預設 None。"""
+    detail = _AnalysisDetail(summary="摘要")
+    assert hasattr(detail, "institutional_flow")
+    assert hasattr(detail, "sentiment_label")
+    assert detail.institutional_flow is None
+    assert detail.sentiment_label is None
+
+
+def test_parse_analysis_reads_new_fields_from_json():
+    """_parse_analysis 能正確讀取 institutional_flow 與 sentiment_label。"""
+    raw = '{"summary": "ok", "risks": [], "technical_signal": "bullish", "institutional_flow": "neutral", "sentiment_label": "positive"}'
+    result = LangChainStockAnalyzer._parse_analysis(raw)
+    assert result.institutional_flow == "neutral"
+    assert result.sentiment_label == "positive"
+
+
+def test_parse_analysis_handles_missing_new_fields_gracefully():
+    """_parse_analysis 在 LLM 未回傳新欄位時 fallback 為 None，不崩潰。"""
+    raw = '{"summary": "ok", "risks": [], "technical_signal": "sideways"}'
+    result = LangChainStockAnalyzer._parse_analysis(raw)
+    assert result.institutional_flow is None
+    assert result.sentiment_label is None
+
+
+def test_parse_analysis_empty_string_new_fields_become_none():
+    """_parse_analysis 回傳空字串新欄位時應轉換為 None。"""
+    raw = '{"summary": "ok", "risks": [], "technical_signal": "sideways", "institutional_flow": "", "sentiment_label": ""}'
+    result = LangChainStockAnalyzer._parse_analysis(raw)
+    assert result.institutional_flow is None
+    assert result.sentiment_label is None
+
+
+# ---------------------------------------------------------------------------
+# Session 5: news_summary LLM Prompt
+# ---------------------------------------------------------------------------
+
+from ai_stock_sentinel.analysis.langchain_analyzer import _HUMAN_PROMPT
+
+
+def test_human_prompt_contains_news_summary_section():
+    """_HUMAN_PROMPT 應包含【消息面摘要】段落。"""
+    assert "【消息面摘要】" in _HUMAN_PROMPT
+    assert "{news_summary}" in _HUMAN_PROMPT
+
+
+def test_estimate_cost_includes_news_summary_length():
+    """_estimate_cost 應將 news_summary 納入長度估算：傳入長字串時費用更高。"""
+    analyzer = LangChainStockAnalyzer(llm=None)
+    snapshot = _make_snapshot()
+
+    # 無 news_summary 不觸發
+    try:
+        analyzer._estimate_cost(
+            snapshot=snapshot,
+            news_summary=None,
+            technical_context="",
+            institutional_context="",
+            confidence_score=50,
+            cross_validation_note="",
+        )
+    except ValueError:
+        pytest.fail("Should not raise without news_summary")
+
+    # 極長的 news_summary 應觸發（加進去後超過門檻）
+    with pytest.raises(ValueError):
+        analyzer._estimate_cost(
+            snapshot=snapshot,
+            news_summary="N" * 1_400_000,
+            technical_context="",
+            institutional_context="",
+            confidence_score=50,
+            cross_validation_note="",
+        )
+
+
+def test_news_summary_fallback_when_cleaned_news_is_none():
+    """analyze_node 在 cleaned_news 為 None 時，傳入 analyze() 的 news_summary 應為 None。"""
+    from unittest.mock import patch, MagicMock
+    from ai_stock_sentinel.graph.nodes import analyze_node
+    from ai_stock_sentinel.models import StockSnapshot, AnalysisDetail
+    from dataclasses import asdict
+
+    snapshot = StockSnapshot(
+        symbol="2330.TW", currency="TWD", current_price=500.0,
+        previous_close=498.0, day_open=499.0, day_high=502.0, day_low=497.0,
+        volume=1_000_000, recent_closes=[490.0, 495.0, 500.0],
+        fetched_at="2026-03-07T00:00:00+00:00",
+    )
+    state = {
+        "snapshot": asdict(snapshot),
+        "cleaned_news": None,
+        "technical_context": None,
+        "institutional_context": None,
+        "confidence_score": None,
+        "cross_validation_note": None,
+        "errors": [],
+    }
+
+    captured_kwargs: dict = {}
+
+    def fake_analyze(snap, **kwargs):
+        captured_kwargs.update(kwargs)
+        return AnalysisDetail(summary="test")
+
+    mock_analyzer = MagicMock()
+    mock_analyzer.analyze.side_effect = fake_analyze
+
+    analyze_node(state, analyzer=mock_analyzer)
+    assert captured_kwargs.get("news_summary") is None
+
+
+def test_analyze_node_passes_news_summary_to_analyzer():
+    """analyze_node 在 cleaned_news 有值時，應組合 news_summary 並傳入 analyzer。"""
+    from unittest.mock import MagicMock
+    from ai_stock_sentinel.graph.nodes import analyze_node
+    from ai_stock_sentinel.models import StockSnapshot, AnalysisDetail
+    from dataclasses import asdict
+
+    snapshot = StockSnapshot(
+        symbol="2330.TW", currency="TWD", current_price=500.0,
+        previous_close=498.0, day_open=499.0, day_high=502.0, day_low=497.0,
+        volume=1_000_000, recent_closes=[490.0, 495.0, 500.0],
+        fetched_at="2026-03-07T00:00:00+00:00",
+    )
+    state = {
+        "snapshot": asdict(snapshot),
+        "cleaned_news": {
+            "title": "台積電法說會利多",
+            "mentioned_numbers": ["18.2%"],
+            "sentiment_label": "positive",
+        },
+        "technical_context": None,
+        "institutional_context": None,
+        "confidence_score": None,
+        "cross_validation_note": None,
+        "errors": [],
+    }
+
+    captured_kwargs: dict = {}
+
+    def fake_analyze(snap, **kwargs):
+        captured_kwargs.update(kwargs)
+        return AnalysisDetail(summary="test")
+
+    mock_analyzer = MagicMock()
+    mock_analyzer.analyze.side_effect = fake_analyze
+
+    analyze_node(state, analyzer=mock_analyzer)
+    news_summary = captured_kwargs.get("news_summary")
+    assert news_summary is not None
+    assert "台積電法說會利多" in news_summary
+    assert "positive" in news_summary

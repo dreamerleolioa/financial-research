@@ -159,6 +159,38 @@ def _determine_stop_loss(
     return "近20日低點 - 3%（位階資料不足，以描述性規則代替）"
 
 
+def generate_action_plan(
+    strategy_type: str,
+    entry_zone: str,
+    stop_loss: str,
+    flow_label: str | None,
+    confidence_score: int | None,
+) -> dict:
+    """由 strategy_type / flow_label / confidence_score 推導 action_plan 各欄位。
+
+    純 rule-based Python，不呼叫 LLM。
+    """
+    if strategy_type == "defensive_wait":
+        action = "觀望"
+    elif strategy_type == "mid_term":
+        action = "分批佈局"
+    else:  # short_term
+        action = "短線進場"
+
+    momentum = (
+        "強（法人集結中）" if flow_label == "institutional_accumulation"
+        else "弱（法人出貨中）" if flow_label == "distribution"
+        else "中性"
+    )
+
+    return {
+        "action": action,
+        "target_zone": entry_zone,
+        "defense_line": stop_loss,
+        "momentum_expectation": momentum,
+    }
+
+
 def calculate_action_plan_tag(
     rsi14: float | None,
     flow_label: str | None,

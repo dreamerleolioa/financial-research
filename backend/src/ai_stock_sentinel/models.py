@@ -7,6 +7,8 @@ class AnalysisDetail:
     summary: str
     risks: list[str] = field(default_factory=list)
     technical_signal: Literal["bullish", "bearish", "sideways"] = "sideways"
+    institutional_flow: str | None = None
+    sentiment_label: str | None = None
 
 
 @dataclass

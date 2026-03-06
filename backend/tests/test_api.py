@@ -446,3 +446,106 @@ def test_api_response_institutional_flow_label_none_when_error() -> None:
 
     assert response.status_code == 200
     assert response.json()["institutional_flow_label"] is None
+
+
+# ---------------------------------------------------------------------------
+# Session 3: sentiment_label, action_plan, data_sources
+# ---------------------------------------------------------------------------
+
+
+def test_api_response_includes_sentiment_label_from_cleaned_news() -> None:
+    """cleaned_news 有 sentiment_label 時，AnalyzeResponse.sentiment_label 應浮出。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": _CLEANED_NEWS,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": None,
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert response.json()["sentiment_label"] == "positive"
+
+
+def test_api_response_sentiment_label_is_none_when_cleaned_news_absent() -> None:
+    """cleaned_news 為 None 時，sentiment_label 應為 None。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": None,
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert response.json()["sentiment_label"] is None
+
+
+def test_api_response_includes_action_plan_dict() -> None:
+    """action_plan 在 state 有值時，AnalyzeResponse.action_plan 應回傳 dict。"""
+    _action_plan = {
+        "action": "觀望",
+        "target_zone": "現價附近",
+        "defense_line": "890",
+        "momentum_expectation": "中性",
+    }
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": None,
+        "action_plan": _action_plan,
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action_plan"] == _action_plan
+
+
+def test_api_response_data_sources_includes_yfinance_when_snapshot_present() -> None:
+    """snapshot 有值時，data_sources 應包含 yfinance。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": None,
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert "yfinance" in response.json()["data_sources"]
+
+
+def test_api_response_data_sources_includes_google_news_rss_when_raw_news_present() -> None:
+    """raw_news_items 有值時，data_sources 應包含 google-news-rss。"""
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": [{"title": "新聞一", "url": None}],
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert "google-news-rss" in response.json()["data_sources"]

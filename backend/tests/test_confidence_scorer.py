@@ -337,26 +337,26 @@ def test_compute_confidence_only_inst_missing():
 
 
 def test_compute_confidence_all_neutral():
-    """三維均中性/退化 → data_confidence=0"""
+    """三維均中性（neutral/sideways）→ data_confidence=100（均視為有取得資料）"""
     result = compute_confidence(
         50,
         news_sentiment="neutral",
         inst_flow="neutral",
         technical_signal="sideways",
     )
-    assert result["data_confidence"] == 0
+    assert result["data_confidence"] == 100
     assert result["signal_confidence"] == 50
 
 
 def test_compute_confidence_one_signal_available():
-    """只有 technical 有方向，其餘中性 → data_confidence=33"""
+    """inst=unknown，其他中性但有取得 → data_confidence=67（兩維可用）"""
     result = compute_confidence(
         50,
         news_sentiment="neutral",
         inst_flow="unknown",
         technical_signal="bullish",
     )
-    assert result["data_confidence"] == 33  # round(1/3 * 100)
+    assert result["data_confidence"] == 67  # round(2/3 * 100)
 
 
 def test_derive_technical_score_rsi_none():
@@ -365,3 +365,109 @@ def test_derive_technical_score_rsi_none():
     result = derive_technical_score(closes, rsi=None, bias=2.0)
     assert isinstance(result, int)
     assert 0 <= result <= 100
+
+
+# ---------------------------------------------------------------------------
+# Session 6: data_confidence 語義修正測試
+# ---------------------------------------------------------------------------
+
+
+def test_data_confidence_is_100_when_all_dims_valid_including_neutral():
+    """三維均有有效值（含 neutral/sideways）→ data_confidence=100"""
+    result = compute_confidence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="neutral",
+        technical_signal="sideways",
+    )
+    assert result["data_confidence"] == 100
+
+
+def test_data_confidence_is_67_when_inst_flow_unknown():
+    """inst_flow=unknown → data_confidence=67（只有兩維有資料）"""
+    result = compute_confidence(
+        50,
+        news_sentiment="positive",
+        inst_flow="unknown",
+        technical_signal="bullish",
+    )
+    assert result["data_confidence"] == 67
+
+
+def test_data_confidence_is_33_when_only_news_available():
+    """news 有資料，inst=unknown，technical=unknown → data_confidence=33"""
+    result = compute_confidence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="unknown",
+        technical_signal="unknown",
+    )
+    assert result["data_confidence"] == 33
+
+
+def test_data_confidence_neutral_sentiment_does_not_reduce_score():
+    """neutral 情緒不應降低 data_confidence"""
+    result_neutral = compute_confidence(
+        50,
+        news_sentiment="neutral",
+        inst_flow="institutional_accumulation",
+        technical_signal="bullish",
+    )
+    result_positive = compute_confidence(
+        50,
+        news_sentiment="positive",
+        inst_flow="institutional_accumulation",
+        technical_signal="bullish",
+    )
+    # 兩者 data_confidence 應相同（均為 100）
+    assert result_neutral["data_confidence"] == 100
+    assert result_positive["data_confidence"] == 100
+
+
+def test_data_confidence_sideways_signal_does_not_reduce_score():
+    """sideways 技術訊號不應降低 data_confidence"""
+    result = compute_confidence(
+        50,
+        news_sentiment="positive",
+        inst_flow="neutral",
+        technical_signal="sideways",
+    )
+    assert result["data_confidence"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Session 7: DATE_UNKNOWN 信心分數懲罰測試
+# ---------------------------------------------------------------------------
+
+
+def test_date_unknown_flag_reduces_signal_confidence_by_3():
+    """DATE_UNKNOWN=True 時 signal_confidence 應比無旗標低 3 分。"""
+    result_no_flag = compute_confidence(50, news_sentiment="neutral", inst_flow="neutral", technical_signal="sideways")
+    result_with_flag = compute_confidence(50, news_sentiment="neutral", inst_flow="neutral", technical_signal="sideways", date_unknown=True)
+    assert result_with_flag["signal_confidence"] == result_no_flag["signal_confidence"] - 3
+
+
+def test_date_unknown_does_not_affect_data_confidence():
+    """DATE_UNKNOWN 旗標不影響 data_confidence。"""
+    result_no_flag = compute_confidence(50, news_sentiment="neutral", inst_flow="neutral", technical_signal="sideways")
+    result_with_flag = compute_confidence(50, news_sentiment="neutral", inst_flow="neutral", technical_signal="sideways", date_unknown=True)
+    assert result_with_flag["data_confidence"] == result_no_flag["data_confidence"]
+
+
+def test_no_penalty_when_date_unknown_false():
+    """date_unknown=False 時不扣分（預設行為）。"""
+    result = compute_confidence(50, news_sentiment="neutral", inst_flow="neutral", technical_signal="sideways", date_unknown=False)
+    assert result["signal_confidence"] == 50
+
+
+def test_date_unknown_signal_confidence_clamped_at_zero():
+    """signal_confidence 扣分後不低於 0。"""
+    # base=50, 強力負向調整讓分數接近 0
+    result = compute_confidence(
+        0,
+        news_sentiment="negative",
+        inst_flow="distribution",
+        technical_signal="bearish",
+        date_unknown=True,
+    )
+    assert result["signal_confidence"] >= 0

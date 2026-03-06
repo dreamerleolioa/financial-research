@@ -44,6 +44,7 @@ interface AnalyzeResponse {
   holding_period: string | null
   action_plan_tag: 'opportunity' | 'overheated' | 'neutral' | null
   institutional_flow_label: string | null
+  data_confidence: number | null
   errors: ErrorDetail[]
 }
 
@@ -257,6 +258,11 @@ function App() {
             </div>
             {result?.cross_validation_note && (
               <p className="mt-3 text-xs text-slate-500 text-center">{result.cross_validation_note}</p>
+            )}
+            {result?.data_confidence !== null && result?.data_confidence !== undefined && result.data_confidence < 60 && (
+              <p className="text-xs text-gray-400 mt-1">
+                ⚠️ 資料不足（完整度 {result.data_confidence}%），分數僅供參考
+              </p>
             )}
           </article>
 

@@ -264,3 +264,87 @@ def test_calculate_action_plan_tag_opportunity_requires_confidence_above_70():
     """confidence_score == 70（非 > 70）→ neutral"""
     tag = calculate_action_plan_tag(rsi14=25.0, flow_label="institutional_accumulation", confidence_score=70)
     assert tag == "neutral"
+
+
+# ---------------------------------------------------------------------------
+# generate_action_plan
+# ---------------------------------------------------------------------------
+
+from ai_stock_sentinel.analysis.strategy_generator import generate_action_plan
+
+
+def test_generate_action_plan_returns_defensive_wait_action():
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="neutral",
+        confidence_score=50,
+    )
+    assert result["action"] == "觀望"
+
+
+def test_generate_action_plan_mid_term_action():
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900-910",
+        stop_loss="880",
+        flow_label="neutral",
+        confidence_score=60,
+    )
+    assert result["action"] == "分批佈局"
+
+
+def test_generate_action_plan_short_term_action():
+    result = generate_action_plan(
+        strategy_type="short_term",
+        entry_zone="895-905",
+        stop_loss="875",
+        flow_label="neutral",
+        confidence_score=70,
+    )
+    assert result["action"] == "短線進場"
+
+
+def test_generate_action_plan_returns_momentum_based_on_flow_label_accumulation():
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=75,
+    )
+    assert result["momentum_expectation"] == "強（法人集結中）"
+
+
+def test_generate_action_plan_returns_momentum_based_on_flow_label_distribution():
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="distribution",
+        confidence_score=40,
+    )
+    assert result["momentum_expectation"] == "弱（法人出貨中）"
+
+
+def test_generate_action_plan_neutral_momentum_for_unknown_flow():
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label=None,
+        confidence_score=50,
+    )
+    assert result["momentum_expectation"] == "中性"
+
+
+def test_generate_action_plan_contains_required_keys():
+    result = generate_action_plan(
+        strategy_type="short_term",
+        entry_zone="895-905",
+        stop_loss="875",
+        flow_label="neutral",
+        confidence_score=70,
+    )
+    assert set(result.keys()) == {"action", "target_zone", "defense_line", "momentum_expectation"}

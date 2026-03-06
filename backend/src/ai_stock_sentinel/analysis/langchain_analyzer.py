@@ -24,7 +24,9 @@ _SYSTEM_PROMPT = """\
 {{
   "summary": "2-3 句事實型摘要",
   "risks": ["風險點 1", "風險點 2"],
-  "technical_signal": "bullish|bearish|sideways"
+  "technical_signal": "bullish|bearish|sideways",
+  "institutional_flow": "從已提供的籌碼資料中讀取 flow_label，直接填入，不得修改",
+  "sentiment_label": "從已提供的 cleaned_news 資料中讀取 sentiment_label，直接填入，不得修改"
 }}
 - 不得輸出 JSON 以外的任何文字。
 """
@@ -39,6 +41,9 @@ _HUMAN_PROMPT = """\
 - Open: {day_open} / High: {day_high} / Low: {day_low}
 - Volume: {volume}
 - Recent Closes: {recent_closes}
+
+【消息面摘要】
+{news_summary}
 
 【技術面敘事】
 {technical_context}
@@ -64,6 +69,7 @@ class LangChainStockAnalyzer:
         self,
         snapshot: StockSnapshot,
         *,
+        news_summary: str | None,
         technical_context: str | None,
         institutional_context: str | None,
         confidence_score: int | None,
@@ -79,6 +85,7 @@ class LangChainStockAnalyzer:
             str(snapshot.day_low),
             str(snapshot.volume),
             str(snapshot.recent_closes),
+            news_summary or "",
             technical_context or "",
             institutional_context or "",
             str(confidence_score if confidence_score is not None else 50),
@@ -106,6 +113,7 @@ class LangChainStockAnalyzer:
         self,
         snapshot: StockSnapshot,
         *,
+        news_summary: str | None = None,
         technical_context: str | None = None,
         institutional_context: str | None = None,
         confidence_score: int | None = None,
@@ -129,6 +137,7 @@ class LangChainStockAnalyzer:
 
         self._estimate_cost(
             snapshot,
+            news_summary=news_summary,
             technical_context=technical_context,
             institutional_context=institutional_context,
             confidence_score=confidence_score,
@@ -155,6 +164,7 @@ class LangChainStockAnalyzer:
                 "day_low": snapshot.day_low,
                 "volume": snapshot.volume,
                 "recent_closes": snapshot.recent_closes,
+                "news_summary": news_summary or "（本次無新聞摘要）",
                 "technical_context": technical_context or "（無技術敘事）",
                 "institutional_context": institutional_context or "（無籌碼敘事）",
                 "confidence_score": confidence_score if confidence_score is not None else 50,
@@ -179,6 +189,8 @@ class LangChainStockAnalyzer:
                 summary=str(data.get("summary", raw)),
                 risks=[str(r) for r in data.get("risks", [])[:3]],
                 technical_signal=str(data.get("technical_signal", "sideways")),
+                institutional_flow=data.get("institutional_flow") or None,
+                sentiment_label=data.get("sentiment_label") or None,
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return AnalysisDetail(summary=raw)

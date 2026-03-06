@@ -10,7 +10,7 @@ from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, comput
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
-from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_tag, generate_strategy
+from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_tag, generate_action_plan, generate_strategy
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
@@ -202,18 +202,28 @@ def score_node(state: GraphState) -> dict[str, Any]:
         closes = [float(v) for v in raw_closes if v is not None]
     technical_signal = _derive_technical_signal(closes)
 
+    # DATE_UNKNOWN 旗標
+    quality = state.get("cleaned_news_quality") or {}
+    flags = quality.get("quality_flags") or []
+    date_unknown = "DATE_UNKNOWN" in flags
+
     result_dict = compute_confidence(
         BASE_CONFIDENCE,
         news_sentiment=news_sentiment,
         inst_flow=inst_flow,
         technical_signal=technical_signal,
+        date_unknown=date_unknown,
     )
+
+    note = result_dict["cross_validation_note"]
+    if date_unknown:
+        note = note + "（注意：新聞日期不明，時效性未驗證）"
 
     return {
         "confidence_score": result_dict["signal_confidence"],  # 向後相容
         "signal_confidence": result_dict["signal_confidence"],
         "data_confidence": result_dict["data_confidence"],
-        "cross_validation_note": result_dict["cross_validation_note"],
+        "cross_validation_note": note,
     }
 
 
@@ -231,8 +241,25 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
             "errors": state["errors"] + [{"code": "MISSING_SNAPSHOT", "message": "No snapshot available for analysis."}],
         }
     snapshot = StockSnapshot(**snapshot_dict)
+
+    # 組合消息面摘要供 LLM 使用
+    cleaned = state.get("cleaned_news")
+    news_summary: str | None = None
+    if cleaned:
+        parts: list[str] = []
+        if cleaned.get("title"):
+            parts.append(f"標題：{cleaned['title']}")
+        nums = cleaned.get("mentioned_numbers") or []
+        if nums:
+            parts.append(f"新聞數值線索：{', '.join(str(n) for n in nums)}")
+        sentiment = cleaned.get("sentiment_label")
+        if sentiment:
+            parts.append(f"情緒判斷：{sentiment}")
+        news_summary = "\n".join(parts) if parts else None
+
     result = analyzer.analyze(
         snapshot,
+        news_summary=news_summary,
         technical_context=state.get("technical_context"),
         institutional_context=state.get("institutional_context"),
         confidence_score=state.get("confidence_score"),
@@ -417,10 +444,19 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         confidence_score=state.get("confidence_score"),
     )
 
+    action_plan = generate_action_plan(
+        strategy_type=strategy["strategy_type"],
+        entry_zone=strategy["entry_zone"],
+        stop_loss=strategy["stop_loss"],
+        flow_label=flow_label_for_tag,
+        confidence_score=state.get("confidence_score"),
+    )
+
     return {
         "strategy_type": strategy["strategy_type"],
         "entry_zone": strategy["entry_zone"],
         "stop_loss": strategy["stop_loss"],
         "holding_period": strategy["holding_period"],
         "action_plan_tag": action_plan_tag,
+        "action_plan": action_plan,
     }

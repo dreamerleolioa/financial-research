@@ -89,6 +89,7 @@ def main() -> None:
         "news_content": news_content,
         "snapshot": None,
         "analysis": None,
+        "analysis_detail": None,
         "cleaned_news": None,
         "raw_news_items": None,
         "data_sufficient": False,
@@ -105,6 +106,18 @@ def main() -> None:
         "holding_period": None,
         "confidence_score": None,
         "cross_validation_note": None,
+        "cleaned_news_quality": None,
+        "news_display": None,
+        "news_display_items": [],
+        "data_confidence": None,
+        "signal_confidence": None,
+        "high_20d": None,
+        "low_20d": None,
+        "support_20d": None,
+        "resistance_20d": None,
+        "rsi14": None,
+        "action_plan_tag": None,
+        "action_plan": None,
     }
 
     result = graph.invoke(initial_state)

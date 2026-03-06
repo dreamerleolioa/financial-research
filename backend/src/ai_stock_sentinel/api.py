@@ -35,6 +35,9 @@ class AnalyzeResponse(BaseModel):
     signal_confidence: int | None = None
     action_plan_tag: str | None = None
     institutional_flow_label: str | None = None
+    sentiment_label: str | None = None
+    action_plan: dict[str, Any] | None = None
+    data_sources: list[str] = Field(default_factory=list)
 
     class ErrorDetail(BaseModel):
         code: str
@@ -101,6 +104,7 @@ def analyze(
         "resistance_20d": None,
         "rsi14": None,
         "action_plan_tag": None,
+        "action_plan": None,
     }
 
     try:
@@ -152,6 +156,25 @@ def analyze(
     if inst_flow and not inst_flow.get("error"):
         institutional_flow_label = inst_flow.get("flow_label")
 
+    # sentiment_label: 從 cleaned_news 浮出
+    sentiment_label: str | None = (
+        result.get("cleaned_news", {}).get("sentiment_label")
+        if result.get("cleaned_news") else None
+    )
+
+    # action_plan: 從 state 讀取
+    action_plan: dict[str, Any] | None = result.get("action_plan")
+
+    # data_sources: 依實際抓取狀況動態填入
+    _sources: list[str] = []
+    if result.get("raw_news_items"):
+        _sources.append("google-news-rss")
+    if result.get("snapshot"):
+        _sources.append("yfinance")
+    _inst = result.get("institutional_flow")
+    if _inst and not _inst.get("error"):
+        _sources.append(_inst.get("provider", "institutional-api"))
+
     return AnalyzeResponse(
         snapshot=snapshot,
         analysis=analysis,
@@ -170,5 +193,8 @@ def analyze(
         signal_confidence=result.get("signal_confidence"),
         action_plan_tag=result.get("action_plan_tag"),
         institutional_flow_label=institutional_flow_label,
+        sentiment_label=sentiment_label,
+        action_plan=action_plan,
+        data_sources=_sources,
         errors=response_errors,
     )

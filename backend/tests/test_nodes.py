@@ -48,9 +48,67 @@ def test_score_node_with_real_bullish_data():
         "cleaned_news": {"sentiment_label": "positive"},
         "institutional_flow": None,
         "snapshot": {"recent_closes": list(range(80, 106))},
+        "cleaned_news_quality": None,
         "errors": [],
     }
     result = score_node(state)
     assert result["signal_confidence"] > 50
     assert result["data_confidence"] is not None
     assert result["confidence_score"] == result["signal_confidence"]  # 向後相容
+
+
+# ---------------------------------------------------------------------------
+# Session 7: DATE_UNKNOWN score_node integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_date_unknown_appends_note_to_cross_validation_note():
+    """DATE_UNKNOWN 旗標存在時 cross_validation_note 末尾應追加時效性未驗證提示。"""
+    from ai_stock_sentinel.graph.nodes import score_node
+    state = {
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": {"recent_closes": list(range(80, 106))},
+        "cleaned_news_quality": {"quality_flags": ["DATE_UNKNOWN"], "quality_score": 40},
+        "errors": [],
+    }
+    result = score_node(state)
+    assert "時效性未驗證" in result["cross_validation_note"]
+
+
+def test_no_penalty_when_quality_flags_empty():
+    """quality_flags 為空時不扣分、不追加提示。"""
+    from ai_stock_sentinel.graph.nodes import score_node
+    state_no_flag = {
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": {"recent_closes": list(range(80, 106))},
+        "cleaned_news_quality": {"quality_flags": [], "quality_score": 100},
+        "errors": [],
+    }
+    state_with_flag = {
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": {"recent_closes": list(range(80, 106))},
+        "cleaned_news_quality": {"quality_flags": ["DATE_UNKNOWN"], "quality_score": 40},
+        "errors": [],
+    }
+    result_no = score_node(state_no_flag)
+    result_with = score_node(state_with_flag)
+    assert result_with["signal_confidence"] == result_no["signal_confidence"] - 3
+    assert "時效性未驗證" not in result_no.get("cross_validation_note", "")
+
+
+def test_no_penalty_when_cleaned_news_quality_is_none():
+    """cleaned_news_quality 為 None 時安全降級，不崩潰，不扣分。"""
+    from ai_stock_sentinel.graph.nodes import score_node
+    state = {
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": {"recent_closes": list(range(80, 106))},
+        "cleaned_news_quality": None,
+        "errors": [],
+    }
+    result = score_node(state)
+    assert isinstance(result["signal_confidence"], int)
+    assert "時效性未驗證" not in result.get("cross_validation_note", "")

@@ -8,6 +8,7 @@ class StockAnalyzer(Protocol):
         self,
         snapshot: StockSnapshot,
         *,
+        news_summary: str | None = None,
         technical_context: str | None = None,
         institutional_context: str | None = None,
         confidence_score: int | None = None,
