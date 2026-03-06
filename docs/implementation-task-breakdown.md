@@ -302,6 +302,21 @@
   - 補齊測試（7 個子任務均有對應測試案例）
 - 計劃文件：`docs/plans/2026-03-06-news-scope-and-display-items.md`
 
+### P5-2 分析敘事結構化（Session 8）
+
+> 計劃文件：`docs/plans/2026-03-07-dimensional-analysis.md`
+
+- **目標**：將 LLM 分析輸出從單一 `summary` 升級為三維獨立段落 + 綜合仲裁，提升可解釋性
+- **任務 A（後端 Schema）**：`AnalysisDetail` dataclass 新增 `tech_insight`、`inst_insight`、`news_insight`、`final_verdict` 欄位（均為 `str | None`，向後相容）
+- **任務 B（後端 Prompt）**：更新 `langchain_analyzer.py` JSON 輸出要求，強制 LLM 分段輸出四欄位，禁止跨維度混寫（參考架構規格 §3.2 分維度 System Prompt 規範）
+- **任務 C（前端 UI）**：「LLM 分析報告」卡片改為分欄式配置——技術面/籌碼面/消息面三張小卡 + 綜合仲裁全寬卡；各卡標題旁附維度燈號
+- **DoD**
+  - `AnalysisDetail` 含四個新欄位，舊欄位不破壞
+  - LLM 輸出的 prompt 包含分維度限制指令；`_parse_analysis()` None-safe
+  - 前端可正確渲染三維小卡（含 null 降級不崩潰）
+  - `make test` 全數通過
+- **架構原則**：`tech_insight` / `inst_insight` / `news_insight` 均由 LLM 生成，但 `confidence_score` 仍由前置 `score_node` rule-based 計算，LLM 不得修改
+
 ---
 
 ## 補強任務（Spec Gap Fix + 邏輯缺口）

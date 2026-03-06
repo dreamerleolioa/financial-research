@@ -295,7 +295,18 @@
 - [x] `cross_validation_note` 末尾追加「（注意：新聞日期不明，時效性未驗證）」（追加不覆蓋）
 - [x] 補齊測試（含/不含 `DATE_UNKNOWN` 兩情境；None-safe）
 
-#### 5. 基本面 / 估值工具（低優先）
+#### 5. 分析敘事結構化 — 分維度拆解（Session 8，中優先）
+
+> **需求來源**：2026-03-07 PM 需求補強
+> **背景**：目前 LLM 將三維資訊揉雜在單一 `summary` 段落，資訊密度過高、推論過程像黑盒子。分維度拆解可提升可讀性與可解釋性。
+> **計劃文件**：`docs/plans/2026-03-07-dimensional-analysis.md`
+> **架構規格**：`docs/ai-stock-sentinel-architecture-spec.md` v2.5 §3.2「分維度強制分段」、§4.1 元件 7
+
+- [ ] **任務 A**：`models.py` `AnalysisDetail` 新增四欄位：`tech_insight: str | None`、`inst_insight: str | None`、`news_insight: str | None`、`final_verdict: str | None`（向後相容，預設 None）
+- [ ] **任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 更新——強制 LLM 分段輸出，禁止 `tech_insight` 混入籌碼/消息、`inst_insight` 混入技術/消息、`news_insight` 混入技術指標數值；`_parse_analysis()` None-safe
+- [ ] **任務 C**：前端 `App.tsx` UI 改版——「LLM 分析報告」改為三張維度小卡（技術面/籌碼面/消息面）+ 一張綜合仲裁全寬卡；各卡標題旁附維度燈號；null 時降級不崩潰
+
+#### 6. 基本面 / 估值工具（低優先）
 
 > 規格 Tool Use 章節列出下列工具，目前完全未實作；屬進階功能，優先序低。
 
@@ -354,6 +365,10 @@ cd backend
 6. **Session 6**：`data_confidence` 語義修正（T6-1）— 可與其他 Session 並行
 7. **Session 7**：DATE_UNKNOWN 信心分數懲罰 — 可與其他 Session 並行
 
+### Session 8（`docs/plans/2026-03-07-dimensional-analysis.md`）
+8. **任務 A**：`models.py` `AnalysisDetail` 新增四欄位（`tech_insight` / `inst_insight` / `news_insight` / `final_verdict`）
+9. **任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 強制分維度輸出
+10. **任務 C**：前端 `App.tsx` 分維度小卡 UI
+
 ### 其他待辦（可穿插）
-- 消息面職責邊界 + 多筆新聞列表（NM-1 ~ NM-7），依 `docs/plans/2026-03-06-news-scope-and-display-items.md`
-- **長期**：Phase 5 準備 — Docker / Railway 部署；基本面/估值工具（`estimate_pe_percentile`）
+- **長期**：Phase 5 準備 — Docker / Railway 部署；基本面/估值工具（`estimate_pe_percentile`、`calculate_growth_rate`）

@@ -1,9 +1,9 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-03-06
-> 狀態：Draft v2.4
+> 日期：2026-03-07
+> 狀態：Draft v2.5
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖
-> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則
+> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則；新增 Session 8 分維度拆解分析——`AnalysisDetail` 三維獨立欄位、LLM 分段 Prompt、前端分欄卡片 UI
 
 ## 1. 目標與方向
 
@@ -330,6 +330,36 @@ class InstitutionalFlowProvider(Protocol):
 3. 若訊號矛盾，必須標記衝突與風險
 4. 僅輸出事實與邏輯推論，不得臆測或補造來源
 
+### System Prompt：分維度強制分段（Session 8 新增）
+
+> **設計動機**：目前 LLM 將三維資訊（新聞、技術、籌碼）揉雜在單一 `summary` 段落中，造成「資訊密度過高」且「推論過程像黑盒子」。分維度拆解不僅提升可讀性，更強化系統的可解釋性，使前端能顯示每個維度的「維度燈號」並讓使用者一眼看出哪個維度在拖累或支撐整體分數。
+
+`analyze_node` 的 system prompt 必須要求 LLM **分段輸出四個獨立欄位**，禁止跨維度混寫：
+
+```
+請針對以下三個維度產出獨立的分析段落，禁止跨維度混寫：
+
+[技術維度] tech_insight：
+- 僅參考 technical_context 中的均線排列、RSI 位階、支撐壓力位
+- 禁止提及法人買賣超、新聞事件等非技術資訊
+
+[籌碼維度] inst_insight：
+- 僅參考 institutional_context 中的三大法人買賣超與融資券動向
+- 禁止提及均線數值、RSI、新聞事件等非籌碼資訊
+
+[消息維度] news_insight：
+- 僅參考 news_summary 中的事件性質與市場情緒傾向
+- 禁止提及具體技術指標數值（如 RSI=62）
+
+[綜合仲裁] final_verdict：
+- 整合三維訊號，解釋為何這些訊號導向當前信心分數與策略
+- 此段允許跨維度整合推論
+```
+
+**欄位對應**：LLM 必須分別輸出 `tech_insight`、`inst_insight`、`news_insight`、`final_verdict` 四個欄位（字串）；`summary` 欄位改由 `final_verdict` 填充（保留向後相容）。
+
+**實作位置**：`langchain_analyzer.py` System Prompt + JSON output schema。
+
 **衝突規則（v2，定案）**：
 
 > 分數調整 = 各維度 lookup 分數加總 + 特殊情境 bonus/penalty。各維度基礎對照：`sentiment` positive/negative/neutral = +5/-5/0；`inst_flow` institutional_accumulation/distribution/retail_chasing/neutral/unknown = +7/-10/-8/0/0；`technical_signal` bullish/bearish/sideways = +5/-5/0。
@@ -402,9 +432,20 @@ class InstitutionalFlowProvider(Protocol):
   },
   "cross_validation_note": "外資連買 3 日，與新聞利多訊號一致，信心分數維持高位",
   "risks": ["RSI 接近超買區間 (>70)，短線需注意回測"],
-  "data_sources": ["google-news-rss", "yfinance", "twse-openapi"]
+  "data_sources": ["google-news-rss", "yfinance", "twse-openapi"],
+  "tech_insight": "均線多頭排列，RSI 62 位於健康動能區，短線無超買疑慮。",
+  "inst_insight": "外資近 5 日累計買超 12,500 張，籌碼持續沉澱，機構資金流向偏多。",
+  "news_insight": "法說會利多消息帶動市場情緒正面，事件時效性已驗證（日期明確）。",
+  "final_verdict": "三維訊號共振：技術面健康、籌碼面偏多、消息面正面，信心分數 78 反映訊號一致性高。"
 }
 ```
+
+> **分維度分析欄位說明（Session 8 新增）**：
+> - `tech_insight`：技術面獨立分析段落，聚焦均線排列、RSI 位階、支撐壓力解讀，**不混入籌碼或消息面**
+> - `inst_insight`：籌碼面獨立分析段落，聚焦三大法人買賣超與融資券對作格局，**不混入技術或消息面**
+> - `news_insight`：消息面獨立分析段落，聚焦市場情緒、事件性質與時效性驗證，**不混入數值指標**
+> - `final_verdict`：綜合仲裁段落，解釋三維訊號如何導向當前信心分數與策略；此段允許跨維度整合推論
+> - 四個欄位均由 LLM 在 `analyze_node` 生成，但 LLM **不得修改** `confidence_score`（由前置 `score_node` rule-based 計算）
 
 ### JSON Schema 範例（AnalyzeResponse 重點欄位）
 
@@ -473,6 +514,22 @@ class InstitutionalFlowProvider(Protocol):
           "source_url": { "type": ["string", "null"] }
         }
       }
+    },
+    "tech_insight": {
+      "type": ["string", "null"],
+      "description": "技術面獨立分析段落（均線排列、RSI 位階、支撐壓力）；禁止混入籌碼或消息面資訊"
+    },
+    "inst_insight": {
+      "type": ["string", "null"],
+      "description": "籌碼面獨立分析段落（三大法人買賣超、融資券對作）；禁止混入技術或消息面資訊"
+    },
+    "news_insight": {
+      "type": ["string", "null"],
+      "description": "消息面獨立分析段落（市場情緒、事件性質、時效性）；禁止混入技術指標數值"
+    },
+    "final_verdict": {
+      "type": ["string", "null"],
+      "description": "綜合仲裁段落：解釋三維訊號如何導向當前信心分數與策略；允許跨維度整合推論"
     }
   }
 }
@@ -607,6 +664,15 @@ class InstitutionalFlowProvider(Protocol):
   - 防守底線：`stop_loss`（例如「近 20 日低點 -3%」或「破 MA60」）
   - 預期動能：依 `institutional_flow` 與 `technical_signal` 共振結果顯示
 
+7. **分維度分析卡片（Session 8 新增）**
+   - 「LLM 分析報告」區塊改為三張獨立小卡 + 一張綜合仲裁卡，取代單一大文字方塊
+   - **技術面卡片**：顯示 `tech_insight` 內容，標題旁附維度燈號（技術面訊號 bullish/bearish/sideways 對應 🟢/🔴/🔵）
+   - **籌碼面卡片**：顯示 `inst_insight` 內容，標題旁附維度燈號（institutional_flow 對應 🟢/🔴/🔵）；卡片下方附原始數據（如外資買超張數）增加說服力
+   - **消息面卡片**：顯示 `news_insight` 內容，標題旁附整體情緒 badge（positive/negative/neutral）
+   - **綜合仲裁卡片**：顯示 `final_verdict` 內容，為全寬卡片，放置於三張小卡下方
+   - 使用「手風琴（Accordion）」或「標籤頁（Tabs）」切換三個維度（前端技術選擇）
+   - 視覺目標：使用者一眼看出哪個維度在「拖累」整體分數、哪個維度在「支撐」策略
+
 ### 4.2 UX 要點
 
 - 顯示資料來源與時間戳
@@ -732,6 +798,12 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 - 技術術語語義化翻譯層（RSI/BIAS/MA/Institutional Flow）
 - Action Plan 強制輸出具體價位（entry/stop/holding）
 - 籌碼資料雙軌穩定化（FinMind Primary + TWSE OpenAPI Fallback）
+
+### Phase 5（Session 8：分析敘事結構化）
+
+- `AnalysisDetail` 新增 `tech_insight` / `inst_insight` / `news_insight` / `final_verdict` 四欄位
+- `langchain_analyzer.py` JSON 輸出要求更新：強制分段輸出，禁止跨維度混寫
+- 前端 UI 改版：「LLM 分析報告」改為分欄式三維小卡 + 綜合仲裁卡配置
 
 ---
 
