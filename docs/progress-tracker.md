@@ -307,13 +307,13 @@
 > 1. 規格釐清：新聞（消息面）僅負責市場情緒訊號（法說會、政策、法人評等等），不負責財務數字（EPS/營收/毛利率屬基本面）；對應調整 quality_score 計分與 LLM Prompt
 > 2. `news_display`（單筆）升級為 `news_display_items`（最多 5 筆陣列），前端可展示多筆近期新聞連結
 
-- [ ] NM-1：`NO_FINANCIAL_NUMBERS` flag 計分貢獻改為 0，旗標保留但不扣 quality_score
-- [ ] NM-2：LLM System Prompt 移除「從新聞提取財務數字」要求，改為聚焦事件情緒語義
-- [ ] NM-3：`GraphState` `news_display` → `news_display_items: list[dict]`
-- [ ] NM-4：`quality_gate_node` 迭代 `raw_news_items[:5]`，產出 `news_display_items` 陣列
-- [ ] NM-5：`api.py` `AnalyzeResponse` 欄位更新（`news_display_items`）
-- [ ] NM-6：前端新聞卡片改為多筆列表，每筆可點擊連結 + 公開資訊觀測站提示
-- [ ] NM-7：補齊測試（state 欄位、node 輸出、API 欄位、quality_score 計分）
+- [x] NM-1：`NO_FINANCIAL_NUMBERS` flag 計分貢獻改為 0，旗標保留但不扣 quality_score
+- [x] NM-2：LLM System Prompt 移除「從新聞提取財務數字」要求，改為聚焦事件情緒語義
+- [x] NM-3：`GraphState` 新增 `news_display_items: list[dict]`（保留 `news_display` 向後相容）
+- [x] NM-4：`quality_gate_node` 迭代 `raw_news_items[:5]`，產出 `news_display_items` 陣列
+- [x] NM-5：`api.py` `AnalyzeResponse` 欄位更新（`news_display_items`）
+- [x] NM-6：前端新聞卡片改為多筆列表，每筆可點擊連結 + 公開資訊觀測站提示
+- [x] NM-7：補齊測試（state 欄位、node 輸出、API 欄位、quality_score 計分）
 
 ---
 
