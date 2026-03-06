@@ -281,12 +281,11 @@ def quality_gate_node(state: GraphState) -> dict[str, Any]:
             if fallback_title:
                 result["cleaned_news"] = {**cleaned, "title": fallback_title}
 
-    # 產出 news_display（供前端顯示，不污染 cleaned_news）
+    # 產出 news_display（向後相容，保留單筆）
     news_display: dict[str, Any] | None = None
     raw_items = state.get("raw_news_items") or []
     if cleaned and raw_items:
         first_raw = raw_items[0]
-        # 日期正規化：unknown → None
         normalized_date = date_result.date
         display_date: str | None = normalized_date if normalized_date != "unknown" else None
         news_display = {
@@ -296,6 +295,22 @@ def quality_gate_node(state: GraphState) -> dict[str, Any]:
         }
 
     result["news_display"] = news_display
+
+    # 產出 news_display_items（最多 5 筆，供前端顯示近期新聞連結）
+    news_display_items: list[dict[str, Any]] = []
+    for raw_item in raw_items[:5]:
+        item_date_str = raw_item.get("published_at") or raw_item.get("pub_date") or "unknown"
+        item_date_result = QualityGate.normalize_date(item_date_str)
+        normalized_item_date: str | None = (
+            item_date_result.date if item_date_result.date != "unknown" else None
+        )
+        news_display_items.append({
+            "title": raw_item.get("title", ""),
+            "date": normalized_item_date,
+            "source_url": raw_item.get("url") or None,
+        })
+
+    result["news_display_items"] = news_display_items
 
     return result
 

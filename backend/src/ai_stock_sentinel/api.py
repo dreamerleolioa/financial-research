@@ -30,6 +30,7 @@ class AnalyzeResponse(BaseModel):
     holding_period: str | None = None
     cleaned_news_quality: dict[str, Any] | None = None
     news_display: dict[str, Any] | None = None
+    news_display_items: list[dict[str, Any]] = Field(default_factory=list)
     data_confidence: int | None = None
     signal_confidence: int | None = None
 
@@ -89,6 +90,7 @@ def analyze(
         "cross_validation_note": None,
         "cleaned_news_quality": None,
         "news_display": None,
+        "news_display_items": [],
         "data_confidence": None,
         "signal_confidence": None,
     }
@@ -144,6 +146,7 @@ def analyze(
         cleaned_news=result.get("cleaned_news"),
         cleaned_news_quality=result.get("cleaned_news_quality"),
         news_display=result.get("news_display"),
+        news_display_items=result.get("news_display_items") or [],
         confidence_score=result.get("confidence_score"),
         cross_validation_note=result.get("cross_validation_note"),
         strategy_type=result.get("strategy_type"),

@@ -35,6 +35,7 @@ def _base_state(**overrides) -> GraphState:
         "cleaned_news": None,
         "cleaned_news_quality": None,
         "news_display": None,
+        "news_display_items": [],
         "raw_news_items": None,
         "data_sufficient": False,
         "retry_count": 0,
@@ -429,7 +430,7 @@ def test_quality_gate_node_flags_unknown_date() -> None:
 
 
 def test_quality_gate_node_flags_no_financial_numbers() -> None:
-    """純日期碎片的 mentioned_numbers 應觸發 NO_FINANCIAL_NUMBERS 並扣分 20。"""
+    """純日期碎片的 mentioned_numbers 應觸發 NO_FINANCIAL_NUMBERS，但不扣分（deduction=0）。"""
     state = _base_state(
         cleaned_news={
             "date": "2026-03-03",
@@ -442,7 +443,7 @@ def test_quality_gate_node_flags_no_financial_numbers() -> None:
 
     quality = result["cleaned_news_quality"]
     assert "NO_FINANCIAL_NUMBERS" in quality["quality_flags"]
-    assert quality["quality_score"] == 80  # 100 - 20
+    assert quality["quality_score"] == 100  # 旗標保留但不扣分
 
 
 def test_quality_gate_node_returns_none_when_no_cleaned_news() -> None:
@@ -576,3 +577,67 @@ def test_quality_gate_node_news_display_none_when_no_raw_news_items() -> None:
     result = quality_gate_node(state)
 
     assert result.get("news_display") is None
+
+
+def test_quality_gate_node_flags_no_financial_numbers_score_100() -> None:
+    """NO_FINANCIAL_NUMBERS 旗標不再扣分（deduction=0），quality_score 應為 100。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "台積電 2 月營收年增",
+            "mentioned_numbers": ["2026", "03"],
+            "sentiment_label": "neutral",
+        }
+    )
+    result = quality_gate_node(state)
+
+    quality = result["cleaned_news_quality"]
+    assert "NO_FINANCIAL_NUMBERS" in quality["quality_flags"]
+    assert quality["quality_score"] == 100  # 不再扣分
+
+
+# ── news_display_items ────────────────────────────────────────────────────────
+
+
+def test_quality_gate_node_produces_news_display_items_list() -> None:
+    """quality_gate_node 應產出 news_display_items 陣列（最多 5 筆）。"""
+    raw_items = [
+        asdict(_make_raw_news_item(
+            title=f"新聞標題 {i}",
+            url=f"https://example.com/news/{i}",
+            published_at="Mon, 03 Mar 2026 08:00:00 GMT",
+        ))
+        for i in range(1, 7)  # 6 筆，應截斷為 5
+    ]
+    state = _base_state(
+        cleaned_news={
+            "date": "Mon, 03 Mar 2026 08:00:00 GMT",
+            "title": "台積電公告",
+            "mentioned_numbers": [],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=raw_items,
+    )
+    result = quality_gate_node(state)
+
+    items = result["news_display_items"]
+    assert isinstance(items, list)
+    assert len(items) == 5  # 最多 5 筆
+    assert items[0]["title"] == "新聞標題 1"
+    assert items[0]["date"] == "2026-03-03"
+    assert items[0]["source_url"] == "https://example.com/news/1"
+
+
+def test_quality_gate_node_news_display_items_empty_when_no_raw() -> None:
+    """raw_news_items 為空時，news_display_items 應為空陣列。"""
+    state = _base_state(
+        cleaned_news={
+            "date": "2026-03-03",
+            "title": "台積電公告",
+            "mentioned_numbers": [],
+            "sentiment_label": "neutral",
+        },
+        raw_news_items=[],
+    )
+    result = quality_gate_node(state)
+    assert result["news_display_items"] == []

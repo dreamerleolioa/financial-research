@@ -63,3 +63,10 @@ def test_graph_state_has_news_display_field() -> None:
     import typing
     hints = typing.get_type_hints(GraphState)
     assert "news_display" in hints
+
+
+def test_graph_state_has_news_display_items_field() -> None:
+    """GraphState 應有 news_display_items 欄位（list 型別）。"""
+    import typing
+    hints = typing.get_type_hints(GraphState)
+    assert "news_display_items" in hints

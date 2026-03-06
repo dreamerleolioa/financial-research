@@ -29,5 +29,6 @@ class GraphState(TypedDict):
     analysis_detail: AnalysisDetail | None
     cleaned_news_quality: dict[str, Any] | None
     news_display: dict[str, Any] | None
+    news_display_items: list[dict[str, Any]]
     data_confidence: int | None
     signal_confidence: int | None
