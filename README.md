@@ -29,9 +29,9 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 - Phase 1（MVP Backend）：100%（技術債清理完成，CLI 改走 graph 流程）
 - Phase 2（LangGraph 回圈）：100%（骨架 + judge + RSS + clean + API 接入完成）
 - Phase 3（分析能力強化）：100%（Provider 抽象層 + ContextGenerator + Skeptic Mode + 信心分數多維加權 + Anthropic LLM 串接完成）
-- Phase 4（前端儀表板）：95%（核心功能完成；Action Plan 燈號尚未實作）
+- Phase 4（前端儀表板）：100%（核心功能完成；Action Plan 燈號 badge；data_confidence 提示完成）
 
-測試：229 tests passed（截至 2026-03-05）
+測試：295 tests passed（截至 2026-03-07）
 
 ---
 
@@ -89,6 +89,7 @@ docs/
 		2026-03-06-spec-gap-fix-day1.md
 		2026-03-06-news-scope-and-display-items.md
 		2026-03-07-spec-gap-fix-day2.md
+		2026-03-07-dimensional-analysis.md
 ```
 
 ---
@@ -148,12 +149,12 @@ pnpm dev
 
 目前前端已包含：
 - 股票代碼輸入框 + 一鍵分析
-- 信心指數圓形元件（動態，含 `cross_validation_note`）
+- 信心指數圓形元件（動態，含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示）
 - 快照資訊（symbol / current_price / volume）
 - AI 萃取純數據摘要（`cleaned_news`）
 - LLM 分析報告（`analysis_detail`：summary + risks + technical_signal 標籤）
-- 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間）
-- 新聞卡片（RSS 標題、日期、原文連結；來自 `news_display`）
+- 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
+- 新聞卡片（RSS 標題、日期、原文連結；多筆列表來自 `news_display_items`，最多 5 筆）
 - 新聞摘要品質提示（`quality_score < 60` 時顯示警告）
 - 分析路徑圖（step timeline）
 - 錯誤 banner + loading 狀態
@@ -242,13 +243,14 @@ POST `/analyze` 回傳 JSON 欄位：
 |------|------|
 | `snapshot` | 股票快照（price / volume / recent_closes 等） |
 | `analysis` | LLM 四步驟分析文字（Skeptic Mode；向後相容） |
-| `analysis_detail` | LLM 結構化輸出（`summary` / `risks` / `technical_signal`） |
+| `analysis_detail` | LLM 結構化輸出（`summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label`） |
 | `sentiment_label` | 消息面情緒標籤（`positive` / `negative` / `neutral`；從 `cleaned_news` 浮出） |
 | `technical_signal` | 技術面訊號（`bullish` / `bearish` / `sideways`） |
 | `institutional_flow` | 籌碼面訊號（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral` / `unknown`） |
 | `cleaned_news` | 結構化新聞摘要（有新聞輸入時才有值） |
 | `cleaned_news_quality` | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`） |
 | `news_display_items` | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔） |
+| `action_plan_tag` | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`） |
 | `confidence_score` | 信心分數 0–100（`signal_confidence` 別名，向後相容） |
 | `signal_confidence` | 訊號強度分數（多維加權計算） |
 | `data_confidence` | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算） |
@@ -273,10 +275,9 @@ Cleaner Agent 輸出 JSON 欄位固定為：
 
 依優先序排列（詳細規格見 `docs/plans/`）：
 
-1. **P4-8** 消息面職責邊界 + 多筆新聞列表（`news_display` → `news_display_items` 最多 5 筆陣列）
-2. **P4-7** 前端 `data_confidence < 60` 資料不足提示
-3. **SG-1** 技術位階指標（`high_20d` / `low_20d` / `support_20d` / `resistance_20d`；讓 `entry_zone` / `stop_loss` 輸出實際價格）
-4. **P4-6** Action Plan 燈號（`opportunity` / `overheated` / `neutral`；後端 rule-based 計算）
-5. **SG-3/4** AnalyzeResponse 欄位完整性 + AnalysisDetail 結構強化
-6. **SG-5** LLM Prompt 補齊消息面三維輸入
-7. **SG-6** `data_confidence` 語義修正（`neutral` 情緒不應計為資料缺失）
+1. **Session 8**（`docs/plans/2026-03-07-dimensional-analysis.md`）分析敘事分維度拆解：
+   - `AnalysisDetail` 新增 `tech_insight` / `inst_insight` / `news_insight` / `final_verdict` 欄位
+   - LLM System Prompt 強制分段輸出（禁止跨維度混述）
+   - 前端改為三張維度小卡 + 一張綜合仲裁全寬卡
+
+2. **長期**：基本面/估值工具（`estimate_pe_percentile`、`calculate_growth_rate`）；Docker / Railway 部署
