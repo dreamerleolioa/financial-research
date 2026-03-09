@@ -835,6 +835,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
   - `risks`：風險提示列表
   - `data_sources`：資料來源列表
 - 所有數值指標**必須**可追溯至 yfinance / TWSE 原始資料，不得由 LLM 直接生成
+- **分維度分析**：LLM 輸出必須包含 `tech_insight`（技術面）、`inst_insight`（籌碼面）、`news_insight`（消息面）、`final_verdict`（綜合仲裁）四個獨立段落；各維度禁止跨維度混寫
 - 前端可視化顯示分析過程與最終結論（含三維訊號燈號）
 
 ---
