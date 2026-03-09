@@ -1,9 +1,9 @@
 # AI Stock Sentinel 技術架構需求文件
 
 > 日期：2026-03-09
-> 狀態：Draft v2.6
+> 狀態：Draft v2.7
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖
-> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則；新增 Session 8 分維度拆解分析——`AnalysisDetail` 三維獨立欄位、LLM 分段 Prompt、前端分欄卡片 UI；v2.6 新增第四維度「基本面估值」——維度表補 Fundamental 行、FinMindFundamentalProvider 規格（PE Band / 殖利率 / TTM EPS）、`fetch_fundamental_data` 工具規格、Crawler 輸出 Schema 補 fundamentals 欄位、`estimate_pe_percentile` 改為正式 `fetch_fundamental_data` 工具規格
+> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則；新增 Session 8 分維度拆解分析——`AnalysisDetail` 三維獨立欄位、LLM 分段 Prompt、前端分欄卡片 UI；v2.6 新增第四維度「基本面估值」——維度表補 Fundamental 行、FinMindFundamentalProvider 規格（PE Band / 殖利率 / TTM EPS）、`fetch_fundamental_data` 工具規格、Crawler 輸出 Schema 補 fundamentals 欄位、`estimate_pe_percentile` 改為正式 `fetch_fundamental_data` 工具規格；v2.7 更新前端元件規格——移除分析路徑圖元件、信心指數與快照資訊合併為單一卡片（圓圈左側 + 資訊列表右側）、四維小卡 badge 顏色規格補齊（含基本面 pe_band 色彩對應）、籌碼面 badge 資料來源修正為頂層 `institutional_flow_label`
 
 ## 1. 目標與方向
 
@@ -79,12 +79,13 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
   - 計算項目：
     - `ttm_eps`：近四季合計 EPS（Trailing Twelve Months）
     - `pe_current`：當前本益比（`current_price / ttm_eps`）
-    - `pe_band`：估值位階（`cheap` / `fair` / `expensive`），以近 20 季 PE 均值 ± 1 標準差為邊界
-    - `pe_percentile`：當前 PE 在歷史分佈的百分位（0–100）
+    - `pe_band`：估值位階（`cheap` / `fair` / `expensive`），以近 20 季**各季末真實股價**計算的歷史 PE 均值 ± 1 標準差為邊界；無法取得歷史股價時回傳 `unknown`
+    - `pe_percentile`：當前 PE 在歷史**真實** PE 分佈的百分位（0–100）
     - `dividend_yield`：現金殖利率（`annual_cash_dividend / current_price × 100`）
     - `yield_signal`：`high_yield`（≥5%）/ `mid_yield`（3–5%）/ `low_yield`（<3%）
   - Provider 架構：`FinMindFundamentalProvider`（與籌碼面採相同 Provider 抽象模式）
   - 無 API Key 或抓取失敗時：回傳帶 `error` 鍵的 dict，流程繼續，`fundamental_context` 顯示「基本面資料不足」
+  - 歷史股價（yfinance）取得失敗時：`pe_band = "unknown"`，`pe_mean = null`，`warnings` 記錄原因，流程繼續
 
 - **即時新聞（消息面）**
   - Google News RSS
@@ -660,8 +661,10 @@ class InstitutionalFlowProvider(Protocol):
 1. **股票代碼輸入框**
    - MVP 入口（例如輸入 2330.TW）
 
-2. **信心指數元件**
-   - 圓形進度條顯示 AI confidence（0~100）
+2. **信心指數 + 快照資訊卡片**（合併為單一卡片）
+   - 左側：SVG 圓形進度條顯示 AI confidence（0~100），`cross_validation_note` 顯示於圓圈下方（灰色小字）
+   - 右側：快照資訊（代碼 / 現價 / 成交量 / 成交量來源），以 `<dl>` 列表呈現
+   - `data_confidence < 60` 時圓圈下方加顯示「⚠️ 資料不足（N%）」提示
 
 3. **近期新聞列表**
    - 顯示最多 5 筆近期新聞，資料來自 `news_display_items`
@@ -669,26 +672,20 @@ class InstitutionalFlowProvider(Protocol):
    - 整體情緒 badge（positive / negative / neutral）顯示於列表標題旁
    - 標示「以上新聞為市場情緒參考，財報數字請參閱公開資訊觀測站」
 
-4. **雜訊過濾對比視窗**
-   - 左：AI 消息面情緒摘要（`cleaned_news.sentiment_label` + `summary`）
-   - 右：技術面與籌碼面數據條列
-
-5. **分析路徑圖（流程事件）**
-   - 例：「抓取新聞中 → 抽取數值完成 → 驗證歷史資料完成」
-
-6. **戰術行動（Action Plan）卡片**
+4. **戰術行動（Action Plan）卡片**
   - 操作方向：`觀望 / 分批佈局 / 持股續抱`
   - 建議區間：由 `entry_zone` + `support_20d` / `resistance_20d` 組成
   - 防守底線：`stop_loss`（例如「近 20 日低點 -3%」或「破 MA60」）
   - 預期動能：依 `institutional_flow` 與 `technical_signal` 共振結果顯示
 
-7. **分維度分析卡片（Session 8 新增）**
-   - 「LLM 分析報告」區塊改為三張獨立小卡 + 一張綜合仲裁卡，取代單一大文字方塊
-   - **技術面卡片**：顯示 `tech_insight` 內容，標題旁附維度燈號（技術面訊號 bullish/bearish/sideways 對應 🟢/🔴/🔵）
-   - **籌碼面卡片**：顯示 `inst_insight` 內容，標題旁附維度燈號（institutional_flow 對應 🟢/🔴/🔵）；卡片下方附原始數據（如外資買超張數）增加說服力
-   - **消息面卡片**：顯示 `news_insight` 內容，標題旁附整體情緒 badge（positive/negative/neutral）
-   - **綜合仲裁卡片**：顯示 `final_verdict` 內容，為全寬卡片，放置於三張小卡下方
-   - 使用「手風琴（Accordion）」或「標籤頁（Tabs）」切換三個維度（前端技術選擇）
+5. **分維度分析卡片（Session 8 新增）**
+   - 「LLM 分析報告」區塊為四張獨立小卡（2×2 grid）+ 一張綜合仲裁全寬卡
+   - **技術面卡片**：顯示 `tech_insight` 內容，右上角 badge 顯示 `technical_signal`（bullish → 綠色「看多」/ bearish → 紅色「看空」/ sideways → 灰色「盤整」）
+   - **籌碼面卡片**：顯示 `inst_insight` 內容，右上角 badge 讀取頂層 `institutional_flow_label`（非 `analysis_detail.institutional_flow`，後者為 LLM 自由文字）；`institutional_accumulation` → 綠色「法人買超」/ `distribution` → 紅色「主力出貨」/ `retail_chasing` → 橘色「散戶追高」/ `neutral` → 灰色「籌碼中性」
+   - **消息面卡片**：顯示 `news_insight` 內容，右上角 badge 顯示 `analysis_detail.sentiment_label`（positive → 綠色「偏正向」/ negative → 紅色「偏負向」/ neutral → 灰色「中性」）
+   - **基本面卡片**：顯示 `analysis_detail.fundamental_insight`（優先）或 `fundamental_data` 原始數值；右上角 badge 讀取 `fundamental_data.pe_band`（cheap → 綠色「低估」/ fair → 灰色「合理」/ expensive → 紅色「高估」/ 無資料 → 灰色「—」）
+   - **綜合仲裁卡片**：顯示 `final_verdict` 內容（藍紫色背景），為全寬卡片，放置於四張小卡下方；附風險提示列表
+   - 四張小卡永遠顯示，無結果時右上角顯示灰色「—」，內容顯示「請先執行分析。」
    - 視覺目標：使用者一眼看出哪個維度在「拖累」整體分數、哪個維度在「支撐」策略
 
 ### 4.2 UX 要點

@@ -306,6 +306,8 @@
 - [x] **任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 更新——強制 LLM 分段輸出，禁止 `tech_insight` 混入籌碼/消息、`inst_insight` 混入技術/消息、`news_insight` 混入技術指標數值；`_parse_analysis()` None-safe（2026-03-09）
 - [x] **任務 C**：前端 `App.tsx` UI 改版——「LLM 分析報告」改為三張維度小卡（技術面/籌碼面/消息面）+ 一張綜合仲裁全寬卡；各卡標題旁附維度燈號；null 時降級不崩潰（2026-03-09）
 - [x] **任務 C 補強**：三維小卡永遠顯示（無結果時內容灰化）；`InsightText` 元件按句號/分號斷段排版（2026-03-09）
+- [x] **任務 C2（前端修正）**：基本面卡片右上角 badge 改用 `PE_BAND_BADGE`（cheap→綠「低估」/ fair→灰「合理」/ expensive→紅「高估」/ 無資料→灰「—」）；籌碼面 badge 來源修正為頂層 `institutional_flow_label`（非 `analysis_detail.institutional_flow` 自由文字）（2026-03-09）
+- [x] **任務 C3（前端重構）**：移除「分析路徑圖」卡片；信心指數與快照資訊合併為單一卡片（SVG 圓圈左側 + 資訊列表右側）（2026-03-09）
 
 #### 6. 基本面 / 估值工具
 
@@ -321,6 +323,7 @@
 - [x] Task 7：`AnalyzeResponse.fundamental_data` + `api.py` / `main.py` initial_state 補欄位（2026-03-09，1 test）
 - [x] Task 8：前端基本面估值小卡（PE/殖利率顯示，無資料時灰化）（2026-03-09）
 - [x] Task 9：進度文件更新（2026-03-09）
+- [x] Task 10（Bug Fix）：PE Band 歷史股價修正——`_fetch_historical_prices()` 改用 yfinance 各季末真實收盤價計算歷史 PE，修正原本以今日股價計算歷史 PE 的邏輯錯誤；無歷史股價時 `pe_band = "unknown"` 並記錄 warning（2026-03-09）
 
 ---
 
