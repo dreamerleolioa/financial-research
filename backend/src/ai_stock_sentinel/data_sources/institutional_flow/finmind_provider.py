@@ -99,21 +99,24 @@ class FinMindProvider:
                     d_buys.append(buy_val)
                     d_sells.append(sell_val)
 
+            # FinMind buy/sell 欄位單位為「股」，除以 1000 轉換為「張」
+            _S = 1000  # shares per lot (張)
+
             if f_buys:
-                foreign_buy = sum(f_buys)
-                foreign_net_cum = sum(f_buys) - sum(f_sells)
+                foreign_buy = sum(f_buys) / _S
+                foreign_net_cum = (sum(f_buys) - sum(f_sells)) / _S
             else:
                 warnings.append("FinMind: 外資欄位未找到，可能欄位名稱漂移")
 
             if t_buys:
-                investment_trust_buy = sum(t_buys)
-                trust_net_cum = sum(t_buys) - sum(t_sells)
+                investment_trust_buy = sum(t_buys) / _S
+                trust_net_cum = (sum(t_buys) - sum(t_sells)) / _S
             else:
                 warnings.append("FinMind: 投信欄位未找到")
 
             if d_buys:
-                dealer_buy = sum(d_buys)
-                dealer_net_cum = sum(d_buys) - sum(d_sells)
+                dealer_buy = sum(d_buys) / _S
+                dealer_net_cum = (sum(d_buys) - sum(d_sells)) / _S
             else:
                 warnings.append("FinMind: 自營商欄位未找到")
         else:
@@ -147,7 +150,8 @@ class FinMindProvider:
                     deltas.append(delta)
                     pct_deltas.append(delta / yesterday_val * 100)
             if deltas:
-                margin_delta = sum(deltas)
+                # MarginPurchaseTodayBalance 單位為「股」，除以 1000 轉換為「張」
+                margin_delta = sum(deltas) / 1000
                 margin_balance_delta_pct = sum(pct_deltas) / len(pct_deltas)
         else:
             warnings.append("FinMind: 融資資料為空，margin_delta 設為 None")

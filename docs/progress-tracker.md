@@ -307,13 +307,20 @@
 - [x] **任務 C**：前端 `App.tsx` UI 改版——「LLM 分析報告」改為三張維度小卡（技術面/籌碼面/消息面）+ 一張綜合仲裁全寬卡；各卡標題旁附維度燈號；null 時降級不崩潰（2026-03-09）
 - [x] **任務 C 補強**：三維小卡永遠顯示（無結果時內容灰化）；`InsightText` 元件按句號/分號斷段排版（2026-03-09）
 
-#### 6. 基本面 / 估值工具（低優先）
+#### 6. 基本面 / 估值工具
 
-> 規格 Tool Use 章節列出下列工具，目前完全未實作；屬進階功能，優先序低。
+> 計劃文件：`docs/plans/2026-03-09-fundamental-valuation.md`
+> **架構決策**：採用與 `InstitutionalFlowProvider` 相同的 Provider 抽象模式；新增 `FundamentalProvider` + `FinMindFundamentalProvider`；graph 插入 `fetch_fundamental_node`；`AnalysisDetail` 新增 `fundamental_insight`；`AnalyzeResponse` 新增 `fundamental_data`。
 
-- [ ] `estimate_pe_percentile(symbol, pe)` — 與歷史 PE 分佈比較，回傳百分位
-- [ ] `calculate_growth_rate(current, previous)` — YoY / MoM 標準化計算
-- [ ] `StockSnapshot` / `GraphState` 補齊 `fundamentals` 資料段（財報、EPS、P/E 等），需研究穩定資料源
+- [ ] Task 1：`FundamentalData` 介面（dataclass + Protocol + Error）
+- [ ] Task 2：`FinMindFundamentalProvider`（PE Band + 殖利率估值 + TTM EPS）
+- [ ] Task 3：`fetch_fundamental_data` 工具函式（失敗回傳 error dict，不拋例外）
+- [ ] Task 4：`generate_fundamental_context()` 敘事產生器（`context_generator.py`）
+- [ ] Task 5：Graph 整合（`fetch_fundamental_node` + `GraphState` 欄位 + `builder.py`）
+- [ ] Task 6：`AnalysisDetail.fundamental_insight` + LLM Prompt `【基本面估值】` 段落
+- [ ] Task 7：`AnalyzeResponse.fundamental_data` + `api.py` / `main.py` initial_state 補欄位
+- [ ] Task 8：前端基本面估值小卡（PE/殖利率顯示，無資料時灰化）
+- [ ] Task 9：進度文件更新
 
 ---
 

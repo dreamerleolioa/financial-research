@@ -1,9 +1,9 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-03-07
-> 狀態：Draft v2.5
+> 日期：2026-03-09
+> 狀態：Draft v2.6
 > 目的：將產品需求大綱轉為可落地的工程實作藍圖
-> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則；新增 Session 8 分維度拆解分析——`AnalysisDetail` 三維獨立欄位、LLM 分段 Prompt、前端分欄卡片 UI
+> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 _price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則；新增 Session 8 分維度拆解分析——`AnalysisDetail` 三維獨立欄位、LLM 分段 Prompt、前端分欄卡片 UI；v2.6 新增第四維度「基本面估值」——維度表補 Fundamental 行、FinMindFundamentalProvider 規格（PE Band / 殖利率 / TTM EPS）、`fetch_fundamental_data` 工具規格、Crawler 輸出 Schema 補 fundamentals 欄位、`estimate_pe_percentile` 改為正式 `fetch_fundamental_data` 工具規格
 
 ## 1. 目標與方向
 
@@ -14,13 +14,14 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 - 嚴格落實 **Tool Use（工具化計算）**：嚴禁 LLM 盲猜數值，所有技術指標與籌碼數據必須透過 Python 函式計算後，再交由 LLM 進行定性分析
 - 將分析過程透明化，前端可視化呈現 AI 決策路徑
 
-### 1.1 三大分析維度
+### 1.1 四大分析維度
 
 | 維度 | 說明 | 資料來源 |
 |------|------|----------|
 | **消息面 (News)** | 影響市場情緒的事件訊號（法說會、政策、產業動態、法人評等調整等），**不涵蓋公司財務數字**（財報數字屬於基本面，需另從財報資料源取得） | Google News RSS、財經媒體 RSS |
 | **技術面 (Technical)** | MA5/20/60 均線、乖離率 (BIAS)、RSI、成交量變化 | yfinance + Pandas 計算 |
 | **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、融資融券消長 | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback） |
+| **基本面 (Fundamental)** | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS） | FinMind `TaiwanStockFinancialStatements` + `TaiwanStockDividend` |
 
 建議以 **LangGraph（LangChain 延伸）** 作為 Agent 協作框架，以支援非線性流程與反饋迴圈。
 
@@ -73,9 +74,17 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 
 ### 資料源建議
 
-- **基本面**
-  - 財報狗 / 公開資訊觀測站（優先採 API 或穩定封裝庫）
-  - 目標：避免高頻爬 HTML 被封鎖
+- **基本面（估值）**
+  - 資料源：FinMind `TaiwanStockFinancialStatements`（每季 EPS）+ `TaiwanStockDividend`（現金股利）
+  - 計算項目：
+    - `ttm_eps`：近四季合計 EPS（Trailing Twelve Months）
+    - `pe_current`：當前本益比（`current_price / ttm_eps`）
+    - `pe_band`：估值位階（`cheap` / `fair` / `expensive`），以近 20 季 PE 均值 ± 1 標準差為邊界
+    - `pe_percentile`：當前 PE 在歷史分佈的百分位（0–100）
+    - `dividend_yield`：現金殖利率（`annual_cash_dividend / current_price × 100`）
+    - `yield_signal`：`high_yield`（≥5%）/ `mid_yield`（3–5%）/ `low_yield`（<3%）
+  - Provider 架構：`FinMindFundamentalProvider`（與籌碼面採相同 Provider 抽象模式）
+  - 無 API Key 或抓取失敗時：回傳帶 `error` 鍵的 dict，流程繼續，`fundamental_context` 顯示「基本面資料不足」
 
 - **即時新聞（消息面）**
   - Google News RSS
@@ -110,7 +119,15 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 {
   "symbol": "2330.TW",
   "fetched_at": "2026-03-03T08:00:00Z",
-  "fundamentals": {},
+  "fundamentals": {
+    "ttm_eps": 39.1,
+    "pe_current": 25.6,
+    "pe_band": "fair",
+    "pe_percentile": 60.0,
+    "annual_cash_dividend": 16.0,
+    "dividend_yield": 1.8,
+    "yield_signal": "low_yield"
+  },
   "news": [
     {
       "source": "google-news-rss",
@@ -400,11 +417,12 @@ class InstitutionalFlowProvider(Protocol):
     - 兩者皆不命中：輸出「現價處於支撐與壓力之間，位階中立」
     - 使用 `<=` / `>=` 確保收盤剛好等於支撐/壓力位時行為確定（算「有撐/有壓」，不落入中立）
 
-- **本益比位階工具** `estimate_pe_percentile(symbol, pe)`
-  - 與歷史 PE 分佈比較，回傳百分位
-
-- **簡易成長率換算** `calculate_growth_rate(current, previous)`
-  - YoY / MoM 標準化計算
+- **基本面估值工具** `fetch_fundamental_data(symbol, current_price)`
+  - 資料源：FinMind `TaiwanStockFinancialStatements` + `TaiwanStockDividend`
+  - 輸出：`{ ttm_eps, pe_current, pe_band, pe_percentile, annual_cash_dividend, dividend_yield, yield_signal }`
+  - PE Band 邊界：`cheap` if `pe < pe_mean - pe_std`；`expensive` if `pe > pe_mean + pe_std`；否則 `fair`
+  - 殖利率分級：`high_yield`（≥5%）/ `mid_yield`（3–5%）/ `low_yield`（<3%）
+  - 失敗時回傳帶 `error` 鍵的 dict，不拋例外，流程不中斷
 
 - **法人籌碼查詢工具** `fetch_institutional_flow(symbol, days)`
   - 輸入：股票代碼、回溯天數

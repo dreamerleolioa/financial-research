@@ -404,8 +404,8 @@ function App() {
         <section className="space-y-4">
           <h2 className="text-sm font-semibold text-slate-800">分析報告</h2>
 
-          {/* 三維小卡：永遠顯示 */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {/* 四維小卡：2×2 排列，永遠顯示 */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {/* 技術面卡片 */}
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
@@ -461,6 +461,15 @@ function App() {
                 )}
               </div>
               <InsightText text={result?.analysis_detail?.news_insight} />
+            </article>
+
+            {/* 基本面卡片（Task 8 實作後填入真實資料） */}
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
+                <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+              </div>
+              <InsightText text={null} />
             </article>
           </div>
 
