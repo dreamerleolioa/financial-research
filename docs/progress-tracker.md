@@ -1,13 +1,13 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-07（Day 2 完成，295 tests passed）
+> 更新日期：2026-03-09（Session 8 完成，302 tests passed）
 
 ## 目前完成度（高層）
 
 - **Phase 1（MVP Backend）**：100%（技術債清理完成：CLI 改走 graph 流程，StockCrawlerAgent / build_agent() 已移除）
 - **Phase 2（LangGraph 回圈）**：100%（骨架 + judge 邏輯 + RSS 新聞抓取 + 新聞清潔接進 graph + graph 接進 API 完成）
 - **Phase 3（分析能力強化）**：100%（Provider 抽象層 + preprocess_node + ContextGenerator + 策略建議模板 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM 串接 + API 新欄位 + AnalysisDetail 結構化輸出 + code fence hotfix + Protocol 回傳型別對齊完成）
-- **Phase 4（前端儀表板）**：100%（核心功能完成；Action Plan 燈號 badge；data_confidence 提示完成）
+- **Phase 4（前端儀表板）**：100%（核心功能完成；Action Plan 燈號 badge；data_confidence 提示；分維度分析小卡完成）
 
 ---
 
@@ -302,9 +302,10 @@
 > **計劃文件**：`docs/plans/2026-03-07-dimensional-analysis.md`
 > **架構規格**：`docs/ai-stock-sentinel-architecture-spec.md` v2.5 §3.2「分維度強制分段」、§4.1 元件 7
 
-- [ ] **任務 A**：`models.py` `AnalysisDetail` 新增四欄位：`tech_insight: str | None`、`inst_insight: str | None`、`news_insight: str | None`、`final_verdict: str | None`（向後相容，預設 None）
-- [ ] **任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 更新——強制 LLM 分段輸出，禁止 `tech_insight` 混入籌碼/消息、`inst_insight` 混入技術/消息、`news_insight` 混入技術指標數值；`_parse_analysis()` None-safe
-- [ ] **任務 C**：前端 `App.tsx` UI 改版——「LLM 分析報告」改為三張維度小卡（技術面/籌碼面/消息面）+ 一張綜合仲裁全寬卡；各卡標題旁附維度燈號；null 時降級不崩潰
+- [x] **任務 A**：`models.py` `AnalysisDetail` 新增四欄位：`tech_insight: str | None`、`inst_insight: str | None`、`news_insight: str | None`、`final_verdict: str | None`（向後相容，預設 None）（2026-03-09）
+- [x] **任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 更新——強制 LLM 分段輸出，禁止 `tech_insight` 混入籌碼/消息、`inst_insight` 混入技術/消息、`news_insight` 混入技術指標數值；`_parse_analysis()` None-safe（2026-03-09）
+- [x] **任務 C**：前端 `App.tsx` UI 改版——「LLM 分析報告」改為三張維度小卡（技術面/籌碼面/消息面）+ 一張綜合仲裁全寬卡；各卡標題旁附維度燈號；null 時降級不崩潰（2026-03-09）
+- [x] **任務 C 補強**：三維小卡永遠顯示（無結果時內容灰化）；`InsightText` 元件按句號/分號斷段排版（2026-03-09）
 
 #### 6. 基本面 / 估值工具（低優先）
 
@@ -365,10 +366,10 @@ cd backend
 6. **Session 6**：`data_confidence` 語義修正（T6-1）— 可與其他 Session 並行
 7. **Session 7**：DATE_UNKNOWN 信心分數懲罰 — 可與其他 Session 並行
 
-### Session 8（`docs/plans/2026-03-07-dimensional-analysis.md`）
-8. **任務 A**：`models.py` `AnalysisDetail` 新增四欄位（`tech_insight` / `inst_insight` / `news_insight` / `final_verdict`）
-9. **任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 強制分維度輸出
-10. **任務 C**：前端 `App.tsx` 分維度小卡 UI
+### Session 8（`docs/plans/2026-03-07-dimensional-analysis.md`）✅ 完成（2026-03-09，302 tests passed）
+8. ~~**任務 A**：`models.py` `AnalysisDetail` 新增四欄位（`tech_insight` / `inst_insight` / `news_insight` / `final_verdict`）~~
+9. ~~**任務 B**：`langchain_analyzer.py` System Prompt + JSON schema 強制分維度輸出~~
+10. ~~**任務 C**：前端 `App.tsx` 分維度小卡 UI~~
 
 ### 其他待辦（可穿插）
 - **長期**：Phase 5 準備 — Docker / Railway 部署；基本面/估值工具（`estimate_pe_percentile`、`calculate_growth_rate`）

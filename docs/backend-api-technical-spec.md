@@ -105,7 +105,13 @@ make run-api
   "analysis_detail": {
     "summary": "台積電法人持續買超，RSI 動能尚未過熱，多頭格局延續。",
     "risks": ["短線乖離偏高，留意拉回壓力"],
-    "technical_signal": "bullish"
+    "technical_signal": "bullish",
+    "institutional_flow": "institutional_accumulation",
+    "sentiment_label": "positive",
+    "tech_insight": "均線多頭排列，RSI 62 位於健康動能區，短線無超買疑慮。",
+    "inst_insight": "外資近 5 日累計買超 12,500 張，籌碼持續沉澱，機構資金流向偏多。",
+    "news_insight": "法說會利多消息帶動市場情緒正面，事件時效性已驗證（日期明確）。",
+    "final_verdict": "三維訊號共振：技術面健康、籌碼面偏多、消息面正面，信心分數 78 反映訊號一致性高。"
   },
   "sentiment_label": "positive",
   "action_plan": {
@@ -142,19 +148,20 @@ make run-api
   | `entry_zone` | string \| null | 建議入場區間（rule-based） |
   | `stop_loss` | string \| null | 防守底線／停損條件（rule-based） |
   | `holding_period` | string \| null | 預期持股期間（rule-based） |
-  | `analysis_detail` | object \| null | LLM 結構化分析輸出（`summary` / `risks` / `technical_signal`），Task 7 新增 |
-  | `sentiment_label` | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`；⚠️ **計劃中（Day 2 Session 3，尚未實作）** |
-  | `action_plan` | object \| null | rule-based 戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）；⚠️ **計劃中（Day 2 Session 3，尚未實作）** |
-  | `data_sources` | array | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）；⚠️ **計劃中（Day 2 Session 3，尚未實作）** |
-  | `institutional_flow_label` | enum \| null | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`；⚠️ **計劃中（Day 1 Session 2，尚未實作）** |
-  | `action_plan_tag` | enum \| null | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射；⚠️ **計劃中（Day 1 Session 2，尚未實作）** |
+  | `analysis_detail` | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位） |
+  | `sentiment_label` | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral` |
+  | `action_plan` | object \| null | rule-based 戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`） |
+  | `data_sources` | array | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`） |
+  | `institutional_flow_label` | enum \| null | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
+  | `action_plan_tag` | enum \| null | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射 |
   | `errors` | array | 錯誤碼陣列 |
 
-> ⚠️ **計劃中欄位（尚未實作）**：
-> - `action_plan_tag`、`institutional_flow_label`：對應 `docs/plans/2026-03-06-spec-gap-fix-day1.md` Day 1 Session 2
-> - `sentiment_label`（頂層）、`action_plan`（dict）、`data_sources`：對應 `docs/plans/2026-03-07-spec-gap-fix-day2.md` Day 2 Session 3
-> Response example 中的值為規格目標，非目前實際回傳。
-> ⚠️ **即將變更**：`news_display`（單筆 object）計劃升級為 `news_display_items`（陣列，最多 5 筆），對應 NM-3~NM-5（`docs/plans/2026-03-06-news-scope-and-display-items.md`）。
+> **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
+> - `tech_insight`：技術面獨立分析段落；禁止提及法人買賣超或新聞事件
+> - `inst_insight`：籌碼面獨立分析段落；禁止提及均線數值、RSI、新聞事件
+> - `news_insight`：消息面獨立分析段落；禁止提及具體技術指標數值
+> - `final_verdict`：三維整合仲裁段落；允許跨維度推論
+> 以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
 
 ---
 
