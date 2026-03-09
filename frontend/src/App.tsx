@@ -15,6 +15,7 @@ interface AnalysisDetail {
   inst_insight: string | null
   news_insight: string | null
   final_verdict: string | null
+  fundamental_insight?: string | null
 }
 
 interface CleanedNewsQuality {
@@ -52,6 +53,14 @@ interface AnalyzeResponse {
   institutional_flow_label: string | null
   data_confidence: number | null
   errors: ErrorDetail[]
+  fundamental_data?: {
+    ttm_eps?: number | null
+    pe_current?: number | null
+    pe_band?: string | null
+    pe_percentile?: number | null
+    dividend_yield?: number | null
+    yield_signal?: string | null
+  } | null
 }
 
 const STRATEGY_LABEL: Record<string, string> = {
@@ -463,13 +472,33 @@ function App() {
               <InsightText text={result?.analysis_detail?.news_insight} />
             </article>
 
-            {/* 基本面卡片（Task 8 實作後填入真實資料） */}
+            {/* 基本面估值卡片 */}
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
-                <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                {result?.fundamental_data?.pe_band && (
+                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-600">
+                    {result.fundamental_data.pe_band === 'cheap' ? '低估' : result.fundamental_data.pe_band === 'expensive' ? '高估' : '合理'}
+                  </span>
+                )}
               </div>
-              <InsightText text={null} />
+              {result?.analysis_detail?.fundamental_insight ? (
+                <InsightText text={result.analysis_detail.fundamental_insight} />
+              ) : result?.fundamental_data ? (
+                <div className="text-sm text-slate-600 space-y-1">
+                  {result.fundamental_data.pe_current != null && (
+                    <p>PE：{result.fundamental_data.pe_current.toFixed(1)} 倍（{result.fundamental_data.pe_band === 'cheap' ? '偏低' : result.fundamental_data.pe_band === 'expensive' ? '偏高' : '合理'}）</p>
+                  )}
+                  {result.fundamental_data.dividend_yield != null && (
+                    <p>殖利率：{result.fundamental_data.dividend_yield.toFixed(2)}%</p>
+                  )}
+                  {result.fundamental_data.pe_percentile != null && (
+                    <p>PE 百分位：{result.fundamental_data.pe_percentile.toFixed(0)}%</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400">本次無基本面資料</p>
+              )}
             </article>
           </div>
 
