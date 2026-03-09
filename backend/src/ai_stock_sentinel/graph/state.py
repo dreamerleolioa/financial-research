@@ -39,3 +39,5 @@ class GraphState(TypedDict):
     rsi14: float | None
     action_plan_tag: str | None
     action_plan: dict[str, Any] | None
+    fundamental_data: dict[str, Any] | None
+    fundamental_context: str | None

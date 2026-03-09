@@ -8,7 +8,7 @@ import pandas as pd
 
 from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence, derive_technical_score
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
-from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context
+from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context, generate_fundamental_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
 from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_tag, generate_action_plan, generate_strategy
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
@@ -31,6 +31,20 @@ def fetch_institutional_node(
     symbol = state["symbol"]
     flow = fetcher(symbol)
     return {"institutional_flow": flow}
+
+
+def fetch_fundamental_node(
+    state: GraphState,
+    *,
+    fetcher: Callable[[str, float], dict[str, Any]],
+) -> dict[str, Any]:
+    """呼叫 fetcher 取得基本面估值資料，並產出 fundamental_context 敘事字串。"""
+    symbol = state["symbol"]
+    snapshot = state.get("snapshot") or {}
+    current_price = float(snapshot.get("current_price") or 0)
+    fund = fetcher(symbol, current_price)
+    context = generate_fundamental_context(fund)
+    return {"fundamental_data": fund, "fundamental_context": context}
 
 
 def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]:
