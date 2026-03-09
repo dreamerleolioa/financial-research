@@ -312,15 +312,15 @@
 > 計劃文件：`docs/plans/2026-03-09-fundamental-valuation.md`
 > **架構決策**：採用與 `InstitutionalFlowProvider` 相同的 Provider 抽象模式；新增 `FundamentalProvider` + `FinMindFundamentalProvider`；graph 插入 `fetch_fundamental_node`；`AnalysisDetail` 新增 `fundamental_insight`；`AnalyzeResponse` 新增 `fundamental_data`。
 
-- [ ] Task 1：`FundamentalData` 介面（dataclass + Protocol + Error）
-- [ ] Task 2：`FinMindFundamentalProvider`（PE Band + 殖利率估值 + TTM EPS）
-- [ ] Task 3：`fetch_fundamental_data` 工具函式（失敗回傳 error dict，不拋例外）
-- [ ] Task 4：`generate_fundamental_context()` 敘事產生器（`context_generator.py`）
-- [ ] Task 5：Graph 整合（`fetch_fundamental_node` + `GraphState` 欄位 + `builder.py`）
-- [ ] Task 6：`AnalysisDetail.fundamental_insight` + LLM Prompt `【基本面估值】` 段落
-- [ ] Task 7：`AnalyzeResponse.fundamental_data` + `api.py` / `main.py` initial_state 補欄位
-- [ ] Task 8：前端基本面估值小卡（PE/殖利率顯示，無資料時灰化）
-- [ ] Task 9：進度文件更新
+- [x] Task 1：`FundamentalData` 介面（dataclass + Protocol + Error）（2026-03-09，2 tests）
+- [x] Task 2：`FinMindFundamentalProvider`（PE Band + 殖利率估值 + TTM EPS）（2026-03-09，4 tests）
+- [x] Task 3：`fetch_fundamental_data` 工具函式（失敗回傳 error dict，不拋例外）（2026-03-09，3 tests）
+- [x] Task 4：`generate_fundamental_context()` 敘事產生器（`context_generator.py`）（2026-03-09，4 tests）
+- [x] Task 5：Graph 整合（`fetch_fundamental_node` + `GraphState` 欄位 + `builder.py`）（2026-03-09，3 tests）
+- [x] Task 6：`AnalysisDetail.fundamental_insight` + LLM Prompt `【基本面估值】` 段落（2026-03-09，2 tests）
+- [x] Task 7：`AnalyzeResponse.fundamental_data` + `api.py` / `main.py` initial_state 補欄位（2026-03-09，1 test）
+- [x] Task 8：前端基本面估值小卡（PE/殖利率顯示，無資料時灰化）（2026-03-09）
+- [x] Task 9：進度文件更新（2026-03-09）
 
 ---
 
