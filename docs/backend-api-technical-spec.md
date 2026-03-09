@@ -1,8 +1,8 @@
-# AI Stock Sentinel 後端 API 技術規格（v2）
+# AI Stock Sentinel 後端 API 技術規格（v3）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-03-05
-> 更新摘要：新增 `news_display` 欄位（新聞顯示資料，含乾淨標題/日期/來源 URL）；新增 `cleaned_news_quality` 欄位；`cleaned_news` 角色重新定義為 LLM pipeline 專用
+> 更新日期：2026-03-09
+> 更新摘要：新增 `POST /analyze/position`（持股診斷端點）——含 `position_analysis` 物件、`PositionScorer` 錯誤碼、`recommended_action` 規則；v2 新增 `news_display` 欄位（新聞顯示資料，含乾淨標題/日期/來源 URL）；新增 `cleaned_news_quality` 欄位；`cleaned_news` 角色重新定義為 LLM pipeline 專用
 
 ## 1) 目的
 
@@ -165,6 +165,139 @@ make run-api
 
 ---
 
+### `POST /analyze/position`
+
+- **用途**：持股診斷——以使用者購入成本價為錨點，評估當前倉位健康度、動態停利/停損位，以及出場建議（詳見 [持股診斷系統技術規格](./ai-stock-sentinel-position-diagnosis-spec.md)）
+
+- **Request Body**
+
+```json
+{
+  "symbol": "2330.TW",
+  "entry_price": 980.0,
+  "entry_date": "2026-01-15",
+  "quantity": 1000
+}
+```
+
+- **欄位說明**
+  - `symbol`：股票代碼，必填，最小長度 1
+  - `entry_price`：購入成本價，必填，正浮點數
+  - `entry_date`：購入日期（ISO 8601），選填
+  - `quantity`：持有數量，選填，正整數
+
+- **Response 200（成功/可降級成功）**
+
+```json
+{
+  "snapshot": {
+    "symbol": "2330.TW",
+    "currency": "TWD",
+    "current_price": 1105.0,
+    "previous_close": 1098.0,
+    "day_open": 1100.0,
+    "day_high": 1110.0,
+    "day_low": 1095.0,
+    "volume": 31200000,
+    "recent_closes": [1090.0, 1095.0, 1100.0, 1105.0],
+    "fetched_at": "2026-03-09T00:00:00+00:00"
+  },
+  "technical": {
+    "ma5": 1098.4,
+    "ma20": 1055.2,
+    "ma60": 1010.5,
+    "bias_ma20": 4.72,
+    "rsi14": 65.1,
+    "volume_change_pct": 12.3,
+    "support_20d": 1040.0,
+    "resistance_20d": 1120.0
+  },
+  "institutional": {
+    "foreign_net": 18500,
+    "trust_net": 2100,
+    "dealer_net": 400,
+    "margin_balance_delta": 1200,
+    "short_balance_delta": -800
+  },
+  "position_analysis": {
+    "entry_price": 980.0,
+    "profit_loss_pct": 12.76,
+    "position_status": "profitable_safe",
+    "position_narrative": "目前獲利已脫離成本區，持股安全緩衝充足。",
+    "recommended_action": "Hold",
+    "trailing_stop": 980.0,
+    "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
+    "exit_reason": null
+  },
+  "data_confidence": 100,
+  "signal_confidence": 79,
+  "confidence_score": 79,
+  "cross_validation_note": "三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高",
+  "analysis_detail": {
+    "summary": "台積電法人持續買超，RSI 動能尚未過熱，多頭格局延續。",
+    "risks": ["RSI 接近超買區間，短線留意拉回壓力"],
+    "technical_signal": "bullish",
+    "institutional_flow": "institutional_accumulation",
+    "sentiment_label": "positive",
+    "tech_insight": "均線多頭排列，RSI 65 位於健康動能區，尚未進入超買。",
+    "inst_insight": "外資近 5 日累計買超 18,500 張，籌碼持續沉澱。",
+    "news_insight": "法說會消息偏正向，事件時效性已驗證。",
+    "final_verdict": "三維訊號共振，持股健康，目前無出場訊號。"
+  },
+  "institutional_flow_label": "institutional_accumulation",
+  "action_plan": {
+    "action": "續抱",
+    "target_zone": null,
+    "defense_line": "980.0（成本保本線）",
+    "momentum_expectation": "法人持續買超，動能延續"
+  },
+  "action_plan_tag": "opportunity",
+  "data_sources": ["google-news-rss", "yfinance", "finmind"],
+  "errors": []
+}
+```
+
+- **欄位說明**
+
+  | 欄位 | 類型 | 說明 |
+  |------|------|------|
+  | `snapshot` | object | yfinance 即時快照（與 `/analyze` 相同） |
+  | `technical` | object | 技術指標（與 `/analyze` 相同，額外含 `support_20d` / `resistance_20d`） |
+  | `institutional` | object | 法人籌碼資料（與 `/analyze` 相同） |
+  | `position_analysis` | object | **持股診斷專屬**——見下方欄位細節 |
+  | `data_confidence` | int \| null | 0–100，資料完整度 |
+  | `signal_confidence` | int \| null | 0–100，訊號強度 |
+  | `confidence_score` | int \| null | = `signal_confidence`，向後相容 |
+  | `cross_validation_note` | string \| null | 三維交叉驗證結論（rule-based 固定字串） |
+  | `analysis_detail` | object \| null | LLM 結構化分析輸出（持股版 System Prompt，強化出場推理） |
+  | `institutional_flow_label` | enum \| null | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
+  | `action_plan` | object \| null | 持股版戰術行動（`action` 為 `續抱` / `減碼` / `出場`） |
+  | `action_plan_tag` | enum \| null | `opportunity` / `overheated` / `neutral` |
+  | `data_sources` | array | 本次成功取得資料的來源列表 |
+  | `errors` | array | 錯誤碼陣列 |
+
+- **`position_analysis` 欄位細節**
+
+  | 欄位 | 類型 | 說明 |
+  |------|------|------|
+  | `entry_price` | float | 購入成本價（回傳確認） |
+  | `profit_loss_pct` | float | 當前損益百分比（rule-based Python 計算） |
+  | `position_status` | string | `profitable_safe` / `at_risk` / `under_water` |
+  | `position_narrative` | string | 倉位狀態敘事（rule-based，供 LLM 讀取） |
+  | `recommended_action` | string | `Hold` / `Trim` / `Exit`（rule-based，LLM 不得覆寫） |
+  | `trailing_stop` | float | 動態防守價位（rule-based Python 計算） |
+  | `trailing_stop_reason` | string | 停利/停損邏輯說明 |
+  | `exit_reason` | string \| null | 出場/減碼理由；無觸發條件時為 `null` |
+
+> **`recommended_action` 判斷規則（rule-based，後端計算）**：
+> - `flow_label = distribution` 且 `profit_loss_pct > 0` → `Trim`
+> - `flow_label = distribution` 且 `profit_loss_pct <= 0` → `Exit`
+> - `technical_signal = bearish` 且 `close < trailing_stop` → `Exit`
+> - `position_status = under_water` 且 `profit_loss_pct < -10%` → `Exit`
+> - 其他 → `Hold`
+
+---
+
 ## 4) 錯誤碼表（`errors[]`）
 
 `errors` 為陣列，每筆格式如下：
@@ -187,6 +320,8 @@ make run-api
 - `TECHNICAL_CALC_ERROR`：`fetch_technical_node` 計算技術指標失敗（yfinance / Pandas 例外）
 - `INSTITUTIONAL_FETCH_ERROR`：`fetch_institutional_node` 抓取法人籌碼資料失敗（API 不可用或網路例外）
 - `CROSS_VALIDATION_ERROR`：`analyze_node` 執行多維交叉驗證失敗
+- `INVALID_ENTRY_PRICE`：`entry_price` 為負數或零（`/analyze/position` 專屬）
+- `POSITION_SCORE_ERROR`：`PositionScorer` 計算倉位位階或移動停利失敗（`/analyze/position` 專屬）
 
 ---
 
@@ -208,3 +343,10 @@ make run-api
   - graph 執行期例外 → `ANALYZE_RUNTIME_ERROR`
   - graph 最終 state 缺 snapshot/analysis → `MISSING_SNAPSHOT` / `MISSING_ANALYSIS`
   - graph 執行期累積的 errors 傳遞到 response
+- 測試檔（持股診斷）：`backend/tests/test_position_api.py`
+- 覆蓋項目（持股診斷）：
+  - 持股診斷成功路徑（`position_analysis` 物件完整性）
+  - `entry_price` 為負數 → `422` + `INVALID_ENTRY_PRICE`
+  - `flow_label = distribution` 且獲利中 → `recommended_action = Trim`、`exit_reason` 非 null
+  - `position_status = under_water` 且 `profit_loss_pct < -10%` → `recommended_action = Exit`
+  - `PositionScorer` 計算失敗 → `POSITION_SCORE_ERROR`（流程繼續，`position_analysis` 降級為 null）
