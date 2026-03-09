@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 from unittest.mock import MagicMock
 
@@ -341,3 +342,37 @@ def test_analyze_node_passes_news_summary_to_analyzer():
     assert news_summary is not None
     assert "台積電法說會利多" in news_summary
     assert "positive" in news_summary
+
+
+# ---------------------------------------------------------------------------
+# Session 8: Dimensional analysis fields
+# ---------------------------------------------------------------------------
+
+def test_analysis_detail_has_dimensional_fields():
+    """AnalysisDetail 應包含四個分維度欄位，預設 None。"""
+    from ai_stock_sentinel.models import AnalysisDetail
+    detail = AnalysisDetail(summary="摘要")
+    assert hasattr(detail, "tech_insight")
+    assert hasattr(detail, "inst_insight")
+    assert hasattr(detail, "news_insight")
+    assert hasattr(detail, "final_verdict")
+    assert detail.tech_insight is None
+    assert detail.inst_insight is None
+    assert detail.news_insight is None
+    assert detail.final_verdict is None
+
+
+def test_analysis_detail_accepts_dimensional_field_values():
+    """AnalysisDetail 應能接受四個分維度欄位的字串值。"""
+    from ai_stock_sentinel.models import AnalysisDetail
+    detail = AnalysisDetail(
+        summary="摘要",
+        tech_insight="均線多頭排列",
+        inst_insight="外資連買",
+        news_insight="法說會利多",
+        final_verdict="三維共振",
+    )
+    assert detail.tech_insight == "均線多頭排列"
+    assert detail.inst_insight == "外資連買"
+    assert detail.news_insight == "法說會利多"
+    assert detail.final_verdict == "三維共振"

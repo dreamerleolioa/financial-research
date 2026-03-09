@@ -9,6 +9,10 @@ class AnalysisDetail:
     technical_signal: Literal["bullish", "bearish", "sideways"] = "sideways"
     institutional_flow: str | None = None
     sentiment_label: str | None = None
+    tech_insight: str | None = None
+    inst_insight: str | None = None
+    news_insight: str | None = None
+    final_verdict: str | None = None
 
 
 @dataclass
