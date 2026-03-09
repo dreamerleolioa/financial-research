@@ -266,134 +266,133 @@ function App() {
           <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || '未輸入'}</p>
         </section>
 
-        <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <div className="flex items-start gap-6">
-              <div className="flex flex-col items-center shrink-0">
-                <h2 className="text-sm font-semibold text-slate-800 mb-3">信心指數</h2>
-                <div className="relative flex items-center justify-center">
-                  <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
-                    <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-slate-200" />
-                    <circle
-                      cx="70"
-                      cy="70"
-                      r="52"
-                      strokeWidth="12"
-                      strokeLinecap="round"
-                      className="fill-none stroke-indigo-600"
-                      strokeDasharray={circumference}
-                      strokeDashoffset={dashOffset}
-                      style={{ transition: 'stroke-dashoffset 0.5s ease' }}
-                    />
-                  </svg>
-                  <div className="absolute text-center">
-                    <div className="text-xl font-semibold">
-                      {confidenceScore != null ? `${confidenceScore}%` : '—'}
-                    </div>
-                    <div className="text-xs text-slate-500">Confidence</div>
+            <h2 className="text-sm font-semibold text-slate-800 mb-3">信心指數</h2>
+            <div className="flex flex-col items-center">
+              <div className="relative flex items-center justify-center">
+                <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
+                  <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-slate-200" />
+                  <circle
+                    cx="70"
+                    cy="70"
+                    r="52"
+                    strokeWidth="12"
+                    strokeLinecap="round"
+                    className="fill-none stroke-indigo-600"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={dashOffset}
+                    style={{ transition: 'stroke-dashoffset 0.5s ease' }}
+                  />
+                </svg>
+                <div className="absolute text-center">
+                  <div className="text-xl font-semibold">
+                    {confidenceScore != null ? `${confidenceScore}%` : '—'}
                   </div>
+                  <div className="text-xs text-slate-500">Confidence</div>
                 </div>
-                {result?.cross_validation_note && (
-                  <p className="mt-2 text-xs text-slate-500 text-center">{result.cross_validation_note}</p>
-                )}
-                {result?.data_confidence !== null && result?.data_confidence !== undefined && result.data_confidence < 60 && (
-                  <p className="text-xs text-gray-400 mt-1 text-center">
-                    ⚠️ 資料不足（{result.data_confidence}%）
-                  </p>
-                )}
               </div>
-              <div className="flex-1 min-w-0">
-                <h2 className="text-sm font-semibold text-slate-800 mb-3">快照資訊</h2>
-                {result ? (
-                  <dl className="space-y-2 text-sm text-slate-700">
-                    <div className="flex justify-between">
-                      <dt className="text-slate-500">代碼</dt>
-                      <dd className="font-medium">{String(snapshot.symbol ?? '—')}</dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-slate-500">現價</dt>
-                      <dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-slate-500">成交量</dt>
-                      <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-slate-500">成交量來源</dt>
-                      <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
-                    </div>
-                  </dl>
-                ) : (
-                  <p className="text-sm text-slate-400">請先執行分析。</p>
-                )}
-              </div>
-            </div>
-          </article>
-
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
-              {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === 'string' && (
-                  <span
-                    className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                      SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
-                    }`}
-                  >
-                    {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? '中性'}
-                  </span>
-                )}
-            </div>
-
-            {result?.cleaned_news_quality != null &&
-              (result.cleaned_news_quality.quality_score < 60 ||
-                result.cleaned_news_quality.quality_flags.length > 0) && (
-                <p className="mt-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-500">
-                  摘要品質受限
+              {result?.cross_validation_note && (
+                <p className="mt-2 text-xs text-slate-500 text-center">{result.cross_validation_note}</p>
+              )}
+              {result?.data_confidence !== null && result?.data_confidence !== undefined && result.data_confidence < 60 && (
+                <p className="text-xs text-gray-400 mt-1 text-center">
+                  ⚠️ 資料不足（{result.data_confidence}%）
                 </p>
               )}
+            </div>
+          </article>
 
+          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+            <h2 className="text-sm font-semibold text-slate-800 mb-3">快照資訊</h2>
             {result ? (
-              result.news_display_items.length > 0 ? (
-                <ul className="mt-3 divide-y divide-slate-100">
-                  {result.news_display_items.map((item, idx) => (
-                    <li key={idx} className="py-2.5">
-                      {item.source_url ? (
-                        <a
-                          href={item.source_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block text-sm text-slate-800 hover:text-indigo-600 hover:underline"
-                        >
-                          {item.title}
-                        </a>
-                      ) : (
-                        <p className="text-sm text-slate-800">{item.title}</p>
-                      )}
-                      {item.date && (
-                        <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-3 text-sm text-slate-400">本次無新聞資料。</p>
-              )
+              <dl className="space-y-2 text-sm text-slate-700">
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">代碼</dt>
+                  <dd className="font-medium">{String(snapshot.symbol ?? '—')}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">現價</dt>
+                  <dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">成交量</dt>
+                  <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-slate-500">成交量來源</dt>
+                  <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
+                </div>
+              </dl>
             ) : (
-              <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
+              <p className="text-sm text-slate-400">請先執行分析。</p>
+            )}
+          </article>
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
+            {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === 'string' && (
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                    SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
+                  }`}
+                >
+                  {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? '中性'}
+                </span>
+              )}
+          </div>
+
+          {result?.cleaned_news_quality != null &&
+            (result.cleaned_news_quality.quality_score < 60 ||
+              result.cleaned_news_quality.quality_flags.length > 0) && (
+              <p className="mt-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-500">
+                摘要品質受限
+              </p>
             )}
 
-            <p className="mt-3 text-xs text-slate-400">
-              以上為市場情緒參考新聞。財報數字請參閱
-              <a
-                href="https://mops.twse.com.tw"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="ml-0.5 text-indigo-500 hover:underline"
-              >
-                公開資訊觀測站
-              </a>。
-            </p>
-          </article>
+          {result ? (
+            result.news_display_items.length > 0 ? (
+              <ul className="mt-3 divide-y divide-slate-100">
+                {result.news_display_items.map((item, idx) => (
+                  <li key={idx} className="py-2.5">
+                    {item.source_url ? (
+                      <a
+                        href={item.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block text-sm text-slate-800 hover:text-indigo-600 hover:underline"
+                      >
+                        {item.title}
+                      </a>
+                    ) : (
+                      <p className="text-sm text-slate-800">{item.title}</p>
+                    )}
+                    {item.date && (
+                      <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-sm text-slate-400">本次無新聞資料。</p>
+            )
+          ) : (
+            <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
+          )}
+
+          <p className="mt-3 text-xs text-slate-400">
+            以上為市場情緒參考新聞。財報數字請參閱
+            <a
+              href="https://mops.twse.com.tw"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-0.5 text-indigo-500 hover:underline"
+            >
+              公開資訊觀測站
+            </a>。
+          </p>
         </section>
 
         <section className="space-y-4">
