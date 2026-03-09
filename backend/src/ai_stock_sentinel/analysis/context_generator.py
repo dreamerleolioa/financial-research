@@ -277,3 +277,47 @@ def generate_technical_context(
 
     institutional = _inst_narrative(inst_data or {})
     return technical, institutional
+
+
+# ─── 基本面敘事 ────────────────────────────────────────────────────────────────
+
+def generate_fundamental_context(fund: dict | None) -> str:
+    """根據 FundamentalData dict 產出基本面估值敘事。
+
+    fund 可為 None、空 dict、或含 error 鍵的 dict，均安全處理。
+    """
+    if not fund or fund.get("error"):
+        return "基本面資料不足或抓取失敗，無法產出估值敘事。"
+
+    parts: list[str] = []
+
+    # PE
+    pe = fund.get("pe_current")
+    pe_band = fund.get("pe_band", "unknown")
+    pe_pct = fund.get("pe_percentile")
+    pe_mean = fund.get("pe_mean")
+
+    _band_map = {"cheap": "偏低（便宜）", "fair": "合理", "expensive": "偏貴（昂貴）", "unknown": "未知"}
+    if pe is not None:
+        parts.append(f"當前本益比（PE）{pe:.1f} 倍，估值位階{_band_map.get(pe_band, pe_band)}")
+    if pe_mean is not None:
+        parts.append(f"歷史 PE 均值 {pe_mean:.1f} 倍")
+    if pe_pct is not None:
+        parts.append(f"PE 百分位 {pe_pct:.0f}%（高於 {pe_pct:.0f}% 的歷史觀測）")
+
+    # 殖利率
+    dy = fund.get("dividend_yield")
+    yield_sig = fund.get("yield_signal", "unknown")
+    _yield_map = {"high_yield": "高殖利率（≥5%）", "mid_yield": "中殖利率（3–5%）", "low_yield": "低殖利率（<3%）", "unknown": "未知"}
+    if dy is not None:
+        parts.append(f"現金殖利率 {dy:.2f}%，屬{_yield_map.get(yield_sig, yield_sig)}")
+
+    # TTM EPS
+    ttm = fund.get("ttm_eps")
+    if ttm is not None:
+        parts.append(f"近四季合計 EPS {ttm:.2f} 元")
+
+    if not parts:
+        return "基本面資料欄位不完整，敘事略過。"
+
+    return "【基本面估值】" + "；".join(parts) + "。"
