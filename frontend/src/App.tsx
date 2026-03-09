@@ -1,208 +1,213 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState } from "react";
 
 interface ErrorDetail {
-  code: string
-  message: string
+  code: string;
+  message: string;
 }
 
 interface AnalysisDetail {
-  summary: string
-  risks: string[]
-  technical_signal: 'bullish' | 'bearish' | 'sideways'
-  institutional_flow: string | null
-  sentiment_label: string | null
-  tech_insight: string | null
-  inst_insight: string | null
-  news_insight: string | null
-  final_verdict: string | null
-  fundamental_insight?: string | null
+  summary: string;
+  risks: string[];
+  technical_signal: "bullish" | "bearish" | "sideways";
+  institutional_flow: string | null;
+  sentiment_label: string | null;
+  tech_insight: string | null;
+  inst_insight: string | null;
+  news_insight: string | null;
+  final_verdict: string | null;
+  fundamental_insight?: string | null;
 }
 
 interface CleanedNewsQuality {
-  quality_score: number
-  quality_flags: string[]
+  quality_score: number;
+  quality_flags: string[];
 }
 
 interface NewsDisplay {
-  title: string
-  date: string | null
-  source_url: string | null
+  title: string;
+  date: string | null;
+  source_url: string | null;
 }
 
 interface NewsDisplayItem {
-  title: string
-  date: string | null
-  source_url: string | null
+  title: string;
+  date: string | null;
+  source_url: string | null;
 }
 
 interface AnalyzeResponse {
-  snapshot: Record<string, unknown>
-  analysis: string
-  analysis_detail: AnalysisDetail | null
-  cleaned_news: Record<string, unknown> | null
-  cleaned_news_quality: CleanedNewsQuality | null
-  news_display: NewsDisplay | null
-  news_display_items: NewsDisplayItem[]
-  confidence_score: number | null
-  cross_validation_note: string | null
-  strategy_type: 'short_term' | 'mid_term' | 'defensive_wait' | null
-  entry_zone: string | null
-  stop_loss: string | null
-  holding_period: string | null
-  action_plan_tag: 'opportunity' | 'overheated' | 'neutral' | null
-  institutional_flow_label: string | null
-  data_confidence: number | null
-  errors: ErrorDetail[]
+  snapshot: Record<string, unknown>;
+  analysis: string;
+  analysis_detail: AnalysisDetail | null;
+  cleaned_news: Record<string, unknown> | null;
+  cleaned_news_quality: CleanedNewsQuality | null;
+  news_display: NewsDisplay | null;
+  news_display_items: NewsDisplayItem[];
+  confidence_score: number | null;
+  cross_validation_note: string | null;
+  strategy_type: "short_term" | "mid_term" | "defensive_wait" | null;
+  entry_zone: string | null;
+  stop_loss: string | null;
+  holding_period: string | null;
+  action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
+  institutional_flow_label: string | null;
+  data_confidence: number | null;
+  errors: ErrorDetail[];
   fundamental_data?: {
-    ttm_eps?: number | null
-    pe_current?: number | null
-    pe_band?: string | null
-    pe_percentile?: number | null
-    dividend_yield?: number | null
-    yield_signal?: string | null
-  } | null
+    ttm_eps?: number | null;
+    pe_current?: number | null;
+    pe_band?: string | null;
+    pe_percentile?: number | null;
+    dividend_yield?: number | null;
+    yield_signal?: string | null;
+  } | null;
 }
 
 const STRATEGY_LABEL: Record<string, string> = {
-  short_term: '短線操作',
-  mid_term: '中線佈局',
-  defensive_wait: '防守觀望',
-}
+  short_term: "短線操作",
+  mid_term: "中線佈局",
+  defensive_wait: "防守觀望",
+};
 
 const SIGNAL_LABEL: Record<string, string> = {
-  bullish: '看多',
-  bearish: '看空',
-  sideways: '盤整',
-}
+  bullish: "看多",
+  bearish: "看空",
+  sideways: "盤整",
+};
 
 const SIGNAL_CLASS: Record<string, string> = {
-  bullish: 'bg-emerald-100 text-emerald-800',
-  bearish: 'bg-red-100 text-red-800',
-  sideways: 'bg-slate-100 text-slate-700',
-}
+  bullish: "bg-emerald-100 text-emerald-800",
+  bearish: "bg-red-100 text-red-800",
+  sideways: "bg-slate-100 text-slate-700",
+};
 
 const SENTIMENT_LABEL: Record<string, string> = {
-  positive: '偏正向',
-  neutral: '中性',
-  negative: '偏負向',
-}
+  positive: "偏正向",
+  neutral: "中性",
+  negative: "偏負向",
+};
 
 const SENTIMENT_CLASS: Record<string, string> = {
-  positive: 'bg-emerald-100 text-emerald-800',
-  neutral: 'bg-slate-100 text-slate-700',
-  negative: 'bg-rose-100 text-rose-800',
-}
+  positive: "bg-emerald-100 text-emerald-800",
+  neutral: "bg-slate-100 text-slate-700",
+  negative: "bg-rose-100 text-rose-800",
+};
 
 const PE_BAND_BADGE: Record<string, { label: string; cls: string }> = {
-  cheap: { label: '低估', cls: 'bg-emerald-100 text-emerald-800' },
-  fair: { label: '合理', cls: 'bg-slate-100 text-slate-700' },
-  expensive: { label: '高估', cls: 'bg-red-100 text-red-800' },
-}
+  cheap: { label: "低估", cls: "bg-emerald-100 text-emerald-800" },
+  fair: { label: "合理", cls: "bg-slate-100 text-slate-700" },
+  expensive: { label: "高估", cls: "bg-red-100 text-red-800" },
+};
 
 const INST_FLOW_BADGE: Record<string, { label: string; cls: string }> = {
-  institutional_accumulation: { label: '法人買超', cls: 'bg-emerald-100 text-emerald-800' },
-  distribution: { label: '主力出貨', cls: 'bg-red-100 text-red-800' },
-  retail_chasing: { label: '散戶追高', cls: 'bg-orange-100 text-orange-800' },
-  neutral: { label: '籌碼中性', cls: 'bg-slate-100 text-slate-700' },
-}
+  institutional_accumulation: { label: "法人買超", cls: "bg-emerald-100 text-emerald-800" },
+  distribution: { label: "主力出貨", cls: "bg-red-100 text-red-800" },
+  retail_chasing: { label: "散戶追高", cls: "bg-orange-100 text-orange-800" },
+  neutral: { label: "籌碼中性", cls: "bg-slate-100 text-slate-700" },
+};
 
 const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: string }> = {
-  opportunity: { emoji: '🟢', label: '機會', color: 'text-green-600' },
-  overheated: { emoji: '🔴', label: '過熱', color: 'text-red-600' },
-  neutral: { emoji: '🔵', label: '中性', color: 'text-blue-500' },
-}
-
+  opportunity: { emoji: "🟢", label: "機會", color: "text-green-600" },
+  overheated: { emoji: "🔴", label: "過熱", color: "text-red-600" },
+  neutral: { emoji: "🔵", label: "中性", color: "text-blue-500" },
+};
 
 function formatVolume(value: unknown): string {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return '—'
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "—";
   }
-  return new Intl.NumberFormat('zh-TW').format(value)
+  return new Intl.NumberFormat("zh-TW").format(value);
 }
 
 function getTaiwanTickSize(price: number): number {
-  if (price < 10) return 0.01
-  if (price < 50) return 0.05
-  if (price < 100) return 0.1
-  if (price < 500) return 0.5
-  if (price < 1000) return 1
-  return 5
+  if (price < 10) return 0.01;
+  if (price < 50) return 0.05;
+  if (price < 100) return 0.1;
+  if (price < 500) return 0.5;
+  if (price < 1000) return 1;
+  return 5;
 }
 
 function decimalPlaces(step: number): number {
-  const stepText = step.toString()
-  const dotIndex = stepText.indexOf('.')
-  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1
+  const stepText = step.toString();
+  const dotIndex = stepText.indexOf(".");
+  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1;
 }
 
 function formatPrice(value: unknown, symbol?: unknown): string {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return '—'
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "—";
   }
 
-  const symbolText = typeof symbol === 'string' ? symbol.toUpperCase() : ''
-  const isTaiwanStock = symbolText.endsWith('.TW') || symbolText.endsWith('.TWO')
+  const symbolText = typeof symbol === "string" ? symbol.toUpperCase() : "";
+  const isTaiwanStock = symbolText.endsWith(".TW") || symbolText.endsWith(".TWO");
 
   if (isTaiwanStock && value > 0) {
-    const tick = getTaiwanTickSize(value)
-    const normalized = Math.round((value + Number.EPSILON) / tick) * tick
-    const digits = decimalPlaces(tick)
-    return normalized.toFixed(digits)
+    const tick = getTaiwanTickSize(value);
+    const normalized = Math.round((value + Number.EPSILON) / tick) * tick;
+    const digits = decimalPlaces(tick);
+    return normalized.toFixed(digits);
   }
 
-  return new Intl.NumberFormat('zh-TW', {
+  return new Intl.NumberFormat("zh-TW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 6,
-  }).format(value)
+  }).format(value);
 }
 
 function InsightText({ text }: { text: string | null | undefined }) {
-  if (!text) return <p className="text-sm text-slate-400">請先執行分析。</p>
-  const sentences = text.split(/(?<=[。；！？\n])/).map(s => s.trim()).filter(Boolean)
-  if (sentences.length <= 1) return <p className="text-sm text-slate-700 leading-relaxed">{text}</p>
+  if (!text) return <p className="text-sm text-slate-400">請先執行分析。</p>;
+  const sentences = text
+    .split(/(?<=[。；！？\n])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (sentences.length <= 1)
+    return <p className="text-sm leading-relaxed text-slate-700">{text}</p>;
   return (
     <div className="space-y-1.5">
       {sentences.map((s, i) => (
-        <p key={i} className="text-sm text-slate-700 leading-relaxed">{s}</p>
+        <p key={i} className="text-sm leading-relaxed text-slate-700">
+          {s}
+        </p>
       ))}
     </div>
-  )
+  );
 }
 
 function mapVolumeSource(value: unknown): string {
-  if (value === 'realtime') return '即時成交量'
-  if (value === 'history_fallback') return '歷史資料回填'
-  if (value === 'unavailable') return '暫無資料'
-  return '未知來源'
+  if (value === "realtime") return "即時成交量";
+  if (value === "history_fallback") return "歷史資料回填";
+  if (value === "unavailable") return "暫無資料";
+  return "未知來源";
 }
 
 function App() {
-  const [symbol, setSymbol] = useState('2330.TW')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<AnalyzeResponse | null>(null)
+  const [symbol, setSymbol] = useState("2330.TW");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
-  const confidenceScore = result?.confidence_score ?? null
-  const circumference = 2 * Math.PI * 52
+  const confidenceScore = result?.confidence_score ?? null;
+  const circumference = 2 * Math.PI * 52;
   const dashOffset = useMemo(
     () => (confidenceScore != null ? circumference * (1 - confidenceScore / 100) : circumference),
     [circumference, confidenceScore],
-  )
+  );
 
   async function handleAnalyze() {
-    if (!symbol.trim()) return
-    setLoading(true)
+    if (!symbol.trim()) return;
+    setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch("http://localhost:8000/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: symbol.trim() }),
-      })
-      const data: AnalyzeResponse = await res.json()
-      setResult(data)
+      });
+      const data: AnalyzeResponse = await res.json();
+      setResult(data);
     } catch {
       setResult({
         snapshot: {},
-        analysis: '',
+        analysis: "",
         analysis_detail: null,
         cleaned_news: null,
         cleaned_news_quality: null,
@@ -217,22 +222,24 @@ function App() {
         action_plan_tag: null,
         institutional_flow_label: null,
         data_confidence: null,
-        errors: [{ code: 'NETWORK_ERROR', message: '無法連線後端，請確認伺服器已啟動。' }],
-      })
+        errors: [{ code: "NETWORK_ERROR", message: "無法連線後端，請確認伺服器已啟動。" }],
+      });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
-  const firstError = result?.errors?.[0]
-  const snapshot = result?.snapshot ?? {}
+  const firstError = result?.errors?.[0];
+  const snapshot = result?.snapshot ?? {};
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-6">
         <header className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold md:text-3xl">個股分析儀表板</h1>
-          <p className="text-sm text-slate-600">輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。</p>
+          <p className="text-sm text-slate-600">
+            輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。
+          </p>
         </header>
 
         {firstError && (
@@ -250,8 +257,8 @@ function App() {
               id="symbol"
               value={symbol}
               onChange={(event) => setSymbol(event.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !loading && handleAnalyze()}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2 md:max-w-sm"
+              onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze()}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm ring-indigo-200 transition outline-none focus:ring-2 md:max-w-sm"
               placeholder="例如 2330.TW"
               disabled={loading}
             />
@@ -260,19 +267,25 @@ function App() {
               disabled={loading}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? '分析中...' : '開始分析'}
+              {loading ? "分析中..." : "開始分析"}
             </button>
           </div>
-          <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || '未輸入'}</p>
+          <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || "未輸入"}</p>
         </section>
 
         <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="text-sm font-semibold text-slate-800 mb-3">信心指數</h2>
+            <h2 className="mb-3 text-sm font-semibold text-slate-800">信心指數</h2>
             <div className="flex flex-col items-center">
               <div className="relative flex items-center justify-center">
                 <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
-                  <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-slate-200" />
+                  <circle
+                    cx="70"
+                    cy="70"
+                    r="52"
+                    strokeWidth="12"
+                    className="fill-none stroke-slate-200"
+                  />
                   <circle
                     cx="70"
                     cy="70"
@@ -282,38 +295,44 @@ function App() {
                     className="fill-none stroke-indigo-600"
                     strokeDasharray={circumference}
                     strokeDashoffset={dashOffset}
-                    style={{ transition: 'stroke-dashoffset 0.5s ease' }}
+                    style={{ transition: "stroke-dashoffset 0.5s ease" }}
                   />
                 </svg>
                 <div className="absolute text-center">
                   <div className="text-xl font-semibold">
-                    {confidenceScore != null ? `${confidenceScore}%` : '—'}
+                    {confidenceScore != null ? `${confidenceScore}%` : "—"}
                   </div>
                   <div className="text-xs text-slate-500">Confidence</div>
                 </div>
               </div>
               {result?.cross_validation_note && (
-                <p className="mt-2 text-xs text-slate-500 text-center">{result.cross_validation_note}</p>
-              )}
-              {result?.data_confidence !== null && result?.data_confidence !== undefined && result.data_confidence < 60 && (
-                <p className="text-xs text-gray-400 mt-1 text-center">
-                  ⚠️ 資料不足（{result.data_confidence}%）
+                <p className="mt-2 text-center text-xs text-slate-500">
+                  {result.cross_validation_note}
                 </p>
               )}
+              {result?.data_confidence !== null &&
+                result?.data_confidence !== undefined &&
+                result.data_confidence < 60 && (
+                  <p className="mt-1 text-center text-xs text-gray-400">
+                    ⚠️ 資料不足（{result.data_confidence}%）
+                  </p>
+                )}
             </div>
           </article>
 
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="text-sm font-semibold text-slate-800 mb-3">快照資訊</h2>
+            <h2 className="mb-3 text-sm font-semibold text-slate-800">快照資訊</h2>
             {result ? (
               <dl className="space-y-2 text-sm text-slate-700">
                 <div className="flex justify-between">
                   <dt className="text-slate-500">代碼</dt>
-                  <dd className="font-medium">{String(snapshot.symbol ?? '—')}</dd>
+                  <dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-500">現價</dt>
-                  <dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd>
+                  <dd className="font-medium">
+                    {formatPrice(snapshot.current_price, snapshot.symbol)}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-500">成交量</dt>
@@ -333,15 +352,14 @@ function App() {
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
-            {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === 'string' && (
-                <span
-                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                    SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
+            {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === "string" && (
+              <span
+                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
                   }`}
-                >
-                  {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? '中性'}
-                </span>
-              )}
+              >
+                {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? "中性"}
+              </span>
+            )}
           </div>
 
           {result?.cleaned_news_quality != null &&
@@ -369,9 +387,7 @@ function App() {
                     ) : (
                       <p className="text-sm text-slate-800">{item.title}</p>
                     )}
-                    {item.date && (
-                      <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
-                    )}
+                    {item.date && <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>}
                   </li>
                 ))}
               </ul>
@@ -391,7 +407,8 @@ function App() {
               className="ml-0.5 text-indigo-500 hover:underline"
             >
               公開資訊觀測站
-            </a>。
+            </a>
+            。
           </p>
         </section>
 
@@ -402,18 +419,19 @@ function App() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {/* 技術面卡片 */}
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
+              <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-600">技術面</h3>
                 {result?.analysis_detail ? (
                   <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways
-                    }`}
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways
+                      }`}
                   >
-                    {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? '盤整'}
+                    {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? "盤整"}
                   </span>
                 ) : (
-                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                    —
+                  </span>
                 )}
               </div>
               <InsightText text={result?.analysis_detail?.tech_insight} />
@@ -421,60 +439,56 @@ function App() {
 
             {/* 籌碼面卡片 */}
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
+              <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
-                {result?.institutional_flow_label && INST_FLOW_BADGE[result.institutional_flow_label] ? (
+                {result?.institutional_flow_label &&
+                  INST_FLOW_BADGE[result.institutional_flow_label] ? (
                   <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      INST_FLOW_BADGE[result.institutional_flow_label].cls
-                    }`}
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${INST_FLOW_BADGE[result.institutional_flow_label].cls
+                      }`}
                   >
                     {INST_FLOW_BADGE[result.institutional_flow_label].label}
                   </span>
                 ) : (
-                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                    —
+                  </span>
                 )}
               </div>
               <InsightText text={result?.analysis_detail?.inst_insight} />
             </article>
 
-            {/* 消息面卡片 */}
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
-                {result?.analysis_detail?.sentiment_label ? (
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ?? SENTIMENT_CLASS.neutral
-                    }`}
-                  >
-                    {SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? '中性'}
-                  </span>
-                ) : (
-                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
-                )}
-              </div>
-              <InsightText text={result?.analysis_detail?.news_insight} />
-            </article>
-
             {/* 基本面估值卡片 */}
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
+              <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
-                {result?.fundamental_data?.pe_band && PE_BAND_BADGE[result.fundamental_data.pe_band] ? (
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${PE_BAND_BADGE[result.fundamental_data.pe_band].cls}`}>
+                {result?.fundamental_data?.pe_band &&
+                  PE_BAND_BADGE[result.fundamental_data.pe_band] ? (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${PE_BAND_BADGE[result.fundamental_data.pe_band].cls}`}
+                  >
                     {PE_BAND_BADGE[result.fundamental_data.pe_band].label}
                   </span>
                 ) : (
-                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                    —
+                  </span>
                 )}
               </div>
               {result?.analysis_detail?.fundamental_insight ? (
                 <InsightText text={result.analysis_detail.fundamental_insight} />
               ) : result?.fundamental_data ? (
-                <div className="text-sm text-slate-600 space-y-1">
+                <div className="space-y-1 text-sm text-slate-600">
                   {result.fundamental_data.pe_current != null && (
-                    <p>PE：{result.fundamental_data.pe_current.toFixed(1)} 倍（{result.fundamental_data.pe_band === 'cheap' ? '偏低' : result.fundamental_data.pe_band === 'expensive' ? '偏高' : '合理'}）</p>
+                    <p>
+                      PE：{result.fundamental_data.pe_current.toFixed(1)} 倍（
+                      {result.fundamental_data.pe_band === "cheap"
+                        ? "偏低"
+                        : result.fundamental_data.pe_band === "expensive"
+                          ? "偏高"
+                          : "合理"}
+                      ）
+                    </p>
                   )}
                   {result.fundamental_data.dividend_yield != null && (
                     <p>殖利率：{result.fundamental_data.dividend_yield.toFixed(2)}%</p>
@@ -487,16 +501,39 @@ function App() {
                 <p className="text-sm text-slate-400">本次無基本面資料</p>
               )}
             </article>
+
+            {/* 消息面卡片 */}
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
+                {result?.analysis_detail?.sentiment_label ? (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ??
+                      SENTIMENT_CLASS.neutral
+                      }`}
+                  >
+                    {SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? "中性"}
+                  </span>
+                ) : (
+                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                    —
+                  </span>
+                )}
+              </div>
+              <InsightText text={result?.analysis_detail?.news_insight} />
+            </article>
           </div>
 
           {/* 綜合仲裁：有結果才顯示 */}
           {result?.analysis_detail && (
             <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
-              <h3 className="text-xs font-semibold text-indigo-700 mb-3">綜合仲裁</h3>
-              <InsightText text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary} />
+              <h3 className="mb-3 text-xs font-semibold text-indigo-700">綜合仲裁</h3>
+              <InsightText
+                text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary}
+              />
               {result.analysis_detail.risks.length > 0 && (
                 <div className="mt-4 border-t border-indigo-100 pt-3">
-                  <p className="text-xs font-medium text-slate-500 mb-1.5">風險提示</p>
+                  <p className="mb-1.5 text-xs font-medium text-slate-500">風險提示</p>
                   <ul className="space-y-1">
                     {result.analysis_detail.risks.map((risk, i) => (
                       <li key={i} className="flex gap-2 text-sm text-slate-700">
@@ -512,7 +549,7 @@ function App() {
 
           {/* fallback：純文字 analysis（LLM 未回傳 analysis_detail 時） */}
           {result && !result.analysis_detail && result.analysis && (
-            <pre className="whitespace-pre-wrap wrap-break-word text-sm text-slate-700 leading-relaxed rounded-xl border border-slate-200 bg-white p-4">
+            <pre className="rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap text-slate-700">
               {result.analysis}
             </pre>
           )}
@@ -522,8 +559,11 @@ function App() {
           <div className="mb-4 flex items-center gap-2">
             <h2 className="text-sm font-semibold text-slate-800">投資策略</h2>
             {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
-              <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
-                {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
+              <span
+                className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}
+              >
+                {ACTION_TAG_MAP[result.action_plan_tag].emoji}{" "}
+                {ACTION_TAG_MAP[result.action_plan_tag].label}
               </span>
             )}
           </div>
@@ -532,20 +572,28 @@ function App() {
               <div className="rounded-lg bg-slate-50 p-3">
                 <dt className="text-xs text-slate-500">策略方向</dt>
                 <dd className="mt-1 text-sm font-medium text-slate-800">
-                  {result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : '—'}
+                  {result.strategy_type
+                    ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type)
+                    : "—"}
                 </dd>
               </div>
               <div className="rounded-lg bg-slate-50 p-3">
                 <dt className="text-xs text-slate-500">建議入場區間</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">{result.entry_zone ?? '—'}</dd>
+                <dd className="mt-1 text-sm font-medium text-slate-800">
+                  {result.entry_zone ?? "—"}
+                </dd>
               </div>
               <div className="rounded-lg bg-slate-50 p-3">
                 <dt className="text-xs text-slate-500">防守底線（停損）</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">{result.stop_loss ?? '—'}</dd>
+                <dd className="mt-1 text-sm font-medium text-slate-800">
+                  {result.stop_loss ?? "—"}
+                </dd>
               </div>
               <div className="rounded-lg bg-slate-50 p-3">
                 <dt className="text-xs text-slate-500">預期持股期間</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">{result.holding_period ?? '—'}</dd>
+                <dd className="mt-1 text-sm font-medium text-slate-800">
+                  {result.holding_period ?? "—"}
+                </dd>
               </div>
             </dl>
           ) : (
@@ -554,7 +602,7 @@ function App() {
         </section>
       </div>
     </main>
-  )
+  );
 }
 
-export default App
+export default App;
