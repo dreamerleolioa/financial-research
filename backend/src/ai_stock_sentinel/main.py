@@ -118,6 +118,8 @@ def main() -> None:
         "rsi14": None,
         "action_plan_tag": None,
         "action_plan": None,
+        "fundamental_data": None,
+        "fundamental_context": None,
     }
 
     result = graph.invoke(initial_state)

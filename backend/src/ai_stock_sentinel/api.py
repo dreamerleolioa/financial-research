@@ -38,6 +38,7 @@ class AnalyzeResponse(BaseModel):
     sentiment_label: str | None = None
     action_plan: dict[str, Any] | None = None
     data_sources: list[str] = Field(default_factory=list)
+    fundamental_data: dict[str, Any] | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -105,6 +106,8 @@ def analyze(
         "rsi14": None,
         "action_plan_tag": None,
         "action_plan": None,
+        "fundamental_data": None,
+        "fundamental_context": None,
     }
 
     try:
@@ -174,6 +177,9 @@ def analyze(
     _inst = result.get("institutional_flow")
     if _inst and not _inst.get("error"):
         _sources.append(_inst.get("provider", "institutional-api"))
+    _fund = result.get("fundamental_data")
+    if _fund and not _fund.get("error"):
+        _sources.append("finmind-fundamental")
 
     return AnalyzeResponse(
         snapshot=snapshot,
@@ -196,5 +202,6 @@ def analyze(
         sentiment_label=sentiment_label,
         action_plan=action_plan,
         data_sources=_sources,
+        fundamental_data=result.get("fundamental_data"),
         errors=response_errors,
     )
