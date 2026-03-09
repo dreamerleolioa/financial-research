@@ -278,6 +278,7 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
         institutional_context=state.get("institutional_context"),
         confidence_score=state.get("confidence_score"),
         cross_validation_note=state.get("cross_validation_note"),
+        fundamental_context=state.get("fundamental_context"),
     )
     return {
         "analysis": result.summary,

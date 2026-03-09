@@ -13,6 +13,7 @@ class AnalysisDetail:
     inst_insight: str | None = None
     news_insight: str | None = None
     final_verdict: str | None = None
+    fundamental_insight: str | None = None
 
 
 @dataclass

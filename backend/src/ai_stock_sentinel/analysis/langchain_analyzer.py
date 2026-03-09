@@ -22,6 +22,7 @@ _SYSTEM_PROMPT = """\
 - tech_insight：僅參考技術面資料（均線排列、RSI 位階、支撐壓力位）；禁止提及法人買賣超或新聞事件
 - inst_insight：僅參考籌碼面資料（三大法人買賣超、融資券動向）；禁止提及均線數值、RSI、新聞事件
 - news_insight：僅參考消息面資料（事件性質、市場情緒傾向）；禁止提及具體技術指標數值（如 RSI=62）
+- fundamental_insight：僅參考基本面估值資料（PE 位階、殖利率、每股盈餘趨勢）；禁止提及技術指標或法人動向
 - final_verdict：整合三維訊號，解釋為何導向當前信心分數與策略；此段允許跨維度整合推論
 
 規範：
@@ -36,6 +37,7 @@ _SYSTEM_PROMPT = """\
   "tech_insight": "技術面獨立分析段落",
   "inst_insight": "籌碼面獨立分析段落",
   "news_insight": "消息面獨立分析段落",
+  "fundamental_insight": "基本面估值分析段落（若無資料則填 null）",
   "final_verdict": "三維整合仲裁段落"
 }}
 - 不得輸出 JSON 以外的任何文字。
@@ -60,6 +62,9 @@ _HUMAN_PROMPT = """\
 
 【籌碼面敘事】
 {institutional_context}
+
+【基本面估值】
+{fundamental_context}
 
 【信心分數】{confidence_score}／100
 【交叉驗證備注】{cross_validation_note}
@@ -128,6 +133,7 @@ class LangChainStockAnalyzer:
         institutional_context: str | None = None,
         confidence_score: int | None = None,
         cross_validation_note: str | None = None,
+        fundamental_context: str | None = None,
     ) -> AnalysisDetail:
         if not self._has_langchain():
             return AnalysisDetail(
@@ -179,6 +185,7 @@ class LangChainStockAnalyzer:
                 "institutional_context": institutional_context or "（無籌碼敘事）",
                 "confidence_score": confidence_score if confidence_score is not None else 50,
                 "cross_validation_note": cross_validation_note or "（無交叉驗證備注）",
+                "fundamental_context": fundamental_context or "（本次無基本面資料）",
             }
         )
         return self._parse_analysis(raw)
@@ -205,6 +212,7 @@ class LangChainStockAnalyzer:
                 inst_insight=data.get("inst_insight") or None,
                 news_insight=data.get("news_insight") or None,
                 final_verdict=data.get("final_verdict") or None,
+                fundamental_insight=data.get("fundamental_insight") or None,
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return AnalysisDetail(summary=raw)
