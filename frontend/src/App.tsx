@@ -148,6 +148,19 @@ function formatPrice(value: unknown, symbol?: unknown): string {
   }).format(value)
 }
 
+function InsightText({ text }: { text: string | null | undefined }) {
+  if (!text) return <p className="text-sm text-slate-400">請先執行分析。</p>
+  const sentences = text.split(/(?<=[。；！？\n])/).map(s => s.trim()).filter(Boolean)
+  if (sentences.length <= 1) return <p className="text-sm text-slate-700 leading-relaxed">{text}</p>
+  return (
+    <div className="space-y-1.5">
+      {sentences.map((s, i) => (
+        <p key={i} className="text-sm text-slate-700 leading-relaxed">{s}</p>
+      ))}
+    </div>
+  )
+}
+
 function mapVolumeSource(value: unknown): string {
   if (value === 'realtime') return '即時成交量'
   if (value === 'history_fallback') return '歷史資料回填'
@@ -391,94 +404,92 @@ function App() {
         <section className="space-y-4">
           <h2 className="text-sm font-semibold text-slate-800">分析報告</h2>
 
-          {result ? (
-            result.analysis_detail ? (
-              <div className="space-y-4">
-                {/* 三維小卡（3 欄網格） */}
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  {/* 技術面卡片 */}
-                  <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="text-xs font-semibold text-slate-600">技術面</h3>
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways
-                        }`}
-                      >
-                        {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? '盤整'}
-                      </span>
-                    </div>
-                    <p className="text-sm text-slate-700 leading-relaxed">
-                      {result.analysis_detail.tech_insight ?? '（無技術面分析）'}
-                    </p>
-                  </article>
-
-                  {/* 籌碼面卡片 */}
-                  <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
-                      {result.analysis_detail.institutional_flow && INST_FLOW_BADGE[result.analysis_detail.institutional_flow] && (
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                            INST_FLOW_BADGE[result.analysis_detail.institutional_flow].cls
-                          }`}
-                        >
-                          {INST_FLOW_BADGE[result.analysis_detail.institutional_flow].label}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-slate-700 leading-relaxed">
-                      {result.analysis_detail.inst_insight ?? '（無籌碼面分析）'}
-                    </p>
-                  </article>
-
-                  {/* 消息面卡片 */}
-                  <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
-                      {result.analysis_detail.sentiment_label && (
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                            SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ?? SENTIMENT_CLASS.neutral
-                          }`}
-                        >
-                          {SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? '中性'}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-slate-700 leading-relaxed">
-                      {result.analysis_detail.news_insight ?? '（無消息面分析）'}
-                    </p>
-                  </article>
-                </div>
-
-                {/* 綜合仲裁全寬卡 */}
-                <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
-                  <h3 className="text-xs font-semibold text-indigo-700 mb-2">綜合仲裁</h3>
-                  <p className="text-sm text-slate-700 leading-relaxed">
-                    {result.analysis_detail.final_verdict ?? result.analysis_detail.summary}
-                  </p>
-                  {result.analysis_detail.risks.length > 0 && (
-                    <div className="mt-3">
-                      <p className="text-xs font-medium text-slate-500 mb-1">風險提示</p>
-                      <ul className="list-disc list-inside space-y-1">
-                        {result.analysis_detail.risks.map((risk, i) => (
-                          <li key={i} className="text-sm text-slate-700">{risk}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </article>
+          {/* 三維小卡：永遠顯示 */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {/* 技術面卡片 */}
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-slate-600">技術面</h3>
+                {result?.analysis_detail ? (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways
+                    }`}
+                  >
+                    {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? '盤整'}
+                  </span>
+                ) : (
+                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                )}
               </div>
-            ) : result.analysis ? (
-              <pre className="whitespace-pre-wrap wrap-break-word text-sm text-slate-700 leading-relaxed rounded-xl border border-slate-200 bg-white p-4">
-                {result.analysis}
-              </pre>
-            ) : (
-              <p className="text-sm text-slate-400">本次無分析結果。</p>
-            )
-          ) : (
-            <p className="text-sm text-slate-400">請先執行分析。</p>
+              <InsightText text={result?.analysis_detail?.tech_insight} />
+            </article>
+
+            {/* 籌碼面卡片 */}
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
+                {result?.analysis_detail?.institutional_flow && INST_FLOW_BADGE[result.analysis_detail.institutional_flow] ? (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      INST_FLOW_BADGE[result.analysis_detail.institutional_flow].cls
+                    }`}
+                  >
+                    {INST_FLOW_BADGE[result.analysis_detail.institutional_flow].label}
+                  </span>
+                ) : (
+                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                )}
+              </div>
+              <InsightText text={result?.analysis_detail?.inst_insight} />
+            </article>
+
+            {/* 消息面卡片 */}
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
+                {result?.analysis_detail?.sentiment_label ? (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ?? SENTIMENT_CLASS.neutral
+                    }`}
+                  >
+                    {SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? '中性'}
+                  </span>
+                ) : (
+                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
+                )}
+              </div>
+              <InsightText text={result?.analysis_detail?.news_insight} />
+            </article>
+          </div>
+
+          {/* 綜合仲裁：有結果才顯示 */}
+          {result?.analysis_detail && (
+            <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
+              <h3 className="text-xs font-semibold text-indigo-700 mb-3">綜合仲裁</h3>
+              <InsightText text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary} />
+              {result.analysis_detail.risks.length > 0 && (
+                <div className="mt-4 border-t border-indigo-100 pt-3">
+                  <p className="text-xs font-medium text-slate-500 mb-1.5">風險提示</p>
+                  <ul className="space-y-1">
+                    {result.analysis_detail.risks.map((risk, i) => (
+                      <li key={i} className="flex gap-2 text-sm text-slate-700">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400" />
+                        {risk}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </article>
+          )}
+
+          {/* fallback：純文字 analysis（LLM 未回傳 analysis_detail 時） */}
+          {result && !result.analysis_detail && result.analysis && (
+            <pre className="whitespace-pre-wrap wrap-break-word text-sm text-slate-700 leading-relaxed rounded-xl border border-slate-200 bg-white p-4">
+              {result.analysis}
+            </pre>
           )}
         </section>
 
