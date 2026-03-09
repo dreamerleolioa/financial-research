@@ -93,6 +93,12 @@ const SENTIMENT_CLASS: Record<string, string> = {
   negative: 'bg-rose-100 text-rose-800',
 }
 
+const PE_BAND_BADGE: Record<string, { label: string; cls: string }> = {
+  cheap: { label: '低估', cls: 'bg-emerald-100 text-emerald-800' },
+  fair: { label: '合理', cls: 'bg-slate-100 text-slate-700' },
+  expensive: { label: '高估', cls: 'bg-red-100 text-red-800' },
+}
+
 const INST_FLOW_BADGE: Record<string, { label: string; cls: string }> = {
   institutional_accumulation: { label: '法人買超', cls: 'bg-emerald-100 text-emerald-800' },
   distribution: { label: '主力出貨', cls: 'bg-red-100 text-red-800' },
@@ -106,13 +112,6 @@ const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: stri
   neutral: { emoji: '🔵', label: '中性', color: 'text-blue-500' },
 }
 
-const ANALYSIS_PATH = [
-  '接收查詢：輸入股票代碼',
-  '抓取股價快照完成',
-  '抓取新聞與資料清潔完成',
-  '提取關鍵數字與情緒標籤完成',
-  '輸出分析結果',
-]
 
 function formatVolume(value: unknown): string {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -267,81 +266,68 @@ function App() {
           <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || '未輸入'}</p>
         </section>
 
-        <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="text-sm font-semibold text-slate-800">信心指數</h2>
-            <div className="relative mt-4 flex items-center justify-center">
-              <svg width="140" height="140" viewBox="0 0 140 140" className="-rotate-90">
-                <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-slate-200" />
-                <circle
-                  cx="70"
-                  cy="70"
-                  r="52"
-                  strokeWidth="12"
-                  strokeLinecap="round"
-                  className="fill-none stroke-indigo-600"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={dashOffset}
-                  style={{ transition: 'stroke-dashoffset 0.5s ease' }}
-                />
-              </svg>
-              <div className="absolute text-center">
-                <div className="text-2xl font-semibold">
-                  {confidenceScore != null ? `${confidenceScore}%` : '—'}
-                </div>
-                <div className="text-xs text-slate-500">Confidence</div>
-              </div>
-            </div>
-            {result?.cross_validation_note && (
-              <p className="mt-3 text-xs text-slate-500 text-center">{result.cross_validation_note}</p>
-            )}
-            {result?.data_confidence !== null && result?.data_confidence !== undefined && result.data_confidence < 60 && (
-              <p className="text-xs text-gray-400 mt-1">
-                ⚠️ 資料不足（完整度 {result.data_confidence}%），分數僅供參考
-              </p>
-            )}
-          </article>
-
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6 lg:col-span-2">
-            <h2 className="text-sm font-semibold text-slate-800">分析路徑圖</h2>
-            <ol className="mt-4 space-y-3">
-              {ANALYSIS_PATH.map((step, index) => (
-                <li key={step} className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
-                    {index + 1}
-                  </span>
-                  <p className="text-sm text-slate-700">{step}</p>
-                </li>
-              ))}
-            </ol>
-          </article>
-        </section>
-
         <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="text-sm font-semibold text-slate-800">快照資訊</h2>
-            {result ? (
-              <dl className="mt-3 space-y-2 text-sm text-slate-700">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">代碼</dt>
-                  <dd className="font-medium">{String(snapshot.symbol ?? '—')}</dd>
+            <div className="flex items-start gap-6">
+              <div className="flex flex-col items-center shrink-0">
+                <h2 className="text-sm font-semibold text-slate-800 mb-3">信心指數</h2>
+                <div className="relative flex items-center justify-center">
+                  <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
+                    <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-slate-200" />
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="52"
+                      strokeWidth="12"
+                      strokeLinecap="round"
+                      className="fill-none stroke-indigo-600"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={dashOffset}
+                      style={{ transition: 'stroke-dashoffset 0.5s ease' }}
+                    />
+                  </svg>
+                  <div className="absolute text-center">
+                    <div className="text-xl font-semibold">
+                      {confidenceScore != null ? `${confidenceScore}%` : '—'}
+                    </div>
+                    <div className="text-xs text-slate-500">Confidence</div>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">現價</dt>
-                  <dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">成交量</dt>
-                  <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">成交量來源</dt>
-                  <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
-                </div>
-              </dl>
-            ) : (
-              <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
-            )}
+                {result?.cross_validation_note && (
+                  <p className="mt-2 text-xs text-slate-500 text-center">{result.cross_validation_note}</p>
+                )}
+                {result?.data_confidence !== null && result?.data_confidence !== undefined && result.data_confidence < 60 && (
+                  <p className="text-xs text-gray-400 mt-1 text-center">
+                    ⚠️ 資料不足（{result.data_confidence}%）
+                  </p>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-sm font-semibold text-slate-800 mb-3">快照資訊</h2>
+                {result ? (
+                  <dl className="space-y-2 text-sm text-slate-700">
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">代碼</dt>
+                      <dd className="font-medium">{String(snapshot.symbol ?? '—')}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">現價</dt>
+                      <dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">成交量</dt>
+                      <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">成交量來源</dt>
+                      <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className="text-sm text-slate-400">請先執行分析。</p>
+                )}
+              </div>
+            </div>
           </article>
 
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
@@ -438,13 +424,13 @@ function App() {
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
-                {result?.analysis_detail?.institutional_flow && INST_FLOW_BADGE[result.analysis_detail.institutional_flow] ? (
+                {result?.institutional_flow_label && INST_FLOW_BADGE[result.institutional_flow_label] ? (
                   <span
                     className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      INST_FLOW_BADGE[result.analysis_detail.institutional_flow].cls
+                      INST_FLOW_BADGE[result.institutional_flow_label].cls
                     }`}
                   >
-                    {INST_FLOW_BADGE[result.analysis_detail.institutional_flow].label}
+                    {INST_FLOW_BADGE[result.institutional_flow_label].label}
                   </span>
                 ) : (
                   <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
@@ -476,10 +462,12 @@ function App() {
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
-                {result?.fundamental_data?.pe_band && (
-                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-600">
-                    {result.fundamental_data.pe_band === 'cheap' ? '低估' : result.fundamental_data.pe_band === 'expensive' ? '高估' : '合理'}
+                {result?.fundamental_data?.pe_band && PE_BAND_BADGE[result.fundamental_data.pe_band] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${PE_BAND_BADGE[result.fundamental_data.pe_band].cls}`}>
+                    {PE_BAND_BADGE[result.fundamental_data.pe_band].label}
                   </span>
+                ) : (
+                  <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-400">—</span>
                 )}
               </div>
               {result?.analysis_detail?.fundamental_insight ? (
