@@ -10,10 +10,10 @@ class FundamentalData:
     # EPS / 本益比
     ttm_eps: float | None = None          # 近四季合計 EPS
     pe_current: float | None = None       # 當前 PE（price / ttm_eps）
-    pe_mean: float | None = None          # 歷史 PE 均值（近 20 季）
-    pe_std: float | None = None           # 歷史 PE 標準差
+    pe_mean: float | None = None          # 歷史 PE 均值（各季末真實股價計算）
+    pe_std: float | None = None           # 歷史 PE 標準差（各季末真實股價計算）
     pe_band: str = "unknown"              # "cheap" | "fair" | "expensive" | "unknown"
-    pe_percentile: float | None = None    # 當前 PE 在歷史分佈的百分位（0-100）
+    pe_percentile: float | None = None    # 當前 PE 在歷史真實 PE 分佈的百分位（0-100）
 
     # 殖利率
     annual_cash_dividend: float | None = None  # 最近年度現金股利合計

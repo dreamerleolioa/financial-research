@@ -42,6 +42,40 @@ class FinMindFundamentalProvider:
         body = resp.json()
         return body.get("data", [])
 
+    def _fetch_historical_prices(self, symbol: str, quarter_dates: list[str]) -> dict[str, float]:
+        """
+        從 yfinance 取得各季末收盤價。
+        回傳 {date_str: price}，取不到的日期不包含在結果中。
+        """
+        if not quarter_dates:
+            return {}
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.warning("yfinance 未安裝，無法取得歷史股價")
+            return {}
+
+        try:
+            start = min(quarter_dates)
+            # 多抓 10 天以涵蓋非交易日
+            end_dt = date.fromisoformat(max(quarter_dates)) + timedelta(days=10)
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(start=start, end=end_dt.isoformat(), interval="1d")
+            if hist.empty:
+                return {}
+
+            result: dict[str, float] = {}
+            for date_str in quarter_dates:
+                target = date.fromisoformat(date_str)
+                # 找 target 當天或之前最近的收盤價
+                candidates = hist[hist.index.date <= target]
+                if not candidates.empty:
+                    result[date_str] = float(candidates["Close"].iloc[-1])
+            return result
+        except Exception as exc:
+            logger.warning("取得歷史股價失敗：%s", exc)
+            return {}
+
     def fetch(self, symbol: str, current_price: float) -> FundamentalData:
         stock_id = symbol.split(".")[0]
         end_date = date.today().isoformat()
@@ -67,6 +101,7 @@ class FinMindFundamentalProvider:
 
         eps_values = [_safe_float(r.get("value")) for r in eps_rows]
         eps_values = [v for v in eps_values if v is not None]
+        quarter_dates = [r.get("date", "") for r in eps_rows if _safe_float(r.get("value")) is not None]
 
         ttm_eps: float | None = None
         pe_current: float | None = None
@@ -80,29 +115,43 @@ class FinMindFundamentalProvider:
             if ttm_eps and ttm_eps > 0:
                 pe_current = current_price / ttm_eps
 
-                # 歷史 PE：逐季滑動（每 4 季一組）
-                historical_pes: list[float] = []
-                for i in range(4, len(eps_values) + 1):
-                    window_eps = sum(eps_values[i - 4:i])
-                    if window_eps and window_eps > 0:
-                        historical_pes.append(current_price / window_eps)
+                # 取歷史股價（各季末真實收盤價）
+                historical_prices = self._fetch_historical_prices(symbol, quarter_dates)
 
-                if len(historical_pes) >= 4:
-                    pe_mean = statistics.mean(historical_pes)
-                    pe_std = statistics.stdev(historical_pes) if len(historical_pes) >= 2 else 0.0
+                if not historical_prices:
+                    warnings.append("無法取得歷史股價，PE Band 無法計算（使用 unknown）")
+                else:
+                    # 歷史 PE：逐季滑動（每 4 季一組），使用各窗口末季的真實股價
+                    historical_pes: list[float] = []
+                    for i in range(4, len(eps_values) + 1):
+                        window_eps = sum(eps_values[i - 4:i])
+                        if not window_eps or window_eps <= 0:
+                            continue
+                        # 取該窗口末季（index i-1）的季末股價
+                        window_end_date = quarter_dates[i - 1]
+                        hist_price = historical_prices.get(window_end_date)
+                        if hist_price is None or hist_price <= 0:
+                            continue
+                        historical_pes.append(hist_price / window_eps)
 
-                    if pe_std and pe_std > 0:
-                        if pe_current < pe_mean - pe_std:
-                            pe_band = "cheap"
-                        elif pe_current > pe_mean + pe_std:
-                            pe_band = "expensive"
+                    if len(historical_pes) >= 4:
+                        pe_mean = statistics.mean(historical_pes)
+                        pe_std = statistics.stdev(historical_pes) if len(historical_pes) >= 2 else 0.0
+
+                        if pe_std and pe_std > 0:
+                            if pe_current < pe_mean - pe_std:
+                                pe_band = "cheap"
+                            elif pe_current > pe_mean + pe_std:
+                                pe_band = "expensive"
+                            else:
+                                pe_band = "fair"
                         else:
                             pe_band = "fair"
-                    else:
-                        pe_band = "fair"
 
-                    below = sum(1 for p in historical_pes if p <= pe_current)
-                    pe_percentile = below / len(historical_pes) * 100
+                        below = sum(1 for p in historical_pes if p <= pe_current)
+                        pe_percentile = below / len(historical_pes) * 100
+                    else:
+                        warnings.append("有效歷史 PE 窗口不足 4 個，PE Band 無法計算")
         else:
             warnings.append("EPS 季數不足 4 季，無法計算 TTM EPS")
 
@@ -120,7 +169,6 @@ class FinMindFundamentalProvider:
         yield_signal = "unknown"
 
         if div_rows:
-            # 取最近一筆年度現金股利
             latest_cash = _safe_float(div_rows[0].get("CashEarningsDistribution"))
             if latest_cash is not None:
                 annual_cash_dividend = latest_cash

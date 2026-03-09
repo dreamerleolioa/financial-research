@@ -85,3 +85,92 @@ def test_raises_when_no_eps_data(mock_fetch):
     with pytest.raises(FundamentalError) as exc_info:
         provider.fetch("2330.TW", current_price=1000.0)
     assert exc_info.value.code == "FINMIND_NO_EPS_DATA"
+
+
+@patch("ai_stock_sentinel.data_sources.fundamental.finmind_provider.FinMindFundamentalProvider._fetch_historical_prices")
+@patch("ai_stock_sentinel.data_sources.fundamental.finmind_provider.FinMindFundamentalProvider._fetch_dataset")
+def test_pe_band_uses_historical_prices(mock_fetch_dataset, mock_fetch_prices):
+    """歷史 PE 必須使用各季末真實股價，而非今日股價"""
+    # 8 季 EPS，每季 10 元
+    rows = [
+        {"date": "2022-03-31", "type": "EPS", "value": 10.0},
+        {"date": "2022-06-30", "type": "EPS", "value": 10.0},
+        {"date": "2022-09-30", "type": "EPS", "value": 10.0},
+        {"date": "2022-12-31", "type": "EPS", "value": 10.0},
+        {"date": "2023-03-31", "type": "EPS", "value": 10.0},
+        {"date": "2023-06-30", "type": "EPS", "value": 10.0},
+        {"date": "2023-09-30", "type": "EPS", "value": 10.0},
+        {"date": "2023-12-31", "type": "EPS", "value": 10.0},
+    ]
+    # 各季末股價（與今日股價 1000.0 完全不同）
+    mock_fetch_prices.return_value = {
+        "2022-03-31": 400.0,
+        "2022-06-30": 420.0,
+        "2022-09-30": 440.0,
+        "2022-12-31": 460.0,
+        "2023-03-31": 480.0,
+        "2023-06-30": 500.0,
+        "2023-09-30": 520.0,
+        "2023-12-31": 540.0,
+    }
+
+    def side_effect(dataset, **kwargs):
+        if dataset == "TaiwanStockFinancialStatements":
+            return rows
+        return []
+    mock_fetch_dataset.side_effect = side_effect
+
+    provider = _make_provider()
+    result = provider.fetch("2330.TW", current_price=1000.0)
+
+    # TTM EPS = 40.0（最近4季合計）
+    assert result.ttm_eps == pytest.approx(40.0, abs=0.01)
+    # pe_current 用今日股價
+    assert result.pe_current == pytest.approx(1000.0 / 40.0, abs=0.1)
+    # pe_mean 應反映歷史股價，遠低於 1000/40=25
+    # 歷史各窗口 pe（共5窗口，range(4,9)）：
+    #   i=4: date=2022-12-31, price=460, eps=40 → 11.5
+    #   i=5: date=2023-03-31, price=480, eps=40 → 12.0
+    #   i=6: date=2023-06-30, price=500, eps=40 → 12.5
+    #   i=7: date=2023-09-30, price=520, eps=40 → 13.0
+    #   i=8: date=2023-12-31, price=540, eps=40 → 13.5
+    # mean = 12.5
+    assert result.pe_mean is not None
+    assert result.pe_mean == pytest.approx(12.5, abs=0.5)
+    # pe_current=25 遠高於歷史均值，應為 expensive
+    assert result.pe_band == "expensive"
+    # pe_percentile：25 高於所有歷史 PE → 100%
+    assert result.pe_percentile == pytest.approx(100.0, abs=1.0)
+
+
+@patch("ai_stock_sentinel.data_sources.fundamental.finmind_provider.FinMindFundamentalProvider._fetch_historical_prices")
+@patch("ai_stock_sentinel.data_sources.fundamental.finmind_provider.FinMindFundamentalProvider._fetch_dataset")
+def test_pe_band_falls_back_when_no_historical_prices(mock_fetch_dataset, mock_fetch_prices):
+    """歷史股價取得失敗時，pe_band 應為 unknown，流程不中斷"""
+    rows = [
+        {"date": "2022-03-31", "type": "EPS", "value": 10.0},
+        {"date": "2022-06-30", "type": "EPS", "value": 10.0},
+        {"date": "2022-09-30", "type": "EPS", "value": 10.0},
+        {"date": "2022-12-31", "type": "EPS", "value": 10.0},
+        {"date": "2023-03-31", "type": "EPS", "value": 10.0},
+        {"date": "2023-06-30", "type": "EPS", "value": 10.0},
+    ]
+    mock_fetch_prices.return_value = {}  # 無歷史股價
+
+    def side_effect(dataset, **kwargs):
+        if dataset == "TaiwanStockFinancialStatements":
+            return rows
+        return []
+    mock_fetch_dataset.side_effect = side_effect
+
+    provider = _make_provider()
+    result = provider.fetch("2330.TW", current_price=500.0)
+
+    # pe_current 仍正常計算
+    assert result.pe_current is not None
+    # pe_band 無法計算歷史分佈，應為 unknown
+    assert result.pe_band == "unknown"
+    assert result.pe_mean is None
+    assert result.pe_std is None
+    assert result.pe_percentile is None
+    assert any("歷史股價" in w for w in result.warnings)
