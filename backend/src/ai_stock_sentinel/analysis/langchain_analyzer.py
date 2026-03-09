@@ -18,15 +18,25 @@ _SYSTEM_PROMPT = """\
 步驟三【衝突檢查】：明確指出三方資料中是否存在矛盾或異常；若有，提出具體衝突點。
 步驟四【輸出】：只輸出有資料支撐的事實與推論，禁止補造未在輸入資料中出現的來源或數字。
 
+分維度輸出規範（禁止跨維度混寫）：
+- tech_insight：僅參考技術面資料（均線排列、RSI 位階、支撐壓力位）；禁止提及法人買賣超或新聞事件
+- inst_insight：僅參考籌碼面資料（三大法人買賣超、融資券動向）；禁止提及均線數值、RSI、新聞事件
+- news_insight：僅參考消息面資料（事件性質、市場情緒傾向）；禁止提及具體技術指標數值（如 RSI=62）
+- final_verdict：整合三維訊號，解釋為何導向當前信心分數與策略；此段允許跨維度整合推論
+
 規範：
 - LLM 不得修改 confidence_score 或 cross_validation_note，這兩個欄位由 rule-based 計算已完成。
 - 輸出格式：必須輸出合法 JSON，格式如下：
 {{
-  "summary": "2-3 句事實型摘要",
+  "summary": "2-3 句事實型摘要（可與 final_verdict 相同）",
   "risks": ["風險點 1", "風險點 2"],
   "technical_signal": "bullish|bearish|sideways",
   "institutional_flow": "從已提供的籌碼資料中讀取 flow_label，直接填入，不得修改",
-  "sentiment_label": "從已提供的 cleaned_news 資料中讀取 sentiment_label，直接填入，不得修改"
+  "sentiment_label": "從已提供的 cleaned_news 資料中讀取 sentiment_label，直接填入，不得修改",
+  "tech_insight": "技術面獨立分析段落",
+  "inst_insight": "籌碼面獨立分析段落",
+  "news_insight": "消息面獨立分析段落",
+  "final_verdict": "三維整合仲裁段落"
 }}
 - 不得輸出 JSON 以外的任何文字。
 """
@@ -191,6 +201,10 @@ class LangChainStockAnalyzer:
                 technical_signal=str(data.get("technical_signal", "sideways")),
                 institutional_flow=data.get("institutional_flow") or None,
                 sentiment_label=data.get("sentiment_label") or None,
+                tech_insight=data.get("tech_insight") or None,
+                inst_insight=data.get("inst_insight") or None,
+                news_insight=data.get("news_insight") or None,
+                final_verdict=data.get("final_verdict") or None,
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return AnalysisDetail(summary=raw)

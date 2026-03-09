@@ -376,3 +376,64 @@ def test_analysis_detail_accepts_dimensional_field_values():
     assert detail.inst_insight == "外資連買"
     assert detail.news_insight == "法說會利多"
     assert detail.final_verdict == "三維共振"
+
+
+def test_parse_analysis_reads_dimensional_fields():
+    """_parse_analysis 能正確讀取四個分維度欄位。"""
+    raw = json.dumps({
+        "summary": "綜合摘要",
+        "risks": [],
+        "technical_signal": "bullish",
+        "tech_insight": "均線多頭排列，RSI 62 健康。",
+        "inst_insight": "外資連買 3 日，籌碼沉澱。",
+        "news_insight": "法說會利多，情緒正面。",
+        "final_verdict": "三維共振，信心偏高。",
+    })
+    result = LangChainStockAnalyzer._parse_analysis(raw)
+    assert result.tech_insight == "均線多頭排列，RSI 62 健康。"
+    assert result.inst_insight == "外資連買 3 日，籌碼沉澱。"
+    assert result.news_insight == "法說會利多，情緒正面。"
+    assert result.final_verdict == "三維共振，信心偏高。"
+
+
+def test_parse_analysis_dimensional_fields_none_when_absent():
+    """_parse_analysis 在 LLM 未回傳分維度欄位時 fallback 為 None，不崩潰。"""
+    raw = '{"summary": "ok", "risks": [], "technical_signal": "sideways"}'
+    result = LangChainStockAnalyzer._parse_analysis(raw)
+    assert result.tech_insight is None
+    assert result.inst_insight is None
+    assert result.news_insight is None
+    assert result.final_verdict is None
+
+
+def test_parse_analysis_empty_string_dimensional_fields_become_none():
+    """_parse_analysis 回傳空字串分維度欄位時應轉換為 None。"""
+    raw = json.dumps({
+        "summary": "ok", "risks": [], "technical_signal": "sideways",
+        "tech_insight": "", "inst_insight": "", "news_insight": "", "final_verdict": "",
+    })
+    result = LangChainStockAnalyzer._parse_analysis(raw)
+    assert result.tech_insight is None
+    assert result.inst_insight is None
+    assert result.news_insight is None
+    assert result.final_verdict is None
+
+
+def test_system_prompt_contains_dimensional_section():
+    """System Prompt 應包含分維度輸出指令。"""
+    import ai_stock_sentinel.analysis.langchain_analyzer as mod
+    prompt = mod._SYSTEM_PROMPT
+    assert "tech_insight" in prompt, "System Prompt 應包含 tech_insight 欄位說明"
+    assert "inst_insight" in prompt, "System Prompt 應包含 inst_insight 欄位說明"
+    assert "news_insight" in prompt, "System Prompt 應包含 news_insight 欄位說明"
+    assert "final_verdict" in prompt, "System Prompt 應包含 final_verdict 欄位說明"
+    assert "禁止跨維度混寫" in prompt or "禁止混入" in prompt, \
+        "System Prompt 應包含禁止跨維度混寫的限制"
+
+
+def test_system_prompt_json_schema_includes_dimensional_fields():
+    """System Prompt 的 JSON schema 範例應包含四個分維度欄位。"""
+    import ai_stock_sentinel.analysis.langchain_analyzer as mod
+    prompt = mod._SYSTEM_PROMPT
+    for field in ["tech_insight", "inst_insight", "news_insight", "final_verdict"]:
+        assert f'"{field}"' in prompt, f"JSON schema 缺少欄位：{field}"
