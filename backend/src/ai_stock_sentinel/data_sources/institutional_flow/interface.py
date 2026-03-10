@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class InstitutionalFlowData:
     """統一輸出 schema，無論哪個 Provider 回傳的欄位都對應此結構。"""
 

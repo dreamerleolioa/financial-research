@@ -59,6 +59,28 @@ class AnalysisDetail:
 
 本專案所有 dataclass 皆無繼承關係，已全數套用此優化。
 
+**`frozen=True`（不可變快照）**
+
+`@dataclass(slots=True, frozen=True)` 讓建立後的 instance 變成唯讀，嘗試修改屬性會拋出 `FrozenInstanceError`：
+
+- 確保資料在 LangGraph 流轉過程中不被意外修改
+- 自動獲得 `__hash__`，可作為 dict key 或放入 set
+- 與 `slots=True` 組合使用，效能與安全性兼顧
+
+限制：`__post_init__` 中若需要賦值（如 `StockSnapshot` 計算衍生欄位），無法使用 `frozen=True`，因為 `__post_init__` 執行時 instance 已被凍結。`QualityResult` 採用先建立再逐步填值的模式，同樣不適用。
+
+本專案套用情況：
+
+| Dataclass | `frozen=True` | 原因 |
+|---|---|---|
+| `AnalysisDetail` | ✅ | 分析結果只讀 |
+| `Settings` | ✅ | 設定值應唯讀 |
+| `FundamentalData` | ✅ | Provider 一次性填入 |
+| `RawNewsItem` | ✅ | 純資料載體 |
+| `InstitutionalFlowData` | ✅ | Provider 一次性填入 |
+| `StockSnapshot` | ❌ | `__post_init__` 需要計算賦值 |
+| `QualityResult` | ❌ | 建立後逐步填值的設計模式 |
+
 **`__post_init__`**
 
 `dataclass` 建構後會自動呼叫 `__post_init__`，適合放衍生計算邏輯。與 `slots=True` 完全相容：
