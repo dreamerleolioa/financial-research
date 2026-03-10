@@ -549,3 +549,118 @@ def test_api_response_data_sources_includes_google_news_rss_when_raw_news_presen
 
     assert response.status_code == 200
     assert "google-news-rss" in response.json()["data_sources"]
+
+
+# ---------------------------------------------------------------------------
+# Task 5: POST /analyze/position
+# ---------------------------------------------------------------------------
+
+_POSITION_SNAPSHOT = StockSnapshot(
+    symbol="2330.TW",
+    currency="TWD",
+    current_price=1050.0,
+    previous_close=1040.0,
+    day_open=1040.0,
+    day_high=1060.0,
+    day_low=1035.0,
+    volume=5000000,
+    recent_closes=[1000.0, 1010.0, 1020.0, 1030.0, 1040.0, 1050.0],
+    fetched_at="2026-03-10T00:00:00+00:00",
+)
+
+_POSITION_FINAL_STATE = {
+    "snapshot": asdict(_POSITION_SNAPSHOT),
+    "analysis": "持倉診斷結果",
+    "analysis_detail": {
+        "summary": "持倉安全",
+        "risks": [],
+        "technical_signal": "bullish",
+        "institutional_flow": "accumulation",
+        "sentiment_label": "positive",
+        "tech_insight": "多頭排列",
+        "inst_insight": "法人買超",
+        "news_insight": "無重大利空",
+        "final_verdict": "建議繼續持有",
+        "fundamental_insight": None,
+    },
+    "entry_price": 980.0,
+    "profit_loss_pct": 7.14,
+    "position_status": "profitable_safe",
+    "position_narrative": "目前獲利已脫離成本區，持股安全緩衝充足。",
+    "trailing_stop": 980.0,
+    "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
+    "recommended_action": "Hold",
+    "exit_reason": None,
+    "cleaned_news": None,
+    "errors": [],
+    "confidence_score": 70,
+    "institutional_flow": {"flow_label": "accumulation"},
+}
+
+_DISTRIBUTION_POSITION_FINAL_STATE = {
+    **_POSITION_FINAL_STATE,
+    "entry_price": 800.0,
+    "profit_loss_pct": 31.25,
+    "position_status": "profitable_safe",
+    "recommended_action": "Trim",
+    "exit_reason": "法人持續出貨，建議逢高分批減碼保護獲利",
+    "institutional_flow": {"flow_label": "distribution"},
+}
+
+
+def test_analyze_position_returns_position_analysis_block() -> None:
+    """The /analyze/position endpoint must return a position_analysis object."""
+    graph = _make_graph(_POSITION_FINAL_STATE)
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze/position", json={
+        "symbol": "2330.TW",
+        "entry_price": 980.0,
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert "position_analysis" in body
+    pa = body["position_analysis"]
+    assert "entry_price" in pa
+    assert "profit_loss_pct" in pa
+    assert "position_status" in pa
+    assert "trailing_stop" in pa
+    assert "recommended_action" in pa
+    assert pa["recommended_action"] in ("Hold", "Trim", "Exit")
+
+
+def test_analyze_position_entry_price_required() -> None:
+    """entry_price is required for /analyze/position."""
+    client = TestClient(api.app)
+    response = client.post("/analyze/position", json={"symbol": "2330.TW"})
+    assert response.status_code == 422
+
+
+def test_analyze_position_optional_fields_accepted() -> None:
+    """entry_date and quantity are accepted but optional."""
+    graph = _make_graph(_POSITION_FINAL_STATE)
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze/position", json={
+        "symbol": "2330.TW",
+        "entry_price": 980.0,
+        "entry_date": "2026-01-15",
+        "quantity": 1000,
+    })
+    assert response.status_code == 200
+
+
+def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> None:
+    """Spec §7: exit_reason must not be null when flow=distribution and profit>0."""
+    graph = _make_graph(_DISTRIBUTION_POSITION_FINAL_STATE)
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze/position", json={
+        "symbol": "2330.TW",
+        "entry_price": 800.0,
+    })
+    assert response.status_code == 200
+    body = response.json()
+    pa = body["position_analysis"]
+    if pa["recommended_action"] in ("Trim", "Exit"):
+        assert pa["exit_reason"] is not None

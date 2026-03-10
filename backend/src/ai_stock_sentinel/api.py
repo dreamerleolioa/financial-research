@@ -18,6 +18,24 @@ class AnalyzeRequest(BaseModel):
     news_text: str | None = None
 
 
+class PositionAnalyzeRequest(BaseModel):
+    symbol: str
+    entry_price: float
+    entry_date: str | None = None
+    quantity: int | None = None
+
+
+class PositionAnalysis(BaseModel):
+    entry_price: float
+    profit_loss_pct: float | None = None
+    position_status: str | None = None
+    position_narrative: str | None = None
+    recommended_action: str | None = None
+    trailing_stop: float | None = None
+    trailing_stop_reason: str | None = None
+    exit_reason: str | None = None
+
+
 class AnalyzeResponse(BaseModel):
     snapshot: dict[str, Any] = Field(default_factory=dict)
     analysis: str = ""
@@ -40,6 +58,7 @@ class AnalyzeResponse(BaseModel):
     action_plan: dict[str, Any] | None = None
     data_sources: list[str] = Field(default_factory=list)
     fundamental_data: dict[str, Any] | None = None
+    position_analysis: PositionAnalysis | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -69,6 +88,104 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
+    """Shared serialization logic for both /analyze and /analyze/position."""
+    snapshot = result.get("snapshot")
+    analysis = result.get("analysis")
+    raw_detail = result.get("analysis_detail")
+    analysis_detail: dict[str, Any] | None = None
+    if raw_detail is not None:
+        if is_dataclass(raw_detail) and not isinstance(raw_detail, type):
+            analysis_detail = _asdict(raw_detail)
+        elif isinstance(raw_detail, dict):
+            analysis_detail = raw_detail
+    response_errors: list[AnalyzeResponse.ErrorDetail] = [
+        AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
+        for e in result.get("errors", [])
+    ]
+
+    if not isinstance(snapshot, dict):
+        response_errors.append(
+            AnalyzeResponse.ErrorDetail(
+                code="MISSING_SNAPSHOT",
+                message="Graph result missing valid snapshot payload.",
+            )
+        )
+        snapshot = {}
+
+    if not isinstance(analysis, str):
+        response_errors.append(
+            AnalyzeResponse.ErrorDetail(
+                code="MISSING_ANALYSIS",
+                message="Graph result missing valid analysis payload.",
+            )
+        )
+        analysis = ""
+
+    inst_flow = result.get("institutional_flow")
+    institutional_flow_label: str | None = None
+    if inst_flow and not inst_flow.get("error"):
+        institutional_flow_label = inst_flow.get("flow_label")
+
+    sentiment_label: str | None = (
+        result.get("cleaned_news", {}).get("sentiment_label")
+        if result.get("cleaned_news") else None
+    )
+
+    action_plan: dict[str, Any] | None = result.get("action_plan")
+
+    _sources: list[str] = []
+    if result.get("raw_news_items"):
+        _sources.append("google-news-rss")
+    if result.get("snapshot"):
+        _sources.append("yfinance")
+    _inst = result.get("institutional_flow")
+    if _inst and not _inst.get("error"):
+        _sources.append(_inst.get("provider", "institutional-api"))
+    _fund = result.get("fundamental_data")
+    if _fund and not _fund.get("error"):
+        _sources.append("finmind-fundamental")
+
+    position_analysis: PositionAnalysis | None = None
+    if result.get("entry_price") is not None:
+        position_analysis = PositionAnalysis(
+            entry_price=result["entry_price"],
+            profit_loss_pct=result.get("profit_loss_pct"),
+            position_status=result.get("position_status"),
+            position_narrative=result.get("position_narrative"),
+            recommended_action=result.get("recommended_action"),
+            trailing_stop=result.get("trailing_stop"),
+            trailing_stop_reason=result.get("trailing_stop_reason"),
+            exit_reason=result.get("exit_reason"),
+        )
+
+    return AnalyzeResponse(
+        snapshot=snapshot,
+        analysis=analysis,
+        analysis_detail=analysis_detail,
+        cleaned_news=result.get("cleaned_news"),
+        cleaned_news_quality=result.get("cleaned_news_quality"),
+        news_display=result.get("news_display"),
+        news_display_items=result.get("news_display_items") or [],
+        confidence_score=result.get("confidence_score"),
+        cross_validation_note=result.get("cross_validation_note"),
+        strategy_type=result.get("strategy_type"),
+        entry_zone=result.get("entry_zone"),
+        stop_loss=result.get("stop_loss"),
+        holding_period=result.get("holding_period"),
+        data_confidence=result.get("data_confidence"),
+        signal_confidence=result.get("signal_confidence"),
+        action_plan_tag=result.get("action_plan_tag"),
+        institutional_flow_label=institutional_flow_label,
+        sentiment_label=sentiment_label,
+        action_plan=action_plan,
+        data_sources=_sources,
+        fundamental_data=result.get("fundamental_data"),
+        position_analysis=position_analysis,
+        errors=response_errors,
+    )
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -126,86 +243,73 @@ def analyze(
             ]
         )
 
-    snapshot = result.get("snapshot")
-    analysis = result.get("analysis")
-    raw_detail = result.get("analysis_detail")
-    analysis_detail: dict[str, Any] | None = None
-    if raw_detail is not None:
-        if is_dataclass(raw_detail) and not isinstance(raw_detail, type):
-            analysis_detail = _asdict(raw_detail)
-        elif isinstance(raw_detail, dict):
-            analysis_detail = raw_detail
-    response_errors: list[AnalyzeResponse.ErrorDetail] = [
-        AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
-        for e in result.get("errors", [])
-    ]
+    return _build_response(result)
 
-    if not isinstance(snapshot, dict):
-        response_errors.append(
-            AnalyzeResponse.ErrorDetail(
-                code="MISSING_SNAPSHOT",
-                message="Graph result missing valid snapshot payload.",
-            )
+
+@app.post("/analyze/position", response_model=AnalyzeResponse)
+def analyze_position(
+    payload: PositionAnalyzeRequest,
+    graph=Depends(get_graph),
+) -> AnalyzeResponse:
+    initial_state: GraphState = {
+        "symbol": payload.symbol,
+        "entry_price": payload.entry_price,
+        "entry_date": payload.entry_date,
+        "quantity": payload.quantity,
+        "news_content": "",
+        "snapshot": None,
+        "analysis": None,
+        "analysis_detail": None,
+        "cleaned_news": None,
+        "raw_news_items": None,
+        "data_sufficient": False,
+        "retry_count": 0,
+        "errors": [],
+        "requires_news_refresh": False,
+        "requires_fundamental_update": False,
+        "technical_context": None,
+        "institutional_context": None,
+        "institutional_flow": None,
+        "strategy_type": None,
+        "entry_zone": None,
+        "stop_loss": None,
+        "holding_period": None,
+        "confidence_score": None,
+        "cross_validation_note": None,
+        "cleaned_news_quality": None,
+        "news_display": None,
+        "news_display_items": [],
+        "data_confidence": None,
+        "signal_confidence": None,
+        "high_20d": None,
+        "low_20d": None,
+        "support_20d": None,
+        "resistance_20d": None,
+        "rsi14": None,
+        "action_plan_tag": None,
+        "action_plan": None,
+        "fundamental_data": None,
+        "fundamental_context": None,
+        "profit_loss_pct": None,
+        "cost_buffer_to_support": None,
+        "position_status": None,
+        "position_narrative": None,
+        "trailing_stop": None,
+        "trailing_stop_reason": None,
+        "recommended_action": None,
+        "exit_reason": None,
+    }
+
+    try:
+        result: dict[str, Any] = graph.invoke(initial_state)
+    except Exception as exc:
+        return AnalyzeResponse(
+            errors=[
+                AnalyzeResponse.ErrorDetail(
+                    code="ANALYZE_RUNTIME_ERROR",
+                    message=str(exc),
+                )
+            ]
         )
-        snapshot = {}
 
-    if not isinstance(analysis, str):
-        response_errors.append(
-            AnalyzeResponse.ErrorDetail(
-                code="MISSING_ANALYSIS",
-                message="Graph result missing valid analysis payload.",
-            )
-        )
-        analysis = ""
-
-    inst_flow = result.get("institutional_flow")
-    institutional_flow_label: str | None = None
-    if inst_flow and not inst_flow.get("error"):
-        institutional_flow_label = inst_flow.get("flow_label")
-
-    # sentiment_label: 從 cleaned_news 浮出
-    sentiment_label: str | None = (
-        result.get("cleaned_news", {}).get("sentiment_label")
-        if result.get("cleaned_news") else None
-    )
-
-    # action_plan: 從 state 讀取
-    action_plan: dict[str, Any] | None = result.get("action_plan")
-
-    # data_sources: 依實際抓取狀況動態填入
-    _sources: list[str] = []
-    if result.get("raw_news_items"):
-        _sources.append("google-news-rss")
-    if result.get("snapshot"):
-        _sources.append("yfinance")
-    _inst = result.get("institutional_flow")
-    if _inst and not _inst.get("error"):
-        _sources.append(_inst.get("provider", "institutional-api"))
-    _fund = result.get("fundamental_data")
-    if _fund and not _fund.get("error"):
-        _sources.append("finmind-fundamental")
-
-    return AnalyzeResponse(
-        snapshot=snapshot,
-        analysis=analysis,
-        analysis_detail=analysis_detail,
-        cleaned_news=result.get("cleaned_news"),
-        cleaned_news_quality=result.get("cleaned_news_quality"),
-        news_display=result.get("news_display"),
-        news_display_items=result.get("news_display_items") or [],
-        confidence_score=result.get("confidence_score"),
-        cross_validation_note=result.get("cross_validation_note"),
-        strategy_type=result.get("strategy_type"),
-        entry_zone=result.get("entry_zone"),
-        stop_loss=result.get("stop_loss"),
-        holding_period=result.get("holding_period"),
-        data_confidence=result.get("data_confidence"),
-        signal_confidence=result.get("signal_confidence"),
-        action_plan_tag=result.get("action_plan_tag"),
-        institutional_flow_label=institutional_flow_label,
-        sentiment_label=sentiment_label,
-        action_plan=action_plan,
-        data_sources=_sources,
-        fundamental_data=result.get("fundamental_data"),
-        errors=response_errors,
-    )
+    return _build_response(result)

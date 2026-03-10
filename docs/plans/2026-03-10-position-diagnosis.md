@@ -2,6 +2,18 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+## 進度追蹤（2026-03-10）
+
+| Task | 狀態 | 備註 |
+|------|------|------|
+| Task 1: GraphState PositionState fields | ✅ 完成 | `state.py` 新增 11 個欄位，6 tests pass |
+| Task 2: PositionScorer | ✅ 完成 | `position_scorer.py` 建立，18 tests pass |
+| Task 3: Wire into preprocess_node / strategy_node | ✅ 完成 | `nodes.py` 修改，43 tests pass（全套 354 tests 全過）|
+| Task 4: position-aware prompt in langchain_analyzer.py | ✅ 完成 | `_POSITION_SYSTEM_PROMPT` + 持倉資訊 block，`analyze()` 新增 `position_context` 參數，2 tests pass |
+| Task 5: POST /analyze/position endpoint | ✅ 完成 | `PositionAnalyzeRequest` / `PositionAnalysis` / `_build_response()` helper，4 tests pass |
+| Task 6: Frontend PositionPage.tsx | ✅ 完成 | `pages/PositionPage.tsx` 建立，`App.tsx` 新增 tab 導航 |
+| Task 7: Full test suite validation | ✅ 完成 | 360 tests 全過（Tasks 4-7 新增 6 tests）|
+
 **Goal:** Add a `POST /analyze/position` endpoint that diagnoses an existing holding using entry price as the anchor, producing trailing stop, position status, and action recommendation — all rule-based Python, no LLM arithmetic.
 
 **Architecture:** Extend the existing LangGraph graph with a new route: when `entry_price` is present in the request, activate `PositionState` fields and a new `PositionScorer` module in `preprocess_node` and `strategy_node`. The `/analyze/position` endpoint runs through the same node pipeline but injects position-specific context into the LLM prompt and overrides strategy output with position-focused fields.
@@ -1357,13 +1369,13 @@ cd frontend && pnpm dev
 ```
 
 Verify:
-- [ ] Two tabs visible: 個股分析 / 我的持股
-- [ ] 我的持股 tab shows the input form
-- [ ] Submitting `2330.TW` + `entry_price=980` returns results without error
-- [ ] Position status card shows correct status label and color
-- [ ] Trailing stop displayed in 防守位 cell
-- [ ] If `recommended_action = Exit`, exit warning banner appears in red
-- [ ] Disclaimer text visible at bottom
+- [x] Two tabs visible: 個股分析 / 我的持股
+- [x] 我的持股 tab shows the input form
+- [x] Submitting `2330.TW` + `entry_price=980` returns results without error
+- [x] Position status card shows correct status label and color
+- [x] Trailing stop displayed in 防守位 cell
+- [x] If `recommended_action = Exit`, exit warning banner appears in red
+- [x] Disclaimer text visible at bottom
 
 ### Step 5: Commit
 
@@ -1396,12 +1408,12 @@ pytest tests/test_position_scorer.py tests/test_graph_nodes.py tests/test_api.py
 ```
 
 Verify manually against spec §7:
-- [ ] `entry_price` + `entry_price` triggers position route (independent of `/analyze`)
-- [ ] `profit_loss_pct`, `position_status`, `trailing_stop` computed by Python (not LLM)
-- [ ] `recommended_action` follows the 4-rule table in spec §4
-- [ ] When `flow_label=distribution` + `profit>0`, `exit_reason` is not null
-- [ ] Frontend: position status card shows correct label and color
-- [ ] Frontend: when `recommended_action=Exit`, red warning banner with `exit_reason`
+- [x] `entry_price` + `entry_price` triggers position route (independent of `/analyze`) — `test_analyze_position_*` 4 tests pass
+- [x] `profit_loss_pct`, `position_status`, `trailing_stop` computed by Python (not LLM) — `test_position_scorer.py` 18 tests pass
+- [x] `recommended_action` follows the 4-rule table in spec §4 — `TestComputeRecommendedAction` 6 tests pass
+- [x] When `flow_label=distribution` + `profit>0`, `exit_reason` is not null — `test_exit_reason_not_null_for_distribution_profit` pass
+- [x] Frontend: position status card shows correct label and color — 已目視確認
+- [x] Frontend: when `recommended_action=Exit`, red warning banner with `exit_reason` — 已目視確認
 
 ### Step 3: Final commit
 

@@ -41,3 +41,20 @@ class GraphState(TypedDict):
     action_plan: dict[str, Any] | None
     fundamental_data: dict[str, Any] | None
     fundamental_context: str | None
+
+    # --- Position Diagnosis (POST /analyze/position) ---
+    entry_price: float | None
+    entry_date: str | None
+    quantity: int | None
+
+    # preprocess_node calculates these (rule-based, not LLM)
+    profit_loss_pct: float | None
+    cost_buffer_to_support: float | None
+    position_status: str | None          # profitable_safe | at_risk | under_water
+    position_narrative: str | None
+
+    # strategy_node populates these for position mode
+    trailing_stop: float | None
+    trailing_stop_reason: str | None
+    recommended_action: str | None       # Hold | Trim | Exit
+    exit_reason: str | None
