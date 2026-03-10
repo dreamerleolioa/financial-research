@@ -219,8 +219,8 @@ class TestFetchInstitutionalFlowTool:
         assert result["source_provider"] == "Tpex"
         twse_provider.fetch_daily_flow.assert_not_called()
 
-    def test_default_days_is_60_when_not_provided(self):
-        """未傳 days 時，工具應使用預設 60 日視窗。"""
+    def test_default_days_is_10_when_not_provided(self):
+        """未傳 days 時，工具應使用預設 10 日視窗。"""
 
         provider = MagicMock()
         provider.name = "FinMind"
@@ -239,8 +239,8 @@ class TestFetchInstitutionalFlowTool:
 
         result = fetch_institutional_flow("2330.TW", router=router)
 
-        provider.fetch_daily_flow.assert_called_once_with(symbol="2330.TW", days=60)
-        assert result["period_days"] == 60
+        provider.fetch_daily_flow.assert_called_once_with(symbol="2330.TW", days=10)
+        assert result["period_days"] == 10
 
 
 # ─── InstitutionalFlowData schema ───────────────────────────────────────────
