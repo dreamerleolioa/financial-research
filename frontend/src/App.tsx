@@ -197,7 +197,7 @@ function App() {
     if (!symbol.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/analyze", {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: symbol.trim() }),
