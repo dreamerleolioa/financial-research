@@ -176,7 +176,7 @@ CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 
 ## 使用方式
 
-### 0) 前端儀表板（React + Tailwind）
+### 前端儀表板（React + Tailwind）
 
 ```bash
 cd frontend
@@ -205,54 +205,7 @@ pnpm dev
 - 出場警示 banner（`exit_reason` 非 null 時紅色顯示）
 - 三維分析卡（技術面防守 / 主力動向 / 消息面風險）+ 綜合研判
 
-### 1) Crawler Agent（股票 + 可選新聞清洗）
-
-啟動預設流程（`2330.TW`）：
-
-```bash
-cd backend
-make run
-```
-
-指定股票代碼：
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m ai_stock_sentinel.main --symbol 2317.TW
-```
-
-附加新聞文字（直接字串）：
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m ai_stock_sentinel.main \
-	--news-text "2026-03-03 台積電 2 月營收 2,600 億元，年增 18.2%"
-```
-
-附加新聞文字（檔案）：
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m ai_stock_sentinel.main --news-file ./news.txt
-```
-
-### 2) Cleaner Agent（只做新聞清潔）
-
-```bash
-cd backend
-./venv/bin/python agent.py --text "2026-03-03 台積電 2 月營收 2,600 億元，年增 18.2%"
-```
-
-讀檔：
-
-```bash
-./venv/bin/python agent.py --file ./news.txt
-```
-
-stdin：
-
-```bash
-cat news.txt | ./venv/bin/python agent.py
-```
-
-### 3) FastAPI 服務
+### FastAPI 服務
 
 ```bash
 cd backend
@@ -331,16 +284,5 @@ make test
 | `recommended_action` | `Hold` / `Trim` / `Exit`（4 規則 rule-based） |
 | `exit_reason` | 出場理由（僅 `Exit` 時非 null） |
 
-Cleaner Agent 輸出 JSON 欄位固定為：
-
-- `date`
-- `title`
-- `mentioned_numbers`
-- `sentiment_label`（`positive` / `neutral` / `negative`）
-
 ---
 
-## 待實作項目
-
-- Docker / Railway 部署準備
-- `calculate_growth_rate` 等進階基本面指標

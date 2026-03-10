@@ -126,8 +126,3 @@ PYTHONPATH=src ./venv/bin/python -m ai_stock_sentinel.main --symbol 2330.TW --ne
 
 ---
 
-## 下一步
-
-### 其他長期待辦
-- Docker / Railway 部署準備
-- `calculate_growth_rate` 等進階基本面指標
