@@ -444,10 +444,11 @@ class InstitutionalFlowProvider(Protocol):
   "stop_loss": "865.4（近20日低點892.2 × 0.97，或跌破 MA60=870.0）",
   "holding_period": "1-2 週 | 1-3 個月",
   "action_plan": {
-    "action": "觀望 | 分批佈局 | 持股續抱",
+    "action": "觀望（待訊號明確再試單）| 分批佈局（首筆 30%）| 短線進場（首筆 50%，確認站穩再加碼）",
     "target_zone": "800-820",
     "defense_line": "780",
-    "momentum_expectation": "強（法人集結中）"
+    "momentum_expectation": "強（法人集結中）；若突破 950.0 壓力則動能轉強",
+    "breakeven_note": "當帳面獲利達 5% 時，建議停損位上移至入場成本價（mid_term 時非 null；其餘 null）"
   },
   "cross_validation_note": "外資連買 3 日，與新聞利多訊號一致，信心分數維持高位",
   "risks": ["RSI 接近超買區間 (>70)，短線需注意回測"],
@@ -512,10 +513,11 @@ class InstitutionalFlowProvider(Protocol):
       "type": ["object", "null"],
       "description": "選填（optional）。strategy 計算失敗或資料不足時為 null",
       "properties": {
-        "action": { "type": "string" },
+        "action": { "type": "string", "description": "帶部位比例的操作建議，如「分批佈局（首筆 30%）」" },
         "target_zone": { "type": "string" },
         "defense_line": { "type": "string" },
-        "momentum_expectation": { "type": "string" }
+        "momentum_expectation": { "type": "string", "description": "基本動能標籤，有 resistance_20d/support_20d 時附加 If-Then 條件句" },
+        "breakeven_note": { "type": ["string", "null"], "description": "mid_term 時輸出獲利 5% 保本提示；short_term / defensive_wait 為 null" }
       }
     },
     "cross_validation_note": { "type": "string", "minLength": 1 },
@@ -717,9 +719,18 @@ def calculate_action_plan_tag(
 
 **`generate_action_plan()` 實作規範**：
 - 獨立於 `generate_strategy()` 的 rule-based 函式，輸出 `action_plan` dict
-- 輸入：`strategy_type`、`entry_zone`、`stop_loss`、`flow_label`、`confidence_score`
-- 輸出：`{ action, target_zone, defense_line, momentum_expectation }`
-- `strategy_type == "defensive_wait"` → `action = "觀望"`
+- 輸入：`strategy_type`、`entry_zone`、`stop_loss`、`flow_label`、`confidence_score`、`resistance_20d`（optional）、`support_20d`（optional）
+- 輸出：`{ action, target_zone, defense_line, momentum_expectation, breakeven_note }`
+- `action` 帶部位比例：
+  - `defensive_wait` → `"觀望（待訊號明確再試單）"`
+  - `mid_term` → `"分批佈局（首筆 30%）"`
+  - `short_term` → `"短線進場（首筆 50%，確認站穩再加碼）"`
+- `breakeven_note`：`mid_term` → `"當帳面獲利達 5% 時，建議停損位上移至入場成本價"`；其餘 `None`
+- `momentum_expectation` If-Then 觸發邏輯：
+  - `institutional_accumulation` + `resistance_20d` → 附加「若突破 XXX 壓力則動能轉強」
+  - `distribution` + `support_20d` → 附加「若跌破 XXX 支撐則轉向 Bearish」
+  - `neutral` + 兩個價位 → 附加突破/跌破雙向提示
+  - 無價位資料（`None`）時維持基本標籤（向後相容）
 - **不呼叫 LLM**；建議放在 `analysis/strategy_generator.py`
 
 ---

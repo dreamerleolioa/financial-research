@@ -82,18 +82,18 @@
 
 > 文件規則提醒：每次完成計劃中的任務，需當日回寫對應 `docs/plans/*.md`；若該需求尚無計劃文件，需先補產計劃文件再標記完成。
 
-### 2026-03-10：Strategy Action Plan 深化
+### 2026-03-10：Strategy Action Plan 深化 ✅
 
 > 計劃文件：`docs/plans/2026-03-10-strategy-action-plan-deepening.md`
 > **目標**：深化 `action_plan` 輸出，加入保本點位提示、分批操作量化文字、If-Then 情境觸發
 
-- [ ] **Task 1**：更新 `action` 文字（帶部位比例）+ 新增 `breakeven_note` 欄位
+- [x] **Task 1**：更新 `action` 文字（帶部位比例）+ 新增 `breakeven_note` 欄位
   - `strategy_generator.py` `generate_action_plan()` 新增 `resistance_20d` / `support_20d` 參數
   - `action` 改為「分批佈局（首筆 30%）」/ 「短線進場（首筆 50%，確認站穩再加碼）」/ 「觀望（待訊號明確再試單）」
   - `breakeven_note`：mid_term → 帶獲利 5% 保本提示；其餘 None
   - 更新測試 exact-match assertions + 新增 breakeven_note 測試
 
-- [ ] **Task 2**：If-Then 情境觸發（擴充 `momentum_expectation`）
+- [x] **Task 2**：If-Then 情境觸發（擴充 `momentum_expectation`）
   - `institutional_accumulation` + `resistance_20d` → 「若突破 XXX 壓力則動能轉強」
   - `distribution` + `support_20d` → 「若跌破 XXX 支撐則轉向 Bearish」
   - `neutral` + 兩個價位 → 同時附帶突破/跌破提示
