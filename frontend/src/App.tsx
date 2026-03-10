@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import PositionPage from "./pages/PositionPage";
 
 interface ErrorDetail {
   code: string;
@@ -158,7 +159,7 @@ function formatPrice(value: unknown, symbol?: unknown): string {
 function InsightText({ text }: { text: string | null | undefined }) {
   if (!text) return <p className="text-sm text-slate-400">請先執行分析。</p>;
   const sentences = text
-    .split(/(?<=[。；！？\n])/)
+    .split(/(?<=[。；！？：\n])/)
     .map((s) => s.trim())
     .filter(Boolean);
   if (sentences.length <= 1)
@@ -182,6 +183,7 @@ function mapVolumeSource(value: unknown): string {
 }
 
 function App() {
+  const [activeTab, setActiveTab] = useState<"analyze" | "position">("analyze");
   const [symbol, setSymbol] = useState("2330.TW");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
@@ -241,6 +243,33 @@ function App() {
             輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。
           </p>
         </header>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => setActiveTab("analyze")}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              activeTab === "analyze"
+                ? "bg-indigo-600 text-white"
+                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            個股分析
+          </button>
+          <button
+            onClick={() => setActiveTab("position")}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              activeTab === "position"
+                ? "bg-indigo-600 text-white"
+                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            我的持股
+          </button>
+        </div>
+
+        {activeTab === "position" && <PositionPage />}
+
+        {activeTab === "analyze" && <>
 
         {firstError && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -600,6 +629,7 @@ function App() {
             <p className="text-sm text-slate-400">請先執行分析。</p>
           )}
         </section>
+        </>}
       </div>
     </main>
   );

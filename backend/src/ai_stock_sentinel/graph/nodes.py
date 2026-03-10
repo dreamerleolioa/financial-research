@@ -153,7 +153,7 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
     if len(closes_list) >= 15:
         rsi14_val = calc_rsi(closes_list, period=14)
 
-    return {
+    updates: dict[str, Any] = {
         "technical_context": technical_context,
         "institutional_context": institutional_context,
         "high_20d": snapshot.get("high_20d"),
@@ -162,6 +162,38 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
         "resistance_20d": snapshot.get("resistance_20d"),
         "rsi14": rsi14_val,
     }
+
+    # ── Position Diagnosis (only when entry_price is provided) ──
+    entry_price = state.get("entry_price")
+    if entry_price is not None:
+        from ai_stock_sentinel.analysis.position_scorer import compute_position_metrics
+        support_20d = state.get("support_20d") or (
+            snapshot.get("support_20d") if snapshot else None
+        )
+        current_price = snapshot.get("current_price") if snapshot else None
+        if current_price and support_20d:
+            pos_metrics = compute_position_metrics(
+                entry_price=entry_price,
+                current_price=current_price,
+                support_20d=support_20d,
+            )
+            updates.update(pos_metrics)
+        else:
+            updates.update({
+                "profit_loss_pct": None,
+                "cost_buffer_to_support": None,
+                "position_status": None,
+                "position_narrative": None,
+            })
+    else:
+        updates.update({
+            "profit_loss_pct": None,
+            "cost_buffer_to_support": None,
+            "position_status": None,
+            "position_narrative": None,
+        })
+
+    return updates
 
 
 def _derive_technical_signal(closes: list[float]) -> str:
@@ -271,6 +303,18 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
             parts.append(f"情緒判斷：{sentiment}")
         news_summary = "\n".join(parts) if parts else None
 
+    position_context = None
+    if state.get("entry_price") is not None:
+        position_context = {
+            "entry_price": state.get("entry_price"),
+            "profit_loss_pct": state.get("profit_loss_pct"),
+            "position_status": state.get("position_status"),
+            "position_narrative": state.get("position_narrative"),
+            "trailing_stop": state.get("trailing_stop"),
+            "trailing_stop_reason": state.get("trailing_stop_reason"),
+            "recommended_action": state.get("recommended_action"),
+        }
+
     result = analyzer.analyze(
         snapshot,
         news_summary=news_summary,
@@ -279,6 +323,7 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
         confidence_score=state.get("confidence_score"),
         cross_validation_note=state.get("cross_validation_note"),
         fundamental_context=state.get("fundamental_context"),
+        position_context=position_context,
     )
     return {
         "analysis": result.summary,
@@ -469,7 +514,7 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         support_20d=state.get("support_20d"),
     )
 
-    return {
+    updates: dict[str, Any] = {
         "strategy_type": strategy["strategy_type"],
         "entry_zone": strategy["entry_zone"],
         "stop_loss": strategy["stop_loss"],
@@ -477,3 +522,57 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "action_plan_tag": action_plan_tag,
         "action_plan": action_plan,
     }
+
+    # ── Position trailing stop (only when entry_price is provided) ──
+    entry_price = state.get("entry_price")
+    if entry_price is not None:
+        from ai_stock_sentinel.analysis.position_scorer import (
+            compute_trailing_stop,
+            compute_recommended_action,
+        )
+        snapshot_d = state.get("snapshot") or {}
+        inst_flow = state.get("institutional_flow") or {}
+        analysis = state.get("analysis_detail") or {}
+
+        profit_loss_pct = state.get("profit_loss_pct", 0.0) or 0.0
+        support_20d_val = state.get("support_20d") or snapshot_d.get("support_20d", 0.0)
+        high_20d_val = state.get("high_20d") or snapshot_d.get("high_20d", 0.0)
+        current_close = snapshot_d.get("current_price", entry_price)
+
+        # MA10: derive from recent_closes if available
+        recent_closes_list = snapshot_d.get("recent_closes", [])
+        ma10 = sum(recent_closes_list[-10:]) / len(recent_closes_list[-10:]) if len(recent_closes_list) >= 10 else current_close
+
+        trailing_stop, trailing_stop_reason = compute_trailing_stop(
+            profit_loss_pct=profit_loss_pct,
+            entry_price=entry_price,
+            support_20d=support_20d_val,
+            ma10=ma10,
+            high_20d=high_20d_val,
+            current_close=current_close,
+        )
+
+        flow_label = inst_flow.get("flow_label", "neutral") if isinstance(inst_flow, dict) else "neutral"
+        technical_signal = analysis.get("technical_signal", "neutral") if isinstance(analysis, dict) else "neutral"
+        position_status = state.get("position_status", "at_risk") or "at_risk"
+
+        recommended_action, exit_reason = compute_recommended_action(
+            flow_label=flow_label,
+            profit_loss_pct=profit_loss_pct,
+            technical_signal=technical_signal,
+            current_close=current_close,
+            trailing_stop=trailing_stop,
+            position_status=position_status,
+        )
+
+        updates["trailing_stop"] = trailing_stop
+        updates["trailing_stop_reason"] = trailing_stop_reason
+        updates["recommended_action"] = recommended_action
+        updates["exit_reason"] = exit_reason
+    else:
+        updates["trailing_stop"] = None
+        updates["trailing_stop_reason"] = None
+        updates["recommended_action"] = None
+        updates["exit_reason"] = None
+
+    return updates

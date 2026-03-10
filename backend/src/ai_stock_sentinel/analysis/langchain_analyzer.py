@@ -43,6 +43,21 @@ _SYSTEM_PROMPT = """\
 - 不得輸出 JSON 以外的任何文字。
 """
 
+_POSITION_SYSTEM_PROMPT = """
+你正在診斷使用者的持有倉位，而非尋找新的買點。
+
+核心任務：
+1. 以購入成本價（entry_price）為錨點，判斷當前持股是否值得繼續持有
+2. 法人資金方向是最重要的出場訊號——若法人轉為出貨，獲利中亦須警示了結
+3. 你的輸出必須聚焦「出場」、「減碼」、「防守」，不得建議加碼或新進場
+4. 禁止以樂觀語氣淡化風險；若存在出場理由，必須明確標記
+
+出場觸發條件（任一命中即須評估出場）：
+- flow_label = distribution 且 profit_loss_pct > 0（獲利出場警示）
+- flow_label = distribution 且 position_status = under_water（停損評估）
+- technical_signal = bearish 且 close < trailing_stop（跌破防守線）
+"""
+
 _HUMAN_PROMPT = """\
 請分析以下股票資料：
 
@@ -134,6 +149,7 @@ class LangChainStockAnalyzer:
         confidence_score: int | None = None,
         cross_validation_note: str | None = None,
         fundamental_context: str | None = None,
+        position_context: dict | None = None,
     ) -> AnalysisDetail:
         if not self._has_langchain():
             return AnalysisDetail(
@@ -165,9 +181,26 @@ class LangChainStockAnalyzer:
         StrOutputParser = getattr(output_parsers, "StrOutputParser")
         ChatPromptTemplate = getattr(prompts, "ChatPromptTemplate")
 
+        system_content = _SYSTEM_PROMPT
+        human_content = _HUMAN_PROMPT
+        if position_context is not None:
+            system_content = _SYSTEM_PROMPT + _POSITION_SYSTEM_PROMPT
+            pc = position_context
+            position_block = (
+                "\n【持倉資訊】\n"
+                f"- 購入成本價（entry_price）：{pc.get('entry_price', 'N/A')}\n"
+                f"- 當前損益：{pc.get('profit_loss_pct', 0.0):.2f}%\n"
+                f"- 倉位狀態：{pc.get('position_status', 'unknown')}（{pc.get('position_narrative', '')}）\n"
+                f"- 動態防守位：{pc.get('trailing_stop', 'N/A')}（{pc.get('trailing_stop_reason', '')}）\n"
+                f"- 系統建議動作：{pc.get('recommended_action', 'N/A')}\n\n"
+                "請根據以上持倉資訊，從「防守」視角撰寫 tech_insight、inst_insight、final_verdict。"
+                "必須明確提示出場或減碼條件。\n"
+            )
+            human_content = _HUMAN_PROMPT + position_block
+
         prompt = ChatPromptTemplate.from_messages([
-            ("system", _SYSTEM_PROMPT),
-            ("human", _HUMAN_PROMPT),
+            ("system", system_content),
+            ("human", human_content),
         ])
         chain = prompt | self.llm | StrOutputParser()
         raw = chain.invoke(

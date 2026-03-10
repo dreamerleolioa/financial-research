@@ -70,3 +70,18 @@ def test_graph_state_has_news_display_items_field() -> None:
     import typing
     hints = typing.get_type_hints(GraphState)
     assert "news_display_items" in hints
+
+
+def test_graph_state_has_position_fields():
+    """GraphState must include all PositionState optional fields."""
+    import typing
+
+    hints = typing.get_type_hints(GraphState)
+    for field in [
+        "entry_price", "entry_date", "quantity",
+        "profit_loss_pct", "cost_buffer_to_support",
+        "position_status", "position_narrative",
+        "trailing_stop", "trailing_stop_reason",
+        "recommended_action", "exit_reason",
+    ]:
+        assert field in hints, f"GraphState missing field: {field}"

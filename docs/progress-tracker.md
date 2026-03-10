@@ -1,6 +1,6 @@
 # AI Stock Sentinel 進度追蹤
 
-> 更新日期：2026-03-09（Phase 6 規格完成，待開發；302 tests passed）
+> 更新日期：2026-03-10（Phase 6 持股診斷初步完成；360 tests passed）
 
 ## 目前完成度（高層）
 
@@ -9,7 +9,7 @@
 - **Phase 3（分析能力強化）**：100%（Provider 抽象層 + 多維分析 + Skeptic Mode + 信心分數 + 成本安全鎖 + Anthropic LLM + AnalysisDetail 結構化輸出）
 - **Phase 4（前端儀表板）**：100%（核心功能 + Action Plan 燈號 badge + data_confidence 提示 + 分維度分析小卡）
 - **Phase 5（基本面估值）**：100%（FinMindFundamentalProvider + PE Band 歷史真實股價修正 + 殖利率 + fetch_fundamental_node + 前端基本面卡片）
-- **Phase 6（持股診斷）**：0%（規格文件已定稿，待開發）
+- **Phase 6（持股診斷）**：100%（`POST /analyze/position` + PositionScorer + 前端我的持股分頁完成）
 
 ---
 
@@ -100,16 +100,16 @@
   - 無價位資料時維持舊有格式（向後相容）
   - 更新 `strategy_node` 補傳 `resistance_20d` / `support_20d`
 
-### Phase 6：持股診斷（`POST /analyze/position`）
+### Phase 6：持股診斷（`POST /analyze/position`）✅
 
-> **規格文件**：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
-> **API 契約**：`docs/backend-api-technical-spec.md` v3
-> **狀態**：0%，規格定稿，待開發
+> **計劃文件**：`docs/plans/2026-03-10-position-diagnosis.md`
+> **狀態**：完成，360 tests passed
 
-- [ ] **Task 1**：建立 `POST /analyze/position` 路由 + `PositionState` GraphState 欄位
-- [ ] **Task 2**：實作 `PositionScorer`（損益位階、移動停利、`recommended_action` 規則）
-- [ ] **Task 3**：持股診斷版 System Prompt（出場推理強化）
-- [ ] **Task 4**：前端「我的持股」分頁（損益對照卡 + 持股版戰術卡 + 出場警示）
+- [x] **Task 1**：`GraphState` 新增 11 個 PositionState 欄位
+- [x] **Task 2**：`PositionScorer`（`compute_position_metrics` / `compute_trailing_stop` / `compute_recommended_action`，18 tests）
+- [x] **Task 3**：`preprocess_node` / `strategy_node` 接入 PositionScorer；position-aware LLM prompt
+- [x] **Task 4**：`POST /analyze/position` 端點（`PositionAnalyzeRequest` / `PositionAnalysis`）
+- [x] **Task 5**：前端「我的持股」分頁（`PositionPage.tsx`；倉位狀態卡 / 操作建議卡 / 出場警示 banner）
 
 ---
 
@@ -126,11 +126,3 @@ PYTHONPATH=src ./venv/bin/python -m ai_stock_sentinel.main --symbol 2330.TW --ne
 
 ---
 
-## 下一步
-
-1. **2026-03-10 Task 1 & 2**：Strategy Action Plan 深化（`docs/plans/2026-03-10-strategy-action-plan-deepening.md`）
-2. **Phase 6**：持股診斷，依 Task 順序執行，每 Task 完成後補測試再標記完成
-
-### 其他長期待辦
-- Docker / Railway 部署準備
-- `calculate_growth_rate` 等進階基本面指標

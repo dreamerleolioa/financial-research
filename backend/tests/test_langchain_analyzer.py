@@ -437,3 +437,78 @@ def test_system_prompt_json_schema_includes_dimensional_fields():
     prompt = mod._SYSTEM_PROMPT
     for field in ["tech_insight", "inst_insight", "news_insight", "final_verdict"]:
         assert f'"{field}"' in prompt, f"JSON schema 缺少欄位：{field}"
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Position-aware prompt injection
+# ---------------------------------------------------------------------------
+
+def test_position_prompt_injected_when_position_context_provided():
+    """When position context is provided, the LLM receives position-mode instructions."""
+    from unittest.mock import patch, MagicMock
+    from ai_stock_sentinel.analysis.langchain_analyzer import LangChainStockAnalyzer
+    from ai_stock_sentinel.models import AnalysisDetail
+
+    captured_prompts = []
+
+    json_response = '{"summary": "test", "risks": [], "technical_signal": "bullish"}'
+
+    analyzer = LangChainStockAnalyzer(llm=MagicMock())
+    snapshot = _make_snapshot()
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.return_value = json_response
+
+    with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
+        mock_prompt = MagicMock()
+        mock_template.from_messages.side_effect = lambda msgs: (
+            captured_prompts.extend(msgs) or mock_prompt
+        )
+        mock_prompt.__or__ = MagicMock(return_value=MagicMock(
+            __or__=MagicMock(return_value=mock_chain)
+        ))
+        analyzer.analyze(
+            snapshot,
+            position_context={
+                "entry_price": 980.0,
+                "profit_loss_pct": 7.14,
+                "position_status": "profitable_safe",
+                "position_narrative": "獲利已脫離成本區",
+                "trailing_stop": 980.0,
+                "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價",
+                "recommended_action": "Hold",
+            },
+        )
+
+    full_text = " ".join(str(m) for m in captured_prompts)
+    assert "持有倉位" in full_text or "entry_price" in full_text or "持倉" in full_text
+    assert "出場" in full_text or "減碼" in full_text
+
+
+def test_analyze_without_position_context_unchanged():
+    """Existing /analyze route: no position_context → no position block in prompt."""
+    from unittest.mock import patch, MagicMock
+    from ai_stock_sentinel.analysis.langchain_analyzer import LangChainStockAnalyzer
+
+    captured_prompts = []
+
+    json_response = '{"summary": "test", "risks": [], "technical_signal": "bullish"}'
+
+    analyzer = LangChainStockAnalyzer(llm=MagicMock())
+    snapshot = _make_snapshot()
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.return_value = json_response
+
+    with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
+        mock_prompt = MagicMock()
+        mock_template.from_messages.side_effect = lambda msgs: (
+            captured_prompts.extend(msgs) or mock_prompt
+        )
+        mock_prompt.__or__ = MagicMock(return_value=MagicMock(
+            __or__=MagicMock(return_value=mock_chain)
+        ))
+        analyzer.analyze(snapshot, position_context=None)
+
+    full_text = " ".join(str(m) for m in captured_prompts)
+    assert "entry_price" not in full_text
