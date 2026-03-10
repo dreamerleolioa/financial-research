@@ -37,13 +37,19 @@
 2. 點 **Settings → Deploy Hook**
 3. 複製該 URL，格式為 `https://api.render.com/deploy/srv-xxxx?key=yyyy`
 
-### C. 設定 GitHub Secrets
+### C. 設定 GitHub Secrets & Variables
 
-在你的 GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**，新增：
+在你的 GitHub repo → **Settings → Secrets and variables → Actions**，新增：
 
+**Secrets（機密）：**
 | Secret 名稱 | 值 |
 |-------------|-----|
 | `RENDER_DEPLOY_HOOK_URL` | 步驟 B 取得的 Deploy Hook URL |
+
+**Variables（非機密）：**
+| Variable 名稱 | 值 |
+|---------------|-----|
+| `VITE_API_URL` | 你的 Render 服務 URL（例如 `https://financial-research-8loz.onrender.com`）|
 
 ### D. 啟用 GitHub Pages
 
@@ -56,7 +62,6 @@
 
 **Files:**
 - Modify: `frontend/vite.config.ts`
-- Modify: `frontend/package.json`（新增 env 相關 script，非必要）
 
 GitHub Pages 的部署路徑是 `https://<username>.github.io/<repo-name>/`，Vite 預設 `base: '/'` 會導致靜態資源 404。需要透過環境變數動態設定。
 
@@ -73,9 +78,6 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: process.env.VITE_BASE_URL || '/',
-  define: {
-    'import.meta.env.VITE_API_BASE_URL': JSON.stringify(process.env.VITE_API_BASE_URL || 'http://localhost:8000'),
-  },
 })
 ```
 
@@ -115,7 +117,7 @@ const response = await fetch('http://localhost:8000/analyze', { ... })
 
 改為：
 ```typescript
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const response = await fetch(`${API_BASE}/analyze`, { ... })
 ```
 
@@ -132,7 +134,7 @@ pnpm dev
 
 ```bash
 git add frontend/src/App.tsx
-git commit -m "feat: use VITE_API_BASE_URL env var for API endpoint"
+git commit -m "feat: use VITE_API_URL env var for API endpoint"
 ```
 
 ---
@@ -295,8 +297,8 @@ jobs:
         env:
           # GitHub Pages 的 base path，格式 /<repo-name>/
           VITE_BASE_URL: /${{ github.event.repository.name }}/
-          # Render 後端 URL（需在 GitHub Actions Variables 設定）
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          # Render 後端 URL（從 GitHub Actions Variables 注入）
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -326,15 +328,9 @@ jobs:
           echo "Render deploy triggered successfully"
 ```
 
-**Step 3: 在 GitHub 設定 VITE_API_BASE_URL Variable**（手動操作）
+**Step 3: 確認 GitHub Variable 已設定**（手動，前置作業 C 應已完成）
 
-這不是 Secret（不需要保密），所以用 **Variables** 而非 Secrets：
-
-GitHub repo → **Settings → Secrets and variables → Actions → Variables → New repository variable**
-
-| Variable 名稱 | 值 |
-|---------------|-----|
-| `VITE_API_BASE_URL` | `https://ai-stock-sentinel-api.onrender.com`（你的 Render URL）|
+確認 `VITE_API_URL` variable 已在 GitHub Actions Variables 設定，值為你的 Render URL。
 
 **Step 4: Commit & Push**
 
@@ -396,7 +392,7 @@ push to main
 | 類型 | 名稱 | 說明 |
 |------|------|------|
 | Secret | `RENDER_DEPLOY_HOOK_URL` | Render Deploy Hook URL |
-| Variable | `VITE_API_BASE_URL` | Render 後端 URL |
+| Variable | `VITE_API_URL` | Render 後端 URL |
 
 **需要設定的 Render Environment Variables：**
 | 名稱 | 值 |
