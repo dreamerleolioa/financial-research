@@ -172,13 +172,14 @@ class FinMindFundamentalProvider:
             latest_cash = _safe_float(div_rows[0].get("CashEarningsDistribution"))
             if latest_cash is not None:
                 annual_cash_dividend = latest_cash
-                dividend_yield = annual_cash_dividend / current_price * 100
-                if dividend_yield >= 5.0:
-                    yield_signal = "high_yield"
-                elif dividend_yield >= 3.0:
-                    yield_signal = "mid_yield"
-                else:
-                    yield_signal = "low_yield"
+                dividend_yield = annual_cash_dividend / current_price * 100 if current_price else None
+                if dividend_yield is not None:
+                    if dividend_yield >= 5.0:
+                        yield_signal = "high_yield"
+                    elif dividend_yield >= 3.0:
+                        yield_signal = "mid_yield"
+                    else:
+                        yield_signal = "low_yield"
         else:
             warnings.append("FinMind: 股利資料為空")
 
