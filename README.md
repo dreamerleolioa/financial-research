@@ -26,12 +26,14 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 ## 目前進度摘要
 
-- Phase 1（MVP Backend）：100%（技術債清理完成，CLI 改走 graph 流程）
-- Phase 2（LangGraph 回圈）：100%（骨架 + judge + RSS + clean + API 接入完成）
-- Phase 3（分析能力強化）：100%（Provider 抽象層 + ContextGenerator + Skeptic Mode + 信心分數多維加權 + Anthropic LLM 串接完成）
-- Phase 4（前端儀表板）：100%（核心功能完成；Action Plan 燈號 badge；data_confidence 提示完成）
+- Phase 1（MVP Backend）：100%
+- Phase 2（LangGraph 回圈）：100%
+- Phase 3（分析能力強化）：100%
+- Phase 4（前端儀表板）：100%
+- Phase 5（基本面估值）：100%
+- Phase 6（持股診斷）：100%（`POST /analyze/position` + 前端我的持股分頁）
 
-測試：295 tests passed（截至 2026-03-07）
+測試：360 tests passed（截至 2026-03-10）
 
 ---
 
@@ -51,6 +53,7 @@ backend/
 			context_generator.py
 			confidence_scorer.py
 			strategy_generator.py
+			position_scorer.py
 		data_sources/
 			yfinance_client.py
 			rss_news_client.py
@@ -79,6 +82,8 @@ frontend/
 	src/
 		App.tsx
 		index.css
+		pages/
+			PositionPage.tsx
 .github/
 	workflows/
 		deploy.yml        # CI/CD：測試 → GitHub Pages + Render
@@ -98,6 +103,8 @@ docs/
 		2026-03-07-spec-gap-fix-day2.md
 		2026-03-07-dimensional-analysis.md
 		2026-03-10-cicd-github-pages-render.md
+		2026-03-10-position-diagnosis.md
+		2026-03-10-strategy-action-plan-deepening.md
 ```
 
 ---
@@ -181,16 +188,22 @@ pnpm dev
 
 目前前端已包含：
 
+**個股分析 tab**
 - 股票代碼輸入框 + 一鍵分析
 - 信心指數圓形元件（動態，含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示）
 - 快照資訊（symbol / current_price / volume）
-- AI 萃取純數據摘要（`cleaned_news`）
-- LLM 分析報告（`analysis_detail`：summary + risks + technical_signal 標籤）
+- 分析報告四維小卡（技術面 / 籌碼面 / 基本面 / 消息面）+ 綜合仲裁全寬卡
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
 - 新聞卡片（RSS 標題、日期、原文連結；多筆列表來自 `news_display_items`，最多 5 筆）
 - 新聞摘要品質提示（`quality_score < 60` 時顯示警告）
-- 分析路徑圖（step timeline）
 - 錯誤 banner + loading 狀態
+
+**我的持股 tab**
+- 持股診斷表單（股票代碼 + 購入成本價 + 選填日期 / 數量）
+- 倉位狀態卡（獲利安全區 / 成本邊緣 / 套牢防守；顯示成本價 / 現價 / 損益%）
+- 操作建議卡（續抱 / 減碼 / 出場；顯示動態防守位）
+- 出場警示 banner（`exit_reason` 非 null 時紅色顯示）
+- 三維分析卡（技術面防守 / 主力動向 / 消息面風險）+ 綜合研判
 
 ### 1) Crawler Agent（股票 + 可選新聞清洗）
 
@@ -250,6 +263,7 @@ make run-api
 
 - `GET /health`
 - `POST /analyze`
+- `POST /analyze/position`
 
 範例：
 
@@ -257,6 +271,10 @@ make run-api
 curl -X POST http://127.0.0.1:8000/analyze \
 	-H "Content-Type: application/json" \
 	-d '{"symbol":"2330.TW","news_text":"2026-03-03 台積電 2 月營收 2,600 億元，年增 18.2%"}'
+
+curl -X POST http://127.0.0.1:8000/analyze/position \
+	-H "Content-Type: application/json" \
+	-d '{"symbol":"2330.TW","entry_price":980}'
 ```
 
 ### 4) 執行測試
@@ -270,7 +288,9 @@ make test
 
 ## 輸出格式
 
-POST `/analyze` 回傳 JSON 欄位：
+### POST `/analyze`
+
+回傳 JSON 欄位：
 
 | 欄位                    | 說明                                                                                                                     |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -294,7 +314,22 @@ POST `/analyze` 回傳 JSON 欄位：
 | `holding_period`        | 預期持股期間（具體時間窗，如「7-10 交易日」）                                                                            |
 | `action_plan`           | 戰術行動摘要（`action` / `target_zone` / `defense_line` / `momentum_expectation`；rule-based 計算，資料不足時為 `null`） |
 | `data_sources`          | 實際成功抓取的資料來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                       |
+| `position_analysis`     | 持股診斷結果（`/analyze/position` 才有值；含 `profit_loss_pct` / `position_status` / `trailing_stop` / `recommended_action` / `exit_reason`） |
 | `errors`                | 錯誤陣列（每項含 `code`、`message`，正常為空陣列）                                                                       |
+
+### POST `/analyze/position`
+
+額外必填欄位：`entry_price`（float）。回傳同上，`position_analysis` 欄位為：
+
+| 欄位 | 說明 |
+| --- | --- |
+| `entry_price` | 購入成本價 |
+| `profit_loss_pct` | 損益百分比（Python 計算，非 LLM） |
+| `position_status` | `profitable_safe` / `at_risk` / `under_water` |
+| `trailing_stop` | 動態防守位（依獲利區間規則計算） |
+| `trailing_stop_reason` | 防守位計算邏輯說明 |
+| `recommended_action` | `Hold` / `Trim` / `Exit`（4 規則 rule-based） |
+| `exit_reason` | 出場理由（僅 `Exit` 時非 null） |
 
 Cleaner Agent 輸出 JSON 欄位固定為：
 
@@ -307,11 +342,5 @@ Cleaner Agent 輸出 JSON 欄位固定為：
 
 ## 待實作項目
 
-依優先序排列（詳細規格見 `docs/plans/`）：
-
-1. **Session 8**（`docs/plans/2026-03-07-dimensional-analysis.md`）分析敘事分維度拆解：
-   - `AnalysisDetail` 新增 `tech_insight` / `inst_insight` / `news_insight` / `final_verdict` 欄位
-   - LLM System Prompt 強制分段輸出（禁止跨維度混述）
-   - 前端改為三張維度小卡 + 一張綜合仲裁全寬卡
-
-2. **長期**：基本面/估值工具（`estimate_pe_percentile`、`calculate_growth_rate`）
+- Docker / Railway 部署準備
+- `calculate_growth_rate` 等進階基本面指標
