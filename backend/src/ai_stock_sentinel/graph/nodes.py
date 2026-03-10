@@ -465,6 +465,8 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         stop_loss=strategy["stop_loss"],
         flow_label=flow_label_for_tag,
         confidence_score=state.get("confidence_score"),
+        resistance_20d=state.get("resistance_20d"),
+        support_20d=state.get("support_20d"),
     )
 
     return {
