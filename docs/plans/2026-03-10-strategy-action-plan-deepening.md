@@ -412,8 +412,8 @@ git commit -m "feat: add if-then conditional triggers to momentum_expectation"
 
 ## 驗收標準
 
-- [ ] `action_plan.action` 含部位比例（`首筆 30%` / `首筆 50%`）或觀望提示
-- [ ] `action_plan.breakeven_note` 在 `mid_term` 時為非 `None` 字串，其餘為 `None`
-- [ ] `action_plan.momentum_expectation` 在有價位資料時，附帶「若突破/跌破 XXX 則…」文字
-- [ ] 無資料（`resistance_20d=None`、`support_20d=None`）時 `momentum_expectation` 維持舊有格式（向後相容）
-- [ ] 全部 pytest 通過，無 regression
+- [x] `action_plan.action` 含部位比例（`首筆 30%` / `首筆 50%`）或觀望提示
+- [x] `action_plan.breakeven_note` 在 `mid_term` 時為非 `None` 字串，其餘為 `None`
+- [x] `action_plan.momentum_expectation` 在有價位資料時，附帶「若突破/跌破 XXX 則…」文字
+- [x] 無資料（`resistance_20d=None`、`support_20d=None`）時 `momentum_expectation` 維持舊有格式（向後相容）
+- [x] 全部 pytest 通過，無 regression
