@@ -36,7 +36,7 @@ def build_graph(
     """
     _rss_client = rss_client or RssNewsClient()
     _news_cleaner = news_cleaner or FinancialNewsCleaner()
-    _institutional_fetcher = institutional_fetcher or fetch_institutional_flow
+    _institutional_fetcher = institutional_fetcher or (lambda symbol: fetch_institutional_flow(symbol, days=10))
     _fundamental_fetcher = fundamental_fetcher or fetch_fundamental_data
 
     graph = StateGraph(GraphState)

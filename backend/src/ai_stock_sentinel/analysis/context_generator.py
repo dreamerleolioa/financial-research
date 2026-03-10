@@ -121,9 +121,9 @@ def _volume_narrative(volumes: list[float]) -> str:
 
 def _inst_narrative(inst: dict[str, Any]) -> str:
     """根據 InstitutionalFlowData（或 dict）產出籌碼敘事。"""
-    foreign = inst.get("foreign_buy")
-    trust = inst.get("investment_trust_buy")
-    dealer = inst.get("dealer_buy")
+    foreign = inst.get("foreign_net_cumulative")
+    trust = inst.get("trust_net_cumulative")
+    dealer = inst.get("dealer_net_cumulative")
     three_net = inst.get("three_party_net")
     consecutive = inst.get("consecutive_buy_days")
     margin_delta = inst.get("margin_delta")

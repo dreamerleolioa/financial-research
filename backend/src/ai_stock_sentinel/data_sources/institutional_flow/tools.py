@@ -53,7 +53,7 @@ def set_router(router: InstitutionalFlowRouter) -> None:
 
 def fetch_institutional_flow(
     symbol: str,
-    days: int = 60,
+    days: int = 10,
     *,
     router: InstitutionalFlowRouter | None = None,
 ) -> dict[str, Any]:
