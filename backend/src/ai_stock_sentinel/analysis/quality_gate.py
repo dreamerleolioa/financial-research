@@ -18,7 +18,7 @@ from email.utils import parsedate_to_datetime
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class QualityResult:
     """Generic result carrying flags and an optional value."""
 

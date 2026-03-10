@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(slots=True)
 class Settings:
     openai_api_key: str | None
     openai_model: str

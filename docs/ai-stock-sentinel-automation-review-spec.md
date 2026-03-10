@@ -514,6 +514,8 @@ correlation_matrix = {
 | 訊號轉向敘事 | API 整合 `history_loader`，Prompt 升級 |
 | 勝率回測腳本 | 引入 yfinance 歷史價格，比對診斷準確率 |
 | 信心分數校準 | 基於回測結果的半自動調權流程 |
+| 資料抓取併發優化 | `crawl` 節點改用 `asyncio.gather` 同時抓取技術面（yfinance）與籌碼面（institutional flow），縮短整體分析等待時間 |
+| `GET /history/{symbol}` 端點 | 從 `daily_analysis_log` 讀取指定股票的歷史診斷紀錄，供前端儀表板使用 |
 
 ### Phase 9：平台化（長期願景）
 

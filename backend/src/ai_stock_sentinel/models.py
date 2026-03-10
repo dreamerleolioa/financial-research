@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import List, Literal
 
 
-@dataclass
+@dataclass(slots=True)
 class AnalysisDetail:
     summary: str
     risks: list[str] = field(default_factory=list)
@@ -16,7 +16,7 @@ class AnalysisDetail:
     fundamental_insight: str | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class StockSnapshot:
     symbol: str
     currency: str

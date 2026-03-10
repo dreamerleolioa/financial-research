@@ -11,7 +11,7 @@ from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_instit
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
-from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_fundamental_node, fetch_institutional_node, fetch_news_node, judge_node, preprocess_node, quality_gate_node, score_node, strategy_node
+from ai_stock_sentinel.graph.nodes import analyze_node, clean_node, crawl_node, fetch_external_data_node, fetch_news_node, judge_node, preprocess_node, quality_gate_node, score_node, strategy_node
 from ai_stock_sentinel.graph.state import GraphState
 
 MAX_RETRIES = 3
@@ -43,8 +43,11 @@ def build_graph(
 
     # 節點
     graph.add_node("crawl", partial(crawl_node, crawler=crawler))
-    graph.add_node("fetch_institutional", partial(fetch_institutional_node, fetcher=_institutional_fetcher))
-    graph.add_node("fetch_fundamental", partial(fetch_fundamental_node, fetcher=_fundamental_fetcher))
+    graph.add_node("fetch_external_data", partial(
+        fetch_external_data_node,
+        institutional_fetcher=_institutional_fetcher,
+        fundamental_fetcher=_fundamental_fetcher,
+    ))
     graph.add_node("clean", partial(clean_node, news_cleaner=_news_cleaner))
     graph.add_node("quality_gate", quality_gate_node)
     graph.add_node("preprocess", preprocess_node)
@@ -69,9 +72,8 @@ def build_graph(
 
     # 邊
     graph.set_entry_point("crawl")
-    graph.add_edge("crawl", "fetch_institutional")
-    graph.add_edge("fetch_institutional", "fetch_fundamental")
-    graph.add_edge("fetch_fundamental", "judge")
+    graph.add_edge("crawl", "fetch_external_data")
+    graph.add_edge("fetch_external_data", "judge")
 
     def _route(state: GraphState) -> str:
         if state["data_sufficient"]:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 
-@dataclass
+@dataclass(slots=True)
 class RawNewsItem:
     source: str
     url: str
