@@ -176,9 +176,9 @@ class TestGenerateTechnicalContext:
         """有籌碼資料時，institutional_context 應含外資敘事"""
         df = _make_df([100.0] * 25)
         inst = {
-            "foreign_buy": 5000.0,
-            "investment_trust_buy": 1000.0,
-            "dealer_buy": -200.0,
+            "foreign_net_cumulative": 5000.0,
+            "trust_net_cumulative": 1000.0,
+            "dealer_net_cumulative": -200.0,
             "three_party_net": 5800.0,
             "margin_delta": 300.0,
             "flow_label": "institutional_accumulation",
@@ -282,9 +282,9 @@ class TestPreprocessNode:
 
         snapshot = {"symbol": "2330.TW", "recent_closes": [100.0] * 25}
         inst = {
-            "foreign_buy": 8000.0,
-            "investment_trust_buy": 500.0,
-            "dealer_buy": 0.0,
+            "foreign_net_cumulative": 8000.0,
+            "trust_net_cumulative": 500.0,
+            "dealer_net_cumulative": 0.0,
             "three_party_net": 8500.0,
             "margin_delta": -200.0,
             "flow_label": "institutional_accumulation",
