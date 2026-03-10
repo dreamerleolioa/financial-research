@@ -6,11 +6,11 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 為了達成「理性偵察」的目標，系統將針對每一標的進行三位一體的數據掃描：
 
-| 維度 | 追蹤指標 | AI 觀察重點 |
-|------|----------|-------------|
-| **消息面** | RSS 財經新聞、法說會摘要 | 提取事實、過濾誇大形容詞、識別情緒雜訊 |
-| **技術面** | $MA_{5/20/60}$、$Vol$、$BIAS$、$RSI_{14}$ | 判斷當前股價位階，識別「利多出盡」或「底部起漲」 |
-| **籌碼面** | 三大法人買賣超、融資餘額 | 追蹤聰明錢流向，判斷籌碼是集中於大戶還是分散至散戶 |
+| 維度       | 追蹤指標                                  | AI 觀察重點                                        |
+| ---------- | ----------------------------------------- | -------------------------------------------------- |
+| **消息面** | RSS 財經新聞、法說會摘要                  | 提取事實、過濾誇大形容詞、識別情緒雜訊             |
+| **技術面** | $MA_{5/20/60}$、$Vol$、$BIAS$、$RSI_{14}$ | 判斷當前股價位階，識別「利多出盡」或「底部起漲」   |
+| **籌碼面** | 三大法人買賣超、融資餘額                  | 追蹤聰明錢流向，判斷籌碼是集中於大戶還是分散至散戶 |
 
 > **嚴格規範**：技術指標與籌碼數據必須由 Python 函式（`pandas` / `yfinance`）精確計算後，再交由 LLM 進行定性分析。**禁止 LLM 自行估算任何數值。**
 
@@ -104,11 +104,6 @@ docs/
 
 ## 部署
 
-| 服務 | 平台 | URL |
-|------|------|-----|
-| 前端 | GitHub Pages | `https://<username>.github.io/financial-research/` |
-| 後端 | Render (free tier) | `https://financial-research-8loz.onrender.com` |
-
 Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages → 觸發 Render 重新部署。
 
 > Render 免費方案閒置 15 分鐘後會 sleep，第一次呼叫需等約 30 秒喚醒。
@@ -151,23 +146,24 @@ CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 > `.env` 不進版控。換電腦時複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
 
 若未設定 `ANTHROPIC_API_KEY`，系統會自動 fallback：
+
 - 股票分析：回傳提示訊息（不會中斷）
 - 新聞清潔：使用 heuristic 規則輸出 JSON
 
 ### CI/CD（GitHub Actions）
 
-| 類型 | 名稱 | 用途 |
-|------|------|------|
-| Secret | `RENDER_DEPLOY_HOOK_URL` | 觸發 Render 重新部署 |
-| Variable | `VITE_API_URL` | 前端 build 時注入後端 URL |
+| 類型     | 名稱                     | 用途                      |
+| -------- | ------------------------ | ------------------------- |
+| Secret   | `RENDER_DEPLOY_HOOK_URL` | 觸發 Render 重新部署      |
+| Variable | `VITE_API_URL`           | 前端 build 時注入後端 URL |
 
 ### 生產環境（Render Environment Variables）
 
-| 名稱 | 值 |
-|------|-----|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-5` |
-| `CORS_ORIGINS` | `http://localhost:5173,https://<username>.github.io` |
+| 名稱                | 值                                                   |
+| ------------------- | ---------------------------------------------------- |
+| `ANTHROPIC_API_KEY` | Anthropic API key                                    |
+| `ANTHROPIC_MODEL`   | `claude-sonnet-4-5`                                  |
+| `CORS_ORIGINS`      | `http://localhost:5173,https://<username>.github.io` |
 
 ---
 
@@ -184,6 +180,7 @@ pnpm dev
 預設開啟：`http://localhost:5173`
 
 目前前端已包含：
+
 - 股票代碼輸入框 + 一鍵分析
 - 信心指數圓形元件（動態，含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示）
 - 快照資訊（symbol / current_price / volume）
@@ -275,31 +272,32 @@ make test
 
 POST `/analyze` 回傳 JSON 欄位：
 
-| 欄位 | 說明 |
-|------|------|
-| `snapshot` | 股票快照（price / volume / recent_closes 等） |
-| `analysis` | LLM 四步驟分析文字（Skeptic Mode；向後相容） |
-| `analysis_detail` | LLM 結構化輸出（`summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label`） |
-| `sentiment_label` | 消息面情緒標籤（`positive` / `negative` / `neutral`；從 `cleaned_news` 浮出） |
-| `technical_signal` | 技術面訊號（`bullish` / `bearish` / `sideways`） |
-| `institutional_flow` | 籌碼面訊號（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral` / `unknown`） |
-| `cleaned_news` | 結構化新聞摘要（有新聞輸入時才有值） |
-| `cleaned_news_quality` | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`） |
-| `news_display_items` | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔） |
-| `action_plan_tag` | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`） |
-| `confidence_score` | 信心分數 0–100（`signal_confidence` 別名，向後相容） |
-| `signal_confidence` | 訊號強度分數（多維加權計算） |
-| `data_confidence` | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算） |
-| `cross_validation_note` | 三維交叉驗證備注（rule-based 固定字串） |
-| `strategy_type` | 策略方向（`short_term` / `mid_term` / `defensive_wait`） |
-| `entry_zone` | 建議入場區間（具體價格數值） |
-| `stop_loss` | 防守底線（具體停損價位） |
-| `holding_period` | 預期持股期間（具體時間窗，如「7-10 交易日」） |
-| `action_plan` | 戰術行動摘要（`action` / `target_zone` / `defense_line` / `momentum_expectation`；rule-based 計算，資料不足時為 `null`） |
-| `data_sources` | 實際成功抓取的資料來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`） |
-| `errors` | 錯誤陣列（每項含 `code`、`message`，正常為空陣列） |
+| 欄位                    | 說明                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `snapshot`              | 股票快照（price / volume / recent_closes 等）                                                                            |
+| `analysis`              | LLM 四步驟分析文字（Skeptic Mode；向後相容）                                                                             |
+| `analysis_detail`       | LLM 結構化輸出（`summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label`）                    |
+| `sentiment_label`       | 消息面情緒標籤（`positive` / `negative` / `neutral`；從 `cleaned_news` 浮出）                                            |
+| `technical_signal`      | 技術面訊號（`bullish` / `bearish` / `sideways`）                                                                         |
+| `institutional_flow`    | 籌碼面訊號（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral` / `unknown`）                   |
+| `cleaned_news`          | 結構化新聞摘要（有新聞輸入時才有值）                                                                                     |
+| `cleaned_news_quality`  | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`）                                                                  |
+| `news_display_items`    | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔）          |
+| `action_plan_tag`       | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`）            |
+| `confidence_score`      | 信心分數 0–100（`signal_confidence` 別名，向後相容）                                                                     |
+| `signal_confidence`     | 訊號強度分數（多維加權計算）                                                                                             |
+| `data_confidence`       | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算）                                                          |
+| `cross_validation_note` | 三維交叉驗證備注（rule-based 固定字串）                                                                                  |
+| `strategy_type`         | 策略方向（`short_term` / `mid_term` / `defensive_wait`）                                                                 |
+| `entry_zone`            | 建議入場區間（具體價格數值）                                                                                             |
+| `stop_loss`             | 防守底線（具體停損價位）                                                                                                 |
+| `holding_period`        | 預期持股期間（具體時間窗，如「7-10 交易日」）                                                                            |
+| `action_plan`           | 戰術行動摘要（`action` / `target_zone` / `defense_line` / `momentum_expectation`；rule-based 計算，資料不足時為 `null`） |
+| `data_sources`          | 實際成功抓取的資料來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                       |
+| `errors`                | 錯誤陣列（每項含 `code`、`message`，正常為空陣列）                                                                       |
 
 Cleaner Agent 輸出 JSON 欄位固定為：
+
 - `date`
 - `title`
 - `mentioned_numbers`

@@ -61,24 +61,23 @@
 ## Task 1: 設定 Vite base URL for GitHub Pages
 
 **Files:**
-- Modify: `frontend/vite.config.ts`
 
-GitHub Pages 的部署路徑是 `https://<username>.github.io/<repo-name>/`，Vite 預設 `base: '/'` 會導致靜態資源 404。需要透過環境變數動態設定。
+- Modify: `frontend/vite.config.ts`
 
 **Step 1: 修改 vite.config.ts**
 
 將 [frontend/vite.config.ts](frontend/vite.config.ts) 改為：
 
 ```typescript
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: process.env.VITE_BASE_URL || '/',
-})
+  base: process.env.VITE_BASE_URL || "/",
+});
 ```
 
 **Step 2: 確認本機 build 正常**
@@ -102,6 +101,7 @@ git commit -m "feat: add base URL and API URL env config for Vite"
 ## Task 2: 更新前端 API URL 為環境變數
 
 **Files:**
+
 - Modify: `frontend/src/App.tsx`（將 hardcode 的 localhost:8000 改為 env var）
 
 **Step 1: 確認目前 App.tsx 裡 API URL 的寫法**
@@ -111,11 +111,13 @@ git commit -m "feat: add base URL and API URL env config for Vite"
 **Step 2: 將 API base URL 改為讀取環境變數**
 
 找到類似這樣的程式碼：
+
 ```typescript
 const response = await fetch('http://localhost:8000/analyze', { ... })
 ```
 
 改為：
+
 ```typescript
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const response = await fetch(`${API_BASE}/analyze`, { ... })
@@ -142,6 +144,7 @@ git commit -m "feat: use VITE_API_URL env var for API endpoint"
 ## Task 3: 更新後端 CORS 允許 GitHub Pages URL
 
 **Files:**
+
 - Modify: `backend/src/ai_stock_sentinel/api.py`
 
 目前 CORS 只允許 `localhost`，部署後前端的 origin 會是 `https://<username>.github.io`，需要加入。
@@ -178,6 +181,7 @@ app.add_middleware(
 **Step 2: 在 Render 環境變數加入 CORS_ORIGINS**（手動操作）
 
 等 workflow 完成後，在 Render 的 Environment Variables 加入：
+
 ```
 CORS_ORIGINS=http://localhost:5173,https://<your-username>.github.io
 ```
@@ -205,6 +209,7 @@ git commit -m "feat: make CORS origins configurable via env var"
 ## Task 4: 建立 GitHub Actions Workflow
 
 **Files:**
+
 - Create: `.github/workflows/deploy.yml`
 
 **Step 1: 建立目錄**
@@ -359,8 +364,6 @@ git push origin main
 
 **Step 2: 確認前端 GitHub Pages**
 
-- GitHub Actions 完成後，前往：
-  `https://<your-username>.github.io/<repo-name>/`
 - 確認頁面正常載入
 
 **Step 3: 確認前後端連線**
@@ -383,10 +386,6 @@ push to main
     │
     └── FAIL → 停止，不部署
 ```
-
-**各服務 URL：**
-- 前端：`https://<username>.github.io/<repo-name>/`
-- 後端：`https://<service-name>.onrender.com`
 
 **需要設定的 GitHub Secrets/Variables：**
 | 類型 | 名稱 | 說明 |
