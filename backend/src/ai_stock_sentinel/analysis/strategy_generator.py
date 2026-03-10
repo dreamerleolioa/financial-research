@@ -165,29 +165,49 @@ def generate_action_plan(
     stop_loss: str,
     flow_label: str | None,
     confidence_score: int | None,
+    resistance_20d: float | None = None,
+    support_20d: float | None = None,
 ) -> dict:
     """由 strategy_type / flow_label / confidence_score 推導 action_plan 各欄位。
 
     純 rule-based Python，不呼叫 LLM。
     """
     if strategy_type == "defensive_wait":
-        action = "觀望"
+        action = "觀望（待訊號明確再試單）"
     elif strategy_type == "mid_term":
-        action = "分批佈局"
+        action = "分批佈局（首筆 30%）"
     else:  # short_term
-        action = "短線進場"
+        action = "短線進場（首筆 50%，確認站穩再加碼）"
 
-    momentum = (
-        "強（法人集結中）" if flow_label == "institutional_accumulation"
-        else "弱（法人出貨中）" if flow_label == "distribution"
-        else "中性"
+    breakeven_note = (
+        "當帳面獲利達 5% 時，建議停損位上移至入場成本價" if strategy_type == "mid_term" else None
     )
+
+    if flow_label == "institutional_accumulation":
+        base = "強（法人集結中）"
+        if resistance_20d is not None:
+            momentum = f"{base}；若突破 {resistance_20d:.1f} 壓力則動能轉強"
+        else:
+            momentum = base
+    elif flow_label == "distribution":
+        base = "弱（法人出貨中）"
+        if support_20d is not None:
+            momentum = f"{base}；若跌破 {support_20d:.1f} 支撐則轉向 Bearish"
+        else:
+            momentum = base
+    else:
+        base = "中性"
+        if resistance_20d is not None and support_20d is not None:
+            momentum = f"{base}；若突破 {resistance_20d:.1f} 則動能轉強，若跌破 {support_20d:.1f} 則轉弱"
+        else:
+            momentum = base
 
     return {
         "action": action,
         "target_zone": entry_zone,
         "defense_line": stop_loss,
         "momentum_expectation": momentum,
+        "breakeven_note": breakeven_note,
     }
 
 

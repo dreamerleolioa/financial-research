@@ -280,8 +280,10 @@ def test_generate_action_plan_returns_defensive_wait_action():
         stop_loss="890",
         flow_label="neutral",
         confidence_score=50,
+        resistance_20d=None,
+        support_20d=None,
     )
-    assert result["action"] == "觀望"
+    assert result["action"] == "觀望（待訊號明確再試單）"
 
 
 def test_generate_action_plan_mid_term_action():
@@ -291,8 +293,10 @@ def test_generate_action_plan_mid_term_action():
         stop_loss="880",
         flow_label="neutral",
         confidence_score=60,
+        resistance_20d=None,
+        support_20d=None,
     )
-    assert result["action"] == "分批佈局"
+    assert result["action"] == "分批佈局（首筆 30%）"
 
 
 def test_generate_action_plan_short_term_action():
@@ -302,8 +306,10 @@ def test_generate_action_plan_short_term_action():
         stop_loss="875",
         flow_label="neutral",
         confidence_score=70,
+        resistance_20d=None,
+        support_20d=None,
     )
-    assert result["action"] == "短線進場"
+    assert result["action"] == "短線進場（首筆 50%，確認站穩再加碼）"
 
 
 def test_generate_action_plan_returns_momentum_based_on_flow_label_accumulation():
@@ -313,6 +319,8 @@ def test_generate_action_plan_returns_momentum_based_on_flow_label_accumulation(
         stop_loss="880",
         flow_label="institutional_accumulation",
         confidence_score=75,
+        resistance_20d=None,
+        support_20d=None,
     )
     assert result["momentum_expectation"] == "強（法人集結中）"
 
@@ -324,6 +332,8 @@ def test_generate_action_plan_returns_momentum_based_on_flow_label_distribution(
         stop_loss="890",
         flow_label="distribution",
         confidence_score=40,
+        resistance_20d=None,
+        support_20d=None,
     )
     assert result["momentum_expectation"] == "弱（法人出貨中）"
 
@@ -335,6 +345,8 @@ def test_generate_action_plan_neutral_momentum_for_unknown_flow():
         stop_loss="890",
         flow_label=None,
         confidence_score=50,
+        resistance_20d=None,
+        support_20d=None,
     )
     assert result["momentum_expectation"] == "中性"
 
@@ -346,5 +358,149 @@ def test_generate_action_plan_contains_required_keys():
         stop_loss="875",
         flow_label="neutral",
         confidence_score=70,
+        resistance_20d=None,
+        support_20d=None,
     )
-    assert set(result.keys()) == {"action", "target_zone", "defense_line", "momentum_expectation"}
+    assert set(result.keys()) == {
+        "action", "target_zone", "defense_line", "momentum_expectation", "breakeven_note"
+    }
+
+
+# ─── breakeven_note 測試 ──────────────────────────────────────────────────────
+
+def test_generate_action_plan_breakeven_note_mid_term():
+    """mid_term → breakeven_note 包含保本提示"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="neutral",
+        confidence_score=60,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["breakeven_note"] is not None
+    assert "5%" in result["breakeven_note"]
+    assert "入場成本" in result["breakeven_note"]
+
+
+def test_generate_action_plan_breakeven_note_short_term_is_none():
+    """short_term → breakeven_note 為 None"""
+    result = generate_action_plan(
+        strategy_type="short_term",
+        entry_zone="895",
+        stop_loss="875",
+        flow_label="neutral",
+        confidence_score=70,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["breakeven_note"] is None
+
+
+def test_generate_action_plan_breakeven_note_defensive_wait_is_none():
+    """defensive_wait → breakeven_note 為 None"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="neutral",
+        confidence_score=50,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["breakeven_note"] is None
+
+
+# ─── If-Then momentum_expectation 測試 ─────────────────────────────────────────
+
+def test_momentum_expectation_accumulation_with_resistance():
+    """institutional_accumulation + resistance_20d → 附帶突破提示"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=75,
+        resistance_20d=950.0,
+        support_20d=880.0,
+    )
+    assert "強（法人集結中）" in result["momentum_expectation"]
+    assert "950.0" in result["momentum_expectation"]
+    assert "突破" in result["momentum_expectation"]
+
+
+def test_momentum_expectation_distribution_with_support():
+    """distribution + support_20d → 附帶跌破提示"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="distribution",
+        confidence_score=40,
+        resistance_20d=950.0,
+        support_20d=880.0,
+    )
+    assert "弱（法人出貨中）" in result["momentum_expectation"]
+    assert "880.0" in result["momentum_expectation"]
+    assert "跌破" in result["momentum_expectation"]
+    assert "Bearish" in result["momentum_expectation"]
+
+
+def test_momentum_expectation_neutral_with_both_levels():
+    """neutral + 兩個價位 → 同時包含突破與跌破提示"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label=None,
+        confidence_score=50,
+        resistance_20d=950.0,
+        support_20d=880.0,
+    )
+    assert "中性" in result["momentum_expectation"]
+    assert "950.0" in result["momentum_expectation"]
+    assert "880.0" in result["momentum_expectation"]
+
+
+def test_momentum_expectation_accumulation_without_resistance():
+    """institutional_accumulation 但 resistance_20d=None → 不含數字，只有基本標籤"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=75,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    # 現有舊測試仍應通過（向後相容）
+    assert result["momentum_expectation"] == "強（法人集結中）"
+
+
+def test_momentum_expectation_distribution_without_support():
+    """distribution 但 support_20d=None → 只有基本標籤"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="distribution",
+        confidence_score=40,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["momentum_expectation"] == "弱（法人出貨中）"
+
+
+def test_momentum_expectation_neutral_without_levels():
+    """neutral + 兩個 None → 只有基本標籤"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label=None,
+        confidence_score=50,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["momentum_expectation"] == "中性"
