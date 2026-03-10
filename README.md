@@ -61,6 +61,10 @@ backend/
 				twse_provider.py
 				tpex_provider.py
 				tools.py
+			fundamental/
+				interface.py
+				finmind_provider.py
+				tools.py
 		graph/
 			builder.py
 			nodes.py
@@ -75,6 +79,9 @@ frontend/
 	src/
 		App.tsx
 		index.css
+.github/
+	workflows/
+		deploy.yml        # CI/CD：測試 → GitHub Pages + Render
 docs/
 	ai-stock-sentinel-architecture-spec.md
 	backend-api-technical-spec.md
@@ -90,7 +97,23 @@ docs/
 		2026-03-06-news-scope-and-display-items.md
 		2026-03-07-spec-gap-fix-day2.md
 		2026-03-07-dimensional-analysis.md
+		2026-03-10-cicd-github-pages-render.md
 ```
+
+---
+
+## 部署
+
+| 服務 | 平台 | URL |
+|------|------|-----|
+| 前端 | GitHub Pages | `https://<username>.github.io/financial-research/` |
+| 後端 | Render (free tier) | `https://financial-research-8loz.onrender.com` |
+
+Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages → 觸發 Render 重新部署。
+
+> Render 免費方案閒置 15 分鐘後會 sleep，第一次呼叫需等約 30 秒喚醒。
+
+CI/CD 設定說明：`docs/plans/2026-03-10-cicd-github-pages-render.md`
 
 ---
 
@@ -98,7 +121,7 @@ docs/
 
 - Python 3.10+
 - 已建立 `backend/venv`
-- Node.js 20+
+- Node.js 20+（前端用 pnpm 10）
 
 ## 安裝與啟動
 
@@ -115,23 +138,36 @@ cd backend
 make install
 ```
 
-## 環境變數（LLM）
+## 環境變數
 
-啟用 Claude 功能時，請在 `backend/.env` 設定：
+### 本機開發（backend/.env）
 
 ```bash
 ANTHROPIC_API_KEY="your_api_key"
 ANTHROPIC_MODEL="claude-sonnet-4-5"
+CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 ```
 
-### 換電腦開發時要注意
-
-- `.env` 不會進版控（也不應進版控），所以在新電腦上**需要手動重建一份** `backend/.env`。
-- 建議直接複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
+> `.env` 不進版控。換電腦時複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
 
 若未設定 `ANTHROPIC_API_KEY`，系統會自動 fallback：
 - 股票分析：回傳提示訊息（不會中斷）
 - 新聞清潔：使用 heuristic 規則輸出 JSON
+
+### CI/CD（GitHub Actions）
+
+| 類型 | 名稱 | 用途 |
+|------|------|------|
+| Secret | `RENDER_DEPLOY_HOOK_URL` | 觸發 Render 重新部署 |
+| Variable | `VITE_API_URL` | 前端 build 時注入後端 URL |
+
+### 生產環境（Render Environment Variables）
+
+| 名稱 | 值 |
+|------|-----|
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-5` |
+| `CORS_ORIGINS` | `http://localhost:5173,https://<username>.github.io` |
 
 ---
 
@@ -280,4 +316,4 @@ Cleaner Agent 輸出 JSON 欄位固定為：
    - LLM System Prompt 強制分段輸出（禁止跨維度混述）
    - 前端改為三張維度小卡 + 一張綜合仲裁全寬卡
 
-2. **長期**：基本面/估值工具（`estimate_pe_percentile`、`calculate_growth_rate`）；Docker / Railway 部署
+2. **長期**：基本面/估值工具（`estimate_pe_percentile`、`calculate_growth_rate`）
