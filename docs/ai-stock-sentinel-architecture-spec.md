@@ -291,7 +291,7 @@ class InstitutionalFlowProvider(Protocol):
 - 可對 `2330.TW`（映射 `2330`）抓到近 5 日：`foreign_buy`、`investment_trust_buy`、`dealer_buy`、`margin_delta`（僅連通性驗收）
 - 可對至少一檔上櫃標的（例：`6488.TWO`）完成路徑驗證
 - 失敗時回傳可追蹤錯誤碼（`INSTITUTIONAL_FETCH_ERROR`）且不中斷主流程
-- 正式分析（flow_label / confidence / strategy）需使用至少 20 日資料視窗，建議 60 日
+- 正式分析（flow_label / confidence / strategy）使用 10 日資料視窗（捕捉近兩週短期籌碼變化）
 
 **籌碼集中度判斷模型**：
 
@@ -310,7 +310,7 @@ class InstitutionalFlowProvider(Protocol):
 ```json
 {
   "symbol": "2330.TW",
-  "period_days": 60,
+  "period_days": 10,
   "foreign_net_cumulative": 15200,
   "trust_net_cumulative": -3100,
   "dealer_net_cumulative": 800,
@@ -427,7 +427,7 @@ class InstitutionalFlowProvider(Protocol):
 
 - **法人籌碼查詢工具** `fetch_institutional_flow(symbol, days)`
   - 輸入：股票代碼、回溯天數
-  - 視窗建議：`days=5` 用於資料源 smoke test；正式分析至少 `days>=20`，建議 `days=60`
+  - 視窗建議：`days=5` 用於資料源 smoke test；正式分析預設 `days=10`（捕捉近兩週短期籌碼變化）
   - 輸出：`{ foreign_net_cumulative, trust_net_cumulative, margin_balance_delta }`
 
 ### 輸出結構（升級後）
