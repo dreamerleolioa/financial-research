@@ -16,6 +16,7 @@ interface AuthState {
 
 interface AuthContextValue extends AuthState {
   loginWithGoogleToken: (idToken: string) => Promise<void>;
+  loginWithGoogleCode: (code: string, redirectUri: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -66,13 +67,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [apiUrl],
   );
 
+  const loginWithGoogleCode = useCallback(
+    async (code: string, redirectUri: string) => {
+      const res = await fetch(`${apiUrl}/auth/google/code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, redirect_uri: redirectUri }),
+      });
+      if (!res.ok) throw new Error("Google login failed");
+      const data = await res.json() as { access_token: string; user: User };
+      setToken(data.access_token);
+      setState({ user: data.user, token: data.access_token, isLoading: false });
+    },
+    [apiUrl],
+  );
+
   const logout = useCallback(() => {
     clearToken();
     setState({ user: null, token: null, isLoading: false });
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, loginWithGoogleToken, logout }}>
+    <AuthContext.Provider value={{ ...state, loginWithGoogleToken, loginWithGoogleCode, logout }}>
       {children}
     </AuthContext.Provider>
   );

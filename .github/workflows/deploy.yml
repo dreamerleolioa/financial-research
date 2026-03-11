@@ -36,6 +36,7 @@ jobs:
           JWT_SECRET: test-secret-for-ci-only
           DATABASE_URL: sqlite:///./test.db
           GOOGLE_CLIENT_ID: test-google-client-id
+          GOOGLE_CLIENT_SECRET: test-google-client-secret
 
   # ── 前端 Build + Deploy to GitHub Pages ──────────────────────
   deploy-frontend:

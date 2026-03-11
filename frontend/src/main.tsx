@@ -5,6 +5,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import "./index.css";
 import App from "./App.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
+import LoginCallbackPage from "./pages/LoginCallbackPage.tsx";
 import { AuthProvider, useAuth } from "./stores/auth.tsx";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -23,6 +24,7 @@ createRoot(document.getElementById("root")!).render(
         <AuthProvider>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/login/callback" element={<LoginCallbackPage />} />
             <Route
               path="/*"
               element={
