@@ -1,6 +1,8 @@
 """純 rule-based 信心分數計算器。不呼叫 LLM。"""
 from __future__ import annotations
 
+from ai_stock_sentinel.analysis.metrics import ma as calc_ma
+
 BASE_CONFIDENCE = 50
 
 
@@ -17,9 +19,6 @@ def derive_technical_score(
     """
     if len(closes) < 20:
         return 50
-
-    # 在函式內 import，避免循環引用
-    from ai_stock_sentinel.analysis.context_generator import ma as calc_ma
 
     ma5 = calc_ma(closes, 5)
     ma20 = calc_ma(closes, 20)
