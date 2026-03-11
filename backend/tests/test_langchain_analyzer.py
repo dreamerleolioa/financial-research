@@ -152,33 +152,30 @@ def test_system_prompt_does_not_require_financial_number_extraction() -> None:
 
 
 def test_analyze_returns_analysis_detail_when_llm_returns_json():
-    """analyze() end-to-end: when chain returns JSON, result is AnalysisDetail."""
+    """analyze() end-to-end: when JsonOutputParser chain returns a dict, result is AnalysisDetail."""
     from unittest.mock import patch
     from ai_stock_sentinel.models import AnalysisDetail
 
-    json_response = '{"summary": "台積電穩健。", "risks": ["匯率風險"], "technical_signal": "bullish"}'
+    dict_response = {"summary": "台積電穩健。", "risks": ["匯率風險"], "technical_signal": "bullish"}
 
     analyzer = LangChainStockAnalyzer(llm=MagicMock())
     snapshot = _make_snapshot()
 
-    with patch.object(LangChainStockAnalyzer, "_parse_analysis", return_value=AnalysisDetail(
-        summary="台積電穩健。",
-        risks=["匯率風險"],
-        technical_signal="bullish",
-    )) as mock_parse:
-        # Patch the chain so invoke returns the json string
-        mock_chain = MagicMock()
-        mock_chain.invoke.return_value = json_response
+    # Patch the chain so invoke returns a parsed dict (as JsonOutputParser would produce)
+    mock_chain = MagicMock()
+    mock_chain.invoke.return_value = dict_response
 
-        with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
-            mock_prompt = MagicMock()
-            mock_template.from_messages.return_value = mock_prompt
-            mock_prompt.__or__ = MagicMock(return_value=MagicMock(
-                __or__=MagicMock(return_value=mock_chain)
-            ))
-            result = analyzer.analyze(snapshot)
+    with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
+        mock_prompt = MagicMock()
+        mock_template.from_messages.return_value = mock_prompt
+        mock_prompt.__or__ = MagicMock(return_value=MagicMock(
+            __or__=MagicMock(return_value=mock_chain)
+        ))
+        result = analyzer.analyze(snapshot)
 
     assert isinstance(result, AnalysisDetail)
+    assert result.summary == "台積電穩健。"
+    assert result.risks == ["匯率風險"]
     assert result.technical_signal == "bullish"
 
 
@@ -451,13 +448,13 @@ def test_position_prompt_injected_when_position_context_provided():
 
     captured_prompts = []
 
-    json_response = '{"summary": "test", "risks": [], "technical_signal": "bullish"}'
+    dict_response = {"summary": "test", "risks": [], "technical_signal": "bullish"}
 
     analyzer = LangChainStockAnalyzer(llm=MagicMock())
     snapshot = _make_snapshot()
 
     mock_chain = MagicMock()
-    mock_chain.invoke.return_value = json_response
+    mock_chain.invoke.return_value = dict_response
 
     with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
         mock_prompt = MagicMock()
@@ -492,13 +489,13 @@ def test_analyze_without_position_context_unchanged():
 
     captured_prompts = []
 
-    json_response = '{"summary": "test", "risks": [], "technical_signal": "bullish"}'
+    dict_response = {"summary": "test", "risks": [], "technical_signal": "bullish"}
 
     analyzer = LangChainStockAnalyzer(llm=MagicMock())
     snapshot = _make_snapshot()
 
     mock_chain = MagicMock()
-    mock_chain.invoke.return_value = json_response
+    mock_chain.invoke.return_value = dict_response
 
     with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
         mock_prompt = MagicMock()
