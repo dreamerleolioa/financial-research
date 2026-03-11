@@ -4,21 +4,20 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Date, ForeignKey, Index, Integer, Numeric,
+    Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric,
     String, Text, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from ai_stock_sentinel.db.session import Base
-from ai_stock_sentinel.user_models.user import User  # noqa: F401 – 確保 User 已被 Base 收錄
 
 
 class UserPortfolio(Base):
     __tablename__ = "user_portfolio"
     __table_args__ = (
-        UniqueConstraint("user_id", "symbol", name="uq_portfolio_active_symbol"),
+        UniqueConstraint("user_id", "symbol", name="uq_portfolio_user_symbol"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -32,10 +31,10 @@ class UserPortfolio(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -60,5 +59,5 @@ class DailyAnalysisLog(Base):
     prev_action_tag: Mapped[str | None] = mapped_column(String(20), nullable=True)
     prev_confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
