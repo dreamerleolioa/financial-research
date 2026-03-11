@@ -9,7 +9,6 @@ fetch_institutional_flow：高階工具函式，封裝 Router 邏輯，供 LangG
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import asdict
 from typing import Any
 
@@ -23,11 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 def _build_default_router() -> InstitutionalFlowRouter:
-    """建立預設 Router（FinMind → TWSE → TPEX），讀取環境變數 FINMIND_API_TOKEN。"""
-    token = os.environ.get("FINMIND_API_TOKEN", "")
+    """建立預設 Router（FinMind → TWSE → TPEX），token 由 FinMindTokenManager 自動管理。"""
     return InstitutionalFlowRouter(
         providers=[
-            FinMindProvider(api_token=token),
+            FinMindProvider(),
             TwseOpenApiProvider(),
             TpexProvider(),
         ]

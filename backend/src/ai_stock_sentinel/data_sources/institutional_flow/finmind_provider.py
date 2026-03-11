@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 
+from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.data_sources.institutional_flow.interface import (
     InstitutionalFlowData,
     InstitutionalFlowError,
@@ -43,9 +44,25 @@ class FinMindProvider:
     name = "FinMind"
 
     def __init__(self, api_token: str = ""):
-        self._token = api_token
+        # api_token 僅供測試用靜態覆蓋；正式使用時留空，由 token manager 動態取得
+        self._static_token = api_token
+
+    def _get_token(self) -> str:
+        """優先用靜態 token（測試用），否則從 token manager 取得。"""
+        return self._static_token or get_token_manager().token
 
     def fetch_daily_flow(self, symbol: str, days: int = 5) -> InstitutionalFlowData:
+        try:
+            return self._fetch_daily_flow_inner(symbol=symbol, days=days)
+        except InstitutionalFlowError as exc:
+            if exc.code == "FINMIND_TOKEN_EXPIRED" and not self._static_token:
+                # token 過期：invalidate 後重試一次
+                logger.warning("[FinMindProvider] token 過期（402），嘗試自動刷新後重試")
+                get_token_manager().invalidate()
+                return self._fetch_daily_flow_inner(symbol=symbol, days=days)
+            raise
+
+    def _fetch_daily_flow_inner(self, symbol: str, days: int) -> InstitutionalFlowData:
         try:
             import requests
         except ImportError as e:
@@ -189,11 +206,27 @@ class FinMindProvider:
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
         }
-        if self._token:
-            params["token"] = self._token
+        token = self._get_token()
+        if token:
+            params["token"] = token
 
         try:
             resp = requests.get(_FINMIND_API, params=params, timeout=15)
+        except Exception as exc:
+            raise InstitutionalFlowError(
+                code="FINMIND_REQUEST_ERROR",
+                message=f"FinMind API 請求失敗（dataset={dataset}）：{exc}",
+                provider=self.name,
+            ) from exc
+
+        if resp.status_code == 402:
+            raise InstitutionalFlowError(
+                code="FINMIND_TOKEN_EXPIRED",
+                message=f"FinMind token 過期或無效（402），dataset={dataset}",
+                provider=self.name,
+            )
+
+        try:
             resp.raise_for_status()
             payload = resp.json()
         except Exception as exc:

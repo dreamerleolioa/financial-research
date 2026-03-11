@@ -3,6 +3,7 @@ import logging
 import statistics
 from datetime import date, timedelta
 
+from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.data_sources.fundamental.interface import (
     FundamentalData, FundamentalError,
 )
@@ -22,7 +23,11 @@ class FinMindFundamentalProvider:
     name = "FinMindFundamental"
 
     def __init__(self, api_token: str = "") -> None:
-        self._token = api_token
+        # api_token 僅供測試用靜態覆蓋；正式使用時留空，由 token manager 動態取得
+        self._static_token = api_token
+
+    def _get_token(self) -> str:
+        return self._static_token or get_token_manager().token
 
     def _fetch_dataset(self, dataset: str, stock_id: str, start_date: str, end_date: str) -> list[dict]:
         try:
@@ -35,9 +40,15 @@ class FinMindFundamentalProvider:
             "data_id": stock_id,
             "start_date": start_date,
             "end_date": end_date,
-            "token": self._token,
+            "token": self._get_token(),
         }
         resp = requests.get(_FINMIND_API, params=params, timeout=15)
+        if resp.status_code == 402:
+            raise FundamentalError(
+                code="FINMIND_TOKEN_EXPIRED",
+                message=f"FinMind token 過期或無效（402），dataset={dataset}",
+                provider=self.name,
+            )
         resp.raise_for_status()
         body = resp.json()
         return body.get("data", [])
@@ -77,6 +88,16 @@ class FinMindFundamentalProvider:
             return {}
 
     def fetch(self, symbol: str, current_price: float) -> FundamentalData:
+        try:
+            return self._fetch_inner(symbol=symbol, current_price=current_price)
+        except FundamentalError as exc:
+            if exc.code == "FINMIND_TOKEN_EXPIRED" and not self._static_token:
+                logger.warning("[FinMindFundamentalProvider] token 過期（402），嘗試自動刷新後重試")
+                get_token_manager().invalidate()
+                return self._fetch_inner(symbol=symbol, current_price=current_price)
+            raise
+
+    def _fetch_inner(self, symbol: str, current_price: float) -> FundamentalData:
         stock_id = symbol.split(".")[0]
         end_date = date.today().isoformat()
         start_date = (date.today() - timedelta(days=365 * 6)).isoformat()  # 6 年抓 20+ 季
