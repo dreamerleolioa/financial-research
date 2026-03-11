@@ -8,10 +8,13 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.auth.router import router as auth_router
 from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
+from ai_stock_sentinel.user_models.user import User
 
 configure_logging()
 
@@ -85,7 +88,10 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
+
+app.include_router(auth_router)
 
 
 @app.get("/health")
@@ -195,6 +201,7 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
 def analyze(
     payload: AnalyzeRequest,
     graph=Depends(get_graph),
+    current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -253,6 +260,7 @@ def analyze(
 def analyze_position(
     payload: PositionAnalyzeRequest,
     graph=Depends(get_graph),
+    current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
     initial_state: GraphState = {
         "symbol": payload.symbol,

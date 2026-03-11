@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { authHeaders } from "../lib/auth";
 
 interface PositionAnalysis {
   entry_price: number;
@@ -85,7 +86,7 @@ export default function PositionPage() {
 
       const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze/position`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.models import StockSnapshot
 
 # ---------------------------------------------------------------------------
@@ -41,8 +42,20 @@ def _make_graph(final_state: dict[str, Any]):
     return graph
 
 
+def _fake_user():
+    user = MagicMock()
+    user.id = 1
+    user.email = "test@example.com"
+    user.name = "Test User"
+    user.avatar_url = None
+    user.is_active = True
+    user.deleted_at = None
+    return user
+
+
 def _client_with_graph(graph) -> TestClient:
     api.app.dependency_overrides[api.get_graph] = lambda: graph
+    api.app.dependency_overrides[get_current_user] = _fake_user
     return TestClient(api.app)
 
 
