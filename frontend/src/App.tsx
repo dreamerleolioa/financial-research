@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { authHeaders } from "./lib/auth";
+import { useAuth } from "./stores/auth";
 import PositionPage from "./pages/PositionPage";
 
 interface ErrorDetail {
@@ -183,6 +185,7 @@ function mapVolumeSource(value: unknown): string {
 }
 
 function App() {
+  const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<"analyze" | "position">("analyze");
   const [symbol, setSymbol] = useState("2330.TW");
   const [loading, setLoading] = useState(false);
@@ -201,7 +204,7 @@ function App() {
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({ symbol: symbol.trim() }),
       });
       const data: AnalyzeResponse = await res.json();
@@ -237,11 +240,22 @@ function App() {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-6">
-        <header className="flex flex-col gap-2">
-          <h1 className="text-2xl font-semibold md:text-3xl">個股分析儀表板</h1>
-          <p className="text-sm text-slate-600">
-            輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。
-          </p>
+        <header className="flex items-start justify-between gap-2">
+          <div>
+            <h1 className="text-2xl font-semibold md:text-3xl">個股分析儀表板</h1>
+            <p className="text-sm text-slate-600">
+              輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。
+            </p>
+          </div>
+          <div className="flex items-center gap-3 pt-1">
+            {user?.name && <span className="text-sm text-slate-500">{user.name}</span>}
+            <button
+              onClick={logout}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+            >
+              登出
+            </button>
+          </div>
         </header>
 
         <div className="flex gap-2">

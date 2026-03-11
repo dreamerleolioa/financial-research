@@ -8,9 +8,15 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.auth.router import router as auth_router
+from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
+from ai_stock_sentinel.user_models.user import User
+
+configure_logging()
 
 
 class AnalyzeRequest(BaseModel):
@@ -74,6 +80,20 @@ def get_graph():
 
 app = FastAPI(title="AI Stock Sentinel API", version="v1")
 
+
+@app.on_event("startup")
+def run_migrations() -> None:
+    import logging
+
+    from alembic import command
+    from alembic.config import Config
+
+    try:
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Alembic migration skipped: %s", exc)
+
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 
@@ -82,7 +102,10 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
+
+app.include_router(auth_router)
 
 
 @app.get("/health")
@@ -192,6 +215,7 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
 def analyze(
     payload: AnalyzeRequest,
     graph=Depends(get_graph),
+    current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -250,6 +274,7 @@ def analyze(
 def analyze_position(
     payload: PositionAnalyzeRequest,
     graph=Depends(get_graph),
+    current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
     initial_state: GraphState = {
         "symbol": payload.symbol,

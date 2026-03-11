@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 
-@dataclass
+@dataclass(slots=True, frozen=True)
 class FundamentalData:
     symbol: str
 

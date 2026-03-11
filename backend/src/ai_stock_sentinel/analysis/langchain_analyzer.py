@@ -178,8 +178,11 @@ class LangChainStockAnalyzer:
 
         output_parsers = import_module("langchain_core.output_parsers")
         prompts = import_module("langchain_core.prompts")
+        exceptions_module = import_module("langchain_core.exceptions")
         StrOutputParser = getattr(output_parsers, "StrOutputParser")
+        JsonOutputParser = getattr(output_parsers, "JsonOutputParser")
         ChatPromptTemplate = getattr(prompts, "ChatPromptTemplate")
+        OutputParserException = getattr(exceptions_module, "OutputParserException")
 
         system_content = _SYSTEM_PROMPT
         human_content = _HUMAN_PROMPT
@@ -202,26 +205,30 @@ class LangChainStockAnalyzer:
             ("system", system_content),
             ("human", human_content),
         ])
-        chain = prompt | self.llm | StrOutputParser()
-        raw = chain.invoke(
-            {
-                "symbol": snapshot.symbol,
-                "current_price": snapshot.current_price,
-                "previous_close": snapshot.previous_close,
-                "day_open": snapshot.day_open,
-                "day_high": snapshot.day_high,
-                "day_low": snapshot.day_low,
-                "volume": snapshot.volume,
-                "recent_closes": snapshot.recent_closes,
-                "news_summary": news_summary or "（本次無新聞摘要）",
-                "technical_context": technical_context or "（無技術敘事）",
-                "institutional_context": institutional_context or "（無籌碼敘事）",
-                "confidence_score": confidence_score if confidence_score is not None else 50,
-                "cross_validation_note": cross_validation_note or "（無交叉驗證備注）",
-                "fundamental_context": fundamental_context or "（本次無基本面資料）",
-            }
-        )
-        return self._parse_analysis(raw)
+        invoke_kwargs = {
+            "symbol": snapshot.symbol,
+            "current_price": snapshot.current_price,
+            "previous_close": snapshot.previous_close,
+            "day_open": snapshot.day_open,
+            "day_high": snapshot.day_high,
+            "day_low": snapshot.day_low,
+            "volume": snapshot.volume,
+            "recent_closes": snapshot.recent_closes,
+            "news_summary": news_summary or "（本次無新聞摘要）",
+            "technical_context": technical_context or "（無技術敘事）",
+            "institutional_context": institutional_context or "（無籌碼敘事）",
+            "confidence_score": confidence_score if confidence_score is not None else 50,
+            "cross_validation_note": cross_validation_note or "（無交叉驗證備注）",
+            "fundamental_context": fundamental_context or "（本次無基本面資料）",
+        }
+        try:
+            json_chain = prompt | self.llm | JsonOutputParser()
+            data = json_chain.invoke(invoke_kwargs)
+            return self._parse_analysis_from_dict(data)
+        except (json.JSONDecodeError, OutputParserException):
+            str_chain = prompt | self.llm | StrOutputParser()
+            raw = str_chain.invoke(invoke_kwargs)
+            return self._parse_analysis(raw)
 
     @staticmethod
     def _parse_analysis(raw: str) -> AnalysisDetail:
@@ -249,3 +256,19 @@ class LangChainStockAnalyzer:
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return AnalysisDetail(summary=raw)
+
+    @staticmethod
+    def _parse_analysis_from_dict(data: dict) -> AnalysisDetail:
+        """從已解析的 dict 建立 AnalysisDetail（JsonOutputParser 路徑）。"""
+        return AnalysisDetail(
+            summary=str(data.get("summary") or "（AI 分析摘要缺失）"),
+            risks=[str(r) for r in data.get("risks", [])[:3]],
+            technical_signal=str(data.get("technical_signal", "sideways")),
+            institutional_flow=data.get("institutional_flow") or None,
+            sentiment_label=data.get("sentiment_label") or None,
+            tech_insight=data.get("tech_insight") or None,
+            inst_insight=data.get("inst_insight") or None,
+            news_insight=data.get("news_insight") or None,
+            final_verdict=data.get("final_verdict") or None,
+            fundamental_insight=data.get("fundamental_insight") or None,
+        )

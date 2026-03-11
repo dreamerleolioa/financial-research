@@ -62,6 +62,18 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 - `requires_news_refresh`
 - `requires_fundamental_update`
 
+### 2.3 資料抓取節點並行設計
+
+`fetch_institutional_node` 與 `fetch_fundamental_node` 彼此獨立、無依賴關係，應並行執行以縮短整體分析等待時間。
+
+**實作方式：** 在 `builder.py` 合併為單一 async 節點 `fetch_external_data_node`，使用 `asyncio.gather` + `loop.run_in_executor` 將兩個同步 fetcher 並行丟入 thread pool。現有同步 fetcher 不需改動。
+
+```
+crawl → fetch_external_data（institutional + fundamental 並行）→ judge → ...
+```
+
+**不採用方案：** 將底層 provider 全面改為 `async def` + `httpx.AsyncClient`，改動範圍過大，風險高於收益。
+
 ---
 
 ## 3. Agent 設計

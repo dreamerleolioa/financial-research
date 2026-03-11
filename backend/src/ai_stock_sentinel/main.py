@@ -12,7 +12,7 @@ except ImportError:
 
 from ai_stock_sentinel.analysis.langchain_analyzer import LangChainStockAnalyzer
 from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
-from ai_stock_sentinel.config import load_settings
+from ai_stock_sentinel.config import configure_logging, load_settings
 from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.builder import build_graph
@@ -68,6 +68,7 @@ def read_news_input(news_file: str | None, news_text: str | None) -> str | None:
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="AI Stock Sentinel crawler")
     parser.add_argument("--symbol", type=str, default="2330.TW")
     parser.add_argument("--news-file", type=str, help="財經新聞文字檔路徑")

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 import httpx
 
+logger = logging.getLogger(__name__)
 
-@dataclass
+
+@dataclass(slots=True, frozen=True)
 class RawNewsItem:
     source: str
     url: str
@@ -37,7 +40,18 @@ class RssNewsClient:
             )
             response.raise_for_status()
             raw_xml = response.content
-        except httpx.HTTPError:
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            log_fn = logger.error if status < 500 else logger.warning
+            log_fn(
+                "RSS fetch HTTP error: status=%s url=%s",
+                status,
+                url,
+                exc_info=True,
+            )
+            return []
+        except httpx.HTTPError as exc:
+            logger.warning("RSS fetch network error: %s url=%s", exc, url, exc_info=True)
             return []
 
         if not raw_xml.strip():
@@ -48,7 +62,8 @@ class RssNewsClient:
     def _parse_rss(self, raw_xml: bytes, max_items: int) -> list[RawNewsItem]:
         try:
             root = ET.fromstring(raw_xml)
-        except ET.ParseError:
+        except ET.ParseError as exc:
+            logger.warning("RSS XML parse error: %s", exc, exc_info=True)
             return []
 
         channel = root.find("channel")

@@ -33,6 +33,10 @@ jobs:
         env:
           # 測試時用假 key，避免真實呼叫 API
           ANTHROPIC_API_KEY: test-key
+          JWT_SECRET: test-secret-for-ci-only
+          DATABASE_URL: sqlite:///./test.db
+          GOOGLE_CLIENT_ID: test-google-client-id
+          GOOGLE_CLIENT_SECRET: test-google-client-secret
 
   # ── 前端 Build + Deploy to GitHub Pages ──────────────────────
   deploy-frontend:
@@ -79,6 +83,8 @@ jobs:
           VITE_BASE_URL: /${{ github.event.repository.name }}/
           # Render 後端 URL（從 GitHub Actions Variables 注入）
           VITE_API_URL: ${{ vars.VITE_API_URL }}
+          # Google OAuth Client ID（從 GitHub Actions Variables 注入）
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

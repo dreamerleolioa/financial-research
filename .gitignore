@@ -44,3 +44,5 @@ htmlcov/
 !.vscode/extensions.json
 !.vscode/launch.json
 !.vscode/tasks.json
+docs/database-credentials.md
+pgdata/

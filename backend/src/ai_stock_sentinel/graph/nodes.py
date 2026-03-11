@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import date
 from typing import Any, Callable
@@ -45,6 +47,38 @@ def fetch_fundamental_node(
     fund = fetcher(symbol, current_price)
     context = generate_fundamental_context(fund)
     return {"fundamental_data": fund, "fundamental_context": context}
+
+
+def fetch_external_data_node(
+    state: GraphState,
+    *,
+    institutional_fetcher: Callable[[str], dict[str, Any]],
+    fundamental_fetcher: Callable[[str, float], dict[str, Any]],
+) -> dict[str, Any]:
+    """並行抓取籌碼面與基本面資料，寫入 institutional_flow 與 fundamental_data。
+
+    使用 asyncio.gather + run_in_executor 將兩個同步 fetcher 丟入 thread pool
+    並行執行，不需修改底層 provider。
+    """
+    symbol = state["symbol"]
+    snapshot = state.get("snapshot") or {}
+    current_price = float(snapshot.get("current_price") or 0)
+
+    async def _run() -> tuple[dict[str, Any], dict[str, Any]]:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            inst_future = loop.run_in_executor(pool, institutional_fetcher, symbol)
+            fund_future = loop.run_in_executor(pool, fundamental_fetcher, symbol, current_price)
+            return await asyncio.gather(inst_future, fund_future)
+
+    inst_result, fund_result = asyncio.run(_run())
+
+    context = generate_fundamental_context(fund_result)
+    return {
+        "institutional_flow": inst_result,
+        "fundamental_data": fund_result,
+        "fundamental_context": context,
+    }
 
 
 def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]:

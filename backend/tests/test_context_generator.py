@@ -5,63 +5,61 @@ import pandas as pd
 import pytest
 
 from ai_stock_sentinel.analysis.context_generator import (
-    _calc_bias,
-    _calc_rsi,
-    _ma,
     _price_level_narrative,
     generate_technical_context,
 )
+from ai_stock_sentinel.analysis.metrics import calc_bias, calc_rsi, ma
 
 
-# ─── _ma ────────────────────────────────────────────────────────────────────
+# ─── ma ─────────────────────────────────────────────────────────────────────
 
 class TestMa:
     def test_ma5_exact(self):
         closes = [10.0, 20.0, 30.0, 40.0, 50.0]
-        assert _ma(closes, 5) == pytest.approx(30.0)
+        assert ma(closes, 5) == pytest.approx(30.0)
 
     def test_ma_insufficient_data_returns_none(self):
-        assert _ma([10.0, 20.0], 5) is None
+        assert ma([10.0, 20.0], 5) is None
 
     def test_ma_uses_last_n(self):
         # 只取最後 5 筆
         closes = [100.0, 10.0, 20.0, 30.0, 40.0, 50.0]
-        assert _ma(closes, 5) == pytest.approx(30.0)
+        assert ma(closes, 5) == pytest.approx(30.0)
 
 
-# ─── _calc_bias ──────────────────────────────────────────────────────────────
+# ─── calc_bias ───────────────────────────────────────────────────────────────
 
 class TestCalcBias:
     def test_positive_bias(self):
         """close > MA → 正乖離"""
-        bias = _calc_bias(close=110.0, ma=100.0)
+        bias = calc_bias(close=110.0, ma_val=100.0)
         assert bias == pytest.approx(10.0)
 
     def test_negative_bias(self):
         """close < MA → 負乖離"""
-        bias = _calc_bias(close=90.0, ma=100.0)
+        bias = calc_bias(close=90.0, ma_val=100.0)
         assert bias == pytest.approx(-10.0)
 
     def test_zero_bias(self):
         """close == MA → 乖離 0"""
-        bias = _calc_bias(close=100.0, ma=100.0)
+        bias = calc_bias(close=100.0, ma_val=100.0)
         assert bias == pytest.approx(0.0)
 
     def test_ma_zero_returns_none(self):
         """MA 為 0 時回傳 None，避免除以零"""
-        assert _calc_bias(close=100.0, ma=0.0) is None
+        assert calc_bias(close=100.0, ma_val=0.0) is None
 
     # 邊界值
     def test_bias_just_above_5(self):
-        bias = _calc_bias(close=105.1, ma=100.0)
+        bias = calc_bias(close=105.1, ma_val=100.0)
         assert bias is not None and bias > 5
 
     def test_bias_just_below_minus_10(self):
-        bias = _calc_bias(close=89.9, ma=100.0)
+        bias = calc_bias(close=89.9, ma_val=100.0)
         assert bias is not None and bias < -10
 
 
-# ─── _calc_rsi ───────────────────────────────────────────────────────────────
+# ─── calc_rsi ────────────────────────────────────────────────────────────────
 
 class TestCalcRsi:
     def _closes_trending_up(self, n: int = 20) -> list[float]:
@@ -75,18 +73,18 @@ class TestCalcRsi:
     def test_insufficient_data_returns_none(self):
         """少於 period+1 筆資料時回傳 None"""
         closes = [100.0] * 14  # 需要 15 筆
-        assert _calc_rsi(closes, period=14) is None
+        assert calc_rsi(closes, period=14) is None
 
     def test_all_up_returns_100(self):
         """純上漲序列，RSI 應為 100"""
         closes = self._closes_trending_up(20)
-        rsi = _calc_rsi(closes, period=14)
+        rsi = calc_rsi(closes, period=14)
         assert rsi == pytest.approx(100.0)
 
     def test_all_down_returns_0(self):
         """純下跌序列，RSI 應為 0"""
         closes = self._closes_trending_down(20)
-        rsi = _calc_rsi(closes, period=14)
+        rsi = calc_rsi(closes, period=14)
         assert rsi == pytest.approx(0.0)
 
     def test_rsi_in_valid_range(self):
@@ -94,7 +92,7 @@ class TestCalcRsi:
         import random
         random.seed(42)
         closes = [100.0 + random.uniform(-5, 5) for _ in range(30)]
-        rsi = _calc_rsi(closes, period=14)
+        rsi = calc_rsi(closes, period=14)
         assert rsi is not None
         assert 0.0 <= rsi <= 100.0
 
@@ -106,7 +104,7 @@ class TestCalcRsi:
         for _ in range(18):
             closes.append(closes[-1] + 2.0)
         closes.append(closes[-1] - 0.1)
-        rsi = _calc_rsi(closes, period=14)
+        rsi = calc_rsi(closes, period=14)
         assert rsi is not None and rsi > 70, f"預期超買但 RSI={rsi}"
 
     def test_rsi_oversold_boundary(self):
@@ -115,7 +113,7 @@ class TestCalcRsi:
         for _ in range(18):
             closes.append(closes[-1] - 2.0)
         closes.append(closes[-1] + 0.1)
-        rsi = _calc_rsi(closes, period=14)
+        rsi = calc_rsi(closes, period=14)
         assert rsi is not None and rsi < 30, f"預期超賣但 RSI={rsi}"
 
 
