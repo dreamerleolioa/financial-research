@@ -41,14 +41,17 @@ class RssNewsClient:
             response.raise_for_status()
             raw_xml = response.content
         except httpx.HTTPStatusError as exc:
-            logger.warning(
+            status = exc.response.status_code
+            log_fn = logger.error if status < 500 else logger.warning
+            log_fn(
                 "RSS fetch HTTP error: status=%s url=%s",
-                exc.response.status_code,
+                status,
                 url,
+                exc_info=True,
             )
             return []
         except httpx.HTTPError as exc:
-            logger.warning("RSS fetch network error: %s url=%s", exc, url)
+            logger.warning("RSS fetch network error: %s url=%s", exc, url, exc_info=True)
             return []
 
         if not raw_xml.strip():
@@ -60,7 +63,7 @@ class RssNewsClient:
         try:
             root = ET.fromstring(raw_xml)
         except ET.ParseError as exc:
-            logger.warning("RSS XML parse error: %s", exc)
+            logger.warning("RSS XML parse error: %s", exc, exc_info=True)
             return []
 
         channel = root.find("channel")
