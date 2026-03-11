@@ -83,11 +83,16 @@ app = FastAPI(title="AI Stock Sentinel API", version="v1")
 
 @app.on_event("startup")
 def run_migrations() -> None:
+    import logging
+
     from alembic import command
     from alembic.config import Config
 
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+    try:
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Alembic migration skipped: %s", exc)
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]

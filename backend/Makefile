@@ -10,7 +10,7 @@ run:
 	PYTHONPATH=src $(PYTHON) -m ai_stock_sentinel.main
 
 run-api:
-	PYTHONPATH=src $(PYTHON) -m uvicorn ai_stock_sentinel.api:app --reload
+	set -a && . ./.env && set +a && PYTHONPATH=src $(PYTHON) -m uvicorn ai_stock_sentinel.api:app --reload
 
 test:
 	PYTHONPATH=src $(PYTHON) -m pytest -q
