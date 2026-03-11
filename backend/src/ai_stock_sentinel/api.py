@@ -1,22 +1,19 @@
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import asdict as _asdict, is_dataclass
 from typing import Any
 
 from fastapi import Depends, FastAPI
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
+
+configure_logging()
 
 
 class AnalyzeRequest(BaseModel):
