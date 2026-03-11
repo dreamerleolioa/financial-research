@@ -1,3 +1,4 @@
+import logging as _logging
 import os
 from dataclasses import dataclass
 
@@ -17,9 +18,6 @@ def load_settings() -> Settings:
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
     )
-
-
-import logging as _logging
 
 
 def configure_logging(level: int = _logging.INFO) -> None:
