@@ -247,12 +247,38 @@ function App() {
               輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。
             </p>
           </div>
-          <div className="flex items-center gap-3 pt-1">
-            {user?.name && <span className="text-sm text-slate-500">{user.name}</span>}
+          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+            {user?.avatar_url ? (
+              <img
+                src={user.avatar_url}
+                alt={user.name ?? "使用者"}
+                referrerPolicy="no-referrer"
+                className="h-8 w-8 rounded-full object-cover ring-2 ring-indigo-100"
+              />
+            ) : (
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-sm font-semibold text-indigo-600">
+                {user?.name ? user.name.charAt(0).toUpperCase() : "?"}
+              </div>
+            )}
+            {user?.name && (
+              <div className="flex flex-col leading-tight">
+                <span className="text-sm font-medium text-slate-800">{user.name}</span>
+                {user?.email && (
+                  <span className="text-xs text-slate-400">{user.email}</span>
+                )}
+              </div>
+            )}
+            <div className="mx-1 h-5 w-px bg-slate-200" />
             <button
               onClick={logout}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+              title="登出"
             >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
               登出
             </button>
           </div>
@@ -261,21 +287,19 @@ function App() {
         <div className="flex gap-2">
           <button
             onClick={() => setActiveTab("analyze")}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-              activeTab === "analyze"
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "analyze"
                 ? "bg-indigo-600 text-white"
                 : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-            }`}
+              }`}
           >
             個股分析
           </button>
           <button
             onClick={() => setActiveTab("position")}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-              activeTab === "position"
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "position"
                 ? "bg-indigo-600 text-white"
                 : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-            }`}
+              }`}
           >
             我的持股
           </button>
@@ -285,364 +309,364 @@ function App() {
 
         {activeTab === "analyze" && <>
 
-        {firstError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            <span className="font-semibold">[{firstError.code}]</span> {firstError.message}
-          </div>
-        )}
+          {firstError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <span className="font-semibold">[{firstError.code}]</span> {firstError.message}
+            </div>
+          )}
 
-        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <label htmlFor="symbol" className="mb-2 block text-sm font-medium text-slate-700">
-            股票代碼
-          </label>
-          <div className="flex flex-col gap-3 md:flex-row">
-            <input
-              id="symbol"
-              value={symbol}
-              onChange={(event) => setSymbol(event.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze()}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm ring-indigo-200 transition outline-none focus:ring-2 md:max-w-sm"
-              placeholder="例如 2330.TW"
-              disabled={loading}
-            />
-            <button
-              onClick={handleAnalyze}
-              disabled={loading}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loading ? "分析中..." : "開始分析"}
-            </button>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || "未輸入"}</p>
-        </section>
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+            <label htmlFor="symbol" className="mb-2 block text-sm font-medium text-slate-700">
+              股票代碼
+            </label>
+            <div className="flex flex-col gap-3 md:flex-row">
+              <input
+                id="symbol"
+                value={symbol}
+                onChange={(event) => setSymbol(event.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze()}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm ring-indigo-200 transition outline-none focus:ring-2 md:max-w-sm"
+                placeholder="例如 2330.TW"
+                disabled={loading}
+              />
+              <button
+                onClick={handleAnalyze}
+                disabled={loading}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading ? "分析中..." : "開始分析"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || "未輸入"}</p>
+          </section>
 
-        <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="mb-3 text-sm font-semibold text-slate-800">信心指數</h2>
-            <div className="flex flex-col items-center">
-              <div className="relative flex items-center justify-center">
-                <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
-                  <circle
-                    cx="70"
-                    cy="70"
-                    r="52"
-                    strokeWidth="12"
-                    className="fill-none stroke-slate-200"
-                  />
-                  <circle
-                    cx="70"
-                    cy="70"
-                    r="52"
-                    strokeWidth="12"
-                    strokeLinecap="round"
-                    className="fill-none stroke-indigo-600"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={dashOffset}
-                    style={{ transition: "stroke-dashoffset 0.5s ease" }}
-                  />
-                </svg>
-                <div className="absolute text-center">
-                  <div className="text-xl font-semibold">
-                    {confidenceScore != null ? `${confidenceScore}%` : "—"}
+          <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-slate-800">信心指數</h2>
+              <div className="flex flex-col items-center">
+                <div className="relative flex items-center justify-center">
+                  <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="52"
+                      strokeWidth="12"
+                      className="fill-none stroke-slate-200"
+                    />
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="52"
+                      strokeWidth="12"
+                      strokeLinecap="round"
+                      className="fill-none stroke-indigo-600"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={dashOffset}
+                      style={{ transition: "stroke-dashoffset 0.5s ease" }}
+                    />
+                  </svg>
+                  <div className="absolute text-center">
+                    <div className="text-xl font-semibold">
+                      {confidenceScore != null ? `${confidenceScore}%` : "—"}
+                    </div>
+                    <div className="text-xs text-slate-500">Confidence</div>
                   </div>
-                  <div className="text-xs text-slate-500">Confidence</div>
                 </div>
-              </div>
-              {result?.cross_validation_note && (
-                <p className="mt-2 text-center text-xs text-slate-500">
-                  {result.cross_validation_note}
-                </p>
-              )}
-              {result?.data_confidence !== null &&
-                result?.data_confidence !== undefined &&
-                result.data_confidence < 60 && (
-                  <p className="mt-1 text-center text-xs text-gray-400">
-                    ⚠️ 資料不足（{result.data_confidence}%）
+                {result?.cross_validation_note && (
+                  <p className="mt-2 text-center text-xs text-slate-500">
+                    {result.cross_validation_note}
                   </p>
                 )}
-            </div>
-          </article>
+                {result?.data_confidence !== null &&
+                  result?.data_confidence !== undefined &&
+                  result.data_confidence < 60 && (
+                    <p className="mt-1 text-center text-xs text-gray-400">
+                      ⚠️ 資料不足（{result.data_confidence}%）
+                    </p>
+                  )}
+              </div>
+            </article>
 
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-            <h2 className="mb-3 text-sm font-semibold text-slate-800">快照資訊</h2>
+            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+              <h2 className="mb-3 text-sm font-semibold text-slate-800">快照資訊</h2>
+              {result ? (
+                <dl className="space-y-2 text-sm text-slate-700">
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">代碼</dt>
+                    <dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">現價</dt>
+                    <dd className="font-medium">
+                      {formatPrice(snapshot.current_price, snapshot.symbol)}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">成交量</dt>
+                    <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">成交量來源</dt>
+                    <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="text-sm text-slate-400">請先執行分析。</p>
+              )}
+            </article>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
+              {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === "string" && (
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
+                    }`}
+                >
+                  {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? "中性"}
+                </span>
+              )}
+            </div>
+
+            {result?.cleaned_news_quality != null &&
+              (result.cleaned_news_quality.quality_score < 60 ||
+                result.cleaned_news_quality.quality_flags.length > 0) && (
+                <p className="mt-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-500">
+                  摘要品質受限
+                </p>
+              )}
+
             {result ? (
-              <dl className="space-y-2 text-sm text-slate-700">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">代碼</dt>
-                  <dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd>
+              result.news_display_items.length > 0 ? (
+                <ul className="mt-3 divide-y divide-slate-100">
+                  {result.news_display_items.map((item, idx) => (
+                    <li key={idx} className="py-2.5">
+                      {item.source_url ? (
+                        <a
+                          href={item.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-sm text-slate-800 hover:text-indigo-600 hover:underline"
+                        >
+                          {item.title}
+                        </a>
+                      ) : (
+                        <p className="text-sm text-slate-800">{item.title}</p>
+                      )}
+                      {item.date && <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-sm text-slate-400">本次無新聞資料。</p>
+              )
+            ) : (
+              <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
+            )}
+
+            <p className="mt-3 text-xs text-slate-400">
+              以上為市場情緒參考新聞。財報數字請參閱
+              <a
+                href="https://mops.twse.com.tw"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-0.5 text-indigo-500 hover:underline"
+              >
+                公開資訊觀測站
+              </a>
+              。
+            </p>
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-sm font-semibold text-slate-800">分析報告</h2>
+
+            {/* 四維小卡：2×2 排列，永遠顯示 */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {/* 技術面卡片 */}
+              <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-600">技術面</h3>
+                  {result?.analysis_detail ? (
+                    <span
+                      className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways
+                        }`}
+                    >
+                      {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? "盤整"}
+                    </span>
+                  ) : (
+                    <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                      —
+                    </span>
+                  )}
                 </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">現價</dt>
-                  <dd className="font-medium">
-                    {formatPrice(snapshot.current_price, snapshot.symbol)}
+                <InsightText text={result?.analysis_detail?.tech_insight} />
+              </article>
+
+              {/* 籌碼面卡片 */}
+              <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
+                  {result?.institutional_flow_label &&
+                    INST_FLOW_BADGE[result.institutional_flow_label] ? (
+                    <span
+                      className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${INST_FLOW_BADGE[result.institutional_flow_label].cls
+                        }`}
+                    >
+                      {INST_FLOW_BADGE[result.institutional_flow_label].label}
+                    </span>
+                  ) : (
+                    <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                      —
+                    </span>
+                  )}
+                </div>
+                <InsightText text={result?.analysis_detail?.inst_insight} />
+              </article>
+
+              {/* 基本面估值卡片 */}
+              <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
+                  {result?.fundamental_data?.pe_band &&
+                    PE_BAND_BADGE[result.fundamental_data.pe_band] ? (
+                    <span
+                      className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${PE_BAND_BADGE[result.fundamental_data.pe_band].cls}`}
+                    >
+                      {PE_BAND_BADGE[result.fundamental_data.pe_band].label}
+                    </span>
+                  ) : (
+                    <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                      —
+                    </span>
+                  )}
+                </div>
+                {result?.analysis_detail?.fundamental_insight ? (
+                  <InsightText text={result.analysis_detail.fundamental_insight} />
+                ) : result?.fundamental_data ? (
+                  <div className="space-y-1 text-sm text-slate-600">
+                    {result.fundamental_data.pe_current != null && (
+                      <p>
+                        PE：{result.fundamental_data.pe_current.toFixed(1)} 倍（
+                        {result.fundamental_data.pe_band === "cheap"
+                          ? "偏低"
+                          : result.fundamental_data.pe_band === "expensive"
+                            ? "偏高"
+                            : "合理"}
+                        ）
+                      </p>
+                    )}
+                    {result.fundamental_data.dividend_yield != null && (
+                      <p>殖利率：{result.fundamental_data.dividend_yield.toFixed(2)}%</p>
+                    )}
+                    {result.fundamental_data.pe_percentile != null && (
+                      <p>PE 百分位：{result.fundamental_data.pe_percentile.toFixed(0)}%</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">本次無基本面資料</p>
+                )}
+              </article>
+
+              {/* 消息面卡片 */}
+              <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
+                  {result?.analysis_detail?.sentiment_label ? (
+                    <span
+                      className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ??
+                        SENTIMENT_CLASS.neutral
+                        }`}
+                    >
+                      {SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? "中性"}
+                    </span>
+                  ) : (
+                    <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                      —
+                    </span>
+                  )}
+                </div>
+                <InsightText text={result?.analysis_detail?.news_insight} />
+              </article>
+            </div>
+
+            {/* 綜合仲裁：有結果才顯示 */}
+            {result?.analysis_detail && (
+              <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
+                <h3 className="mb-3 text-xs font-semibold text-indigo-700">綜合仲裁</h3>
+                <InsightText
+                  text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary}
+                />
+                {result.analysis_detail.risks.length > 0 && (
+                  <div className="mt-4 border-t border-indigo-100 pt-3">
+                    <p className="mb-1.5 text-xs font-medium text-slate-500">風險提示</p>
+                    <ul className="space-y-1">
+                      {result.analysis_detail.risks.map((risk, i) => (
+                        <li key={i} className="flex gap-2 text-sm text-slate-700">
+                          <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400" />
+                          {risk}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </article>
+            )}
+
+            {/* fallback：純文字 analysis（LLM 未回傳 analysis_detail 時） */}
+            {result && !result.analysis_detail && result.analysis && (
+              <pre className="rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap text-slate-700">
+                {result.analysis}
+              </pre>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+            <div className="mb-4 flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-800">投資策略</h2>
+              {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
+                <span
+                  className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}
+                >
+                  {ACTION_TAG_MAP[result.action_plan_tag].emoji}{" "}
+                  {ACTION_TAG_MAP[result.action_plan_tag].label}
+                </span>
+              )}
+            </div>
+            {result ? (
+              <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <dt className="text-xs text-slate-500">策略方向</dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-800">
+                    {result.strategy_type
+                      ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type)
+                      : "—"}
                   </dd>
                 </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">成交量</dt>
-                  <dd className="font-medium">{formatVolume(snapshot.volume)}</dd>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <dt className="text-xs text-slate-500">建議入場區間</dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-800">
+                    {result.entry_zone ?? "—"}
+                  </dd>
                 </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">成交量來源</dt>
-                  <dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <dt className="text-xs text-slate-500">防守底線（停損）</dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-800">
+                    {result.stop_loss ?? "—"}
+                  </dd>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <dt className="text-xs text-slate-500">預期持股期間</dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-800">
+                    {result.holding_period ?? "—"}
+                  </dd>
                 </div>
               </dl>
             ) : (
               <p className="text-sm text-slate-400">請先執行分析。</p>
             )}
-          </article>
-        </section>
-
-        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
-            {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === "string" && (
-              <span
-                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral
-                  }`}
-              >
-                {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? "中性"}
-              </span>
-            )}
-          </div>
-
-          {result?.cleaned_news_quality != null &&
-            (result.cleaned_news_quality.quality_score < 60 ||
-              result.cleaned_news_quality.quality_flags.length > 0) && (
-              <p className="mt-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-500">
-                摘要品質受限
-              </p>
-            )}
-
-          {result ? (
-            result.news_display_items.length > 0 ? (
-              <ul className="mt-3 divide-y divide-slate-100">
-                {result.news_display_items.map((item, idx) => (
-                  <li key={idx} className="py-2.5">
-                    {item.source_url ? (
-                      <a
-                        href={item.source_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block text-sm text-slate-800 hover:text-indigo-600 hover:underline"
-                      >
-                        {item.title}
-                      </a>
-                    ) : (
-                      <p className="text-sm text-slate-800">{item.title}</p>
-                    )}
-                    {item.date && <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-sm text-slate-400">本次無新聞資料。</p>
-            )
-          ) : (
-            <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
-          )}
-
-          <p className="mt-3 text-xs text-slate-400">
-            以上為市場情緒參考新聞。財報數字請參閱
-            <a
-              href="https://mops.twse.com.tw"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="ml-0.5 text-indigo-500 hover:underline"
-            >
-              公開資訊觀測站
-            </a>
-            。
-          </p>
-        </section>
-
-        <section className="space-y-4">
-          <h2 className="text-sm font-semibold text-slate-800">分析報告</h2>
-
-          {/* 四維小卡：2×2 排列，永遠顯示 */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {/* 技術面卡片 */}
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-slate-600">技術面</h3>
-                {result?.analysis_detail ? (
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways
-                      }`}
-                  >
-                    {SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? "盤整"}
-                  </span>
-                ) : (
-                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
-                    —
-                  </span>
-                )}
-              </div>
-              <InsightText text={result?.analysis_detail?.tech_insight} />
-            </article>
-
-            {/* 籌碼面卡片 */}
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
-                {result?.institutional_flow_label &&
-                  INST_FLOW_BADGE[result.institutional_flow_label] ? (
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${INST_FLOW_BADGE[result.institutional_flow_label].cls
-                      }`}
-                  >
-                    {INST_FLOW_BADGE[result.institutional_flow_label].label}
-                  </span>
-                ) : (
-                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
-                    —
-                  </span>
-                )}
-              </div>
-              <InsightText text={result?.analysis_detail?.inst_insight} />
-            </article>
-
-            {/* 基本面估值卡片 */}
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
-                {result?.fundamental_data?.pe_band &&
-                  PE_BAND_BADGE[result.fundamental_data.pe_band] ? (
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${PE_BAND_BADGE[result.fundamental_data.pe_band].cls}`}
-                  >
-                    {PE_BAND_BADGE[result.fundamental_data.pe_band].label}
-                  </span>
-                ) : (
-                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
-                    —
-                  </span>
-                )}
-              </div>
-              {result?.analysis_detail?.fundamental_insight ? (
-                <InsightText text={result.analysis_detail.fundamental_insight} />
-              ) : result?.fundamental_data ? (
-                <div className="space-y-1 text-sm text-slate-600">
-                  {result.fundamental_data.pe_current != null && (
-                    <p>
-                      PE：{result.fundamental_data.pe_current.toFixed(1)} 倍（
-                      {result.fundamental_data.pe_band === "cheap"
-                        ? "偏低"
-                        : result.fundamental_data.pe_band === "expensive"
-                          ? "偏高"
-                          : "合理"}
-                      ）
-                    </p>
-                  )}
-                  {result.fundamental_data.dividend_yield != null && (
-                    <p>殖利率：{result.fundamental_data.dividend_yield.toFixed(2)}%</p>
-                  )}
-                  {result.fundamental_data.pe_percentile != null && (
-                    <p>PE 百分位：{result.fundamental_data.pe_percentile.toFixed(0)}%</p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-slate-400">本次無基本面資料</p>
-              )}
-            </article>
-
-            {/* 消息面卡片 */}
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
-                {result?.analysis_detail?.sentiment_label ? (
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ??
-                      SENTIMENT_CLASS.neutral
-                      }`}
-                  >
-                    {SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? "中性"}
-                  </span>
-                ) : (
-                  <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">
-                    —
-                  </span>
-                )}
-              </div>
-              <InsightText text={result?.analysis_detail?.news_insight} />
-            </article>
-          </div>
-
-          {/* 綜合仲裁：有結果才顯示 */}
-          {result?.analysis_detail && (
-            <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
-              <h3 className="mb-3 text-xs font-semibold text-indigo-700">綜合仲裁</h3>
-              <InsightText
-                text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary}
-              />
-              {result.analysis_detail.risks.length > 0 && (
-                <div className="mt-4 border-t border-indigo-100 pt-3">
-                  <p className="mb-1.5 text-xs font-medium text-slate-500">風險提示</p>
-                  <ul className="space-y-1">
-                    {result.analysis_detail.risks.map((risk, i) => (
-                      <li key={i} className="flex gap-2 text-sm text-slate-700">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400" />
-                        {risk}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </article>
-          )}
-
-          {/* fallback：純文字 analysis（LLM 未回傳 analysis_detail 時） */}
-          {result && !result.analysis_detail && result.analysis && (
-            <pre className="rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap text-slate-700">
-              {result.analysis}
-            </pre>
-          )}
-        </section>
-
-        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="mb-4 flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-slate-800">投資策略</h2>
-            {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
-              <span
-                className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}
-              >
-                {ACTION_TAG_MAP[result.action_plan_tag].emoji}{" "}
-                {ACTION_TAG_MAP[result.action_plan_tag].label}
-              </span>
-            )}
-          </div>
-          {result ? (
-            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="rounded-lg bg-slate-50 p-3">
-                <dt className="text-xs text-slate-500">策略方向</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">
-                  {result.strategy_type
-                    ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type)
-                    : "—"}
-                </dd>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-3">
-                <dt className="text-xs text-slate-500">建議入場區間</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">
-                  {result.entry_zone ?? "—"}
-                </dd>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-3">
-                <dt className="text-xs text-slate-500">防守底線（停損）</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">
-                  {result.stop_loss ?? "—"}
-                </dd>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-3">
-                <dt className="text-xs text-slate-500">預期持股期間</dt>
-                <dd className="mt-1 text-sm font-medium text-slate-800">
-                  {result.holding_period ?? "—"}
-                </dd>
-              </div>
-            </dl>
-          ) : (
-            <p className="text-sm text-slate-400">請先執行分析。</p>
-          )}
-        </section>
+          </section>
         </>}
       </div>
     </main>
