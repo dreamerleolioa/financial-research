@@ -12,12 +12,6 @@ import pandas as pd
 from ai_stock_sentinel.analysis.metrics import ma, calc_bias, calc_rsi
 
 
-# 保留私有別名，避免現有測試直接引用私有名稱時中斷
-_calc_bias = calc_bias
-_calc_rsi = calc_rsi
-_ma = ma
-
-
 # ─── 敘事生成規則 ────────────────────────────────────────────────────────────
 
 def _bias_narrative(bias: float | None) -> str:
@@ -218,11 +212,11 @@ def generate_technical_context(
 
     close = closes[-1] if closes else 0.0
 
-    ma5 = _ma(closes, 5)
-    ma20 = _ma(closes, 20)
-    ma60 = _ma(closes, 60)
-    bias = _calc_bias(close, ma20) if ma20 is not None else None
-    rsi = _calc_rsi(closes, period=14)
+    ma5 = ma(closes, 5)
+    ma20 = ma(closes, 20)
+    ma60 = ma(closes, 60)
+    bias = calc_bias(close, ma20) if ma20 is not None else None
+    rsi = calc_rsi(closes, period=14)
 
     lines = [
         f"【技術位階】當前收盤價 {close:.2f}。",

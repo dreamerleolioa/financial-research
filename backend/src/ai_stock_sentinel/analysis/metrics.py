@@ -8,11 +8,11 @@ def ma(closes: list[float], n: int) -> float | None:
     return sum(closes[-n:]) / n
 
 
-def calc_bias(close: float, ma: float) -> float | None:
+def calc_bias(close: float, ma_val: float) -> float | None:
     """BIAS = (close - MA) / MA * 100"""
-    if ma == 0:
+    if ma_val == 0:
         return None
-    return (close - ma) / ma * 100
+    return (close - ma_val) / ma_val * 100
 
 
 def calc_rsi(closes: list[float], period: int = 14) -> float | None:
