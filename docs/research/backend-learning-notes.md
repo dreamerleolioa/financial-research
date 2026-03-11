@@ -17,6 +17,8 @@
 7. [工作流程：LangGraph](#7-工作流程langgraph)
 8. [測試：pytest + httpx](#8-測試pytest--httpx)
 9. [並行執行：asyncio + ThreadPoolExecutor](#9-並行執行asyncio--threadpoolexecutor)
+10. [資料庫：SQLAlchemy + Alembic](#10-資料庫sqlalchemy--alembic)
+11. [使用者認證：JWT + Google OAuth](#11-使用者認證jwt--google-oauth)
 
 ---
 
@@ -667,4 +669,299 @@ def test_runs_fetchers_concurrently():
 
 ---
 
-*最後更新：2026-03-10*
+---
+
+## 10. 資料庫：SQLAlchemy + Alembic
+
+### 10.1 SQLAlchemy ORM（DeclarativeBase + Mapped）
+
+**這是什麼**
+
+SQLAlchemy 是 Python 最主流的 ORM，讓你用 Python class 操作資料庫，不需要手寫 SQL。SQLAlchemy 2.0 引入了新的 `Mapped` 型別標注語法，讓欄位定義更清晰。
+
+**在本專案的用途**
+
+定義 `User`、`UserPortfolio`、`DailyAnalysisLog` 三張表的 ORM model，供 FastAPI 路由透過 session 操作資料庫。
+
+**程式碼片段**（`backend/src/ai_stock_sentinel/db/session.py`）
+
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+class Base(DeclarativeBase):
+    pass
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency – yields a DB session and closes it after the request."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+```
+
+- `pool_pre_ping=True`：每次使用連線前先 ping，避免用到斷線的連線
+- `autocommit=False`：需要手動呼叫 `db.commit()` 才會寫入
+- `autoflush=False`：不自動同步 ORM 狀態到 DB，避免意外的 SQL
+
+**Mapped 型別標注語法**（`backend/src/ai_stock_sentinel/db/models.py`）
+
+```python
+from datetime import date, datetime
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func
+
+class UserPortfolio(Base):
+    __tablename__ = "user_portfolio"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+```
+
+- `Mapped[int]` 表示欄位不可為 NULL；`Mapped[int | None]` 表示可為 NULL
+- `server_default=func.now()`：讓資料庫自動填入當前時間（INSERT 時）
+- `onupdate=func.now()`：ORM 執行 UPDATE 時自動更新時間戳
+- `DateTime(timezone=True)`：存為 TIMESTAMPTZ，含時區資訊，避免跨時區 bug
+
+**JSONB 欄位**（PostgreSQL 專屬）
+
+```python
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Index
+
+class DailyAnalysisLog(Base):
+    __tablename__ = "daily_analysis_log"
+    __table_args__ = (
+        Index("idx_log_indicators_gin", "indicators", postgresql_using="gin"),
+    )
+
+    indicators: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+```
+
+- `JSONB`：PostgreSQL 的二進位 JSON 格式，支援 indexing 和查詢（比 JSON 快）
+- `postgresql_using="gin"`：GIN（Generalized Inverted Index），適合 JSONB 的 key 查詢
+
+**FastAPI 中使用 DB session**
+
+```python
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from ai_stock_sentinel.db.session import get_db
+
+@app.post("/some-route")
+def some_route(db: Session = Depends(get_db)):
+    user = db.get(User, user_id)        # 按主鍵查詢
+    users = db.query(User).filter(User.email == email).first()  # 條件查詢
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)  # 讀取 DB 自動填入的欄位（id、created_at）
+```
+
+---
+
+### 10.2 Alembic Schema 版本管理
+
+**這是什麼**
+
+Alembic 是 SQLAlchemy 官方的 migration 工具，讓你把 schema 變更（新增表、加欄位）記錄成版本化的 migration 檔案，可以 upgrade（往前）也可以 downgrade（回滾）。
+
+**在本專案的用途**
+
+取代手動 SQL，每次改 ORM model 後自動 diff 出 migration，部署時自動套用。
+
+**常用指令**
+
+```bash
+# 產生 migration（自動 diff ORM model 和現有 DB 的差異）
+cd backend && PYTHONPATH=src alembic revision --autogenerate -m "add user table"
+
+# 套用所有未執行的 migration
+cd backend && PYTHONPATH=src alembic upgrade head
+
+# 回滾一個版本
+cd backend && PYTHONPATH=src alembic downgrade -1
+
+# 查看目前版本
+cd backend && PYTHONPATH=src alembic current
+```
+
+**env.py 設定重點**（`backend/alembic/env.py`）
+
+```python
+# 確保所有 model 都被 import，讓 Base.metadata 完整
+from ai_stock_sentinel.db.session import Base
+import ai_stock_sentinel.user_models.user   # noqa: F401
+import ai_stock_sentinel.db.models          # noqa: F401
+
+target_metadata = Base.metadata
+
+def get_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL environment variable is not set")
+    return url
+```
+
+- `Base.metadata` 是 autogenerate 的資料來源，必須確保所有 model 都被 import 過
+- `DATABASE_URL` 動態讀取，不 hardcode，本地和雲端各自用自己的 .env
+
+**自動化部署**（`backend/src/ai_stock_sentinel/api.py`）
+
+```python
+@app.on_event("startup")
+def run_migrations() -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
+```
+
+FastAPI 啟動時自動跑 `alembic upgrade head`，idempotent（已是最新就不做任何事）。本地和 Render 雲端部署都會自動同步 schema。
+
+**學習資源**
+
+- [SQLAlchemy 2.0 ORM 文件](https://docs.sqlalchemy.org/en/20/orm/)
+- [Alembic 官方文件](https://alembic.sqlalchemy.org/en/latest/)
+
+---
+
+## 11. 使用者認證：JWT + Google OAuth
+
+### 11.1 JWT（JSON Web Token）
+
+**這是什麼**
+
+JWT 是一種自包含的 token 格式，伺服器簽發後不需要存 session，客戶端每次請求帶上 token，伺服器驗證簽名即可確認身份。
+
+結構：`header.payload.signature`（Base64 編碼，用 `.` 分隔）
+
+**在本專案的用途**
+
+Google OAuth 登入成功後，伺服器簽發 JWT，前端存在 localStorage，之後每次 API 請求放在 `Authorization: Bearer <token>` header。
+
+**程式碼片段**（`backend/src/ai_stock_sentinel/auth/jwt_handler.py`）
+
+```python
+import jwt  # PyJWT
+
+_ALGORITHM = "HS256"
+_EXPIRE_DAYS = 7
+
+def create_access_token(user_id: int, email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(days=_EXPIRE_DAYS)
+    payload = {"sub": str(user_id), "email": email, "exp": expire}
+    return jwt.encode(payload, JWT_SECRET, algorithm=_ALGORITHM)
+
+def decode_access_token(token: str) -> dict:
+    """Decode and verify JWT. Raises jwt.PyJWTError on failure."""
+    return jwt.decode(token, JWT_SECRET, algorithms=[_ALGORITHM])
+```
+
+- `sub`（subject）：JWT 標準欄位，存放 user_id
+- `exp`（expiration）：到期時間，PyJWT 驗證時自動檢查
+- `HS256`：HMAC-SHA256，用 `JWT_SECRET` 環境變數簽名/驗證
+
+### 11.2 Google OAuth（id_token 驗證）
+
+**這是什麼**
+
+Google OAuth 的前端 Sign-In 流程：使用者點「用 Google 登入」→ Google 回傳 id_token → 前端把 id_token 傳給後端驗證。
+
+後端不需要走完整的 OAuth code exchange，直接用 Google 提供的 public key 驗證 id_token 的簽名。
+
+**在本專案的用途**
+
+`verify_google_id_token()` 驗證前端傳來的 id_token，提取 Google sub（唯一識別符）和 email。
+
+**程式碼片段**（`backend/src/ai_stock_sentinel/auth/google_verifier.py`）
+
+```python
+from google.oauth2 import id_token as google_id_token
+import google.auth.transport.requests
+
+def verify_google_id_token(token: str) -> GoogleUserInfo:
+    request = google.auth.transport.requests.Request()
+    idinfo = google_id_token.verify_oauth2_token(
+        token, request, audience=GOOGLE_CLIENT_ID
+    )
+    return GoogleUserInfo(
+        sub=idinfo["sub"],    # Google 帳號唯一識別符
+        email=idinfo["email"],
+        name=idinfo.get("name"),
+        picture=idinfo.get("picture"),
+    )
+```
+
+- `audience` 必須符合 `GOOGLE_CLIENT_ID`，防止 token 被其他應用重複使用
+- `google-auth` 函式庫自動向 Google 取得 public key 並驗證簽名
+
+### 11.3 完整登入流程
+
+**登入（`backend/src/ai_stock_sentinel/auth/router.py`）**
+
+```python
+@router.post("/google", response_model=TokenResponse)
+def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
+    # 1. 驗證 Google id_token
+    google_info = verify_google_id_token(payload.id_token)
+
+    # 2. 查詢或建立使用者（upsert 概念）
+    user = db.query(User).filter(User.google_sub == google_info.sub).first()
+    if user is None:
+        user = User(google_sub=google_info.sub, email=google_info.email, ...)
+        db.add(user)
+        db.commit()
+    else:
+        user.name = google_info.name   # 更新最新資料
+        db.commit()
+
+    # 3. 簽發 JWT
+    token = create_access_token(user_id=user.id, email=user.email)
+    return TokenResponse(access_token=token)
+```
+
+**驗證（`backend/src/ai_stock_sentinel/auth/dependencies.py`）**
+
+```python
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+    db: Session = Depends(get_db),
+) -> User:
+    payload = decode_access_token(credentials.credentials)  # 驗證 JWT
+    user = db.get(User, int(payload["sub"]))                 # 查詢 DB
+    if user is None or not user.is_active or user.deleted_at is not None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return user
+```
+
+使用方式：在任何需要登入的路由加上 `current_user: User = Depends(get_current_user)`
+
+**軟刪除模式**
+
+使用者停用不刪除資料，設定 `deleted_at = datetime.now()`。查詢時檢查 `user.deleted_at is not None`，確保軟刪除的帳號無法登入。
+
+**學習資源**
+
+- [PyJWT 官方文件](https://pyjwt.readthedocs.io/)
+- [Google Identity — Verify the Google ID token](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token)
+- [FastAPI — Security](https://fastapi.tiangolo.com/tutorial/security/)
+
+---
+
+*最後更新：2026-03-11*
