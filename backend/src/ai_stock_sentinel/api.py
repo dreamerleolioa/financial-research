@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict as _asdict, is_dataclass
 from typing import Any
 
 from fastapi import Depends, FastAPI
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
