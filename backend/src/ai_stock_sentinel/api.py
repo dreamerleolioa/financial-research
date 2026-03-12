@@ -107,6 +107,9 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
+from ai_stock_sentinel.portfolio.router import router as portfolio_router
+app.include_router(portfolio_router)
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
