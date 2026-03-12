@@ -278,6 +278,9 @@ app.include_router(auth_router)
 from ai_stock_sentinel.portfolio.router import router as portfolio_router
 app.include_router(portfolio_router)
 
+from ai_stock_sentinel.portfolio.history_router import router as history_router
+app.include_router(history_router)
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
