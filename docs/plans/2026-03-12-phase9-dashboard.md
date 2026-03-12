@@ -4,7 +4,7 @@
 
 **Goal:** 建立前端復盤儀表板頁面，視覺化單股的信心分數時序趨勢與訊號轉向歷史，讓使用者能回顧過去 N 天的診斷演變。
 
-**Architecture:** 後端新增 `GET /history/{symbol}` 端點，從 `daily_analysis_log` 讀取指定股票的歷史診斷紀錄並回傳。前端新增 `/history` 路由頁面，以折線圖呈現信心分數時序，搭配 action_tag 色塊標記訊號轉向點，使用原生 SVG 繪圖（無需引入 chart library）。
+**Architecture:** 後端新增 `GET /history/{symbol}` 端點，從 `stock_analysis_cache` 讀取指定股票的歷史診斷紀錄並回傳（不需要使用者有持倉，供即時分析視窗查看該股歷史趨勢）。`GET /portfolio/{id}/history` 則查 `daily_analysis_log`（含 user_id，供持倉列表追蹤持倉診斷變化，已在 Phase 7 實作）。前端新增 `/history` 路由頁面，以折線圖呈現信心分數時序，搭配 action_tag 色塊標記訊號轉向點，使用原生 SVG 繪圖（無需引入 chart library）。
 
 **Tech Stack:** FastAPI（新端點）、SQLAlchemy AsyncSession、React 19、TypeScript、Tailwind CSS v4、原生 SVG 折線圖
 
@@ -43,7 +43,9 @@ def _make_mock_log(record_date: str, action_tag: str, confidence: float):
 
 
 def test_history_returns_list():
-    """GET /history/{symbol} 應回傳 list 格式。"""
+    """GET /history/{symbol} 應回傳 list 格式。
+    fetch_symbol_history 查 stock_analysis_cache（mock 欄位與 DailyAnalysisLog 相同）。
+    """
     mock_logs = [
         _make_mock_log("2026-03-01", "Hold", 61.5),
         _make_mock_log("2026-03-04", "Trim", 74.0),
@@ -96,16 +98,23 @@ async def fetch_symbol_history(
     *,
     days: int = 30,
 ) -> list:
+    """從 stock_analysis_cache 讀取指定股票的歷史診斷紀錄。
+
+    查 stock_analysis_cache（不含 user_id，跨使用者共用），供即時分析視窗
+    查看該股歷史趨勢，不需要使用者有持倉。
+    若需查詢持倉診斷變化，請使用 GET /portfolio/{id}/history
+    （查 daily_analysis_log，含 user_id，已在 Phase 7 實作）。
+    """
     from datetime import date, timedelta
-    from ai_stock_sentinel.db.models import DailyAnalysisLog
+    from ai_stock_sentinel.db.models import StockAnalysisCache  # 查 stock_analysis_cache，非 daily_analysis_log
     since = date.today() - timedelta(days=days)
     result = await db.execute(
-        sa_select(DailyAnalysisLog)
+        sa_select(StockAnalysisCache)          # 查 stock_analysis_cache
         .where(
-            DailyAnalysisLog.symbol == symbol,
-            DailyAnalysisLog.record_date >= since,
+            StockAnalysisCache.symbol == symbol,
+            StockAnalysisCache.record_date >= since,
         )
-        .order_by(DailyAnalysisLog.record_date)
+        .order_by(StockAnalysisCache.record_date)
     )
     return list(result.scalars().all())
 
@@ -617,4 +626,4 @@ git commit -m "feat: add dashboard page with confidence trend chart and signal h
 
 ---
 
-*文件版本：v1.0 | 建立日期：2026-03-11 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 9*
+*文件版本：v1.1 | 建立日期：2026-03-11 | 更新日期：2026-03-12 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 9*
