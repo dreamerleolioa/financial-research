@@ -1,8 +1,8 @@
 # AI Stock Sentinel 自動化復盤與數據循環系統技術規格
 
 > 類型：Phase 7 系統擴展文件
-> 日期：2026-03-10
-> 狀態：Draft v1.0
+> 日期：2026-03-12
+> 狀態：Draft v1.4
 > 定位：將單次診斷系統升級為具備記憶、自我修正能力的閉環量化平台
 > 前置依賴：Phase 6 持股診斷系統（`POST /analyze/position`）完成
 
@@ -82,6 +82,8 @@ CREATE INDEX idx_users_email ON users (email);
 
 #### Table 1：`user_portfolio`（持倉主表）
 
+**持倉上限：每位使用者最多 5 筆 `is_active = TRUE` 的持倉。** 新增持倉時，後端須先計算該使用者目前 active 持倉數，若已達 5 筆則回傳 `HTTP 422`。
+
 ```sql
 CREATE TABLE user_portfolio (
     id              SERIAL PRIMARY KEY,
@@ -115,6 +117,17 @@ CREATE INDEX idx_portfolio_user_id ON user_portfolio (user_id);
 | `entry_price` | 與 `POST /analyze/position` 的 `entry_price` 直接對應，自動化流程從此欄讀取 |
 | `notes` | 非必填，可記錄「買進理由」，未來可作為反思提示的上下文 |
 
+**持倉上限實作規格**
+
+- 上限：每位使用者最多 **5 筆** active 持倉（`is_active = TRUE`）
+- 新增持倉的端點（`POST /portfolio`）在寫入前執行計數查詢：
+  ```python
+  count = db.query(UserPortfolio).filter_by(user_id=user.id, is_active=True).count()
+  if count >= 5:
+      raise HTTPException(status_code=422, detail="最多只能追蹤 5 筆持股")
+  ```
+- 出場（`is_active = False`）不計入上限，上限只針對 active 持倉
+
 ---
 
 #### Table 2：`daily_analysis_log`（每日診斷紀錄表）
@@ -132,21 +145,28 @@ CREATE TABLE daily_analysis_log (
     final_verdict       TEXT,                               -- LLM 產出的完整診斷結論
     prev_action_tag     VARCHAR(20),                        -- 昨日 action_tag（用於訊號轉向偵測）
     prev_confidence     NUMERIC(5, 2),                      -- 昨日信心分數（對比用）
+    is_final            BOOLEAN         NOT NULL DEFAULT FALSE,  -- FALSE=盤中非定稿；TRUE=收盤定稿（歷史復盤唯一依據）
     created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
 -- 查詢用索引
-CREATE UNIQUE INDEX uq_log_symbol_date
-    ON daily_analysis_log (symbol, record_date);  -- 確保每股每日只有一筆
+CREATE UNIQUE INDEX uq_log_user_symbol_date
+    ON daily_analysis_log (user_id, symbol, record_date);  -- 確保每位使用者每股每日只有一筆
 
 CREATE INDEX idx_log_symbol ON daily_analysis_log (symbol);
 CREATE INDEX idx_log_record_date ON daily_analysis_log (record_date);
 CREATE INDEX idx_log_action_tag ON daily_analysis_log (action_tag);
 CREATE INDEX idx_log_user_id ON daily_analysis_log (user_id);
 
--- JSONB GIN 索引：支援指標值的高效查詢
+-- JSONB GIN 索引：支援結構化包含查詢（@>）
 CREATE INDEX idx_log_indicators_gin
     ON daily_analysis_log USING GIN (indicators);
+
+-- 表達式索引：加速範圍比較查詢（GIN 對 > / < 效能受限，需改用表達式索引）
+CREATE INDEX idx_log_rsi_value
+    ON daily_analysis_log (((indicators->>'rsi_14')::NUMERIC));
+CREATE INDEX idx_log_bias_value
+    ON daily_analysis_log (((indicators->>'bias_20')::NUMERIC));
 ```
 
 **`indicators` JSONB 範例結構**
@@ -186,29 +206,310 @@ WHERE indicators @> '{"institutional": {}}'
 
 ---
 
-## 3. n8n 自動化工作流設計
+#### Table 3：`stock_raw_data`（原始數據表）
 
-### 3.1 架構總覽
+```sql
+CREATE TABLE stock_raw_data (
+    id              SERIAL PRIMARY KEY,
+    symbol          VARCHAR(20)     NOT NULL,
+    record_date     DATE            NOT NULL,
+    technical       JSONB,          -- 技術面：K線、MA、RSI、量比
+    institutional   JSONB,          -- 籌碼面：外資、投信、自營
+    fundamental     JSONB,          -- 基本面：本益比、EPS、殖利率
+    fetched_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX uq_raw_symbol_date
+    ON stock_raw_data (symbol, record_date);
+
+CREATE INDEX idx_raw_symbol      ON stock_raw_data (symbol);
+CREATE INDEX idx_raw_record_date ON stock_raw_data (record_date);
+CREATE INDEX idx_raw_technical_gin  ON stock_raw_data USING GIN (technical);
+CREATE INDEX idx_raw_institutional_gin ON stock_raw_data USING GIN (institutional);
+```
+
+**欄位說明**
+
+| 欄位 | 說明 |
+|------|------|
+| `technical` | JSONB：ma5/ma20/ma60/rsi_14/volume_ratio/close_price 等 |
+| `institutional` | JSONB：foreign_net/trust_net/dealer_net |
+| `fundamental` | JSONB：pe_ratio/eps/dividend_yield 等 |
+| `fetched_at` | 資料抓取時間，用於判斷資料新鮮度 |
+
+---
+
+#### Table 4：`stock_analysis_cache`（分析結果快取表）
+
+```sql
+CREATE TABLE stock_analysis_cache (
+    id                  SERIAL PRIMARY KEY,
+    symbol              VARCHAR(20)     NOT NULL,
+    record_date         DATE            NOT NULL,
+    signal_confidence   NUMERIC(5, 2),
+    action_tag          VARCHAR(20),
+    recommended_action  TEXT,
+    indicators          JSONB,          -- 分析當下的指標快照（從 stock_raw_data 複製）
+    final_verdict       TEXT,
+    prev_action_tag     VARCHAR(20),
+    prev_confidence     NUMERIC(5, 2),
+    is_final            BOOLEAN         NOT NULL DEFAULT FALSE,  -- FALSE=盤中非定稿；TRUE=收盤定稿
+    created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX uq_cache_symbol_date
+    ON stock_analysis_cache (symbol, record_date);
+
+CREATE INDEX idx_cache_symbol      ON stock_analysis_cache (symbol);
+CREATE INDEX idx_cache_record_date ON stock_analysis_cache (record_date);
+CREATE INDEX idx_cache_action_tag  ON stock_analysis_cache (action_tag);
+CREATE INDEX idx_cache_indicators_gin
+    ON stock_analysis_cache USING GIN (indicators);
+```
+
+**欄位說明**
+
+| 欄位 | 說明 |
+|------|------|
+| `symbol` + `record_date` | 唯一鍵，跨使用者共用，同一股票同一天只有一筆 |
+| `indicators` | 分析當下的指標快照，從 `stock_raw_data` 複製，保留分析時的數據狀態 |
+| `prev_action_tag` / `prev_confidence` | 前一交易日的訊號與信心分數，用於訊號轉向偵測 |
+| `is_final` | `FALSE` = 盤中非定稿（指標未收定，報告需附免責聲明）；`TRUE` = 收盤後定稿，權重高於盤中快照 |
+| `updated_at` | 同一天若重新分析，記錄最新更新時間 |
+
+---
+
+## 3. API 架構：雙軌分析模式
+
+### 3.1 設計原則
+
+持股分析拆分為兩隻獨立 API，職責清晰分離：
+
+| | 歷史分析 API | 即時分析 API |
+|---|---|---|
+| 端點 | `GET /portfolio/{portfolio_id}/history` | `POST /analyze/position`（現有） |
+| 用途 | 持倉列表展示每日診斷結果 | 使用者主動查詢任意個股 |
+| 資料來源 | `daily_analysis_log`（純 DB 查詢） | 即時呼叫 LangGraph（LLM + 爬蟲） |
+| 觸發時機 | 前端載入持倉列表 / 點開個股詳情 | 使用者在即時分析視窗手動發起 |
+| 成本 | 低（DB read） | 高（LLM token + 外部資料抓取） |
+
+### 3.2 使用者操作流程
+
+```
+即時分析視窗 ──查詢──▶ POST /analyze/position
+      │                    │
+      │                    ├─ 快取命中 → 直接回傳
+      │                    └─ 快取未命中 → 抓數據/用現有數據打 model → 存快取 → 回傳
+      │
+      │ 想追蹤 → 加入持倉（POST /portfolio）
+      ▼
+持倉列表 ──展示──▶ GET /portfolio/{id}/history（查 daily_analysis_log，含 user_id）
+      ▲
+      │ 使用者查詢時若有持倉，分析結果同步寫入 daily_analysis_log
+      │
+      │ 每日 18:30 cron（抓原始數據，不打 model）
+      └─ n8n 更新 stock_raw_data
+```
+
+**關鍵行為**：
+
+- **收盤前 / cron 空窗期 / 非交易日**：持倉列表顯示最近一筆歷史分析紀錄，無需特殊判斷邏輯
+- **分析快取跨使用者共用**：`stock_analysis_cache` 不含 `user_id`，同一股票同一天的分析結果全體使用者共享，不重複燒 LLM token
+- **持倉寫回**：即時分析完成後，若使用者有該股的 active 持倉，同步寫一筆至 `daily_analysis_log`（含 `user_id`），列表頁立即可見
+
+### 3.3 即時分析三段式快取邏輯
+
+```
+使用者查詢 symbol X
+    │
+    ▼
+[1] stock_analysis_cache 有 record_date = today 的紀錄？
+    ├─ YES，且 is_final = TRUE ──▶ 直接回傳（毫秒級，定稿數據）
+    ├─ YES，且 is_final = FALSE，且現在 < 13:30 ──▶ 直接回傳（盤中快照，附免責聲明）
+    ├─ YES，且 is_final = FALSE，且現在 ≥ 13:30 ──▶ 強制覆蓋（觸發 L2/L3，重新分析，is_final = TRUE）
+    └─ NO
+          ▼
+    [2] stock_raw_data 有 record_date = today 的原始數據？
+        ├─ YES（收盤後）──▶ 只打 model → 存 stock_analysis_cache（is_final=TRUE）→ 回傳（快）
+        └─ NO（盤中）──▶ 爬蟲抓原始數據 + 打 model → 存兩張表（is_final=FALSE）→ 回傳（慢，現有行為）
+
+分析完成後，若使用者有該股的 active 持倉，同步寫一筆到 daily_analysis_log（含 user_id）
+```
+
+**三段設計理念**：
+
+| 層級 | 命中條件 | 成本 | 說明 |
+|------|---------|------|------|
+| L1：分析快取 | `stock_analysis_cache` 今日有紀錄 | 極低（DB read） | 同天第二位使用者查同股，直接命中 |
+| L2：原始數據 | `stock_raw_data` 今日有紀錄 | 中（只打 model） | 收盤後 cron 已預拉，省去爬蟲等待 |
+| L3：即時抓取 | 兩者皆無 | 高（爬蟲 + model） | 盤中首次查詢，走現有流程 |
+
+**`POST /analyze/position` Response 包含 `is_final`**：
+
+```json
+{
+  "symbol": "2330.TW",
+  "signal_confidence": 68.5,
+  "action_tag": "Hold",
+  "recommended_action": "...",
+  "final_verdict": "...",
+  "is_final": false,
+  "intraday_disclaimer": "目前為盤中即時分析，指標尚未收定，僅供參考。"
+}
+```
+
+- `is_final = false`：前端應顯示盤中警告標語（黃色 banner 或角標），防止使用者將盤中數據誤認為收盤定論
+- `is_final = true`：正常顯示，無需附加警告
+- `intraday_disclaimer`：僅在 `is_final = false` 時回傳，`is_final = true` 時此欄位不存在（或為 `null`）
+
+### 3.4 歷史分析 API 規格
+
+```
+GET /portfolio/{portfolio_id}/history?limit=20&offset=0
+```
+
+**Response**：
+
+```json
+{
+  "symbol": "2330.TW",
+  "total": 45,
+  "records": [
+    {
+      "record_date": "2026-03-10",
+      "signal_confidence": 72.5,
+      "action_tag": "Hold",
+      "recommended_action": "持續觀察，均線多頭排列",
+      "indicators": { "rsi_14": 68.5, "ma5": 975.0, ... },
+      "final_verdict": "...",
+      "prev_action_tag": "Hold",
+      "prev_confidence": 61.5
+    }
+  ]
+}
+```
+
+**查詢邏輯**：從 `daily_analysis_log` 依 `symbol` + `user_id` 篩選，按 `record_date DESC` 排序，支援分頁。
+
+### 3.5 即時分析寫回 DB 邏輯
+
+`POST /analyze/position` 完成分析後，依序執行兩段寫入：
+
+```python
+is_final = datetime.now().time() >= MARKET_CLOSE  # 13:30 後為定稿
+
+# 1. 永遠寫入 stock_analysis_cache（跨使用者共用快取）
+await upsert_analysis_cache(db, {
+    "symbol":             payload.symbol,
+    "signal_confidence":  result.get("signal_confidence"),
+    "action_tag":         result.get("action_plan_tag"),
+    "recommended_action": result.get("recommended_action"),
+    "indicators":         _extract_indicators(result),
+    "final_verdict":      result.get("analysis"),
+    "is_final":           is_final,
+})
+
+# 2. 若使用者有該股的 active 持倉，額外寫入 daily_analysis_log
+if has_active_portfolio(current_user.id, payload.symbol, db):
+    await upsert_analysis_log(db, {
+        "user_id":  current_user.id,
+        "symbol":   payload.symbol,
+        "is_final": is_final,
+        ...
+    })
+```
+
+- `stock_analysis_cache` 以 `(symbol, record_date)` 為衝突鍵，**不含 `user_id`**，跨使用者共用
+- `daily_analysis_log` 以 `(user_id, symbol, record_date)` 為衝突鍵，只在使用者有持倉時寫入
+
+### 3.6 兩段式快取機制：盤中 vs. 收盤後（Refined Cache Logic）
+
+> **核心原則：收盤前數據皆不可信。** 盤中指標（RSI、MA、量比等）尚未收定，分析結論僅供參考，不得作為歷史復盤的依據。
+
+#### 階段定義
+
+| 階段 | 時間範圍 | `is_final` | 快取行為 |
+|------|----------|------------|---------|
+| **盤中階段** | 09:00 – 13:30 | `FALSE` | 當日首位查詢者產生「非定稿」快照，後續同時段查詢直接命中，**不重複分析**（降低數據波動雜訊） |
+| **收盤後階段** | 13:30 之後 | `TRUE` | 任何新查詢（或 n8n 定時任務）**強制覆蓋**盤中紀錄，寫入定稿版本 |
+
+#### API 層判斷邏輯（`POST /analyze/position` L1 檢查）
+
+```python
+from datetime import datetime, time
+
+MARKET_CLOSE = time(13, 30)
+
+cache = await get_analysis_cache(db, symbol, today)
+
+if cache:
+    if cache.is_final:
+        return cache  # L1 命中：定稿數據，直接回傳
+    if datetime.now().time() < MARKET_CLOSE:
+        return cache  # L1 命中：盤中非定稿，直接回傳（附免責聲明）
+    # 收盤後發現非定稿快取 → 強制觸發 L2/L3 重新分析
+    pass  # fall through to L2/L3
+
+# L2 / L3 分析流程（同現有邏輯）
+result = await run_analysis(symbol, db)
+is_final = datetime.now().time() >= MARKET_CLOSE
+await upsert_analysis_cache(db, symbol, result, is_final=is_final)
+```
+
+#### 免責聲明注入規則
+
+- `is_final = FALSE` 的分析結果，`final_verdict` 開頭自動附加：
+  ```
+  ⚠️ 注意：目前為盤中階段（指標未收定），以下分析僅供即時參考，不代表當日收盤定論。
+  ```
+- `is_final = TRUE` 的結果為收盤定稿，作為歷史復盤與勝率回測的唯一依據。
+
+#### `is_final` 與三段式快取（L1–L3）的整合關係
+
+```
+L1 命中
+ ├─ is_final=TRUE  → 直接回傳（無論何時）
+ ├─ is_final=FALSE + 盤中 → 直接回傳（附免責聲明）
+ └─ is_final=FALSE + 收盤後 → 作廢，強制重走 L2/L3，完成後以 is_final=TRUE 覆蓋
+
+L2 命中（stock_raw_data 有今日原始數據）
+ └─ 只打 model → is_final=TRUE（收盤後一定是定稿）
+
+L3 觸發（盤中首次查詢）
+ └─ 爬蟲 + model → is_final=FALSE（指標未收定）
+```
+
+---
+
+## 4. n8n 自動化工作流設計
+
+### 4.1 架構總覽
 
 ```
 n8n (Zeabur/雲端)
     │
-    ├─── 每日診斷流 (Cron: 每日 18:30)
-    │       └─── 讀持倉 → 批次呼叫 API → 寫回 DB
+    ├─── 每日數據更新流 (Cron: 每日 18:30)
+    │       └─── 收集 watchlist → 批次抓原始數據 → 存 stock_raw_data → 觸發風險預警
     │
-    ├─── 風險預警流 (Webhook: 每日診斷流完成後觸發)
-    │       └─── 判斷 action_tag → Telegram/Line 通知
+    ├─── 風險預警流 (Webhook: 每日數據更新流完成後觸發)
+    │       └─── 查 stock_analysis_cache → 判斷 action_tag → Telegram/Line 通知
     │
     └─── 優化回測流 (Cron: 每週日 08:00)
             └─── 統計信心分數 vs 實際漲跌 → 產出報告
 
 PostgreSQL (Local Server)
     ├── user_portfolio
-    └── daily_analysis_log
+    ├── stock_raw_data          ← 新增：原始數據快取
+    ├── stock_analysis_cache    ← 新增：分析結果快取（跨使用者共用）
+    └── daily_analysis_log      ← 持倉歷史（含 user_id）
 
 FastAPI Backend (AI Stock Sentinel)
-    └── POST /analyze/position
+    ├── POST /analyze/position      （三段式快取邏輯）
+    └── POST /internal/fetch-raw-data  （n8n cron 呼叫）
 ```
+
+**傳輸效率注意事項**：n8n（Zeabur 雲端）透過 Cloudflare Tunnel 連接本地 PostgreSQL，頻寬與握手次數是效能瓶頸，詳見 Section 4.5。
 
 **安全性注意事項**：n8n 若架設於雲端（如 Zeabur），與本地 PostgreSQL 的連線必須經過安全隧道：
 
@@ -222,68 +523,45 @@ FastAPI Backend (AI Stock Sentinel)
 
 ---
 
-### 3.2 工作流 A：每日診斷流
+### 4.2 工作流 A：每日數據更新流
 
 **觸發條件**：Cron 表達式 `30 18 * * 1-5`（台灣時間，週一至週五收盤後）
+
+**定位調整**：此流程**不再批次打 model**，改為預拉原始數據存入 `stock_raw_data`，讓 model 推理只在使用者主動查詢時才觸發。
 
 **完整節點設計**
 
 ```
-[Cron Trigger]
+[Cron Trigger] 30 18 * * 1-5
     │
     ▼
-[Postgres Node] ── 查詢 user_portfolio WHERE is_active = TRUE
-    │ 回傳: [{symbol, entry_price, quantity, entry_date}, ...]
+[Postgres Node] 收集 watchlist
+    Query:
+        SELECT DISTINCT symbol FROM user_portfolio WHERE is_active = TRUE
+        UNION
+        SELECT DISTINCT symbol FROM stock_analysis_cache
+        WHERE record_date >= CURRENT_DATE - 30  -- 近 30 天被查過的
     │
     ▼
-[Split In Batches] ── 每批 1 筆（避免 API 過載，可調整）
+[Split In Batches] ── 每批 1 筆
     │
     ▼
-[HTTP Request Node] ── POST /analyze/position
-    │ Body: {symbol, entry_price, entry_date, quantity}
-    │ Headers: {Authorization: Bearer <API_KEY>}
+[HTTP Request Node] ── 呼叫後端原始數據抓取端點
+    POST /internal/fetch-raw-data
+    Body: { "symbol": "{{ $json.symbol }}", "date": "today" }
     │
     ▼
-[Function Node] ── 解析 API Response，提取關鍵欄位
-    │ 輸出: {symbol, signal_confidence, action_tag,
-    │        recommended_action, indicators, final_verdict}
+[Wait Node] ── 1 秒（避免外部 API 速率限制）
     │
     ▼
-[Postgres Node] ── UPSERT into daily_analysis_log
-    │ ON CONFLICT (symbol, record_date) DO UPDATE SET ...
-    │
-    ▼
-[Webhook Trigger] ── 觸發「風險預警流」
-```
-
-**UPSERT SQL（n8n Postgres Node 使用）**
-
-```sql
-INSERT INTO daily_analysis_log (
-    symbol, record_date, signal_confidence, action_tag,
-    recommended_action, indicators, final_verdict,
-    prev_action_tag, prev_confidence
-)
-VALUES (
-    $1, CURRENT_DATE, $2, $3, $4, $5::JSONB, $6,
-    -- 從昨日 log 帶入對比數據
-    (SELECT action_tag    FROM daily_analysis_log WHERE symbol = $1 AND record_date = CURRENT_DATE - 1),
-    (SELECT signal_confidence FROM daily_analysis_log WHERE symbol = $1 AND record_date = CURRENT_DATE - 1)
-)
-ON CONFLICT (symbol, record_date)
-DO UPDATE SET
-    signal_confidence  = EXCLUDED.signal_confidence,
-    action_tag         = EXCLUDED.action_tag,
-    recommended_action = EXCLUDED.recommended_action,
-    indicators         = EXCLUDED.indicators,
-    final_verdict      = EXCLUDED.final_verdict;
+[Webhook Node] ── 觸發「風險預警流」
 ```
 
 ---
 
-### 3.3 工作流 B：風險預警流
+### 4.3 工作流 B：風險預警流
 
-**觸發條件**：每日診斷流完成後，由 Webhook 觸發
+**觸發條件**：每日數據更新流完成後，由 Webhook 觸發
 
 **判斷邏輯**
 
@@ -291,7 +569,7 @@ DO UPDATE SET
 [Webhook Trigger]
     │
     ▼
-[Postgres Node] ── 查詢今日所有 action_tag IN ('Exit', 'Trim')
+[Postgres Node] ── 查詢今日持倉股票中需預警的分析快取
     │
     ▼
 [IF Node] ── 是否有需要預警的持股？
@@ -303,6 +581,19 @@ DO UPDATE SET
     │               發送格式化預警訊息
     │
     └─ NO ───▶ [NoOp] 結束，不發送通知
+```
+
+**風險預警查詢 SQL（Postgres Node 使用）**
+
+```sql
+SELECT symbol, action_tag, signal_confidence, recommended_action,
+       prev_action_tag, prev_confidence
+FROM stock_analysis_cache
+WHERE record_date = CURRENT_DATE
+  AND action_tag IN ('Exit', 'Trim')
+  AND symbol IN (
+      SELECT symbol FROM user_portfolio WHERE is_active = TRUE
+  )
 ```
 
 **Telegram 訊息格式範例**
@@ -333,7 +624,7 @@ DO UPDATE SET
 
 ---
 
-### 3.4 工作流 C：優化回測流
+### 4.4 工作流 C：優化回測流
 
 **觸發條件**：Cron `0 8 * * 0`（每週日早上 08:00）
 
@@ -390,13 +681,131 @@ Add        |    3    |   68.3   |   67.5
 
 ---
 
-## 4. 邏輯升級與模型優化 Roadmap
+### 4.5 n8n 與 Cloudflare Tunnel 傳輸優化（Network Efficiency）
 
-### 4.1 歷史對比敘事（API 層升級）
+> **背景**：n8n（Zeabur 雲端）與本地 PostgreSQL 透過 Cloudflare Tunnel 溝通，每次 TCP 握手都有額外的隧道建立開銷。逐筆（row-by-row）寫入會大幅放大握手次數，導致批次任務延遲或 Tunnel 超時中斷。
+
+#### 批次寫入規範
+
+**禁止做法**：在 n8n 的迴圈中對 `stock_raw_data` 逐筆執行 `INSERT`：
+
+```sql
+-- ❌ 禁止：每筆一次 INSERT，100 筆 = 100 次握手
+INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2330.TW', '2026-03-12', '{}');
+INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2454.TW', '2026-03-12', '{}');
+-- ...
+```
+
+**正確做法**：在 n8n 使用 **Execute Query 節點**，將多筆資料合併為單一 `INSERT ... VALUES` 語句：
+
+```sql
+-- ✅ 正確：N 筆合一次 INSERT，大幅減少握手次數
+INSERT INTO stock_raw_data (symbol, record_date, technical, institutional, fetched_at)
+VALUES
+    ('2330.TW', '2026-03-12', '{"rsi_14": 68.5, "close_price": 985.0}'::JSONB, '{}'::JSONB, NOW()),
+    ('2454.TW', '2026-03-12', '{"rsi_14": 55.2, "close_price": 1230.0}'::JSONB, '{}'::JSONB, NOW()),
+    ('2317.TW', '2026-03-12', '{"rsi_14": 72.1, "close_price": 118.5}'::JSONB, '{}'::JSONB, NOW())
+ON CONFLICT (symbol, record_date) DO UPDATE
+    SET technical   = EXCLUDED.technical,
+        institutional = EXCLUDED.institutional,
+        fetched_at  = EXCLUDED.fetched_at;
+```
+
+#### n8n 節點設計要點
+
+| 設定項 | 建議值 | 原因 |
+|--------|--------|------|
+| **Split In Batches** Batch Size | 50–100 筆 | 單次封包不宜過大（> 100 筆可能觸發 Tunnel 封包大小限制） |
+| **節點類型** | Execute Query（非 Insert Row） | Insert Row 為逐筆操作，必須改用 Execute Query 組合多值 INSERT |
+| **Wait Node** 間隔 | 1 秒（每批次後） | 避免連續封包衝擊 Tunnel 連線穩定性 |
+
+#### 工作流 A 節點更新
+
+Section 4.2 的 `[Split In Batches]` 設定調整：
+- 原設定：每批 1 筆（適合 HTTP Request 節點的速率控制）
+- **原始數據寫入路徑**：改為每批 50 筆 → Function 節點組裝多值 INSERT → Execute Query 節點送出
+
+---
+
+## 5. 前端頁面架構
+
+### 5.1 頁面總覽
+
+| 頁面 | 路由 | 主要 API | 說明 |
+|------|------|---------|------|
+| 個股分析 | `/analyze` | `POST /analyze/position` | 輸入代碼查詢即時分析，可加入持倉 |
+| 我的持股 | `/portfolio` | `GET /portfolio/{id}/history` | 持倉列表 + 個股歷史診斷紀錄 |
+
+### 5.2 個股分析頁（`/analyze`）
+
+```
+┌─────────────────────────────────────┐
+│  輸入股票代碼  [2330.TW]  [分析]    │
+├─────────────────────────────────────┤
+│  ⚠️ 盤中即時分析，指標尚未收定      │  ← is_final=false 時顯示
+├─────────────────────────────────────┤
+│  Hold  信心分數：68.5               │
+│  建議：持續觀察，均線多頭排列...    │
+│                                     │
+│  [加入我的持股]                     │  ← 點擊開啟填寫 Modal
+└─────────────────────────────────────┘
+```
+
+**「加入我的持股」Modal 欄位**：
+
+| 欄位 | 對應 `POST /portfolio` 欄位 | 說明 |
+|------|--------------------------|------|
+| 股票代碼 | `symbol` | 自動帶入，不可修改 |
+| 成本價 | `entry_price` | 必填，購入均價 |
+| 持有股數 | `quantity` | 必填 |
+| 購入日期 | `entry_date` | 必填，預設今日 |
+| 備註 | `notes` | 選填 |
+
+**互動邏輯**：
+- 若該股已在 active 持倉中，按鈕改為「已追蹤」（disabled）
+- 新增成功後按鈕變為「已追蹤」，不跳頁
+
+### 5.3 我的持股頁（`/portfolio`）
+
+```
+┌─────────────────────────────────────┐
+│  我的持股                           │
+├─────────────────────────────────────┤
+│  2330.TW  台積電                    │
+│  成本 850 | 現價 985 | Hold 72.5   │  ← 最新一筆 daily_analysis_log
+│  [查看歷史]                         │
+├─────────────────────────────────────┤
+│  2454.TW  聯發科                    │
+│  成本 1100 | 現價 1230 | Trim 65.0 │
+│  [查看歷史]                         │
+└─────────────────────────────────────┘
+```
+
+**「查看歷史」展開後**（呼叫 `GET /portfolio/{id}/history`）：
+
+```
+┌─────────────────────────────────────┐
+│  2330.TW 診斷歷史                   │
+├────────────┬───────┬───────────────┤
+│ 日期       │ 建議  │ 信心分數      │
+├────────────┼───────┼───────────────┤
+│ 2026-03-12 │ Hold  │ 72.5          │
+│ 2026-03-11 │ Hold  │ 61.5          │
+│ 2026-03-10 │ Trim  │ 74.0          │
+└────────────┴───────┴───────────────┘
+```
+
+**持倉上限提示**：active 持倉已達 5 筆時，「加入我的持股」按鈕顯示 tooltip「最多追蹤 5 筆持股」並 disabled。
+
+---
+
+## 6. 邏輯升級與模型優化 Roadmap
+
+### 6.1 歷史對比敘事（API 層升級）
 
 **目標**：`POST /analyze/position` 的 `final_verdict` 能包含「訊號轉向分析」，而非每次都是孤立的當日診斷。
 
-**實作方式**：
+**實作方式**（搭配 Section 3.5 的即時分析寫回機制）：
 
 1. API 接收請求後，在呼叫 LangGraph 前，先執行 DB 查詢取得昨日數據：
 
@@ -440,7 +849,7 @@ async def load_yesterday_context(symbol: str, db: AsyncSession) -> dict | None:
 
 ---
 
-### 4.2 策略勝率校準（`confidence_scorer.py` 動態調權）
+### 6.2 策略勝率校準（`confidence_scorer.py` 動態調權）
 
 **目標**：根據累積數據，調整各維度在信心分數計算中的加權比例。
 
@@ -479,7 +888,7 @@ correlation_matrix = {
 
 ---
 
-## 5. 實作任務與優先序
+## 7. 實作任務與優先序
 
 ### Phase 7 前置：使用者系統建置（優先執行）
 
@@ -500,9 +909,14 @@ correlation_matrix = {
 | 優先序 | 任務 | 說明 | 預估工時 |
 |--------|------|------|---------|
 | P0 | 執行 Table Schema 建立 | 執行本文件 Section 2 的 DDL（含 user_id FK） | 0.5 天 |
-| P1 | SQLAlchemy 接入（FastAPI） | 建立 `User`、`DailyAnalysisLog` ORM Model，實作 CRUD | 1 天 |
-| P1 | `history_loader.py` 實作 | 昨日上下文讀取服務（Section 4.1） | 0.5 天 |
-| P1 | n8n 每日診斷流部署 | 建立 Workflow A（Section 3.2） | 1 天 |
+| P1 | `stock_raw_data` + `stock_analysis_cache` Table DDL | 新增兩張表（Section 2） | 0.25 天 |
+| P1 | SQLAlchemy 接入（FastAPI） | 建立 `User`、`DailyAnalysisLog`、`StockRawData`、`StockAnalysisCache` ORM Model，實作 CRUD | 1 天 |
+| P1 | 三段式快取邏輯實作 | `POST /analyze/position` 加入快取判斷（Section 3.3） | 1 天 |
+| P1 | `POST /internal/fetch-raw-data` 端點 | n8n 呼叫的數據抓取端點 | 0.5 天 |
+| P1 | `history_loader.py` 實作 | 昨日上下文讀取服務（Section 5.1） | 0.5 天 |
+| P1 | `GET /portfolio/{id}/history` 端點 | 歷史分析 API，從 `daily_analysis_log` 讀取診斷紀錄（Section 3.4） | 0.5 天 |
+| P1 | 即時分析結果寫回 DB | `POST /analyze/position` 完成後依序寫入 `stock_analysis_cache` 與 `daily_analysis_log`（Section 3.5） | 0.5 天 |
+| P1 | n8n 每日數據更新流部署 | 建立 Workflow A（Section 4.2） | 1 天 |
 | P2 | 安全隧道設定（Cloudflare Tunnel） | 保護 n8n 至本地 DB 的連線 | 0.5 天 |
 | P2 | 風險預警流部署 | 建立 Workflow B + Telegram Bot | 0.5 天 |
 | P3 | 優化回測流部署 | 建立 Workflow C + 週報產出 | 1 天 |
@@ -515,7 +929,6 @@ correlation_matrix = {
 | 勝率回測腳本 | 引入 yfinance 歷史價格，比對診斷準確率 |
 | 信心分數校準 | 基於回測結果的半自動調權流程 |
 | 資料抓取併發優化 | `crawl` 節點改用 `asyncio.gather` 同時抓取技術面（yfinance）與籌碼面（institutional flow），縮短整體分析等待時間 |
-| `GET /history/{symbol}` 端點 | 從 `daily_analysis_log` 讀取指定股票的歷史診斷紀錄，供前端儀表板使用 |
 
 ### Phase 9：平台化（長期願景）
 
@@ -525,10 +938,17 @@ correlation_matrix = {
 
 ---
 
-## 6. 關鍵設計決策記錄
+## 8. 關鍵設計決策記錄
 
 | 決策 | 選擇 | 理由 |
 |------|------|------|
+| 分析 API 架構 | 雙軌模式（歷史 + 即時） | 列表頁純 DB 查詢不燒 token；即時分析保持現有能力；職責清晰無判斷邏輯 |
+| 即時分析快取策略 | 三段式快取（分析快取 → 原始數據 → 即時抓取） | 最大化快取命中率，只在必要時才燒 LLM token |
+| 分析快取 user_id | 不含 user_id（跨使用者共用） | 同一股票同一天的分析結果對所有使用者相同，無需重複計算 |
+| n8n cron 定位 | 原始數據預抓取，不打 model | model 推理只在有人查詢時才觸發，避免無效燒 token |
+| 原始數據更新頻率 | 收盤後每日一次 | 系統定位為收盤後復盤，不需盤中即時數據 |
+| 即時分析寫回 DB | 交易日自動 UPSERT | 使用者加入持倉後列表立即有資料，不需等隔天 cron |
+| `daily_analysis_log` 唯一鍵 | `(user_id, symbol, record_date)` | 不同使用者可各自擁有同一股票的分析紀錄 |
 | DB 型別 | PostgreSQL（JSONB） | JSONB GIN 索引支援指標值的高效查詢 |
 | 自動化引擎 | n8n | 低代碼、支援 Postgres Node、Webhook、排程，適合小型量化平台 |
 | 連線安全 | Cloudflare Tunnel | 零開放埠，最安全的本地 DB 暴露方案 |
@@ -543,4 +963,4 @@ correlation_matrix = {
 
 ---
 
-*文件版本：v1.1 | 最後更新：2026-03-10 | 下一步：執行 Phase 7 前置任務（使用者系統建置）*
+*文件版本：v1.4 | 最後更新：2026-03-12 | 變更：加入兩段式快取 is_final 邏輯（Section 3.6）、JSONB 表達式索引、n8n 批次寫入規範（Section 4.5）*

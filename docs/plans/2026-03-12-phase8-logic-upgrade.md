@@ -4,11 +4,11 @@
 
 **Goal:** 將系統從孤立的當日診斷升級為具備歷史記憶的連續敘事分析，並建立勝率回測腳本為未來信心分數校準奠定基礎。
 
-**Architecture:** `history_loader.py`（Phase 7 已建立）的昨日上下文注入 LangGraph GraphState，再透過新的 `prev_context` 欄位傳入 LLM Prompt，產出包含「訊號轉向分析」的 `final_verdict`。勝率回測腳本獨立為 CLI 工具，讀取 `daily_analysis_log` 並以 yfinance 驗證實際漲跌，輸出 Pearson 相關性報告。
+**Architecture:** `history_loader.py`（Phase 7 已建立）的昨日上下文注入 LangGraph GraphState，再透過新的 `prev_context` 欄位傳入 LLM Prompt，產出包含「訊號轉向分析」的 `final_verdict`。昨日上下文改為從 `stock_analysis_cache` 讀取（跨使用者共用，非持倉查詢也有記錄，資料更完整）。勝率回測腳本獨立為 CLI 工具，讀取 `daily_analysis_log` 並以 yfinance 驗證實際漲跌，輸出 Pearson 相關性報告。
 
 **Tech Stack:** Python、SQLAlchemy AsyncSession、LangGraph GraphState、yfinance、scipy（pearsonr）
 
-**前置依賴:** Phase 7 完成（`daily_analysis_log` 已有數據、`history_loader.py` 已實作）
+**前置依賴:** Phase 7 完成（`daily_analysis_log` 已有數據、`history_loader.py` 已實作）。注意：`history_loader.py` 的昨日上下文查詢已改為從 `stock_analysis_cache` 讀取（按 symbol 查，不分使用者），確保非持倉查詢也能取得昨日上下文。
 
 ---
 
@@ -150,6 +150,42 @@ git commit -m "feat: inject yesterday context into GraphState before position an
 
 ## Task 3: Prompt 升級——加入訊號轉向分析段落
 
+**前置說明：`history_loader.py` 昨日上下文來源**
+
+`load_yesterday_context` 查詢目標已從 `DailyAnalysisLog` 改為 `StockAnalysisCache`（查 `stock_analysis_cache` 表，按 symbol 查，不含 user_id）。原因：`daily_analysis_log` 只有持倉使用者才有紀錄，非持倉查詢不會有昨日記錄；改為查 `stock_analysis_cache` 後，跨使用者共用，資料更完整。
+
+實作如下：
+
+```python
+# backend/src/ai_stock_sentinel/services/history_loader.py
+from ai_stock_sentinel.db.models import StockAnalysisCache  # 查 stock_analysis_cache，非 daily_analysis_log
+
+async def load_yesterday_context(symbol: str, db: AsyncSession) -> dict | None:
+    """從 stock_analysis_cache 讀取昨日上下文（跨使用者共用，資料更完整）。"""
+    yesterday = date.today() - timedelta(days=1)
+    result = await db.execute(
+        select(StockAnalysisCache).where(   # 查 stock_analysis_cache
+            StockAnalysisCache.symbol == symbol,
+            StockAnalysisCache.record_date == yesterday,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+
+    indicators = row.indicators or {}
+    return {
+        "prev_action_tag":   row.action_tag,
+        "prev_confidence":   float(row.signal_confidence) if row.signal_confidence else None,
+        "prev_rsi":          indicators.get("rsi_14"),
+        "prev_ma_alignment": _derive_ma_alignment(indicators),
+    }
+```
+
+測試中 mock 的欄位名稱（`action_tag`、`signal_confidence`、`indicators`）在 `StockAnalysisCache` 和 `DailyAnalysisLog` 都有，mock 邏輯本身不需要修改，但測試 docstring 需更新說明查的是 `stock_analysis_cache`。
+
+---
+
 **Files:**
 - Modify: `backend/src/ai_stock_sentinel/analysis/langchain_analyzer.py`
 - Modify: `backend/tests/test_langchain_analyzer.py`
@@ -160,7 +196,9 @@ git commit -m "feat: inject yesterday context into GraphState before position an
 # backend/tests/test_langchain_analyzer.py 新增
 
 def test_position_prompt_includes_history_when_prev_context_provided():
-    """有昨日上下文時，position prompt 應包含訊號轉向區塊。"""
+    """有昨日上下文時，position prompt 應包含訊號轉向區塊。
+    昨日數據來自 stock_analysis_cache（非 daily_analysis_log）。
+    """
     from ai_stock_sentinel.analysis.langchain_analyzer import build_position_history_section
 
     prev = {
@@ -177,7 +215,9 @@ def test_position_prompt_includes_history_when_prev_context_provided():
 
 
 def test_position_prompt_empty_when_no_prev_context():
-    """無昨日上下文時，history section 應為空字串。"""
+    """無昨日上下文時，history section 應為空字串。
+    （stock_analysis_cache 無該日紀錄時 load_yesterday_context 回傳 None）
+    """
     from ai_stock_sentinel.analysis.langchain_analyzer import build_position_history_section
 
     assert build_position_history_section(None) == ""
@@ -255,6 +295,18 @@ git commit -m "feat: add signal continuity section to position analysis prompt"
 ---
 
 ## Task 4: 勝率回測腳本
+
+> **設計決策：CLI 腳本 vs. n8n Workflow C**
+>
+> Spec Section 4.4 描述的「優化回測流」定位為 n8n Workflow C（每週日自動執行）。
+> Phase 8 先以 **CLI 腳本**形式實作，原因：
+> 1. 需要 DB 累積至少 30 天有效數據後才有統計意義（Phase 7 完成後約 6 週）
+> 2. 回測結果必須人工審核後才可調整權重，自動排程價值有限
+> 3. CLI 版本可作為 n8n Workflow C 的 HTTP Endpoint 後端，屆時直接包裝成端點即可
+>
+> **Phase 8 完成後的後續動作**：數據足夠後，將 `backtest_win_rate.py` 封裝為
+> `POST /internal/run-backtest` 端點，並在 n8n 建立 Workflow C（每週日 08:00）呼叫此端點，
+> 結果透過 Telegram 發送週報（如 Phase 7 Task 7 規格）。
 
 **Files:**
 - Create: `backend/scripts/backtest_win_rate.py`
@@ -448,11 +500,13 @@ git commit -m "feat: add win rate backtest script for Phase 8 model calibration"
 
 - [ ] `GraphState` 有 `prev_context` 欄位，測試通過
 - [ ] `analyze_position` 呼叫前自動讀取昨日上下文注入 state
+- [ ] `history_loader.py` 查詢來源為 `stock_analysis_cache`（非 `daily_analysis_log`），確保非持倉查詢也有昨日上下文
 - [ ] `build_position_history_section` 函式測試通過
 - [ ] LLM Prompt 有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
 - [ ] 完整測試套件無回歸
 - [ ] `backtest_win_rate.py` 語法正確，可正常執行
+- [ ] （後續）數據足夠後封裝為 HTTP 端點，接入 n8n Workflow C 週報自動化
 
 ---
 
-*文件版本：v1.0 | 建立日期：2026-03-11 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8*
+*文件版本：v1.2 | 建立日期：2026-03-11 | 更新日期：2026-03-12 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8*
