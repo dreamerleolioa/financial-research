@@ -444,6 +444,28 @@ def analyze(
     return _build_response(result)
 
 
+@app.post("/internal/fetch-raw-data")
+def fetch_raw_data_endpoint(
+    payload: FetchRawDataRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_internal_api_key),
+):
+    """n8n cron 呼叫的內部端點，抓取原始數據並存入 stock_raw_data。"""
+    from datetime import date as _date_type
+    record_date = _date_type.today() if payload.date == "today" else _date_type.fromisoformat(payload.date)
+    fetch_and_store_raw_data(db, payload.symbol, record_date)
+    return {"status": "ok", "symbol": payload.symbol, "record_date": record_date.isoformat()}
+
+
+def fetch_and_store_raw_data(db: Session, symbol: str, record_date) -> None:
+    """抓取技術面、籌碼面、基本面原始數據並 UPSERT 至 stock_raw_data。
+
+    TODO: 接入現有爬蟲（yfinance_client、institutional_flow、fundamental）。
+    目前為 stub，不執行任何操作。
+    """
+    pass
+
+
 @app.post("/analyze/position", response_model=AnalyzeResponse)
 def analyze_position(
     payload: PositionAnalyzeRequest,
