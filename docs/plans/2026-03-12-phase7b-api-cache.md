@@ -884,13 +884,6 @@ git commit -m "feat: add POST /internal/fetch-raw-data endpoint for n8n cron raw
 - Cloudflare Tunnel 連線本地 PostgreSQL
 - n8n 建立 Cron（18:30 週一–五）→ 查 watchlist → HTTP POST `/internal/fetch-raw-data`
 
-**Task 6 摘要（Workflow B）：**
-- 建立 Telegram Bot（@BotFather）
-- n8n 查 `stock_analysis_cache` action_tag = Exit/Trim → 組訊息 → Telegram 發送
-
-**Task 7 摘要（Workflow C）：**
-- Cron（週日 08:00）→ 查 `daily_analysis_log` 週報統計 → Telegram 發送
-
 ---
 
 ## 完成檢查清單
@@ -904,7 +897,7 @@ git commit -m "feat: add POST /internal/fetch-raw-data endpoint for n8n cron raw
 - [ ] `POST /internal/fetch-raw-data` 無 key 回傳 401，正確 key 回傳 200
 - [ ] `test_fetch_raw_data.py` 3 tests PASSED
 - [ ] 全部既有 `tests/test_api.py` 通過（無回歸）
-- [ ] n8n Workflow A/B/C 手動配置完成（參考原計劃 Tasks 5–7）
+- [ ] n8n Workflow A 手動配置完成（參考原計劃 Task 5）
 
 ---
 

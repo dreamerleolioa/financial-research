@@ -487,39 +487,27 @@ L3 觸發（盤中首次查詢）
 ### 4.1 架構總覽
 
 ```
-n8n (Zeabur/雲端)
-    │
-    ├─── 每日數據更新流 (Cron: 每日 18:30)
-    │       └─── 收集 watchlist → 批次抓原始數據 → 存 stock_raw_data → 觸發風險預警
-    │
-    ├─── 風險預警流 (Webhook: 每日數據更新流完成後觸發)
-    │       └─── 查 stock_analysis_cache → 判斷 action_tag → Telegram/Line 通知
-    │
-    └─── 優化回測流 (Cron: 每週日 08:00)
-            └─── 統計信心分數 vs 實際漲跌 → 產出報告
-
-PostgreSQL (Local Server)
-    ├── user_portfolio
-    ├── stock_raw_data          ← 新增：原始數據快取
-    ├── stock_analysis_cache    ← 新增：分析結果快取（跨使用者共用）
-    └── daily_analysis_log      ← 持倉歷史（含 user_id）
-
-FastAPI Backend (AI Stock Sentinel)
-    ├── POST /analyze/position      （三段式快取邏輯）
-    └── POST /internal/fetch-raw-data  （n8n cron 呼叫）
+── Zeabur 專案（同一內網）──────────────────────────────┐
+│                                                        │
+│  n8n                                                   │
+│      └─── 每日數據更新流 (Cron: 每日 18:30)            │
+│               └─── 收集 watchlist → 批次抓原始數據     │
+│                        → HTTP POST /internal/fetch-raw-data
+│                                                        │
+│  FastAPI Backend (AI Stock Sentinel)                   │
+│      ├── POST /analyze/position  （三段式快取邏輯）     │
+│      └── POST /internal/fetch-raw-data（n8n cron 呼叫）│
+│                                                        │
+│  PostgreSQL (Zeabur)                                   │
+│      ├── user_portfolio                                │
+│      ├── stock_raw_data          ← 原始數據快取        │
+│      ├── stock_analysis_cache    ← 分析結果快取（跨使用者共用）
+│      └── daily_analysis_log      ← 持倉歷史（含 user_id）
+│                                                        │
+└────────────────────────────────────────────────────────┘
 ```
 
-**傳輸效率注意事項**：n8n（Zeabur 雲端）透過 Cloudflare Tunnel 連接本地 PostgreSQL，頻寬與握手次數是效能瓶頸，詳見 Section 4.5。
-
-**安全性注意事項**：n8n 若架設於雲端（如 Zeabur），與本地 PostgreSQL 的連線必須經過安全隧道：
-
-- **推薦方案 A：Cloudflare Tunnel**（零開放埠，最安全）
-  - 本地伺服器安裝 `cloudflared`，建立 Named Tunnel，指向 PostgreSQL port 5432
-  - n8n 的 Postgres Node 連接 Cloudflare 提供的私有 hostname
-- **備選方案 B：SSH Tunnel**
-  - n8n 伺服器以 SSH Port Forwarding 連接本地 PostgreSQL
-  - 搭配 IP 白名單限制 SSH 來源
-- **禁止做法**：直接將 5432 port 開放至公網，即使有密碼保護仍屬高風險
+**傳輸效率**：n8n、FastAPI、PostgreSQL 同在 Zeabur 內網，數據交換不經公網，無額外隧道建立開銷，延遲最低且安全性最高。
 
 ---
 
@@ -552,145 +540,20 @@ FastAPI Backend (AI Stock Sentinel)
     │
     ▼
 [Wait Node] ── 1 秒（避免外部 API 速率限制）
-    │
-    ▼
-[Webhook Node] ── 觸發「風險預警流」
 ```
 
 ---
 
-### 4.3 工作流 B：風險預警流
+### 4.3 n8n 批次寫入規範（Network Efficiency）
 
-**觸發條件**：每日數據更新流完成後，由 Webhook 觸發
-
-**判斷邏輯**
-
-```
-[Webhook Trigger]
-    │
-    ▼
-[Postgres Node] ── 查詢今日持倉股票中需預警的分析快取
-    │
-    ▼
-[IF Node] ── 是否有需要預警的持股？
-    │
-    ├─ YES ──▶ [Function Node] 組裝通知訊息
-    │               │
-    │               ▼
-    │          [Telegram Node / Line Notify Node]
-    │               發送格式化預警訊息
-    │
-    └─ NO ───▶ [NoOp] 結束，不發送通知
-```
-
-**風險預警查詢 SQL（Postgres Node 使用）**
-
-```sql
-SELECT symbol, action_tag, signal_confidence, recommended_action,
-       prev_action_tag, prev_confidence
-FROM stock_analysis_cache
-WHERE record_date = CURRENT_DATE
-  AND action_tag IN ('Exit', 'Trim')
-  AND symbol IN (
-      SELECT symbol FROM user_portfolio WHERE is_active = TRUE
-  )
-```
-
-**Telegram 訊息格式範例**
-
-```
-🚨 AI Stock Sentinel 風險預警 (2026-03-10)
-
-以下持股建議注意：
-
-📌 2330.TW（台積電）
-   建議：Exit（出場）
-   信心分數：78.5
-   摘要：RSI 已達 76，外資連三日賣超，建議逢高減碼...
-
-📌 2454.TW（聯發科）
-   建議：Trim（減碼 30%）
-   信心分數：65.0
-   摘要：均線空頭排列，月線下彎...
-
-⚠️ 以上建議僅供參考，請結合個人判斷操作。
-```
-
-**訊號轉向偵測**：若 `prev_action_tag` 與今日 `action_tag` 不同，在通知中加入轉向標記：
-
-```
-🔄 訊號轉向：Hold → Exit（較昨日信心分數下降 12.5 點）
-```
-
----
-
-### 4.4 工作流 C：優化回測流
-
-**觸發條件**：Cron `0 8 * * 0`（每週日早上 08:00）
-
-**目的**：統計過去 N 週內，各 `action_tag` 建議後的實際股價走勢，校驗信心分數的預測準確性。
-
-**核心查詢**
-
-```sql
--- 統計各 action_tag 的信心分數分布
-SELECT
-    action_tag,
-    COUNT(*)                              AS total_signals,
-    AVG(signal_confidence)                AS avg_confidence,
-    PERCENTILE_CONT(0.5) WITHIN GROUP
-        (ORDER BY signal_confidence)      AS median_confidence,
-    MIN(signal_confidence)                AS min_confidence,
-    MAX(signal_confidence)                AS max_confidence
-FROM daily_analysis_log
-WHERE record_date >= CURRENT_DATE - 30
-GROUP BY action_tag
-ORDER BY avg_confidence DESC;
-```
-
-```sql
--- 信心分數時序趨勢（單股，近 20 個交易日）
-SELECT
-    record_date,
-    signal_confidence,
-    action_tag,
-    LAG(signal_confidence) OVER (PARTITION BY symbol ORDER BY record_date) AS prev_confidence,
-    signal_confidence - LAG(signal_confidence) OVER (PARTITION BY symbol ORDER BY record_date) AS confidence_delta
-FROM daily_analysis_log
-WHERE symbol = '2330.TW'
-  AND record_date >= CURRENT_DATE - 30
-ORDER BY record_date;
-```
-
-**產出報告格式**（寫入 n8n 的 Google Sheets Node 或本地 CSV）
-
-```
-週報期間：2026-03-03 ~ 2026-03-09
-
-【信心分數校準報告】
-action_tag | 訊號次數 | 平均信心 | 中位信心
-Hold       |   35    |   61.2   |   62.0
-Trim       |    8    |   72.5   |   71.8
-Exit       |    4    |   79.1   |   80.0
-Add        |    3    |   68.3   |   67.5
-
-【建議】
-- Exit 訊號的平均信心（79.1）顯著高於 Hold（61.2），閾值設定合理
-- Trim 與 Exit 訊號分界建議維持在 75.0
-```
-
----
-
-### 4.5 n8n 與 Cloudflare Tunnel 傳輸優化（Network Efficiency）
-
-> **背景**：n8n（Zeabur 雲端）與本地 PostgreSQL 透過 Cloudflare Tunnel 溝通，每次 TCP 握手都有額外的隧道建立開銷。逐筆（row-by-row）寫入會大幅放大握手次數，導致批次任務延遲或 Tunnel 超時中斷。
+> **背景**：n8n 與 PostgreSQL 同在 Zeabur 內網，雖然無隧道開銷，逐筆（row-by-row）`INSERT` 仍會造成不必要的往返次數。批次合併寫入是基本的效能規範。
 
 #### 批次寫入規範
 
 **禁止做法**：在 n8n 的迴圈中對 `stock_raw_data` 逐筆執行 `INSERT`：
 
 ```sql
--- ❌ 禁止：每筆一次 INSERT，100 筆 = 100 次握手
+-- ❌ 禁止：每筆一次 INSERT，100 筆 = 100 次往返
 INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2330.TW', '2026-03-12', '{}');
 INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2454.TW', '2026-03-12', '{}');
 -- ...
@@ -699,7 +562,7 @@ INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2454.TW', '
 **正確做法**：在 n8n 使用 **Execute Query 節點**，將多筆資料合併為單一 `INSERT ... VALUES` 語句：
 
 ```sql
--- ✅ 正確：N 筆合一次 INSERT，大幅減少握手次數
+-- ✅ 正確：N 筆合一次 INSERT
 INSERT INTO stock_raw_data (symbol, record_date, technical, institutional, fetched_at)
 VALUES
     ('2330.TW', '2026-03-12', '{"rsi_14": 68.5, "close_price": 985.0}'::JSONB, '{}'::JSONB, NOW()),
@@ -715,9 +578,8 @@ ON CONFLICT (symbol, record_date) DO UPDATE
 
 | 設定項 | 建議值 | 原因 |
 |--------|--------|------|
-| **Split In Batches** Batch Size | 50–100 筆 | 單次封包不宜過大（> 100 筆可能觸發 Tunnel 封包大小限制） |
 | **節點類型** | Execute Query（非 Insert Row） | Insert Row 為逐筆操作，必須改用 Execute Query 組合多值 INSERT |
-| **Wait Node** 間隔 | 1 秒（每批次後） | 避免連續封包衝擊 Tunnel 連線穩定性 |
+| **Wait Node** 間隔 | 1 秒（每批次後） | 避免對外部資料來源（yfinance 等）造成速率限制 |
 
 #### 工作流 A 節點更新
 
@@ -918,8 +780,6 @@ correlation_matrix = {
 | P1 | 即時分析結果寫回 DB | `POST /analyze/position` 完成後依序寫入 `stock_analysis_cache` 與 `daily_analysis_log`（Section 3.5） | 0.5 天 |
 | P1 | n8n 每日數據更新流部署 | 建立 Workflow A（Section 4.2） | 1 天 |
 | P2 | 安全隧道設定（Cloudflare Tunnel） | 保護 n8n 至本地 DB 的連線 | 0.5 天 |
-| P2 | 風險預警流部署 | 建立 Workflow B + Telegram Bot | 0.5 天 |
-| P3 | 優化回測流部署 | 建立 Workflow C + 週報產出 | 1 天 |
 
 ### Phase 8：邏輯強化（後續規劃）
 
@@ -951,7 +811,7 @@ correlation_matrix = {
 | `daily_analysis_log` 唯一鍵 | `(user_id, symbol, record_date)` | 不同使用者可各自擁有同一股票的分析紀錄 |
 | DB 型別 | PostgreSQL（JSONB） | JSONB GIN 索引支援指標值的高效查詢 |
 | 自動化引擎 | n8n | 低代碼、支援 Postgres Node、Webhook、排程，適合小型量化平台 |
-| 連線安全 | Cloudflare Tunnel | 零開放埠，最安全的本地 DB 暴露方案 |
+| 部署環境 | Zeabur 全雲端（n8n + FastAPI + PostgreSQL 同專案） | 內網通訊零公網暴露，延遲最低，無需安全隧道 |
 | 歷史數據注入 | DB 查詢後傳入 Prompt | 嚴守 Tool Use 原則，LLM 不猜歷史數值 |
 | 權重校準流程 | 人工審核後調整 | 防止自動調權引入系統性偏差 |
 | 出場後的倉位處理 | `is_active = FALSE`（軟刪除） | 保留歷史診斷 log 的可追溯性 |
@@ -963,4 +823,4 @@ correlation_matrix = {
 
 ---
 
-*文件版本：v1.4 | 最後更新：2026-03-12 | 變更：加入兩段式快取 is_final 邏輯（Section 3.6）、JSONB 表達式索引、n8n 批次寫入規範（Section 4.5）*
+*文件版本：v1.5 | 最後更新：2026-03-12 | 變更：架構改為 Zeabur 全雲端部署（n8n + FastAPI + PostgreSQL 同內網），移除 Cloudflare Tunnel，更新 Section 4.1 架構圖、Section 4.3 批次寫入規範、Section 8 決策記錄*
