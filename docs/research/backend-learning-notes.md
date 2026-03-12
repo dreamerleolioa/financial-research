@@ -239,18 +239,33 @@ def load_settings() -> Settings:
 
 ---
 
-### 2.2 pyproject.toml
+### 2.2 uv + pyproject.toml
 
 **這是什麼**
 
-Python 專案的現代設定檔（PEP 518），取代舊的 `setup.py`，定義套件名稱、版本、依賴等。
+- **uv**：用 Rust 寫的超快 Python 套件管理工具，取代 pip + venv + pip-tools 的組合
+- **pyproject.toml**：Python 專案的現代設定檔（PEP 518），定義套件名稱、版本、依賴等
 
 **在本專案的用途**
 
-`backend/pyproject.toml` 定義 `ai_stock_sentinel` 套件，讓 `from ai_stock_sentinel.api import ...` 可以正確解析。
+`backend/pyproject.toml` 定義 `ai-stock-sentinel` 套件與所有依賴，uv 負責建立虛擬環境、安裝套件、執行指令。
+
+**常用指令**
+
+```bash
+cd backend
+
+uv sync                  # 建立 .venv + 安裝所有依賴（含 dev）
+uv run python -m module  # 在虛擬環境中執行指令
+uv run pytest -q         # 跑測試
+uv add <package>         # 新增依賴並更新 uv.lock
+uv remove <package>      # 移除依賴
+uv add --group dev <pkg> # 新增到 dev dependency group
+```
 
 **學習資源**
 
+- [uv 官方文件](https://docs.astral.sh/uv/)
 - [Python Packaging — pyproject.toml](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/)
 
 ---

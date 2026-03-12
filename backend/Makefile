@@ -1,16 +1,13 @@
 .PHONY: install run run-api test
 
-PYTHON := ./venv/bin/python
-PIP := ./venv/bin/pip
-
 install:
-	$(PIP) install -r requirements.txt
+	uv sync
 
 run:
-	PYTHONPATH=src $(PYTHON) -m ai_stock_sentinel.main
+	uv run python -m ai_stock_sentinel.main
 
 run-api:
-	set -a && . ./.env && set +a && PYTHONPATH=src $(PYTHON) -m uvicorn ai_stock_sentinel.api:app --reload
+	set -a && . ./.env && set +a && PYTHONPATH=src uv run uvicorn ai_stock_sentinel.api:app --reload
 
 test:
-	PYTHONPATH=src $(PYTHON) -m pytest -q
+	uv run pytest -q
