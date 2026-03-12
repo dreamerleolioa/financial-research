@@ -15,6 +15,7 @@
 ## Task 1: GraphState 加入 `prev_context` 欄位
 
 **Files:**
+
 - Modify: `backend/src/ai_stock_sentinel/graph/state.py`
 - Modify: `backend/tests/test_graph_state.py`
 
@@ -66,6 +67,7 @@ git commit -m "feat: add prev_context field to GraphState for history injection"
 ## Task 2: `analyze_position` 路由注入昨日上下文
 
 **Files:**
+
 - Modify: `backend/src/ai_stock_sentinel/api.py`
 - Modify: `backend/tests/test_api.py`
 
@@ -187,6 +189,7 @@ async def load_yesterday_context(symbol: str, db: AsyncSession) -> dict | None:
 ---
 
 **Files:**
+
 - Modify: `backend/src/ai_stock_sentinel/analysis/langchain_analyzer.py`
 - Modify: `backend/tests/test_langchain_analyzer.py`
 
@@ -300,6 +303,7 @@ git commit -m "feat: add signal continuity section to position analysis prompt"
 >
 > Spec Section 4.4 描述的「優化回測流」定位為 n8n Workflow C（每週日自動執行）。
 > Phase 8 先以 **CLI 腳本**形式實作，原因：
+>
 > 1. 需要 DB 累積至少 30 天有效數據後才有統計意義（Phase 7 完成後約 6 週）
 > 2. 回測結果必須人工審核後才可調整權重，自動排程價值有限
 > 3. CLI 版本可作為 n8n Workflow C 的 HTTP Endpoint 後端，屆時直接包裝成端點即可
@@ -309,6 +313,7 @@ git commit -m "feat: add signal continuity section to position analysis prompt"
 > 結果透過 Telegram 發送週報（如 Phase 7 Task 7 規格）。
 
 **Files:**
+
 - Create: `backend/scripts/backtest_win_rate.py`
 - Modify: `backend/requirements.txt`
 
@@ -496,6 +501,90 @@ git commit -m "feat: add win rate backtest script for Phase 8 model calibration"
 
 ---
 
+## Task 5: 資料抓取併發優化（`asyncio.gather`）
+
+**Files:**
+
+- Modify: `backend/src/ai_stock_sentinel/graph/nodes.py`（或對應的 `crawl` node）
+- Modify: `backend/tests/test_graph_nodes.py`
+
+**背景**：目前 `crawl` 節點依序抓取技術面（yfinance）與籌碼面（institutional flow），兩者互相獨立，改為 `asyncio.gather` 並發執行可顯著縮短整體等待時間。
+
+**Step 1: 寫失敗測試**
+
+```python
+# backend/tests/test_graph_nodes.py 新增
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+async def test_crawl_node_fetches_concurrently():
+    """crawl node 應用 asyncio.gather 同時抓取技術面與籌碼面，不依序執行。"""
+    call_order = []
+
+    async def fake_fetch_technical(symbol):
+        call_order.append("technical_start")
+        await asyncio.sleep(0.05)
+        call_order.append("technical_end")
+        return {"close_price": 985.0}
+
+    async def fake_fetch_institutional(symbol):
+        call_order.append("institutional_start")
+        await asyncio.sleep(0.05)
+        call_order.append("institutional_end")
+        return {"foreign_net": 12500}
+
+    with patch("ai_stock_sentinel.graph.nodes.fetch_technical", fake_fetch_technical), \
+         patch("ai_stock_sentinel.graph.nodes.fetch_institutional", fake_fetch_institutional):
+        # 並發執行時，兩個 start 應該都在 end 之前出現
+        from ai_stock_sentinel.graph.nodes import crawl_node
+        await crawl_node({"symbol": "2330.TW"})
+
+    # 並發：start 順序不固定，但兩個 start 應在任一 end 前出現
+    first_end_idx = min(call_order.index("technical_end"), call_order.index("institutional_end"))
+    assert call_order.index("technical_start") < first_end_idx
+    assert call_order.index("institutional_start") < first_end_idx
+```
+
+**Step 2: 修改 crawl node 改用 asyncio.gather**
+
+```python
+# 修改前（依序抓取）
+technical_data   = await fetch_technical(state["symbol"])
+institutional_data = await fetch_institutional(state["symbol"])
+
+# 修改後（並發抓取）
+technical_data, institutional_data = await asyncio.gather(
+    fetch_technical(state["symbol"]),
+    fetch_institutional(state["symbol"]),
+)
+```
+
+**Step 3: 執行測試**
+
+```bash
+cd backend && pytest tests/test_graph_nodes.py -v
+```
+
+Expected: 全部 PASSED
+
+**Step 4: 執行完整測試套件確認無回歸**
+
+```bash
+cd backend && pytest -v
+```
+
+Expected: 全部 PASSED
+
+**Step 5: Commit**
+
+```bash
+git add backend/src/ai_stock_sentinel/graph/nodes.py \
+        backend/tests/test_graph_nodes.py
+git commit -m "perf: fetch technical and institutional data concurrently with asyncio.gather"
+```
+
+---
+
 ## 完成檢查清單
 
 - [ ] `GraphState` 有 `prev_context` 欄位，測試通過
@@ -505,8 +594,9 @@ git commit -m "feat: add win rate backtest script for Phase 8 model calibration"
 - [ ] LLM Prompt 有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
 - [ ] 完整測試套件無回歸
 - [ ] `backtest_win_rate.py` 語法正確，可正常執行
+- [ ] crawl node 改用 `asyncio.gather` 並發抓取，測試通過
 - [ ] （後續）數據足夠後封裝為 HTTP 端點，接入 n8n Workflow C 週報自動化
 
 ---
 
-*文件版本：v1.2 | 建立日期：2026-03-11 | 更新日期：2026-03-12 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8*
+_文件版本：v1.3 | 建立日期：2026-03-11 | 更新日期：2026-03-12 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8_
