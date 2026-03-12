@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict as _asdict, is_dataclass
-from typing import Any
+from datetime import date as _date, datetime, time as _time
+from typing import Any, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.auth.router import router as auth_router
 from ai_stock_sentinel.config import configure_logging
+from ai_stock_sentinel.db.models import StockAnalysisCache, StockRawData, UserPortfolio
+from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
@@ -71,6 +76,169 @@ class AnalyzeResponse(BaseModel):
         message: str
 
     errors: list[ErrorDetail] = Field(default_factory=list)
+
+
+# ─── 快取常數 ───────────────────────────────────────────────
+MARKET_CLOSE = _time(13, 30)
+INTRADAY_DISCLAIMER = (
+    "⚠️ 注意：目前為盤中階段（指標未收定），"
+    "以下分析僅供即時參考，不代表當日收盤定論。"
+)
+
+INTERNAL_API_KEY: str = os.environ.get("INTERNAL_API_KEY", "")
+
+
+# ─── 快取 Response Schema ────────────────────────────────────
+class CachedAnalyzeResponse(BaseModel):
+    symbol: str
+    signal_confidence: float | None
+    action_tag: str | None
+    recommended_action: str | None
+    final_verdict: str | None
+    is_final: bool
+    intraday_disclaimer: Optional[str] = None
+
+
+# ─── 快取輔助函式 ─────────────────────────────────────────────
+
+def get_analysis_cache(db: Session, symbol: str) -> StockAnalysisCache | None:
+    """查詢今日的分析結果快取（L1）。"""
+    return db.execute(
+        select(StockAnalysisCache).where(
+            StockAnalysisCache.symbol == symbol,
+            StockAnalysisCache.record_date == _date.today(),
+        )
+    ).scalar_one_or_none()
+
+
+def get_raw_data(db: Session, symbol: str) -> StockRawData | None:
+    """查詢今日的原始數據快取（L2）。"""
+    return db.execute(
+        select(StockRawData).where(
+            StockRawData.symbol == symbol,
+            StockRawData.record_date == _date.today(),
+        )
+    ).scalar_one_or_none()
+
+
+def _handle_cache_hit(
+    cache: StockAnalysisCache,
+    now_time: _time,
+) -> CachedAnalyzeResponse | None:
+    """處理 L1 快取命中邏輯。
+
+    - is_final=TRUE：直接回傳
+    - is_final=FALSE + 盤中：回傳含免責聲明
+    - is_final=FALSE + 收盤後：回傳 None（強制重新分析）
+    """
+    if cache.is_final:
+        return _build_analysis_response(
+            symbol=cache.symbol,
+            action_tag=cache.action_tag,
+            signal_confidence=float(cache.signal_confidence) if cache.signal_confidence else None,
+            recommended_action=cache.recommended_action,
+            final_verdict=cache.final_verdict,
+            is_final=True,
+        )
+    if now_time < MARKET_CLOSE:
+        return _build_analysis_response(
+            symbol=cache.symbol,
+            action_tag=cache.action_tag,
+            signal_confidence=float(cache.signal_confidence) if cache.signal_confidence else None,
+            recommended_action=cache.recommended_action,
+            final_verdict=cache.final_verdict,
+            is_final=False,
+        )
+    return None  # 收盤後非定稿快取 → 強制重新分析
+
+
+def _build_analysis_response(
+    *,
+    symbol: str,
+    action_tag: str | None,
+    signal_confidence: float | None,
+    recommended_action: str | None,
+    final_verdict: str | None,
+    is_final: bool,
+) -> CachedAnalyzeResponse:
+    return CachedAnalyzeResponse(
+        symbol=symbol,
+        signal_confidence=signal_confidence,
+        action_tag=action_tag,
+        recommended_action=recommended_action,
+        final_verdict=final_verdict,
+        is_final=is_final,
+        intraday_disclaimer=INTRADAY_DISCLAIMER if not is_final else None,
+    )
+
+
+def upsert_analysis_cache(db: Session, data: dict) -> None:
+    """UPSERT 分析結果至 stock_analysis_cache（跨使用者共用）。"""
+    import json
+    db.execute(
+        text("""
+            INSERT INTO stock_analysis_cache (
+                symbol, record_date, signal_confidence, action_tag,
+                recommended_action, indicators, final_verdict,
+                prev_action_tag, prev_confidence, is_final, updated_at
+            ) VALUES (
+                :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
+                :recommended_action, :indicators::jsonb, :final_verdict,
+                (SELECT action_tag FROM stock_analysis_cache
+                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
+                (SELECT signal_confidence FROM stock_analysis_cache
+                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
+                :is_final, NOW()
+            )
+            ON CONFLICT (symbol, record_date) DO UPDATE SET
+                signal_confidence  = EXCLUDED.signal_confidence,
+                action_tag         = EXCLUDED.action_tag,
+                recommended_action = EXCLUDED.recommended_action,
+                indicators         = EXCLUDED.indicators,
+                final_verdict      = EXCLUDED.final_verdict,
+                is_final           = EXCLUDED.is_final,
+                updated_at         = NOW()
+        """),
+        {
+            "symbol":             data.get("symbol"),
+            "signal_confidence":  data.get("signal_confidence"),
+            "action_tag":         data.get("action_tag"),
+            "recommended_action": data.get("recommended_action"),
+            "indicators":         json.dumps(data.get("indicators") or {}),
+            "final_verdict":      data.get("final_verdict"),
+            "is_final":           data.get("is_final", False),
+        }
+    )
+    db.commit()
+
+
+def _extract_indicators(result: dict) -> dict:
+    """從 graph result 提取 indicators JSONB 快照。"""
+    snapshot = result.get("snapshot") or {}
+    inst = result.get("institutional_flow") or {}
+    return {
+        "ma5":          snapshot.get("ma5"),
+        "ma20":         snapshot.get("ma20"),
+        "ma60":         snapshot.get("ma60"),
+        "rsi_14":       result.get("rsi14"),
+        "close_price":  snapshot.get("current_price"),
+        "volume_ratio": snapshot.get("volume_ratio"),
+        "institutional": {
+            "foreign_net": inst.get("foreign_net"),
+            "trust_net":   inst.get("trust_net"),
+            "dealer_net":  inst.get("dealer_net"),
+        } if not inst.get("error") else None,
+    }
+
+
+def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
+    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid internal API key")
+
+
+class FetchRawDataRequest(BaseModel):
+    symbol: str
+    date: str = "today"
 
 
 def get_graph():
