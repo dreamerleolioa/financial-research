@@ -677,3 +677,33 @@ def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> Non
     pa = body["position_analysis"]
     if pa["recommended_action"] in ("Trim", "Exit"):
         assert pa["exit_reason"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Full result cache persistence
+# ---------------------------------------------------------------------------
+
+def test_upsert_analysis_cache_stores_full_result() -> None:
+    """upsert_analysis_cache should persist full_result when provided."""
+    from unittest.mock import MagicMock
+    from ai_stock_sentinel.api import upsert_analysis_cache
+
+    db = MagicMock()
+    data = {
+        "symbol": "2330.TW",
+        "signal_confidence": 55,
+        "action_tag": "neutral",
+        "recommended_action": "觀望",
+        "indicators": {},
+        "final_verdict": "分析結果",
+        "is_final": False,
+        "full_result": {"snapshot": {"symbol": "2330.TW"}, "analysis": "分析結果"},
+    }
+
+    upsert_analysis_cache(db, data)
+
+    db.execute.assert_called_once()
+    call_kwargs = db.execute.call_args
+    params = call_kwargs[0][1]  # second positional arg is the params dict
+    assert "full_result" in params
+    assert params["full_result"] is not None

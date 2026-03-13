@@ -70,6 +70,8 @@ class AnalyzeResponse(BaseModel):
     data_sources: list[str] = Field(default_factory=list)
     fundamental_data: dict[str, Any] | None = None
     position_analysis: PositionAnalysis | None = None
+    is_final: bool = True
+    intraday_disclaimer: str | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -180,15 +182,15 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
             INSERT INTO stock_analysis_cache (
                 symbol, record_date, signal_confidence, action_tag,
                 recommended_action, indicators, final_verdict,
-                prev_action_tag, prev_confidence, is_final, updated_at
+                prev_action_tag, prev_confidence, is_final, full_result, updated_at
             ) VALUES (
                 :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
-                :recommended_action, :indicators::jsonb, :final_verdict,
+                :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
                 (SELECT action_tag FROM stock_analysis_cache
                  WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
                 (SELECT signal_confidence FROM stock_analysis_cache
                  WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
-                :is_final, NOW()
+                :is_final, CAST(:full_result AS jsonb), NOW()
             )
             ON CONFLICT (symbol, record_date) DO UPDATE SET
                 signal_confidence  = EXCLUDED.signal_confidence,
@@ -197,6 +199,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
                 indicators         = EXCLUDED.indicators,
                 final_verdict      = EXCLUDED.final_verdict,
                 is_final           = EXCLUDED.is_final,
+                full_result        = EXCLUDED.full_result,
                 updated_at         = NOW()
         """),
         {
@@ -207,6 +210,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
             "indicators":         json.dumps(data.get("indicators") or {}),
             "final_verdict":      data.get("final_verdict"),
             "is_final":           data.get("is_final", False),
+            "full_result":        json.dumps(data.get("full_result") or {}),
         }
     )
     db.commit()
@@ -229,6 +233,117 @@ def _extract_indicators(result: dict) -> dict:
             "dealer_net":  inst.get("dealer_net"),
         } if not inst.get("error") else None,
     }
+
+
+def has_active_portfolio(user_id: int, symbol: str, db: Session) -> bool:
+    return db.execute(
+        select(func.count()).select_from(UserPortfolio).where(
+            UserPortfolio.user_id == user_id,
+            UserPortfolio.symbol == symbol,
+            UserPortfolio.is_active == True,
+        )
+    ).scalar() > 0
+
+
+def upsert_analysis_log(db: Session, data: dict) -> None:
+    """UPSERT 分析結果至 daily_analysis_log（含 user_id）。"""
+    import json as _json
+    db.execute(
+        text("""
+            INSERT INTO daily_analysis_log (
+                user_id, symbol, record_date, signal_confidence, action_tag,
+                recommended_action, indicators, final_verdict,
+                prev_action_tag, prev_confidence, is_final
+            ) VALUES (
+                :user_id, :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
+                :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
+                (SELECT action_tag FROM daily_analysis_log
+                 WHERE user_id = :user_id AND symbol = :symbol
+                   AND record_date = CURRENT_DATE - 1),
+                (SELECT signal_confidence FROM daily_analysis_log
+                 WHERE user_id = :user_id AND symbol = :symbol
+                   AND record_date = CURRENT_DATE - 1),
+                :is_final
+            )
+            ON CONFLICT (user_id, symbol, record_date) DO UPDATE SET
+                signal_confidence  = EXCLUDED.signal_confidence,
+                action_tag         = EXCLUDED.action_tag,
+                recommended_action = EXCLUDED.recommended_action,
+                indicators         = EXCLUDED.indicators,
+                final_verdict      = EXCLUDED.final_verdict,
+                is_final           = EXCLUDED.is_final
+        """),
+        {
+            "user_id":            data.get("user_id"),
+            "symbol":             data.get("symbol"),
+            "signal_confidence":  data.get("signal_confidence"),
+            "action_tag":         data.get("action_tag"),
+            "recommended_action": data.get("recommended_action"),
+            "indicators":         _json.dumps(data.get("indicators") or {}),
+            "final_verdict":      data.get("final_verdict"),
+            "is_final":           data.get("is_final", False),
+        }
+    )
+    db.commit()
+
+
+def _maybe_upsert_log(
+    db: Session,
+    user_id: int,
+    symbol: str,
+    cache: StockAnalysisCache,
+    is_final: bool,
+) -> None:
+    """若使用者有 active 持倉，寫入 daily_analysis_log（從快取命中路徑呼叫）。"""
+    if not has_active_portfolio(user_id, symbol, db):
+        return
+    upsert_analysis_log(db, {
+        "user_id":            user_id,
+        "symbol":             symbol,
+        "signal_confidence":  float(cache.signal_confidence) if cache.signal_confidence else None,
+        "action_tag":         cache.action_tag,
+        "recommended_action": cache.recommended_action,
+        "indicators":         cache.indicators or {},
+        "final_verdict":      cache.final_verdict,
+        "is_final":           is_final,
+    })
+
+
+def _maybe_upsert_log_from_result(
+    db: Session,
+    user_id: int,
+    symbol: str,
+    result: dict,
+    is_final: bool,
+) -> None:
+    """若使用者有 active 持倉，寫入 daily_analysis_log（從分析結果路徑呼叫）。"""
+    if not has_active_portfolio(user_id, symbol, db):
+        return
+    upsert_analysis_log(db, {
+        "user_id":            user_id,
+        "symbol":             symbol,
+        "signal_confidence":  result.get("signal_confidence"),
+        "action_tag":         result.get("action_plan_tag"),
+        "recommended_action": result.get("recommended_action"),
+        "indicators":         _extract_indicators(result),
+        "final_verdict":      result.get("analysis"),
+        "is_final":           is_final,
+    })
+
+
+def _build_response_from_cache(
+    hit: CachedAnalyzeResponse,
+    symbol: str,
+) -> AnalyzeResponse:
+    """把快取命中的精簡結果轉成 AnalyzeResponse，缺少的欄位留 null。"""
+    return AnalyzeResponse(
+        snapshot={},
+        analysis=hit.final_verdict or "",
+        signal_confidence=int(hit.signal_confidence) if hit.signal_confidence is not None else None,
+        action_plan_tag=hit.action_tag,
+        is_final=hit.is_final,
+        intraday_disclaimer=hit.intraday_disclaimer,
+    )
 
 
 def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
@@ -389,8 +504,19 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
 def analyze(
     payload: AnalyzeRequest,
     graph=Depends(get_graph),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
+    now_time = datetime.now().time()
+
+    # L1：快取命中檢查
+    cache = get_analysis_cache(db, payload.symbol)
+    if cache:
+        hit = _handle_cache_hit(cache, now_time)
+        if hit:
+            _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
+            return _build_response_from_cache(hit, payload.symbol)
+
     initial_state: GraphState = {
         "symbol": payload.symbol,
         "news_content": payload.news_text,
@@ -441,7 +567,22 @@ def analyze(
             ]
         )
 
-    return _build_response(result)
+    is_final = now_time >= MARKET_CLOSE
+    upsert_analysis_cache(db, {
+        "symbol":             payload.symbol,
+        "signal_confidence":  result.get("signal_confidence"),
+        "action_tag":         result.get("action_plan_tag"),
+        "recommended_action": result.get("recommended_action"),
+        "indicators":         _extract_indicators(result),
+        "final_verdict":      result.get("analysis"),
+        "is_final":           is_final,
+    })
+    _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
+
+    response = _build_response(result)
+    response.is_final = is_final
+    response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
+    return response
 
 
 @app.post("/internal/fetch-raw-data")
@@ -470,8 +611,19 @@ def fetch_and_store_raw_data(db: Session, symbol: str, record_date) -> None:
 def analyze_position(
     payload: PositionAnalyzeRequest,
     graph=Depends(get_graph),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
+    now_time = datetime.now().time()
+
+    # L1：快取命中檢查
+    cache = get_analysis_cache(db, payload.symbol)
+    if cache:
+        hit = _handle_cache_hit(cache, now_time)
+        if hit:
+            _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
+            return _build_response_from_cache(hit, payload.symbol)
+
     initial_state: GraphState = {
         "symbol": payload.symbol,
         "entry_price": payload.entry_price,
@@ -533,4 +685,19 @@ def analyze_position(
             ]
         )
 
-    return _build_response(result)
+    is_final = now_time >= MARKET_CLOSE
+    upsert_analysis_cache(db, {
+        "symbol":             payload.symbol,
+        "signal_confidence":  result.get("signal_confidence"),
+        "action_tag":         result.get("action_plan_tag"),
+        "recommended_action": result.get("recommended_action"),
+        "indicators":         _extract_indicators(result),
+        "final_verdict":      result.get("analysis"),
+        "is_final":           is_final,
+    })
+    _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
+
+    response = _build_response(result)
+    response.is_final = is_final
+    response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
+    return response
