@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.db.models import DailyAnalysisLog
+from ai_stock_sentinel.db.models import StockAnalysisCache
 
 
 def _derive_ma_alignment(indicators: dict) -> str:
@@ -29,9 +29,9 @@ def load_yesterday_context(symbol: str, db: Session) -> dict | None:
     """
     yesterday = date.today() - timedelta(days=1)
     result = db.execute(
-        select(DailyAnalysisLog).where(
-            DailyAnalysisLog.symbol == symbol,
-            DailyAnalysisLog.record_date == yesterday,
+        select(StockAnalysisCache).where(
+            StockAnalysisCache.symbol == symbol,
+            StockAnalysisCache.record_date == yesterday,
         )
     )
     row = result.scalar_one_or_none()

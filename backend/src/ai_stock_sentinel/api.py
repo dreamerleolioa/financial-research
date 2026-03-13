@@ -384,7 +384,7 @@ def run_migrations() -> None:
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
     except Exception as exc:
-        logging.getLogger(__name__).warning("Alembic migration skipped: %s", exc)
+        logging.getLogger(__name__).error("Alembic migration failed: %s", exc, exc_info=True)
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]

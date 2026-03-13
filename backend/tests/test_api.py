@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.models import StockSnapshot
 
 # ---------------------------------------------------------------------------
@@ -53,9 +54,17 @@ def _fake_user():
     return user
 
 
+def _fake_db():
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = None
+    db.execute.return_value.scalar.return_value = 0
+    return db
+
+
 def _client_with_graph(graph) -> TestClient:
     api.app.dependency_overrides[api.get_graph] = lambda: graph
     api.app.dependency_overrides[get_current_user] = _fake_user
+    api.app.dependency_overrides[get_db] = _fake_db
     return TestClient(api.app)
 
 
