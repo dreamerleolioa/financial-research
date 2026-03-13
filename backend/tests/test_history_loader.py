@@ -88,3 +88,68 @@ def test_prev_confidence_none_when_null():
     result = load_yesterday_context("2330.TW", db)
 
     assert result["prev_confidence"] is None
+
+
+def test_backfill_yesterday_indicators_updates_is_final(monkeypatch) -> None:
+    """昨日 is_final=False 時，backfill 應更新 indicators 並設 is_final=True。"""
+    from unittest.mock import MagicMock, patch
+    from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
+
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = None  # 預設昨日無資料
+
+    # 製造昨日 is_final=False 的快取
+    cache = MagicMock()
+    cache.is_final = False
+    cache.symbol = "2330.TW"
+
+    # 第一次 execute 查昨日快取，回傳 cache
+    db.execute.return_value.scalar_one_or_none.return_value = cache
+
+    # mock yfinance 回傳含昨日收盤的 history
+    import pandas as pd
+    from datetime import date, timedelta
+    yesterday = date.today() - timedelta(days=1)
+    fake_history = pd.DataFrame(
+        {"Close": [185.0, 187.0], "Volume": [10000, 12000]},
+        index=pd.to_datetime([str(yesterday - timedelta(days=1)), str(yesterday)]),
+    )
+
+    with patch("ai_stock_sentinel.services.history_loader.yf.Ticker") as mock_ticker:
+        mock_ticker.return_value.history.return_value = fake_history
+        backfill_yesterday_indicators(db, "2330.TW")
+
+    db.execute.assert_called()  # 有執行 UPDATE SQL
+    db.commit.assert_called_once()
+
+
+def test_backfill_yesterday_indicators_skips_when_already_final(monkeypatch) -> None:
+    """昨日 is_final=True 時，backfill 應跳過，不執行任何 DB 寫入。"""
+    from unittest.mock import MagicMock, patch
+    from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
+
+    db = MagicMock()
+    cache = MagicMock()
+    cache.is_final = True
+    db.execute.return_value.scalar_one_or_none.return_value = cache
+
+    backfill_yesterday_indicators(db, "2330.TW")
+
+    # 只有一次 execute（查詢），沒有 commit
+    assert db.execute.call_count == 1
+    db.commit.assert_not_called()
+
+
+def test_backfill_yesterday_indicators_skips_when_no_cache() -> None:
+    """昨日無快取時，backfill 應直接 return，不呼叫 yfinance。"""
+    from unittest.mock import MagicMock, patch
+    from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
+
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = None
+
+    with patch("ai_stock_sentinel.services.history_loader.yf.Ticker") as mock_ticker:
+        backfill_yesterday_indicators(db, "2330.TW")
+        mock_ticker.assert_not_called()
+
+    db.commit.assert_not_called()

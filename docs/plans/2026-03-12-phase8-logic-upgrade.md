@@ -4,7 +4,7 @@
 
 **Goal:** 將系統從孤立的當日診斷升級為具備歷史記憶的連續敘事分析，並建立勝率回測腳本為未來信心分數校準奠定基礎。
 
-**Architecture:** `history_loader.py`（Phase 7 已建立）的昨日上下文注入 LangGraph GraphState，再透過新的 `prev_context` 欄位傳入 LLM Prompt，產出包含「訊號轉向分析」的 `final_verdict`。昨日上下文改為從 `stock_analysis_cache` 讀取（跨使用者共用，非持倉查詢也有記錄，資料更完整）。勝率回測腳本獨立為 CLI 工具，讀取 `daily_analysis_log` 並以 yfinance 驗證實際漲跌，輸出 Pearson 相關性報告。
+**Architecture:** `history_loader.py`（Phase 7 已建立）的昨日上下文注入 LangGraph GraphState，再透過新的 `prev_context` 欄位傳入 LLM Prompt，產出包含「訊號轉向分析」的 `final_verdict`。依 review-spec v1.7，兩支分析端點在讀取昨日上下文前都必須先執行 `backfill_yesterday_indicators(db, symbol)`，若昨日快取仍是盤中未定稿（`is_final=False`）則先補成收盤版指標，再由 `load_yesterday_context` 從 `stock_analysis_cache` 讀取（跨使用者共用，非持倉查詢也有記錄，資料更完整）。勝率回測腳本獨立為 CLI 工具，讀取 `daily_analysis_log` 並以 yfinance 驗證實際漲跌，輸出 Pearson 相關性報告。
 
 **Tech Stack:** Python、SQLAlchemy AsyncSession、LangGraph GraphState、yfinance、scipy（pearsonr）
 
@@ -30,7 +30,7 @@ cat backend/tests/test_graph_state.py
 在 `GraphState` TypedDict 末尾加入：
 
 ```python
-# --- History Context (from daily_analysis_log, injected before LLM call) ---
+# --- History Context (from stock_analysis_cache, injected before LLM call) ---
 prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值
 ```
 
@@ -64,7 +64,7 @@ git commit -m "feat: add prev_context field to GraphState for history injection"
 
 ---
 
-## Task 2: `analyze_position` 路由注入昨日上下文
+## Task 2: 兩支分析路由注入昨日上下文
 
 **Files:**
 
@@ -79,7 +79,7 @@ git commit -m "feat: add prev_context field to GraphState for history injection"
 from unittest.mock import patch, AsyncMock
 
 def test_analyze_position_injects_prev_context(mock_graph_with_state):
-    """analyze/position 應在 graph.invoke 前注入 prev_context。"""
+    """analyze/position 應在 graph.invoke 前先 backfill，再注入 prev_context。"""
     prev_ctx = {
         "prev_action_tag": "Hold",
         "prev_confidence": 61.5,
@@ -87,7 +87,8 @@ def test_analyze_position_injects_prev_context(mock_graph_with_state):
         "prev_ma_alignment": "bullish",
     }
 
-    with patch("ai_stock_sentinel.api.load_yesterday_context", new_callable=AsyncMock) as mock_loader:
+    with patch("ai_stock_sentinel.api.backfill_yesterday_indicators") as mock_backfill, \
+         patch("ai_stock_sentinel.api.load_yesterday_context", new_callable=AsyncMock) as mock_loader:
         mock_loader.return_value = prev_ctx
         # graph.invoke 收到的 initial_state 應包含 prev_context
         client = TestClient(api.app)
@@ -96,17 +97,41 @@ def test_analyze_position_injects_prev_context(mock_graph_with_state):
             "entry_price": 950.0,
         })
         assert resp.status_code == 200
+        mock_backfill.assert_called_once()
+        call_args = mock_graph_with_state.invoke.call_args[0][0]
+        assert call_args["prev_context"] == prev_ctx
+
+
+def test_analyze_injects_prev_context(mock_graph_with_state):
+    """analyze 也應在 graph.invoke 前先 backfill，再注入 prev_context。"""
+    prev_ctx = {
+        "prev_action_tag": "Trim",
+        "prev_confidence": 74.0,
+        "prev_rsi": 73.8,
+        "prev_ma_alignment": "bullish",
+    }
+
+    with patch("ai_stock_sentinel.api.backfill_yesterday_indicators") as mock_backfill, \
+         patch("ai_stock_sentinel.api.load_yesterday_context", new_callable=AsyncMock) as mock_loader:
+        mock_loader.return_value = prev_ctx
+        client = TestClient(api.app)
+        resp = client.post("/analyze", json={"symbol": "2330.TW"})
+        assert resp.status_code == 200
+        mock_backfill.assert_called_once()
         call_args = mock_graph_with_state.invoke.call_args[0][0]
         assert call_args["prev_context"] == prev_ctx
 ```
 
-**Step 2: 在 api.py 修改 analyze_position**
+**Step 2: 在 api.py 修改兩支 analyze 路由**
 
 ```python
 # api.py 新增 import
-from ai_stock_sentinel.services.history_loader import load_yesterday_context
+from ai_stock_sentinel.services.history_loader import (
+    backfill_yesterday_indicators,
+    load_yesterday_context,
+)
 
-# analyze_position 路由：在 graph.invoke 前插入
+# analyze_position / analyze 路由：在 graph.invoke 前插入
 @app.post("/analyze/position", response_model=AnalyzeResponse)
 async def analyze_position(
     payload: PositionAnalyzeRequest,
@@ -114,6 +139,9 @@ async def analyze_position(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> AnalyzeResponse:
+    # 若昨日快取仍是盤中版，先補成收盤指標，避免 history_loader 讀到未定稿資料
+    backfill_yesterday_indicators(db, payload.symbol)
+
     # 從 DB 讀取昨日上下文（Tool Use 原則：數值必須從 DB 讀取，不由 LLM 推斷）
     prev_context = await load_yesterday_context(payload.symbol, db)
 
@@ -122,18 +150,25 @@ async def analyze_position(
         "prev_context": prev_context,   # 新增
     }
     # ... 後續 graph.invoke 邏輯不變 ...
+
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(
+    payload: AnalyzeRequest,
+    graph=Depends(get_graph),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> AnalyzeResponse:
+    backfill_yesterday_indicators(db, payload.symbol)
+    prev_context = await load_yesterday_context(payload.symbol, db)
+
+    initial_state: GraphState = {
+        # ... 原有欄位不變 ...
+        "prev_context": prev_context,
+    }
 ```
 
-**Step 3: 在 /analyze 路由也初始化 prev_context（設為 None）**
-
-```python
-initial_state: GraphState = {
-    # ... 原有欄位 ...
-    "prev_context": None,
-}
-```
-
-**Step 4: 執行所有 API 測試**
+**Step 3: 執行所有 API 測試**
 
 ```bash
 cd backend && pytest tests/test_api.py -v
@@ -141,11 +176,11 @@ cd backend && pytest tests/test_api.py -v
 
 Expected: 全部 PASSED
 
-**Step 5: Commit**
+**Step 4: Commit**
 
 ```bash
 git add backend/src/ai_stock_sentinel/api.py backend/tests/test_api.py
-git commit -m "feat: inject yesterday context into GraphState before position analysis"
+git commit -m "feat: inject yesterday context into both analyze routes after backfill"
 ```
 
 ---
@@ -248,9 +283,9 @@ def build_position_history_section(prev_context: dict | None) -> str:
     )
 ```
 
-**Step 3: 在 position 分析呼叫時帶入 history section**
+**Step 3: 在兩種分析流程帶入 history section**
 
-修改 `analyze_position`（或對應的 node）傳入 Prompt：
+修改共用分析 node，或同步修改 `analyze_position` / `analyze` 對應的 Prompt 組裝流程：
 
 ```python
 # 在組裝 human_prompt 時加入 history_section
@@ -262,7 +297,7 @@ human_prompt = _POSITION_HUMAN_PROMPT.format(
 )
 ```
 
-在 `_POSITION_HUMAN_PROMPT` 末尾加入佔位符：
+在相關 human prompt 模板末尾加入佔位符：
 
 ```python
 _POSITION_HUMAN_PROMPT = """...(原有內容)...
@@ -588,10 +623,10 @@ git commit -m "perf: fetch technical and institutional data concurrently with as
 ## 完成檢查清單
 
 - [ ] `GraphState` 有 `prev_context` 欄位，測試通過
-- [ ] `analyze_position` 呼叫前自動讀取昨日上下文注入 state
+- [ ] `/analyze/position` 與 `/analyze` 呼叫前都會先 backfill 昨日未定稿快取，再讀取昨日上下文注入 state
 - [ ] `history_loader.py` 查詢來源為 `stock_analysis_cache`（非 `daily_analysis_log`），確保非持倉查詢也有昨日上下文
 - [ ] `build_position_history_section` 函式測試通過
-- [ ] LLM Prompt 有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
+- [ ] 兩種分析流程的 LLM Prompt 都有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
 - [ ] 完整測試套件無回歸
 - [ ] `backtest_win_rate.py` 語法正確，可正常執行
 - [ ] crawl node 改用 `asyncio.gather` 並發抓取，測試通過
@@ -599,4 +634,4 @@ git commit -m "perf: fetch technical and institutional data concurrently with as
 
 ---
 
-_文件版本：v1.3 | 建立日期：2026-03-11 | 更新日期：2026-03-12 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8_
+_文件版本：v1.4 | 建立日期：2026-03-11 | 更新日期：2026-03-13 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_

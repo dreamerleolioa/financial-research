@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.models import StockSnapshot
 
 # ---------------------------------------------------------------------------
@@ -53,9 +54,17 @@ def _fake_user():
     return user
 
 
+def _fake_db():
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = None
+    db.execute.return_value.scalar.return_value = 0
+    return db
+
+
 def _client_with_graph(graph) -> TestClient:
     api.app.dependency_overrides[api.get_graph] = lambda: graph
     api.app.dependency_overrides[get_current_user] = _fake_user
+    api.app.dependency_overrides[get_db] = _fake_db
     return TestClient(api.app)
 
 
@@ -677,3 +686,150 @@ def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> Non
     pa = body["position_analysis"]
     if pa["recommended_action"] in ("Trim", "Exit"):
         assert pa["exit_reason"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Full result cache persistence
+# ---------------------------------------------------------------------------
+
+def test_upsert_analysis_cache_stores_full_result() -> None:
+    """upsert_analysis_cache should persist full_result when provided."""
+    from unittest.mock import MagicMock
+    from ai_stock_sentinel.api import upsert_analysis_cache
+
+    db = MagicMock()
+    data = {
+        "symbol": "2330.TW",
+        "signal_confidence": 55,
+        "action_tag": "neutral",
+        "recommended_action": "觀望",
+        "indicators": {},
+        "final_verdict": "分析結果",
+        "is_final": False,
+        "full_result": {"snapshot": {"symbol": "2330.TW"}, "analysis": "分析結果"},
+    }
+
+    upsert_analysis_cache(db, data)
+
+    db.execute.assert_called_once()
+    call_kwargs = db.execute.call_args
+    params = call_kwargs[0][1]  # second positional arg is the params dict
+    assert "full_result" in params
+    assert params["full_result"] is not None
+
+
+def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
+    """When cache has full_result, /analyze should return all fields."""
+    from unittest.mock import MagicMock
+    import ai_stock_sentinel.api as api_module
+    from ai_stock_sentinel.db.session import get_db
+
+    full = {
+        "snapshot": {"symbol": "2330.TW", "current_price": 1865.0},
+        "analysis": "完整分析內容",
+        "signal_confidence": 37,
+        "action_plan_tag": "neutral",
+        "news_display_items": [{"title": "新聞標題"}],
+        "fundamental_data": {"pe_ratio": 28.1},
+        "is_final": False,
+        "intraday_disclaimer": None,
+        "errors": [],
+    }
+
+    cache = MagicMock()
+    cache.symbol = "2330.TW"
+    cache.is_final = True
+    cache.full_result = full
+    cache.signal_confidence = 37
+    cache.action_tag = "neutral"
+    cache.recommended_action = None
+    cache.final_verdict = "完整分析內容"
+    cache.indicators = {}
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol: cache)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+
+    fake_db = MagicMock()
+    api.app.dependency_overrides[get_db] = lambda: fake_db
+
+    graph = _make_graph({})  # should not be invoked
+    client = _client_with_graph(graph)
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    api.app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis"] == "完整分析內容"
+    assert body["fundamental_data"] == {"pe_ratio": 28.1}
+    assert body["news_display_items"] == [{"title": "新聞標題"}]
+    assert body["snapshot"]["symbol"] == "2330.TW"
+
+
+def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
+    """POST /analyze should pass full_result to upsert_analysis_cache."""
+    import ai_stock_sentinel.api as api_module
+    from ai_stock_sentinel.db.session import get_db
+
+    graph = _make_graph(
+        {
+            "snapshot": {"symbol": "2330.TW", "current_price": 100.0},
+            "analysis": "分析結果",
+            "signal_confidence": 55,
+            "action_plan_tag": "neutral",
+            "errors": [],
+        }
+    )
+
+    captured = {}
+
+    def fake_upsert(db, data):
+        captured["data"] = data
+
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", fake_upsert)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+
+    fake_db = MagicMock()
+    api.app.dependency_overrides[get_db] = lambda: fake_db
+    client = _client_with_graph(graph)
+    client.post("/analyze", json={"symbol": "2330.TW"})
+    api.app.dependency_overrides.pop(get_db, None)
+
+    assert "full_result" in captured.get("data", {})
+    full = captured["data"]["full_result"]
+    assert full.get("analysis") == "分析結果"
+    assert full.get("snapshot", {}).get("symbol") == "2330.TW"
+
+
+# ---------------------------------------------------------------------------
+# Backfill yesterday indicators
+# ---------------------------------------------------------------------------
+
+def test_analyze_calls_backfill_yesterday_indicators(monkeypatch) -> None:
+    """POST /analyze 應在 graph.invoke 之前呼叫 backfill_yesterday_indicators。"""
+    import ai_stock_sentinel.api as api_module
+    from dataclasses import asdict
+
+    called = {}
+
+    def fake_backfill(db, symbol):
+        called["symbol"] = symbol
+
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "errors": [],
+    })
+    client = _client_with_graph(graph)
+    client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert called.get("symbol") == "2330.TW"

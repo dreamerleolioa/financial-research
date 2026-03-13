@@ -26,6 +26,31 @@ class PortfolioCreateRequest(BaseModel):
     notes: str | None = None
 
 
+@router.get("")
+def list_portfolio(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = db.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == current_user.id,
+            UserPortfolio.is_active == True,
+        ).order_by(UserPortfolio.created_at.desc())
+    ).scalars().all()
+
+    return [
+        {
+            "id":          r.id,
+            "symbol":      r.symbol,
+            "entry_price": float(r.entry_price),
+            "quantity":    r.quantity,
+            "entry_date":  r.entry_date.isoformat(),
+            "notes":       r.notes,
+        }
+        for r in rows
+    ]
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def add_portfolio(
     payload: PortfolioCreateRequest,

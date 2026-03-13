@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { authHeaders } from "./lib/auth";
 import { useAuth } from "./stores/auth";
-import PositionPage from "./pages/PositionPage";
+import PortfolioPage from "./pages/PortfolioPage";
 
 interface ErrorDetail {
   code: string;
@@ -55,6 +55,8 @@ interface AnalyzeResponse {
   action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
   institutional_flow_label: string | null;
   data_confidence: number | null;
+  is_final: boolean;
+  intraday_disclaimer: string | null;
   errors: ErrorDetail[];
   fundamental_data?: {
     ttm_eps?: number | null;
@@ -65,6 +67,7 @@ interface AnalyzeResponse {
     yield_signal?: string | null;
   } | null;
 }
+
 
 const STRATEGY_LABEL: Record<string, string> = {
   short_term: "短線操作",
@@ -184,12 +187,82 @@ function mapVolumeSource(value: unknown): string {
   return "未知來源";
 }
 
+interface AddPortfolioForm {
+  entry_price: string;
+  quantity: string;
+  entry_date: string;
+  notes: string;
+}
+
 function App() {
   const { user, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<"analyze" | "position">("analyze");
+  const [activeTab, setActiveTab] = useState<"analyze" | "portfolio">("analyze");
   const [symbol, setSymbol] = useState("2330.TW");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
+
+  // Portfolio state
+  const [portfolioSymbols, setPortfolioSymbols] = useState<Set<string>>(new Set());
+  const [portfolioCount, setPortfolioCount] = useState(0);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addForm, setAddForm] = useState<AddPortfolioForm>({
+    entry_price: "",
+    quantity: "",
+    entry_date: new Date().toISOString().slice(0, 10),
+    notes: "",
+  });
+  const [addLoading, setAddLoading] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  async function fetchPortfolio() {
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) return;
+      const data: { id: number; symbol: string }[] = await res.json();
+      setPortfolioSymbols(new Set(data.map((r) => r.symbol)));
+      setPortfolioCount(data.length);
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    fetchPortfolio();
+  }, []);
+
+  async function handleAddPortfolio(e: React.FormEvent) {
+    e.preventDefault();
+    setAddLoading(true);
+    setAddError(null);
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          symbol,
+          entry_price: parseFloat(addForm.entry_price),
+          quantity: addForm.quantity ? parseInt(addForm.quantity) : 0,
+          entry_date: addForm.entry_date,
+          notes: addForm.notes || null,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail ?? `HTTP ${res.status}`);
+      }
+      await fetchPortfolio();
+      setShowAddModal(false);
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : "新增失敗");
+    } finally {
+      setAddLoading(false);
+    }
+  }
+
+  const isTracked = portfolioSymbols.has(symbol);
+  const portfolioFull = portfolioCount >= 5;
 
   const confidenceScore = result?.confidence_score ?? null;
   const circumference = 2 * Math.PI * 52;
@@ -227,6 +300,8 @@ function App() {
         action_plan_tag: null,
         institutional_flow_label: null,
         data_confidence: null,
+        is_final: true,
+        intraday_disclaimer: null,
         errors: [{ code: "NETWORK_ERROR", message: "無法連線後端，請確認伺服器已啟動。" }],
       });
     } finally {
@@ -288,30 +363,36 @@ function App() {
           <button
             onClick={() => setActiveTab("analyze")}
             className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "analyze"
-                ? "bg-indigo-600 text-white"
-                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+              ? "bg-indigo-600 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
           >
             個股分析
           </button>
           <button
-            onClick={() => setActiveTab("position")}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "position"
-                ? "bg-indigo-600 text-white"
-                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+            onClick={() => setActiveTab("portfolio")}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "portfolio"
+              ? "bg-indigo-600 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
           >
             我的持股
           </button>
         </div>
 
-        {activeTab === "position" && <PositionPage />}
+        {activeTab === "portfolio" && <PortfolioPage onNavigateAnalyze={(s: string) => { setSymbol(s); setActiveTab("analyze"); }} />}
 
         {activeTab === "analyze" && <>
 
           {firstError && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <span className="font-semibold">[{firstError.code}]</span> {firstError.message}
+            </div>
+          )}
+
+          {result && result.is_final === false && result.intraday_disclaimer && (
+            <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
+              {result.intraday_disclaimer}
             </div>
           )}
 
@@ -336,9 +417,100 @@ function App() {
               >
                 {loading ? "分析中..." : "開始分析"}
               </button>
+              {result && (
+                <button
+                  onClick={() => { setAddError(null); setShowAddModal(true); }}
+                  disabled={isTracked || portfolioFull}
+                  title={isTracked ? "已追蹤" : portfolioFull ? "最多追蹤 5 筆持股" : "加入我的持股"}
+                  className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isTracked ? "已追蹤" : "加入我的持股"}
+                </button>
+              )}
             </div>
             <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || "未輸入"}</p>
           </section>
+
+          {/* 加入持股 Modal */}
+          {showAddModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+              <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+                <h3 className="mb-4 text-base font-semibold text-slate-800">加入我的持股</h3>
+                <form onSubmit={handleAddPortfolio} className="space-y-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">股票代碼</label>
+                    <input
+                      value={symbol}
+                      readOnly
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">成本價 *</label>
+                    <input
+                      type="number"
+                      value={addForm.entry_price}
+                      onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))}
+                      required
+                      min="0.01"
+                      step="0.01"
+                      placeholder="980"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">持有股數 *</label>
+                    <input
+                      type="number"
+                      value={addForm.quantity}
+                      onChange={(e) => setAddForm((f) => ({ ...f, quantity: e.target.value }))}
+                      required
+                      min="1"
+                      placeholder="1000"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">購入日期</label>
+                    <input
+                      type="date"
+                      value={addForm.entry_date}
+                      onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">備註（選填）</label>
+                    <input
+                      value={addForm.notes}
+                      onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
+                      placeholder="自訂備註"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2"
+                    />
+                  </div>
+                  {addError && (
+                    <p className="text-sm text-red-600">{addError}</p>
+                  )}
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddModal(false)}
+                      className="rounded-lg px-4 py-2 text-sm text-slate-600 hover:bg-slate-100"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={addLoading}
+                      className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+                    >
+                      {addLoading ? "新增中..." : "確認新增"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
 
           <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">

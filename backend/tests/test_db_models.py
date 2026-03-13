@@ -45,3 +45,8 @@ def test_stock_analysis_cache_model_columns():
         "action_tag", "indicators", "final_verdict",
         "prev_action_tag", "prev_confidence", "is_final", "created_at", "updated_at",
     } <= cols
+
+
+def test_stock_analysis_cache_has_full_result_column() -> None:
+    from ai_stock_sentinel.db.models import StockAnalysisCache
+    assert hasattr(StockAnalysisCache, "full_result")
