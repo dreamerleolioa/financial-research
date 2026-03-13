@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict as _asdict, is_dataclass
 from datetime import date as _date, datetime, time as _time
@@ -176,7 +177,6 @@ def _build_analysis_response(
 
 def upsert_analysis_cache(db: Session, data: dict) -> None:
     """UPSERT 分析結果至 stock_analysis_cache（跨使用者共用）。"""
-    import json
     db.execute(
         text("""
             INSERT INTO stock_analysis_cache (
@@ -247,7 +247,6 @@ def has_active_portfolio(user_id: int, symbol: str, db: Session) -> bool:
 
 def upsert_analysis_log(db: Session, data: dict) -> None:
     """UPSERT 分析結果至 daily_analysis_log（含 user_id）。"""
-    import json as _json
     db.execute(
         text("""
             INSERT INTO daily_analysis_log (
@@ -279,7 +278,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
             "signal_confidence":  data.get("signal_confidence"),
             "action_tag":         data.get("action_tag"),
             "recommended_action": data.get("recommended_action"),
-            "indicators":         _json.dumps(data.get("indicators") or {}),
+            "indicators":         json.dumps(data.get("indicators") or {}),
             "final_verdict":      data.get("final_verdict"),
             "is_final":           data.get("is_final", False),
         }
