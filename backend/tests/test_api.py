@@ -709,6 +709,55 @@ def test_upsert_analysis_cache_stores_full_result() -> None:
     assert params["full_result"] is not None
 
 
+def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
+    """When cache has full_result, /analyze should return all fields."""
+    from unittest.mock import MagicMock
+    import ai_stock_sentinel.api as api_module
+    from ai_stock_sentinel.db.session import get_db
+
+    full = {
+        "snapshot": {"symbol": "2330.TW", "current_price": 1865.0},
+        "analysis": "完整分析內容",
+        "signal_confidence": 37,
+        "action_plan_tag": "neutral",
+        "news_display_items": [{"title": "新聞標題"}],
+        "fundamental_data": {"pe_ratio": 28.1},
+        "is_final": False,
+        "intraday_disclaimer": None,
+        "errors": [],
+    }
+
+    cache = MagicMock()
+    cache.symbol = "2330.TW"
+    cache.is_final = False
+    cache.full_result = full
+    cache.signal_confidence = 37
+    cache.action_tag = "neutral"
+    cache.recommended_action = None
+    cache.final_verdict = "完整分析內容"
+    cache.indicators = {}
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol: cache)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+
+    fake_db = MagicMock()
+    api.app.dependency_overrides[get_db] = lambda: fake_db
+
+    graph = _make_graph({})  # should not be invoked
+    client = _client_with_graph(graph)
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    api.app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis"] == "完整分析內容"
+    assert body["fundamental_data"] == {"pe_ratio": 28.1}
+    assert body["news_display_items"] == [{"title": "新聞標題"}]
+    assert body["snapshot"]["symbol"] == "2330.TW"
+
+
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     """POST /analyze should pass full_result to upsert_analysis_cache."""
     import ai_stock_sentinel.api as api_module

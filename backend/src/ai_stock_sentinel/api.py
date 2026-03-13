@@ -333,8 +333,18 @@ def _maybe_upsert_log_from_result(
 def _build_response_from_cache(
     hit: CachedAnalyzeResponse,
     symbol: str,
+    full_result: dict | None = None,
 ) -> AnalyzeResponse:
-    """把快取命中的精簡結果轉成 AnalyzeResponse，缺少的欄位留 null。"""
+    """把快取命中的結果轉成 AnalyzeResponse。
+
+    若 full_result 存在，直接用它還原完整欄位；
+    否則 fallback 到精簡欄位（舊資料相容）。
+    """
+    if full_result:
+        resp = AnalyzeResponse(**full_result)
+        resp.is_final = hit.is_final
+        resp.intraday_disclaimer = hit.intraday_disclaimer
+        return resp
     return AnalyzeResponse(
         snapshot={},
         analysis=hit.final_verdict or "",
@@ -514,7 +524,7 @@ def analyze(
         hit = _handle_cache_hit(cache, now_time)
         if hit:
             _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-            return _build_response_from_cache(hit, payload.symbol)
+            return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -623,7 +633,7 @@ def analyze_position(
         hit = _handle_cache_hit(cache, now_time)
         if hit:
             _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-            return _build_response_from_cache(hit, payload.symbol)
+            return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
