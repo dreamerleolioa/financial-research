@@ -363,8 +363,8 @@ function App() {
           <button
             onClick={() => setActiveTab("analyze")}
             className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "analyze"
-                ? "bg-indigo-600 text-white"
-                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+              ? "bg-indigo-600 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
           >
             個股分析
@@ -372,8 +372,8 @@ function App() {
           <button
             onClick={() => setActiveTab("portfolio")}
             className={`rounded-lg px-4 py-2 text-sm font-medium transition ${activeTab === "portfolio"
-                ? "bg-indigo-600 text-white"
-                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+              ? "bg-indigo-600 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
           >
             我的持股
