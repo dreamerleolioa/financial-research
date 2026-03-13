@@ -189,6 +189,7 @@ pnpm dev
 目前前端已包含：
 
 **個股分析 tab**
+
 - 股票代碼輸入框 + 一鍵分析
 - 信心指數圓形元件（動態，含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示）
 - 快照資訊（symbol / current_price / volume）
@@ -199,6 +200,7 @@ pnpm dev
 - 錯誤 banner + loading 狀態
 
 **我的持股 tab**
+
 - 持股診斷表單（股票代碼 + 購入成本價 + 選填日期 / 數量）
 - 倉位狀態卡（獲利安全區 / 成本邊緣 / 套牢防守；顯示成本價 / 現價 / 損益%）
 - 操作建議卡（續抱 / 減碼 / 出場；顯示動態防守位）
@@ -245,44 +247,43 @@ make test
 
 回傳 JSON 欄位：
 
-| 欄位                    | 說明                                                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `snapshot`              | 股票快照（price / volume / recent_closes 等）                                                                            |
-| `analysis`              | LLM 四步驟分析文字（Skeptic Mode；向後相容）                                                                             |
-| `analysis_detail`       | LLM 結構化輸出（`summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label`）                    |
-| `sentiment_label`       | 消息面情緒標籤（`positive` / `negative` / `neutral`；從 `cleaned_news` 浮出）                                            |
-| `technical_signal`      | 技術面訊號（`bullish` / `bearish` / `sideways`）                                                                         |
-| `institutional_flow`    | 籌碼面訊號（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral` / `unknown`）                   |
-| `cleaned_news`          | 結構化新聞摘要（有新聞輸入時才有值）                                                                                     |
-| `cleaned_news_quality`  | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`）                                                                  |
-| `news_display_items`    | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔）          |
-| `action_plan_tag`       | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`）            |
-| `confidence_score`      | 信心分數 0–100（`signal_confidence` 別名，向後相容）                                                                     |
-| `signal_confidence`     | 訊號強度分數（多維加權計算）                                                                                             |
-| `data_confidence`       | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算）                                                          |
-| `cross_validation_note` | 三維交叉驗證備注（rule-based 固定字串）                                                                                  |
-| `strategy_type`         | 策略方向（`short_term` / `mid_term` / `defensive_wait`）                                                                 |
-| `entry_zone`            | 建議入場區間（具體價格數值）                                                                                             |
-| `stop_loss`             | 防守底線（具體停損價位）                                                                                                 |
-| `holding_period`        | 預期持股期間（具體時間窗，如「7-10 交易日」）                                                                            |
-| `action_plan`           | 戰術行動摘要（`action` / `target_zone` / `defense_line` / `momentum_expectation`；rule-based 計算，資料不足時為 `null`） |
-| `data_sources`          | 實際成功抓取的資料來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                       |
+| 欄位                    | 說明                                                                                                                                          |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `snapshot`              | 股票快照（price / volume / recent_closes 等）                                                                                                 |
+| `analysis`              | LLM 四步驟分析文字（Skeptic Mode；向後相容）                                                                                                  |
+| `analysis_detail`       | LLM 結構化輸出（`summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label`）                                         |
+| `sentiment_label`       | 消息面情緒標籤（`positive` / `negative` / `neutral`；從 `cleaned_news` 浮出）                                                                 |
+| `technical_signal`      | 技術面訊號（`bullish` / `bearish` / `sideways`）                                                                                              |
+| `institutional_flow`    | 籌碼面訊號（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral` / `unknown`）                                        |
+| `cleaned_news`          | 結構化新聞摘要（有新聞輸入時才有值）                                                                                                          |
+| `cleaned_news_quality`  | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`）                                                                                       |
+| `news_display_items`    | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔）                               |
+| `action_plan_tag`       | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`）                                 |
+| `confidence_score`      | 信心分數 0–100（`signal_confidence` 別名，向後相容）                                                                                          |
+| `signal_confidence`     | 訊號強度分數（多維加權計算）                                                                                                                  |
+| `data_confidence`       | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算）                                                                               |
+| `cross_validation_note` | 三維交叉驗證備注（rule-based 固定字串）                                                                                                       |
+| `strategy_type`         | 策略方向（`short_term` / `mid_term` / `defensive_wait`）                                                                                      |
+| `entry_zone`            | 建議入場區間（具體價格數值）                                                                                                                  |
+| `stop_loss`             | 防守底線（具體停損價位）                                                                                                                      |
+| `holding_period`        | 預期持股期間（具體時間窗，如「7-10 交易日」）                                                                                                 |
+| `action_plan`           | 戰術行動摘要（`action` / `target_zone` / `defense_line` / `momentum_expectation`；rule-based 計算，資料不足時為 `null`）                      |
+| `data_sources`          | 實際成功抓取的資料來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                            |
 | `position_analysis`     | 持股診斷結果（`/analyze/position` 才有值；含 `profit_loss_pct` / `position_status` / `trailing_stop` / `recommended_action` / `exit_reason`） |
-| `errors`                | 錯誤陣列（每項含 `code`、`message`，正常為空陣列）                                                                       |
+| `errors`                | 錯誤陣列（每項含 `code`、`message`，正常為空陣列）                                                                                            |
 
 ### POST `/analyze/position`
 
 額外必填欄位：`entry_price`（float）。回傳同上，`position_analysis` 欄位為：
 
-| 欄位 | 說明 |
-| --- | --- |
-| `entry_price` | 購入成本價 |
-| `profit_loss_pct` | 損益百分比（Python 計算，非 LLM） |
-| `position_status` | `profitable_safe` / `at_risk` / `under_water` |
-| `trailing_stop` | 動態防守位（依獲利區間規則計算） |
-| `trailing_stop_reason` | 防守位計算邏輯說明 |
-| `recommended_action` | `Hold` / `Trim` / `Exit`（4 規則 rule-based） |
-| `exit_reason` | 出場理由（僅 `Exit` 時非 null） |
+| 欄位                   | 說明                                          |
+| ---------------------- | --------------------------------------------- |
+| `entry_price`          | 購入成本價                                    |
+| `profit_loss_pct`      | 損益百分比（Python 計算，非 LLM）             |
+| `position_status`      | `profitable_safe` / `at_risk` / `under_water` |
+| `trailing_stop`        | 動態防守位（依獲利區間規則計算）              |
+| `trailing_stop_reason` | 防守位計算邏輯說明                            |
+| `recommended_action`   | `Hold` / `Trim` / `Exit`（4 規則 rule-based） |
+| `exit_reason`          | 出場理由（僅 `Exit` 時非 null）               |
 
 ---
-
