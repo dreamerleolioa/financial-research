@@ -1,5 +1,8 @@
 # Phase 8 邏輯強化 Implementation Plan
 
+> 狀態：待執行
+> 預計執行日期：2026-03-16
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 將系統從孤立的當日診斷升級為具備歷史記憶的連續敘事分析，並建立勝率回測腳本為未來信心分數校準奠定基礎。

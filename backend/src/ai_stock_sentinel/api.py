@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict as _asdict, is_dataclass
-from datetime import date as _date, datetime, time as _time
+from datetime import date as _date, datetime, time as _time, timezone as _timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -83,6 +84,7 @@ class AnalyzeResponse(BaseModel):
 
 
 # ─── 快取常數 ───────────────────────────────────────────────
+_TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 MARKET_CLOSE = _time(13, 30)
 INTRADAY_DISCLAIMER = (
     "⚠️ 注意：目前為盤中階段（指標未收定），"
@@ -517,7 +519,7 @@ def analyze(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
-    now_time = datetime.now().time()
+    now_time = datetime.now(_TZ_TAIPEI).time()
 
     # L1：快取命中檢查
     cache = get_analysis_cache(db, payload.symbol)
@@ -591,6 +593,13 @@ def analyze(
         "is_final":           is_final,
         "full_result":        _response.model_dump(),
     })
+    fetch_and_store_raw_data(
+        db,
+        payload.symbol,
+        technical=result.get("snapshot"),
+        institutional=result.get("institutional_flow"),
+        fundamental=result.get("fundamental_data"),
+    )
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
     response = _response
@@ -608,17 +617,52 @@ def fetch_raw_data_endpoint(
     """n8n cron 呼叫的內部端點，抓取原始數據並存入 stock_raw_data。"""
     from datetime import date as _date_type
     record_date = _date_type.today() if payload.date == "today" else _date_type.fromisoformat(payload.date)
-    fetch_and_store_raw_data(db, payload.symbol, record_date)
+    pass
     return {"status": "ok", "symbol": payload.symbol, "record_date": record_date.isoformat()}
 
 
-def fetch_and_store_raw_data(db: Session, symbol: str, record_date) -> None:
-    """抓取技術面、籌碼面、基本面原始數據並 UPSERT 至 stock_raw_data。
+def fetch_and_store_raw_data(
+    db: Session,
+    symbol: str,
+    *,
+    technical: dict | None,
+    institutional: dict | None,
+    fundamental: dict | None,
+) -> None:
+    """將 graph result 的原始資料 UPSERT 至 stock_raw_data（今日）。
 
-    TODO: 接入現有爬蟲（yfinance_client、institutional_flow、fundamental）。
-    目前為 stub，不執行任何操作。
+    - technical      ← graph result["snapshot"]
+    - institutional  ← graph result["institutional_flow"]
+    - fundamental    ← graph result["fundamental_data"]
+
+    使用 ON CONFLICT (symbol, record_date) DO UPDATE，同日只存一筆。
+    若籌碼面含 'error' 鍵，仍寫入（保留原始錯誤資訊以供 debug）。
     """
-    pass
+    db.execute(
+        text("""
+            INSERT INTO stock_raw_data (
+                symbol, record_date, technical, institutional, fundamental, fetched_at
+            ) VALUES (
+                :symbol, CURRENT_DATE,
+                CAST(:technical AS jsonb),
+                CAST(:institutional AS jsonb),
+                CAST(:fundamental AS jsonb),
+                NOW()
+            )
+            ON CONFLICT (symbol, record_date) DO UPDATE SET
+                technical     = EXCLUDED.technical,
+                institutional = EXCLUDED.institutional,
+                fundamental   = EXCLUDED.fundamental,
+                fetched_at    = NOW()
+        """),
+        {
+            "symbol":        symbol,
+            "technical":     json.dumps(technical or {}),
+            "institutional": json.dumps(institutional or {}),
+            "fundamental":   json.dumps(fundamental or {}),
+        }
+    )
+    db.commit()
 
 
 @app.post("/analyze/position", response_model=AnalyzeResponse)
@@ -628,7 +672,7 @@ def analyze_position(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyzeResponse:
-    now_time = datetime.now().time()
+    now_time = datetime.now(_TZ_TAIPEI).time()
 
     # L1：快取命中檢查
     cache = get_analysis_cache(db, payload.symbol)
@@ -713,6 +757,13 @@ def analyze_position(
         "is_final":           is_final,
         "full_result":        _response.model_dump(),
     })
+    fetch_and_store_raw_data(
+        db,
+        payload.symbol,
+        technical=result.get("snapshot"),
+        institutional=result.get("institutional_flow"),
+        fundamental=result.get("fundamental_data"),
+    )
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
     response = _response

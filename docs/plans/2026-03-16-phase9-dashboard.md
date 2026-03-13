@@ -1,5 +1,8 @@
 # Phase 9 前端復盤儀表板 Implementation Plan
 
+> 狀態：待執行
+> 預計執行日期：2026-03-16
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 建立前端復盤儀表板頁面，視覺化單股的信心分數時序趨勢與訊號轉向歷史，讓使用者能回顧過去 N 天的診斷演變。
