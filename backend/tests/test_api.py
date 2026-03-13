@@ -738,7 +738,7 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
 
     cache = MagicMock()
     cache.symbol = "2330.TW"
-    cache.is_final = False
+    cache.is_final = True
     cache.full_result = full
     cache.signal_confidence = 37
     cache.action_tag = "neutral"

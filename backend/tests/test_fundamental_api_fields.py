@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 from ai_stock_sentinel import api
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.db.session import get_db
 
 
 def _make_graph(final_state):
@@ -25,6 +26,7 @@ def _fake_user():
 def _client_with_graph(graph):
     api.app.dependency_overrides[api.get_graph] = lambda: graph
     api.app.dependency_overrides[get_current_user] = _fake_user
+    api.app.dependency_overrides[get_db] = lambda: MagicMock()
     return TestClient(api.app)
 
 
@@ -68,7 +70,13 @@ def _mock_graph_result():
     }
 
 
-def test_analyze_response_includes_fundamental_data():
+def test_analyze_response_includes_fundamental_data(monkeypatch):
+    import ai_stock_sentinel.api as api_module
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
     client = _client_with_graph(_make_graph(_mock_graph_result()))
     resp = client.post("/analyze", json={"symbol": "2330.TW"})
 
