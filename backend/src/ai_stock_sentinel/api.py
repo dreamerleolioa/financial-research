@@ -567,6 +567,7 @@ def analyze(
         )
 
     is_final = now_time >= MARKET_CLOSE
+    _response = _build_response(result)
     upsert_analysis_cache(db, {
         "symbol":             payload.symbol,
         "signal_confidence":  result.get("signal_confidence"),
@@ -575,10 +576,11 @@ def analyze(
         "indicators":         _extract_indicators(result),
         "final_verdict":      result.get("analysis"),
         "is_final":           is_final,
+        "full_result":        _response.model_dump(),
     })
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
-    response = _build_response(result)
+    response = _response
     response.is_final = is_final
     response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
     return response
@@ -685,6 +687,7 @@ def analyze_position(
         )
 
     is_final = now_time >= MARKET_CLOSE
+    _response = _build_response(result)
     upsert_analysis_cache(db, {
         "symbol":             payload.symbol,
         "signal_confidence":  result.get("signal_confidence"),
@@ -693,10 +696,11 @@ def analyze_position(
         "indicators":         _extract_indicators(result),
         "final_verdict":      result.get("analysis"),
         "is_final":           is_final,
+        "full_result":        _response.model_dump(),
     })
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
-    response = _build_response(result)
+    response = _response
     response.is_final = is_final
     response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
     return response

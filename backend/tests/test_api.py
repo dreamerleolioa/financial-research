@@ -707,3 +707,40 @@ def test_upsert_analysis_cache_stores_full_result() -> None:
     params = call_kwargs[0][1]  # second positional arg is the params dict
     assert "full_result" in params
     assert params["full_result"] is not None
+
+
+def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
+    """POST /analyze should pass full_result to upsert_analysis_cache."""
+    import ai_stock_sentinel.api as api_module
+    from ai_stock_sentinel.db.session import get_db
+
+    graph = _make_graph(
+        {
+            "snapshot": {"symbol": "2330.TW", "current_price": 100.0},
+            "analysis": "分析結果",
+            "signal_confidence": 55,
+            "action_plan_tag": "neutral",
+            "errors": [],
+        }
+    )
+
+    captured = {}
+
+    def fake_upsert(db, data):
+        captured["data"] = data
+
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", fake_upsert)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+
+    fake_db = MagicMock()
+    api.app.dependency_overrides[get_db] = lambda: fake_db
+    client = _client_with_graph(graph)
+    client.post("/analyze", json={"symbol": "2330.TW"})
+    api.app.dependency_overrides.pop(get_db, None)
+
+    assert "full_result" in captured.get("data", {})
+    full = captured["data"]["full_result"]
+    assert full.get("analysis") == "分析結果"
+    assert full.get("snapshot", {}).get("symbol") == "2330.TW"
