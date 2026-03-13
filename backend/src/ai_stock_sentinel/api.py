@@ -20,6 +20,7 @@ from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
+from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
 from ai_stock_sentinel.user_models.user import User
 
 configure_logging()
@@ -526,6 +527,8 @@ def analyze(
             _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
             return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
+    backfill_yesterday_indicators(db, payload.symbol)
+
     initial_state: GraphState = {
         "symbol": payload.symbol,
         "news_content": payload.news_text,
@@ -634,6 +637,8 @@ def analyze_position(
         if hit:
             _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
             return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
+
+    backfill_yesterday_indicators(db, payload.symbol)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,

@@ -802,3 +802,34 @@ def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     full = captured["data"]["full_result"]
     assert full.get("analysis") == "分析結果"
     assert full.get("snapshot", {}).get("symbol") == "2330.TW"
+
+
+# ---------------------------------------------------------------------------
+# Backfill yesterday indicators
+# ---------------------------------------------------------------------------
+
+def test_analyze_calls_backfill_yesterday_indicators(monkeypatch) -> None:
+    """POST /analyze 應在 graph.invoke 之前呼叫 backfill_yesterday_indicators。"""
+    import ai_stock_sentinel.api as api_module
+    from dataclasses import asdict
+
+    called = {}
+
+    def fake_backfill(db, symbol):
+        called["symbol"] = symbol
+
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "errors": [],
+    })
+    client = _client_with_graph(graph)
+    client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert called.get("symbol") == "2330.TW"
