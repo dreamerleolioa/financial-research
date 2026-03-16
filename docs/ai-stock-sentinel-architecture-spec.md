@@ -745,7 +745,7 @@ class InstitutionalFlowProvider(Protocol):
 - 明確標示「推論」與「事實」區塊
 - 長流程分析需有進度狀態（loading / step logs）
 - Analyze 頁需以文案或輔助說明明確標示：本區塊屬「新倉策略建議」，非持股中的即時出場指令
-- Position 頁維持持股診斷語義，不受本次命名調整影響
+- Portfolio 頁中的持股診斷介面維持持股操作語義，不受本次命名調整影響
 
 **紅綠燈標籤定義（新增）**：
 

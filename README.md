@@ -21,19 +21,13 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 - 技術架構需求文件：`docs/ai-stock-sentinel-architecture-spec.md`
 - 後端 API 技術規格：`docs/backend-api-technical-spec.md`
 - 實作任務拆解：`docs/implementation-task-breakdown.md`
-- 進度追蹤：`docs/progress-tracker.md`
+- 執行計劃目錄：`docs/plans/`
 - 開發執行手冊：`docs/development-execution-playbook.md`
 
 ## 目前進度摘要
 
-- Phase 1（MVP Backend）：100%
-- Phase 2（LangGraph 回圈）：100%
-- Phase 3（分析能力強化）：100%
-- Phase 4（前端儀表板）：100%
-- Phase 5（基本面估值）：100%
-- Phase 6（持股診斷）：100%（`POST /analyze/position` + 前端我的持股分頁）
-
-測試：360 tests passed（截至 2026-03-10）
+- 目前以各需求對應的計劃文件與 spec 為準，不再維護集中式 phase 百分比追蹤。
+- 最新工作請直接查看 `docs/plans/` 下對應日期的 implementation plan。
 
 ---
 
@@ -83,7 +77,6 @@ frontend/
 		App.tsx
 		index.css
 		pages/
-			PositionPage.tsx
 .github/
 	workflows/
 		deploy.yml        # CI/CD：測試 → GitHub Pages + Render
@@ -91,7 +84,6 @@ docs/
 	ai-stock-sentinel-architecture-spec.md
 	backend-api-technical-spec.md
 	implementation-task-breakdown.md
-	progress-tracker.md
 	development-execution-playbook.md
 	plans/
 		2026-03-04-multi-dimension-analysis.md
@@ -201,7 +193,7 @@ pnpm dev
 
 **我的持股 tab**
 
-- 持股診斷表單（股票代碼 + 購入成本價 + 選填日期 / 數量）
+- 持股列表與持股診斷入口
 - 倉位狀態卡（獲利安全區 / 成本邊緣 / 套牢防守；顯示成本價 / 現價 / 損益%）
 - 操作建議卡（續抱 / 減碼 / 出場；顯示動態防守位）
 - 出場警示 banner（`exit_reason` 非 null 時紅色顯示）

@@ -5,7 +5,7 @@
 
 **Goal:** 將個股即時分析頁底部策略區塊從模糊的「投資策略」重新定位為「新倉策略建議」，明確區分 `/analyze` 與 `/analyze/position` 的產品語義，降低使用者將其誤解為持股操作指令的風險。
 
-**Scope:** 本次以前端 Analyze 頁與相關文案同步為主，不改動 Position 頁既有持股診斷邏輯；後端策略規則暫不重寫，只補語義對齊與必要文件同步。
+**Scope:** 本次以前端 Analyze 頁與相關文案同步為主，不改動 Portfolio 頁內既有持股診斷邏輯；後端策略規則暫不重寫，只補語義對齊與必要文件同步。
 
 **Non-Goals:**
 
@@ -33,7 +33,7 @@
 
 - Modify: `frontend/src/pages/AnalyzePage.tsx`
 - Optional Modify: `frontend/src/pages/PortfolioPage.tsx`（若有導向文案需同步）
-- Verify Only: `frontend/src/pages/PositionPage.tsx`
+- Verify Only: `frontend/src/pages/PortfolioPage.tsx`（持股診斷 modal / detail flow）
 - Modify: `docs/ai-stock-sentinel-architecture-spec.md`
 - Modify: `docs/backend-api-technical-spec.md`
 
@@ -68,11 +68,11 @@
 
 ---
 
-## Task 2：確認 Position 頁維持持股操作建議語義
+## Task 2：確認 Portfolio 頁內持股診斷介面維持持股操作建議語義
 
-**Goal:** 避免本次調整誤傷持股診斷頁。
+**Goal:** 避免本次調整誤傷持股診斷介面。
 
-### Step 1: 檢查 `frontend/src/pages/PositionPage.tsx`
+### Step 1: 檢查 `frontend/src/pages/PortfolioPage.tsx` 的持股診斷流程
 
 確認以下內容不變：
 
@@ -82,7 +82,7 @@
 
 ### 驗收標準
 
-1. Position 頁不做命名調整
+1. Portfolio 頁內持股診斷介面不改成新倉語義
 2. 持股操作建議語義保持清晰
 
 ---
@@ -104,7 +104,7 @@
 可在 PR 描述或實作回報中使用：
 
 1. Analyze 頁已明確標示為新倉策略建議
-2. Position 頁持股操作建議未受影響
+2. Portfolio 頁內持股診斷介面未受影響
 3. 使用者不再容易把 `/analyze` 的策略卡解讀為持股中的出場訊號
 
 ---
@@ -112,7 +112,7 @@
 ## 建議執行順序
 
 1. 先改 `AnalyzePage.tsx` 文案
-2. 手動檢查 Analyze / Position 兩頁語義是否清楚
+2. 手動檢查 Analyze 頁與 Portfolio 頁內持股診斷介面的語義是否清楚
 3. 最後回寫文件與進度追蹤
 
 ---

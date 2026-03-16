@@ -12,12 +12,12 @@
 
 本系統與 `POST /analyze`（個股偵察）在邏輯層級上**完全分離**：
 
-| 維度 | 個股偵察（`/analyze`） | 持股診斷（`/analyze/position`） |
-|------|----------------------|-------------------------------|
-| 核心錨點 | 當前市場價格 | 使用者**購入成本價（Entry Price）** |
-| 主要目的 | 尋找買點（進攻） | 管理倉位風險（防守） |
-| 策略輸出 | 建議入場區間、停損位 | 建議出場/減碼區間、移動停利位 |
-| LLM 推理模式 | 標準偵察模式 | 持股初衷檢視（Skeptic Mode 升級版） |
+| 維度         | 個股偵察（`/analyze`） | 持股診斷（`/analyze/position`）     |
+| ------------ | ---------------------- | ----------------------------------- |
+| 核心錨點     | 當前市場價格           | 使用者**購入成本價（Entry Price）** |
+| 主要目的     | 尋找買點（進攻）       | 管理倉位風險（防守）                |
+| 策略輸出     | 建議入場區間、停損位   | 建議出場/減碼區間、移動停利位       |
+| LLM 推理模式 | 標準偵察模式           | 持股初衷檢視（Skeptic Mode 升級版） |
 
 本系統不重新尋找買點，而是將 `entry_price` 作為核心錨點，對撞當前技術、籌碼、消息與基本面數據，產出戰術建議。
 
@@ -40,12 +40,12 @@
 
 **欄位說明**
 
-| 欄位 | 型別 | 必填 | 說明 |
-|------|------|------|------|
-| `symbol` | string | ✅ | 股票代碼（例：`2330.TW`） |
-| `entry_price` | float | ✅ | 購入成本價，作為診斷核心錨點 |
-| `entry_date` | string (ISO 8601) | ❌ | 購入日期，用於對比購入後的訊號變化 |
-| `quantity` | int | ❌ | 持有數量，用於計算損益金額 |
+| 欄位          | 型別              | 必填 | 說明                               |
+| ------------- | ----------------- | ---- | ---------------------------------- |
+| `symbol`      | string            | ✅   | 股票代碼（例：`2330.TW`）          |
+| `entry_price` | float             | ✅   | 購入成本價，作為診斷核心錨點       |
+| `entry_date`  | string (ISO 8601) | ❌   | 購入日期，用於對比購入後的訊號變化 |
+| `quantity`    | int               | ❌   | 持有數量，用於計算損益金額         |
 
 ---
 
@@ -55,19 +55,19 @@
 
 在 Python 層計算以下數據後餵入 LLM，**禁止 LLM 自行計算數值**：
 
-| 計算項目 | 公式 | 說明 |
-|----------|------|------|
-| `profit_loss_pct` | `(current_price - entry_price) / entry_price × 100` | 當前損益百分比 |
-| `cost_buffer_to_support` | `entry_price - support_20d` | 成本價與支撐位的距離 |
-| `position_status` | rule-based 判斷（見下表） | 倉位健康度標籤 |
+| 計算項目                 | 公式                                                | 說明                 |
+| ------------------------ | --------------------------------------------------- | -------------------- |
+| `profit_loss_pct`        | `(current_price - entry_price) / entry_price × 100` | 當前損益百分比       |
+| `cost_buffer_to_support` | `entry_price - support_20d`                         | 成本價與支撐位的距離 |
+| `position_status`        | rule-based 判斷（見下表）                           | 倉位健康度標籤       |
 
 **`position_status` 判斷規則**：
 
-| 條件 | 標籤 | 中文說明 |
-|------|------|----------|
+| 條件                                                  | 標籤              | 中文說明       |
+| ----------------------------------------------------- | ----------------- | -------------- |
 | `profit_loss_pct > 5%` 且 `entry_price > support_20d` | `profitable_safe` | 獲利脫離成本區 |
-| `-5% <= profit_loss_pct <= 5%` | `at_risk` | 成本邊緣震盪 |
-| `profit_loss_pct < -5%` | `under_water` | 套牢防守期 |
+| `-5% <= profit_loss_pct <= 5%`                        | `at_risk`         | 成本邊緣震盪   |
+| `profit_loss_pct < -5%`                               | `under_water`     | 套牢防守期     |
 
 **`position_status_narrative` 敘事（供 LLM 讀取）**：
 
@@ -80,14 +80,17 @@
 根據損益狀態調整 `stop_loss` 邏輯（**rule-based Python，不由 LLM 計算**）：
 
 **保本機制**：
+
 - 條件：`profit_loss_pct >= 5%`
 - 規則：`trailing_stop = max(entry_price, support_20d)`（停損位至少上移至成本價）
 
 **移動停利（Trailing Stop）**：
+
 - 條件：當前收盤價 >= 近 20 日最高點（`close >= high_20d`）
 - 規則：`trailing_stop = max(MA10, support_20d)`（防守位隨之調整）
 
 **套牢防守**：
+
 - 條件：`profit_loss_pct < -5%`
 - 規則：`trailing_stop = entry_price × 0.93`（預設持守成本價 -7% 以內）
 
@@ -148,26 +151,26 @@ LLM 在 `analyze_node` 中必須執行「持股初衷檢視」邏輯：
 
 **`position_analysis` 欄位說明**：
 
-| 欄位 | 型別 | 說明 | 範例 |
-|------|------|------|------|
-| `entry_price` | float | 購入成本價（回傳確認） | `980.0` |
-| `profit_loss_pct` | float | 當前損益百分比 | `12.5` |
-| `position_status` | string | 倉位健康度標籤 | `profitable_safe` / `at_risk` / `under_water` |
-| `position_narrative` | string | 倉位狀態敘事（rule-based，供 LLM 讀取） | `"目前獲利已脫離成本區..."` |
-| `recommended_action` | string | 持股戰術指令 | `Hold` / `Trim` / `Exit` |
-| `trailing_stop` | float | 動態調整後的防守價位 | `1025.0` |
-| `trailing_stop_reason` | string | 停利/停損邏輯說明 | `"獲利超過 5%，停損位上移至成本價保本"` |
-| `exit_reason` | string \| null | 觸發減碼/出場的核心理由（無則 null） | `"法人連續大賣且跌破 MA5，建議保護獲利"` |
+| 欄位                   | 型別           | 說明                                    | 範例                                          |
+| ---------------------- | -------------- | --------------------------------------- | --------------------------------------------- |
+| `entry_price`          | float          | 購入成本價（回傳確認）                  | `980.0`                                       |
+| `profit_loss_pct`      | float          | 當前損益百分比                          | `12.5`                                        |
+| `position_status`      | string         | 倉位健康度標籤                          | `profitable_safe` / `at_risk` / `under_water` |
+| `position_narrative`   | string         | 倉位狀態敘事（rule-based，供 LLM 讀取） | `"目前獲利已脫離成本區..."`                   |
+| `recommended_action`   | string         | 持股戰術指令                            | `Hold` / `Trim` / `Exit`                      |
+| `trailing_stop`        | float          | 動態調整後的防守價位                    | `1025.0`                                      |
+| `trailing_stop_reason` | string         | 停利/停損邏輯說明                       | `"獲利超過 5%，停損位上移至成本價保本"`       |
+| `exit_reason`          | string \| null | 觸發減碼/出場的核心理由（無則 null）    | `"法人連續大賣且跌破 MA5，建議保護獲利"`      |
 
 **`recommended_action` 判斷規則（rule-based Python）**：
 
-| 條件 | 輸出 |
-|------|------|
-| `flow_label = distribution` 且 `profit_loss_pct > 0` | `Trim`（建議減碼） |
-| `flow_label = distribution` 且 `profit_loss_pct <= 0` | `Exit`（建議出場） |
-| `technical_signal = bearish` 且 `close < trailing_stop` | `Exit`（跌破防守線） |
-| `position_status = under_water` 且 `profit_loss_pct < -10%` | `Exit`（深度套牢） |
-| 其他 | `Hold`（續抱） |
+| 條件                                                        | 輸出                 |
+| ----------------------------------------------------------- | -------------------- |
+| `flow_label = distribution` 且 `profit_loss_pct > 0`        | `Trim`（建議減碼）   |
+| `flow_label = distribution` 且 `profit_loss_pct <= 0`       | `Exit`（建議出場）   |
+| `technical_signal = bearish` 且 `close < trailing_stop`     | `Exit`（跌破防守線） |
+| `position_status = under_water` 且 `profit_loss_pct < -10%` | `Exit`（深度套牢）   |
+| 其他                                                        | `Hold`（續抱）       |
 
 ---
 
@@ -197,47 +200,54 @@ class PositionState(TypedDict, total=False):
 
 ---
 
-## 6. 前端介面需求（持股診斷分頁）
+## 6. 前端介面需求（持股診斷介面）
 
 ### 6.1 頁面入口
 
-獨立分頁「我的持股」（與「個股分析」分頁平行），輸入欄位：
-- 股票代碼（必填）
-- 購入成本價（必填）
-- 購入日期（選填）
-- 持有數量（選填）
+入口位於「我的持股」列表頁中，由使用者針對單一持股觸發即時診斷；不再維持獨立的 `PositionPage` 路由。
+
+觸發診斷時，前端從持股資料直接帶入：
+
+- 股票代碼
+- 購入成本價
+- 購入日期（若有）
+- 持有數量（若有）
 
 ### 6.2 持股診斷儀表板元件
 
 **損益對照卡**：
+
 - 視覺化進度條：顯示成本價 → 現價 → 壓力位的位置關係
 - 標註關鍵價位：`entry_price`、`trailing_stop`、`support_20d`、`resistance_20d`
 - 顏色語意：獲利（綠）/ 成本邊緣（黃）/ 套牢（紅）
 
 **倉位狀態標籤**：
+
 - `profitable_safe` → 🟢 「獲利安全區」
 - `at_risk` → 🟡 「成本邊緣」
 - `under_water` → 🔴 「套牢防守」
 
 **戰術建議卡（Action Plan，持股版）**：
+
 - 操作方向：`Hold`（續抱）/ `Trim`（減碼）/ `Exit`（出場）（取代個股版的「分批佈局」）
 - 防守底線：`trailing_stop`（動態更新，非靜態停損）
 - 出場理由：`exit_reason`（有值時以紅色警示框顯示）
 
 **三維 Insight 卡片（持股版調整）**：
+
 - 技術面：強調「目前的防守線在哪裡」（非「在哪裡買」）
 - 籌碼面：強調「主力是否在撤退」
 - 消息面：強調「是否有改變趨勢的利空」
 
 ### 6.3 差異對照（與個股分析版比較）
 
-| UI 元件 | 個股分析版 | 持股診斷版 |
-|---------|-----------|-----------|
-| 信心指數卡 | 同 | 同（不變） |
-| 戰術卡操作方向 | 觀望 / 分批佈局 / 持股續抱 | **續抱 / 減碼 / 出場** |
-| 戰術卡入場區間 | `entry_zone` | ❌ 不顯示 |
-| 戰術卡防守底線 | `stop_loss`（靜態） | **`trailing_stop`（動態）** |
-| 新增元件 | — | **損益對照卡**、**出場理由警示框** |
+| UI 元件        | 個股分析版                 | 持股診斷版                         |
+| -------------- | -------------------------- | ---------------------------------- |
+| 信心指數卡     | 同                         | 同（不變）                         |
+| 戰術卡操作方向 | 觀望 / 分批佈局 / 持股續抱 | **續抱 / 減碼 / 出場**             |
+| 戰術卡入場區間 | `entry_zone`               | ❌ 不顯示                          |
+| 戰術卡防守底線 | `stop_loss`（靜態）        | **`trailing_stop`（動態）**        |
+| 新增元件       | —                          | **損益對照卡**、**出場理由警示框** |
 
 ---
 
@@ -255,12 +265,12 @@ class PositionState(TypedDict, total=False):
 
 ## 8. 任務拆解（Phase 6 Roadmap）
 
-| Task | 說明 | 主要異動檔案 |
-|------|------|-------------|
-| Task 1 | 建立 `POST /analyze/position` 路由與 `PositionState` GraphState 欄位 | `backend/src/api.py`、`backend/src/graph_state.py` |
-| Task 2 | 實作 `PositionScorer`（損益位階計算、移動停利邏輯、`recommended_action` 規則） | `backend/src/analysis/position_scorer.py` |
-| Task 3 | 撰寫持股診斷專用 System Prompt 段落（持股初衷檢視、出場推理強化） | `backend/src/langchain_analyzer.py` |
-| Task 4 | 前端開發「我的持股」分頁（損益對照卡、持股版戰術卡、出場警示元件） | `frontend/src/pages/PositionPage.tsx`（新建）、`frontend/src/components/` |
+| Task   | 說明                                                                             | 主要異動檔案                                                       |
+| ------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Task 1 | 建立 `POST /analyze/position` 路由與 `PositionState` GraphState 欄位             | `backend/src/api.py`、`backend/src/graph_state.py`                 |
+| Task 2 | 實作 `PositionScorer`（損益位階計算、移動停利邏輯、`recommended_action` 規則）   | `backend/src/analysis/position_scorer.py`                          |
+| Task 3 | 撰寫持股診斷專用 System Prompt 段落（持股初衷檢視、出場推理強化）                | `backend/src/langchain_analyzer.py`                                |
+| Task 4 | 前端開發「我的持股」頁內的持股診斷介面（損益對照卡、持股版戰術卡、出場警示元件） | `frontend/src/pages/PortfolioPage.tsx`、`frontend/src/components/` |
 
 ---
 
