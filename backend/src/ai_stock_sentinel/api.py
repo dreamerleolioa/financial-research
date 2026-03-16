@@ -619,10 +619,33 @@ def fetch_raw_data_endpoint(
     db: Session = Depends(get_db),
     _: None = Depends(verify_internal_api_key),
 ):
-    """n8n cron 呼叫的內部端點，抓取原始數據並存入 stock_raw_data。"""
+    """n8n cron 呼叫的內部端點，抓取原始數據並存入 stock_raw_data。
+
+    只抓資料（technical/institutional/fundamental），不跑 LLM 分析。
+    """
     from datetime import date as _date_type
+    from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
+    from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
+    from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
+
     record_date = _date_type.today() if payload.date == "today" else _date_type.fromisoformat(payload.date)
-    pass
+
+    crawler = YFinanceCrawler()
+    snapshot = crawler.fetch_basic_snapshot(payload.symbol)
+    technical = _asdict(snapshot) if is_dataclass(snapshot) else dict(snapshot)
+
+    institutional = fetch_institutional_flow(payload.symbol, days=10)
+
+    current_price = float(technical.get("current_price") or 0)
+    fundamental = fetch_fundamental_data(payload.symbol, current_price)
+
+    fetch_and_store_raw_data(
+        db,
+        payload.symbol,
+        technical=technical,
+        institutional=institutional,
+        fundamental=fundamental,
+    )
     return {"status": "ok", "symbol": payload.symbol, "record_date": record_date.isoformat()}
 
 
