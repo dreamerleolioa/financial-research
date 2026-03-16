@@ -243,15 +243,21 @@ CREATE INDEX idx_raw_institutional_gin ON stock_raw_data USING GIN (institutiona
 - 技術面、籌碼面、基本面等完整 payload 應寫入這張表，而不是寫入 `stock_analysis_cache`。
 - 若 `/analyze/position` 與 `/analyze` 在同一交易日查詢同一股票，應優先共用這張表中的原始資料，避免重複抓取。
 
-**寫入策略（Phase 7 實作）**
+**寫入策略（Phase 7+ 正式需求）**
 
-`stock_raw_data` 的寫入由兩支分析端點在 `graph.invoke` 完成後順帶寫入，不依賴 n8n 主動抓取：
+`stock_raw_data` 的寫入有兩條來源：
 
 - `technical` ← `graph result["snapshot"]`（yfinance 技術面）
 - `institutional` ← `graph result["institutional_flow"]`（籌碼面）
 - `fundamental` ← `graph result["fundamental_data"]`（基本面）
 
-n8n cron 的 `POST /internal/fetch-raw-data` 端點保留作為未來批次預拉的入口，但 Phase 7 不實作其內部邏輯（stub）。L2 共用邏輯（raw data 命中時跳過 graph 執行）為 Phase 8 前置工作。
+來源一：兩支分析端點在 `graph.invoke` 完成後順帶寫入。
+
+來源二：n8n Workflow A 於收盤後批次抓取原始資料，先寫入 `stock_raw_data`，再觸發定稿分析流程。
+
+**重要修正**：n8n 收盤後流程不能只更新 `stock_raw_data` 或只把 `stock_analysis_cache.is_final` 翻成 `TRUE`。若要將當日資料定稿，必須以收盤後 raw data 重新產出 analysis result，再覆寫分析快取與歷史 log。
+
+n8n cron 的 `POST /internal/fetch-raw-data` 端點作為 Workflow A 第一階段（raw data 預拉）入口；第二階段應新增收盤定稿端點，由 n8n 批次呼叫以完成 final analysis 覆寫。L2 共用邏輯（raw data 命中時跳過部分抓取）仍是後續優化方向，但不改變收盤後必須重算定稿分析的需求。
 
 ---
 
@@ -335,8 +341,8 @@ CREATE INDEX idx_cache_indicators_gin
       ▲
       │ 使用者查詢時若有持倉，分析結果同步寫入 daily_analysis_log
       │
-      │ 每日 18:30 cron（抓原始數據，不打 model）
-      └─ n8n 更新 stock_raw_data
+    │ 每日 18:30 cron（先抓原始數據，再定稿分析）
+    └─ n8n 更新 stock_raw_data → 覆寫 stock_analysis_cache / daily_analysis_log
 ```
 
 **關鍵行為**：
@@ -345,6 +351,7 @@ CREATE INDEX idx_cache_indicators_gin
 - **分析快取跨使用者共用**：`stock_analysis_cache` 不含 `user_id`，同一股票同一天的分析結果全體使用者共享，不重複燒 LLM token
 - **原始股票資料跨端點共用**：`/analyze/position` 與 `/analyze` 應優先讀取 `stock_raw_data` 的同日資料，共用技術面 / 籌碼面 / 基本面 payload
 - **持倉寫回**：即時分析完成後，若使用者有該股的 active 持倉，同步寫一筆至 `daily_analysis_log`（含 `user_id`），列表頁立即可見
+- **收盤後定稿責任**：n8n Workflow A 必須將 watchlist 的當日盤中結果覆寫為收盤定稿版，不能只停留在 raw data 更新
 
 ### 3.3 即時分析三段式快取邏輯
 
@@ -359,7 +366,7 @@ CREATE INDEX idx_cache_indicators_gin
     └─ NO
           ▼
     [2] stock_raw_data 有 record_date = today 的原始數據？
-        ├─ YES（收盤後）──▶ 只打 model → 存 stock_analysis_cache（is_final=TRUE）→ 回傳（快）
+        ├─ YES（收盤後）──▶ 以收盤 raw data 重跑分析 → 存 stock_analysis_cache（is_final=TRUE）→ 回傳（快）
         └─ NO（盤中）──▶ 爬蟲抓原始數據 + 打 model → 存兩張表（is_final=FALSE）→ 回傳（慢，現有行為）
 
 分析完成後，若使用者有該股的 active 持倉，同步寫一筆到 daily_analysis_log（含 user_id）
@@ -370,7 +377,7 @@ CREATE INDEX idx_cache_indicators_gin
 | 層級         | 命中條件                          | 成本               | 說明                             |
 | ------------ | --------------------------------- | ------------------ | -------------------------------- |
 | L1：分析快取 | `stock_analysis_cache` 今日有紀錄 | 極低（DB read）    | 同天第二位使用者查同股，直接命中 |
-| L2：原始數據 | `stock_raw_data` 今日有紀錄       | 中（只打 model）   | 收盤後 cron 已預拉，省去爬蟲等待 |
+| L2：原始數據 | `stock_raw_data` 今日有紀錄       | 中（以收盤 raw data 重跑分析） | 收盤後 cron 已預拉，省去重抓原始資料 |
 | L3：即時抓取 | 兩者皆無                          | 高（爬蟲 + model） | 盤中首次查詢，走現有流程         |
 
 **`POST /analyze/position` / `POST /analyze` Response 皆包含 `is_final`**：
@@ -534,7 +541,7 @@ L1 命中
  └─ is_final=FALSE + 收盤後 → 作廢，強制重走 L2/L3，完成後以 is_final=TRUE 覆蓋
 
 L2 命中（stock_raw_data 有今日原始數據）
- └─ 只打 model → is_final=TRUE（收盤後一定是定稿）
+ └─ 以收盤 raw data 重跑分析 → is_final=TRUE（收盤後一定是定稿）
 
 L3 觸發（盤中首次查詢）
  └─ 爬蟲 + model → is_final=FALSE（指標未收定）
@@ -553,10 +560,12 @@ L3 觸發（盤中首次查詢）
 │      └─── 每日數據更新流 (Cron: 每日 18:30)            │
 │               └─── 收集 watchlist → 批次抓原始數據     │
 │                        → HTTP POST /internal/fetch-raw-data
+│                        → HTTP POST /internal/finalize-analysis
 │                                                        │
 │  FastAPI Backend (AI Stock Sentinel)                   │
 │      ├── POST /analyze/position  （三段式快取邏輯）     │
-│      └── POST /internal/fetch-raw-data（n8n cron 呼叫）│
+│      ├── POST /internal/fetch-raw-data（n8n cron 呼叫）│
+│      └── POST /internal/finalize-analysis（n8n 收盤定稿）│
 │                                                        │
 │  PostgreSQL (Zeabur)                                   │
 │      ├── user_portfolio                                │
@@ -575,7 +584,12 @@ L3 觸發（盤中首次查詢）
 
 **觸發條件**：Cron 表達式 `30 18 * * 1-5`（台灣時間，週一至週五收盤後）
 
-**定位調整**：此流程**不再批次打 model**，改為預拉原始數據存入 `stock_raw_data`，讓 model 推理只在使用者主動查詢時才觸發。
+**定位調整**：此流程分成兩段。
+
+- 第一段：預拉收盤後 raw data，寫入 `stock_raw_data`
+- 第二段：以收盤 raw data 重跑當日分析，將結果覆寫為 `is_final = TRUE`
+
+換言之，收盤後的 n8n 流程不是只抓資料，而是負責完成「當日定稿」。
 
 **完整節點設計**
 
@@ -599,8 +613,20 @@ L3 觸發（盤中首次查詢）
     Body: { "symbol": "{{ $json.symbol }}", "date": "today" }
     │
     ▼
+[HTTP Request Node] ── 呼叫後端收盤定稿端點
+    POST /internal/finalize-analysis
+    Body: { "symbol": "{{ $json.symbol }}", "date": "today" }
+    │
+    ▼
 [Wait Node] ── 1 秒（避免外部 API 速率限制）
 ```
+
+**收盤定稿端點需求**：
+
+- 必須讀取當日 `stock_raw_data`
+- 必須以收盤後資料重新產出 analysis result，不得沿用盤中文案直接翻旗標
+- 必須覆寫 `stock_analysis_cache.full_result` 與 `is_final = TRUE`
+- 若該 symbol 存在 active 持倉使用者，必須同步覆寫對應的 `daily_analysis_log.is_final = TRUE` 與相關分析欄位
 
 ---
 
@@ -890,13 +916,14 @@ correlation_matrix = {
 | P1     | SQLAlchemy 接入（FastAPI）                          | 建立 `User`、`DailyAnalysisLog`、`StockRawData`、`StockAnalysisCache` ORM Model，實作 CRUD | 1 天     |
 | P1     | 三段式快取邏輯實作                                  | `POST /analyze/position` 與 `POST /analyze` 同步加入快取判斷（Section 3.3）                | 1 天     |
 | P1     | 完整回應快取欄位補齊                                | `stock_analysis_cache` 新增 `full_result`，L1 命中時可還原完整 `AnalyzeResponse`           | 0.5 天   |
-| P1     | `POST /internal/fetch-raw-data` 端點                | n8n 呼叫的數據抓取端點                                                                     | 0.5 天   |
+| P1     | `POST /internal/fetch-raw-data` 端點                | n8n Workflow A 第一階段：抓取收盤後原始數據                                                | 0.5 天   |
+| P1     | `POST /internal/finalize-analysis` 端點             | n8n Workflow A 第二階段：以收盤 raw data 重跑分析並覆寫 `is_final=TRUE`                    | 1 天     |
 | P1     | `history_loader.py` 實作                            | 昨日上下文讀取服務（Section 5.1）                                                          | 0.5 天   |
 | P1     | 昨日未定稿快取補正                                  | 端點分析前自動 backfill 昨日收盤技術指標，避免歷史上下文讀到盤中快取                       | 0.5 天   |
 | P1     | `GET /portfolio` 端點                               | 提供 active 持倉列表，供前端「我的持股」頁初始化（Section 3.7）                            | 0.5 天   |
 | P1     | `GET /portfolio/{id}/history` 端點                  | 歷史分析 API，從 `daily_analysis_log` 讀取診斷紀錄（Section 3.4）                          | 0.5 天   |
 | P1     | 即時分析結果寫回 DB                                 | 兩支分析端點完成後依序寫入 `stock_analysis_cache` 與 `daily_analysis_log`（Section 3.5）   | 0.5 天   |
-| P1     | n8n 每日數據更新流部署                              | 建立 Workflow A（Section 4.2）                                                             | 1 天     |
+| P1     | n8n 每日數據更新流部署                              | 建立 Workflow A（先 raw data、再 finalize analysis）                                       | 1 天     |
 | P2     | 安全隧道設定（Cloudflare Tunnel）                   | 保護 n8n 至本地 DB 的連線                                                                  | 0.5 天   |
 
 ### Phase 8：邏輯強化（後續規劃）
@@ -926,7 +953,7 @@ correlation_matrix = {
 | 即時分析快取策略            | 三段式快取（分析快取 → 原始數據 → 即時抓取）       | 最大化快取命中率，只在必要時才燒 LLM token                            |
 | 快取回應保真策略            | `stock_analysis_cache.full_result`                 | L1 命中時回傳完整 `AnalyzeResponse`，避免快取命中與首次分析欄位不一致 |
 | 分析快取 user_id            | 不含 user_id（跨使用者共用）                       | 同一股票同一天的分析結果對所有使用者相同，無需重複計算                |
-| n8n cron 定位               | 原始數據預抓取，不打 model                         | model 推理只在有人查詢時才觸發，避免無效燒 token                      |
+| n8n cron 定位               | 收盤後定稿 pipeline（先 raw data、再 final analysis） | 確保當日歷史資料在無人查詢情況下也能收斂為 `is_final=TRUE`            |
 | 原始數據更新頻率            | 收盤後每日一次                                     | 系統定位為收盤後復盤，不需盤中即時數據                                |
 | 昨日快取邊界修正            | 分析前自動 backfill 昨日未定稿指標                 | 確保 `history_loader` 讀到的是收盤數據，而非前一日盤中快照            |
 | 即時分析寫回 DB             | 交易日自動 UPSERT                                  | 使用者加入持倉後列表立即有資料，不需等隔天 cron                       |
@@ -945,4 +972,4 @@ correlation_matrix = {
 
 ---
 
-_文件版本：v1.8 | 最後更新：2026-03-16 | 變更：新增 5.4 編輯持股（`PUT /portfolio/{id}`）與 5.5 刪除持股（`DELETE /portfolio/{id}`）需求規格；Phase 9 任務表同步更新。_
+_文件版本：v1.9 | 最後更新：2026-03-16 | 變更：修正 n8n Workflow A 需求為「收盤後定稿 pipeline」（先更新 `stock_raw_data`，再重跑 final analysis 覆寫 `stock_analysis_cache` / `daily_analysis_log`）；保留 5.4 編輯持股與 5.5 刪除持股需求規格。_

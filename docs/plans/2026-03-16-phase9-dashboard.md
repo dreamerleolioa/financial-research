@@ -7,11 +7,11 @@
 
 **Goal:** 建立前端復盤儀表板頁面，視覺化單股的信心分數時序趨勢與訊號轉向歷史，讓使用者能回顧過去 N 天的診斷演變。
 
-**Architecture:** 後端新增 `GET /history/{symbol}` 端點，從 `stock_analysis_cache` 讀取指定股票的歷史診斷紀錄並回傳（不需要使用者有持倉，供即時分析視窗查看該股歷史趨勢）。依 review-spec v1.7，history payload 應額外暴露 `is_final`，讓前端區分盤中點與收盤定稿點，避免把未定稿資料當成復盤結論。`GET /portfolio/{id}/history` 則查 `daily_analysis_log`（含 user_id，供持倉列表追蹤持倉診斷變化，已在 Phase 7 實作）。前端整合必須以目前既有的 `App.tsx` 為基礎：保留現有 `analyze` / `portfolio` 兩個 tab、既有登入頭部、盤中 banner 與加入持股 modal，另外新增第三個 `dashboard` tab 掛入 `DashboardPage`。資料請求沿用現有 `frontend/src/lib/auth.ts` 的 `authHeaders()`，不新增 token prop 傳遞鏈。
+**Architecture:** 後端新增 `GET /history/{symbol}` 端點，從 `stock_analysis_cache` 讀取指定股票的歷史診斷紀錄並回傳（不需要使用者有持倉，供即時分析視窗查看該股歷史趨勢）。依 review-spec v1.9，history payload 應額外暴露 `is_final`，讓前端區分盤中點與收盤定稿點，避免把未定稿資料當成復盤結論。另依最新 review 決策，n8n Workflow A 會在收盤後先更新 `stock_raw_data`，再重跑 final analysis 覆寫 `stock_analysis_cache` 與持倉使用者的 `daily_analysis_log`；因此 dashboard 的大多數日終歷史點應為 `is_final = true`，但前端仍需保留對盤中未定稿點的顯示能力。`GET /portfolio/{id}/history` 則查 `daily_analysis_log`（含 user_id，供持倉列表追蹤持倉診斷變化，已在 Phase 7 實作）。前端整合必須以目前既有的 `App.tsx` 為基礎：保留現有 `analyze` / `portfolio` 兩個 tab、既有登入頭部、盤中 banner 與加入持股 modal，另外新增第三個 `dashboard` tab 掛入 `DashboardPage`。資料請求沿用現有 `frontend/src/lib/auth.ts` 的 `authHeaders()`，不新增 token prop 傳遞鏈。
 
 **Tech Stack:** FastAPI（新端點）、SQLAlchemy AsyncSession、React 19、TypeScript、Tailwind CSS v4、原生 SVG 折線圖
 
-**前置依賴:** Phase 7 完成（`daily_analysis_log` 有實際數據）、使用者系統完成（`get_current_user` Depends 可用）、前端已完成 analyze / portfolio 雙 tab 與 `authHeaders()` API 呼叫模式
+**前置依賴:** Phase 7 完成（`daily_analysis_log` 有實際數據）、使用者系統完成（`get_current_user` Depends 可用）、前端已完成 analyze / portfolio 雙 tab 與 `authHeaders()` API 呼叫模式、n8n Workflow A 收盤後定稿流程已上線或至少規格已凍結
 
 ---
 
@@ -518,7 +518,7 @@ export default function DashboardPage() {
           </h2>
           {entries.some((e) => !e.is_final) && (
             <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              含盤中未定稿資料點；虛線外圈標記僅供即時參考，不代表收盤定論。
+              含盤中未定稿資料點；這類資料通常出現在盤中查詢或收盤後定稿工作流尚未完成前，虛線外圈標記僅供即時參考，不代表收盤定論。
             </p>
           )}
           <ConfidenceChart data={chartData} />
@@ -700,6 +700,7 @@ git commit -m "feat: add dashboard page with confidence trend chart and signal h
 - [ ] 完整後端測試套件無回歸
 - [ ] `ConfidenceChart` SVG 元件 TypeScript 無錯誤
 - [ ] `DashboardPage` 正確顯示折線圖、訊號轉向紀錄，以及盤中未定稿提示
+- [ ] 與 review-spec v1.9 對齊：dashboard 能正確處理收盤後已被 n8n 定稿覆寫的歷史點，且對少數 `is_final = false` 點仍保留警示顯示
 - [ ] Dashboard API 呼叫沿用 `authHeaders()`，不新增 token prop 傳遞
 - [ ] `App.tsx` 成功新增第三個 dashboard tab，且不影響既有 analyze / portfolio 流程
 - [ ] `PUT /portfolio/{id}` 端點測試通過
@@ -848,4 +849,4 @@ git commit -m "feat: add edit and delete portfolio UI in PortfolioPage"
 
 ---
 
-_文件版本：v1.4 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 9 v1.8，新增 Task 5–7 編輯與刪除持股_
+_文件版本：v1.5 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` v1.9，已納入 n8n 收盤後定稿流程與 Task 5–7 編輯、刪除持股規格_
