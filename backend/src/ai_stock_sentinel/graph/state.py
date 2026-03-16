@@ -121,3 +121,6 @@ class GraphState(TypedDict):
     trailing_stop_reason: str | None
     recommended_action: str | None
     exit_reason: str | None
+
+    # --- History Context (from stock_analysis_cache, injected before LLM call) ---
+    prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值

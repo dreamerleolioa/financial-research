@@ -85,3 +85,11 @@ def test_graph_state_has_position_fields():
         "recommended_action", "exit_reason",
     ]:
         assert field in hints, f"GraphState missing field: {field}"
+
+
+def test_prev_context_field_exists():
+    """GraphState 應包含 prev_context 欄位。"""
+    from ai_stock_sentinel.graph.state import GraphState
+    import typing
+    hints = typing.get_type_hints(GraphState)
+    assert "prev_context" in hints
