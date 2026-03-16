@@ -52,3 +52,44 @@ def test_fetch_raw_data_success():
             assert resp.json()["symbol"] == "2330.TW"
         finally:
             api_module.INTERNAL_API_KEY = original_key
+
+
+def test_fetch_raw_data_calls_data_sources():
+    """應呼叫 YFinanceCrawler、fetch_institutional_flow、fetch_fundamental_data，
+    並將結果傳入 fetch_and_store_raw_data。
+    """
+    import ai_stock_sentinel.api as api_module
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeSnapshot:
+        current_price: float = 100.0
+        symbol: str = "2330.TW"
+
+    fake_snapshot = FakeSnapshot()
+    fake_institutional = {"foreign_net": 1000}
+    fake_fundamental = {"pe_ratio": 20.0}
+
+    original_key = api_module.INTERNAL_API_KEY
+    api_module.INTERNAL_API_KEY = "test-key"
+    try:
+        with patch("ai_stock_sentinel.api.fetch_and_store_raw_data") as mock_store, \
+             patch("ai_stock_sentinel.api.YFinanceCrawler") as mock_crawler_cls, \
+             patch("ai_stock_sentinel.api.fetch_institutional_flow", return_value=fake_institutional) as mock_inst, \
+             patch("ai_stock_sentinel.api.fetch_fundamental_data", return_value=fake_fundamental) as mock_fund:
+            mock_crawler_cls.return_value.fetch_basic_snapshot.return_value = fake_snapshot
+            client = _client_with_db()
+            resp = client.post(
+                "/internal/fetch-raw-data",
+                json={"symbol": "2330.TW"},
+                headers={"X-Internal-Api-Key": "test-key"},
+            )
+        assert resp.status_code == 200
+        mock_inst.assert_called_once_with("2330.TW", days=10)
+        mock_fund.assert_called_once_with("2330.TW", 100.0)
+        mock_store.assert_called_once()
+        _, kwargs = mock_store.call_args
+        assert kwargs["institutional"] == fake_institutional
+        assert kwargs["fundamental"] == fake_fundamental
+    finally:
+        api_module.INTERNAL_API_KEY = original_key

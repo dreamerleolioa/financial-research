@@ -21,6 +21,9 @@ from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
+from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
+from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
+from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
@@ -624,9 +627,6 @@ def fetch_raw_data_endpoint(
     只抓資料（technical/institutional/fundamental），不跑 LLM 分析。
     """
     from datetime import date as _date_type
-    from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
-    from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
-    from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 
     record_date = _date_type.today() if payload.date == "today" else _date_type.fromisoformat(payload.date)
 
