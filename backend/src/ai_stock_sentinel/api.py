@@ -21,7 +21,10 @@ from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
-from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
+from ai_stock_sentinel.services.history_loader import (
+    backfill_yesterday_indicators,
+    load_yesterday_context,
+)
 from ai_stock_sentinel.user_models.user import User
 
 configure_logging()
@@ -530,6 +533,7 @@ def analyze(
             return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
     backfill_yesterday_indicators(db, payload.symbol)
+    prev_context = load_yesterday_context(payload.symbol, db)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -567,6 +571,7 @@ def analyze(
         "action_plan": None,
         "fundamental_data": None,
         "fundamental_context": None,
+        "prev_context": prev_context,
     }
 
     try:
@@ -683,6 +688,7 @@ def analyze_position(
             return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
     backfill_yesterday_indicators(db, payload.symbol)
+    prev_context = load_yesterday_context(payload.symbol, db)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -731,6 +737,7 @@ def analyze_position(
         "trailing_stop_reason": None,
         "recommended_action": None,
         "exit_reason": None,
+        "prev_context": prev_context,
     }
 
     try:

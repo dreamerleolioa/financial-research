@@ -833,3 +833,80 @@ def test_analyze_calls_backfill_yesterday_indicators(monkeypatch) -> None:
     client.post("/analyze", json={"symbol": "2330.TW"})
 
     assert called.get("symbol") == "2330.TW"
+
+
+def test_analyze_injects_prev_context(monkeypatch) -> None:
+    """POST /analyze 應在 graph.invoke 前讀取昨日上下文並注入 prev_context。"""
+    import ai_stock_sentinel.api as api_module
+    from dataclasses import asdict
+
+    prev_ctx = {
+        "prev_action_tag": "Trim",
+        "prev_confidence": 74.0,
+        "prev_rsi": 73.8,
+        "prev_ma_alignment": "bullish",
+    }
+    captured_state = {}
+
+    original_invoke = None
+
+    def fake_backfill(db, symbol):
+        pass
+
+    def fake_load_yesterday_context(symbol, db):
+        return prev_ctx
+
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
+    monkeypatch.setattr(api_module, "load_yesterday_context", fake_load_yesterday_context)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+
+    graph = MagicMock()
+    graph.invoke.side_effect = lambda state: (
+        captured_state.update(state) or {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+    client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert captured_state.get("prev_context") == prev_ctx
+
+
+def test_analyze_position_injects_prev_context(monkeypatch) -> None:
+    """POST /analyze/position 應在 graph.invoke 前讀取昨日上下文並注入 prev_context。"""
+    import ai_stock_sentinel.api as api_module
+
+    prev_ctx = {
+        "prev_action_tag": "Hold",
+        "prev_confidence": 61.5,
+        "prev_rsi": 65.2,
+        "prev_ma_alignment": "bullish",
+    }
+    captured_state = {}
+
+    def fake_backfill(db, symbol):
+        pass
+
+    def fake_load_yesterday_context(symbol, db):
+        return prev_ctx
+
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
+    monkeypatch.setattr(api_module, "load_yesterday_context", fake_load_yesterday_context)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+
+    graph = MagicMock()
+    graph.invoke.side_effect = lambda state: (
+        captured_state.update(state) or {**_POSITION_FINAL_STATE}
+    )
+    client = _client_with_graph(graph)
+    client.post("/analyze/position", json={"symbol": "2330.TW", "entry_price": 950.0})
+
+    assert captured_state.get("prev_context") == prev_ctx
