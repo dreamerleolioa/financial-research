@@ -420,6 +420,14 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _check_symbol_exists(symbol: str) -> None:
+    """yfinance 輕量驗證：代號無效時拋 HTTP 404，避免跑 LLM。"""
+    import yfinance as yf
+    hist = yf.Ticker(symbol).history(period="5d", interval="1d")
+    if hist.empty or hist["Close"].dropna().empty:
+        raise HTTPException(status_code=404, detail=f"查詢目標不存在：{symbol}")
+
+
 def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
     """Shared serialization logic for both /analyze and /analyze/position."""
     snapshot = result.get("snapshot")
@@ -535,6 +543,7 @@ def analyze(
             _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
             return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
+    _check_symbol_exists(payload.symbol)
     backfill_yesterday_indicators(db, payload.symbol)
     prev_context = load_yesterday_context(payload.symbol, db)
 
@@ -634,6 +643,9 @@ def fetch_raw_data_endpoint(
     snapshot = crawler.fetch_basic_snapshot(payload.symbol)
     technical = _asdict(snapshot) if is_dataclass(snapshot) else dict(snapshot)
 
+    if not technical.get("recent_closes"):
+        raise HTTPException(status_code=404, detail=f"查詢目標不存在：{payload.symbol}")
+
     institutional = fetch_institutional_flow(payload.symbol, days=10)
 
     current_price = float(technical.get("current_price") or 0)
@@ -712,6 +724,7 @@ def analyze_position(
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
                 return _build_response_from_cache(hit, payload.symbol, full_result=full)
 
+    _check_symbol_exists(payload.symbol)
     backfill_yesterday_indicators(db, payload.symbol)
     prev_context = load_yesterday_context(payload.symbol, db)
 

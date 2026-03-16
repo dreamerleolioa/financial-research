@@ -1,6 +1,33 @@
 import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
 
+function getTaiwanTickSize(price: number): number {
+  if (price < 10) return 0.01;
+  if (price < 50) return 0.05;
+  if (price < 100) return 0.1;
+  if (price < 500) return 0.5;
+  if (price < 1000) return 1;
+  return 5;
+}
+
+function decimalPlaces(step: number): number {
+  const stepText = step.toString();
+  const dotIndex = stepText.indexOf(".");
+  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1;
+}
+
+function formatPrice(value: number | null | undefined, symbol?: string): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  const symbolText = (symbol ?? "").toUpperCase();
+  const isTaiwanStock = symbolText.endsWith(".TW") || symbolText.endsWith(".TWO");
+  if (isTaiwanStock && value > 0) {
+    const tick = getTaiwanTickSize(value);
+    const normalized = Math.round((value + Number.EPSILON) / tick) * tick;
+    return normalized.toFixed(decimalPlaces(tick));
+  }
+  return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 6 }).format(value);
+}
+
 interface PortfolioItem {
   id: number;
   symbol: string;
@@ -340,7 +367,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
           <div>
             <p className="font-semibold text-slate-800">{item.symbol} 持股診斷</p>
             <p className="text-xs text-slate-400">
-              成本 {item.entry_price}
+              成本 {formatPrice(item.entry_price, item.symbol)}
               {item.quantity > 0 && ` ｜ ${item.quantity} 股`}
             </p>
           </div>
@@ -392,14 +419,12 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                     <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                       <div className="text-center">
                         <div className="text-slate-400">成本</div>
-                        <div className="font-mono font-medium text-slate-700">{pa.entry_price}</div>
+                        <div className="font-mono font-medium text-slate-700">{formatPrice(pa.entry_price, item.symbol)}</div>
                       </div>
                       <div className="text-center">
                         <div className="text-slate-400">現價</div>
                         <div className="font-mono font-medium text-slate-700">
-                          {typeof result.snapshot?.current_price === "number"
-                            ? result.snapshot.current_price
-                            : "—"}
+                          {formatPrice(result.snapshot?.current_price as number | undefined, item.symbol)}
                         </div>
                       </div>
                       <div className="text-center">
@@ -431,7 +456,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                     <div className="flex justify-between text-xs text-slate-500">
                       <span>防守位</span>
                       <span className="font-mono font-medium text-orange-600">
-                        {pa.trailing_stop ?? "—"}
+                        {formatPrice(pa.trailing_stop, item.symbol)}
                       </span>
                     </div>
                     {pa.trailing_stop_reason && (
@@ -565,6 +590,18 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: PositionResult = await res.json();
       setAnalysisMap((prev) => ({ ...prev, [item.id]: data }));
+
+      // Refresh the latest history entry so the card reflects the new analysis
+      try {
+        const r = await fetch(
+          `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=1`,
+          { headers: authHeaders() },
+        );
+        if (r.ok) {
+          const hBody: { records: HistoryEntry[] } = await r.json();
+          setLatestMap((prev) => ({ ...prev, [item.id]: hBody.records[0] ?? null }));
+        }
+      } catch { /* ignore */ }
     } catch (err) {
       setAnalysisError((prev) => ({
         ...prev,
@@ -628,7 +665,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 {/* Meta badges */}
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                   <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                    成本 <span className="font-medium text-slate-800">{item.entry_price}</span>
+                    成本 <span className="font-medium text-slate-800">{formatPrice(item.entry_price, item.symbol)}</span>
                   </span>
                   {item.quantity > 0 && (
                     <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-600">

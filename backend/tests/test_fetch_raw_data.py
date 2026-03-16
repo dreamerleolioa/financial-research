@@ -54,6 +54,38 @@ def test_fetch_raw_data_success():
             api_module.INTERNAL_API_KEY = original_key
 
 
+def test_fetch_raw_data_returns_404_for_unknown_symbol():
+    """股票代號無效（yfinance 回傳空資料）時應回傳 404。"""
+    import ai_stock_sentinel.api as api_module
+    from dataclasses import dataclass
+
+    @dataclass
+    class EmptySnapshot:
+        current_price: float = 0.0
+        symbol: str = "INVALID"
+        recent_closes: list = None
+
+        def __post_init__(self):
+            if self.recent_closes is None:
+                self.recent_closes = []
+
+    original_key = api_module.INTERNAL_API_KEY
+    api_module.INTERNAL_API_KEY = "test-key"
+    try:
+        with patch("ai_stock_sentinel.api.YFinanceCrawler") as mock_crawler_cls:
+            mock_crawler_cls.return_value.fetch_basic_snapshot.return_value = EmptySnapshot()
+            client = _client_with_db()
+            resp = client.post(
+                "/internal/fetch-raw-data",
+                json={"symbol": "INVALID"},
+                headers={"X-Internal-Api-Key": "test-key"},
+            )
+        assert resp.status_code == 404
+        assert "INVALID" in resp.json()["detail"]
+    finally:
+        api_module.INTERNAL_API_KEY = original_key
+
+
 def test_fetch_raw_data_calls_data_sources():
     """應呼叫 YFinanceCrawler、fetch_institutional_flow、fetch_fundamental_data，
     並將結果傳入 fetch_and_store_raw_data。
@@ -65,6 +97,11 @@ def test_fetch_raw_data_calls_data_sources():
     class FakeSnapshot:
         current_price: float = 100.0
         symbol: str = "2330.TW"
+        recent_closes: list = None
+
+        def __post_init__(self):
+            if self.recent_closes is None:
+                self.recent_closes = [100.0, 101.0]
 
     fake_snapshot = FakeSnapshot()
     fake_institutional = {"foreign_net": 1000}
