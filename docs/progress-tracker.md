@@ -16,6 +16,7 @@
 ## 已完成 ✅
 
 ### Phase 1：MVP Backend + 技術債
+
 - 專案環境（Git、venv、Makefile、.gitignore）
 - `yfinance` 抓取股票快照、LLM fallback 分析介面
 - 財經新聞清潔器（schema + CLI + graph `clean_node` 整合）
@@ -24,6 +25,7 @@
 - 文件：README、架構需求、任務拆解、後端 API 技術規格
 
 ### Phase 2：LangGraph 回圈
+
 - GraphState + 節點 + loop guard（max_retries）
 - 完整性判斷節點（snapshot 缺失、新聞過舊、數字不足）
 - RSS 自動抓取（RssNewsClient + fetch_news_node）
@@ -31,6 +33,7 @@
 - `clean_node` 插入 judge → analyze 之間
 
 ### Phase 3：分析深化
+
 - **籌碼 Provider 抽象層**：`FinMindProvider`（Primary）→ `TwseOpenApiProvider`（Fallback #1）→ `TpexProvider`（Fallback #2）；Router + Schema Mapping；42 tests
 - **ContextGenerator**（`analysis/context_generator.py`）：BIAS/RSI/均線/量能/籌碼敘事；29 tests
 - **Skeptic Mode Prompt** + 四步驟強制流程（提取→對照→衝突檢查→輸出）
@@ -45,6 +48,7 @@
 - **分維度拆解**（`AnalysisDetail`）：`tech_insight` / `inst_insight` / `news_insight` / `final_verdict`
 
 ### Phase 3 修正輪
+
 - **新聞摘要品質優化（NQ-1~6）**：title 品質檢查、日期正規化、quality_score、前端提示；198 tests
 - **新聞顯示資料拆分（ND-1~5）**：`news_display_items`（最多 5 筆）；205 tests
 - **信心分數可靠性優化（CS-1~5）**：`derive_technical_score()`、多維加權、`unknown` 機構資料處理
@@ -56,6 +60,7 @@
 - **消息面職責邊界（NM-1~7）**：`NO_FINANCIAL_NUMBERS` 不扣分；`news_display_items` 陣列；295 tests
 
 ### Phase 4：前端儀表板
+
 - 串接後端 API（真實資料驅動，含載入/錯誤狀態）
 - 信心指數圓弧（`confidence_score`）、快照資訊、AI 萃取摘要
 - Action Plan 卡片（2×2 grid：策略方向/入場區間/防守底線/持股期間）
@@ -66,6 +71,7 @@
 - `data_confidence < 60` 時顯示「資料不足」灰色提示
 
 ### Phase 5：基本面估值
+
 - `FundamentalData` 介面（dataclass + Protocol + Error）
 - `FinMindFundamentalProvider`：PE Band + 殖利率估值 + TTM EPS
 - `fetch_fundamental_data` 工具函式（失敗回傳 error dict）
@@ -81,6 +87,26 @@
 ## 進行中 / 待完成 ⏳
 
 > 文件規則提醒：每次完成計劃中的任務，需當日回寫對應 `docs/plans/*.md`；若該需求尚無計劃文件，需先補產計劃文件再標記完成。
+> 高層後續路徑入口：`docs/research/post-new-position-strategy-optimization-roadmap.md`
+
+### 2026-03-16：Analyze 頁策略語義調整 ⏳
+
+> 計劃文件：`docs/plans/2026-03-17-analyze-new-position-strategy.md`
+> **目標**：將 Analyze 頁底部區塊正式調整為「新倉策略建議」，與 `/analyze/position` 的持股操作建議語義切開
+
+- [ ] **Task 1**：更新 Analyze 頁文案與標題，避免誤解為持股中的即時操作指令
+- [ ] **Task 2**：保留 Position 頁既有持股操作語義，不修改 `recommended_action` / `exit_reason` 呈現
+- [ ] **Task 3**：同步檢查相關文件與驗收文案，確認 `/analyze` = 新倉、`/analyze/position` = 持股
+
+### 2026-03-16：新倉策略建議演算法優化 ⏳
+
+> 計劃文件：`docs/plans/2026-03-17-new-position-strategy-algorithm-upgrade.md`
+> **目標**：提升 `/analyze` 新倉策略建議的可靠度與可解釋性，將現行模板化規則升級為 evidence-based 的 rule-based 決策引擎
+
+- [ ] **Task 1**：重新設計新倉策略輸入特徵與策略分級規則，降低目前三分類過度收斂的問題
+- [ ] **Task 2**：擴充 `action_plan` 輸出，加入理由、觸發條件、失效條件與建議倉位強度
+- [ ] **Task 3**：加入安全降級規則，於低信心、盤中或訊號衝突時限制策略積極度
+- [ ] **Task 4**：補齊測試與驗證策略案例，為後續歷史回測奠定基礎
 
 ### 2026-03-10：Strategy Action Plan 深化 ✅
 
@@ -125,4 +151,3 @@ PYTHONPATH=src ./venv/bin/python -m ai_stock_sentinel.main --symbol 2330.TW --ne
 ```
 
 ---
-

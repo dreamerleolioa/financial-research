@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v3）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-03-09
-> 更新摘要：新增 `POST /analyze/position`（持股診斷端點）——含 `position_analysis` 物件、`PositionScorer` 錯誤碼、`recommended_action` 規則；v2 新增 `news_display` 欄位（新聞顯示資料，含乾淨標題/日期/來源 URL）；新增 `cleaned_news_quality` 欄位；`cleaned_news` 角色重新定義為 LLM pipeline 專用
+> 更新日期：2026-03-16
+> 更新摘要：補充 `/analyze` 與 `/analyze/position` 的策略語義邊界：`/analyze` 底部策略區塊正式定位為「新倉策略建議」，`/analyze/position` 維持持股操作建議；並明確定義 `action_plan` / `strategy_type` / `entry_zone` / `stop_loss` 為 rule-based 新倉策略輸出，非 LLM 直接產生的買賣指令。
 
 ## 1) 目的
 
@@ -37,6 +37,7 @@ make run-api
 ### `POST /analyze`
 
 - **用途**：執行股票分析流程（LangGraph 回圈：crawl → fetch_technical → fetch_institutional → judge → [data_sufficient/retry_limit: clean | requires_news_refresh: fetch_news → increment_retry → crawl | else: increment_retry → crawl] → clean → analyze）
+- **產品語義**：此端點對應 Analyze 頁的「新倉策略建議」，用於評估是否值得觀察、等待與建立新倉；**不是**持股中的續抱 / 減碼 / 出場指令端點
 
 - **Request Body**
 
@@ -133,41 +134,45 @@ make run-api
 
 - **欄位說明**
 
-  | 欄位 | 類型 | 說明 |
-  |------|------|------|
-  | `snapshot` | object | yfinance 即時快照 |
-  | `analysis` | string | LLM Skeptic Mode 四步驟完整分析文字 |
-  | `cleaned_news` | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null |
-  | `news_display` | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null |
-  | `cleaned_news_quality` | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null |
-  | `data_confidence` | int \| null | 0–100，資料完整度（成功取得的維度數量，CS-4 新增） |
-  | `signal_confidence` | int \| null | 0–100，訊號強度（CS-4 新增；`confidence_score` 為向後相容別名） |
-  | `confidence_score` | int \| null | 0–100，反映三維訊號一致性（= `signal_confidence`，向後相容） |
-  | `cross_validation_note` | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串） |
-  | `strategy_type` | enum \| null | `short_term` / `mid_term` / `defensive_wait` |
-  | `entry_zone` | string \| null | 建議入場區間（rule-based） |
-  | `stop_loss` | string \| null | 防守底線／停損條件（rule-based） |
-  | `holding_period` | string \| null | 預期持股期間（rule-based） |
-  | `analysis_detail` | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位） |
-  | `sentiment_label` | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral` |
-  | `action_plan` | object \| null | rule-based 戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`） |
-  | `data_sources` | array | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`） |
-  | `institutional_flow_label` | enum \| null | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
-  | `action_plan_tag` | enum \| null | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射 |
-  | `errors` | array | 錯誤碼陣列 |
+  | 欄位                       | 類型           | 說明                                                                                                                                                                                                          |
+  | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `snapshot`                 | object         | yfinance 即時快照                                                                                                                                                                                             |
+  | `analysis`                 | string         | LLM Skeptic Mode 四步驟完整分析文字                                                                                                                                                                           |
+  | `cleaned_news`             | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null                                                                                                                   |
+  | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                    |
+  | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                        |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）                                                                                                                                                            |
+  | `signal_confidence`        | int \| null    | 0–100，訊號強度（CS-4 新增；`confidence_score` 為向後相容別名）                                                                                                                                               |
+  | `confidence_score`         | int \| null    | 0–100，反映三維訊號一致性（= `signal_confidence`，向後相容）                                                                                                                                                  |
+  | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                   |
+  | `strategy_type`            | enum \| null   | `short_term` / `mid_term` / `defensive_wait`                                                                                                                                                                  |
+  | `entry_zone`               | string \| null | 建議入場區間（rule-based）                                                                                                                                                                                    |
+  | `stop_loss`                | string \| null | 防守底線／停損條件（rule-based）                                                                                                                                                                              |
+  | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                    |
+  | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位） |
+  | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                   |
+  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）；不表示持股中的出場/減碼指令                                                                             |
+  | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                        |
+  | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                    |
+  | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                  |
+  | `errors`                   | array          | 錯誤碼陣列                                                                                                                                                                                                    |
+
+> **策略產生邊界（`POST /analyze`）**：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`、`action_plan`、`action_plan_tag` 皆由後端 Python rule-based 邏輯產出；LLM 可參與分析文字、新聞情緒或綜合敘事生成，但**不得直接輸出最終進場指令**。
 
 > **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
+>
 > - `tech_insight`：技術面獨立分析段落；禁止提及法人買賣超或新聞事件
 > - `inst_insight`：籌碼面獨立分析段落；禁止提及均線數值、RSI、新聞事件
 > - `news_insight`：消息面獨立分析段落；禁止提及具體技術指標數值
 > - `final_verdict`：三維整合仲裁段落；允許跨維度推論
-> 以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
+>   以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
 
 ---
 
 ### `POST /analyze/position`
 
 - **用途**：持股診斷——以使用者購入成本價為錨點，評估當前倉位健康度、動態停利/停損位，以及出場建議（詳見 [持股診斷系統技術規格](./ai-stock-sentinel-position-diagnosis-spec.md)）
+- **產品語義**：此端點是持股中的操作建議唯一真相來源；`recommended_action` / `exit_reason` 才對應續抱 / 減碼 / 出場等當前操作判斷
 
 - **Request Body**
 
@@ -259,37 +264,38 @@ make run-api
 
 - **欄位說明**
 
-  | 欄位 | 類型 | 說明 |
-  |------|------|------|
-  | `snapshot` | object | yfinance 即時快照（與 `/analyze` 相同） |
-  | `technical` | object | 技術指標（與 `/analyze` 相同，額外含 `support_20d` / `resistance_20d`） |
-  | `institutional` | object | 法人籌碼資料（與 `/analyze` 相同） |
-  | `position_analysis` | object | **持股診斷專屬**——見下方欄位細節 |
-  | `data_confidence` | int \| null | 0–100，資料完整度 |
-  | `signal_confidence` | int \| null | 0–100，訊號強度 |
-  | `confidence_score` | int \| null | = `signal_confidence`，向後相容 |
-  | `cross_validation_note` | string \| null | 三維交叉驗證結論（rule-based 固定字串） |
-  | `analysis_detail` | object \| null | LLM 結構化分析輸出（持股版 System Prompt，強化出場推理） |
-  | `institutional_flow_label` | enum \| null | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
-  | `action_plan` | object \| null | 持股版戰術行動（`action` 為 `續抱` / `減碼` / `出場`） |
-  | `action_plan_tag` | enum \| null | `opportunity` / `overheated` / `neutral` |
-  | `data_sources` | array | 本次成功取得資料的來源列表 |
-  | `errors` | array | 錯誤碼陣列 |
+  | 欄位                       | 類型           | 說明                                                                         |
+  | -------------------------- | -------------- | ---------------------------------------------------------------------------- |
+  | `snapshot`                 | object         | yfinance 即時快照（與 `/analyze` 相同）                                      |
+  | `technical`                | object         | 技術指標（與 `/analyze` 相同，額外含 `support_20d` / `resistance_20d`）      |
+  | `institutional`            | object         | 法人籌碼資料（與 `/analyze` 相同）                                           |
+  | `position_analysis`        | object         | **持股診斷專屬**——見下方欄位細節                                             |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度                                                            |
+  | `signal_confidence`        | int \| null    | 0–100，訊號強度                                                              |
+  | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容                                              |
+  | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                      |
+  | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 System Prompt，強化出場推理）                     |
+  | `institutional_flow_label` | enum \| null   | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
+  | `action_plan`              | object \| null | 持股版戰術行動（`action` 為 `續抱` / `減碼` / `出場`）                       |
+  | `action_plan_tag`          | enum \| null   | `opportunity` / `overheated` / `neutral`                                     |
+  | `data_sources`             | array          | 本次成功取得資料的來源列表                                                   |
+  | `errors`                   | array          | 錯誤碼陣列                                                                   |
 
 - **`position_analysis` 欄位細節**
 
-  | 欄位 | 類型 | 說明 |
-  |------|------|------|
-  | `entry_price` | float | 購入成本價（回傳確認） |
-  | `profit_loss_pct` | float | 當前損益百分比（rule-based Python 計算） |
-  | `position_status` | string | `profitable_safe` / `at_risk` / `under_water` |
-  | `position_narrative` | string | 倉位狀態敘事（rule-based，供 LLM 讀取） |
-  | `recommended_action` | string | `Hold` / `Trim` / `Exit`（rule-based，LLM 不得覆寫） |
-  | `trailing_stop` | float | 動態防守價位（rule-based Python 計算） |
-  | `trailing_stop_reason` | string | 停利/停損邏輯說明 |
-  | `exit_reason` | string \| null | 出場/減碼理由；無觸發條件時為 `null` |
+  | 欄位                   | 類型           | 說明                                                 |
+  | ---------------------- | -------------- | ---------------------------------------------------- |
+  | `entry_price`          | float          | 購入成本價（回傳確認）                               |
+  | `profit_loss_pct`      | float          | 當前損益百分比（rule-based Python 計算）             |
+  | `position_status`      | string         | `profitable_safe` / `at_risk` / `under_water`        |
+  | `position_narrative`   | string         | 倉位狀態敘事（rule-based，供 LLM 讀取）              |
+  | `recommended_action`   | string         | `Hold` / `Trim` / `Exit`（rule-based，LLM 不得覆寫） |
+  | `trailing_stop`        | float          | 動態防守價位（rule-based Python 計算）               |
+  | `trailing_stop_reason` | string         | 停利/停損邏輯說明                                    |
+  | `exit_reason`          | string \| null | 出場/減碼理由；無觸發條件時為 `null`                 |
 
 > **`recommended_action` 判斷規則（rule-based，後端計算）**：
+>
 > - `flow_label = distribution` 且 `profit_loss_pct > 0` → `Trim`
 > - `flow_label = distribution` 且 `profit_loss_pct <= 0` → `Exit`
 > - `technical_signal = bearish` 且 `close < trailing_stop` → `Exit`
