@@ -368,7 +368,7 @@ export default function AnalyzePage() {
             </div>
             {result?.cross_validation_note && <p className="mt-2 text-center text-xs text-text-muted">{result.cross_validation_note}</p>}
             {result?.data_confidence != null && result.data_confidence < 60 && (
-              <p className="mt-1 text-center text-xs text-gray-400 dark:text-slate-500">⚠️ 資料不足（{result.data_confidence}%）</p>
+              <p className="mt-1 text-center text-xs text-text-faint">⚠️ 資料不足（{result.data_confidence}%）</p>
             )}
           </div>
         </article>
