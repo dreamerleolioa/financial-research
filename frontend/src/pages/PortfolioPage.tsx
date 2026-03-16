@@ -301,15 +301,15 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
 }
 
 const STATUS_CONFIG = {
-  profitable_safe: { label: "獲利安全區", color: "text-green-700", bg: "bg-green-50 border-green-200", dot: "🟢" },
-  at_risk: { label: "成本邊緣", color: "text-yellow-700", bg: "bg-yellow-50 border-yellow-200", dot: "🟡" },
-  under_water: { label: "套牢防守", color: "text-red-700", bg: "bg-red-50 border-red-200", dot: "🔴" },
+  profitable_safe: { label: "獲利安全區", color: "text-green-700 dark:text-green-400", bg: "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800", dot: "🟢" },
+  at_risk: { label: "成本邊緣", color: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800", dot: "🟡" },
+  under_water: { label: "套牢防守", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800", dot: "🔴" },
 } as const;
 
 const ACTION_CONFIG = {
-  Hold: { label: "續抱", color: "text-green-700", bg: "bg-green-50 border-green-200" },
-  Trim: { label: "減碼", color: "text-yellow-700", bg: "bg-yellow-50 border-yellow-200" },
-  Exit: { label: "出場", color: "text-red-700", bg: "bg-red-50 border-red-200" },
+  Hold: { label: "續抱", color: "text-green-700 dark:text-green-400", bg: "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800" },
+  Trim: { label: "減碼", color: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800" },
+  Exit: { label: "出場", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800" },
 } as const;
 
 function InsightText({ text }: { text: string | null | undefined }) {

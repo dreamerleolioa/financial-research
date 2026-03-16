@@ -481,7 +481,7 @@ export default function AnalyzePage() {
         </div>
 
         {result?.analysis_detail && (
-          <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-900 dark:bg-indigo-950">
+          <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/60">
             <h3 className="mb-3 text-xs font-semibold text-indigo-700 dark:text-indigo-400">綜合仲裁</h3>
             <InsightText text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary} />
             {result.analysis_detail.risks.length > 0 && (
@@ -516,10 +516,10 @@ export default function AnalyzePage() {
         </div>
         {result ? (
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="rounded-lg bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
-            <div className="rounded-lg bg-card-hover p-3"><dt className="text-xs text-text-muted">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.entry_zone ?? "—"}</dd></div>
-            <div className="rounded-lg bg-card-hover p-3"><dt className="text-xs text-text-muted">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.stop_loss ?? "—"}</dd></div>
-            <div className="rounded-lg bg-card-hover p-3"><dt className="text-xs text-text-muted">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.holding_period ?? "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.entry_zone ?? "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.stop_loss ?? "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.holding_period ?? "—"}</dd></div>
           </dl>
         ) : (
           <p className="text-sm text-text-faint">請先執行分析。</p>

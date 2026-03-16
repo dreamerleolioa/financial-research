@@ -36,7 +36,7 @@ createRoot(document.getElementById("root")!).render(
             >
               <Route index element={<Navigate to="/analyze" replace />} />
               <Route path="/analyze" element={<AnalyzePage />} />
-              <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => {}} />} />
+              <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => { }} />} />
               <Route path="*" element={<Navigate to="/analyze" replace />} />
             </Route>
           </Routes>

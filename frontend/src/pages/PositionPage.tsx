@@ -14,7 +14,7 @@ interface PositionAnalysis {
 
 interface PositionResponse {
   symbol: string;
-  snapshot: { current_price?: number; [key: string]: unknown };
+  snapshot: { current_price?: number;[key: string]: unknown };
   position_analysis: PositionAnalysis | null;
   confidence_score: number | null;
   analysis_detail: {
@@ -113,10 +113,11 @@ export default function PositionPage() {
                 type="text"
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                placeholder="2330.TW"
+                placeholder="2330.TW 或 6488.TWO"
                 required
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2"
               />
+              <p className="mt-1 text-xs text-slate-500">上市股票請用 .TW，上櫃股票請用 .TWO。</p>
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600">購入成本價 *</label>
@@ -208,11 +209,10 @@ export default function PositionPage() {
                   <div className="text-center">
                     <div className="text-slate-400">損益</div>
                     <div
-                      className={`font-mono font-medium ${
-                        pa.profit_loss_pct != null && pa.profit_loss_pct >= 0
-                          ? "text-green-600"
-                          : "text-red-600"
-                      }`}
+                      className={`font-mono font-medium ${pa.profit_loss_pct != null && pa.profit_loss_pct >= 0
+                        ? "text-green-600"
+                        : "text-red-600"
+                        }`}
                     >
                       {pa.profit_loss_pct != null
                         ? `${pa.profit_loss_pct > 0 ? "+" : ""}${pa.profit_loss_pct.toFixed(2)}%`
