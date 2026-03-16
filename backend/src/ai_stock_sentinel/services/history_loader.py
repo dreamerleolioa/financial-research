@@ -17,7 +17,11 @@ def _derive_ma_alignment(indicators: dict) -> str:
     ma5  = indicators.get("ma5")
     ma20 = indicators.get("ma20")
     ma60 = indicators.get("ma60")
-    if ma5 is not None and ma20 is not None and ma60 is not None:
+    if (
+        isinstance(ma5, (int, float))
+        and isinstance(ma20, (int, float))
+        and isinstance(ma60, (int, float))
+    ):
         if ma5 > ma20 > ma60:
             return "bullish"
         if ma5 < ma20 < ma60:
