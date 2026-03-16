@@ -702,9 +702,150 @@ git commit -m "feat: add dashboard page with confidence trend chart and signal h
 - [ ] `DashboardPage` 正確顯示折線圖、訊號轉向紀錄，以及盤中未定稿提示
 - [ ] Dashboard API 呼叫沿用 `authHeaders()`，不新增 token prop 傳遞
 - [ ] `App.tsx` 成功新增第三個 dashboard tab，且不影響既有 analyze / portfolio 流程
+- [ ] `PUT /portfolio/{id}` 端點測試通過
+- [ ] `DELETE /portfolio/{id}` 端點測試通過，確認 `daily_analysis_log` 同步刪除
+- [ ] 前端編輯 Modal 儲存後顯示重新觸發分析提示
+- [ ] 前端刪除確認彈窗顯示，確認後正確移除清單項目
 - [ ] 前端 `pnpm build` 成功
 - [ ] 本地手動驗證折線圖、轉向標記、列表三個區塊
 
 ---
 
-_文件版本：v1.3 | 建立日期：2026-03-11 | 更新日期：2026-03-13 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 9，並對齊目前前端 App 結構與 v1.7 的 `is_final` 語意_
+## Task 5: 後端編輯持股端點
+
+**Files:**
+
+- Modify: `backend/src/ai_stock_sentinel/portfolio/router.py`
+- Modify: `backend/tests/test_portfolio_api.py`（或新增測試）
+
+**Step 1: 寫失敗測試**
+
+```python
+def test_update_portfolio_success():
+    """PUT /portfolio/{id} 應更新持倉資料並回傳更新後的結果。"""
+    ...
+
+def test_update_portfolio_forbidden():
+    """非持倉擁有者呼叫 PUT /portfolio/{id} 應回傳 403。"""
+    ...
+```
+
+**Step 2: 實作端點**
+
+```python
+class UpdatePortfolioRequest(BaseModel):
+    entry_price: float
+    quantity: int
+    entry_date: str
+    notes: str | None = None
+
+@router.put("/{portfolio_id}", response_model=PortfolioItemResponse)
+def update_portfolio(
+    portfolio_id: int,
+    payload: UpdatePortfolioRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = db.get(UserPortfolio, portfolio_id)
+    if not item or item.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限")
+    item.entry_price = payload.entry_price
+    item.quantity = payload.quantity
+    item.entry_date = payload.entry_date
+    item.notes = payload.notes
+    item.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(item)
+    return item
+```
+
+**Step 3: 執行測試並 Commit**
+
+```bash
+cd backend && pytest -v
+git add backend/src/ai_stock_sentinel/portfolio/router.py
+git commit -m "feat: add PUT /portfolio/{id} endpoint for editing portfolio items"
+```
+
+---
+
+## Task 6: 後端刪除持股端點
+
+**Files:**
+
+- Modify: `backend/src/ai_stock_sentinel/portfolio/router.py`
+- Modify: `backend/tests/test_portfolio_api.py`
+
+**Step 1: 寫失敗測試**
+
+```python
+def test_delete_portfolio_success():
+    """DELETE /portfolio/{id} 應同時刪除持倉與該使用者該股的 daily_analysis_log。"""
+    ...
+
+def test_delete_portfolio_forbidden():
+    """非持倉擁有者呼叫 DELETE /portfolio/{id} 應回傳 403。"""
+    ...
+```
+
+**Step 2: 實作端點**
+
+```python
+@router.delete("/{portfolio_id}", status_code=204)
+def delete_portfolio(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = db.get(UserPortfolio, portfolio_id)
+    if not item or item.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限")
+    # 同一 transaction 內先刪 log，再刪持倉
+    db.execute(
+        text("DELETE FROM daily_analysis_log WHERE user_id = :uid AND symbol = :sym"),
+        {"uid": current_user.id, "sym": item.symbol},
+    )
+    db.delete(item)
+    db.commit()
+```
+
+**Step 3: 執行測試並 Commit**
+
+```bash
+cd backend && pytest -v
+git add backend/src/ai_stock_sentinel/portfolio/router.py
+git commit -m "feat: add DELETE /portfolio/{id} endpoint with cascade log deletion"
+```
+
+---
+
+## Task 7: 前端編輯與刪除持股 UI
+
+**Files:**
+
+- Modify: `frontend/src/pages/PortfolioPage.tsx`
+
+**Step 1: 新增編輯 Modal**
+
+- 點擊「編輯」開啟 Modal，帶入目前 `entry_price`、`quantity`、`entry_date`、`notes`
+- 儲存後呼叫 `PUT /portfolio/{id}`
+- 成功後更新本地 `items` state，並顯示提示：「持倉資訊已更新。若成本價或日期有變更，建議重新觸發分析以確保數據正確。」
+
+**Step 2: 新增刪除確認**
+
+- 點擊「刪除」顯示 `window.confirm`（或自訂 confirm Modal）：
+  「確定刪除 {symbol} 持股？此操作將同時移除所有歷史診斷紀錄，且無法復原。」
+- 確認後呼叫 `DELETE /portfolio/{id}`
+- 成功後從 `items` state 移除該筆
+
+**Step 3: 確認 TypeScript 編譯並 Commit**
+
+```bash
+cd frontend && pnpm build 2>&1 | tail -20
+git add frontend/src/pages/PortfolioPage.tsx
+git commit -m "feat: add edit and delete portfolio UI in PortfolioPage"
+```
+
+---
+
+_文件版本：v1.4 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 9 v1.8，新增 Task 5–7 編輯與刪除持股_
