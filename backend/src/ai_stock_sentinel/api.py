@@ -21,7 +21,13 @@ from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
-from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
+from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
+from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
+from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
+from ai_stock_sentinel.services.history_loader import (
+    backfill_yesterday_indicators,
+    load_yesterday_context,
+)
 from ai_stock_sentinel.user_models.user import User
 
 configure_logging()
@@ -530,6 +536,7 @@ def analyze(
             return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
     backfill_yesterday_indicators(db, payload.symbol)
+    prev_context = load_yesterday_context(payload.symbol, db)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -567,6 +574,7 @@ def analyze(
         "action_plan": None,
         "fundamental_data": None,
         "fundamental_context": None,
+        "prev_context": prev_context,
     }
 
     try:
@@ -614,10 +622,30 @@ def fetch_raw_data_endpoint(
     db: Session = Depends(get_db),
     _: None = Depends(verify_internal_api_key),
 ):
-    """n8n cron 呼叫的內部端點，抓取原始數據並存入 stock_raw_data。"""
+    """n8n cron 呼叫的內部端點，抓取原始數據並存入 stock_raw_data。
+
+    只抓資料（technical/institutional/fundamental），不跑 LLM 分析。
+    """
     from datetime import date as _date_type
+
     record_date = _date_type.today() if payload.date == "today" else _date_type.fromisoformat(payload.date)
-    pass
+
+    crawler = YFinanceCrawler()
+    snapshot = crawler.fetch_basic_snapshot(payload.symbol)
+    technical = _asdict(snapshot) if is_dataclass(snapshot) else dict(snapshot)
+
+    institutional = fetch_institutional_flow(payload.symbol, days=10)
+
+    current_price = float(technical.get("current_price") or 0)
+    fundamental = fetch_fundamental_data(payload.symbol, current_price)
+
+    fetch_and_store_raw_data(
+        db,
+        payload.symbol,
+        technical=technical,
+        institutional=institutional,
+        fundamental=fundamental,
+    )
     return {"status": "ok", "symbol": payload.symbol, "record_date": record_date.isoformat()}
 
 
@@ -674,15 +702,18 @@ def analyze_position(
 ) -> AnalyzeResponse:
     now_time = datetime.now(_TZ_TAIPEI).time()
 
-    # L1：快取命中檢查
+    # L1：快取命中檢查（position 分析須確認 full_result 含 position_analysis，否則強制重跑）
     cache = get_analysis_cache(db, payload.symbol)
     if cache:
         hit = _handle_cache_hit(cache, now_time)
         if hit:
-            _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-            return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
+            full = cache.full_result or {}
+            if full.get("position_analysis") is not None:
+                _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
+                return _build_response_from_cache(hit, payload.symbol, full_result=full)
 
     backfill_yesterday_indicators(db, payload.symbol)
+    prev_context = load_yesterday_context(payload.symbol, db)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
@@ -731,6 +762,7 @@ def analyze_position(
         "trailing_stop_reason": None,
         "recommended_action": None,
         "exit_reason": None,
+        "prev_context": prev_context,
     }
 
     try:

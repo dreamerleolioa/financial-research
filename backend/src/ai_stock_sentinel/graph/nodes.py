@@ -195,6 +195,7 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
         "support_20d": snapshot.get("support_20d"),
         "resistance_20d": snapshot.get("resistance_20d"),
         "rsi14": rsi14_val,
+        "entry_price": state.get("entry_price"),
     }
 
     # ── Position Diagnosis (only when entry_price is provided) ──
@@ -358,6 +359,7 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
         cross_validation_note=state.get("cross_validation_note"),
         fundamental_context=state.get("fundamental_context"),
         position_context=position_context,
+        prev_context=state.get("prev_context"),
     )
     return {
         "analysis": result.summary,
@@ -555,6 +557,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "holding_period": strategy["holding_period"],
         "action_plan_tag": action_plan_tag,
         "action_plan": action_plan,
+        "ma5": ma5,
+        "ma20": ma20,
+        "ma60": ma60,
     }
 
     # ── Position trailing stop (only when entry_price is provided) ──

@@ -509,3 +509,35 @@ def test_analyze_without_position_context_unchanged():
 
     full_text = " ".join(str(m) for m in captured_prompts)
     assert "entry_price" not in full_text
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (Phase 8): Signal continuity section
+# ---------------------------------------------------------------------------
+
+def test_position_prompt_includes_history_when_prev_context_provided():
+    """有昨日上下文時，position prompt 應包含訊號轉向區塊。
+    昨日數據來自 stock_analysis_cache（非 daily_analysis_log）。
+    """
+    from ai_stock_sentinel.analysis.langchain_analyzer import build_position_history_section
+
+    prev = {
+        "prev_action_tag":   "Hold",
+        "prev_confidence":   61.5,
+        "prev_rsi":          65.2,
+        "prev_ma_alignment": "bullish",
+    }
+    section = build_position_history_section(prev)
+
+    assert "昨日建議：Hold" in section
+    assert "61.5" in section
+    assert "RSI：65.2" in section
+
+
+def test_position_prompt_empty_when_no_prev_context():
+    """無昨日上下文時，history section 應為空字串。
+    （stock_analysis_cache 無該日紀錄時 load_yesterday_context 回傳 None）
+    """
+    from ai_stock_sentinel.analysis.langchain_analyzer import build_position_history_section
+
+    assert build_position_history_section(None) == ""

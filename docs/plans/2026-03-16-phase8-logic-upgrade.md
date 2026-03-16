@@ -625,16 +625,35 @@ git commit -m "perf: fetch technical and institutional data concurrently with as
 
 ## 完成檢查清單
 
-- [ ] `GraphState` 有 `prev_context` 欄位，測試通過
-- [ ] `/analyze/position` 與 `/analyze` 呼叫前都會先 backfill 昨日未定稿快取，再讀取昨日上下文注入 state
-- [ ] `history_loader.py` 查詢來源為 `stock_analysis_cache`（非 `daily_analysis_log`），確保非持倉查詢也有昨日上下文
-- [ ] `build_position_history_section` 函式測試通過
-- [ ] 兩種分析流程的 LLM Prompt 都有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
-- [ ] 完整測試套件無回歸
-- [ ] `backtest_win_rate.py` 語法正確，可正常執行
-- [ ] crawl node 改用 `asyncio.gather` 並發抓取，測試通過
+- [x] `GraphState` 有 `prev_context` 欄位，測試通過
+- [x] `/analyze/position` 與 `/analyze` 呼叫前都會先 backfill 昨日未定稿快取，再讀取昨日上下文注入 state
+- [x] `history_loader.py` 查詢來源為 `stock_analysis_cache`（非 `daily_analysis_log`），確保非持倉查詢也有昨日上下文
+- [x] `build_position_history_section` 函式測試通過
+- [x] 兩種分析流程的 LLM Prompt 都有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
+- [x] 完整測試套件無回歸（404 passed，1 pre-existing failure）
+- [x] `backtest_win_rate.py` 語法正確，可正常執行
+- [x] `fetch_external_data_node` 用 `asyncio.gather` 並發抓取籌碼面與基本面，測試通過
 - [ ] （後續）數據足夠後封裝為 HTTP 端點，接入 n8n Workflow C 週報自動化
 
 ---
 
-_文件版本：v1.4 | 建立日期：2026-03-11 | 更新日期：2026-03-13 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_
+## 已知問題（2026-03-16 實作後發現）
+
+### ✅ 問題 1：`ma5/ma20/ma60` 永遠存 `None`（`stock_analysis_cache.indicators`）
+
+**已修正（2026-03-16）：**
+- `GraphState` 新增 `ma5 / ma20 / ma60: float | None` 欄位（`_MarketDataStateFields` 與主類別）
+- `strategy_node` 的 `updates` dict 補上 `"ma5": ma5, "ma20": ma20, "ma60": ma60`，確保存回 GraphState
+- 修正後 `_extract_indicators` 可從 graph result 正確取得 MA 值，`prev_ma_alignment` 將反映真實均線方向
+
+---
+
+### ✅ 問題 2：`_estimate_cost` 未納入 `fundamental_context` 與 `history_section`
+
+**已修正（2026-03-16）：**
+- `_estimate_cost` 新增 `fundamental_context` 與 `history_section` 參數（預設 `None`），納入 combined 字串計算
+- `analyze()` 呼叫 `_estimate_cost` 時傳入兩個新參數（`history_section` 由 `build_position_history_section(prev_context)` 產出）
+
+---
+
+_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_

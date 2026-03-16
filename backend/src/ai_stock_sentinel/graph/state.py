@@ -30,6 +30,9 @@ class _MarketDataStateFields(TypedDict, total=False):
     support_20d: float | None
     resistance_20d: float | None
     rsi14: float | None
+    ma5: float | None
+    ma20: float | None
+    ma60: float | None
 
 
 class _AnalysisStateFields(TypedDict, total=False):
@@ -94,6 +97,9 @@ class GraphState(TypedDict):
     support_20d: float | None
     resistance_20d: float | None
     rsi14: float | None
+    ma5: float | None
+    ma20: float | None
+    ma60: float | None
 
     # 分析結果（參見 _AnalysisStateFields）
     analysis: str | None
@@ -121,3 +127,6 @@ class GraphState(TypedDict):
     trailing_stop_reason: str | None
     recommended_action: str | None
     exit_reason: str | None
+
+    # --- History Context (from stock_analysis_cache, injected before LLM call) ---
+    prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值

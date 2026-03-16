@@ -85,7 +85,24 @@ _HUMAN_PROMPT = """\
 【交叉驗證備注】{cross_validation_note}
 
 請依步驟一至四完成分析，最後輸出 summary 與 risks。
-"""
+{history_section}"""
+
+
+def build_position_history_section(prev_context: dict | None) -> str:
+    """將昨日上下文格式化為 Prompt 的【訊號連續性】區塊。
+
+    所有數值來自 DB 讀取，此函式僅做格式化，不推斷任何數值。
+    """
+    if prev_context is None:
+        return ""
+    return (
+        f"\n【訊號連續性分析（昨日數據來自 DB，非 LLM 推斷）】\n"
+        f"- 昨日建議：{prev_context.get('prev_action_tag', 'N/A')}"
+        f"（信心：{prev_context.get('prev_confidence', 'N/A')}）\n"
+        f"- 昨日 RSI：{prev_context.get('prev_rsi', 'N/A')}\n"
+        f"- 昨日均線排列：{prev_context.get('prev_ma_alignment', 'N/A')}\n"
+        f"請在 final_verdict 中說明今日訊號與昨日的連續性或轉向原因。\n"
+    )
 
 
 class LangChainStockAnalyzer:
@@ -104,6 +121,8 @@ class LangChainStockAnalyzer:
         institutional_context: str | None,
         confidence_score: int | None,
         cross_validation_note: str | None,
+        fundamental_context: str | None = None,
+        history_section: str | None = None,
     ) -> None:
         combined = "".join([
             _SYSTEM_PROMPT,
@@ -120,6 +139,8 @@ class LangChainStockAnalyzer:
             institutional_context or "",
             str(confidence_score if confidence_score is not None else 50),
             cross_validation_note or "",
+            fundamental_context or "",
+            history_section or "",
         ])
         estimated_tokens = len(combined) / 4
         estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_INPUT_TOKENS
@@ -150,6 +171,7 @@ class LangChainStockAnalyzer:
         cross_validation_note: str | None = None,
         fundamental_context: str | None = None,
         position_context: dict | None = None,
+        prev_context: dict | None = None,
     ) -> AnalysisDetail:
         if not self._has_langchain():
             return AnalysisDetail(
@@ -174,6 +196,8 @@ class LangChainStockAnalyzer:
             institutional_context=institutional_context,
             confidence_score=confidence_score,
             cross_validation_note=cross_validation_note,
+            fundamental_context=fundamental_context,
+            history_section=build_position_history_section(prev_context),
         )
 
         output_parsers = import_module("langchain_core.output_parsers")
@@ -220,6 +244,7 @@ class LangChainStockAnalyzer:
             "confidence_score": confidence_score if confidence_score is not None else 50,
             "cross_validation_note": cross_validation_note or "（無交叉驗證備注）",
             "fundamental_context": fundamental_context or "（本次無基本面資料）",
+            "history_section": build_position_history_section(prev_context),
         }
         try:
             json_chain = prompt | self.llm | JsonOutputParser()
