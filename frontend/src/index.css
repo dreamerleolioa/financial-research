@@ -23,7 +23,7 @@
   --color-card: theme(colors.slate.800);
   --color-card-hover: theme(colors.slate.700);
   --color-border: theme(colors.slate.700);
-  --color-border-subtle: theme(colors.slate.700);
+  --color-border-subtle: theme(colors.slate.800);
   --color-text-primary: theme(colors.slate.100);
   --color-text-secondary: theme(colors.slate.300);
   --color-text-muted: theme(colors.slate.400);
