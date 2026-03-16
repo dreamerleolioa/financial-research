@@ -358,6 +358,7 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
         cross_validation_note=state.get("cross_validation_note"),
         fundamental_context=state.get("fundamental_context"),
         position_context=position_context,
+        prev_context=state.get("prev_context"),
     )
     return {
         "analysis": result.summary,
