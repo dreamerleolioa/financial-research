@@ -25,6 +25,7 @@ export default function App() {
                 className="h-8 w-8 rounded-full object-cover ring-2 ring-indigo-100 dark:ring-indigo-900"
               />
             ) : (
+              // brand color: no token defined
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-sm font-semibold text-indigo-600 dark:bg-indigo-900 dark:text-indigo-300">
                 {user?.name ? user.name.charAt(0).toUpperCase() : "?"}
               </div>
@@ -72,10 +73,9 @@ export default function App() {
           <NavLink
             to="/analyze"
             className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
+              `rounded-lg px-4 py-2 text-sm font-medium transition ${isActive
+                ? "bg-indigo-600 text-white"
+                : "border border-border bg-card text-text-muted hover:bg-card-hover"
               }`
             }
           >
@@ -84,10 +84,9 @@ export default function App() {
           <NavLink
             to="/portfolio"
             className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
+              `rounded-lg px-4 py-2 text-sm font-medium transition ${isActive
+                ? "bg-indigo-600 text-white"
+                : "border border-border bg-card text-text-muted hover:bg-card-hover"
               }`
             }
           >
