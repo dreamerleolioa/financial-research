@@ -625,14 +625,14 @@ git commit -m "perf: fetch technical and institutional data concurrently with as
 
 ## 完成檢查清單
 
-- [ ] `GraphState` 有 `prev_context` 欄位，測試通過
-- [ ] `/analyze/position` 與 `/analyze` 呼叫前都會先 backfill 昨日未定稿快取，再讀取昨日上下文注入 state
-- [ ] `history_loader.py` 查詢來源為 `stock_analysis_cache`（非 `daily_analysis_log`），確保非持倉查詢也有昨日上下文
-- [ ] `build_position_history_section` 函式測試通過
-- [ ] 兩種分析流程的 LLM Prompt 都有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
-- [ ] 完整測試套件無回歸
-- [ ] `backtest_win_rate.py` 語法正確，可正常執行
-- [ ] crawl node 改用 `asyncio.gather` 並發抓取，測試通過
+- [x] `GraphState` 有 `prev_context` 欄位，測試通過
+- [x] `/analyze/position` 與 `/analyze` 呼叫前都會先 backfill 昨日未定稿快取，再讀取昨日上下文注入 state
+- [x] `history_loader.py` 查詢來源為 `stock_analysis_cache`（非 `daily_analysis_log`），確保非持倉查詢也有昨日上下文
+- [x] `build_position_history_section` 函式測試通過
+- [x] 兩種分析流程的 LLM Prompt 都有【訊號連續性分析】區塊，數值來自 DB（非 LLM 推斷）
+- [x] 完整測試套件無回歸（404 passed，1 pre-existing failure）
+- [x] `backtest_win_rate.py` 語法正確，可正常執行
+- [x] `fetch_external_data_node` 用 `asyncio.gather` 並發抓取籌碼面與基本面，測試通過
 - [ ] （後續）數據足夠後封裝為 HTTP 端點，接入 n8n Workflow C 週報自動化
 
 ---
