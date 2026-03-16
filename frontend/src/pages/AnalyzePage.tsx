@@ -506,14 +506,15 @@ export default function AnalyzePage() {
       </section>
 
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-        <div className="mb-4 flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-text-primary">投資策略</h2>
+        <div className="mb-1 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-text-primary">新倉策略建議</h2>
           {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
             <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
               {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
             </span>
           )}
         </div>
+        <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
         {result ? (
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
