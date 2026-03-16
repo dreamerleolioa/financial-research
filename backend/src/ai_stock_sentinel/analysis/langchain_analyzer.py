@@ -121,6 +121,8 @@ class LangChainStockAnalyzer:
         institutional_context: str | None,
         confidence_score: int | None,
         cross_validation_note: str | None,
+        fundamental_context: str | None = None,
+        history_section: str | None = None,
     ) -> None:
         combined = "".join([
             _SYSTEM_PROMPT,
@@ -137,6 +139,8 @@ class LangChainStockAnalyzer:
             institutional_context or "",
             str(confidence_score if confidence_score is not None else 50),
             cross_validation_note or "",
+            fundamental_context or "",
+            history_section or "",
         ])
         estimated_tokens = len(combined) / 4
         estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_INPUT_TOKENS
@@ -192,6 +196,8 @@ class LangChainStockAnalyzer:
             institutional_context=institutional_context,
             confidence_score=confidence_score,
             cross_validation_note=cross_validation_note,
+            fundamental_context=fundamental_context,
+            history_section=build_position_history_section(prev_context),
         )
 
         output_parsers = import_module("langchain_core.output_parsers")

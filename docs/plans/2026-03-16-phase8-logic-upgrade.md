@@ -637,4 +637,23 @@ git commit -m "perf: fetch technical and institutional data concurrently with as
 
 ---
 
-_文件版本：v1.4 | 建立日期：2026-03-11 | 更新日期：2026-03-13 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_
+## 已知問題（2026-03-16 實作後發現）
+
+### ✅ 問題 1：`ma5/ma20/ma60` 永遠存 `None`（`stock_analysis_cache.indicators`）
+
+**已修正（2026-03-16）：**
+- `GraphState` 新增 `ma5 / ma20 / ma60: float | None` 欄位（`_MarketDataStateFields` 與主類別）
+- `strategy_node` 的 `updates` dict 補上 `"ma5": ma5, "ma20": ma20, "ma60": ma60`，確保存回 GraphState
+- 修正後 `_extract_indicators` 可從 graph result 正確取得 MA 值，`prev_ma_alignment` 將反映真實均線方向
+
+---
+
+### ✅ 問題 2：`_estimate_cost` 未納入 `fundamental_context` 與 `history_section`
+
+**已修正（2026-03-16）：**
+- `_estimate_cost` 新增 `fundamental_context` 與 `history_section` 參數（預設 `None`），納入 combined 字串計算
+- `analyze()` 呼叫 `_estimate_cost` 時傳入兩個新參數（`history_section` 由 `build_position_history_section(prev_context)` 產出）
+
+---
+
+_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_

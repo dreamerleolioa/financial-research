@@ -556,6 +556,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "holding_period": strategy["holding_period"],
         "action_plan_tag": action_plan_tag,
         "action_plan": action_plan,
+        "ma5": ma5,
+        "ma20": ma20,
+        "ma60": ma60,
     }
 
     # ── Position trailing stop (only when entry_price is provided) ──
