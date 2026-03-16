@@ -679,13 +679,15 @@ def analyze_position(
 ) -> AnalyzeResponse:
     now_time = datetime.now(_TZ_TAIPEI).time()
 
-    # L1：快取命中檢查
+    # L1：快取命中檢查（position 分析須確認 full_result 含 position_analysis，否則強制重跑）
     cache = get_analysis_cache(db, payload.symbol)
     if cache:
         hit = _handle_cache_hit(cache, now_time)
         if hit:
-            _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-            return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
+            full = cache.full_result or {}
+            if full.get("position_analysis") is not None:
+                _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
+                return _build_response_from_cache(hit, payload.symbol, full_result=full)
 
     backfill_yesterday_indicators(db, payload.symbol)
     prev_context = load_yesterday_context(payload.symbol, db)

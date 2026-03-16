@@ -195,6 +195,7 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
         "support_20d": snapshot.get("support_20d"),
         "resistance_20d": snapshot.get("resistance_20d"),
         "rsi14": rsi14_val,
+        "entry_price": state.get("entry_price"),
     }
 
     # ── Position Diagnosis (only when entry_price is provided) ──
