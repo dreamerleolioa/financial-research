@@ -775,3 +775,37 @@ def test_strategy_node_computes_trailing_stop_when_position_mode():
     assert "trailing_stop_reason" in result
     assert "recommended_action" in result
     assert result["recommended_action"] in ("Hold", "Trim", "Exit")
+
+
+# ── fetch_external_data_node concurrency ──────────────────────────────────────
+
+def test_fetch_external_data_node_fetches_concurrently() -> None:
+    """fetch_external_data_node 應用 asyncio.gather 同時抓取籌碼面與基本面，不依序執行。"""
+    import time
+    call_order: list[str] = []
+
+    def fake_institutional_fetcher(symbol: str) -> dict:
+        call_order.append("institutional_start")
+        time.sleep(0.05)
+        call_order.append("institutional_end")
+        return {"symbol": symbol, "flow_label": "neutral"}
+
+    def fake_fundamental_fetcher(symbol: str, current_price: float) -> dict:
+        call_order.append("fundamental_start")
+        time.sleep(0.05)
+        call_order.append("fundamental_end")
+        return {"pe_ratio": None, "dividend_yield": None}
+
+    from ai_stock_sentinel.graph.nodes import fetch_external_data_node
+
+    state = _base_state(snapshot=_make_snapshot())
+    fetch_external_data_node(
+        state,
+        institutional_fetcher=fake_institutional_fetcher,
+        fundamental_fetcher=fake_fundamental_fetcher,
+    )
+
+    # 並發執行時，兩個 start 應都在任一 end 之前出現
+    first_end_idx = min(call_order.index("institutional_end"), call_order.index("fundamental_end"))
+    assert call_order.index("institutional_start") < first_end_idx
+    assert call_order.index("fundamental_start") < first_end_idx
