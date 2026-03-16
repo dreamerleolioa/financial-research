@@ -340,7 +340,7 @@ export default function AnalyzePage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-muted">備註（選填）</label>
-                <input value={addForm.notes} onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))} placeholder="自訂備註" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500 dark:placeholder-slate-500" />
+                <input value={addForm.notes} onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))} placeholder="自訂備註" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
               </div>
               {addError && <p className="text-sm text-red-600 dark:text-red-400">{addError}</p>}
               <div className="flex justify-end gap-2 pt-2">
