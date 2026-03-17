@@ -129,3 +129,35 @@ def test_graph_loop_guard_stops_after_max_retries() -> None:
     result = graph.invoke(_initial_state())
 
     assert result["retry_count"] >= 2
+
+
+def test_graph_routes_to_fetch_external_data_when_fundamental_update_needed() -> None:
+    """requires_fundamental_update=True 且 snapshot 已有時，retry 應走 fetch_external_data 而非重新 crawl。"""
+    mock_crawler = MagicMock()
+    # 第一次 crawl（entry point）回傳 snapshot
+    mock_crawler.fetch_basic_snapshot.return_value = _make_stock_snapshot()
+    mock_analyzer = MagicMock()
+    mock_analyzer.analyze.return_value = AnalysisDetail(summary="ok")
+
+    inst_calls: list[str] = []
+
+    def counting_institutional(symbol: str) -> dict:
+        inst_calls.append(symbol)
+        return {}
+
+    graph = build_graph(
+        crawler=mock_crawler,
+        analyzer=mock_analyzer,
+        institutional_fetcher=counting_institutional,
+        fundamental_fetcher=lambda s, p: {},
+        _force_fundamental_update=True,
+    )
+
+    result = graph.invoke(_initial_state())
+
+    # requires_fundamental_update 觸發後應走 fetch_external_data，
+    # 而 Task 3 的 skip guard 讓第二次 fetch_external_data 直接跳過，
+    # 因此 crawl 只被呼叫一次（entry point），不會觸發 crawl retry
+    assert mock_crawler.fetch_basic_snapshot.call_count == 1, (
+        f"crawler 應只被呼叫一次，實際被呼叫 {mock_crawler.fetch_basic_snapshot.call_count} 次"
+    )
