@@ -60,8 +60,10 @@ def fetch_external_data_node(
     使用 asyncio.gather + run_in_executor 將兩個同步 fetcher 丟入 thread pool
     並行執行，不需修改底層 provider。
     """
-    # Skip guard：若 external data 已存在（前一輪 retry 已抓過），不重複呼叫外部 API
-    if state.get("institutional_flow") is not None and state.get("fundamental_data") is not None:
+    # Skip guard：若 external data 已存在且無錯誤（前一輪 retry 已抓過），不重複呼叫外部 API
+    inst = state.get("institutional_flow")
+    fund = state.get("fundamental_data")
+    if inst is not None and not inst.get("error") and fund is not None:
         return {}
 
     symbol = state["symbol"]
@@ -107,7 +109,8 @@ def _check_sufficiency(state: GraphState) -> tuple[bool, bool, bool]:
     requires_news_refresh = False
     requires_fundamental_update = False
 
-    # 規則 1：snapshot 缺失
+    # 規則 1：snapshot 缺失 → 設 requires_fundamental_update=True 使 data_sufficient=False，
+    # 觸發 retry loop 重新 crawl（_route 透過 data_sufficient 間接處理此情況）
     if state["snapshot"] is None:
         requires_fundamental_update = True
 

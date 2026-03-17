@@ -905,3 +905,27 @@ def test_fetch_external_data_node_skips_when_data_already_present():
     assert inst_calls == [], "institutional fetcher should not be called"
     assert fund_calls == [], "fundamental fetcher should not be called"
     assert result == {}
+
+
+def test_fetch_external_data_node_does_not_skip_when_previous_fetch_errored():
+    """institutional_flow 含 error key 時，應重新呼叫 fetcher（不快取錯誤回應）。"""
+    inst_calls = []
+
+    def mock_inst(symbol):
+        inst_calls.append(symbol)
+        return {"flow_label": "buy"}
+
+    state = _base_state(
+        snapshot={"current_price": 100.0, "recent_closes": []},
+        institutional_flow={"error": "API key not configured"},
+        fundamental_data={"pe": 20},
+    )
+
+    from ai_stock_sentinel.graph.nodes import fetch_external_data_node
+    fetch_external_data_node(
+        state,
+        institutional_fetcher=mock_inst,
+        fundamental_fetcher=lambda s, p: {},
+    )
+
+    assert inst_calls == ["2330.TW"], "fetcher should be called when previous result was an error"
