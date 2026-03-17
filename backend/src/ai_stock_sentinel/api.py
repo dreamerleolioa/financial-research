@@ -139,11 +139,11 @@ def _handle_cache_hit(
 ) -> CachedAnalyzeResponse | None:
     """處理 L1 快取命中邏輯。
 
-    - is_final=TRUE：直接回傳
-    - is_final=FALSE + 盤中：回傳含免責聲明
-    - is_final=FALSE + 收盤後：回傳 None（強制重新分析）
+    - analysis_is_final=TRUE：直接回傳
+    - analysis_is_final=FALSE + 盤中：回傳含免責聲明
+    - analysis_is_final=FALSE + 收盤後：回傳 None（強制重新分析）
     """
-    if cache.is_final:
+    if cache.analysis_is_final:
         return _build_analysis_response(
             symbol=cache.symbol,
             action_tag=cache.action_tag,
@@ -191,7 +191,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
             INSERT INTO stock_analysis_cache (
                 symbol, record_date, signal_confidence, action_tag,
                 recommended_action, indicators, final_verdict,
-                prev_action_tag, prev_confidence, is_final, full_result, updated_at
+                prev_action_tag, prev_confidence, analysis_is_final, full_result, updated_at
             ) VALUES (
                 :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
                 :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
@@ -199,7 +199,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
                  WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
                 (SELECT signal_confidence FROM stock_analysis_cache
                  WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
-                :is_final, CAST(:full_result AS jsonb), NOW()
+                :analysis_is_final, CAST(:full_result AS jsonb), NOW()
             )
             ON CONFLICT (symbol, record_date) DO UPDATE SET
                 signal_confidence  = EXCLUDED.signal_confidence,
@@ -207,7 +207,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
                 recommended_action = EXCLUDED.recommended_action,
                 indicators         = EXCLUDED.indicators,
                 final_verdict      = EXCLUDED.final_verdict,
-                is_final           = EXCLUDED.is_final,
+                analysis_is_final  = EXCLUDED.analysis_is_final,
                 full_result        = EXCLUDED.full_result,
                 updated_at         = NOW()
         """),
@@ -218,7 +218,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
             "recommended_action": data.get("recommended_action"),
             "indicators":         json.dumps(data.get("indicators") or {}),
             "final_verdict":      data.get("final_verdict"),
-            "is_final":           data.get("is_final", False),
+            "analysis_is_final":  data.get("is_final", False),
             "full_result":        json.dumps(data.get("full_result") or {}),
         }
     )
@@ -261,7 +261,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
             INSERT INTO daily_analysis_log (
                 user_id, symbol, record_date, signal_confidence, action_tag,
                 recommended_action, indicators, final_verdict,
-                prev_action_tag, prev_confidence, is_final
+                prev_action_tag, prev_confidence, analysis_is_final
             ) VALUES (
                 :user_id, :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
                 :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
@@ -271,7 +271,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
                 (SELECT signal_confidence FROM daily_analysis_log
                  WHERE user_id = :user_id AND symbol = :symbol
                    AND record_date = CURRENT_DATE - 1),
-                :is_final
+                :analysis_is_final
             )
             ON CONFLICT (user_id, symbol, record_date) DO UPDATE SET
                 signal_confidence  = EXCLUDED.signal_confidence,
@@ -279,7 +279,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
                 recommended_action = EXCLUDED.recommended_action,
                 indicators         = EXCLUDED.indicators,
                 final_verdict      = EXCLUDED.final_verdict,
-                is_final           = EXCLUDED.is_final
+                analysis_is_final  = EXCLUDED.analysis_is_final
         """),
         {
             "user_id":            data.get("user_id"),
@@ -289,7 +289,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
             "recommended_action": data.get("recommended_action"),
             "indicators":         json.dumps(data.get("indicators") or {}),
             "final_verdict":      data.get("final_verdict"),
-            "is_final":           data.get("is_final", False),
+            "analysis_is_final":  data.get("is_final", False),
         }
     )
     db.commit()
@@ -313,7 +313,7 @@ def _maybe_upsert_log(
         "recommended_action": cache.recommended_action,
         "indicators":         cache.indicators or {},
         "final_verdict":      cache.final_verdict,
-        "is_final":           is_final,
+        "is_final":           is_final,  # mapped to analysis_is_final in upsert_analysis_log
     })
 
 
@@ -351,7 +351,7 @@ def _build_response_from_cache(
     """
     if full_result:
         resp = AnalyzeResponse(**full_result)
-        resp.is_final = hit.is_final
+        resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
         resp.intraday_disclaimer = hit.intraday_disclaimer
         return resp
     return AnalyzeResponse(
@@ -703,6 +703,66 @@ def fetch_and_store_raw_data(
         }
     )
     db.commit()
+
+
+class HistoryEntry(BaseModel):
+    record_date:       str
+    signal_confidence: float | None
+    action_tag:        str | None
+    prev_action_tag:   str | None
+    prev_confidence:   float | None
+    analysis_is_final: bool
+    indicators:        dict[str, Any] | None
+    final_verdict:     str | None
+
+
+def fetch_symbol_history(
+    symbol: str,
+    db: Session,
+    *,
+    days: int = 30,
+) -> list:
+    """從 stock_analysis_cache 讀取指定股票的歷史診斷紀錄。
+
+    查 stock_analysis_cache（不含 user_id，跨使用者共用），供即時分析視窗
+    查看該股歷史趨勢，不需要使用者有持倉。
+    若需查詢持倉診斷變化，請使用 GET /portfolio/{id}/history
+    （查 daily_analysis_log，含 user_id，已在 Phase 7 實作）。
+    """
+    from datetime import date, timedelta
+    since = date.today() - timedelta(days=days)
+    result = db.execute(
+        select(StockAnalysisCache)
+        .where(
+            StockAnalysisCache.symbol == symbol,
+            StockAnalysisCache.record_date >= since,
+        )
+        .order_by(StockAnalysisCache.record_date)
+    )
+    return list(result.scalars().all())
+
+
+@app.get("/history/{symbol}", response_model=list[HistoryEntry])
+def get_symbol_history(
+    symbol: str,
+    days: int = 30,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[HistoryEntry]:
+    logs = fetch_symbol_history(symbol, db, days=days)
+    return [
+        HistoryEntry(
+            record_date=       str(log.record_date),
+            signal_confidence= float(log.signal_confidence) if log.signal_confidence else None,
+            action_tag=        log.action_tag,
+            prev_action_tag=   log.prev_action_tag,
+            prev_confidence=   float(log.prev_confidence) if log.prev_confidence else None,
+            analysis_is_final= bool(log.analysis_is_final),
+            indicators=        log.indicators,
+            final_verdict=     log.final_verdict,
+        )
+        for log in logs
+    ]
 
 
 @app.post("/analyze/position", response_model=AnalyzeResponse)
