@@ -85,6 +85,7 @@ interface EditPortfolioModalProps {
 
 function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const [entryPrice, setEntryPrice] = useState(String(item.entry_price));
   const [quantity, setQuantity] = useState(String(item.quantity));
   const [entryDate, setEntryDate] = useState(item.entry_date);
@@ -129,7 +130,8 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
   return (
     <div
       ref={backdropRef}
-      onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
@@ -231,6 +233,7 @@ interface DeleteConfirmModalProps {
 
 function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -262,7 +265,8 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
   return (
     <div
       ref={backdropRef}
-      onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-sm rounded-2xl bg-card shadow-xl">
@@ -341,10 +345,16 @@ interface AnalysisModalProps {
 
 function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const pa = result?.position_analysis;
 
+  function handleBackdropMouseDown(e: React.MouseEvent) {
+    mouseDownOnBackdrop.current = e.target === backdropRef.current;
+  }
+
   function handleBackdropClick(e: React.MouseEvent) {
-    if (e.target === backdropRef.current) onClose();
+    if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+    mouseDownOnBackdrop.current = false;
   }
 
   useEffect(() => {
@@ -358,6 +368,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
   return (
     <div
       ref={backdropRef}
+      onMouseDown={handleBackdropMouseDown}
       onClick={handleBackdropClick}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
@@ -568,8 +579,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function openAnalysis(item: PortfolioItem) {
     setModalItem(item);
-    // If already fetched, just open the modal
-    if (analysisMap[item.id] !== undefined) return;
 
     setAnalysisLoading((prev) => ({ ...prev, [item.id]: true }));
     setAnalysisError((prev) => ({ ...prev, [item.id]: null }));
