@@ -1,17 +1,98 @@
 # Phase 9 前端復盤儀表板 Implementation Plan
 
-> 狀態：待執行
+> 狀態：進行中（Task 0 完成）
 > 預計執行日期：2026-03-16
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 建立前端復盤儀表板頁面，視覺化單股的信心分數時序趨勢與訊號轉向歷史，讓使用者能回顧過去 N 天的診斷演變。
 
-**Architecture:** 後端新增 `GET /history/{symbol}` 端點，從 `stock_analysis_cache` 讀取指定股票的歷史診斷紀錄並回傳（不需要使用者有持倉，供即時分析視窗查看該股歷史趨勢）。依 review-spec v1.7，history payload 應額外暴露 `is_final`，讓前端區分盤中點與收盤定稿點，避免把未定稿資料當成復盤結論。`GET /portfolio/{id}/history` 則查 `daily_analysis_log`（含 user_id，供持倉列表追蹤持倉診斷變化，已在 Phase 7 實作）。前端整合必須以目前既有的 `App.tsx` 為基礎：保留現有 `analyze` / `portfolio` 兩個 tab、既有登入頭部、盤中 banner 與加入持股 modal，另外新增第三個 `dashboard` tab 掛入 `DashboardPage`。資料請求沿用現有 `frontend/src/lib/auth.ts` 的 `authHeaders()`，不新增 token prop 傳遞鏈。
+**Architecture:** 後端新增 `GET /history/{symbol}` 端點，從 `stock_analysis_cache` 讀取指定股票的歷史診斷紀錄並回傳（不需要使用者有持倉，供即時分析視窗查看該股歷史趨勢）。依 review-spec v2.0，history payload 應額外暴露 `analysis_is_final`，讓前端區分臨時分析點與真正按收盤資料重算的定稿點，避免把未定稿資料當成復盤結論。另依最新 review 決策，n8n Workflow A 只會在收盤後更新 `stock_raw_data.raw_data_is_final = true`，不會批次重跑所有分析；因此 dashboard 必須接受「某日 raw data 已 final，但該日 analysis 仍可能不是 final」的情況。`GET /portfolio/{id}/history` 則查 `daily_analysis_log`（含 user_id，供持倉列表追蹤持倉診斷變化，已在 Phase 7 實作）。前端整合必須以目前既有的 `App.tsx` 為基礎：保留現有 `analyze` / `portfolio` 兩個 tab、既有登入頭部、盤中 banner 與加入持股 modal，另外新增第三個 `dashboard` tab 掛入 `DashboardPage`。資料請求沿用現有 `frontend/src/lib/auth.ts` 的 `authHeaders()`，不新增 token prop 傳遞鏈。
 
 **Tech Stack:** FastAPI（新端點）、SQLAlchemy AsyncSession、React 19、TypeScript、Tailwind CSS v4、原生 SVG 折線圖
 
-**前置依賴:** Phase 7 完成（`daily_analysis_log` 有實際數據）、使用者系統完成（`get_current_user` Depends 可用）、前端已完成 analyze / portfolio 雙 tab 與 `authHeaders()` API 呼叫模式
+**前置依賴:** Phase 7 完成（`daily_analysis_log` 有實際數據）、使用者系統完成（`get_current_user` Depends 可用）、前端已完成 analyze / portfolio 雙 tab 與 `authHeaders()` API 呼叫模式、review-spec v2.0 雙旗標語義已凍結
+
+---
+
+## Task 0: Schema Migration 與舊資料 Backfill
+
+**Goal:** 將既有單旗標 `is_final` 資料安全遷移到雙旗標模型，確保歷史資料保留、API 可平滑升級、n8n 收盤流程能從新欄位繼續運作。
+
+**Files:**
+
+- Create: `backend/alembic/versions/<revision>_split_final_flags.py`
+- Modify: `backend/src/ai_stock_sentinel/db/models.py`
+- Modify: `backend/src/ai_stock_sentinel/api.py`
+- Modify: `backend/tests/...` 相關 schema / API 測試
+
+**Migration 策略**
+
+- `daily_analysis_log.is_final` 直接 rename 成 `analysis_is_final`
+- `stock_analysis_cache.is_final` 直接 rename 成 `analysis_is_final`
+- `stock_raw_data` 新增 `raw_data_is_final BOOLEAN NOT NULL DEFAULT FALSE`
+- 既有 `stock_raw_data` 資料在 migration 時統一 backfill 成 `raw_data_is_final = TRUE`
+
+原因：
+
+- `daily_analysis_log` / `stock_analysis_cache` 的舊 `is_final` 仍然只代表「分析是否定稿」，因此只映射到 `analysis_is_final`
+- `stock_raw_data` 本身不沿用舊 `is_final`，而是基於目前產品前提直接視為已被 n8n 每日更新完成，因此既有 rows 可安全 backfill 為 `raw_data_is_final = TRUE`
+
+**舊資料 Backfill 規則**
+
+- `daily_analysis_log.analysis_is_final = 舊 daily_analysis_log.is_final`
+- `stock_analysis_cache.analysis_is_final = 舊 stock_analysis_cache.is_final`
+- `stock_raw_data.raw_data_is_final = TRUE` for all existing rows
+
+這表示：
+
+- 舊的分析 final 狀態會被完整保留
+- 舊的 raw data 直接承接「已由 n8n 每日更新完成」的營運假設
+- migration 完成後，歷史 raw data 可立即作為 final raw data 使用，不必等待 n8n 重新逐日補正
+
+**Alembic 實作步驟**
+
+1. 新增 migration revision。
+2. 對 `daily_analysis_log` 執行 rename column：`is_final` → `analysis_is_final`。
+3. 對 `stock_analysis_cache` 執行 rename column：`is_final` → `analysis_is_final`。
+4. 對 `stock_raw_data` 新增 `raw_data_is_final BOOLEAN NOT NULL DEFAULT FALSE`。
+5. 將既有 `stock_raw_data.raw_data_is_final` 全部 update 成 `TRUE`。
+6. 視需要重建或調整依賴欄位名稱的 index / ORM mapping。
+7. 更新 ORM model、Pydantic schema、API response 與查詢條件，全面改讀新欄位。
+8. 執行 migration 後驗證舊資料筆數、NULL 狀態與欄位值是否符合預期。
+
+**Alembic 範例骨架**
+
+```python
+def upgrade() -> None:
+  op.alter_column("daily_analysis_log", "is_final", new_column_name="analysis_is_final")
+  op.alter_column("stock_analysis_cache", "is_final", new_column_name="analysis_is_final")
+  op.add_column(
+    "stock_raw_data",
+    sa.Column("raw_data_is_final", sa.Boolean(), nullable=False, server_default=sa.false()),
+  )
+  op.execute("UPDATE stock_raw_data SET raw_data_is_final = TRUE")
+
+
+def downgrade() -> None:
+  op.drop_column("stock_raw_data", "raw_data_is_final")
+  op.alter_column("stock_analysis_cache", "analysis_is_final", new_column_name="is_final")
+  op.alter_column("daily_analysis_log", "analysis_is_final", new_column_name="is_final")
+```
+
+**上線順序**
+
+1. 先部署 migration。
+2. 再部署後端程式碼，改讀 `analysis_is_final` / `raw_data_is_final`。
+3. 最後確認 n8n Workflow A 呼叫的 `POST /internal/fetch-raw-data` 已會把新寫入的 `stock_raw_data.raw_data_is_final = TRUE`。
+
+**驗證清單**
+
+- migration 後，`daily_analysis_log` 與 `stock_analysis_cache` 舊資料筆數不變
+- 原本 `is_final = TRUE` 的歷史分析，在新欄位下仍為 `analysis_is_final = TRUE`
+- `stock_raw_data.raw_data_is_final` 舊資料 backfill 後皆為 `TRUE`
+- 收盤後由 n8n 重新寫入的新資料，`raw_data_is_final = TRUE`
+- dashboard / history API 不再讀取舊欄位名稱
 
 ---
 
@@ -92,7 +173,7 @@ class HistoryEntry(BaseModel):
     action_tag:        str | None
     prev_action_tag:   str | None
     prev_confidence:   float | None
-  is_final:          bool
+  analysis_is_final: bool
     indicators:        dict[str, Any] | None
     final_verdict:     str | None
 
@@ -139,7 +220,7 @@ async def get_symbol_history(
             action_tag=        log.action_tag,
             prev_action_tag=   log.prev_action_tag,
             prev_confidence=   float(log.prev_confidence) if log.prev_confidence else None,
-          is_final=          bool(log.is_final),
+          analysis_is_final= bool(log.analysis_is_final),
             indicators=        log.indicators,
             final_verdict=     log.final_verdict,
         )
@@ -378,7 +459,7 @@ export interface HistoryEntry {
   action_tag: string | null;
   prev_action_tag: string | null;
   prev_confidence: number | null;
-  is_final: boolean;
+  analysis_is_final: boolean;
   indicators: Record<string, unknown> | null;
   final_verdict: string | null;
 }
@@ -467,7 +548,7 @@ export default function DashboardPage() {
     confidence: e.signal_confidence,
     actionTag: e.action_tag,
     prevActionTag: e.prev_action_tag,
-    isFinal: e.is_final,
+    isFinal: e.analysis_is_final,
   }));
 
   // 找出訊號轉向的紀錄
@@ -516,9 +597,10 @@ export default function DashboardPage() {
           <h2 className="mb-3 text-sm font-medium text-slate-700">
             {symbol} 信心分數趨勢（近 {days} 天）
           </h2>
-          {entries.some((e) => !e.is_final) && (
+          {entries.some((e) => !e.analysis_is_final) && (
             <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              含盤中未定稿資料點；虛線外圈標記僅供即時參考，不代表收盤定論。
+              含未定稿分析點；這類資料可能來自盤中查詢，或該日雖然 raw data
+              已收盤定稿，但分析尚未重跑，虛線外圈標記僅供參考，不代表收盤定論。
             </p>
           )}
           <ConfidenceChart data={chartData} />
@@ -696,10 +778,11 @@ git commit -m "feat: add dashboard page with confidence trend chart and signal h
 
 ## 完成檢查清單
 
-- [ ] `GET /history/{symbol}` 端點測試通過，且 payload 含 `is_final`
+- [ ] `GET /history/{symbol}` 端點測試通過，且 payload 含 `analysis_is_final`
 - [ ] 完整後端測試套件無回歸
 - [ ] `ConfidenceChart` SVG 元件 TypeScript 無錯誤
 - [ ] `DashboardPage` 正確顯示折線圖、訊號轉向紀錄，以及盤中未定稿提示
+- [ ] 與 review-spec v2.0 對齊：dashboard 能正確處理 `analysis_is_final = false` 的歷史點，且不將 raw data final 誤解為 analysis final
 - [ ] Dashboard API 呼叫沿用 `authHeaders()`，不新增 token prop 傳遞
 - [ ] `App.tsx` 成功新增第三個 dashboard tab，且不影響既有 analyze / portfolio 流程
 - [ ] `PUT /portfolio/{id}` 端點測試通過
@@ -848,4 +931,4 @@ git commit -m "feat: add edit and delete portfolio UI in PortfolioPage"
 
 ---
 
-_文件版本：v1.4 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 9 v1.8，新增 Task 5–7 編輯與刪除持股_
+_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` v2.0，已改採 `raw_data_is_final` / `analysis_is_final` 雙旗標語義，並保留 Task 5–7 編輯、刪除持股規格_

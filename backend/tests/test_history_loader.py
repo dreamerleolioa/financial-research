@@ -91,16 +91,16 @@ def test_prev_confidence_none_when_null():
 
 
 def test_backfill_yesterday_indicators_updates_is_final(monkeypatch) -> None:
-    """昨日 is_final=False 時，backfill 應更新 indicators 並設 is_final=True。"""
+    """昨日 analysis_is_final=False 時，backfill 應更新 indicators 並設 analysis_is_final=True。"""
     from unittest.mock import MagicMock, patch
     from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
 
     db = MagicMock()
     db.execute.return_value.scalar_one_or_none.return_value = None  # 預設昨日無資料
 
-    # 製造昨日 is_final=False 的快取
+    # 製造昨日 analysis_is_final=False 的快取
     cache = MagicMock()
-    cache.is_final = False
+    cache.analysis_is_final = False
     cache.symbol = "2330.TW"
 
     # 第一次 execute 查昨日快取，回傳 cache
@@ -124,13 +124,13 @@ def test_backfill_yesterday_indicators_updates_is_final(monkeypatch) -> None:
 
 
 def test_backfill_yesterday_indicators_skips_when_already_final(monkeypatch) -> None:
-    """昨日 is_final=True 時，backfill 應跳過，不執行任何 DB 寫入。"""
+    """昨日 analysis_is_final=True 時，backfill 應跳過，不執行任何 DB 寫入。"""
     from unittest.mock import MagicMock, patch
     from ai_stock_sentinel.services.history_loader import backfill_yesterday_indicators
 
     db = MagicMock()
     cache = MagicMock()
-    cache.is_final = True
+    cache.analysis_is_final = True
     db.execute.return_value.scalar_one_or_none.return_value = cache
 
     backfill_yesterday_indicators(db, "2330.TW")

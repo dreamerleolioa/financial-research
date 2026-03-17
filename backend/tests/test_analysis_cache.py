@@ -11,7 +11,7 @@ from ai_stock_sentinel import api
 
 def _make_mock_cache(is_final: bool, action_tag: str = "Hold", confidence: float = 72.5):
     c = MagicMock()
-    c.is_final = is_final
+    c.analysis_is_final = is_final
     c.symbol = "2330.TW"
     c.action_tag = action_tag
     c.signal_confidence = confidence

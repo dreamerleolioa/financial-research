@@ -1,5 +1,39 @@
 @import 'tailwindcss';
 
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-surface: theme(colors.slate.50);
+  --color-card: theme(colors.white);
+  --color-card-hover: theme(colors.slate.50);
+  --color-border: theme(colors.slate.200);
+  --color-border-subtle: theme(colors.slate.100);
+  --color-text-primary: theme(colors.slate.900);
+  --color-text-secondary: theme(colors.slate.700);
+  --color-text-muted: theme(colors.slate.500);
+  --color-text-faint: theme(colors.slate.400);
+  --color-input-bg: theme(colors.white);
+  --color-input-border: theme(colors.slate.300);
+  --color-badge-neutral-bg: theme(colors.slate.100);
+  --color-badge-neutral-text: theme(colors.slate.700);
+}
+
+.dark {
+  --color-surface: theme(colors.slate.900);
+  --color-card: theme(colors.slate.800);
+  --color-card-hover: theme(colors.slate.700);
+  --color-border: theme(colors.slate.700);
+  --color-border-subtle: theme(colors.slate.800);
+  --color-text-primary: theme(colors.slate.100);
+  --color-text-secondary: theme(colors.slate.300);
+  --color-text-muted: theme(colors.slate.400);
+  --color-text-faint: theme(colors.slate.500);
+  --color-input-bg: theme(colors.slate.700);
+  --color-input-border: theme(colors.slate.600);
+  --color-badge-neutral-bg: theme(colors.slate.700);
+  --color-badge-neutral-text: theme(colors.slate.400);
+}
+
 body {
   margin: 0;
   min-width: 320px;

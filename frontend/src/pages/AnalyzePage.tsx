@@ -81,7 +81,7 @@ const SIGNAL_LABEL: Record<string, string> = {
 const SIGNAL_CLASS: Record<string, string> = {
   bullish: "bg-emerald-100 text-emerald-800",
   bearish: "bg-red-100 text-red-800",
-  sideways: "bg-slate-100 text-slate-700",
+  sideways: "bg-badge-neutral-bg text-badge-neutral-text",
 };
 
 const SENTIMENT_LABEL: Record<string, string> = {
@@ -92,13 +92,13 @@ const SENTIMENT_LABEL: Record<string, string> = {
 
 const SENTIMENT_CLASS: Record<string, string> = {
   positive: "bg-emerald-100 text-emerald-800",
-  neutral: "bg-slate-100 text-slate-700",
+  neutral: "bg-badge-neutral-bg text-badge-neutral-text",
   negative: "bg-rose-100 text-rose-800",
 };
 
 const PE_BAND_BADGE: Record<string, { label: string; cls: string }> = {
   cheap: { label: "低估", cls: "bg-emerald-100 text-emerald-800" },
-  fair: { label: "合理", cls: "bg-slate-100 text-slate-700" },
+  fair: { label: "合理", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
   expensive: { label: "高估", cls: "bg-red-100 text-red-800" },
 };
 
@@ -106,7 +106,7 @@ const INST_FLOW_BADGE: Record<string, { label: string; cls: string }> = {
   institutional_accumulation: { label: "法人買超", cls: "bg-emerald-100 text-emerald-800" },
   distribution: { label: "主力出貨", cls: "bg-red-100 text-red-800" },
   retail_chasing: { label: "散戶追高", cls: "bg-orange-100 text-orange-800" },
-  neutral: { label: "籌碼中性", cls: "bg-slate-100 text-slate-700" },
+  neutral: { label: "籌碼中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: string }> = {
@@ -155,14 +155,14 @@ function mapVolumeSource(value: unknown): string {
 }
 
 function InsightText({ text }: { text: string | null | undefined }) {
-  if (!text) return <p className="text-sm text-slate-400">請先執行分析。</p>;
+  if (!text) return <p className="text-sm text-text-faint">請先執行分析。</p>;
   const sentences = text.split(/(?<=[。；！？：\n])/).map((s) => s.trim()).filter(Boolean);
   if (sentences.length <= 1)
-    return <p className="text-sm leading-relaxed text-slate-700">{text}</p>;
+    return <p className="text-sm leading-relaxed text-text-secondary">{text}</p>;
   return (
     <div className="space-y-1.5">
       {sentences.map((s, i) => (
-        <p key={i} className="text-sm leading-relaxed text-slate-700">{s}</p>
+        <p key={i} className="text-sm leading-relaxed text-text-secondary">{s}</p>
       ))}
     </div>
   );
@@ -233,10 +233,15 @@ export default function AnalyzePage() {
         headers: authHeaders(),
         body: JSON.stringify({ symbol: symbol.trim() }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail ?? `HTTP ${res.status}`);
+      }
       const data: AnalyzeResponse = await res.json();
       setResult(data);
       await fetchPortfolio();
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "無法連線後端，請確認伺服器已啟動。";
       setResult({
         snapshot: {}, analysis: "", analysis_detail: null, cleaned_news: null,
         cleaned_news_quality: null, news_display_items: [], confidence_score: null,
@@ -244,7 +249,7 @@ export default function AnalyzePage() {
         stop_loss: null, holding_period: null, action_plan_tag: null,
         institutional_flow_label: null, data_confidence: null,
         is_final: true, intraday_disclaimer: null,
-        errors: [{ code: "NETWORK_ERROR", message: "無法連線後端，請確認伺服器已啟動。" }],
+        errors: [{ code: "NETWORK_ERROR", message }],
       });
     } finally {
       setLoading(false);
@@ -276,8 +281,8 @@ export default function AnalyzePage() {
         </div>
       )}
 
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-        <label htmlFor="symbol" className="mb-2 block text-sm font-medium text-slate-700">
+      <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
+        <label htmlFor="symbol" className="mb-2 block text-sm font-medium text-text-secondary">
           股票代碼
         </label>
         <div className="flex flex-col gap-3 md:flex-row">
@@ -286,8 +291,8 @@ export default function AnalyzePage() {
             value={symbol}
             onChange={(e) => setSymbol(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze()}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm ring-indigo-200 transition outline-none focus:ring-2 md:max-w-sm"
-            placeholder="例如 2330.TW"
+            className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary ring-indigo-200 transition outline-none focus:ring-2 dark:ring-indigo-500 md:max-w-sm"
+            placeholder="例如 2330.TW 或 6488.TWO"
             disabled={loading}
           />
           <button
@@ -302,43 +307,44 @@ export default function AnalyzePage() {
               onClick={() => { setAddError(null); setShowAddModal(true); }}
               disabled={isTracked || portfolioFull}
               title={isTracked ? "已追蹤" : portfolioFull ? "最多追蹤 5 筆持股" : "加入我的持股"}
-              className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-600 dark:text-indigo-400 dark:hover:bg-indigo-950"
             >
               {isTracked ? "已追蹤" : "加入我的持股"}
             </button>
           )}
         </div>
-        <p className="mt-2 text-xs text-slate-500">目前查詢代碼：{symbol || "未輸入"}</p>
+        <p className="mt-2 text-xs text-text-muted">上市股票請用 .TW，上櫃股票請用 .TWO。</p>
+        <p className="mt-1 text-xs text-text-muted">上市範例：2330.TW（台積電）；上櫃範例：6488.TWO（環球晶）。</p>
       </section>
 
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="mb-4 text-base font-semibold text-slate-800">加入我的持股</h3>
+          <div className="w-full max-w-md rounded-xl bg-card p-6 shadow-xl">
+            <h3 className="mb-4 text-base font-semibold text-text-primary">加入我的持股</h3>
             <form onSubmit={handleAddPortfolio} className="space-y-4">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">股票代碼</label>
-                <input value={symbol} readOnly className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500" />
+                <label className="mb-1 block text-xs font-medium text-text-muted">股票代碼</label>
+                <input value={symbol} readOnly className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">成本價 *</label>
-                <input type="number" value={addForm.entry_price} onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))} required min="0.01" step="0.01" placeholder="980" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2" />
+                <label className="mb-1 block text-xs font-medium text-text-muted">成本價 *</label>
+                <input type="number" value={addForm.entry_price} onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))} required min="0.01" step="0.01" placeholder="980" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">持有股數 *</label>
-                <input type="number" value={addForm.quantity} onChange={(e) => setAddForm((f) => ({ ...f, quantity: e.target.value }))} required min="1" placeholder="1000" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2" />
+                <label className="mb-1 block text-xs font-medium text-text-muted">持有股數 *</label>
+                <input type="number" value={addForm.quantity} onChange={(e) => setAddForm((f) => ({ ...f, quantity: e.target.value }))} required min="1" placeholder="1000" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">購入日期</label>
-                <input type="date" value={addForm.entry_date} onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2" />
+                <label className="mb-1 block text-xs font-medium text-text-muted">購入日期</label>
+                <input type="date" value={addForm.entry_date} onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">備註（選填）</label>
-                <input value={addForm.notes} onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))} placeholder="自訂備註" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none ring-indigo-200 transition focus:ring-2" />
+                <label className="mb-1 block text-xs font-medium text-text-muted">備註（選填）</label>
+                <input value={addForm.notes} onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))} placeholder="自訂備註" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
               </div>
-              {addError && <p className="text-sm text-red-600">{addError}</p>}
+              {addError && <p className="text-sm text-red-600 dark:text-red-400">{addError}</p>}
               <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setShowAddModal(false)} className="rounded-lg px-4 py-2 text-sm text-slate-600 hover:bg-slate-100">取消</button>
+                <button type="button" onClick={() => setShowAddModal(false)} className="rounded-lg px-4 py-2 text-sm text-text-muted hover:bg-card-hover">取消</button>
                 <button type="submit" disabled={addLoading} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60">{addLoading ? "新增中..." : "確認新增"}</button>
               </div>
             </form>
@@ -347,44 +353,44 @@ export default function AnalyzePage() {
       )}
 
       <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <h2 className="mb-3 text-sm font-semibold text-slate-800">信心指數</h2>
+        <article className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
+          <h2 className="mb-3 text-sm font-semibold text-text-primary">信心指數</h2>
           <div className="flex flex-col items-center">
             <div className="relative flex items-center justify-center">
               <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
-                <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-slate-200" />
+                <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-border" />
                 <circle cx="70" cy="70" r="52" strokeWidth="12" strokeLinecap="round" className="fill-none stroke-indigo-600" strokeDasharray={circumference} strokeDashoffset={dashOffset} style={{ transition: "stroke-dashoffset 0.5s ease" }} />
               </svg>
               <div className="absolute text-center">
                 <div className="text-xl font-semibold">{confidenceScore != null ? `${confidenceScore}%` : "—"}</div>
-                <div className="text-xs text-slate-500">Confidence</div>
+                <div className="text-xs text-text-muted">Confidence</div>
               </div>
             </div>
-            {result?.cross_validation_note && <p className="mt-2 text-center text-xs text-slate-500">{result.cross_validation_note}</p>}
+            {result?.cross_validation_note && <p className="mt-2 text-center text-xs text-text-muted">{result.cross_validation_note}</p>}
             {result?.data_confidence != null && result.data_confidence < 60 && (
-              <p className="mt-1 text-center text-xs text-gray-400">⚠️ 資料不足（{result.data_confidence}%）</p>
+              <p className="mt-1 text-center text-xs text-text-faint">⚠️ 資料不足（{result.data_confidence}%）</p>
             )}
           </div>
         </article>
 
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-          <h2 className="mb-3 text-sm font-semibold text-slate-800">快照資訊</h2>
+        <article className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
+          <h2 className="mb-3 text-sm font-semibold text-text-primary">快照資訊</h2>
           {result ? (
-            <dl className="space-y-2 text-sm text-slate-700">
-              <div className="flex justify-between"><dt className="text-slate-500">代碼</dt><dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd></div>
-              <div className="flex justify-between"><dt className="text-slate-500">現價</dt><dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd></div>
-              <div className="flex justify-between"><dt className="text-slate-500">成交量</dt><dd className="font-medium">{formatVolume(snapshot.volume)}</dd></div>
-              <div className="flex justify-between"><dt className="text-slate-500">成交量來源</dt><dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd></div>
+            <dl className="space-y-2 text-sm text-text-secondary">
+              <div className="flex justify-between"><dt className="text-text-muted">代碼</dt><dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd></div>
+              <div className="flex justify-between"><dt className="text-text-muted">現價</dt><dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd></div>
+              <div className="flex justify-between"><dt className="text-text-muted">成交量</dt><dd className="font-medium">{formatVolume(snapshot.volume)}</dd></div>
+              <div className="flex justify-between"><dt className="text-text-muted">成交量來源</dt><dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd></div>
             </dl>
           ) : (
-            <p className="text-sm text-slate-400">請先執行分析。</p>
+            <p className="text-sm text-text-faint">請先執行分析。</p>
           )}
         </article>
       </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+      <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-800">近期新聞</h2>
+          <h2 className="text-sm font-semibold text-text-primary">近期新聞</h2>
           {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === "string" && (
             <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral}`}>
               {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? "中性"}
@@ -392,98 +398,98 @@ export default function AnalyzePage() {
           )}
         </div>
         {result?.cleaned_news_quality != null && (result.cleaned_news_quality.quality_score < 60 || result.cleaned_news_quality.quality_flags.length > 0) && (
-          <p className="mt-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-500">摘要品質受限</p>
+          <p className="mt-2 rounded-md bg-badge-neutral-bg px-3 py-1.5 text-xs text-text-muted">摘要品質受限</p>
         )}
         {result ? (
           result.news_display_items.length > 0 ? (
-            <ul className="mt-3 divide-y divide-slate-100">
+            <ul className="mt-3 divide-y divide-border-subtle">
               {result.news_display_items.map((item, idx) => (
                 <li key={idx} className="py-2.5">
                   {item.source_url ? (
-                    <a href={item.source_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-slate-800 hover:text-indigo-600 hover:underline">{item.title}</a>
+                    <a href={item.source_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-text-primary hover:text-indigo-600 hover:underline dark:hover:text-indigo-400">{item.title}</a>
                   ) : (
-                    <p className="text-sm text-slate-800">{item.title}</p>
+                    <p className="text-sm text-text-primary">{item.title}</p>
                   )}
-                  {item.date && <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>}
+                  {item.date && <p className="mt-0.5 text-xs text-text-faint">{item.date}</p>}
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="mt-3 text-sm text-slate-400">本次無新聞資料。</p>
+            <p className="mt-3 text-sm text-text-faint">本次無新聞資料。</p>
           )
         ) : (
-          <p className="mt-3 text-sm text-slate-400">請先執行分析。</p>
+          <p className="mt-3 text-sm text-text-faint">請先執行分析。</p>
         )}
-        <p className="mt-3 text-xs text-slate-400">
+        <p className="mt-3 text-xs text-text-faint">
           以上為市場情緒參考新聞。財報數字請參閱
-          <a href="https://mops.twse.com.tw" target="_blank" rel="noopener noreferrer" className="ml-0.5 text-indigo-500 hover:underline">公開資訊觀測站</a>。
+          <a href="https://mops.twse.com.tw" target="_blank" rel="noopener noreferrer" className="ml-0.5 text-indigo-500 hover:underline dark:text-indigo-400">公開資訊觀測站</a>。
         </p>
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-sm font-semibold text-slate-800">分析報告</h2>
+        <h2 className="text-sm font-semibold text-text-primary">分析報告</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-slate-600">技術面</h3>
+              <h3 className="text-xs font-semibold text-text-muted">技術面</h3>
               {result?.analysis_detail ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SIGNAL_CLASS[result.analysis_detail.technical_signal] ?? SIGNAL_CLASS.sideways}`}>{SIGNAL_LABEL[result.analysis_detail.technical_signal] ?? "盤整"}</span>
-              ) : <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">—</span>}
+              ) : <span className="inline-block rounded-full bg-badge-neutral-bg px-2 py-0.5 text-xs font-semibold text-badge-neutral-text">—</span>}
             </div>
             <InsightText text={result?.analysis_detail?.tech_insight} />
           </article>
 
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-slate-600">籌碼面</h3>
+              <h3 className="text-xs font-semibold text-text-muted">籌碼面</h3>
               {result?.institutional_flow_label && INST_FLOW_BADGE[result.institutional_flow_label] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${INST_FLOW_BADGE[result.institutional_flow_label].cls}`}>{INST_FLOW_BADGE[result.institutional_flow_label].label}</span>
-              ) : <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">—</span>}
+              ) : <span className="inline-block rounded-full bg-badge-neutral-bg px-2 py-0.5 text-xs font-semibold text-badge-neutral-text">—</span>}
             </div>
             <InsightText text={result?.analysis_detail?.inst_insight} />
           </article>
 
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-slate-600">基本面</h3>
+              <h3 className="text-xs font-semibold text-text-muted">基本面</h3>
               {result?.fundamental_data?.pe_band && PE_BAND_BADGE[result.fundamental_data.pe_band] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${PE_BAND_BADGE[result.fundamental_data.pe_band].cls}`}>{PE_BAND_BADGE[result.fundamental_data.pe_band].label}</span>
-              ) : <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">—</span>}
+              ) : <span className="inline-block rounded-full bg-badge-neutral-bg px-2 py-0.5 text-xs font-semibold text-badge-neutral-text">—</span>}
             </div>
             {result?.analysis_detail?.fundamental_insight ? (
               <InsightText text={result.analysis_detail.fundamental_insight} />
             ) : result?.fundamental_data ? (
-              <div className="space-y-1 text-sm text-slate-600">
+              <div className="space-y-1 text-sm text-text-muted">
                 {result.fundamental_data.pe_current != null && <p>PE：{result.fundamental_data.pe_current.toFixed(1)} 倍（{result.fundamental_data.pe_band === "cheap" ? "偏低" : result.fundamental_data.pe_band === "expensive" ? "偏高" : "合理"}）</p>}
                 {result.fundamental_data.dividend_yield != null && <p>殖利率：{result.fundamental_data.dividend_yield.toFixed(2)}%</p>}
                 {result.fundamental_data.pe_percentile != null && <p>PE 百分位：{result.fundamental_data.pe_percentile.toFixed(0)}%</p>}
               </div>
             ) : (
-              <p className="text-sm text-slate-400">本次無基本面資料</p>
+              <p className="text-sm text-text-faint">本次無基本面資料</p>
             )}
           </article>
 
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-slate-600">消息面</h3>
+              <h3 className="text-xs font-semibold text-text-muted">消息面</h3>
               {result?.analysis_detail?.sentiment_label ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.analysis_detail.sentiment_label] ?? SENTIMENT_CLASS.neutral}`}>{SENTIMENT_LABEL[result.analysis_detail.sentiment_label] ?? "中性"}</span>
-              ) : <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-400">—</span>}
+              ) : <span className="inline-block rounded-full bg-badge-neutral-bg px-2 py-0.5 text-xs font-semibold text-badge-neutral-text">—</span>}
             </div>
             <InsightText text={result?.analysis_detail?.news_insight} />
           </article>
         </div>
 
         {result?.analysis_detail && (
-          <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
-            <h3 className="mb-3 text-xs font-semibold text-indigo-700">綜合仲裁</h3>
+          <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/60">
+            <h3 className="mb-3 text-xs font-semibold text-indigo-700 dark:text-indigo-400">綜合仲裁</h3>
             <InsightText text={result.analysis_detail.final_verdict ?? result.analysis_detail.summary} />
             {result.analysis_detail.risks.length > 0 && (
-              <div className="mt-4 border-t border-indigo-100 pt-3">
-                <p className="mb-1.5 text-xs font-medium text-slate-500">風險提示</p>
+              <div className="mt-4 border-t border-indigo-100 pt-3 dark:border-indigo-900">
+                <p className="mb-1.5 text-xs font-medium text-text-muted">風險提示</p>
                 <ul className="space-y-1">
                   {result.analysis_detail.risks.map((risk, i) => (
-                    <li key={i} className="flex gap-2 text-sm text-slate-700">
+                    <li key={i} className="flex gap-2 text-sm text-text-secondary">
                       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400" />
                       {risk}
                     </li>
@@ -495,28 +501,29 @@ export default function AnalyzePage() {
         )}
 
         {result && !result.analysis_detail && result.analysis && (
-          <pre className="rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap text-slate-700">{result.analysis}</pre>
+          <pre className="rounded-xl border border-border bg-card p-4 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap text-text-secondary">{result.analysis}</pre>
         )}
       </section>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-        <div className="mb-4 flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-slate-800">投資策略</h2>
+      <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
+        <div className="mb-1 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-text-primary">新倉策略建議</h2>
           {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
             <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
               {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
             </span>
           )}
         </div>
+        <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
         {result ? (
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">策略方向</dt><dd className="mt-1 text-sm font-medium text-slate-800">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-slate-800">{result.entry_zone ?? "—"}</dd></div>
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-slate-800">{result.stop_loss ?? "—"}</dd></div>
-            <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-500">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-slate-800">{result.holding_period ?? "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.entry_zone ?? "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.stop_loss ?? "—"}</dd></div>
+            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.holding_period ?? "—"}</dd></div>
           </dl>
         ) : (
-          <p className="text-sm text-slate-400">請先執行分析。</p>
+          <p className="text-sm text-text-faint">請先執行分析。</p>
         )}
       </section>
     </div>

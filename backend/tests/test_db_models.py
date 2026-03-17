@@ -18,10 +18,10 @@ def test_user_portfolio_model_columns():
     assert {"id", "user_id", "symbol", "entry_price", "quantity", "entry_date", "is_active"} <= cols
 
 
-def test_daily_analysis_log_has_is_final():
-    """DailyAnalysisLog 必須有 is_final 欄位。"""
+def test_daily_analysis_log_has_analysis_is_final():
+    """DailyAnalysisLog 必須有 analysis_is_final 欄位（由 is_final rename 而來）。"""
     cols = {c.name for c in DailyAnalysisLog.__table__.columns}
-    assert "is_final" in cols
+    assert "analysis_is_final" in cols
 
 
 def test_daily_analysis_log_model_columns():
@@ -29,13 +29,16 @@ def test_daily_analysis_log_model_columns():
     assert {
         "id", "user_id", "symbol", "record_date", "signal_confidence",
         "action_tag", "indicators", "final_verdict",
-        "prev_action_tag", "prev_confidence", "is_final",
+        "prev_action_tag", "prev_confidence", "analysis_is_final",
     } <= cols
 
 
 def test_stock_raw_data_model_columns():
     cols = {c.name for c in StockRawData.__table__.columns}
-    assert {"id", "symbol", "record_date", "technical", "institutional", "fundamental", "fetched_at"} <= cols
+    assert {
+        "id", "symbol", "record_date", "technical", "institutional",
+        "fundamental", "raw_data_is_final", "fetched_at",
+    } <= cols
 
 
 def test_stock_analysis_cache_model_columns():
@@ -43,7 +46,7 @@ def test_stock_analysis_cache_model_columns():
     assert {
         "id", "symbol", "record_date", "signal_confidence",
         "action_tag", "indicators", "final_verdict",
-        "prev_action_tag", "prev_confidence", "is_final", "created_at", "updated_at",
+        "prev_action_tag", "prev_confidence", "analysis_is_final", "created_at", "updated_at",
     } <= cols
 
 
