@@ -92,6 +92,17 @@ export default function App() {
           >
             我的持股
           </NavLink>
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) =>
+              `rounded-lg px-4 py-2 text-sm font-medium transition ${isActive
+                ? "bg-indigo-600 text-white"
+                : "border border-border bg-card text-text-muted hover:bg-card-hover"
+              }`
+            }
+          >
+            復盤儀表板
+          </NavLink>
         </nav>
 
         <Outlet />
