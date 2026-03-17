@@ -39,8 +39,8 @@ class AnalyzeRequest(BaseModel):
 
 
 class PositionAnalyzeRequest(BaseModel):
-    symbol: str
-    entry_price: float
+    symbol: str = Field(min_length=1, max_length=20)
+    entry_price: float = Field(gt=0)
     entry_date: str | None = None
     quantity: int | None = None
 
