@@ -489,22 +489,16 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         const data: PortfolioItem[] = await res.json();
         setItems(data);
 
-        const entries = await Promise.all(
-          data.map(async (item) => {
-            try {
-              const r = await fetch(
-                `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=1`,
-                { headers: authHeaders() },
-              );
-              if (!r.ok) return [item.id, null] as const;
-              const body: { records: HistoryEntry[] } = await r.json();
-              return [item.id, body.records[0] ?? null] as const;
-            } catch {
-              return [item.id, null] as const;
-            }
-          }),
-        );
-        setLatestMap(Object.fromEntries(entries));
+        try {
+          const r = await fetch(
+            `${import.meta.env.VITE_API_URL}/portfolio/latest-history`,
+            { headers: authHeaders() },
+          );
+          if (r.ok) {
+            const latestData: Record<number, HistoryEntry | null> = await r.json();
+            setLatestMap(latestData);
+          }
+        } catch { /* ignore */ }
       } finally {
         setLoading(false);
       }
