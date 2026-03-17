@@ -130,3 +130,6 @@ class GraphState(TypedDict):
 
     # --- History Context (from stock_analysis_cache, injected before LLM call) ---
     prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值
+
+    # 分析時間戳記 — 由 API 層注入，strategy_node 讀取以套用盤中 guardrail
+    is_final: bool

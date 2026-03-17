@@ -582,6 +582,7 @@ def analyze(
         "fundamental_data": None,
         "fundamental_context": None,
         "prev_context": prev_context,
+        "is_final": now_time >= MARKET_CLOSE,
     }
 
     try:
@@ -843,6 +844,7 @@ def analyze_position(
         "recommended_action": None,
         "exit_reason": None,
         "prev_context": prev_context,
+        "is_final": now_time >= MARKET_CLOSE,
     }
 
     try:

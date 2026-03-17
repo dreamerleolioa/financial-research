@@ -548,6 +548,14 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         confidence_score=state.get("confidence_score"),
         resistance_20d=state.get("resistance_20d"),
         support_20d=state.get("support_20d"),
+        data_confidence=state.get("data_confidence"),
+        is_final=state["is_final"],
+        rsi=rsi,
+        sentiment_label=sentiment_label,
+        bias=bias,
+        close=close,
+        ma5=ma5,
+        ma20=ma20,
     )
 
     updates: dict[str, Any] = {
