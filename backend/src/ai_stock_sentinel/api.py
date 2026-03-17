@@ -374,9 +374,15 @@ class FetchRawDataRequest(BaseModel):
     date: str = "today"
 
 
-def get_graph():
+# ─── Graph Singleton ─────────────────────────────────────────
+def _build_graph_singleton():
     crawler, analyzer, rss_client, news_cleaner = build_graph_deps()
     return build_graph(crawler=crawler, analyzer=analyzer, rss_client=rss_client, news_cleaner=news_cleaner)
+
+_graph = _build_graph_singleton()
+
+def get_graph():
+    return _graph
 
 
 app = FastAPI(title="AI Stock Sentinel API", version="v1")

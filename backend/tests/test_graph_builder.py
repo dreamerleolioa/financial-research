@@ -43,6 +43,7 @@ def _initial_state(symbol: str = "2330.TW") -> dict:
         "holding_period": None,
         "confidence_score": None,
         "cross_validation_note": None,
+        "is_final": True,
     }
 
 
