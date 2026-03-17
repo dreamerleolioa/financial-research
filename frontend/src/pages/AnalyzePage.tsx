@@ -418,7 +418,7 @@ export default function AnalyzePage() {
           {result ? (
             <dl className="space-y-2 text-sm text-text-secondary">
               <div className="flex justify-between"><dt className="text-text-muted">代碼</dt><dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd></div>
-              <div className="flex justify-between"><dt className="text-text-muted">現價</dt><dd className="font-medium">{formatPrice(snapshot.current_price, snapshot.symbol)}</dd></div>
+              <div className="flex justify-between"><dt className="text-text-muted">現價</dt><dd className="font-medium">{formatPrice(snapshot.current_price as number | null | undefined, snapshot.symbol as string | undefined)}</dd></div>
               <div className="flex justify-between"><dt className="text-text-muted">成交量</dt><dd className="font-medium">{formatVolume(snapshot.volume)}</dd></div>
               <div className="flex justify-between"><dt className="text-text-muted">成交量來源</dt><dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd></div>
             </dl>

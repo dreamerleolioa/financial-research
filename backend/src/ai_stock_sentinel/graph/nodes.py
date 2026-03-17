@@ -61,6 +61,8 @@ def fetch_external_data_node(
     並行執行，不需修改底層 provider。
     """
     # Skip guard：若 external data 已存在（前一輪 retry 已抓過），不重複呼叫外部 API
+    # error response 也視為已存在：institutional_flow error 通常為 API key 未設定等永久性問題，
+    # retry 重抓不會恢復，快取 error 是正確行為。
     if state.get("institutional_flow") is not None and state.get("fundamental_data") is not None:
         return {}
 
@@ -107,7 +109,8 @@ def _check_sufficiency(state: GraphState) -> tuple[bool, bool, bool]:
     requires_news_refresh = False
     requires_fundamental_update = False
 
-    # 規則 1：snapshot 缺失
+    # 規則 1：snapshot 缺失 → 設 requires_fundamental_update=True 使 data_sufficient=False，
+    # 觸發 retry loop 重新 crawl（_route 透過 data_sufficient 間接處理此情況）
     if state["snapshot"] is None:
         requires_fundamental_update = True
 
