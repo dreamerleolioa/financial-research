@@ -907,8 +907,8 @@ def test_fetch_external_data_node_skips_when_data_already_present():
     assert result == {}
 
 
-def test_fetch_external_data_node_does_not_skip_when_previous_fetch_errored():
-    """institutional_flow 含 error key 時，應重新呼叫 fetcher（不快取錯誤回應）。"""
+def test_fetch_external_data_node_skips_when_previous_fetch_errored():
+    """institutional_flow 含 error key 時も skip する：API key 未設定等の永久的エラーは retry で回復しない。"""
     inst_calls = []
 
     def mock_inst(symbol):
@@ -922,10 +922,11 @@ def test_fetch_external_data_node_does_not_skip_when_previous_fetch_errored():
     )
 
     from ai_stock_sentinel.graph.nodes import fetch_external_data_node
-    fetch_external_data_node(
+    result = fetch_external_data_node(
         state,
         institutional_fetcher=mock_inst,
         fundamental_fetcher=lambda s, p: {},
     )
 
-    assert inst_calls == ["2330.TW"], "fetcher should be called when previous result was an error"
+    assert inst_calls == [], "error response is treated as cached — no retry for permanent failures"
+    assert result == {}

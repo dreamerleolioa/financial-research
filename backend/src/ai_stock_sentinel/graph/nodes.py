@@ -60,10 +60,10 @@ def fetch_external_data_node(
     使用 asyncio.gather + run_in_executor 將兩個同步 fetcher 丟入 thread pool
     並行執行，不需修改底層 provider。
     """
-    # Skip guard：若 external data 已存在且無錯誤（前一輪 retry 已抓過），不重複呼叫外部 API
-    inst = state.get("institutional_flow")
-    fund = state.get("fundamental_data")
-    if inst is not None and not inst.get("error") and fund is not None:
+    # Skip guard：若 external data 已存在（前一輪 retry 已抓過），不重複呼叫外部 API
+    # error response 也視為已存在：institutional_flow error 通常為 API key 未設定等永久性問題，
+    # retry 重抓不會恢復，快取 error 是正確行為。
+    if state.get("institutional_flow") is not None and state.get("fundamental_data") is not None:
         return {}
 
     symbol = state["symbol"]
