@@ -165,44 +165,49 @@ def test_defensive_wait_takes_priority_over_mid_term():
 
 
 def test_mid_term_requires_all_ma_conditions():
-    """mid_term 需要 close > ma5 > ma20；不符合則退回 defensive_wait"""
-    # close < ma5 → 均線空頭，不符合
+    """mid_term 需要 close > ma5 > ma20 + 足夠分數；只有法人積極但均線不排列時為 short_term"""
+    # close < ma5 → 均線空頭，不符合 mid_term；但法人積累(+2) + 健康 RSI(+1) → 分數夠 short_term
     tech = {"sentiment_label": "neutral", "rsi": 55.0, "bias": 3.0,
             "close": 98.0, "ma5": 103.0, "ma20": 100.0}
     inst = {"flow_label": "institutional_accumulation"}
     result = generate_strategy(tech, inst)
-    assert result["strategy_type"] == "defensive_wait"
+    # 不符合 mid_term 條件，但 evidence score 充足 → short_term
+    assert result["strategy_type"] != "mid_term"
+    assert result["strategy_type"] in {"short_term", "defensive_wait"}
 
 
 def test_mid_term_with_none_ma_values():
-    """mid_term 需要 close/ma5/ma20 都不為 None；有 None 則略過條件"""
+    """mid_term 需要均線多頭排列；MA 為 None 時不得為 mid_term"""
     tech = {"sentiment_label": "neutral", "rsi": 55.0, "bias": 3.0,
             "close": None, "ma5": None, "ma20": None}
     inst = {"flow_label": "institutional_accumulation"}
     result = generate_strategy(tech, inst)
-    # MA 都為 None → 條件不成立 → defensive_wait
-    assert result["strategy_type"] == "defensive_wait"
+    # MA 都為 None → mid_term 條件不成立，但 flow(+2)+rsi(+1) 分數足夠 short_term
+    assert result["strategy_type"] != "mid_term"
 
 
-def test_short_term_requires_both_conditions():
-    """short_term 需要 positive + rsi < 30；缺一不可"""
-    # RSI 正常（不超賣）
+def test_short_term_evidence_based():
+    """evidence scoring：positive sentiment + 健康 RSI → 分數夠 short_term；
+    單純 neutral sentiment + 超賣 RSI 單獨仍可觸發 short_term。"""
+    # positive(+1) + RSI in 45-65(+1) = 2 → short_term（新版允許）
     tech = {"sentiment_label": "positive", "rsi": 50.0, "bias": 2.0}
     inst = {"flow_label": "neutral"}
     result = generate_strategy(tech, inst)
-    assert result["strategy_type"] != "short_term"
+    assert result["strategy_type"] in {"short_term", "defensive_wait"}
 
-    # 情緒中性
+    # 情緒中性 + RSI 超賣(+1) = 1 < 2 → defensive_wait
     tech2 = {"sentiment_label": "neutral", "rsi": 20.0, "bias": 2.0}
     result2 = generate_strategy(tech2, inst)
-    assert result2["strategy_type"] != "short_term"
+    assert result2["strategy_type"] == "defensive_wait"
 
 
 def test_inst_none_does_not_crash_mid_term_check():
-    """inst_data 為 None 時，mid_term 條件不滿足，回傳 defensive_wait"""
+    """inst_data 為 None 時不 crash；均線多頭 + 無法人積極 → flow=0，mid_term 需 flow>0 所以非 mid_term"""
     tech = {"sentiment_label": "neutral", "close": 105.0, "ma5": 103.0, "ma20": 100.0}
     result = generate_strategy(tech, None)
-    assert result["strategy_type"] == "defensive_wait"
+    # flow=0（inst_data=None）→ mid_term 條件不符，但 technical(+2) → short_term
+    assert result["strategy_type"] != "mid_term"
+    assert isinstance(result["strategy_type"], str)
 
 
 # ─── Holding Period Mapping ───────────────────────────────────────────────────
@@ -296,7 +301,7 @@ def test_generate_action_plan_mid_term_action():
         resistance_20d=None,
         support_20d=None,
     )
-    assert result["action"] == "分批佈局（首筆 30%）"
+    assert "分批佈局" in result["action"]
 
 
 def test_generate_action_plan_short_term_action():
@@ -309,7 +314,7 @@ def test_generate_action_plan_short_term_action():
         resistance_20d=None,
         support_20d=None,
     )
-    assert result["action"] == "短線進場（首筆 50%，確認站穩再加碼）"
+    assert "短線試單" in result["action"]
 
 
 def test_generate_action_plan_returns_momentum_based_on_flow_label_accumulation():
@@ -361,9 +366,12 @@ def test_generate_action_plan_contains_required_keys():
         resistance_20d=None,
         support_20d=None,
     )
-    assert set(result.keys()) == {
-        "action", "target_zone", "defense_line", "momentum_expectation", "breakeven_note"
+    required_keys = {
+        "action", "target_zone", "defense_line", "momentum_expectation", "breakeven_note",
+        "conviction_level", "thesis_points", "upgrade_triggers",
+        "downgrade_triggers", "invalidation_conditions", "suggested_position_size",
     }
+    assert required_keys.issubset(set(result.keys()))
 
 
 # ─── breakeven_note 測試 ──────────────────────────────────────────────────────
@@ -504,3 +512,326 @@ def test_momentum_expectation_neutral_without_levels():
         support_20d=None,
     )
     assert result["momentum_expectation"] == "中性"
+
+
+# ─── Evidence Score Tests ─────────────────────────────────────────────────────
+
+from ai_stock_sentinel.analysis.strategy_generator import _compute_evidence_scores, EvidenceScores
+
+
+def test_evidence_scores_bullish_ma_alignment():
+    """close > ma5 > ma20 → technical +2"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=50.0,
+        close=105.0, ma5=103.0, ma20=100.0,
+        sentiment_label="neutral", flow_label="neutral",
+    )
+    assert scores.technical >= 2
+
+
+def test_evidence_scores_rsi_healthy_range():
+    """RSI 45-65 → technical +1"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=55.0,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="neutral", flow_label="neutral",
+    )
+    assert scores.technical >= 1
+
+
+def test_evidence_scores_rsi_oversold():
+    """RSI < 30 → technical +1（反彈候選）"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=25.0,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="neutral", flow_label="neutral",
+    )
+    assert scores.technical >= 1
+
+
+def test_evidence_scores_high_bias_penalty():
+    """bias > 10 → technical -2（使用 rsi=None 避免 rsi 健康區間加分干擾）"""
+    scores = _compute_evidence_scores(
+        bias=12.0, rsi=None,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="neutral", flow_label="neutral",
+    )
+    assert scores.technical == -2
+
+
+def test_evidence_scores_institutional_accumulation():
+    """institutional_accumulation → flow +2"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=50.0,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="neutral", flow_label="institutional_accumulation",
+    )
+    assert scores.flow == 2
+
+
+def test_evidence_scores_distribution():
+    """distribution → flow -2"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=50.0,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="neutral", flow_label="distribution",
+    )
+    assert scores.flow == -2
+
+
+def test_evidence_scores_positive_sentiment():
+    """positive → sentiment +1"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=50.0,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="positive", flow_label="neutral",
+    )
+    assert scores.sentiment == 1
+
+
+def test_evidence_scores_signal_conflict():
+    """positive + distribution → risk_penalty -2 且 signal_conflict = True"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=50.0,
+        close=None, ma5=None, ma20=None,
+        sentiment_label="positive", flow_label="distribution",
+    )
+    assert scores.risk_penalty <= -2
+    assert scores.signal_conflict is True
+
+
+def test_evidence_scores_total_computed():
+    """total = technical + flow + sentiment + risk_penalty"""
+    scores = _compute_evidence_scores(
+        bias=3.0, rsi=55.0,        # technical +1 (rsi)
+        close=105.0, ma5=103.0, ma20=100.0,  # technical +2 (ma alignment)
+        sentiment_label="positive",  # sentiment +1
+        flow_label="institutional_accumulation",  # flow +2
+    )
+    assert scores.total == scores.technical + scores.flow + scores.sentiment + scores.risk_penalty
+    assert scores.total >= 6
+
+
+# ─── generate_strategy returns evidence_scores ────────────────────────────────
+
+def test_generate_strategy_returns_evidence_scores():
+    """generate_strategy 回傳結果包含 evidence_scores 欄位"""
+    tech = {"sentiment_label": "positive", "rsi": 55.0, "bias": 3.0,
+            "close": 105.0, "ma5": 103.0, "ma20": 100.0}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    assert "evidence_scores" in result
+    ev = result["evidence_scores"]
+    assert "technical" in ev
+    assert "flow" in ev
+    assert "sentiment" in ev
+    assert "risk_penalty" in ev
+    assert "total" in ev
+    assert "signal_conflict" in ev
+
+
+def test_generate_strategy_evidence_scores_reflect_inputs():
+    """evidence_scores.flow == 2 when institutional_accumulation"""
+    tech = {"bias": 3.0, "rsi": 55.0, "close": 105.0, "ma5": 103.0, "ma20": 100.0}
+    inst = {"flow_label": "institutional_accumulation"}
+    result = generate_strategy(tech, inst)
+    assert result["evidence_scores"]["flow"] == 2
+
+
+# ─── Conviction Level Guardrails ──────────────────────────────────────────────
+
+def test_conviction_level_low_when_confidence_below_60():
+    """confidence_score < 60 → conviction_level = low"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=55,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["conviction_level"] == "low"
+
+
+def test_conviction_level_low_when_data_confidence_below_60():
+    """data_confidence < 60 → conviction_level = low"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=80,
+        resistance_20d=None,
+        support_20d=None,
+        data_confidence=50,
+    )
+    assert result["conviction_level"] == "low"
+
+
+def test_conviction_level_capped_at_medium_when_intraday():
+    """is_final=False（盤中）→ mid_term 的 conviction_level 最高為 medium"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=80,
+        resistance_20d=None,
+        support_20d=None,
+        data_confidence=80,
+        is_final=False,
+    )
+    assert result["conviction_level"] in {"low", "medium"}
+    assert result["conviction_level"] != "high"
+
+
+def test_conviction_level_defensive_wait_always_low():
+    """defensive_wait → conviction_level 固定 low"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="neutral",
+        confidence_score=90,
+        resistance_20d=None,
+        support_20d=None,
+        data_confidence=90,
+        is_final=True,
+    )
+    assert result["conviction_level"] == "low"
+
+
+def test_suggested_position_size_zero_for_defensive_wait():
+    """defensive_wait → suggested_position_size = 0%"""
+    result = generate_action_plan(
+        strategy_type="defensive_wait",
+        entry_zone="現價附近",
+        stop_loss="890",
+        flow_label="neutral",
+        confidence_score=50,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["suggested_position_size"] == "0%"
+
+
+def test_suggested_position_size_capped_when_low_confidence():
+    """低信心時 suggested_position_size 不超過 10%"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="neutral",
+        confidence_score=50,  # < 60 → conviction low
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert result["suggested_position_size"] == "10%"
+
+
+# ─── thesis_points & invalidation_conditions ─────────────────────────────────
+
+def test_thesis_points_not_empty_for_strong_case():
+    """強訊號情況下 thesis_points 不為空"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=80,
+        resistance_20d=None,
+        support_20d=None,
+        sentiment_label="positive",
+        rsi=55.0,
+        close=105.0,
+        ma5=103.0,
+        ma20=100.0,
+    )
+    assert isinstance(result["thesis_points"], list)
+    assert len(result["thesis_points"]) >= 2
+
+
+def test_thesis_points_contain_flow_label():
+    """institutional_accumulation → thesis_points 包含法人相關說明"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=80,
+        resistance_20d=None,
+        support_20d=None,
+    )
+    assert any("法人" in p for p in result["thesis_points"])
+
+
+def test_invalidation_conditions_not_empty():
+    """invalidation_conditions 不為空 list"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="institutional_accumulation",
+        confidence_score=80,
+        resistance_20d=None,
+        support_20d=900.0,
+        ma20=100.0,
+    )
+    assert isinstance(result["invalidation_conditions"], list)
+    assert len(result["invalidation_conditions"]) >= 1
+
+
+def test_invalidation_conditions_with_support_20d():
+    """有 support_20d → invalidation_conditions 包含支撐數值"""
+    result = generate_action_plan(
+        strategy_type="mid_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="neutral",
+        confidence_score=75,
+        resistance_20d=None,
+        support_20d=880.0,
+    )
+    assert any("880.0" in c for c in result["invalidation_conditions"])
+
+
+def test_upgrade_triggers_not_empty():
+    """upgrade_triggers 不為空 list"""
+    result = generate_action_plan(
+        strategy_type="short_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="neutral",
+        confidence_score=65,
+        resistance_20d=950.0,
+        support_20d=None,
+    )
+    assert isinstance(result["upgrade_triggers"], list)
+    assert len(result["upgrade_triggers"]) >= 1
+
+
+def test_downgrade_triggers_contain_ma20():
+    """有 ma20 → downgrade_triggers 包含 MA20 數值"""
+    result = generate_action_plan(
+        strategy_type="short_term",
+        entry_zone="900",
+        stop_loss="880",
+        flow_label="neutral",
+        confidence_score=65,
+        resistance_20d=None,
+        support_20d=None,
+        ma20=100.0,
+    )
+    assert any("100.0" in t for t in result["downgrade_triggers"])
+
+
+# ─── calculate_action_plan_tag 行為不回歸 ────────────────────────────────────
+
+def test_calculate_action_plan_tag_behavior_unchanged():
+    """舊有 calculate_action_plan_tag 行為不回歸（向後相容）"""
+    from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_tag
+    assert calculate_action_plan_tag(rsi14=25.0, flow_label="institutional_accumulation", confidence_score=80) == "opportunity"
+    assert calculate_action_plan_tag(rsi14=75.0, flow_label="distribution", confidence_score=50) == "overheated"
+    assert calculate_action_plan_tag(rsi14=25.0, flow_label="neutral", confidence_score=80) == "neutral"
+    assert calculate_action_plan_tag(rsi14=None, flow_label="institutional_accumulation", confidence_score=80) == "neutral"

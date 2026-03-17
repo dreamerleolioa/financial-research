@@ -60,12 +60,16 @@ def fetch_external_data_node(
     使用 asyncio.gather + run_in_executor 將兩個同步 fetcher 丟入 thread pool
     並行執行，不需修改底層 provider。
     """
+    # Skip guard：若 external data 已存在（前一輪 retry 已抓過），不重複呼叫外部 API
+    if state.get("institutional_flow") is not None and state.get("fundamental_data") is not None:
+        return {}
+
     symbol = state["symbol"]
     snapshot = state.get("snapshot") or {}
     current_price = float(snapshot.get("current_price") or 0)
 
     async def _run() -> tuple[dict[str, Any], dict[str, Any]]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=2) as pool:
             inst_future = loop.run_in_executor(pool, institutional_fetcher, symbol)
             fund_future = loop.run_in_executor(pool, fundamental_fetcher, symbol, current_price)
@@ -231,13 +235,14 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
     return updates
 
 
-def _derive_technical_signal(closes: list[float]) -> str:
+def _derive_technical_signal(closes: list[float], rsi: float | None = None) -> str:
     """由 close/ma5/ma20/RSI/BIAS 推導 technical_signal（多條件加權）。"""
     if len(closes) < 20:
         return "sideways"
     close = closes[-1]
     ma20 = calc_ma(closes, 20)
-    rsi = calc_rsi(closes, period=14)
+    if rsi is None:
+        rsi = calc_rsi(closes, period=14)
     bias = calc_bias(close, ma20) if ma20 is not None else None
 
     tech_score = derive_technical_score(closes, rsi=rsi, bias=bias)
@@ -281,7 +286,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
     if snapshot:
         raw_closes = snapshot.get("recent_closes", [])
         closes = [float(v) for v in raw_closes if v is not None]
-    technical_signal = _derive_technical_signal(closes)
+    technical_signal = _derive_technical_signal(closes, rsi=state.get("rsi14"))
 
     # DATE_UNKNOWN 旗標
     quality = state.get("cleaned_news_quality") or {}
@@ -506,7 +511,7 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     ma20: float | None = calc_ma(closes, 20)
     ma60: float | None = calc_ma(closes, 60)
     bias: float | None = calc_bias(close, ma20) if close is not None and ma20 is not None else None
-    rsi: float | None = calc_rsi(closes, period=14) if closes else None
+    rsi: float | None = state.get("rsi14")
 
     # 從 cleaned_news 取 sentiment_label
     cleaned_news = state.get("cleaned_news")
@@ -532,10 +537,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     strategy = generate_strategy(technical_context_data, inst_data)
 
     # 計算 action_plan_tag（燈號）：使用 state 中已計算的 rsi14 和 confidence_score
-    rsi14_val: float | None = state.get("rsi14")  # type: ignore[assignment]
     flow_label_for_tag: str | None = (inst_data or {}).get("flow_label") if inst_data else None
     action_plan_tag = calculate_action_plan_tag(
-        rsi14=rsi14_val,
+        rsi14=rsi,
         flow_label=flow_label_for_tag,
         confidence_score=state.get("confidence_score"),
     )
@@ -548,6 +552,14 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         confidence_score=state.get("confidence_score"),
         resistance_20d=state.get("resistance_20d"),
         support_20d=state.get("support_20d"),
+        data_confidence=state.get("data_confidence"),
+        is_final=state["is_final"],
+        rsi=rsi,
+        sentiment_label=sentiment_label,
+        bias=bias,
+        close=close,
+        ma5=ma5,
+        ma20=ma20,
     )
 
     updates: dict[str, Any] = {

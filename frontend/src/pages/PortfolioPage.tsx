@@ -1,32 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
-
-function getTaiwanTickSize(price: number): number {
-  if (price < 10) return 0.01;
-  if (price < 50) return 0.05;
-  if (price < 100) return 0.1;
-  if (price < 500) return 0.5;
-  if (price < 1000) return 1;
-  return 5;
-}
-
-function decimalPlaces(step: number): number {
-  const stepText = step.toString();
-  const dotIndex = stepText.indexOf(".");
-  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1;
-}
-
-function formatPrice(value: number | null | undefined, symbol?: string): string {
-  if (value == null || Number.isNaN(value)) return "—";
-  const symbolText = (symbol ?? "").toUpperCase();
-  const isTaiwanStock = symbolText.endsWith(".TW") || symbolText.endsWith(".TWO");
-  if (isTaiwanStock && value > 0) {
-    const tick = getTaiwanTickSize(value);
-    const normalized = Math.round((value + Number.EPSILON) / tick) * tick;
-    return normalized.toFixed(decimalPlaces(tick));
-  }
-  return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 6 }).format(value);
-}
+import { formatPrice } from "../lib/formatters";
+import { InsightText } from "../components/InsightText";
 
 interface PortfolioItem {
   id: number;
@@ -85,6 +60,7 @@ interface EditPortfolioModalProps {
 
 function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const [entryPrice, setEntryPrice] = useState(String(item.entry_price));
   const [quantity, setQuantity] = useState(String(item.quantity));
   const [entryDate, setEntryDate] = useState(item.entry_date);
@@ -129,7 +105,8 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
   return (
     <div
       ref={backdropRef}
-      onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
@@ -231,6 +208,7 @@ interface DeleteConfirmModalProps {
 
 function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -262,7 +240,8 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
   return (
     <div
       ref={backdropRef}
-      onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-sm rounded-2xl bg-card shadow-xl">
@@ -312,25 +291,6 @@ const ACTION_CONFIG = {
   Exit: { label: "出場", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800" },
 } as const;
 
-function InsightText({ text }: { text: string | null | undefined }) {
-  if (!text) return <p className="text-sm text-text-faint">—</p>;
-  const sentences = text
-    .split(/(?<=[。；！？：\n])/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (sentences.length <= 1)
-    return <p className="text-sm leading-relaxed text-text-secondary">{text}</p>;
-  return (
-    <div className="space-y-1.5">
-      {sentences.map((s, i) => (
-        <p key={i} className="text-sm leading-relaxed text-text-secondary">
-          {s}
-        </p>
-      ))}
-    </div>
-  );
-}
-
 interface AnalysisModalProps {
   item: PortfolioItem;
   result: PositionResult | null;
@@ -341,10 +301,16 @@ interface AnalysisModalProps {
 
 function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const pa = result?.position_analysis;
 
+  function handleBackdropMouseDown(e: React.MouseEvent) {
+    mouseDownOnBackdrop.current = e.target === backdropRef.current;
+  }
+
   function handleBackdropClick(e: React.MouseEvent) {
-    if (e.target === backdropRef.current) onClose();
+    if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+    mouseDownOnBackdrop.current = false;
   }
 
   useEffect(() => {
@@ -358,6 +324,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
   return (
     <div
       ref={backdropRef}
+      onMouseDown={handleBackdropMouseDown}
       onClick={handleBackdropClick}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
@@ -468,7 +435,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
               {result.analysis_detail?.final_verdict && (
                 <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-900 dark:bg-indigo-950">
                   <div className="mb-2 text-xs font-semibold text-indigo-700 dark:text-indigo-400">綜合研判</div>
-                  <InsightText text={result.analysis_detail.final_verdict} />
+                  <InsightText text={result.analysis_detail.final_verdict} emptyText="—" />
                 </article>
               )}
 
@@ -479,7 +446,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
               ].filter(({ content }) => content).map(({ label, content }) => (
                 <article key={label} className="rounded-xl border border-border bg-card p-4 shadow-sm">
                   <div className="mb-2 text-xs font-semibold text-text-muted">{label}</div>
-                  <InsightText text={content} />
+                  <InsightText text={content} emptyText="—" />
                 </article>
               ))}
 
@@ -497,7 +464,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [latestMap, setLatestMap] = useState<Record<number, HistoryEntry | null>>({});
+  const [latestMap, setLatestMap] = useState<Record<string, HistoryEntry | null>>({});
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -522,22 +489,16 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         const data: PortfolioItem[] = await res.json();
         setItems(data);
 
-        const entries = await Promise.all(
-          data.map(async (item) => {
-            try {
-              const r = await fetch(
-                `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=1`,
-                { headers: authHeaders() },
-              );
-              if (!r.ok) return [item.id, null] as const;
-              const body: { records: HistoryEntry[] } = await r.json();
-              return [item.id, body.records[0] ?? null] as const;
-            } catch {
-              return [item.id, null] as const;
-            }
-          }),
-        );
-        setLatestMap(Object.fromEntries(entries));
+        try {
+          const r = await fetch(
+            `${import.meta.env.VITE_API_URL}/portfolio/latest-history`,
+            { headers: authHeaders() },
+          );
+          if (r.ok) {
+            const latestData: Record<string, HistoryEntry | null> = await r.json();
+            setLatestMap(latestData);
+          }
+        } catch { /* ignore */ }
       } finally {
         setLoading(false);
       }
@@ -568,8 +529,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function openAnalysis(item: PortfolioItem) {
     setModalItem(item);
-    // If already fetched, just open the modal
-    if (analysisMap[item.id] !== undefined) return;
 
     setAnalysisLoading((prev) => ({ ...prev, [item.id]: true }));
     setAnalysisError((prev) => ({ ...prev, [item.id]: null }));
@@ -632,7 +591,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         </div>
 
         {items.map((item) => {
-          const latest = latestMap[item.id];
+          const latest = latestMap[String(item.id)];
           const history = historyMap[item.id];
           const isExpanded = expandedId === item.id;
           const isAnalyzing = analysisLoading[item.id];
@@ -769,7 +728,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                             ? ((closePrice - item.entry_price) / item.entry_price) * 100
                             : null;
                           return (
-                            <tr key={idx} className="text-text-secondary">
+                            <tr key={row.record_date} className="text-text-secondary">
                               <td className="py-1">{row.record_date}</td>
                               <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
                               <td className={`py-1 text-right font-mono text-xs ${plPct == null ? "text-text-faint" :

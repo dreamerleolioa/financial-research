@@ -118,3 +118,77 @@ def test_delete_portfolio_forbidden():
     client = _make_client_with_item(item, user_id=1)
     resp = client.delete("/portfolio/42")
     assert resp.status_code == 403
+
+
+# ── Task 2: GET /portfolio/latest-history ────────────────────
+
+def _make_latest_history_client(portfolios, log_rows) -> TestClient:
+    """Helper: 建立帶有 mock DB 的 TestClient，模擬 latest-history endpoint 的兩次 execute。"""
+    mock_user = MagicMock()
+    mock_user.id = 1
+
+    # 第一次 execute 回傳 portfolios，第二次回傳 log rows（subquery）
+    portfolios_result = MagicMock()
+    portfolios_result.all.return_value = portfolios
+
+    log_result = MagicMock()
+    log_result.mappings.return_value.all.return_value = log_rows
+
+    mock_db = MagicMock()
+    mock_db.execute.side_effect = [portfolios_result, log_result]
+
+    app = api.app
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides[get_db] = lambda: mock_db
+    return TestClient(app)
+
+
+def test_latest_history_returns_empty_when_no_portfolios():
+    """無 active 持倉時應回傳空 dict。"""
+    mock_user = MagicMock()
+    mock_user.id = 1
+
+    portfolios_result = MagicMock()
+    portfolios_result.all.return_value = []
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value = portfolios_result
+
+    app = api.app
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides[get_db] = lambda: mock_db
+    client = TestClient(app)
+
+    resp = client.get("/portfolio/latest-history")
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+
+def test_latest_history_returns_latest_per_portfolio():
+    """有持倉且有 log 時，應以 portfolio_id 為 key 回傳最新一筆。"""
+    from datetime import date
+
+    portfolio = MagicMock()
+    portfolio.id = 42
+    portfolio.symbol = "2330.TW"
+
+    log_row = {
+        "symbol": "2330.TW",
+        "record_date": date(2026, 3, 10),
+        "signal_confidence": 75.0,
+        "action_tag": "Trim",
+        "recommended_action": "部分獲利了結",
+        "indicators": None,
+        "final_verdict": None,
+        "prev_action_tag": "Hold",
+        "prev_confidence": 60.0,
+    }
+
+    client = _make_latest_history_client([portfolio], [log_row])
+    resp = client.get("/portfolio/latest-history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "42" in data
+    assert data["42"]["action_tag"] == "Trim"
+    assert data["42"]["record_date"] == "2026-03-10"
+    assert data["42"]["signal_confidence"] == 75.0

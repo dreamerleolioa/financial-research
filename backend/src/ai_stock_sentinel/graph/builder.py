@@ -82,15 +82,15 @@ def build_graph(
             return "clean"  # 超過上限，強制往下走
         if state["requires_news_refresh"]:
             return "fetch_news"
-        return "crawl"
+        return "increment_retry"
 
     graph.add_conditional_edges(
         "judge",
         _route,
         {
-            "clean": "clean",
-            "fetch_news": "fetch_news",
-            "crawl": "increment_retry",
+            "clean":           "clean",
+            "fetch_news":      "fetch_news",
+            "increment_retry": "increment_retry",
         },
     )
     graph.add_edge("fetch_news", "increment_retry")

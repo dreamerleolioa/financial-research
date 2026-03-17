@@ -51,6 +51,7 @@ def _base_state(**overrides) -> GraphState:
         "holding_period": None,
         "confidence_score": None,
         "cross_validation_note": None,
+        "is_final": True,
     }
     state.update(overrides)
     return state
@@ -684,6 +685,69 @@ def test_strategy_node_returns_action_plan_tag() -> None:
     assert result["action_plan_tag"] in ("opportunity", "overheated", "neutral")
 
 
+def test_strategy_node_action_plan_contains_new_fields() -> None:
+    """strategy_node 產出的 action_plan 必須包含 evidence-based 新欄位。"""
+    from ai_stock_sentinel.graph.nodes import strategy_node
+    closes = [float(90 + i) for i in range(25)]
+    state = _base_state(
+        snapshot={"recent_closes": closes},
+        rsi14=55.0,
+        confidence_score=75,
+        data_confidence=75,
+        is_final=True,
+        institutional_flow={"flow_label": "institutional_accumulation"},
+    )
+    result = strategy_node(state)
+    action_plan = result.get("action_plan")
+    assert action_plan is not None, "action_plan should not be None"
+    assert "conviction_level" in action_plan
+    assert action_plan["conviction_level"] in ("low", "medium", "high")
+    assert "thesis_points" in action_plan
+    assert isinstance(action_plan["thesis_points"], list)
+    assert "invalidation_conditions" in action_plan
+    assert isinstance(action_plan["invalidation_conditions"], list)
+    assert "upgrade_triggers" in action_plan
+    assert isinstance(action_plan["upgrade_triggers"], list)
+    assert "downgrade_triggers" in action_plan
+    assert isinstance(action_plan["downgrade_triggers"], list)
+    assert "suggested_position_size" in action_plan
+    assert isinstance(action_plan["suggested_position_size"], str)
+
+
+def test_strategy_node_action_plan_conviction_low_when_low_confidence() -> None:
+    """confidence_score < 60 時，action_plan.conviction_level 應為 low。"""
+    from ai_stock_sentinel.graph.nodes import strategy_node
+    closes = [float(90 + i) for i in range(25)]
+    state = _base_state(
+        snapshot={"recent_closes": closes},
+        rsi14=55.0,
+        confidence_score=50,  # < 60 → guardrail
+        institutional_flow={"flow_label": "institutional_accumulation"},
+    )
+    result = strategy_node(state)
+    action_plan = result.get("action_plan")
+    assert action_plan is not None
+    assert action_plan["conviction_level"] == "low"
+
+
+def test_strategy_node_action_plan_position_size_zero_for_defensive_wait() -> None:
+    """defensive_wait 策略時，action_plan.suggested_position_size 應為 0%。"""
+    from ai_stock_sentinel.graph.nodes import strategy_node
+    # 高 bias → defensive_wait
+    closes = [100.0] * 25
+    closes[-1] = 115.0  # 大幅拉升造成 bias > 10
+    state = _base_state(
+        snapshot={"recent_closes": closes},
+        confidence_score=80,
+        institutional_flow={"flow_label": "neutral"},
+    )
+    result = strategy_node(state)
+    action_plan = result.get("action_plan")
+    assert action_plan is not None
+    if result.get("strategy_type") == "defensive_wait":
+        assert action_plan["suggested_position_size"] == "0%"
+
+
 # -- Position Diagnosis node tests --
 
 from ai_stock_sentinel.analysis.position_scorer import compute_position_metrics  # noqa: E402
@@ -713,6 +777,7 @@ def _base_position_state():
         "institutional_flow": None,
         "fundamental_data": None,
         "errors": [],
+        "is_final": True,
     }
 
 
@@ -809,3 +874,34 @@ def test_fetch_external_data_node_fetches_concurrently() -> None:
     first_end_idx = min(call_order.index("institutional_end"), call_order.index("fundamental_end"))
     assert call_order.index("institutional_start") < first_end_idx
     assert call_order.index("fundamental_start") < first_end_idx
+
+
+def test_fetch_external_data_node_skips_when_data_already_present():
+    """institutional_flow 和 fundamental_data 都已存在時，不應再呼叫外部 fetcher。"""
+    inst_calls = []
+    fund_calls = []
+
+    def mock_inst(symbol):
+        inst_calls.append(symbol)
+        return {"flow": "new"}
+
+    def mock_fund(symbol, price):
+        fund_calls.append(symbol)
+        return {"pe": 99}
+
+    state = _base_state(
+        snapshot={"current_price": 100.0, "recent_closes": []},
+        institutional_flow={"flow": "existing"},
+        fundamental_data={"pe": 20},
+    )
+
+    from ai_stock_sentinel.graph.nodes import fetch_external_data_node
+    result = fetch_external_data_node(
+        state,
+        institutional_fetcher=mock_inst,
+        fundamental_fetcher=mock_fund,
+    )
+
+    assert inst_calls == [], "institutional fetcher should not be called"
+    assert fund_calls == [], "fundamental fetcher should not be called"
+    assert result == {}

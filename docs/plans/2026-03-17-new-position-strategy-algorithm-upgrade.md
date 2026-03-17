@@ -132,7 +132,7 @@
 
 ```json
 {
-  "action": "分批佈局（首筆 20%）",
+  "action": "分批佈局（首筆 10-20%）",
   "conviction_level": "medium",
   "thesis_points": ["法人籌碼偏多", "均線仍維持多頭排列", "新聞情緒偏正向"],
   "upgrade_triggers": ["突破近 20 日壓力", "量能同步放大"],

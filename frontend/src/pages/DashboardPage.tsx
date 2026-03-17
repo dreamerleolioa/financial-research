@@ -126,7 +126,7 @@ export default function DashboardPage() {
                     )}
                     {delta && (
                       <span
-                        className={`text-xs ${Number(delta) > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}
+                        className={`text-xs ${Number(delta) > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}
                       >
                         ({Number(delta) > 0 ? "+" : ""}
                         {delta} 分)

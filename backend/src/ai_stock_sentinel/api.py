@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
 from datetime import date as _date, datetime, time as _time, timezone as _timezone
 from zoneinfo import ZoneInfo
@@ -39,8 +40,8 @@ class AnalyzeRequest(BaseModel):
 
 
 class PositionAnalyzeRequest(BaseModel):
-    symbol: str
-    entry_price: float
+    symbol: str = Field(min_length=1, max_length=20)
+    entry_price: float = Field(gt=0)
     entry_date: str | None = None
     quantity: int | None = None
 
@@ -350,10 +351,14 @@ def _build_response_from_cache(
     否則 fallback 到精簡欄位（舊資料相容）。
     """
     if full_result:
-        resp = AnalyzeResponse(**full_result)
-        resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
-        resp.intraday_disclaimer = hit.intraday_disclaimer
-        return resp
+        try:
+            resp = AnalyzeResponse.model_validate(full_result)
+            resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
+            resp.intraday_disclaimer = hit.intraday_disclaimer
+            return resp
+        except Exception:
+            # Schema drift — fallback to sparse fields from cache metadata
+            pass
     return AnalyzeResponse(
         snapshot={},
         analysis=hit.final_verdict or "",
@@ -365,7 +370,9 @@ def _build_response_from_cache(
 
 
 def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
-    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
+    if not INTERNAL_API_KEY:
+        raise HTTPException(status_code=503, detail="Internal API key not configured")
+    if x_internal_api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid internal API key")
 
 
@@ -374,26 +381,31 @@ class FetchRawDataRequest(BaseModel):
     date: str = "today"
 
 
-def get_graph():
+# ─── Graph Singleton ─────────────────────────────────────────
+def _build_graph_singleton():
     crawler, analyzer, rss_client, news_cleaner = build_graph_deps()
     return build_graph(crawler=crawler, analyzer=analyzer, rss_client=rss_client, news_cleaner=news_cleaner)
 
+_graph = _build_graph_singleton()
 
-app = FastAPI(title="AI Stock Sentinel API", version="v1")
+def get_graph():
+    return _graph
 
 
-@app.on_event("startup")
-def run_migrations() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     import logging
-
     from alembic import command
     from alembic.config import Config
-
     try:
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
     except Exception as exc:
         logging.getLogger(__name__).error("Alembic migration failed: %s", exc, exc_info=True)
+    yield
+
+
+app = FastAPI(title="AI Stock Sentinel API", version="v1", lifespan=lifespan)
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]
@@ -582,6 +594,7 @@ def analyze(
         "fundamental_data": None,
         "fundamental_context": None,
         "prev_context": prev_context,
+        "is_final": now_time >= MARKET_CLOSE,
     }
 
     try:
@@ -843,6 +856,7 @@ def analyze_position(
         "recommended_action": None,
         "exit_reason": None,
         "prev_context": prev_context,
+        "is_final": now_time >= MARKET_CLOSE,
     }
 
     try:
