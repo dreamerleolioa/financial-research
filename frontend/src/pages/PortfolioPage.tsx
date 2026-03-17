@@ -711,7 +711,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border-subtle">
-                        {history.map((row, idx) => {
+                        {history.map((row) => {
                           const action = row.recommended_action;
                           const actionColor =
                             action === "Exit" ? "text-red-600 font-semibold" :
