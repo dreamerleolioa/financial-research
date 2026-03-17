@@ -51,7 +51,7 @@ class DailyAnalysisLog(Base):
     final_verdict:      Mapped[str | None]   = mapped_column(Text, nullable=True)
     prev_action_tag:    Mapped[str | None]   = mapped_column(String(20), nullable=True)
     prev_confidence:    Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
-    is_final:           Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    analysis_is_final:  Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -63,13 +63,14 @@ class StockRawData(Base):
         Index("idx_raw_institutional_gin", "institutional", postgresql_using="gin"),
     )
 
-    id:            Mapped[int]          = mapped_column(Integer, primary_key=True)
-    symbol:        Mapped[str]          = mapped_column(String(20), nullable=False)
-    record_date:   Mapped[date]         = mapped_column(Date, nullable=False)
-    technical:     Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
-    institutional: Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
-    fundamental:   Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
-    fetched_at:    Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    id:                 Mapped[int]          = mapped_column(Integer, primary_key=True)
+    symbol:             Mapped[str]          = mapped_column(String(20), nullable=False)
+    record_date:        Mapped[date]         = mapped_column(Date, nullable=False)
+    technical:          Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
+    institutional:      Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
+    fundamental:        Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
+    raw_data_is_final:  Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    fetched_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class StockAnalysisCache(Base):
@@ -89,7 +90,7 @@ class StockAnalysisCache(Base):
     final_verdict:      Mapped[str | None]   = mapped_column(Text, nullable=True)
     prev_action_tag:    Mapped[str | None]   = mapped_column(String(20), nullable=True)
     prev_confidence:    Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
-    is_final:           Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    analysis_is_final:  Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     full_result:        Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
     updated_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

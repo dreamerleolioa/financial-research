@@ -94,9 +94,9 @@ def _compute_indicators_from_history(history) -> dict:
 
 
 def backfill_yesterday_indicators(db: Session, symbol: str) -> None:
-    """若昨日快取為盤中未定稿（is_final=False），補抓收盤指標並更新。
+    """若昨日快取為盤中未定稿（analysis_is_final=False），補抓收盤指標並更新。
 
-    只更新 indicators 與 is_final，不動 action_tag/final_verdict。
+    只更新 indicators 與 analysis_is_final，不動 action_tag/final_verdict。
     """
     yesterday = date.today() - timedelta(days=1)
     row = db.execute(
@@ -106,7 +106,7 @@ def backfill_yesterday_indicators(db: Session, symbol: str) -> None:
         )
     ).scalar_one_or_none()
 
-    if row is None or row.is_final:
+    if row is None or row.analysis_is_final:
         return
 
     try:
@@ -127,9 +127,9 @@ def backfill_yesterday_indicators(db: Session, symbol: str) -> None:
     db.execute(
         text("""
             UPDATE stock_analysis_cache
-            SET indicators = CAST(:indicators AS jsonb),
-                is_final   = TRUE,
-                updated_at = NOW()
+            SET indicators        = CAST(:indicators AS jsonb),
+                analysis_is_final = TRUE,
+                updated_at        = NOW()
             WHERE symbol      = :symbol
               AND record_date = :record_date
         """),

@@ -68,10 +68,10 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
               y1={toY(y)}
               x2={W - PAD.right}
               y2={toY(y)}
-              stroke="#e2e8f0"
+              stroke="var(--color-border)"
               strokeWidth={1}
             />
-            <text x={PAD.left - 6} y={toY(y) + 4} textAnchor="end" fontSize={10} fill="#94a3b8">
+            <text x={PAD.left - 6} y={toY(y) + 4} textAnchor="end" fontSize={10} fill="var(--color-text-faint)">
               {y}
             </text>
           </g>
@@ -125,7 +125,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
               )}
               {/* 日期標籤（每隔 5 點顯示一個） */}
               {i % 5 === 0 && (
-                <text x={x} y={H - PAD.bottom + 14} textAnchor="middle" fontSize={9} fill="#94a3b8">
+                <text x={x} y={H - PAD.bottom + 14} textAnchor="middle" fontSize={9} fill="var(--color-text-faint)">
                   {d.date.slice(5)} {/* MM-DD */}
                 </text>
               )}
@@ -135,7 +135,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
       </svg>
 
       {/* 圖例 */}
-      <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
+      <div className="mt-2 flex flex-wrap gap-3 text-xs text-text-secondary">
         {Object.entries(ACTION_LABEL).map(([tag, label]) => (
           <span key={tag} className="flex items-center gap-1">
             <span
@@ -145,7 +145,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
             {label}
           </span>
         ))}
-        <span className="flex items-center gap-1 text-slate-400">
+        <span className="flex items-center gap-1 text-text-muted">
           <span className="inline-block h-px w-4 border-t border-dashed border-slate-400" />
           訊號轉向
         </span>
