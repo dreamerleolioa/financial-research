@@ -9,6 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
 from ai_stock_sentinel.db.models import UserPortfolio
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.user_models.user import User
@@ -68,6 +69,12 @@ def add_portfolio(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"最多只能追蹤 {PORTFOLIO_LIMIT} 筆持股",
+        )
+
+    if not check_symbol_exists(payload.symbol):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"查詢目標不存在：{payload.symbol}",
         )
 
     entry = UserPortfolio(

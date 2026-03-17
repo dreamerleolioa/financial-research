@@ -23,7 +23,7 @@ from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
-from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
+from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
 from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
@@ -422,9 +422,7 @@ def health() -> dict[str, str]:
 
 def _check_symbol_exists(symbol: str) -> None:
     """yfinance 輕量驗證：代號無效時拋 HTTP 404，避免跑 LLM。"""
-    import yfinance as yf
-    hist = yf.Ticker(symbol).history(period="5d", interval="1d")
-    if hist.empty or hist["Close"].dropna().empty:
+    if not check_symbol_exists(symbol):
         raise HTTPException(status_code=404, detail=f"查詢目標不存在：{symbol}")
 
 
