@@ -734,7 +734,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                             ? ((closePrice - item.entry_price) / item.entry_price) * 100
                             : null;
                           return (
-                            <tr key={idx} className="text-text-secondary">
+                            <tr key={row.record_date} className="text-text-secondary">
                               <td className="py-1">{row.record_date}</td>
                               <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
                               <td className={`py-1 text-right font-mono text-xs ${plPct == null ? "text-text-faint" :
