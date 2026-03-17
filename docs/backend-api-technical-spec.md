@@ -116,10 +116,17 @@ make run-api
   },
   "sentiment_label": "positive",
   "action_plan": {
-    "action": "分批買進",
+    "action": "分批佈局（首筆 20-30%）",
     "target_zone": "900.0–915.0（support_20d ~ MA20）",
     "defense_line": "880.5（近20日低點×0.97）或跌破 MA60",
-    "momentum_expectation": "法人持續買超，技術面健康，動能延續"
+    "momentum_expectation": "強（法人集結中）；若突破 950.0 壓力則動能轉強",
+    "breakeven_note": "當帳面獲利達 5% 時，建議停損位上移至入場成本價",
+    "conviction_level": "high",
+    "thesis_points": ["法人籌碼偏多（持續吸籌）", "均線維持多頭排列（close > MA5 > MA20）", "新聞情緒偏正向"],
+    "upgrade_triggers": ["突破近 20 日壓力（950.0）且量能同步放大"],
+    "downgrade_triggers": ["跌破 MA20（915.0）", "法人轉賣超（出貨訊號出現）"],
+    "invalidation_conditions": ["跌破近 20 日支撐（900.0）", "RSI 快速轉弱且價格失守 MA20（915.0）", "法人由買超轉為持續賣超"],
+    "suggested_position_size": "20-30%"
   },
   "data_sources": ["google-news-rss", "yfinance", "twse-openapi"],
   "institutional_flow_label": "institutional_accumulation",
@@ -151,7 +158,7 @@ make run-api
   | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                    |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位） |
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                   |
-  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation`）；不表示持股中的出場/減碼指令                                                                             |
+  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令                                                                             |
   | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                        |
   | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                    |
   | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                  |

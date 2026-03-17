@@ -771,22 +771,48 @@ def calculate_action_plan_tag(
 - 🔵 `neutral`：其餘情況
 - 此函式為純 rule-based Python，**不呼叫 LLM**；建議放在 `analysis/strategy_generator.py`
 
-**`generate_action_plan()` 實作規範**：
+**`generate_action_plan()` 實作規範**（v2.8 evidence-based 升級）：
 
 - 獨立於 `generate_strategy()` 的 rule-based 函式，輸出 `action_plan` dict
-- 輸入：`strategy_type`、`entry_zone`、`stop_loss`、`flow_label`、`confidence_score`、`resistance_20d`（optional）、`support_20d`（optional）
-- 輸出：`{ action, target_zone, defense_line, momentum_expectation, breakeven_note }`
-- `action` 帶部位比例：
-  - `defensive_wait` → `"觀望（待訊號明確再試單）"`
-  - `mid_term` → `"分批佈局（首筆 30%）"`
-  - `short_term` → `"短線進場（首筆 50%，確認站穩再加碼）"`
-- `breakeven_note`：`mid_term` → `"當帳面獲利達 5% 時，建議停損位上移至入場成本價"`；其餘 `None`
+- 輸入：`strategy_type`、`entry_zone`、`stop_loss`、`flow_label`、`confidence_score`、`resistance_20d`（optional）、`support_20d`（optional）、`data_confidence`（optional）、`is_final`（optional，預設 `True`）、`evidence_scores`（optional）、`rsi`（optional）、`sentiment_label`（optional）、`bias`（optional）、`close` / `ma5` / `ma20`（optional）
+- 輸出欄位：
+  - `action`：帶部位比例（依 `strategy_type` + `conviction_level`）
+  - `target_zone`：入場區間
+  - `defense_line`：停損條件
+  - `momentum_expectation`：動能預期（含 If-Then 觸發邏輯）
+  - `breakeven_note`：保本提示（`mid_term` 才有）
+  - `conviction_level`：`low` / `medium` / `high`（含 guardrails）
+  - `thesis_points`：`string[]`，2–4 條主要支持理由
+  - `upgrade_triggers`：`string[]`，何時可升級積極度
+  - `downgrade_triggers`：`string[]`，何時需轉保守
+  - `invalidation_conditions`：`string[]`，原判斷失效條件
+  - `suggested_position_size`：建議首筆部位（`0%` / `10%` / `10-20%` / `20-30%`）
+- **Guardrails（安全降級）**：
+  - `confidence_score < 60` → `conviction_level` 不得高於 `low`
+  - `data_confidence < 60` → `conviction_level` 不得高於 `low`
+  - `is_final = False`（盤中）→ `conviction_level` 最高為 `medium`
+  - `defensive_wait` → `conviction_level` 固定 `low`、`suggested_position_size = "0%"`
 - `momentum_expectation` If-Then 觸發邏輯：
   - `institutional_accumulation` + `resistance_20d` → 附加「若突破 XXX 壓力則動能轉強」
   - `distribution` + `support_20d` → 附加「若跌破 XXX 支撐則轉向 Bearish」
   - `neutral` + 兩個價位 → 附加突破/跌破雙向提示
   - 無價位資料（`None`）時維持基本標籤（向後相容）
-- **不呼叫 LLM**；建議放在 `analysis/strategy_generator.py`
+- **不呼叫 LLM**；實作位於 `analysis/strategy_generator.py`
+
+**`generate_strategy()` Evidence-Based Scoring（v2.8 升級）**：
+
+- 使用 `_compute_evidence_scores()` 計算四組證據分數再決定 `strategy_type`，取代原單一條件優先序
+- 四組分數：
+  - `technical`：MA 排列、RSI 健康/超賣區間、bias 過熱懲罰
+  - `flow`：法人吸籌(+2)、出貨(-2)、中性(0)
+  - `sentiment`：positive(+1)、negative(-1)
+  - `risk_penalty`：訊號衝突(-2)、bias 過熱追加懲罰
+- `strategy_type` 映射：
+  - `signal_conflict = True` 或 `bias > 10` → `defensive_wait`（hard rule 優先）
+  - `total >= 4` + `flow > 0` + 均線多頭排列 → `mid_term`
+  - `positive + rsi < 30` 或 `total >= 2` → `short_term`
+  - 其餘 → `defensive_wait`
+- 回傳結果新增 `evidence_scores` 欄位（`dict`），供除錯與前端選用
 
 ---
 
