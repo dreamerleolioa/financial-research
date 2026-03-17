@@ -231,13 +231,14 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
     return updates
 
 
-def _derive_technical_signal(closes: list[float]) -> str:
+def _derive_technical_signal(closes: list[float], rsi: float | None = None) -> str:
     """由 close/ma5/ma20/RSI/BIAS 推導 technical_signal（多條件加權）。"""
     if len(closes) < 20:
         return "sideways"
     close = closes[-1]
     ma20 = calc_ma(closes, 20)
-    rsi = calc_rsi(closes, period=14)
+    if rsi is None:
+        rsi = calc_rsi(closes, period=14)
     bias = calc_bias(close, ma20) if ma20 is not None else None
 
     tech_score = derive_technical_score(closes, rsi=rsi, bias=bias)
@@ -281,7 +282,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
     if snapshot:
         raw_closes = snapshot.get("recent_closes", [])
         closes = [float(v) for v in raw_closes if v is not None]
-    technical_signal = _derive_technical_signal(closes)
+    technical_signal = _derive_technical_signal(closes, rsi=state.get("rsi14"))
 
     # DATE_UNKNOWN 旗標
     quality = state.get("cleaned_news_quality") or {}
@@ -506,7 +507,7 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     ma20: float | None = calc_ma(closes, 20)
     ma60: float | None = calc_ma(closes, 60)
     bias: float | None = calc_bias(close, ma20) if close is not None and ma20 is not None else None
-    rsi: float | None = calc_rsi(closes, period=14) if closes else None
+    rsi: float | None = state.get("rsi14")
 
     # 從 cleaned_news 取 sentiment_label
     cleaned_news = state.get("cleaned_news")
