@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
 from datetime import date as _date, datetime, time as _time, timezone as _timezone
 from zoneinfo import ZoneInfo
@@ -391,21 +392,20 @@ def get_graph():
     return _graph
 
 
-app = FastAPI(title="AI Stock Sentinel API", version="v1")
-
-
-@app.on_event("startup")
-def run_migrations() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     import logging
-
     from alembic import command
     from alembic.config import Config
-
     try:
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
     except Exception as exc:
         logging.getLogger(__name__).error("Alembic migration failed: %s", exc, exc_info=True)
+    yield
+
+
+app = FastAPI(title="AI Stock Sentinel API", version="v1", lifespan=lifespan)
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]
