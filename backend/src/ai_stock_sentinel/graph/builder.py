@@ -27,14 +27,12 @@ def build_graph(
     fundamental_fetcher: Callable[[str, float], dict[str, Any]] | None = None,
     max_retries: int = MAX_RETRIES,
     _force_insufficient: bool = False,
-    _force_fundamental_update: bool = False,
 ):
     """組裝並編譯 LangGraph 狀態機。
 
     rss_client: 提供 RSS 新聞抓取；若為 None 則自動建立預設實例。
     news_cleaner: 提供新聞清潔；若為 None 則自動建立預設實例。
     _force_insufficient: 測試用，強制讓 judge 永遠回傳 insufficient。
-    _force_fundamental_update: 測試用，讓 judge 第一次回傳 requires_fundamental_update=True，之後正常。
     """
     _rss_client = rss_client or RssNewsClient()
     _news_cleaner = news_cleaner or FinancialNewsCleaner()
@@ -58,17 +56,10 @@ def build_graph(
     graph.add_node("fetch_news", partial(fetch_news_node, rss_client=_rss_client))
     graph.add_node("strategy", strategy_node)
 
-    _fundamental_update_triggered = [False]
-
     def _judge(state: GraphState) -> dict[str, Any]:
         """呼叫 judge_node；若 _force_insufficient=True 則永遠回傳 insufficient（測試用）。"""
         if _force_insufficient:
             return {"data_sufficient": False}
-        if _force_fundamental_update:
-            if not _fundamental_update_triggered[0]:
-                _fundamental_update_triggered[0] = True
-                return {"data_sufficient": False, "requires_fundamental_update": True}
-            return {"data_sufficient": True}
         return judge_node(state)
 
     graph.add_node("judge", _judge)
@@ -89,8 +80,6 @@ def build_graph(
             return "clean"
         if state["retry_count"] >= max_retries:
             return "clean"  # 超過上限，強制往下走
-        if state.get("requires_fundamental_update") and state.get("snapshot") is not None:
-            return "fetch_external_data"  # snapshot 已有，只重抓 external data
         if state["requires_news_refresh"]:
             return "fetch_news"
         return "increment_retry"
@@ -99,10 +88,9 @@ def build_graph(
         "judge",
         _route,
         {
-            "clean":               "clean",
-            "fetch_news":          "fetch_news",
-            "fetch_external_data": "fetch_external_data",
-            "increment_retry":     "increment_retry",
+            "clean":           "clean",
+            "fetch_news":      "fetch_news",
+            "increment_retry": "increment_retry",
         },
     )
     graph.add_edge("fetch_news", "increment_retry")

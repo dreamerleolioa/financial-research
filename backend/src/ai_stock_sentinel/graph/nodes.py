@@ -537,10 +537,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     strategy = generate_strategy(technical_context_data, inst_data)
 
     # 計算 action_plan_tag（燈號）：使用 state 中已計算的 rsi14 和 confidence_score
-    rsi14_val: float | None = state.get("rsi14")  # type: ignore[assignment]
     flow_label_for_tag: str | None = (inst_data or {}).get("flow_label") if inst_data else None
     action_plan_tag = calculate_action_plan_tag(
-        rsi14=rsi14_val,
+        rsi14=rsi,
         flow_label=flow_label_for_tag,
         confidence_score=state.get("confidence_score"),
     )

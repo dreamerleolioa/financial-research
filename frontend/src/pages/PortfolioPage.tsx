@@ -464,7 +464,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [latestMap, setLatestMap] = useState<Record<number, HistoryEntry | null>>({});
+  const [latestMap, setLatestMap] = useState<Record<string, HistoryEntry | null>>({});
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -495,7 +495,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
             { headers: authHeaders() },
           );
           if (r.ok) {
-            const latestData: Record<number, HistoryEntry | null> = await r.json();
+            const latestData: Record<string, HistoryEntry | null> = await r.json();
             setLatestMap(latestData);
           }
         } catch { /* ignore */ }
@@ -591,7 +591,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         </div>
 
         {items.map((item) => {
-          const latest = latestMap[item.id];
+          const latest = latestMap[String(item.id)];
           const history = historyMap[item.id];
           const isExpanded = expandedId === item.id;
           const isAnalyzing = analysisLoading[item.id];
