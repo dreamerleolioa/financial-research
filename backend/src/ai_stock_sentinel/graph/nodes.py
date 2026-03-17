@@ -65,7 +65,7 @@ def fetch_external_data_node(
     current_price = float(snapshot.get("current_price") or 0)
 
     async def _run() -> tuple[dict[str, Any], dict[str, Any]]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=2) as pool:
             inst_future = loop.run_in_executor(pool, institutional_fetcher, symbol)
             fund_future = loop.run_in_executor(pool, fundamental_fetcher, symbol, current_price)
