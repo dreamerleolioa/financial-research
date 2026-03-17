@@ -1,5 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
+import { formatPrice, formatVolume } from "../lib/formatters";
+import { InsightText } from "../components/InsightText";
 
 interface ErrorDetail {
   code: string;
@@ -136,57 +138,11 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
   low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
-function formatVolume(value: unknown): string {
-  if (typeof value !== "number" || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat("zh-TW").format(value);
-}
-
-function getTaiwanTickSize(price: number): number {
-  if (price < 10) return 0.01;
-  if (price < 50) return 0.05;
-  if (price < 100) return 0.1;
-  if (price < 500) return 0.5;
-  if (price < 1000) return 1;
-  return 5;
-}
-
-function decimalPlaces(step: number): number {
-  const stepText = step.toString();
-  const dotIndex = stepText.indexOf(".");
-  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1;
-}
-
-function formatPrice(value: unknown, symbol?: unknown): string {
-  if (typeof value !== "number" || Number.isNaN(value)) return "—";
-  const symbolText = typeof symbol === "string" ? symbol.toUpperCase() : "";
-  const isTaiwanStock = symbolText.endsWith(".TW") || symbolText.endsWith(".TWO");
-  if (isTaiwanStock && value > 0) {
-    const tick = getTaiwanTickSize(value);
-    const normalized = Math.round((value + Number.EPSILON) / tick) * tick;
-    return normalized.toFixed(decimalPlaces(tick));
-  }
-  return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 6 }).format(value);
-}
-
 function mapVolumeSource(value: unknown): string {
   if (value === "realtime") return "即時成交量";
   if (value === "history_fallback") return "歷史資料回填";
   if (value === "unavailable") return "暫無資料";
   return "未知來源";
-}
-
-function InsightText({ text }: { text: string | null | undefined }) {
-  if (!text) return <p className="text-sm text-text-faint">請先執行分析。</p>;
-  const sentences = text.split(/(?<=[。；！？：\n])/).map((s) => s.trim()).filter(Boolean);
-  if (sentences.length <= 1)
-    return <p className="text-sm leading-relaxed text-text-secondary">{text}</p>;
-  return (
-    <div className="space-y-1.5">
-      {sentences.map((s, i) => (
-        <p key={i} className="text-sm leading-relaxed text-text-secondary">{s}</p>
-      ))}
-    </div>
-  );
 }
 
 export default function AnalyzePage() {

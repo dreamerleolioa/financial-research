@@ -1,32 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
-
-function getTaiwanTickSize(price: number): number {
-  if (price < 10) return 0.01;
-  if (price < 50) return 0.05;
-  if (price < 100) return 0.1;
-  if (price < 500) return 0.5;
-  if (price < 1000) return 1;
-  return 5;
-}
-
-function decimalPlaces(step: number): number {
-  const stepText = step.toString();
-  const dotIndex = stepText.indexOf(".");
-  return dotIndex === -1 ? 0 : stepText.length - dotIndex - 1;
-}
-
-function formatPrice(value: number | null | undefined, symbol?: string): string {
-  if (value == null || Number.isNaN(value)) return "—";
-  const symbolText = (symbol ?? "").toUpperCase();
-  const isTaiwanStock = symbolText.endsWith(".TW") || symbolText.endsWith(".TWO");
-  if (isTaiwanStock && value > 0) {
-    const tick = getTaiwanTickSize(value);
-    const normalized = Math.round((value + Number.EPSILON) / tick) * tick;
-    return normalized.toFixed(decimalPlaces(tick));
-  }
-  return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 6 }).format(value);
-}
+import { formatPrice } from "../lib/formatters";
+import { InsightText } from "../components/InsightText";
 
 interface PortfolioItem {
   id: number;
@@ -316,25 +291,6 @@ const ACTION_CONFIG = {
   Exit: { label: "出場", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800" },
 } as const;
 
-function InsightText({ text }: { text: string | null | undefined }) {
-  if (!text) return <p className="text-sm text-text-faint">—</p>;
-  const sentences = text
-    .split(/(?<=[。；！？：\n])/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (sentences.length <= 1)
-    return <p className="text-sm leading-relaxed text-text-secondary">{text}</p>;
-  return (
-    <div className="space-y-1.5">
-      {sentences.map((s, i) => (
-        <p key={i} className="text-sm leading-relaxed text-text-secondary">
-          {s}
-        </p>
-      ))}
-    </div>
-  );
-}
-
 interface AnalysisModalProps {
   item: PortfolioItem;
   result: PositionResult | null;
@@ -479,7 +435,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
               {result.analysis_detail?.final_verdict && (
                 <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-900 dark:bg-indigo-950">
                   <div className="mb-2 text-xs font-semibold text-indigo-700 dark:text-indigo-400">綜合研判</div>
-                  <InsightText text={result.analysis_detail.final_verdict} />
+                  <InsightText text={result.analysis_detail.final_verdict} emptyText="—" />
                 </article>
               )}
 
@@ -490,7 +446,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
               ].filter(({ content }) => content).map(({ label, content }) => (
                 <article key={label} className="rounded-xl border border-border bg-card p-4 shadow-sm">
                   <div className="mb-2 text-xs font-semibold text-text-muted">{label}</div>
-                  <InsightText text={content} />
+                  <InsightText text={content} emptyText="—" />
                 </article>
               ))}
 
