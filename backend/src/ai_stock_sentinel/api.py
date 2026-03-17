@@ -616,6 +616,7 @@ def analyze(
         technical=result.get("snapshot"),
         institutional=result.get("institutional_flow"),
         fundamental=result.get("fundamental_data"),
+        raw_data_is_final=is_final,
     )
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
@@ -657,6 +658,7 @@ def fetch_raw_data_endpoint(
         technical=technical,
         institutional=institutional,
         fundamental=fundamental,
+        raw_data_is_final=True,
     )
     return {"status": "ok", "symbol": payload.symbol, "record_date": record_date.isoformat()}
 
@@ -668,6 +670,7 @@ def fetch_and_store_raw_data(
     technical: dict | None,
     institutional: dict | None,
     fundamental: dict | None,
+    raw_data_is_final: bool = False,
 ) -> None:
     """將 graph result 的原始資料 UPSERT 至 stock_raw_data（今日）。
 
@@ -681,25 +684,28 @@ def fetch_and_store_raw_data(
     db.execute(
         text("""
             INSERT INTO stock_raw_data (
-                symbol, record_date, technical, institutional, fundamental, fetched_at
+                symbol, record_date, technical, institutional, fundamental, raw_data_is_final, fetched_at
             ) VALUES (
                 :symbol, CURRENT_DATE,
                 CAST(:technical AS jsonb),
                 CAST(:institutional AS jsonb),
                 CAST(:fundamental AS jsonb),
+                :raw_data_is_final,
                 NOW()
             )
             ON CONFLICT (symbol, record_date) DO UPDATE SET
-                technical     = EXCLUDED.technical,
-                institutional = EXCLUDED.institutional,
-                fundamental   = EXCLUDED.fundamental,
-                fetched_at    = NOW()
+                technical         = EXCLUDED.technical,
+                institutional     = EXCLUDED.institutional,
+                fundamental       = EXCLUDED.fundamental,
+                raw_data_is_final = EXCLUDED.raw_data_is_final,
+                fetched_at        = NOW()
         """),
         {
-            "symbol":        symbol,
-            "technical":     json.dumps(technical or {}),
-            "institutional": json.dumps(institutional or {}),
-            "fundamental":   json.dumps(fundamental or {}),
+            "symbol":             symbol,
+            "technical":          json.dumps(technical or {}),
+            "institutional":      json.dumps(institutional or {}),
+            "fundamental":        json.dumps(fundamental or {}),
+            "raw_data_is_final":  raw_data_is_final,
         }
     )
     db.commit()
@@ -868,6 +874,7 @@ def analyze_position(
         technical=result.get("snapshot"),
         institutional=result.get("institutional_flow"),
         fundamental=result.get("fundamental_data"),
+        raw_data_is_final=is_final,
     )
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
