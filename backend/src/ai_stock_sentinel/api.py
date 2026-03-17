@@ -639,8 +639,11 @@ def fetch_raw_data_endpoint(
     record_date = _date_type.today() if payload.date == "today" else _date_type.fromisoformat(payload.date)
 
     crawler = YFinanceCrawler()
-    snapshot = crawler.fetch_basic_snapshot(payload.symbol)
-    technical = _asdict(snapshot) if is_dataclass(snapshot) else dict(snapshot)
+    try:
+        snapshot = crawler.fetch_basic_snapshot(payload.symbol)
+        technical = _asdict(snapshot) if is_dataclass(snapshot) else dict(snapshot)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"查詢目標不存在：{payload.symbol}")
 
     if not technical.get("recent_closes"):
         raise HTTPException(status_code=404, detail=f"查詢目標不存在：{payload.symbol}")
