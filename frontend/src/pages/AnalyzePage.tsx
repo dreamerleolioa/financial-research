@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
 
 interface ErrorDetail {
@@ -44,6 +44,21 @@ interface AnalyzeResponse {
   stop_loss: string | null;
   holding_period: string | null;
   action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
+  action_plan: {
+    action?: string;
+    target_zone?: string;
+    defense_line?: string;
+    breakeven_note?: string;
+    momentum_expectation?: string;
+    conviction_level?: "low" | "medium" | "high";
+    thesis_points?: string[];
+    invalidation_conditions?: string[];
+    suggested_position_size?: string;
+    /** 升級觸發條件 — 已接收但暫未渲染，預留未來 UI 擴充 */
+    upgrade_triggers?: string[];
+    /** 降級觸發條件 — 已接收但暫未渲染，預留未來 UI 擴充 */
+    downgrade_triggers?: string[];
+  } | null;
   institutional_flow_label: string | null;
   data_confidence: number | null;
   is_final: boolean;
@@ -115,6 +130,12 @@ const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: stri
   neutral: { emoji: "🔵", label: "中性", color: "text-blue-500" },
 };
 
+const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
+  high: { label: "高信心", cls: "bg-emerald-100 text-emerald-800" },
+  medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
+  low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
 function formatVolume(value: unknown): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("zh-TW").format(value);
@@ -173,6 +194,8 @@ export default function AnalyzePage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const [portfolioSymbols, setPortfolioSymbols] = useState<Set<string>>(new Set());
   const [portfolioCount, setPortfolioCount] = useState(0);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -226,12 +249,19 @@ export default function AnalyzePage() {
 
   async function handleAnalyze() {
     if (!symbol.trim()) return;
+
+    // 取消上一個尚未完成的請求
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ symbol: symbol.trim() }),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -241,12 +271,13 @@ export default function AnalyzePage() {
       setResult(data);
       await fetchPortfolio();
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return; // 使用者已送出新請求，忽略
       const message = err instanceof Error ? err.message : "無法連線後端，請確認伺服器已啟動。";
       setResult({
         snapshot: {}, analysis: "", analysis_detail: null, cleaned_news: null,
         cleaned_news_quality: null, news_display_items: [], confidence_score: null,
         cross_validation_note: null, strategy_type: null, entry_zone: null,
-        stop_loss: null, holding_period: null, action_plan_tag: null,
+        stop_loss: null, holding_period: null, action_plan_tag: null, action_plan: null,
         institutional_flow_label: null, data_confidence: null,
         is_final: true, intraday_disclaimer: null,
         errors: [{ code: "NETWORK_ERROR", message }],
@@ -315,6 +346,59 @@ export default function AnalyzePage() {
         </div>
         <p className="mt-2 text-xs text-text-muted">上市股票請用 .TW，上櫃股票請用 .TWO。</p>
         <p className="mt-1 text-xs text-text-muted">上市範例：2330.TW（台積電）；上櫃範例：6488.TWO（環球晶）。</p>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
+        <div className="mb-1 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-text-primary">新倉策略建議</h2>
+          {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
+            <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
+              {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
+            </span>
+          )}
+          {result?.action_plan?.conviction_level && CONVICTION_BADGE[result.action_plan.conviction_level] && (
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[result.action_plan.conviction_level].cls}`}>
+              {CONVICTION_BADGE[result.action_plan.conviction_level].label}
+            </span>
+          )}
+        </div>
+        <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
+        {result ? (
+          <div className="space-y-3">
+            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
+              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.entry_zone ?? "—"}</dd></div>
+              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.stop_loss ?? "—"}</dd></div>
+              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.holding_period ?? "—"}</dd></div>
+            </dl>
+            {result.action_plan?.thesis_points && result.action_plan.thesis_points.length > 0 && (
+              <div className="rounded-lg border border-border bg-card-hover p-3">
+                <dt className="mb-1.5 text-xs text-text-muted">主要支持理由</dt>
+                <ul className="space-y-1">
+                  {result.action_plan.thesis_points.slice(0, 3).map((point, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-sm text-text-primary">
+                      <span className="mt-0.5 text-text-muted">·</span>{point}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {result.action_plan?.invalidation_conditions && result.action_plan.invalidation_conditions.length > 0 && (
+              <div className="rounded-lg border border-border bg-card-hover p-3">
+                <dt className="mb-1.5 text-xs text-text-muted">失效條件（出現時重新評估）</dt>
+                <ul className="space-y-1">
+                  {result.action_plan.invalidation_conditions.map((cond, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-sm text-text-primary">
+                      <span className="mt-0.5 text-rose-400">⚠</span>{cond}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-text-faint">請先執行分析。</p>
+        )}
       </section>
 
       {showAddModal && (
@@ -386,44 +470,6 @@ export default function AnalyzePage() {
             <p className="text-sm text-text-faint">請先執行分析。</p>
           )}
         </article>
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-text-primary">近期新聞</h2>
-          {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === "string" && (
-            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral}`}>
-              {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? "中性"}
-            </span>
-          )}
-        </div>
-        {result?.cleaned_news_quality != null && (result.cleaned_news_quality.quality_score < 60 || result.cleaned_news_quality.quality_flags.length > 0) && (
-          <p className="mt-2 rounded-md bg-badge-neutral-bg px-3 py-1.5 text-xs text-text-muted">摘要品質受限</p>
-        )}
-        {result ? (
-          result.news_display_items.length > 0 ? (
-            <ul className="mt-3 divide-y divide-border-subtle">
-              {result.news_display_items.map((item, idx) => (
-                <li key={idx} className="py-2.5">
-                  {item.source_url ? (
-                    <a href={item.source_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-text-primary hover:text-indigo-600 hover:underline dark:hover:text-indigo-400">{item.title}</a>
-                  ) : (
-                    <p className="text-sm text-text-primary">{item.title}</p>
-                  )}
-                  {item.date && <p className="mt-0.5 text-xs text-text-faint">{item.date}</p>}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-sm text-text-faint">本次無新聞資料。</p>
-          )
-        ) : (
-          <p className="mt-3 text-sm text-text-faint">請先執行分析。</p>
-        )}
-        <p className="mt-3 text-xs text-text-faint">
-          以上為市場情緒參考新聞。財報數字請參閱
-          <a href="https://mops.twse.com.tw" target="_blank" rel="noopener noreferrer" className="ml-0.5 text-indigo-500 hover:underline dark:text-indigo-400">公開資訊觀測站</a>。
-        </p>
       </section>
 
       <section className="space-y-4">
@@ -506,26 +552,43 @@ export default function AnalyzePage() {
       </section>
 
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-        <div className="mb-1 flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-text-primary">新倉策略建議</h2>
-          {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
-            <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
-              {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-text-primary">近期新聞</h2>
+          {result?.cleaned_news && typeof result.cleaned_news.sentiment_label === "string" && (
+            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${SENTIMENT_CLASS[result.cleaned_news.sentiment_label] ?? SENTIMENT_CLASS.neutral}`}>
+              {SENTIMENT_LABEL[result.cleaned_news.sentiment_label] ?? "中性"}
             </span>
           )}
         </div>
-        <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
-        {result ? (
-          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
-            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.entry_zone ?? "—"}</dd></div>
-            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.stop_loss ?? "—"}</dd></div>
-            <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.holding_period ?? "—"}</dd></div>
-          </dl>
-        ) : (
-          <p className="text-sm text-text-faint">請先執行分析。</p>
+        {result?.cleaned_news_quality != null && (result.cleaned_news_quality.quality_score < 60 || result.cleaned_news_quality.quality_flags.length > 0) && (
+          <p className="mt-2 rounded-md bg-badge-neutral-bg px-3 py-1.5 text-xs text-text-muted">摘要品質受限</p>
         )}
+        {result ? (
+          result.news_display_items.length > 0 ? (
+            <ul className="mt-3 divide-y divide-border-subtle">
+              {result.news_display_items.map((item, idx) => (
+                <li key={idx} className="py-2.5">
+                  {item.source_url ? (
+                    <a href={item.source_url} target="_blank" rel="noopener noreferrer" className="block text-sm text-text-primary hover:text-indigo-600 hover:underline dark:hover:text-indigo-400">{item.title}</a>
+                  ) : (
+                    <p className="text-sm text-text-primary">{item.title}</p>
+                  )}
+                  {item.date && <p className="mt-0.5 text-xs text-text-faint">{item.date}</p>}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-sm text-text-faint">本次無新聞資料。</p>
+          )
+        ) : (
+          <p className="mt-3 text-sm text-text-faint">請先執行分析。</p>
+        )}
+        <p className="mt-3 text-xs text-text-faint">
+          以上為市場情緒參考新聞。財報數字請參閱
+          <a href="https://mops.twse.com.tw" target="_blank" rel="noopener noreferrer" className="ml-0.5 text-indigo-500 hover:underline dark:text-indigo-400">公開資訊觀測站</a>。
+        </p>
       </section>
+
     </div>
   );
 }
