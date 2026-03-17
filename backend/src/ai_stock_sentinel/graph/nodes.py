@@ -60,6 +60,10 @@ def fetch_external_data_node(
     使用 asyncio.gather + run_in_executor 將兩個同步 fetcher 丟入 thread pool
     並行執行，不需修改底層 provider。
     """
+    # Skip guard：若 external data 已存在（前一輪 retry 已抓過），不重複呼叫外部 API
+    if state.get("institutional_flow") is not None and state.get("fundamental_data") is not None:
+        return {}
+
     symbol = state["symbol"]
     snapshot = state.get("snapshot") or {}
     current_price = float(snapshot.get("current_price") or 0)

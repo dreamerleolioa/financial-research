@@ -874,3 +874,34 @@ def test_fetch_external_data_node_fetches_concurrently() -> None:
     first_end_idx = min(call_order.index("institutional_end"), call_order.index("fundamental_end"))
     assert call_order.index("institutional_start") < first_end_idx
     assert call_order.index("fundamental_start") < first_end_idx
+
+
+def test_fetch_external_data_node_skips_when_data_already_present():
+    """institutional_flow 和 fundamental_data 都已存在時，不應再呼叫外部 fetcher。"""
+    inst_calls = []
+    fund_calls = []
+
+    def mock_inst(symbol):
+        inst_calls.append(symbol)
+        return {"flow": "new"}
+
+    def mock_fund(symbol, price):
+        fund_calls.append(symbol)
+        return {"pe": 99}
+
+    state = _base_state(
+        snapshot={"current_price": 100.0, "recent_closes": []},
+        institutional_flow={"flow": "existing"},
+        fundamental_data={"pe": 20},
+    )
+
+    from ai_stock_sentinel.graph.nodes import fetch_external_data_node
+    result = fetch_external_data_node(
+        state,
+        institutional_fetcher=mock_inst,
+        fundamental_fetcher=mock_fund,
+    )
+
+    assert inst_calls == [], "institutional fetcher should not be called"
+    assert fund_calls == [], "fundamental fetcher should not be called"
+    assert result == {}
