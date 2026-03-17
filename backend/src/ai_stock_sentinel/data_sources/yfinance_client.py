@@ -7,6 +7,12 @@ import yfinance as yf
 from ai_stock_sentinel.models import StockSnapshot
 
 
+def check_symbol_exists(symbol: str) -> bool:
+    """yfinance 輕量驗證：代號有效回傳 True，否則回傳 False。"""
+    hist = yf.Ticker(symbol).history(period="5d", interval="1d")
+    return not (hist.empty or hist["Close"].dropna().empty)
+
+
 class YFinanceCrawler:
     def fetch_basic_snapshot(self, symbol: str = "2330.TW") -> StockSnapshot:
         ticker = yf.Ticker(symbol)
