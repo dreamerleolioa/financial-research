@@ -369,7 +369,9 @@ def _build_response_from_cache(
 
 
 def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
-    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
+    if not INTERNAL_API_KEY:
+        raise HTTPException(status_code=503, detail="Internal API key not configured")
+    if x_internal_api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid internal API key")
 
 

@@ -17,21 +17,27 @@ def _client_with_db() -> TestClient:
 
 
 def test_fetch_raw_data_requires_api_key():
-    """未提供 API Key 時應回傳 401。"""
+    """未設定 INTERNAL_API_KEY 環境變數時應回傳 503（fail closed）。"""
     client = _client_with_db()
     resp = client.post("/internal/fetch-raw-data", json={"symbol": "2330.TW"})
-    assert resp.status_code == 401
+    assert resp.status_code == 503
 
 
 def test_fetch_raw_data_rejects_wrong_key():
-    """提供錯誤 API Key 時應回傳 401。"""
-    client = _client_with_db()
-    resp = client.post(
-        "/internal/fetch-raw-data",
-        json={"symbol": "2330.TW"},
-        headers={"X-Internal-Api-Key": "wrong-key"},
-    )
-    assert resp.status_code == 401
+    """INTERNAL_API_KEY 已設定但提供錯誤 Key 時應回傳 401。"""
+    import ai_stock_sentinel.api as api_module
+    original_key = api_module.INTERNAL_API_KEY
+    api_module.INTERNAL_API_KEY = "configured-key"
+    try:
+        client = _client_with_db()
+        resp = client.post(
+            "/internal/fetch-raw-data",
+            json={"symbol": "2330.TW"},
+            headers={"X-Internal-Api-Key": "wrong-key"},
+        )
+        assert resp.status_code == 401
+    finally:
+        api_module.INTERNAL_API_KEY = original_key
 
 
 def test_fetch_raw_data_success():
