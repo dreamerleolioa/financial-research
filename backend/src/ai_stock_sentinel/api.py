@@ -350,10 +350,14 @@ def _build_response_from_cache(
     否則 fallback 到精簡欄位（舊資料相容）。
     """
     if full_result:
-        resp = AnalyzeResponse(**full_result)
-        resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
-        resp.intraday_disclaimer = hit.intraday_disclaimer
-        return resp
+        try:
+            resp = AnalyzeResponse.model_validate(full_result)
+            resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
+            resp.intraday_disclaimer = hit.intraday_disclaimer
+            return resp
+        except Exception:
+            # Schema drift — fallback to sparse fields from cache metadata
+            pass
     return AnalyzeResponse(
         snapshot={},
         analysis=hit.final_verdict or "",
