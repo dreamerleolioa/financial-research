@@ -233,7 +233,7 @@ logger.warning(json.dumps({
 
 ## 9. Spec Review
 
-對應需求規格：`docs/p0-prerequisite-spec.md`
+對應需求規格：`docs/specs/p0-prerequisite-spec.md`
 
 實作前請確認 spec 中以下項目無歧義：
 

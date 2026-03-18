@@ -16,7 +16,7 @@
 | Phase 5（基本面估值）     | **100%**       | FinMindFundamentalProvider + PE Band + 殖利率 + fetch_fundamental_node |
 | Phase 6（持股診斷）       | **歷史里程碑** | 本文件狀態已過期，請改看對應 plan / spec                               |
 
-實際進度請直接查看 `docs/plans/` 下對應主題的 implementation plan；Phase 6 規格：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
+實際進度請直接查看 `docs/plans/` 下對應主題的 implementation plan；Phase 6 規格：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
 
 ---
 
@@ -69,7 +69,7 @@
   - 持股診斷版 System Prompt（出場/保本推理強化，禁止加碼建議）
   - 前端「我的持股」分頁（損益對照卡 + 持股版戰術卡 + 出場警示框）
 - **Checkpoint**：輸入 `symbol` + `entry_price` 可取得 `position_analysis`（含 `recommended_action` / `trailing_stop` / `exit_reason`）；`flow_label = distribution` 且獲利中時 `exit_reason` 非 null
-- **規格文件**：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
+- **規格文件**：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
 
 ---
 
@@ -116,7 +116,7 @@
      --output-json docs/research/backtest-results/new-position-baseline-$(date +%Y%m%d).json
    ```
 
-2. **判斷是否需要調權**（根據 `docs/p0-confidence-calibration-spec.md` §6 診斷矩陣）
+2. **判斷是否需要調權**（根據 `docs/specs/p0-confidence-calibration-spec.md` §6 診斷矩陣）
    - 若 signal_confidence 分桶勝率呈單調遞增，且各分桶差距 > 10%：**無需調整**
    - 若高分桶勝率低於低分桶，或各分桶勝率無差異（< 5%）：**需進行維度分析**
 
@@ -165,7 +165,7 @@
 
 ### 相關文件
 
-- 需求規格：`docs/p0-confidence-calibration-spec.md`
+- 需求規格：`docs/specs/p0-confidence-calibration-spec.md`
 - 實作計劃：`docs/plans/2026-03-18-p0-confidence-calibration.md`
 - 維度分析腳本：`backend/scripts/analyze_confidence_breakdown.py`
 - 調權提案目錄：`docs/research/confidence-calibration-proposals/`
@@ -176,8 +176,8 @@
 
 - 進行中需求的真相來源：對應的 `docs/plans/*.md`
 - 任務唯一真相來源：`docs/implementation-task-breakdown.md`
-- API 技術契約唯一真相來源：`docs/backend-api-technical-spec.md`（個股分析 + 持股診斷）
-- 持股診斷功能規格唯一真相來源：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
+- API 技術契約唯一真相來源：`docs/specs/backend-api-technical-spec.md`（個股分析 + 持股診斷）
+- 持股診斷功能規格唯一真相來源：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
 - 入口與操作唯一真相來源：`README.md`
 - 每週五 Checkpoint 後 24 小時內同步更新對應 plan、README 與必要 spec。
 - Gate 結果變更必須當日更新文件並註明原因。

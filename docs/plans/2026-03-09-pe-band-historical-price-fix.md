@@ -420,12 +420,12 @@ actual quarter-end closing prices from yfinance for each TTM window."
 ## Task 2：更新架構規格文件與進度追蹤
 
 **Files:**
-- Modify: `docs/ai-stock-sentinel-architecture-spec.md`
+- Modify: `docs/specs/ai-stock-sentinel-architecture-spec.md`
 - Modify: `docs/progress-tracker.md`
 
 ### Step 1：更新架構規格文件的 PE Band 定義
 
-在 `docs/ai-stock-sentinel-architecture-spec.md` §3.1「資料源建議 > 基本面（估值）」，找到 `pe_band` 說明，更新為：
+在 `docs/specs/ai-stock-sentinel-architecture-spec.md` §3.1「資料源建議 > 基本面（估值）」，找到 `pe_band` 說明，更新為：
 
 ```
 - `pe_band`：估值位階（`cheap` / `fair` / `expensive`），以近 20 季**各季末真實股價**計算的歷史 PE 均值 ± 1 標準差為邊界；無法取得歷史股價時回傳 `unknown`
@@ -449,7 +449,7 @@ actual quarter-end closing prices from yfinance for each TTM window."
 ### Step 3：Commit
 
 ```bash
-git add docs/ai-stock-sentinel-architecture-spec.md docs/progress-tracker.md
+git add docs/specs/ai-stock-sentinel-architecture-spec.md docs/progress-tracker.md
 git commit -m "docs: update PE Band spec to reflect historical price fix"
 ```
 

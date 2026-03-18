@@ -104,8 +104,8 @@
 
 ## Phase 6：持股診斷（待開發）
 
-> 規格文件：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
-> API 契約：`docs/backend-api-technical-spec.md` v3（`POST /analyze/position`）
+> 規格文件：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
+> API 契約：`docs/specs/backend-api-technical-spec.md` v3（`POST /analyze/position`）
 
 - **Task 1**：建立 `POST /analyze/position` 路由 + `PositionState` GraphState 欄位（`entry_price` / `profit_loss_pct` / `position_status` / `trailing_stop` / `recommended_action` / `exit_reason`）
 - **Task 2**：`PositionScorer`（`analysis/position_scorer.py`）：損益位階、移動停利、`recommended_action`（Hold/Trim/Exit）、`exit_reason`

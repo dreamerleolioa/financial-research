@@ -931,4 +931,4 @@ git commit -m "feat: add edit and delete portfolio UI in PortfolioPage"
 
 ---
 
-_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` v2.0，已改採 `raw_data_is_final` / `analysis_is_final` 雙旗標語義，並保留 Task 5–7 編輯、刪除持股規格_
+_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/specs/ai-stock-sentinel-automation-review-spec.md` v2.0，已改採 `raw_data_is_final` / `analysis_is_final` 雙旗標語義，並保留 Task 5–7 編輯、刪除持股規格_

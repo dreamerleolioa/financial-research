@@ -1568,4 +1568,4 @@ n8n → Settings → Variables：
 
 ---
 
-*文件版本：v1.2 | 最後更新：2026-03-12 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 7*
+*文件版本：v1.2 | 最後更新：2026-03-12 | 對應需求：`docs/specs/ai-stock-sentinel-automation-review-spec.md` Phase 7*

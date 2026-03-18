@@ -1,7 +1,7 @@
 # 計劃：多維分析升級（模式一～三實作對齊）
 
 > 日期：2026-03-04 執行
-> 前置：`docs/ai-stock-sentinel-architecture-spec.md`、`docs/implementation-task-breakdown.md` 已更新
+> 前置：`docs/specs/ai-stock-sentinel-architecture-spec.md`、`docs/implementation-task-breakdown.md` 已更新
 > 目標：先補齊資料源，再做敘事化，再做矛盾檢查，最後才進前端
 
 ---

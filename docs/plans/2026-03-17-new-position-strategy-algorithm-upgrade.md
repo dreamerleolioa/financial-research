@@ -52,8 +52,8 @@
 - Modify: `backend/tests/test_strategy_generator.py`
 - Modify: `backend/tests/test_graph_nodes.py`
 - Optional Modify: `frontend/src/pages/AnalyzePage.tsx`（若策略輸出欄位擴充後要先接）
-- Modify: `docs/backend-api-technical-spec.md`
-- Modify: `docs/ai-stock-sentinel-architecture-spec.md`
+- Modify: `docs/specs/backend-api-technical-spec.md`
+- Modify: `docs/specs/ai-stock-sentinel-architecture-spec.md`
 
 ---
 
@@ -195,8 +195,8 @@
 
 同步更新：
 
-1. `docs/backend-api-technical-spec.md`
-2. `docs/ai-stock-sentinel-architecture-spec.md`
+1. `docs/specs/backend-api-technical-spec.md`
+2. `docs/specs/ai-stock-sentinel-architecture-spec.md`
 
 ### Step 2: 前端承接策略欄位
 

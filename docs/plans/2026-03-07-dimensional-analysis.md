@@ -579,7 +579,7 @@ cd backend && make test
 
 **3. 架構規格 §7 驗收標準**
 
-確認 `docs/ai-stock-sentinel-architecture-spec.md` §7 驗收標準是否需要補入分維度輸出的 DoD。若規格 §7 缺少對應條目，在規格文件中補上：
+確認 `docs/specs/ai-stock-sentinel-architecture-spec.md` §7 驗收標準是否需要補入分維度輸出的 DoD。若規格 §7 缺少對應條目，在規格文件中補上：
 
 ```
 - **分維度分析**：LLM 輸出必須包含 `tech_insight`（技術面）、`inst_insight`（籌碼面）、`news_insight`（消息面）、`final_verdict`（綜合仲裁）四個獨立段落；各維度禁止跨維度混寫

@@ -34,8 +34,8 @@
 - Modify: `frontend/src/pages/AnalyzePage.tsx`
 - Optional Modify: `frontend/src/pages/PortfolioPage.tsx`（若有導向文案需同步）
 - Verify Only: `frontend/src/pages/PortfolioPage.tsx`（持股診斷 modal / detail flow）
-- Modify: `docs/ai-stock-sentinel-architecture-spec.md`
-- Modify: `docs/backend-api-technical-spec.md`
+- Modify: `docs/specs/ai-stock-sentinel-architecture-spec.md`
+- Modify: `docs/specs/backend-api-technical-spec.md`
 
 ---
 
