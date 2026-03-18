@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.auth.router import router as auth_router
-from ai_stock_sentinel.config import configure_logging
+from ai_stock_sentinel.config import configure_logging, STRATEGY_VERSION
 from ai_stock_sentinel.db.models import StockAnalysisCache, StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
@@ -190,11 +190,11 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
     db.execute(
         text("""
             INSERT INTO stock_analysis_cache (
-                symbol, record_date, signal_confidence, action_tag,
+                symbol, record_date, signal_confidence, strategy_version, action_tag,
                 recommended_action, indicators, final_verdict,
                 prev_action_tag, prev_confidence, analysis_is_final, full_result, updated_at
             ) VALUES (
-                :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
+                :symbol, CURRENT_DATE, :signal_confidence, :strategy_version, :action_tag,
                 :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
                 (SELECT action_tag FROM stock_analysis_cache
                  WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
@@ -204,6 +204,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
             )
             ON CONFLICT (symbol, record_date) DO UPDATE SET
                 signal_confidence  = EXCLUDED.signal_confidence,
+                strategy_version   = EXCLUDED.strategy_version,
                 action_tag         = EXCLUDED.action_tag,
                 recommended_action = EXCLUDED.recommended_action,
                 indicators         = EXCLUDED.indicators,
@@ -215,6 +216,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
         {
             "symbol":             data.get("symbol"),
             "signal_confidence":  data.get("signal_confidence"),
+            "strategy_version":   STRATEGY_VERSION,
             "action_tag":         data.get("action_tag"),
             "recommended_action": data.get("recommended_action"),
             "indicators":         json.dumps(data.get("indicators") or {}),
@@ -230,13 +232,20 @@ def _extract_indicators(result: dict) -> dict:
     """從 graph result 提取 indicators JSONB 快照。"""
     snapshot = result.get("snapshot") or {}
     inst = result.get("institutional_flow") or {}
+    action_plan = result.get("action_plan") or {}
+    cleaned_news = result.get("cleaned_news") or {}
     return {
-        "ma5":          snapshot.get("ma5"),
-        "ma20":         snapshot.get("ma20"),
-        "ma60":         snapshot.get("ma60"),
-        "rsi_14":       result.get("rsi14"),
-        "close_price":  snapshot.get("current_price"),
-        "volume_ratio": snapshot.get("volume_ratio"),
+        "ma5":             snapshot.get("ma5"),
+        "ma20":            snapshot.get("ma20"),
+        "ma60":            snapshot.get("ma60"),
+        "rsi_14":          result.get("rsi14"),
+        "close_price":     snapshot.get("current_price"),
+        "volume_ratio":    snapshot.get("volume_ratio"),
+        "strategy_type":   result.get("strategy_type"),
+        "conviction_level": action_plan.get("conviction_level"),
+        "sentiment_label": cleaned_news.get("sentiment_label"),
+        "flow_label":      inst.get("flow_label") if not inst.get("error") else None,
+        "technical_signal": result.get("technical_signal"),
         "institutional": {
             "foreign_net": inst.get("foreign_net"),
             "trust_net":   inst.get("trust_net"),
@@ -260,11 +269,11 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
     db.execute(
         text("""
             INSERT INTO daily_analysis_log (
-                user_id, symbol, record_date, signal_confidence, action_tag,
+                user_id, symbol, record_date, signal_confidence, strategy_version, action_tag,
                 recommended_action, indicators, final_verdict,
                 prev_action_tag, prev_confidence, analysis_is_final
             ) VALUES (
-                :user_id, :symbol, CURRENT_DATE, :signal_confidence, :action_tag,
+                :user_id, :symbol, CURRENT_DATE, :signal_confidence, :strategy_version, :action_tag,
                 :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
                 (SELECT action_tag FROM daily_analysis_log
                  WHERE user_id = :user_id AND symbol = :symbol
@@ -276,6 +285,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
             )
             ON CONFLICT (user_id, symbol, record_date) DO UPDATE SET
                 signal_confidence  = EXCLUDED.signal_confidence,
+                strategy_version   = EXCLUDED.strategy_version,
                 action_tag         = EXCLUDED.action_tag,
                 recommended_action = EXCLUDED.recommended_action,
                 indicators         = EXCLUDED.indicators,
@@ -286,6 +296,7 @@ def upsert_analysis_log(db: Session, data: dict) -> None:
             "user_id":            data.get("user_id"),
             "symbol":             data.get("symbol"),
             "signal_confidence":  data.get("signal_confidence"),
+            "strategy_version":   STRATEGY_VERSION,
             "action_tag":         data.get("action_tag"),
             "recommended_action": data.get("recommended_action"),
             "indicators":         json.dumps(data.get("indicators") or {}),

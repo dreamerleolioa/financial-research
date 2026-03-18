@@ -1,6 +1,7 @@
 """Provider Router：依固定優先序 + 市場分流自動選擇資料源。"""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Sequence
 
@@ -62,13 +63,28 @@ class InstitutionalFlowRouter:
             try:
                 logger.info("[Router] 嘗試 %s（symbol=%s, days=%d）", provider.name, symbol, days)
                 data = provider.fetch_daily_flow(symbol=symbol, days=days)
-                logger.info("[Router] 命中 %s（symbol=%s）", provider.name, symbol)
+                logger.info(json.dumps({
+                    "event": "provider_success",
+                    "provider": provider.name,
+                    "symbol": symbol,
+                    "is_fallback": len(attempted) > 1,
+                }))
                 return data
             except InstitutionalFlowError as exc:
-                logger.warning("[Router] %s 失敗：[%s] %s", provider.name, exc.code, exc)
+                logger.warning(json.dumps({
+                    "event": "provider_failure",
+                    "provider": provider.name,
+                    "symbol": symbol,
+                    "error_code": exc.code if hasattr(exc, "code") else "unknown",
+                }))
                 last_error = exc
             except Exception as exc:
-                logger.warning("[Router] %s 意外錯誤：%s", provider.name, exc)
+                logger.warning(json.dumps({
+                    "event": "provider_failure",
+                    "provider": provider.name,
+                    "symbol": symbol,
+                    "error_code": "unknown",
+                }))
                 last_error = exc
 
         providers_tried = ", ".join(attempted) if attempted else "(none)"

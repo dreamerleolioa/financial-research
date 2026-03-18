@@ -2,6 +2,8 @@ import logging as _logging
 import os
 from dataclasses import dataclass
 
+STRATEGY_VERSION = "1.0.0"
+
 
 @dataclass(slots=True, frozen=True)
 class Settings:

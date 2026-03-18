@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
 
 import yfinance as yf
 
 from ai_stock_sentinel.models import StockSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 def check_symbol_exists(symbol: str) -> bool:
@@ -15,9 +19,18 @@ def check_symbol_exists(symbol: str) -> bool:
 
 class YFinanceCrawler:
     def fetch_basic_snapshot(self, symbol: str = "2330.TW") -> StockSnapshot:
-        ticker = yf.Ticker(symbol)
-        info = ticker.fast_info
-        history = ticker.history(period="3mo", interval="1d")
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.fast_info
+            history = ticker.history(period="3mo", interval="1d")
+        except Exception as exc:
+            logger.warning(json.dumps({
+                "event": "provider_failure",
+                "provider": "yfinance",
+                "symbol": symbol,
+                "error_code": type(exc).__name__,
+            }))
+            raise
 
         recent_closes = []
         if not history.empty and "Close" in history.columns:
@@ -33,7 +46,7 @@ class YFinanceCrawler:
         if volume <= 0:
             volume_source = "unavailable"
 
-        return StockSnapshot(
+        snapshot = StockSnapshot(
             symbol=symbol,
             currency=str(getattr(info, "currency", "TWD") or "TWD"),
             current_price=float(getattr(info, "last_price", 0.0) or 0.0),
@@ -46,3 +59,10 @@ class YFinanceCrawler:
             fetched_at=datetime.now(timezone.utc).isoformat(),
             volume_source=volume_source,
         )
+        logger.info(json.dumps({
+            "event": "provider_success",
+            "provider": "yfinance",
+            "symbol": symbol,
+            "is_fallback": False,
+        }))
+        return snapshot

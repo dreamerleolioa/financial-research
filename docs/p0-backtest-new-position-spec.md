@@ -42,7 +42,7 @@
 - 多持有週期矩陣輸出（5 / 10 / 20 日）
 - `signal_confidence` vs 漲幅的 Pearson 相關性分析（新倉版）
 - `evidence_scores.total` vs 漲幅的 Pearson 相關性分析
-- 執行初始基線回測，結果存入 `docs/research/backtest-results/`
+- 執行初始基線回測，結果存入 `backend/backtest-results/`
 
 ### 範圍外
 
@@ -116,7 +116,7 @@
 | 編號 | 需求 |
 |---|---|
 | F7-1 | 首次正式回測使用 `--require-final-raw-data` 確保樣本品質 |
-| F7-2 | 結果存入 `docs/research/backtest-results/new-position-baseline-YYYYMMDD.json` |
+| F7-2 | 結果存入 `backend/backtest-results/new-position-baseline-YYYYMMDD.json` |
 | F7-3 | 同目錄建立 `README.md`，記錄每次回測的執行日期、主要發現、`strategy_version` |
 
 ---

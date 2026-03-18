@@ -2,8 +2,11 @@
 
 > 類型：Implementation Plan
 > 建立日期：2026-03-18
+> 狀態：**部分完成（Task 1/2 已完成；Task 3 待樣本累積後繼續）**
 > 對應 Roadmap：`docs/research/post-new-position-strategy-optimization-roadmap.md` §5.1
 > 前置依賴：`docs/plans/2026-03-18-p0-prerequisite.md` 全部完成
+>
+> ⚠️ **待辦提醒**：當 `analysis_is_final=TRUE` 記錄 >= 30 筆時，需回來執行 Task 3（初始基線回測），並補寫 `backend/backtest-results/README.md` 的回測紀錄表。
 
 ---
 
@@ -150,7 +153,7 @@ python scripts/backtest_win_rate.py \
   --mode new-position \
   --days 90 \
   --require-final-raw-data \
-  --output-json docs/research/backtest-results/new-position-baseline-$(date +%Y%m%d).json
+  --output-json backtest-results/new-position-baseline-$(date +%Y%m%d).json
 ```
 
 結果存入 `docs/research/backtest-results/`（新建目錄）。

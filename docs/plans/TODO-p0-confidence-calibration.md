@@ -2,8 +2,11 @@
 
 > 類型：Implementation Plan
 > 建立日期：2026-03-18
+> 狀態：**部分完成（Task 1/2/5 已完成；Task 3/4 待樣本累積後繼續）**
 > 對應 Roadmap：`docs/research/post-new-position-strategy-optimization-roadmap.md` §5.2
 > 前置依賴：`docs/plans/2026-03-18-p0-backtest-new-position.md` 完成，且回測樣本數各分箱 >= 10
+>
+> ⚠️ **待辦提醒**：當 `analysis_is_final=TRUE` 記錄 >= 30 筆時，需回來執行 Task 3 & 4（調權提案 + 審核修改）。執行指令詳見 §11「下一步」。
 
 ---
 
@@ -236,3 +239,49 @@ python scripts/backtest_win_rate.py \
 - 第 6 節（診斷矩陣）：「需要調權」與「不需要調權」的判斷邊界是否認同
 
 驗收時對照 spec AC1 ~ AC7 逐條確認。
+
+---
+
+## 11. 執行進度（2026-03-18）
+
+| Task | 狀態 | 說明 |
+|---|---|---|
+| Task 1：信心分桶 vs 勝率分析 | ✅ 完成 | `backtest_win_rate.py` 新增 `confidence_bucket_multi_period_stats()`，分桶輸出與單調性診斷 |
+| Task 2：維度貢獻分析腳本 | ✅ 完成 | `scripts/analyze_confidence_breakdown.py` 建立，支援 `--days` / `--output-json`；同步修改 `api.py`、`graph/nodes.py`、`graph/state.py` 以儲存 `flow_label` / `sentiment_label` / `technical_signal` 至 `indicators` JSONB |
+| Task 3：調權提案 | ⏳ 待回測資料 | 須先執行 `backtest_win_rate.py --mode new-position --days 90` 取得分桶勝率，若發現異常才需撰寫提案 |
+| Task 4：人工審核 + 修改 + 驗證 | ⏳ 待 Task 3 + 人工審核 | 不得自動執行 |
+| Task 5：調權流程文件化 | ✅ 完成 | `docs/development-execution-playbook.md` §6 已補充 8 步驟調權流程 |
+
+### 受影響檔案（已完成部分）
+
+- `backend/scripts/backtest_win_rate.py` — 新增信心分桶矩陣輸出
+- `backend/scripts/analyze_confidence_breakdown.py` — 新建
+- `backend/src/ai_stock_sentinel/api.py` — `_extract_indicators()` 新增 `flow_label` / `sentiment_label` / `technical_signal`
+- `backend/src/ai_stock_sentinel/graph/nodes.py` — `score_node()` 回傳 `technical_signal`
+- `backend/src/ai_stock_sentinel/graph/state.py` — `GraphState` 新增 `technical_signal` 欄位
+- `docs/development-execution-playbook.md` — 新增 §6 調權流程
+
+### 首次回測結果（2026-03-18）
+
+```
+期間內總 log 筆數：5
+analysis_is_final=TRUE：0
+排除（未定稿分析）：5
+→ 無符合條件的新倉策略紀錄
+```
+
+**結論：Task 3 / Task 4 暫緩。**
+樣本不足（`analysis_is_final=TRUE` = 0），需等系統累積至少 30 筆 final 記錄後再執行。
+`indicators` 中的三個維度標籤（`flow_label` / `sentiment_label` / `technical_signal`）已於本次實作中開始儲存，舊資料不含這些欄位屬預期行為。
+
+### 下一步（待條件成熟後）
+
+當 `analysis_is_final=TRUE` 記錄 >= 30 筆時，重新執行：
+
+```bash
+cd backend
+set -a && . ./.env && set +a && PYTHONPATH=src uv run python scripts/backtest_win_rate.py \
+  --mode new-position \
+  --days 90 \
+  --output-json docs/research/backtest-results/new-position-baseline-$(date +%Y%m%d).json
+```
