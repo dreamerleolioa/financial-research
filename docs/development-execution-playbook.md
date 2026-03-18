@@ -102,7 +102,77 @@
 
 ---
 
-## 6) 文件維護規範
+## 6) 信心分數調權流程
+
+當需要校準 `confidence_scorer.py` 的權重時，遵循以下半自動流程：
+
+### 流程步驟
+
+1. **執行回測，取得分桶勝率基線**
+   ```bash
+   python scripts/backtest_win_rate.py \
+     --mode new-position \
+     --days 90 \
+     --output-json docs/research/backtest-results/new-position-baseline-$(date +%Y%m%d).json
+   ```
+
+2. **判斷是否需要調權**（根據 `docs/p0-confidence-calibration-spec.md` §6 診斷矩陣）
+   - 若 signal_confidence 分桶勝率呈單調遞增，且各分桶差距 > 10%：**無需調整**
+   - 若高分桶勝率低於低分桶，或各分桶勝率無差異（< 5%）：**需進行維度分析**
+
+3. **執行維度貢獻分析腳本**（若步驟 2 發現問題）
+   ```bash
+   python scripts/analyze_confidence_breakdown.py \
+     --days 90 \
+     --output-json docs/research/backtest-results/confidence-breakdown-$(date +%Y%m%d).json
+   ```
+
+4. **產出調權提案文件**（若維度分析發現問題）
+   - 格式參見 `docs/plans/2026-03-18-p0-confidence-calibration.md` §Task 3
+   - 存入 `docs/research/confidence-calibration-proposals/YYYY-MM-DD.md`
+   - 提案需包含：問題描述、診斷依據（附數據）、具體建議變更（含前後值）、預期效果、風險說明
+
+5. **人工審核提案**
+   - 確認診斷邏輯合理
+   - 確認調整不影響持股診斷端的語意（`/analyze/position` 同樣使用 `confidence_scorer.py`）
+   - 審核通過後在提案文件中標注「已審核」
+
+6. **修改 `confidence_scorer.py` 常數**（審核通過後）
+   - 只修改提案中明確列出的常數
+   - 遵守 NF2：不改變函式簽名或輸出 key 結構
+
+7. **更新 `STRATEGY_VERSION`（minor bump）**
+   - 如 `1.0.x` → `1.1.0`
+   - 修改 `config.py` 中的 `STRATEGY_VERSION`
+
+8. **重新執行回測，確認改善**
+   ```bash
+   python scripts/backtest_win_rate.py \
+     --mode new-position \
+     --days 90 \
+     --output-json docs/research/backtest-results/new-position-post-calibration-$(date +%Y%m%d).json
+   ```
+   - 對比 baseline 與 post-calibration 的分桶勝率
+   - 若高分桶勝率 >= baseline 同分桶勝率：調整成功
+   - 若無改善：回滾並重新分析（`git revert` 對應 commit）
+
+### 重要限制
+
+- **未經人工審核前不得修改 `confidence_scorer.py`**
+- **每次調整需間隔至少一個月的新樣本**，避免 overfitting
+- 各分桶樣本數 < 5 時結論不可靠，< 10 時初步參考，>= 30 時可較有信心
+- 調整幅度應保守，避免單次調整過大
+
+### 相關文件
+
+- 需求規格：`docs/p0-confidence-calibration-spec.md`
+- 實作計劃：`docs/plans/2026-03-18-p0-confidence-calibration.md`
+- 維度分析腳本：`backend/scripts/analyze_confidence_breakdown.py`
+- 調權提案目錄：`docs/research/confidence-calibration-proposals/`
+
+---
+
+## 7) 文件維護規範
 
 - 進行中需求的真相來源：對應的 `docs/plans/*.md`
 - 任務唯一真相來源：`docs/implementation-task-breakdown.md`

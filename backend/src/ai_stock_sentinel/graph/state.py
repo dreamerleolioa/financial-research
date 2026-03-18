@@ -43,6 +43,7 @@ class _AnalysisStateFields(TypedDict, total=False):
     cross_validation_note: str | None
     signal_confidence: int | None
     data_confidence: int | None
+    technical_signal: str | None
     strategy_type: str | None
     entry_zone: str | None
     stop_loss: str | None
@@ -108,6 +109,7 @@ class GraphState(TypedDict):
     cross_validation_note: str | None
     signal_confidence: int | None
     data_confidence: int | None
+    technical_signal: str | None
     strategy_type: str | None
     entry_zone: str | None
     stop_loss: str | None

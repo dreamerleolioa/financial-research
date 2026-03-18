@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -43,21 +44,33 @@ class RssNewsClient:
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             log_fn = logger.error if status < 500 else logger.warning
-            log_fn(
-                "RSS fetch HTTP error: status=%s url=%s",
-                status,
-                url,
-                exc_info=True,
-            )
+            log_fn(json.dumps({
+                "event": "provider_failure",
+                "provider": "google-news-rss",
+                "symbol": query,
+                "error_code": str(status),
+            }))
             return []
         except httpx.HTTPError as exc:
-            logger.warning("RSS fetch network error: %s url=%s", exc, url, exc_info=True)
+            logger.warning(json.dumps({
+                "event": "provider_failure",
+                "provider": "google-news-rss",
+                "symbol": query,
+                "error_code": type(exc).__name__,
+            }))
             return []
 
         if not raw_xml.strip():
             return []
 
-        return self._parse_rss(raw_xml, max_items=max_items)
+        items = self._parse_rss(raw_xml, max_items=max_items)
+        logger.info(json.dumps({
+            "event": "provider_success",
+            "provider": "google-news-rss",
+            "symbol": query,
+            "is_fallback": False,
+        }))
+        return items
 
     def _parse_rss(self, raw_xml: bytes, max_items: int) -> list[RawNewsItem]:
         try:

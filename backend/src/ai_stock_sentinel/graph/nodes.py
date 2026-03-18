@@ -313,6 +313,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
         "signal_confidence": result_dict["signal_confidence"],
         "data_confidence": result_dict["data_confidence"],
         "cross_validation_note": note,
+        "technical_signal": technical_signal,
     }
 
 
