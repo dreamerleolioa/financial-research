@@ -4,13 +4,14 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 ## 核心分析維度 (Core Analysis Dimensions)
 
-為了達成「理性偵察」的目標，系統將針對每一標的進行三位一體的數據掃描：
+為了達成「理性偵察」的目標，系統將針對每一標的進行四維數據掃描：
 
 | 維度       | 追蹤指標                                  | AI 觀察重點                                        |
 | ---------- | ----------------------------------------- | -------------------------------------------------- |
 | **消息面** | RSS 財經新聞、法說會摘要                  | 提取事實、過濾誇大形容詞、識別情緒雜訊             |
 | **技術面** | $MA_{5/20/60}$、$Vol$、$BIAS$、$RSI_{14}$ | 判斷當前股價位階，識別「利多出盡」或「底部起漲」   |
 | **籌碼面** | 三大法人買賣超、融資餘額                  | 追蹤聰明錢流向，判斷籌碼是集中於大戶還是分散至散戶 |
+| **基本面** | 本益比區間、歷史估值帶                    | 判斷當前股價相對估值位階，識別高估或低估區間       |
 
 > **嚴格規範**：技術指標與籌碼數據必須由 Python 函式（`pandas` / `yfinance`）精確計算後，再交由 LLM 進行定性分析。**禁止 LLM 自行估算任何數值。**
 
@@ -20,9 +21,11 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 - 技術架構需求文件：`docs/ai-stock-sentinel-architecture-spec.md`
 - 後端 API 技術規格：`docs/backend-api-technical-spec.md`
-- 實作任務拆解：`docs/implementation-task-breakdown.md`
+- 自動化審核規格：`docs/ai-stock-sentinel-automation-review-spec.md`
+- 持股診斷規格：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
 - 執行計劃目錄：`docs/plans/`
 - 開發執行手冊：`docs/development-execution-playbook.md`
+- 後續優化路線圖：`docs/research/post-new-position-strategy-optimization-roadmap.md`
 
 ## 目前進度摘要
 
@@ -37,7 +40,8 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 backend/
 	Makefile
 	requirements.txt
-	agent.py
+	scripts/
+		backtest_win_rate.py    # 勝率回測 CLI 腳本
 	src/ai_stock_sentinel/
 		analysis/
 			interface.py
@@ -48,12 +52,19 @@ backend/
 			confidence_scorer.py
 			strategy_generator.py
 			position_scorer.py
+			metrics.py
+		auth/
+			dependencies.py
+			google_verifier.py
+			jwt_handler.py
+			router.py
 		data_sources/
 			yfinance_client.py
 			rss_news_client.py
+			finmind_token.py
 			institutional_flow/
 				interface.py
-				router.py
+				router.py           # 三層 fallback：FinMind → TWSE → TPEX
 				finmind_provider.py
 				twse_provider.py
 				tpex_provider.py
@@ -62,10 +73,20 @@ backend/
 				interface.py
 				finmind_provider.py
 				tools.py
+		db/
+			models.py               # DailyAnalysisLog / StockRawData / StockAnalysisCache
+			session.py
 		graph/
 			builder.py
 			nodes.py
 			state.py
+		portfolio/
+			router.py
+			history_router.py
+		services/
+			history_loader.py
+		user_models/
+			user.py
 		config.py
 		models.py
 		main.py
@@ -75,28 +96,33 @@ frontend/
 	vite.config.ts
 	src/
 		App.tsx
-		index.css
 		pages/
+			AnalyzePage.tsx
+			PortfolioPage.tsx
+			DashboardPage.tsx
+			LoginPage.tsx
+			LoginCallbackPage.tsx
+		components/
+			ConfidenceChart.tsx
+			InsightText.tsx
+		lib/
+			auth.ts
+			formatters.ts
+			historyApi.ts
+		stores/
+			auth.tsx
+			theme.ts
 .github/
 	workflows/
-		deploy.yml        # CI/CD：測試 → GitHub Pages + Render
+		deploy.yml              # CI/CD：測試 → GitHub Pages + Render
 docs/
 	ai-stock-sentinel-architecture-spec.md
 	backend-api-technical-spec.md
-	implementation-task-breakdown.md
+	ai-stock-sentinel-automation-review-spec.md
+	ai-stock-sentinel-position-diagnosis-spec.md
 	development-execution-playbook.md
-	plans/
-		2026-03-04-multi-dimension-analysis.md
-		2026-03-05-news-summary-quality.md
-		2026-03-05-news-display-split.md
-		2026-03-05-deep-analysis-upgrade.md
-		2026-03-06-spec-gap-fix-day1.md
-		2026-03-06-news-scope-and-display-items.md
-		2026-03-07-spec-gap-fix-day2.md
-		2026-03-07-dimensional-analysis.md
-		2026-03-10-cicd-github-pages-render.md
-		2026-03-10-position-diagnosis.md
-		2026-03-10-strategy-action-plan-deepening.md
+	plans/                      # 各功能 implementation plan（依日期命名）
+	research/                   # 研究文件與優化路線圖
 ```
 
 ---
@@ -138,8 +164,11 @@ make install
 
 ```bash
 ANTHROPIC_API_KEY="your_api_key"
-ANTHROPIC_MODEL="claude-sonnet-4-5"
+ANTHROPIC_MODEL="claude-sonnet-4-6"
 CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
+GOOGLE_CLIENT_ID="your_google_client_id"    # Google OAuth 登入用
+JWT_SECRET="your_jwt_secret"
+DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 ```
 
 > `.env` 不進版控。換電腦時複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
@@ -161,8 +190,11 @@ CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 | 名稱                | 值                                                   |
 | ------------------- | ---------------------------------------------------- |
 | `ANTHROPIC_API_KEY` | Anthropic API key                                    |
-| `ANTHROPIC_MODEL`   | `claude-sonnet-4-5`                                  |
+| `ANTHROPIC_MODEL`   | `claude-sonnet-4-6`                                  |
 | `CORS_ORIGINS`      | `http://localhost:5173,https://<username>.github.io` |
+| `GOOGLE_CLIENT_ID`  | Google OAuth client ID                               |
+| `JWT_SECRET`        | JWT 簽名密鑰                                         |
+| `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 
 ---
 
@@ -180,7 +212,7 @@ pnpm dev
 
 目前前端已包含：
 
-**個股分析 tab**
+**新倉分析頁（`/analyze`）**
 
 - 股票代碼輸入框 + 一鍵分析
 - 信心指數圓形元件（動態，含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示）
@@ -191,13 +223,22 @@ pnpm dev
 - 新聞摘要品質提示（`quality_score < 60` 時顯示警告）
 - 錯誤 banner + loading 狀態
 
-**我的持股 tab**
+**持股管理頁（`/portfolio`）**
 
 - 持股列表與持股診斷入口
 - 倉位狀態卡（獲利安全區 / 成本邊緣 / 套牢防守；顯示成本價 / 現價 / 損益%）
 - 操作建議卡（續抱 / 減碼 / 出場；顯示動態防守位）
 - 出場警示 banner（`exit_reason` 非 null 時紅色顯示）
-- 三維分析卡（技術面防守 / 主力動向 / 消息面風險）+ 綜合研判
+- 四維分析卡（技術面防守 / 主力動向 / 消息面風險 / 基本面）+ 綜合研判
+
+**復盤儀表板（`/dashboard`）**
+
+- 歷史分析記錄列表
+- 各標的策略方向與信心分數趨勢
+
+**登入（`/login`）**
+
+- Google OAuth 登入流程
 
 ### FastAPI 服務
 
@@ -209,8 +250,12 @@ make run-api
 預設開啟：`http://127.0.0.1:8000`
 
 - `GET /health`
-- `POST /analyze`
-- `POST /analyze/position`
+- `POST /analyze` — 新倉策略分析
+- `POST /analyze/position` — 持股操作建議
+- `POST /internal/fetch-raw-data` — 觸發原始資料預取（內部用）
+- `GET /history/{symbol}` — 查詢歷史分析記錄
+- `GET/POST /auth/*` — Google OAuth 登入流程
+- `GET/POST /portfolio/*` — 持股管理
 
 範例：
 
