@@ -549,15 +549,17 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       const data: PositionResult = await res.json();
       setAnalysisMap((prev) => ({ ...prev, [item.id]: data }));
 
-      // Refresh the latest history entry so the card reflects the new analysis
+      // Refresh latest card entry + history panel (if expanded)
+      setHistoryMap((prev) => { const next = { ...prev }; delete next[item.id]; return next; });
       try {
         const r = await fetch(
-          `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=1`,
+          `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=20`,
           { headers: authHeaders() },
         );
         if (r.ok) {
           const hBody: { records: HistoryEntry[] } = await r.json();
           setLatestMap((prev) => ({ ...prev, [item.id]: hBody.records[0] ?? null }));
+          setHistoryMap((prev) => ({ ...prev, [item.id]: hBody.records }));
         }
       } catch { /* ignore */ }
     } catch (err) {
