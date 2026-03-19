@@ -94,6 +94,37 @@ CHECK_FN_MAP = {
 
 # ─── 執行評測 ─────────────────────────────────────────────────────────────────
 
+def _call_llm(mock_input: str) -> dict:
+    """用 mock_input 直接呼叫 LLM，回傳解析後的 dict。"""
+    import os
+    from ai_stock_sentinel.analysis.langchain_analyzer import _SYSTEM_PROMPT
+
+    try:
+        import anthropic
+    except ImportError:
+        raise RuntimeError("需要安裝 anthropic 套件：pip install anthropic")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("缺少 ANTHROPIC_API_KEY 環境變數")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        system=_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": mock_input}],
+    )
+    raw = message.content[0].text.strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        inner = lines[1:]
+        if inner and inner[-1].strip() == "```":
+            inner = inner[:-1]
+        raw = "\n".join(inner).strip()
+    return json.loads(raw)
+
+
 def run_checks(case: dict, llm_output: dict) -> list[dict]:
     results = []
     for check_name in case.get("expected_checks", []):
@@ -116,10 +147,26 @@ def run_eval(cases: list[dict], dry_run: bool) -> dict:
         print(f"\n[{case['id']}] {case['description']}")
 
         if dry_run:
-            print("  (dry-run: 跳過 LLM 呼叫)")
-            continue
+            print("  (dry-run: 跳過 LLM 呼叫，以 mock_llm_output 執行 checks)")
+            llm_output = case.get("mock_llm_output", {})
+        else:
+            mock_input = case.get("mock_input")
+            if not mock_input:
+                print("  [warn] 缺少 mock_input，跳過此案例")
+                continue
+            try:
+                llm_output = _call_llm(mock_input)
+                print("  LLM 回應已取得")
+            except Exception as e:
+                print(f"  [error] LLM 呼叫失敗：{e}", file=sys.stderr)
+                all_case_results.append({
+                    "id": case["id"],
+                    "description": case["description"],
+                    "checks": [{"check": "llm_call", "result": "fail", "message": str(e)}],
+                })
+                fail_count += 1
+                continue
 
-        llm_output = case.get("mock_llm_output", {})
         checks = run_checks(case, llm_output)
 
         for c in checks:

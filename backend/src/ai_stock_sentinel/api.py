@@ -480,6 +480,9 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
             analysis_detail = _asdict(raw_detail)
         elif isinstance(raw_detail, dict):
             analysis_detail = raw_detail
+    if analysis_detail is not None:
+        from ai_stock_sentinel.analysis.langchain_analyzer import PROMPT_HASH
+        analysis_detail = {**analysis_detail, "prompt_hash": PROMPT_HASH}
     response_errors: list[AnalyzeResponse.ErrorDetail] = [
         AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
         for e in result.get("errors", [])
