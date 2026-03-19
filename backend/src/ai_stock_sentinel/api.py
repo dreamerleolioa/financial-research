@@ -685,6 +685,20 @@ def fetch_raw_data_endpoint(
         fundamental=fundamental,
         raw_data_is_final=True,
     )
+
+    # raw data 已定稿，將同日盤中未定稿的分析 log 一併標記為 final
+    db.execute(
+        text("""
+            UPDATE daily_analysis_log
+            SET analysis_is_final = TRUE
+            WHERE symbol          = :symbol
+              AND record_date     = :record_date
+              AND analysis_is_final = FALSE
+        """),
+        {"symbol": payload.symbol, "record_date": record_date.isoformat()},
+    )
+    db.commit()
+
     return {"status": "ok", "symbol": payload.symbol, "record_date": record_date.isoformat()}
 
 
