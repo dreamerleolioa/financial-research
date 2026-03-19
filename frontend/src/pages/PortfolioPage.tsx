@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
@@ -462,6 +463,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
 }
 
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
+  const navigate = useNavigate();
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [latestMap, setLatestMap] = useState<Record<string, HistoryEntry | null>>({});
@@ -667,6 +669,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                     className="rounded-lg bg-indigo-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {isAnalyzing ? "分析中…" : "即時分析"}
+                  </button>
+                  <button
+                    onClick={() => navigate(`/analyze?symbol=${item.symbol}`)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-muted hover:bg-card-hover transition"
+                  >
+                    新倉分析
                   </button>
                   <button
                     onClick={() => toggleHistory(item.id)}

@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
@@ -74,6 +75,14 @@ interface AnalyzeResponse {
     dividend_yield?: number | null;
     yield_signal?: string | null;
   } | null;
+}
+
+interface PortfolioItem {
+  id: number;
+  symbol: string;
+  entry_price: number;
+  quantity: number;
+  entry_date: string;
 }
 
 interface AddPortfolioForm {
@@ -187,6 +196,40 @@ function TriggersSection({
   );
 }
 
+function HeldPositionBanner({
+  item,
+  currentPrice,
+}: {
+  item: PortfolioItem;
+  currentPrice: number | undefined;
+}) {
+  const pct = currentPrice != null
+    ? ((currentPrice - item.entry_price) / item.entry_price * 100).toFixed(1)
+    : null;
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 px-4 py-3 flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-semibold text-amber-700 dark:text-amber-400">已持有</span>
+        <span className="text-sm text-text-secondary">
+          成本 {item.entry_price.toFixed(2)}
+          {pct != null && (
+            <span className={`ml-1 font-medium ${parseFloat(pct) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+              {parseFloat(pct) >= 0 ? "+" : ""}{pct}%
+            </span>
+          )}
+        </span>
+      </div>
+      <a
+        href="/portfolio"
+        className="text-xs text-text-muted underline hover:text-text-secondary"
+      >
+        查看持股診斷
+      </a>
+    </div>
+  );
+}
+
 function mapVolumeSource(value: unknown): string {
   if (value === "realtime") return "即時成交量";
   if (value === "history_fallback") return "歷史資料回填";
@@ -195,13 +238,14 @@ function mapVolumeSource(value: unknown): string {
 }
 
 export default function AnalyzePage() {
+  const [searchParams] = useSearchParams();
   const [symbol, setSymbol] = useState("2330.TW");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const [portfolioSymbols, setPortfolioSymbols] = useState<Set<string>>(new Set());
+  const [portfolioItems, setPortfolioItems] = useState<PortfolioItem[]>([]);
   const [portfolioCount, setPortfolioCount] = useState(0);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addForm, setAddForm] = useState<AddPortfolioForm>({
@@ -217,11 +261,20 @@ export default function AnalyzePage() {
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, { headers: authHeaders() });
       if (!res.ok) return;
-      const data: { id: number; symbol: string }[] = await res.json();
-      setPortfolioSymbols(new Set(data.map((r) => r.symbol)));
+      const data: PortfolioItem[] = await res.json();
+      setPortfolioItems(data);
       setPortfolioCount(data.length);
     } catch { /* ignore */ }
   }
+
+  useEffect(() => {
+    const sym = searchParams.get("symbol");
+    if (sym) {
+      setSymbol(sym);
+      handleAnalyze(sym);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleAddPortfolio(e: React.FormEvent) {
     e.preventDefault();
@@ -252,8 +305,9 @@ export default function AnalyzePage() {
     }
   }
 
-  async function handleAnalyze() {
-    if (!symbol.trim()) return;
+  async function handleAnalyze(overrideSymbol?: string) {
+    const target = (overrideSymbol ?? symbol).trim();
+    if (!target) return;
 
     // 取消上一個尚未完成的請求
     abortControllerRef.current?.abort();
@@ -265,7 +319,7 @@ export default function AnalyzePage() {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ symbol: symbol.trim() }),
+        body: JSON.stringify({ symbol: target }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -292,7 +346,7 @@ export default function AnalyzePage() {
     }
   }
 
-  const isTracked = portfolioSymbols.has(symbol);
+  const isTracked = portfolioItems.some((i) => i.symbol === symbol);
   const portfolioFull = portfolioCount >= 5;
   const confidenceScore = result?.confidence_score ?? null;
   const circumference = 2 * Math.PI * 52;
@@ -308,12 +362,6 @@ export default function AnalyzePage() {
       {firstError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span className="font-semibold">[{firstError.code}]</span> {firstError.message}
-        </div>
-      )}
-
-      {result?.is_final === false && result.intraday_disclaimer && (
-        <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
-          {result.intraday_disclaimer}
         </div>
       )}
 
@@ -352,6 +400,17 @@ export default function AnalyzePage() {
         <p className="mt-2 text-xs text-text-muted">上市股票請用 .TW，上櫃股票請用 .TWO。</p>
         <p className="mt-1 text-xs text-text-muted">上市範例：2330.TW（台積電）；上櫃範例：6488.TWO（環球晶）。</p>
       </section>
+
+      {(() => {
+        const held = portfolioItems.find((i) => i.symbol === symbol);
+        if (!held || !result) return null;
+        return (
+          <HeldPositionBanner
+            item={held}
+            currentPrice={result.snapshot?.current_price as number | undefined}
+          />
+        );
+      })()}
 
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
         <div className="mb-1 flex items-center gap-2">
