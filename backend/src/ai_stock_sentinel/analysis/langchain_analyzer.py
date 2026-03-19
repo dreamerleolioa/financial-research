@@ -43,6 +43,9 @@ _SYSTEM_PROMPT = """\
 - 不得輸出 JSON 以外的任何文字。
 """
 
+import hashlib as _hashlib
+PROMPT_HASH: str = _hashlib.md5(_SYSTEM_PROMPT.encode()).hexdigest()[:8]
+
 _POSITION_SYSTEM_PROMPT = """
 你正在診斷使用者的持有倉位，而非尋找新的買點。
 
