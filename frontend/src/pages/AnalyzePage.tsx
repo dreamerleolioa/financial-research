@@ -83,11 +83,6 @@ interface AddPortfolioForm {
   notes: string;
 }
 
-const STRATEGY_LABEL: Record<string, string> = {
-  short_term: "短線操作",
-  mid_term: "中線佈局",
-  defensive_wait: "防守觀望",
-};
 
 const SIGNAL_LABEL: Record<string, string> = {
   bullish: "看多",
@@ -137,6 +132,60 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
   medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
   low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
+
+function TriggersSection({
+  upgradeTriggers,
+  downgradeTriggers,
+}: {
+  upgradeTriggers?: string[];
+  downgradeTriggers?: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const hasUpgrade = upgradeTriggers && upgradeTriggers.length > 0;
+  const hasDowngrade = downgradeTriggers && downgradeTriggers.length > 0;
+
+  if (!hasUpgrade && !hasDowngrade) return null;
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors"
+      >
+        <span>{open ? "▲" : "▼"}</span>
+        條件變化
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {hasUpgrade && (
+            <div>
+              <p className="text-xs font-semibold text-emerald-600 mb-1">升級觸發</p>
+              <ul className="space-y-0.5">
+                {upgradeTriggers!.map((t, i) => (
+                  <li key={i} className="text-xs text-text-primary flex gap-1.5">
+                    <span className="text-emerald-500 shrink-0">↑</span>{t}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {hasDowngrade && (
+            <div>
+              <p className="text-xs font-semibold text-amber-600 mb-1">降級觸發</p>
+              <ul className="space-y-0.5">
+                {downgradeTriggers!.map((t, i) => (
+                  <li key={i} className="text-xs text-text-primary flex gap-1.5">
+                    <span className="text-amber-500 shrink-0">↓</span>{t}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function mapVolumeSource(value: unknown): string {
   if (value === "realtime") return "即時成交量";
@@ -312,46 +361,106 @@ export default function AnalyzePage() {
               {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
             </span>
           )}
-          {result?.action_plan?.conviction_level && CONVICTION_BADGE[result.action_plan.conviction_level] && (
-            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[result.action_plan.conviction_level].cls}`}>
-              {CONVICTION_BADGE[result.action_plan.conviction_level].label}
-            </span>
-          )}
         </div>
         <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
         {result ? (
-          <div className="space-y-3">
-            <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">策略方向</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.strategy_type ? (STRATEGY_LABEL[result.strategy_type] ?? result.strategy_type) : "—"}</dd></div>
-              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">建議入場區間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.entry_zone ?? "—"}</dd></div>
-              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">防守底線（停損）</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.stop_loss ?? "—"}</dd></div>
-              <div className="rounded-lg border border-border bg-card-hover p-3"><dt className="text-xs text-text-muted">預期持股期間</dt><dd className="mt-1 text-sm font-medium text-text-primary">{result.holding_period ?? "—"}</dd></div>
-            </dl>
-            {result.action_plan?.thesis_points && result.action_plan.thesis_points.length > 0 && (
-              <div className="rounded-lg border border-border bg-card-hover p-3">
-                <dt className="mb-1.5 text-xs text-text-muted">主要支持理由</dt>
-                <ul className="space-y-1">
-                  {result.action_plan.thesis_points.slice(0, 3).map((point, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-sm text-text-primary">
-                      <span className="mt-0.5 text-text-muted">·</span>{point}
-                    </li>
-                  ))}
-                </ul>
+          result.action_plan ? (
+            <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+
+              {/* 段落一：建議動作 */}
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-medium text-text-primary flex-1">
+                  {result.action_plan.action}
+                </p>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {!result.is_final && (
+                    <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800">
+                      盤中版
+                    </span>
+                  )}
+                  {result.action_plan.conviction_level && CONVICTION_BADGE[result.action_plan.conviction_level] && (
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[result.action_plan.conviction_level].cls}`}>
+                      {CONVICTION_BADGE[result.action_plan.conviction_level].label}
+                    </span>
+                  )}
+                </div>
               </div>
-            )}
-            {result.action_plan?.invalidation_conditions && result.action_plan.invalidation_conditions.length > 0 && (
-              <div className="rounded-lg border border-border bg-card-hover p-3">
-                <dt className="mb-1.5 text-xs text-text-muted">失效條件（出現時重新評估）</dt>
-                <ul className="space-y-1">
-                  {result.action_plan.invalidation_conditions.map((cond, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-sm text-text-primary">
-                      <span className="mt-0.5 text-rose-400">⚠</span>{cond}
-                    </li>
-                  ))}
-                </ul>
+
+              {/* 段落二：主要理由 */}
+              {result.action_plan.thesis_points && result.action_plan.thesis_points.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-text-muted mb-1.5">主要理由</p>
+                  <ul className="space-y-1">
+                    {result.action_plan.thesis_points.map((point, i) => (
+                      <li key={i} className="flex gap-1.5 text-sm text-text-primary">
+                        <span className="text-text-muted shrink-0">·</span>
+                        {point}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* 段落三：關鍵價位 */}
+              <div className="rounded-lg bg-card-hover p-3 grid grid-cols-2 gap-2">
+                <p className="text-xs font-semibold text-text-muted col-span-2 mb-0.5">關鍵價位</p>
+                {result.action_plan.target_zone && (
+                  <div>
+                    <p className="text-xs text-text-muted">進場區間</p>
+                    <p className="text-sm font-medium text-text-primary">{result.action_plan.target_zone}</p>
+                  </div>
+                )}
+                {result.action_plan.defense_line && (
+                  <div>
+                    <p className="text-xs text-text-muted">停損位</p>
+                    <p className="text-sm font-medium text-text-primary">{result.action_plan.defense_line}</p>
+                  </div>
+                )}
+                {result.action_plan.momentum_expectation && (
+                  <div className="col-span-2">
+                    <p className="text-xs text-text-muted">動能預期</p>
+                    <p className="text-sm text-text-primary">{result.action_plan.momentum_expectation}</p>
+                  </div>
+                )}
+                {result.action_plan.suggested_position_size && (
+                  <div className="col-span-2">
+                    <p className="text-xs text-text-muted">建議部位規模</p>
+                    <p className="text-sm text-text-primary">{result.action_plan.suggested_position_size}</p>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+
+              {/* 段落四：失效條件 */}
+              {result.action_plan.invalidation_conditions && result.action_plan.invalidation_conditions.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-text-muted mb-1.5">失效條件</p>
+                  <ul className="space-y-1">
+                    {result.action_plan.invalidation_conditions.map((cond, i) => (
+                      <li key={i} className="flex gap-1.5 text-sm text-text-primary">
+                        <span className="text-rose-400 shrink-0">⚠</span>
+                        {cond}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* 可收合：條件變化 */}
+              <TriggersSection
+                upgradeTriggers={result.action_plan.upgrade_triggers}
+                downgradeTriggers={result.action_plan.downgrade_triggers}
+              />
+
+              {/* 免責聲明（移至底部） */}
+              {result.intraday_disclaimer && (
+                <p className="text-xs text-text-muted border-t border-border pt-2">
+                  {result.intraday_disclaimer}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-text-faint">無策略建議。</p>
+          )
         ) : (
           <p className="text-sm text-text-faint">請先執行分析。</p>
         )}

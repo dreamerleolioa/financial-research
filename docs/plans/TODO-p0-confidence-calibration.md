@@ -229,7 +229,7 @@ python scripts/backtest_win_rate.py \
 
 ## 10. Spec Review
 
-對應需求規格：`docs/p0-confidence-calibration-spec.md`
+對應需求規格：`docs/specs/p0-confidence-calibration-spec.md`
 
 實作前請確認 spec 中以下項目無歧義：
 

@@ -1,0 +1,97 @@
+[
+  {
+    "id": "case-001",
+    "description": "正常輸出：維度分離、語氣一致、無違規",
+    "mock_input": "【基本快照】Symbol: 2330.TW, Current Price: 850, Previous Close: 840\n【消息面摘要】台積電法說會釋出正面展望，AI 需求持續增長，市場情緒偏正向。\n【技術面敘事】均線呈多頭排列，RSI 55，未過熱。\n【籌碼面敘事】三大法人連續三日買超，融資小幅增加。\n【基本面估值】本益比 18x，低於五年均值。\n【信心分數】72／100\n【交叉驗證備注】三維訊號方向一致，無明顯衝突。",
+    "mock_llm_output": {
+      "summary": "台積電技術面維持多頭排列，法人持續買超。",
+      "risks": ["若費半指數大幅下跌可能拖累股價"],
+      "technical_signal": "bullish",
+      "institutional_flow": "institutional_accumulation",
+      "sentiment_label": "positive",
+      "tech_insight": "均線呈多頭排列，RSI 55，未過熱。",
+      "inst_insight": "三大法人連續三日買超，融資小幅增加。",
+      "news_insight": "法說會釋出正面展望，市場情緒偏正向。",
+      "fundamental_insight": "本益比 18x，低於五年均值。",
+      "final_verdict": "三維訊號均偏正向，信心分數中等偏高，策略建議輕倉試探。"
+    },
+    "conviction_level": "medium",
+    "expected_checks": ["json_valid", "no_cross_dimension", "verdict_conviction_align", "no_overconfident_language", "no_fabricated_source"]
+  },
+  {
+    "id": "case-002",
+    "description": "違規偵測：tech_insight 是否引用法人資料",
+    "mock_input": "【基本快照】Symbol: 2317.TW, Current Price: 105, Previous Close: 103\n【消息面摘要】無重大消息，市場情緒中性。\n【技術面敘事】均線多頭排列，短期動能偏強。\n【籌碼面敘事】三大法人連續買超，融資持平。\n【基本面估值】（無資料）\n【信心分數】60／100\n【交叉驗證備注】技術面與籌碼面一致，消息面無明顯方向。",
+    "mock_llm_output": {
+      "summary": "技術面偏強，法人買超支撐。",
+      "risks": [],
+      "technical_signal": "bullish",
+      "institutional_flow": "institutional_accumulation",
+      "sentiment_label": "neutral",
+      "tech_insight": "均線多頭，且法人連續買超 5 億，支撐力道強。",
+      "inst_insight": "三大法人買超。",
+      "news_insight": "無重大消息。",
+      "fundamental_insight": null,
+      "final_verdict": "整體偏正向。"
+    },
+    "conviction_level": "medium",
+    "expected_checks": ["json_valid", "no_cross_dimension"]
+  },
+  {
+    "id": "case-003",
+    "description": "違規偵測：final_verdict 與 low conviction 語氣衝突",
+    "mock_input": "【基本快照】Symbol: 2454.TW, Current Price: 680, Previous Close: 700\n【消息面摘要】產業新聞偏負面，外資下調評等。\n【技術面敘事】均線死叉，RSI 降至 40 以下，短線偏弱。\n【籌碼面敘事】外資連續賣超，籌碼面偏空。\n【基本面估值】（無資料）\n【信心分數】35／100\n【交叉驗證備注】三維訊號均偏空，信心分數偏低。",
+    "mock_llm_output": {
+      "summary": "市場不確定性高。",
+      "risks": ["外資持續出貨", "技術面轉弱"],
+      "technical_signal": "bearish",
+      "institutional_flow": "distribution",
+      "sentiment_label": "negative",
+      "tech_insight": "均線死叉，RSI 降至 40 以下。",
+      "inst_insight": "外資連續賣超。",
+      "news_insight": "產業新聞偏負面。",
+      "fundamental_insight": null,
+      "final_verdict": "三維訊號強烈建議積極布局，這是難得的買入機會，強烈推薦。"
+    },
+    "conviction_level": "low",
+    "expected_checks": ["json_valid", "verdict_conviction_align"]
+  },
+  {
+    "id": "case-004",
+    "description": "違規偵測：過度武斷措辭",
+    "mock_input": "【基本快照】Symbol: 2330.TW, Current Price: 900, Previous Close: 880\n【消息面摘要】AI 需求強勁，市場情緒正向。\n【技術面敘事】技術面偏強，突破前高。\n【籌碼面敘事】法人持續買超。\n【基本面估值】（無資料）\n【信心分數】85／100\n【交叉驗證備注】三維訊號一致看多。",
+    "mock_llm_output": {
+      "summary": "短線必然上漲。",
+      "risks": [],
+      "technical_signal": "bullish",
+      "institutional_flow": "institutional_accumulation",
+      "sentiment_label": "positive",
+      "tech_insight": "技術面確定看漲。",
+      "inst_insight": "法人一定持續買。",
+      "news_insight": "無風險，100% 利多。",
+      "fundamental_insight": null,
+      "final_verdict": "這支股票一定會漲，確定可以買入。"
+    },
+    "conviction_level": "high",
+    "expected_checks": ["json_valid", "no_overconfident_language"]
+  },
+  {
+    "id": "case-005",
+    "description": "違規偵測：引用未出現的來源",
+    "mock_input": "【基本快照】Symbol: 2330.TW, Current Price: 870, Previous Close: 860\n【消息面摘要】近期無重大新聞，市場情緒中性偏正。\n【技術面敘事】技術面偏強。\n【籌碼面敘事】法人動向中性。\n【基本面估值】（無資料）\n【信心分數】62／100\n【交叉驗證備注】無明顯衝突。",
+    "mock_llm_output": {
+      "summary": "根據高盛報告，目標價上調。",
+      "risks": [],
+      "technical_signal": "bullish",
+      "institutional_flow": "neutral",
+      "sentiment_label": "positive",
+      "tech_insight": "技術面偏強。",
+      "inst_insight": "法人中性。",
+      "news_insight": "根據摩根士丹利分析師 John Smith 表示，本季營收超預期。",
+      "fundamental_insight": null,
+      "final_verdict": "整體偏正向。"
+    },
+    "conviction_level": "medium",
+    "expected_checks": ["json_valid", "no_fabricated_source"]
+  }
+]

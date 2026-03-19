@@ -826,6 +826,42 @@ def test_downgrade_triggers_contain_ma20():
     assert any("100.0" in t for t in result["downgrade_triggers"])
 
 
+def test_suggested_position_size_intraday_is_conservative():
+    """盤中時 suggested_position_size 應為保守文字，不出現積極建議"""
+    from ai_stock_sentinel.analysis.strategy_generator import generate_action_plan
+
+    result = generate_action_plan(
+        strategy_type="short_term",
+        flow_label="institutional_accumulation",
+        confidence_score=75,
+        is_final=False,
+        entry_zone="150-155",
+        stop_loss="145",
+        data_confidence=70,
+    )
+    pos_size = result.get("suggested_position_size", "")
+    assert "盤中" in pos_size or "收盤確認" in pos_size, (
+        f"盤中時應輸出保守提示，但得到：{pos_size}"
+    )
+
+
+def test_suggested_position_size_final_is_normal():
+    """收盤後 is_final=True 時，suggested_position_size 不應出現『盤中』字樣"""
+    from ai_stock_sentinel.analysis.strategy_generator import generate_action_plan
+
+    result = generate_action_plan(
+        strategy_type="short_term",
+        flow_label="institutional_accumulation",
+        confidence_score=75,
+        is_final=True,
+        entry_zone="150-155",
+        stop_loss="145",
+        data_confidence=70,
+    )
+    pos_size = result.get("suggested_position_size", "")
+    assert "盤中" not in pos_size
+
+
 # ─── calculate_action_plan_tag 行為不回歸 ────────────────────────────────────
 
 def test_calculate_action_plan_tag_behavior_unchanged():

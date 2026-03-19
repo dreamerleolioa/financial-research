@@ -26,7 +26,7 @@
 **Files:**
 
 - Modify: [backend/scripts/backtest_win_rate.py](backend/scripts/backtest_win_rate.py)
-- Optional Reference: [docs/ai-stock-sentinel-automation-review-spec.md](docs/ai-stock-sentinel-automation-review-spec.md)
+- Optional Reference: [docs/specs/ai-stock-sentinel-automation-review-spec.md](docs/specs/ai-stock-sentinel-automation-review-spec.md)
 
 **目標決策**
 
@@ -201,4 +201,4 @@ cd backend && python scripts/backtest_win_rate.py --days 90 --require-final-raw-
 
 ---
 
-_文件版本：v1.0 | 建立日期：2026-03-16 | 預計執行：2026-03-17 | 關聯檔案：`backend/scripts/backtest_win_rate.py`、`docs/ai-stock-sentinel-automation-review-spec.md`_
+_文件版本：v1.0 | 建立日期：2026-03-16 | 預計執行：2026-03-17 | 關聯檔案：`backend/scripts/backtest_win_rate.py`、`docs/specs/ai-stock-sentinel-automation-review-spec.md`_

@@ -791,7 +791,7 @@ data_confidence = round(data_available / 3 * 100)
 ## Session 7：DATE_UNKNOWN 信心分數懲罰
 
 > **複雜度**：低（純新增，修改一個函式 + 補測試）
-> **對應規格**：`docs/ai-stock-sentinel-architecture-spec.md` v2.4，新聞摘要品質門檻段落
+> **對應規格**：`docs/specs/ai-stock-sentinel-architecture-spec.md` v2.4，新聞摘要品質門檻段落
 
 ### 背景
 
@@ -878,7 +878,7 @@ if date_unknown:
 請幫我實作 Session 7 的 DATE_UNKNOWN 信心分數懲罰：
 
 參考文件：docs/plans/2026-03-06-spec-gap-fix.md 的 Session 7 詳細任務（T7-1 ~ T7-3）
-架構規格：docs/ai-stock-sentinel-architecture-spec.md v2.4，新聞摘要品質門檻段落
+架構規格：docs/specs/ai-stock-sentinel-architecture-spec.md v2.4，新聞摘要品質門檻段落
 
 執行順序：
 1. T7-1：confidence_scorer.py compute_confidence() 新增 date_unknown 參數，在 clamp 前扣 3 分
@@ -924,7 +924,7 @@ Session 1（高複雜）→ Session 2（中）→ Session 3（中）→ Session 
 
 ## 最終步驟：Spec Review
 
-所有 Session 完成後，對照 `docs/ai-stock-sentinel-architecture-spec.md` 與 `docs/progress-tracker.md`，確認：
+所有 Session 完成後，對照 `docs/specs/ai-stock-sentinel-architecture-spec.md` 與 `docs/progress-tracker.md`，確認：
 
 1. 本計劃修補的六大缺口均已正確實作，與架構規格描述一致
 2. 未引入新的規格缺口（特別是跨 Session 的欄位變動）

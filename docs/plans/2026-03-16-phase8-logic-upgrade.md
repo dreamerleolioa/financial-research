@@ -656,4 +656,4 @@ git commit -m "perf: fetch technical and institutional data concurrently with as
 
 ---
 
-_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_
+_文件版本：v1.6 | 建立日期：2026-03-11 | 更新日期：2026-03-16 | 對應需求：`docs/specs/ai-stock-sentinel-automation-review-spec.md` Phase 8（含 v1.7 backfill 規格）_

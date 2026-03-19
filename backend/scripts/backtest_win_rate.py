@@ -7,7 +7,6 @@
     python scripts/backtest_win_rate.py --days 90
     python scripts/backtest_win_rate.py --days 90 --action-tag Exit
     python scripts/backtest_win_rate.py --days 90 --require-final-raw-data
-    python scripts/backtest_win_rate.py --days 90 --output-json result.json
     python scripts/backtest_win_rate.py --mode new-position --days 90
     python scripts/backtest_win_rate.py --mode new-position --hold-days 10
 
@@ -23,7 +22,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import NamedTuple
@@ -62,6 +61,7 @@ def fetch_logs(
     analysis_is_final_only: bool = True,
     symbols: list[str] | None = None,
     min_confidence: float | None = None,
+    strategy_version: str | None = None,
 ) -> tuple[list[DailyAnalysisLog], int]:
     """從 DB 讀取指定期間的診斷 log。
 
@@ -85,6 +85,21 @@ def fetch_logs(
     if min_confidence is not None:
         q = q.filter(DailyAnalysisLog.signal_confidence >= min_confidence)
 
+    if strategy_version is not None:
+        versions = [v.strip() for v in strategy_version.split(",")]
+        if "NULL" in versions:
+            non_null = [v for v in versions if v != "NULL"]
+            if non_null:
+                q = q.filter(
+                    (DailyAnalysisLog.strategy_version.in_(non_null)) |
+                    (DailyAnalysisLog.strategy_version.is_(None))
+                )
+            else:
+                q = q.filter(DailyAnalysisLog.strategy_version.is_(None))
+        else:
+            q = q.filter(DailyAnalysisLog.strategy_version.in_(versions))
+        print(f"[backtest] 版本過濾：{strategy_version}")
+
     return q.all(), total_count
 
 
@@ -94,6 +109,7 @@ def fetch_new_position_logs(
     *,
     analysis_is_final_only: bool = True,
     min_confidence: float | None = None,
+    strategy_version: str | None = None,
 ) -> tuple[list[DailyAnalysisLog], int]:
     """從 DB 讀取新倉策略 log（strategy_type IN short_term/mid_term）。
 
@@ -119,6 +135,21 @@ def fetch_new_position_logs(
     q = q.filter(
         DailyAnalysisLog.indicators["strategy_type"].astext.in_(["short_term", "mid_term"])
     )
+
+    if strategy_version is not None:
+        versions = [v.strip() for v in strategy_version.split(",")]
+        if "NULL" in versions:
+            non_null = [v for v in versions if v != "NULL"]
+            if non_null:
+                q = q.filter(
+                    (DailyAnalysisLog.strategy_version.in_(non_null)) |
+                    (DailyAnalysisLog.strategy_version.is_(None))
+                )
+            else:
+                q = q.filter(DailyAnalysisLog.strategy_version.is_(None))
+        else:
+            q = q.filter(DailyAnalysisLog.strategy_version.in_(versions))
+        print(f"[backtest] 版本過濾：{strategy_version}")
 
     return q.all(), total_count
 
@@ -501,11 +532,65 @@ def print_matrix_table(
         print(f"  [{label:>12}]{''.join(cells)}")
 
 
+def _save_run_to_db(
+    session,
+    mode: str,
+    hold_days: int,
+    days_lookback: int,
+    results: list[dict],
+) -> None:
+    """將回測執行結果寫入 DB"""
+    from ai_stock_sentinel.config import STRATEGY_VERSION
+    from ai_stock_sentinel.db.models import BacktestRun, BacktestResult
+    from datetime import date as _date
+
+    wins = [r for r in results if r["outcome"] == "win"]
+    losses = [r for r in results if r["outcome"] == "loss"]
+    draws = [r for r in results if r["outcome"] == "draw"]
+    skips = [r for r in results if r["outcome"] == "skip"]
+    valid = [r for r in results if r["outcome"] != "skip"]
+    win_rate = (len(wins) / len(valid) * 100) if valid else None
+
+    run = BacktestRun(
+        run_date=_date.today(),
+        mode=mode,
+        hold_days=hold_days,
+        days_lookback=days_lookback,
+        strategy_version=STRATEGY_VERSION,
+        total_samples=len(results),
+        win_count=len(wins),
+        loss_count=len(losses),
+        draw_count=len(draws),
+        skip_count=len(skips),
+        win_rate=win_rate,
+    )
+    session.add(run)
+    session.flush()  # 取得 run.id
+
+    for r in results:
+        session.add(BacktestResult(
+            run_id=run.id,
+            symbol=r["symbol"],
+            signal_date=r["signal_date"],
+            p0_price=r.get("p0_price"),
+            pN_price=r.get("pN_price"),
+            pct_change=r.get("pct_change"),
+            outcome=r["outcome"],
+            skip_reason=r.get("skip_reason"),
+            signal_confidence=r.get("signal_confidence"),
+            conviction_level=r.get("conviction_level"),
+            strategy_type=r.get("strategy_type"),
+            action_tag=r.get("action_tag"),
+            log_id=r.get("log_id"),
+        ))
+    session.commit()
+
+
 def main_new_position(
     days: int,
     hold_days: int | None,
-    output_json: str | None,
     min_confidence: float | None,
+    strategy_version: str | None = None,
 ) -> None:
     """新倉策略回測主程式。
 
@@ -521,6 +606,7 @@ def main_new_position(
             days, db,
             analysis_is_final_only=True,
             min_confidence=min_confidence,
+            strategy_version=strategy_version,
         )
 
     excluded_not_final = total_in_range - len(logs)
@@ -676,50 +762,52 @@ def main_new_position(
     print("  回測解讀準則：勝率>60%=有預測價值；50-60%=邊際有效；<50%=需審核策略邏輯")
     print("  分箱 n<5 時數據不足，分箱 n>=30 可初步得出結論。")
 
-    if output_json:
-        overall_by_period = {
-            f"hold_{p}d": compute_new_position_stats(results_by_period[p], WIN_THRESHOLD)
-            for p in active_periods
-        }
-        # F6-5: multi_period_matrix = {strategy_type: {hold_days: win_rate}}
-        multi_period_matrix: dict = {}
-        for row in strategy_type_stats:
-            key = row["group"]
-            multi_period_matrix[key] = {
-                p: row["by_period"].get(f"hold_{p}d", {}).get("win_rate")
-                for p in active_periods
-            }
-        payload = {
-            "mode":              "new-position",
-            "days":              days,
-            "hold_days":         hold_days,
-            "hold_periods":      active_periods,
-            "win_threshold_pct": WIN_THRESHOLD,
-            "data_quality": {
-                "total_logs":           total_in_range,
-                "final_analysis_count": len(logs),
-                "excluded_not_final":   excluded_not_final,
-                "excluded_no_price":    excluded_no_price,
-            },
-            "overall_by_period":         overall_by_period,
-            "strategy_type_stats":       strategy_type_stats,
-            "conviction_stats":          conviction_stats,
-            "evidence_score_stats":      ev_score_stats,
-            "confidence_bucket_stats":   conf_bucket_stats,
-            "multi_period_matrix":       multi_period_matrix,
-            "pearson":                   pearson_stats,
-        }
-        with open(output_json, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        print(f"\n結果已寫入 {output_json}")
+    # 寫入 DB（以最短持有週期為代表寫入 BacktestResult）
+    active_hold = active_periods[0]
+    all_results_for_db = []
+    for r in results_by_period[active_hold]:
+        indicators = r.log.indicators or {}
+        all_results_for_db.append({
+            "symbol": r.log.symbol,
+            "signal_date": r.log.record_date,
+            "p0_price": r.p0,
+            "pN_price": r.p5,
+            "pct_change": r.pct_change,
+            "outcome": "skip" if r.skip_reason else (
+                "win" if r.pct_change is not None and r.pct_change > WIN_THRESHOLD else (
+                    "loss" if r.pct_change is not None and r.pct_change < -WIN_THRESHOLD else "draw"
+                )
+            ),
+            "skip_reason": r.skip_reason,
+            "signal_confidence": float(r.log.signal_confidence) if r.log.signal_confidence is not None else None,
+            "conviction_level": indicators.get("conviction_level"),
+            "strategy_type": indicators.get("strategy_type"),
+            "action_tag": r.log.action_tag,
+            "log_id": r.log.id,
+        })
+
+    try:
+        SessionLocal = _get_session_local()
+        with SessionLocal() as session:
+            _save_run_to_db(
+                session=session,
+                mode="new-position",
+                hold_days=active_hold,
+                days_lookback=days,
+                results=all_results_for_db,
+            )
+        print("[backtest] 結果已寫入 DB")
+    except Exception as e:
+        print(f"[backtest] DB 寫入失敗：{e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main(
     days: int,
     action_tag: str | None,
     require_final_raw: bool,
-    output_json: str | None,
     min_confidence: float | None,
+    strategy_version: str | None = None,
 ) -> None:
     print(f"\n=== 勝率回測報告（過去 {days} 天）===")
     if require_final_raw:
@@ -733,6 +821,7 @@ def main(
             days, action_tag, db,
             analysis_is_final_only=True,
             min_confidence=min_confidence,
+            strategy_version=strategy_version,
         )
         final_raw_lookup = build_raw_data_lookup(logs, db)
 
@@ -821,27 +910,42 @@ def main(
 
     print("\n⚠️  注意：校準結果需人工審核後才可調整 confidence_scorer.py 的權重。")
 
-    # JSON 輸出
-    if output_json:
-        payload = {
-            "days":                days,
-            "require_final_raw":   require_final_raw,
-            "data_quality": {
-                "total_logs":            total_in_range,
-                "final_analysis_count":  len(logs),
-                "excluded_not_final":    excluded_not_final,
-                "has_final_raw":         has_raw,
-                "no_final_raw":          no_raw,
-                "excluded_no_price":     excluded_no_price,
-                "excluded_no_final_raw": excluded_no_final_raw,
-            },
-            "tag_stats":    tag_stats,
-            "pearson":      pearson_stat,
-            "confidence_buckets": confidence_bucket_stats(exit_trim_results) if exit_trim_results else [],
-        }
-        with open(output_json, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        print(f"\n結果已寫入 {output_json}")
+    # 寫入 DB
+    all_results_for_db = []
+    for r in all_results:
+        all_results_for_db.append({
+            "symbol": r.log.symbol,
+            "signal_date": r.log.record_date,
+            "p0_price": r.p0,
+            "pN_price": r.p5,
+            "pct_change": r.pct_change,
+            "outcome": "skip" if r.skip_reason else (
+                "win" if r.pct_change is not None and r.pct_change <= -3.0 else (
+                    "loss" if r.pct_change is not None and r.pct_change > -3.0 else "draw"
+                )
+            ),
+            "skip_reason": r.skip_reason,
+            "signal_confidence": float(r.log.signal_confidence) if r.log.signal_confidence is not None else None,
+            "conviction_level": None,
+            "strategy_type": None,
+            "action_tag": r.log.action_tag,
+            "log_id": r.log.id,
+        })
+
+    try:
+        SessionLocal = _get_session_local()
+        with SessionLocal() as session:
+            _save_run_to_db(
+                session=session,
+                mode="position",
+                hold_days=5,
+                days_lookback=days,
+                results=all_results_for_db,
+            )
+        print("[backtest] 結果已寫入 DB")
+    except Exception as e:
+        print(f"[backtest] DB 寫入失敗：{e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
@@ -853,21 +957,25 @@ if __name__ == "__main__":
     parser.add_argument("--action-tag",           type=str,   default=None, help="篩選特定 action_tag（position 模式）")
     parser.add_argument("--min-confidence",       type=float, default=None, help="最低 signal_confidence 門檻")
     parser.add_argument("--require-final-raw-data", action="store_true",   help="只納入同時有 final raw data 的樣本（position 模式）")
-    parser.add_argument("--output-json",          type=str,   default=None, help="輸出結構化 JSON 結果至指定路徑")
+    parser.add_argument(
+        "--strategy-version",
+        default=None,
+        help="過濾特定策略版本（逗號分隔多個，如 '1.0.0,1.1.0'；'NULL' 表示無版本記錄）",
+    )
     args = parser.parse_args()
 
     if args.mode == "new-position":
         main_new_position(
             days=args.days,
             hold_days=args.hold_days,
-            output_json=args.output_json,
             min_confidence=args.min_confidence,
+            strategy_version=args.strategy_version,
         )
     else:
         main(
             days=args.days,
             action_tag=args.action_tag,
             require_final_raw=args.require_final_raw_data,
-            output_json=args.output_json,
             min_confidence=args.min_confidence,
+            strategy_version=args.strategy_version,
         )
