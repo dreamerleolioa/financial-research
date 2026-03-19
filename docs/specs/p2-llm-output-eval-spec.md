@@ -67,7 +67,7 @@
 |---|---|
 | F2-1 | `scripts/eval_llm_output.py` 接受 `--cases` 參數（預設讀 `tests/fixtures/llm_eval_cases.json`） |
 | F2-2 | 對每筆案例，呼叫實際 LLM API 取得輸出，再執行 `expected_checks` |
-| F2-3 | 支援 `--dry-run`：只印出案例資訊，不呼叫 LLM（供本機快速驗證腳本結構） |
+| F2-3 | 支援 `--dry-run`：不呼叫 LLM，改以 `mock_llm_output` 執行所有 checks 並輸出結果（供本機快速迴歸驗證） |
 | F2-4 | 每個 check 結果為 `pass`、`warn`、`fail` 三態 |
 | F2-5 | 支援 `--output-json` 輸出完整結果至 JSON 檔 |
 
