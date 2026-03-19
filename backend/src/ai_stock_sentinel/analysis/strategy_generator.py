@@ -366,6 +366,10 @@ def generate_action_plan(
         flow_label=flow_label,
     )
 
+    # 盤中 guardrail：覆蓋 suggested_position_size
+    if not is_final:
+        suggested_position_size = "盤中觀察，建議等待收盤確認後再評估部位"
+
     return {
         "action": action,
         "target_zone": entry_zone,
