@@ -4,7 +4,7 @@ LLM 輸出品質評測腳本
 
 使用方式：
   python scripts/eval_llm_output.py --dry-run
-  python scripts/eval_llm_output.py --output-json eval-results/result.json
+  python scripts/eval_llm_output.py --output-json eval-results/20260319-a3f7c891.json
 """
 from __future__ import annotations
 
@@ -217,11 +217,11 @@ def main() -> None:
         print(f"\n=== 評測結果 ===")
         print(f"Pass: {report['pass_count']} / Warn: {report['warn_count']} / Fail: {report['fail_count']}")
 
-        if args.output_json:
-            out_path = Path(args.output_json)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"結果已寫入：{out_path}")
+        out_path_str = args.output_json or f"eval-results/{report['run_date'].replace('-', '')}-{report['prompt_hash']}.json"
+        out_path = Path(out_path_str)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"結果已寫入：{out_path}")
 
         if report["fail_count"] > 0:
             print(f"\n[!] 有 {report['fail_count']} 個 fail，請確認 LLM 輸出品質。", file=sys.stderr)
