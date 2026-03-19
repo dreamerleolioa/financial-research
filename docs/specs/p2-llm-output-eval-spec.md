@@ -39,7 +39,7 @@
 - `scripts/eval_llm_output.py`：評測腳本（讀取固定案例集，輸出報告）
 - `tests/fixtures/llm_eval_cases.json`：固定 eval 案例集（至少 5 筆）
 - `langchain_analyzer.py`：system prompt 版本 hash 計算（不修改 prompt 本身）
-- 評測報告儲存至 `docs/research/llm-eval-results/`
+- 評測報告儲存至 `backend/eval-results/`
 
 ### 範圍外
 
@@ -93,7 +93,7 @@
 
 | 編號 | 需求 |
 |---|---|
-| F5-1 | 結果存入 `docs/research/llm-eval-results/YYYYMMDD-<prompt_hash_short>.json` |
+| F5-1 | 結果存入 `backend/eval-results/YYYYMMDD-<prompt_hash_short>.json` |
 | F5-2 | 頂層欄位：`run_date`、`prompt_hash`、`total`、`pass_count`、`warn_count`、`fail_count`、`cases` |
 | F5-3 | 每筆 `cases` 含：`id`、`description`、`checks`（每條 check 的結果與說明） |
 | F5-4 | `fail_count > 0` 時腳本以 exit code 1 結束（讓 CI 可偵測） |
@@ -119,7 +119,7 @@
 | AC3 | 手動注入違規 LLM 輸出（含「法人」字樣至 tech_insight），對應 check 輸出 `fail` | mock 測試 |
 | AC4 | `--output-json` 輸出包含 F5 定義的所有欄位 | 驗證 JSON |
 | AC5 | `langchain_analyzer.py` 可計算並輸出 `PROMPT_HASH` | import 確認 |
-| AC6 | `docs/research/llm-eval-results/` 有第一次評測結果 JSON | 確認檔案 |
+| AC6 | `backend/eval-results/` 有第一次評測結果 JSON | 確認檔案 |
 
 ---
 

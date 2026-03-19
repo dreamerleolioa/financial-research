@@ -1,0 +1,105 @@
+{
+  "run_date": "2026-03-19",
+  "prompt_hash": "05b2afb4",
+  "total": 13,
+  "pass_count": 9,
+  "warn_count": 1,
+  "fail_count": 3,
+  "cases": [
+    {
+      "id": "case-001",
+      "description": "正常輸出：維度分離、語氣一致、無違規",
+      "checks": [
+        {
+          "check": "json_valid",
+          "result": "pass",
+          "message": "JSON 結構完整"
+        },
+        {
+          "check": "no_cross_dimension",
+          "result": "pass",
+          "message": "維度隔離正常"
+        },
+        {
+          "check": "verdict_conviction_align",
+          "result": "pass",
+          "message": "語氣與信心等級一致"
+        },
+        {
+          "check": "no_overconfident_language",
+          "result": "pass",
+          "message": "無過度武斷措辭"
+        },
+        {
+          "check": "no_fabricated_source",
+          "result": "pass",
+          "message": "無造假來源跡象"
+        }
+      ]
+    },
+    {
+      "id": "case-002",
+      "description": "違規：tech_insight 引用法人資料",
+      "checks": [
+        {
+          "check": "json_valid",
+          "result": "pass",
+          "message": "JSON 結構完整"
+        },
+        {
+          "check": "no_cross_dimension",
+          "result": "fail",
+          "message": "tech_insight 含禁用字：「法人」; tech_insight 含禁用字：「買超」"
+        }
+      ]
+    },
+    {
+      "id": "case-003",
+      "description": "違規：final_verdict 與 low conviction 語氣衝突",
+      "checks": [
+        {
+          "check": "json_valid",
+          "result": "pass",
+          "message": "JSON 結構完整"
+        },
+        {
+          "check": "verdict_conviction_align",
+          "result": "fail",
+          "message": "low conviction 但 final_verdict 含積極語氣：「強烈建議」"
+        }
+      ]
+    },
+    {
+      "id": "case-004",
+      "description": "違規：過度武斷措辭",
+      "checks": [
+        {
+          "check": "json_valid",
+          "result": "pass",
+          "message": "JSON 結構完整"
+        },
+        {
+          "check": "no_overconfident_language",
+          "result": "warn",
+          "message": "含過度武斷措辭：['必然', '確定', '100%', '一定會', '一定']"
+        }
+      ]
+    },
+    {
+      "id": "case-005",
+      "description": "違規：引用未出現的來源",
+      "checks": [
+        {
+          "check": "json_valid",
+          "result": "pass",
+          "message": "JSON 結構完整"
+        },
+        {
+          "check": "no_fabricated_source",
+          "result": "fail",
+          "message": "含疑似造假來源：pattern=「根據.*分析師」"
+        }
+      ]
+    }
+  ]
+}

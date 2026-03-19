@@ -4,7 +4,7 @@ LLM 輸出品質評測腳本
 
 使用方式：
   python scripts/eval_llm_output.py --dry-run
-  python scripts/eval_llm_output.py --output-json docs/research/llm-eval-results/result.json
+  python scripts/eval_llm_output.py --output-json eval-results/result.json
 """
 from __future__ import annotations
 
