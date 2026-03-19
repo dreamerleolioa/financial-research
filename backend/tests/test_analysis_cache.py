@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.config import STRATEGY_VERSION
 
 
 def _make_mock_cache(is_final: bool, action_tag: str = "Hold", confidence: float = 72.5):
@@ -17,6 +18,7 @@ def _make_mock_cache(is_final: bool, action_tag: str = "Hold", confidence: float
     c.signal_confidence = confidence
     c.recommended_action = "觀望"
     c.final_verdict = "中性"
+    c.strategy_version = STRATEGY_VERSION
     return c
 
 

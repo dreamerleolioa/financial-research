@@ -7,7 +7,6 @@
     python scripts/backtest_win_rate.py --days 90
     python scripts/backtest_win_rate.py --days 90 --action-tag Exit
     python scripts/backtest_win_rate.py --days 90 --require-final-raw-data
-    python scripts/backtest_win_rate.py --days 90 --output-json result.json
     python scripts/backtest_win_rate.py --mode new-position --days 90
     python scripts/backtest_win_rate.py --mode new-position --hold-days 10
 
@@ -62,6 +61,7 @@ def fetch_logs(
     analysis_is_final_only: bool = True,
     symbols: list[str] | None = None,
     min_confidence: float | None = None,
+    strategy_version: str | None = None,
 ) -> tuple[list[DailyAnalysisLog], int]:
     """從 DB 讀取指定期間的診斷 log。
 
@@ -85,6 +85,21 @@ def fetch_logs(
     if min_confidence is not None:
         q = q.filter(DailyAnalysisLog.signal_confidence >= min_confidence)
 
+    if strategy_version is not None:
+        versions = [v.strip() for v in strategy_version.split(",")]
+        if "NULL" in versions:
+            non_null = [v for v in versions if v != "NULL"]
+            if non_null:
+                q = q.filter(
+                    (DailyAnalysisLog.strategy_version.in_(non_null)) |
+                    (DailyAnalysisLog.strategy_version.is_(None))
+                )
+            else:
+                q = q.filter(DailyAnalysisLog.strategy_version.is_(None))
+        else:
+            q = q.filter(DailyAnalysisLog.strategy_version.in_(versions))
+        print(f"[backtest] 版本過濾：{strategy_version}")
+
     return q.all(), total_count
 
 
@@ -94,6 +109,7 @@ def fetch_new_position_logs(
     *,
     analysis_is_final_only: bool = True,
     min_confidence: float | None = None,
+    strategy_version: str | None = None,
 ) -> tuple[list[DailyAnalysisLog], int]:
     """從 DB 讀取新倉策略 log（strategy_type IN short_term/mid_term）。
 
@@ -119,6 +135,21 @@ def fetch_new_position_logs(
     q = q.filter(
         DailyAnalysisLog.indicators["strategy_type"].astext.in_(["short_term", "mid_term"])
     )
+
+    if strategy_version is not None:
+        versions = [v.strip() for v in strategy_version.split(",")]
+        if "NULL" in versions:
+            non_null = [v for v in versions if v != "NULL"]
+            if non_null:
+                q = q.filter(
+                    (DailyAnalysisLog.strategy_version.in_(non_null)) |
+                    (DailyAnalysisLog.strategy_version.is_(None))
+                )
+            else:
+                q = q.filter(DailyAnalysisLog.strategy_version.is_(None))
+        else:
+            q = q.filter(DailyAnalysisLog.strategy_version.in_(versions))
+        print(f"[backtest] 版本過濾：{strategy_version}")
 
     return q.all(), total_count
 
@@ -559,6 +590,7 @@ def main_new_position(
     days: int,
     hold_days: int | None,
     min_confidence: float | None,
+    strategy_version: str | None = None,
 ) -> None:
     """新倉策略回測主程式。
 
@@ -574,6 +606,7 @@ def main_new_position(
             days, db,
             analysis_is_final_only=True,
             min_confidence=min_confidence,
+            strategy_version=strategy_version,
         )
 
     excluded_not_final = total_in_range - len(logs)
@@ -774,6 +807,7 @@ def main(
     action_tag: str | None,
     require_final_raw: bool,
     min_confidence: float | None,
+    strategy_version: str | None = None,
 ) -> None:
     print(f"\n=== 勝率回測報告（過去 {days} 天）===")
     if require_final_raw:
@@ -787,6 +821,7 @@ def main(
             days, action_tag, db,
             analysis_is_final_only=True,
             min_confidence=min_confidence,
+            strategy_version=strategy_version,
         )
         final_raw_lookup = build_raw_data_lookup(logs, db)
 
@@ -922,6 +957,11 @@ if __name__ == "__main__":
     parser.add_argument("--action-tag",           type=str,   default=None, help="篩選特定 action_tag（position 模式）")
     parser.add_argument("--min-confidence",       type=float, default=None, help="最低 signal_confidence 門檻")
     parser.add_argument("--require-final-raw-data", action="store_true",   help="只納入同時有 final raw data 的樣本（position 模式）")
+    parser.add_argument(
+        "--strategy-version",
+        default=None,
+        help="過濾特定策略版本（逗號分隔多個，如 '1.0.0,1.1.0'；'NULL' 表示無版本記錄）",
+    )
     args = parser.parse_args()
 
     if args.mode == "new-position":
@@ -929,6 +969,7 @@ if __name__ == "__main__":
             days=args.days,
             hold_days=args.hold_days,
             min_confidence=args.min_confidence,
+            strategy_version=args.strategy_version,
         )
     else:
         main(
@@ -936,4 +977,5 @@ if __name__ == "__main__":
             action_tag=args.action_tag,
             require_final_raw=args.require_final_raw_data,
             min_confidence=args.min_confidence,
+            strategy_version=args.strategy_version,
         )

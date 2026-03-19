@@ -172,7 +172,39 @@
 
 ---
 
-## 7) 文件維護規範
+## 7) 策略版本遞增 SOP
+
+### 觸發條件判斷
+
+| 變更類型 | 版次 | 範例 |
+|---|---|---|
+| docstring / log / 非邏輯性重構 | PATCH | `1.0.0 → 1.0.1` |
+| confidence_scorer.py 常數值、action_plan 文字模板、conviction 降級閾值 | MINOR | `1.0.0 → 1.1.0` |
+| generate_strategy() evidence scoring 核心邏輯、strategy_type 分類規則 | MAJOR | `1.0.0 → 2.0.0` |
+
+LLM prompt 修改不屬於策略版本，以 `PROMPT_HASH` 追蹤。
+
+### 操作步驟
+
+1. 確認變更屬於哪個版次（對照上表）
+2. 修改 `backend/src/ai_stock_sentinel/config.py` 的 `STRATEGY_VERSION`
+3. 執行所有後端測試確認通過
+4. 部署後，現有 `StockAnalysisCache` 中的舊版快取自動失效（下次查詢時觸發重分析）
+5. 重新執行回測腳本：
+   ```bash
+   python scripts/backtest_win_rate.py --mode new-position --days 90
+   ```
+6. 比較新舊版本勝率差異（使用 `--strategy-version` 過濾）
+
+### 注意事項
+
+- 版本遞增後不需要手動清空快取，失效機制自動處理
+- 若新版本回測結果不如舊版，可回滾 `STRATEGY_VERSION` 並調查原因
+- 每次調整需間隔至少一個月的新樣本，避免 overfitting（信心校準規範）
+
+---
+
+## 8) 文件維護規範
 
 - 進行中需求的真相來源：對應的 `docs/plans/*.md`
 - 任務唯一真相來源：`docs/implementation-task-breakdown.md`

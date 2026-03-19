@@ -736,6 +736,8 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
         "errors": [],
     }
 
+    from ai_stock_sentinel.config import STRATEGY_VERSION
+
     cache = MagicMock()
     cache.symbol = "2330.TW"
     cache.is_final = True
@@ -745,6 +747,8 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     cache.recommended_action = None
     cache.final_verdict = "完整分析內容"
     cache.indicators = {}
+    cache.analysis_is_final = True
+    cache.strategy_version = STRATEGY_VERSION
 
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol: cache)
     monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)

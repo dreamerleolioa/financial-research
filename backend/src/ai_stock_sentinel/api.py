@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
@@ -32,6 +33,7 @@ from ai_stock_sentinel.services.history_loader import (
 from ai_stock_sentinel.user_models.user import User
 
 configure_logging()
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeRequest(BaseModel):
@@ -82,6 +84,7 @@ class AnalyzeResponse(BaseModel):
     position_analysis: PositionAnalysis | None = None
     is_final: bool = True
     intraday_disclaimer: str | None = None
+    strategy_version: str | None = None
 
     class ErrorDetail(BaseModel):
         code: str
@@ -110,6 +113,7 @@ class CachedAnalyzeResponse(BaseModel):
     final_verdict: str | None
     is_final: bool
     intraday_disclaimer: Optional[str] = None
+    strategy_version: str | None = None
 
 
 # ─── 快取輔助函式 ─────────────────────────────────────────────
@@ -144,6 +148,16 @@ def _handle_cache_hit(
     - analysis_is_final=FALSE + 盤中：回傳含免責聲明
     - analysis_is_final=FALSE + 收盤後：回傳 None（強制重新分析）
     """
+    # 版本一致性檢查：快取版本與當前版本不一致時，視為失效
+    if cache.strategy_version != STRATEGY_VERSION:
+        logger.info(json.dumps({
+            "event": "cache_version_mismatch",
+            "symbol": cache.symbol,
+            "cache_version": cache.strategy_version,
+            "current_version": STRATEGY_VERSION,
+        }))
+        return None  # 觸發重新分析
+
     if cache.analysis_is_final:
         return _build_analysis_response(
             symbol=cache.symbol,
@@ -152,6 +166,7 @@ def _handle_cache_hit(
             recommended_action=cache.recommended_action,
             final_verdict=cache.final_verdict,
             is_final=True,
+            strategy_version=cache.strategy_version,
         )
     if now_time < MARKET_CLOSE:
         return _build_analysis_response(
@@ -161,6 +176,7 @@ def _handle_cache_hit(
             recommended_action=cache.recommended_action,
             final_verdict=cache.final_verdict,
             is_final=False,
+            strategy_version=cache.strategy_version,
         )
     return None  # 收盤後非定稿快取 → 強制重新分析
 
@@ -173,6 +189,7 @@ def _build_analysis_response(
     recommended_action: str | None,
     final_verdict: str | None,
     is_final: bool,
+    strategy_version: str | None = None,
 ) -> CachedAnalyzeResponse:
     return CachedAnalyzeResponse(
         symbol=symbol,
@@ -182,6 +199,7 @@ def _build_analysis_response(
         final_verdict=final_verdict,
         is_final=is_final,
         intraday_disclaimer=INTRADAY_DISCLAIMER if not is_final else None,
+        strategy_version=strategy_version,
     )
 
 
@@ -366,6 +384,7 @@ def _build_response_from_cache(
             resp = AnalyzeResponse.model_validate(full_result)
             resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
             resp.intraday_disclaimer = hit.intraday_disclaimer
+            resp.strategy_version = hit.strategy_version  # 快取命中時回傳快取的版本（可能為 NULL）
             return resp
         except Exception:
             # Schema drift — fallback to sparse fields from cache metadata
@@ -377,6 +396,7 @@ def _build_response_from_cache(
         action_plan_tag=hit.action_tag,
         is_final=hit.is_final,
         intraday_disclaimer=hit.intraday_disclaimer,
+        strategy_version=hit.strategy_version,
     )
 
 
@@ -544,6 +564,7 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
         fundamental_data=result.get("fundamental_data"),
         position_analysis=position_analysis,
         errors=response_errors,
+        strategy_version=STRATEGY_VERSION,
     )
 
 
