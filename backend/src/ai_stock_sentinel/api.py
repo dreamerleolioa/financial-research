@@ -785,13 +785,7 @@ class HistoryEntry(BaseModel):
     final_verdict:     str | None
 
 
-@app.get("/history/{symbol}", response_model=list[HistoryEntry])
-def get_symbol_history(
-    symbol: str,
-    days: int = 30,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-) -> list[HistoryEntry]:
+def fetch_symbol_history(db: Session, symbol: str, days: int = 30):
     from datetime import date, timedelta
     since = date.today() - timedelta(days=days)
     result = db.execute(
@@ -802,7 +796,17 @@ def get_symbol_history(
         )
         .order_by(StockAnalysisCache.record_date)
     )
-    logs = list(result.scalars().all())
+    return list(result.scalars().all())
+
+
+@app.get("/history/{symbol}", response_model=list[HistoryEntry])
+def get_symbol_history(
+    symbol: str,
+    days: int = 30,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[HistoryEntry]:
+    logs = fetch_symbol_history(db=db, symbol=symbol, days=days)
     return [
         HistoryEntry(
             record_date=       str(log.record_date),
