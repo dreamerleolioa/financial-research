@@ -785,19 +785,7 @@ class HistoryEntry(BaseModel):
     final_verdict:     str | None
 
 
-def fetch_symbol_history(
-    symbol: str,
-    db: Session,
-    *,
-    days: int = 30,
-) -> list:
-    """從 stock_analysis_cache 讀取指定股票的歷史診斷紀錄。
-
-    查 stock_analysis_cache（不含 user_id，跨使用者共用），供即時分析視窗
-    查看該股歷史趨勢，不需要使用者有持倉。
-    若需查詢持倉診斷變化，請使用 GET /portfolio/{id}/history
-    （查 daily_analysis_log，含 user_id，已在 Phase 7 實作）。
-    """
+def fetch_symbol_history(db: Session, symbol: str, days: int = 30):
     from datetime import date, timedelta
     since = date.today() - timedelta(days=days)
     result = db.execute(
@@ -818,7 +806,7 @@ def get_symbol_history(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> list[HistoryEntry]:
-    logs = fetch_symbol_history(symbol, db, days=days)
+    logs = fetch_symbol_history(db=db, symbol=symbol, days=days)
     return [
         HistoryEntry(
             record_date=       str(log.record_date),

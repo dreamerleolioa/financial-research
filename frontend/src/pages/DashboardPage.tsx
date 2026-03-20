@@ -4,10 +4,11 @@ import { ConfidenceChart } from "../components/ConfidenceChart";
 import { fetchSymbolHistory, type HistoryEntry } from "../lib/historyApi";
 
 const ACTION_BADGE: Record<string, { label: string; cls: string }> = {
-  Hold: { label: "續抱", cls: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300" },
-  Trim: { label: "減碼", cls: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300" },
-  Exit: { label: "出場", cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" },
-  Add: { label: "加碼", cls: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
+  Hold:    { label: "續抱",   cls: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300" },
+  Trim:    { label: "減碼",   cls: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300" },
+  Exit:    { label: "出場",   cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" },
+  Add:     { label: "加碼",   cls: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
+  neutral: { label: "中性觀望", cls: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" },
 };
 
 export default function DashboardPage() {
@@ -44,7 +45,7 @@ export default function DashboardPage() {
   );
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-4">
+    <div className="w-full space-y-6 px-6 py-4">
       <h1 className="text-xl font-semibold text-text-primary">復盤儀表板</h1>
 
       {/* 查詢列 */}
@@ -90,7 +91,7 @@ export default function DashboardPage() {
               已收盤定稿，但分析尚未重跑，虛線外圈標記僅供參考，不代表收盤定論。
             </p>
           )}
-          <ConfidenceChart data={chartData} />
+          <ConfidenceChart data={chartData} height={320} />
         </div>
       )}
 
