@@ -8,10 +8,11 @@ interface DataPoint {
 }
 
 const ACTION_COLOR: Record<string, string> = {
-  Hold: "#22c55e", // green-500
-  Trim: "#eab308", // yellow-500
-  Exit: "#ef4444", // red-500
-  Add: "#3b82f6",  // blue-500
+  Hold: "#22c55e",    // green-500
+  Trim: "#eab308",    // yellow-500
+  Exit: "#ef4444",    // red-500
+  Add: "#3b82f6",     // blue-500
+  neutral: "#94a3b8", // slate-400
 };
 
 const ACTION_LABEL: Record<string, string> = {
@@ -19,6 +20,7 @@ const ACTION_LABEL: Record<string, string> = {
   Trim: "減碼",
   Exit: "出場",
   Add: "加碼",
+  neutral: "中性觀望",
 };
 
 interface Props {
@@ -59,7 +61,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
 
   return (
     <div className="w-full overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 320 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 320, height: H }} preserveAspectRatio="none">
         {/* 格線 */}
         {gridLines.map((y) => (
           <g key={y}>
@@ -78,7 +80,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
         ))}
 
         {/* 折線 */}
-        <path d={linePath} fill="none" stroke="#6366f1" strokeWidth={2} />
+        <path d={linePath} fill="none" stroke="var(--color-border)" strokeWidth={2} />
 
         {/* 各點標記 */}
         {validPoints.map((d, i) => {
