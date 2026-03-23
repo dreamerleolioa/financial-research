@@ -351,8 +351,10 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
         {/* Body */}
         <div className="space-y-4 p-5">
           {loading && (
-            <div className="flex items-center justify-center py-12 text-sm text-text-faint">
-              分析中，請稍候…
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" style={{ animationDuration: "1s" }} />
+              <p className="text-sm font-medium text-text-primary">AI 持倉診斷中</p>
+              <p className="text-xs text-text-muted">通常需要 15–30 秒</p>
             </div>
           )}
 
@@ -573,7 +575,27 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   }
 
   if (loading) {
-    return <p className="text-sm text-text-faint">載入中…</p>;
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="h-4 w-16 animate-pulse rounded bg-border" />
+          <div className="h-3 w-8 animate-pulse rounded bg-border" />
+        </div>
+        {[1, 2].map((i) => (
+          <div key={i} className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="h-5 w-20 animate-pulse rounded bg-border" />
+              <div className="h-5 w-16 animate-pulse rounded bg-border" />
+            </div>
+            <div className="h-3 w-32 animate-pulse rounded bg-border" />
+            <div className="flex gap-2 pt-1">
+              <div className="h-8 w-16 animate-pulse rounded-lg bg-border" />
+              <div className="h-8 w-16 animate-pulse rounded-lg bg-border" />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
   }
 
   if (items.length === 0) {

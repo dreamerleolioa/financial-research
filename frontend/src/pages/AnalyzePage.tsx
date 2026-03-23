@@ -363,7 +363,13 @@ export default function AnalyzePage() {
           )}
         </div>
         <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
-        {result ? (
+        {loading ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" style={{ animationDuration: "1s" }} />
+            <p className="text-sm font-medium text-text-primary">AI 分析中</p>
+            <p className="text-xs text-text-muted">正在抓取行情、計算指標並呼叫 AI，通常需要 15–30 秒</p>
+          </div>
+        ) : result ? (
           result.action_plan ? (
             <div className="rounded-xl border border-border bg-card p-4 space-y-4">
 
