@@ -22,7 +22,6 @@ pnpm dev
 pnpm build
 pnpm preview
 pnpm lint
-pnpm
 ```
 
 ## 目前頁面內容
