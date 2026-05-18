@@ -32,6 +32,18 @@ interface NewsDisplayItem {
   source_url: string | null;
 }
 
+interface TechnicalIndicators {
+  bollinger_upper: number | null;
+  bollinger_mid: number | null;
+  bollinger_lower: number | null;
+  bollinger_bandwidth: number | null;
+  bollinger_position: string | null;
+  macd_line: number | null;
+  macd_signal: number | null;
+  macd_hist: number | null;
+  macd_bias: string | null;
+}
+
 interface AnalyzeResponse {
   snapshot: Record<string, unknown>;
   analysis: string;
@@ -46,6 +58,7 @@ interface AnalyzeResponse {
   stop_loss: string | null;
   holding_period: string | null;
   action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
+  technical_indicators?: TechnicalIndicators | null;
   action_plan: {
     action?: string;
     target_zone?: string;
@@ -131,6 +144,20 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
   high: { label: "高信心", cls: "bg-emerald-100 text-emerald-800" },
   medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
   low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const BOLLINGER_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
+  near_upper: { label: "近上軌", cls: "bg-red-100 text-red-800" },
+  above_mid:  { label: "中軌上方", cls: "bg-emerald-100 text-emerald-800" },
+  below_mid:  { label: "中軌下方", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  near_lower: { label: "近下軌", cls: "bg-blue-100 text-blue-800" },
+  flat:       { label: "通道平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const MACD_BIAS_LABEL: Record<string, { label: string; cls: string }> = {
+  bullish: { label: "偏多", cls: "bg-emerald-100 text-emerald-800" },
+  bearish: { label: "偏空", cls: "bg-red-100 text-red-800" },
+  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 function TriggersSection({
@@ -596,6 +623,58 @@ export default function AnalyzePage() {
             <InsightText text={result?.analysis_detail?.news_insight} />
           </article>
         </div>
+
+        {result?.technical_indicators && (
+          <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <h3 className="mb-3 text-xs font-semibold text-text-muted">技術指標數值</h3>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+              <div>
+                <p className="text-xs text-text-muted mb-1">布林通道位階</p>
+                {result.technical_indicators.bollinger_position && BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position].cls}`}>
+                    {BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">MACD 方向</p>
+                {result.technical_indicators.macd_bias && MACD_BIAS_LABEL[result.technical_indicators.macd_bias] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MACD_BIAS_LABEL[result.technical_indicators.macd_bias].cls}`}>
+                    {MACD_BIAS_LABEL[result.technical_indicators.macd_bias].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">布林上軌</p>
+                <p className="text-sm font-medium text-text-primary">{result.technical_indicators.bollinger_upper != null ? result.technical_indicators.bollinger_upper.toFixed(2) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">布林中軌</p>
+                <p className="text-sm font-medium text-text-primary">{result.technical_indicators.bollinger_mid != null ? result.technical_indicators.bollinger_mid.toFixed(2) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">布林下軌</p>
+                <p className="text-sm font-medium text-text-primary">{result.technical_indicators.bollinger_lower != null ? result.technical_indicators.bollinger_lower.toFixed(2) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">MACD 線</p>
+                <p className={`text-sm font-medium ${result.technical_indicators.macd_line != null ? (result.technical_indicators.macd_line >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
+                  {result.technical_indicators.macd_line != null ? result.technical_indicators.macd_line.toFixed(3) : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">訊號線</p>
+                <p className="text-sm font-medium text-text-primary">{result.technical_indicators.macd_signal != null ? result.technical_indicators.macd_signal.toFixed(3) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">柱狀體</p>
+                <p className={`text-sm font-medium ${result.technical_indicators.macd_hist != null ? (result.technical_indicators.macd_hist >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
+                  {result.technical_indicators.macd_hist != null ? result.technical_indicators.macd_hist.toFixed(3) : "—"}
+                </p>
+              </div>
+            </div>
+          </article>
+        )}
 
         {result?.analysis_detail && (
           <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/60">

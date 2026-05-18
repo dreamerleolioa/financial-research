@@ -10,12 +10,14 @@ def derive_technical_score(
     closes: list[float],
     rsi: float | None,
     bias: float | None,
+    macd_data: dict | None = None,
+    bb: dict | None = None,
 ) -> int:
-    """依據 RSI、BIAS、MA 排列三個獨立訊號計算技術面信心分數。
+    """依據 RSI、BIAS、MA、MACD、布林通道五個獨立訊號計算技術面信心分數。
 
     - 資料不足（< 20 根）→ 回傳 50
-    - score 範圍 -3 ~ +3，映射至 30 ~ 70
-    - 映射公式：round(50 + score * (20 / 3))
+    - score 範圍 -5 ~ +5，映射至 33 ~ 67（每格 ≈ 3.4 分）
+    - 映射公式：round(50 + score * (17 / 5))
     """
     if len(closes) < 20:
         return 50
@@ -26,14 +28,14 @@ def derive_technical_score(
 
     score = 0
 
-    # RSI 訊號
+    # ── RSI 訊號 ──────────────────────────────────────────────
     if rsi is not None:
         if rsi >= 50:
             score += 1
         elif rsi <= 30:
             score -= 1
 
-    # BIAS 訊號：
+    # ── BIAS 訊號 ─────────────────────────────────────────────
     # >10 → 乖離過大（超買），偏空；<-10 → 乖離過深（超賣極端），偏空
     # 0 < bias <= 5 → 小幅正乖離，偏多；其餘中性
     if bias is not None:
@@ -44,15 +46,48 @@ def derive_technical_score(
         elif 0 < bias <= 5:
             score += 1
 
-    # MA 排列訊號
+    # ── MA 排列訊號 ───────────────────────────────────────────
     if ma5 is not None and ma20 is not None:
         if close > ma5 > ma20:
             score += 1
         elif ma5 < ma20:
             score -= 1
 
-    clamped = max(-3, min(3, score))
-    return round(50 + clamped * (20 / 3))
+    # ── MACD 訊號 ─────────────────────────────────────────────
+    if macd_data is not None:
+        macd_line = macd_data.get("macd_line")
+        macd_bias = macd_data.get("macd_bias")
+        # 黃金交叉且零軸上方：偏多加分
+        if macd_bias == "bullish" and macd_line is not None and macd_line > 0:
+            score += 1
+        # 死亡交叉且零軸下方：偏空扣分
+        elif macd_bias == "bearish" and macd_line is not None and macd_line < 0:
+            score -= 1
+
+    # ── 布林通道訊號 ──────────────────────────────────────────
+    if bb is not None:
+        upper = bb.get("bollinger_upper")
+        lower = bb.get("bollinger_lower")
+        mid = bb.get("bollinger_mid")
+        if upper is not None and lower is not None and mid is not None:
+            band_range = upper - lower
+            if band_range > 0:
+                # 價格沿上軌且非極端爆離（95%-99% 區間）：小幅偏多
+                if upper * 0.95 <= close < upper * 0.99:
+                    score += 1
+                # 價格有效跌破中軌並靠近下軌（低於 40% 分位）：偏空
+                elif close < lower + band_range * 0.4:
+                    score -= 1
+
+                # 風險扣分：價格觸上軌且 RSI 過熱
+                if close >= upper * 0.99 and rsi is not None and rsi > 70:
+                    score -= 1
+                # 反彈候選加分：價格觸下軌且 RSI 超賣（小幅，不直接翻多）
+                elif close <= lower * 1.01 and rsi is not None and rsi < 30:
+                    score += 1
+
+    clamped = max(-5, min(5, score))
+    return round(50 + clamped * (17 / 5))
 
 
 # Sentiment 分數對照

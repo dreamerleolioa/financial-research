@@ -26,6 +26,7 @@ from ai_stock_sentinel.main import build_graph_deps
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
+from ai_stock_sentinel.analysis.metrics import bollinger_bands as _bollinger_bands, macd as _macd
 from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
@@ -59,6 +60,18 @@ class PositionAnalysis(BaseModel):
     exit_reason: str | None = None
 
 
+class TechnicalIndicators(BaseModel):
+    bollinger_upper: float | None = None
+    bollinger_mid: float | None = None
+    bollinger_lower: float | None = None
+    bollinger_bandwidth: float | None = None
+    bollinger_position: str | None = None
+    macd_line: float | None = None
+    macd_signal: float | None = None
+    macd_hist: float | None = None
+    macd_bias: str | None = None
+
+
 class AnalyzeResponse(BaseModel):
     snapshot: dict[str, Any] = Field(default_factory=dict)
     analysis: str = ""
@@ -82,6 +95,7 @@ class AnalyzeResponse(BaseModel):
     data_sources: list[str] = Field(default_factory=list)
     fundamental_data: dict[str, Any] | None = None
     position_analysis: PositionAnalysis | None = None
+    technical_indicators: TechnicalIndicators | None = None
     is_final: bool = True
     intraday_disclaimer: str | None = None
     strategy_version: str | None = None
@@ -246,24 +260,80 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
     db.commit()
 
 
+def _compute_bollinger_position(bb: dict, close_price: float | None) -> str | None:
+    upper = bb["bollinger_upper"]
+    lower = bb["bollinger_lower"]
+    if not (upper and lower and close_price):
+        return None
+    band_range = upper - lower
+    if band_range <= 0:
+        return "flat"
+    if close_price >= upper * 0.99:
+        return "near_upper"
+    if close_price <= lower * 1.01:
+        return "near_lower"
+    if close_price >= (lower + band_range * 0.5):
+        return "above_mid"
+    return "below_mid"
+
+
+def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
+    """從 snapshot 計算布林通道與 MACD，回傳 TechnicalIndicators 或 None。"""
+    recent_closes = snapshot.get("recent_closes") or []
+    closes = [float(v) for v in recent_closes if v is not None]
+    if not closes:
+        return None
+    bb = _bollinger_bands(closes)
+    macd_data = _macd(closes)
+    if bb is None and macd_data is None:
+        return None
+    bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
+    return TechnicalIndicators(
+        bollinger_upper=bb["bollinger_upper"] if bb else None,
+        bollinger_mid=bb["bollinger_mid"] if bb else None,
+        bollinger_lower=bb["bollinger_lower"] if bb else None,
+        bollinger_bandwidth=bb.get("bollinger_bandwidth") if bb else None,
+        bollinger_position=bollinger_position,
+        macd_line=macd_data["macd_line"] if macd_data else None,
+        macd_signal=macd_data["macd_signal"] if macd_data else None,
+        macd_hist=macd_data["macd_hist"] if macd_data else None,
+        macd_bias=macd_data["macd_bias"] if macd_data else None,
+    )
+
+
 def _extract_indicators(result: dict) -> dict:
     """從 graph result 提取 indicators JSONB 快照。"""
     snapshot = result.get("snapshot") or {}
     inst = result.get("institutional_flow") or {}
     action_plan = result.get("action_plan") or {}
     cleaned_news = result.get("cleaned_news") or {}
+
+    recent_closes = snapshot.get("recent_closes") or []
+    closes = [float(v) for v in recent_closes if v is not None]
+    bb = _bollinger_bands(closes) if closes else None
+    macd_data = _macd(closes) if closes else None
+    bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
+
     return {
-        "ma5":             snapshot.get("ma5"),
-        "ma20":            snapshot.get("ma20"),
-        "ma60":            snapshot.get("ma60"),
-        "rsi_14":          result.get("rsi14"),
-        "close_price":     snapshot.get("current_price"),
-        "volume_ratio":    snapshot.get("volume_ratio"),
-        "strategy_type":   result.get("strategy_type"),
-        "conviction_level": action_plan.get("conviction_level"),
-        "sentiment_label": cleaned_news.get("sentiment_label"),
-        "flow_label":      inst.get("flow_label") if not inst.get("error") else None,
-        "technical_signal": result.get("technical_signal"),
+        "ma5":                snapshot.get("ma5"),
+        "ma20":               snapshot.get("ma20"),
+        "ma60":               snapshot.get("ma60"),
+        "rsi_14":             result.get("rsi14"),
+        "close_price":        snapshot.get("current_price"),
+        "volume_ratio":       snapshot.get("volume_ratio"),
+        "strategy_type":      result.get("strategy_type"),
+        "conviction_level":   action_plan.get("conviction_level"),
+        "sentiment_label":    cleaned_news.get("sentiment_label"),
+        "flow_label":         inst.get("flow_label") if not inst.get("error") else None,
+        "technical_signal":   result.get("technical_signal"),
+        "bollinger_mid":      bb["bollinger_mid"] if bb else None,
+        "bollinger_upper":    bb["bollinger_upper"] if bb else None,
+        "bollinger_lower":    bb["bollinger_lower"] if bb else None,
+        "bollinger_position": bollinger_position,
+        "macd_line":          macd_data["macd_line"] if macd_data else None,
+        "macd_signal":        macd_data["macd_signal"] if macd_data else None,
+        "macd_hist":          macd_data["macd_hist"] if macd_data else None,
+        "macd_bias":          macd_data["macd_bias"] if macd_data else None,
         "institutional": {
             "foreign_net": inst.get("foreign_net"),
             "trust_net":   inst.get("trust_net"),
@@ -543,6 +613,8 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
             exit_reason=result.get("exit_reason"),
         )
 
+    technical_indicators = _compute_technical_indicators(snapshot if isinstance(snapshot, dict) else {})
+
     return AnalyzeResponse(
         snapshot=snapshot,
         analysis=analysis,
@@ -566,6 +638,7 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
         data_sources=_sources,
         fundamental_data=result.get("fundamental_data"),
         position_analysis=position_analysis,
+        technical_indicators=technical_indicators,
         errors=response_errors,
         strategy_version=STRATEGY_VERSION,
     )

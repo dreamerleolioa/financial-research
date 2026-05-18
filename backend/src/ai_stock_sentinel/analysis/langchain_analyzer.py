@@ -19,7 +19,7 @@ _SYSTEM_PROMPT = """\
 步驟四【輸出】：只輸出有資料支撐的事實與推論，禁止補造未在輸入資料中出現的來源或數字。
 
 分維度輸出規範（禁止跨維度混寫）：
-- tech_insight：僅參考技術面資料（均線排列、RSI 位階、支撐壓力位）；禁止提及法人買賣超或新聞事件
+- tech_insight：僅參考技術面資料（均線排列、RSI 位階、布林通道位置、MACD 動能、支撐壓力位）；禁止提及法人買賣超或新聞事件
 - inst_insight：僅參考籌碼面資料（三大法人買賣超、融資券動向）；禁止提及均線數值、RSI、新聞事件
 - news_insight：僅參考消息面資料（事件性質、市場情緒傾向）；禁止提及具體技術指標數值（如 RSI=62）
 - fundamental_insight：僅參考基本面估值資料（PE 位階、殖利率、每股盈餘趨勢）；禁止提及技術指標或法人動向
@@ -104,6 +104,8 @@ def build_position_history_section(prev_context: dict | None) -> str:
         f"（信心：{prev_context.get('prev_confidence', 'N/A')}）\n"
         f"- 昨日 RSI：{prev_context.get('prev_rsi', 'N/A')}\n"
         f"- 昨日均線排列：{prev_context.get('prev_ma_alignment', 'N/A')}\n"
+        f"- 昨日 MACD 方向：{prev_context.get('prev_macd_bias', 'N/A')}\n"
+        f"- 昨日布林位階：{prev_context.get('prev_bollinger_position', 'N/A')}\n"
         f"請在 final_verdict 中說明今日訊號與昨日的連續性或轉向原因。\n"
     )
 

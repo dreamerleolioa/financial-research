@@ -8,7 +8,7 @@ from ai_stock_sentinel.analysis.context_generator import (
     _price_level_narrative,
     generate_technical_context,
 )
-from ai_stock_sentinel.analysis.metrics import calc_bias, calc_rsi, ma
+from ai_stock_sentinel.analysis.metrics import calc_bias, calc_rsi, ma, bollinger_bands, macd
 
 
 # ─── ma ─────────────────────────────────────────────────────────────────────
@@ -354,3 +354,135 @@ class TestGenerateTechnicalContextWithPriceLevels:
         df = _make_df(closes)
         tc, _ = generate_technical_context(df, None)
         assert "支撐壓力位" in tc and "不足" in tc
+
+
+# ─── 布林通道指標數學測試 ───────────────────────────────────────────────────────
+
+class TestBollingerBands:
+    def test_insufficient_data_returns_none(self):
+        """資料不足 20 筆 → 回傳 None"""
+        assert bollinger_bands([100.0] * 5) is None
+        assert bollinger_bands([100.0] * 19) is None
+
+    def test_exact_20_data_points(self):
+        """恰好 20 筆 → 可計算"""
+        result = bollinger_bands([100.0] * 20)
+        assert result is not None
+
+    def test_upper_greater_than_mid_greater_than_lower(self):
+        """上軌 > 中軌 > 下軌（有波動時）"""
+        closes = [100.0 + (i % 5) * 2.0 for i in range(25)]
+        result = bollinger_bands(closes)
+        assert result is not None
+        assert result["bollinger_upper"] >= result["bollinger_mid"] >= result["bollinger_lower"]
+
+    def test_flat_prices_zero_bandwidth(self):
+        """完全平坦 → 上下軌皆等於中軌，bandwidth=0"""
+        result = bollinger_bands([100.0] * 25)
+        assert result is not None
+        assert result["bollinger_upper"] == pytest.approx(result["bollinger_mid"])
+        assert result["bollinger_lower"] == pytest.approx(result["bollinger_mid"])
+        assert result["bollinger_bandwidth"] == pytest.approx(0.0)
+
+    def test_returns_all_required_keys(self):
+        """回傳 dict 需包含四個必要 key"""
+        result = bollinger_bands([float(i) for i in range(1, 26)])
+        assert result is not None
+        for key in ("bollinger_mid", "bollinger_upper", "bollinger_lower", "bollinger_bandwidth"):
+            assert key in result
+
+
+# ─── MACD 指標數學測試 ─────────────────────────────────────────────────────────
+
+class TestMacd:
+    def test_insufficient_data_returns_none(self):
+        """少於 35 筆（26+9）→ 回傳 None"""
+        assert macd([float(i) for i in range(1, 34)]) is None
+
+    def test_boundary_35_data_points(self):
+        """恰好 35 筆 → 可計算"""
+        result = macd([float(i) for i in range(1, 36)])
+        assert result is not None
+
+    def test_returns_all_required_keys(self):
+        """回傳 dict 需包含四個必要 key"""
+        result = macd([float(i) for i in range(1, 70)])
+        assert result is not None
+        for key in ("macd_line", "macd_signal", "macd_hist", "macd_bias"):
+            assert key in result
+
+    def test_macd_bias_valid_values(self):
+        """macd_bias 只能是 bullish / bearish / neutral"""
+        result = macd([float(i) for i in range(1, 70)])
+        assert result is not None
+        assert result["macd_bias"] in ("bullish", "bearish", "neutral")
+
+    def test_hist_equals_line_minus_signal(self):
+        """macd_hist 應等於 macd_line - macd_signal"""
+        closes = [float(100 + i * 0.5) for i in range(70)]
+        result = macd(closes)
+        assert result is not None
+        assert result["macd_hist"] == pytest.approx(
+            result["macd_line"] - result["macd_signal"], abs=1e-9
+        )
+
+
+# ─── 布林通道與 MACD 敘事整合測試 ─────────────────────────────────────────────
+
+class TestBollingerAndMacdNarrative:
+    def test_technical_context_contains_bollinger_section(self):
+        """generate_technical_context 應固定含【布林通道】段落"""
+        closes = [100.0] * 25
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "【布林通道】" in tc
+
+    def test_technical_context_contains_macd_section(self):
+        """generate_technical_context 應固定含【MACD】段落"""
+        closes = [100.0] * 25
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "【MACD】" in tc
+
+    def test_bollinger_insufficient_fallback(self):
+        """資料不足 20 筆時，布林通道段落應包含資料不足提示"""
+        closes = [100.0] * 5
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "布林通道資料不足" in tc
+
+    def test_macd_insufficient_fallback(self):
+        """資料不足 35 筆時，MACD 段落應包含資料不足提示"""
+        closes = [100.0] * 25
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "MACD 資料不足" in tc
+
+    def test_price_near_upper_band_narrative(self):
+        """價格接近上軌 → 敘事含「上軌」或「偏熱」"""
+        # 19 筆平均 100，最後一筆拉高到接近上軌
+        closes = [100.0] * 19 + [110.0]
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "上軌" in tc or "偏熱" in tc
+
+    def test_price_near_lower_band_narrative(self):
+        """價格接近下軌 → 敘事含「下軌」或「超跌」或「止跌」"""
+        closes = [100.0] * 19 + [82.0]
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "下軌" in tc or "超跌" in tc or "止跌" in tc
+
+    def test_bollinger_convergence_narrative(self):
+        """完全平坦 → 敘事含「收斂」"""
+        closes = [100.0] * 25
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "收斂" in tc
+
+    def test_macd_data_present_when_sufficient(self):
+        """60 筆資料 → MACD 段落應含有效敘事（含「MACD 線位於」）"""
+        closes = [float(100 + i * 0.2) for i in range(60)]
+        df = _make_df(closes)
+        tc, _ = generate_technical_context(df)
+        assert "MACD 線位於" in tc
