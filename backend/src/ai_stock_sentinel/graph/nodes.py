@@ -9,6 +9,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence, derive_technical_score
+from ai_stock_sentinel.analysis.metrics import bollinger_bands as calc_bollinger, macd as calc_macd
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context, generate_fundamental_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
@@ -239,7 +240,7 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
 
 
 def _derive_technical_signal(closes: list[float], rsi: float | None = None) -> str:
-    """由 close/ma5/ma20/RSI/BIAS 推導 technical_signal（多條件加權）。"""
+    """由 close/ma5/ma20/RSI/BIAS/MACD/布林通道推導 technical_signal（多條件加權）。"""
     if len(closes) < 20:
         return "sideways"
     close = closes[-1]
@@ -247,12 +248,14 @@ def _derive_technical_signal(closes: list[float], rsi: float | None = None) -> s
     if rsi is None:
         rsi = calc_rsi(closes, period=14)
     bias = calc_bias(close, ma20) if ma20 is not None else None
+    macd_data = calc_macd(closes)
+    bb = calc_bollinger(closes)
 
-    tech_score = derive_technical_score(closes, rsi=rsi, bias=bias)
+    tech_score = derive_technical_score(closes, rsi=rsi, bias=bias, macd_data=macd_data, bb=bb)
 
-    if tech_score >= 60:  # score >= 60 → net +2 or +3 in weighted model (majority bullish)
+    if tech_score >= 60:
         return "bullish"
-    if tech_score <= 40:  # score <= 40 → net -2 or -3 in weighted model (majority bearish)
+    if tech_score <= 40:
         return "bearish"
     return "sideways"
 
@@ -526,6 +529,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     # 籌碼資料
     inst_data: dict[str, Any] | None = state.get("institutional_flow")  # type: ignore[assignment]
 
+    macd_data = calc_macd(closes) if len(closes) >= 35 else None
+    bb = calc_bollinger(closes)
+
     technical_context_data: dict[str, Any] = {
         "bias": bias,
         "rsi": rsi,
@@ -536,6 +542,8 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "support_20d": state.get("support_20d"),
         "low_20d": state.get("low_20d"),
         "sentiment_label": sentiment_label,
+        "macd_data": macd_data,
+        "bb": bb,
     }
 
     strategy = generate_strategy(technical_context_data, inst_data)

@@ -29,6 +29,7 @@ class EvidenceScores:
     sentiment: int = 0
     risk_penalty: int = 0
     signal_conflict: bool = False
+    bollinger_upper_alert: bool = False  # 貼上軌且 RSI/BIAS 過熱
 
     @property
     def total(self) -> int:
@@ -44,6 +45,8 @@ def _compute_evidence_scores(
     ma20: float | None,
     sentiment_label: str | None,
     flow_label: str | None,
+    macd_data: dict | None = None,
+    bb: dict | None = None,
 ) -> EvidenceScores:
     """計算四組 evidence score，供策略分類使用。"""
     scores = EvidenceScores()
@@ -59,6 +62,50 @@ def _compute_evidence_scores(
             scores.technical += 1
     if bias is not None and bias > 10:
         scores.technical -= 2
+
+    # MACD 動能貢獻
+    if macd_data is not None:
+        macd_line = macd_data.get("macd_line")
+        macd_bias_val = macd_data.get("macd_bias")
+        macd_hist = macd_data.get("macd_hist")
+        # MACD 翻多且零軸上方：偏多加分
+        if macd_bias_val == "bullish" and macd_line is not None and macd_line > 0:
+            scores.technical += 1
+        # MACD 翻空且零軸下方：偏空扣分
+        elif macd_bias_val == "bearish" and macd_line is not None and macd_line < 0:
+            scores.technical -= 1
+        # 柱狀體縮短但仍正值 → 動能減弱，小幅扣分
+        elif (
+            macd_hist is not None
+            and macd_bias_val == "bullish"
+            and macd_data.get("macd_signal") is not None
+            and abs(macd_hist) < abs(macd_data.get("macd_signal", 1.0)) * 0.3
+        ):
+            scores.technical -= 1
+
+    # 布林通道貢獻
+    if bb is not None and close is not None:
+        upper = bb.get("bollinger_upper")
+        lower = bb.get("bollinger_lower")
+        mid = bb.get("bollinger_mid")
+        if upper is not None and lower is not None and mid is not None:
+            band_range = upper - lower
+            if band_range > 0:
+                # 接近下軌 + MACD 柱狀體縮短 → 反彈觀察區（小幅加分）
+                if close <= lower * 1.02:
+                    if (
+                        macd_data is not None
+                        and macd_data.get("macd_hist") is not None
+                        and abs(macd_data["macd_hist"]) < abs(macd_data.get("macd_signal", 1.0) or 1.0) * 0.5
+                    ):
+                        scores.technical += 1
+                # MACD 翻空且價格失守布林中軌：加重空頭扣分
+                if (
+                    close < mid
+                    and macd_data is not None
+                    and macd_data.get("macd_bias") == "bearish"
+                ):
+                    scores.risk_penalty -= 1
 
     # ── 2. flow_evidence ──────────────────────────────────────
     if flow_label == "institutional_accumulation":
@@ -85,6 +132,18 @@ def _compute_evidence_scores(
     if rsi is not None and rsi > 70 and bias is not None and bias > 10:
         scores.risk_penalty -= 1
 
+    # 布林上軌 + RSI 及 BIAS 同時過熱：強制防守旗標
+    if bb is not None and close is not None:
+        upper = bb.get("bollinger_upper")
+        if (
+            upper is not None
+            and close >= upper * 0.99
+            and rsi is not None and rsi > 70
+            and bias is not None and bias > 10
+        ):
+            scores.bollinger_upper_alert = True
+            scores.risk_penalty -= 2
+
     return scores
 
 
@@ -105,6 +164,8 @@ def generate_strategy(
             - support_20d: float | None — 近20日支撐位
             - low_20d: float | None — 近20日最低收盤價
             - sentiment_label: str | None — "positive"/"negative"/"neutral"/None
+            - macd_data: dict | None — MACD 指標 dict（macd_line/signal/hist/bias）
+            - bb: dict | None — 布林通道 dict（bollinger_mid/upper/lower/bandwidth）
         inst_data: 籌碼 dict，key 包含 flow_label 等，或 None。
 
     Returns:
@@ -124,6 +185,8 @@ def generate_strategy(
     support_20d: float | None = technical_context_data.get("support_20d")
     low_20d: float | None = technical_context_data.get("low_20d")
     sentiment_label: str | None = technical_context_data.get("sentiment_label")
+    macd_data: dict | None = technical_context_data.get("macd_data")
+    bb: dict | None = technical_context_data.get("bb")
 
     flow_label: str | None = inst_data.get("flow_label") if inst_data else None
 
@@ -135,6 +198,8 @@ def generate_strategy(
         ma20=ma20,
         sentiment_label=sentiment_label,
         flow_label=flow_label,
+        macd_data=macd_data,
+        bb=bb,
     )
 
     strategy_type = _determine_strategy_from_scores(
@@ -146,6 +211,8 @@ def generate_strategy(
         ma20=ma20,
         sentiment_label=sentiment_label,
         flow_label=flow_label,
+        macd_data=macd_data,
+        bb=bb,
     )
 
     entry_zone = _determine_entry_zone(bias=bias, support_20d=support_20d, ma20=ma20)
@@ -164,6 +231,7 @@ def generate_strategy(
             "risk_penalty": scores.risk_penalty,
             "total": scores.total,
             "signal_conflict": scores.signal_conflict,
+            "bollinger_upper_alert": scores.bollinger_upper_alert,
         },
     }
 
@@ -178,6 +246,8 @@ def _determine_strategy_from_scores(
     ma20: float | None,
     sentiment_label: str | None,
     flow_label: str | None,
+    macd_data: dict | None = None,
+    bb: dict | None = None,
 ) -> str:
     """依 evidence scores 與 hard rules 決定策略類型。
 
@@ -192,25 +262,55 @@ def _determine_strategy_from_scores(
     if bias is not None and bias > 10:
         return STRATEGY_DEFENSIVE_WAIT
 
+    # 布林上軌 + RSI + BIAS 三重過熱：強制防守（已在 risk_penalty 計算，這裡再加 hard rule）
+    if scores.bollinger_upper_alert:
+        return STRATEGY_DEFENSIVE_WAIT
+
+    # MACD 翻空且價格失守布林中軌：偏防守（降為最多 short_term，若分數不足則 defensive_wait）
+    macd_bearish_below_mid = False
+    if (
+        macd_data is not None
+        and macd_data.get("macd_bias") == "bearish"
+        and bb is not None
+        and close is not None
+        and bb.get("bollinger_mid") is not None
+        and close < bb["bollinger_mid"]
+    ):
+        macd_bearish_below_mid = True
+
     # ── Score-based classification ────────────────────────────
     total = scores.total
 
     # mid_term：分數高 + 無嚴重風險
     # 要求 flow 分數為正（法人積極）且均線多頭排列
+    # MACD 翻空且失守中軌時不允許進入 mid_term
     if (
         total >= 4
         and scores.flow > 0
         and _is_bullish_ma_alignment(close=close, ma5=ma5, ma20=ma20)
+        and not macd_bearish_below_mid
     ):
         return STRATEGY_MID_TERM
 
     # short_term：中等分數 或 超賣反彈機會
     # 原有條件：positive sentiment + RSI 超賣
+    # MACD 翻多但價格偏離上軌過大（近上軌 + bias > 5）→ 不直接追價，改為觀望等回測
+    if (
+        macd_data is not None
+        and macd_data.get("macd_bias") == "bullish"
+        and bb is not None
+        and close is not None
+        and bb.get("bollinger_upper") is not None
+        and close >= bb["bollinger_upper"] * 0.97
+        and bias is not None and bias > 5
+    ):
+        return STRATEGY_DEFENSIVE_WAIT
+
     if sentiment_label == "positive" and rsi is not None and rsi < 30:
         return STRATEGY_SHORT_TERM
 
     # 分數中等（2-3）且非衝突 → 短線試單
-    if total >= 2 and not scores.signal_conflict:
+    if total >= 2 and not scores.signal_conflict and not macd_bearish_below_mid:
         return STRATEGY_SHORT_TERM
 
     # 預設觀望

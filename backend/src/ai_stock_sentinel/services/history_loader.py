@@ -9,6 +9,7 @@ import yfinance as yf
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.analysis.metrics import bollinger_bands, macd
 from ai_stock_sentinel.db.models import StockAnalysisCache
 
 
@@ -47,10 +48,12 @@ def load_yesterday_context(symbol: str, db: Session) -> dict | None:
 
     indicators = row.indicators or {}
     return {
-        "prev_action_tag":   row.action_tag,
-        "prev_confidence":   float(row.signal_confidence) if row.signal_confidence is not None else None,
-        "prev_rsi":          indicators.get("rsi_14"),
-        "prev_ma_alignment": _derive_ma_alignment(indicators),
+        "prev_action_tag":        row.action_tag,
+        "prev_confidence":        float(row.signal_confidence) if row.signal_confidence is not None else None,
+        "prev_rsi":               indicators.get("rsi_14"),
+        "prev_ma_alignment":      _derive_ma_alignment(indicators),
+        "prev_macd_bias":         indicators.get("macd_bias"),
+        "prev_bollinger_position": indicators.get("bollinger_position"),
     }
 
 
@@ -84,12 +87,46 @@ def _compute_indicators_from_history(history) -> dict:
             rs = avg_gain / avg_loss
             rsi14 = round(100 - 100 / (1 + rs), 2)
 
+    # Bollinger Bands
+    bb = bollinger_bands(closes)
+    bollinger_position: str | None = None
+    if bb is not None:
+        upper = bb["bollinger_upper"]
+        lower = bb["bollinger_lower"]
+        mid = bb["bollinger_mid"]
+        if upper is not None and lower is not None and mid is not None:
+            band_range = upper - lower
+            if band_range > 0:
+                pct = (last_close - lower) / band_range
+                if last_close >= upper * 0.99:
+                    bollinger_position = "near_upper"
+                elif last_close <= lower * 1.01:
+                    bollinger_position = "near_lower"
+                elif pct >= 0.5:
+                    bollinger_position = "above_mid"
+                else:
+                    bollinger_position = "below_mid"
+            else:
+                bollinger_position = "flat"
+
+    # MACD
+    macd_data = macd(closes)
+    macd_bias_val = macd_data["macd_bias"] if macd_data else None
+
     return {
-        "ma5":         ma5,
-        "ma20":        ma20,
-        "ma60":        ma60,
-        "rsi_14":      rsi14,
-        "close_price": last_close,
+        "ma5":                ma5,
+        "ma20":               ma20,
+        "ma60":               ma60,
+        "rsi_14":             rsi14,
+        "close_price":        last_close,
+        "bollinger_mid":      bb["bollinger_mid"] if bb else None,
+        "bollinger_upper":    bb["bollinger_upper"] if bb else None,
+        "bollinger_lower":    bb["bollinger_lower"] if bb else None,
+        "bollinger_position": bollinger_position,
+        "macd_line":          macd_data["macd_line"] if macd_data else None,
+        "macd_signal":        macd_data["macd_signal"] if macd_data else None,
+        "macd_hist":          macd_data["macd_hist"] if macd_data else None,
+        "macd_bias":          macd_bias_val,
     }
 
 
@@ -111,7 +148,7 @@ def backfill_yesterday_indicators(db: Session, symbol: str) -> None:
 
     try:
         ticker = yf.Ticker(symbol)
-        history = ticker.history(period="5d", interval="1d")
+        history = ticker.history(period="3mo", interval="1d")
         # 只取昨日那列
         history.index = history.index.normalize()
         yesterday_ts = pd.Timestamp(yesterday)

@@ -541,3 +541,29 @@ def test_position_prompt_empty_when_no_prev_context():
     from ai_stock_sentinel.analysis.langchain_analyzer import build_position_history_section
 
     assert build_position_history_section(None) == ""
+
+
+def test_system_prompt_includes_bollinger_and_macd():
+    """system prompt 的 tech_insight 規則應包含布林通道與 MACD"""
+    from ai_stock_sentinel.analysis.langchain_analyzer import _SYSTEM_PROMPT
+    assert "布林通道" in _SYSTEM_PROMPT
+    assert "MACD" in _SYSTEM_PROMPT
+
+
+def test_history_section_includes_macd_and_bollinger_fields():
+    """history section 應包含 prev_macd_bias 與 prev_bollinger_position"""
+    from ai_stock_sentinel.analysis.langchain_analyzer import build_position_history_section
+
+    prev = {
+        "prev_action_tag": "Hold",
+        "prev_confidence": 61.5,
+        "prev_rsi": 65.2,
+        "prev_ma_alignment": "bullish",
+        "prev_macd_bias": "bullish",
+        "prev_bollinger_position": "above_mid",
+    }
+    section = build_position_history_section(prev)
+    assert "MACD 方向" in section
+    assert "bullish" in section
+    assert "布林位階" in section
+    assert "above_mid" in section

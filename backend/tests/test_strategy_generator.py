@@ -871,3 +871,142 @@ def test_calculate_action_plan_tag_behavior_unchanged():
     assert calculate_action_plan_tag(rsi14=75.0, flow_label="distribution", confidence_score=50) == "overheated"
     assert calculate_action_plan_tag(rsi14=25.0, flow_label="neutral", confidence_score=80) == "neutral"
     assert calculate_action_plan_tag(rsi14=None, flow_label="institutional_accumulation", confidence_score=80) == "neutral"
+
+
+# ─── Phase 2: MACD 與布林通道對策略的影響 ────────────────────────────────────
+
+def _base_tech_data(**overrides):
+    """建立基礎技術資料 dict，可被覆寫。"""
+    base = {
+        "bias": 2.0,
+        "rsi": 55.0,
+        "close": 100.0,
+        "ma5": 99.0,
+        "ma20": 97.0,
+        "ma60": 95.0,
+        "support_20d": 94.0,
+        "low_20d": 94.5,
+        "sentiment_label": "neutral",
+        "macd_data": None,
+        "bb": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def _bull_macd(line=1.5):
+    return {"macd_line": line, "macd_signal": 1.0, "macd_hist": 0.5, "macd_bias": "bullish"}
+
+
+def _bear_macd(line=-1.5):
+    return {"macd_line": line, "macd_signal": -1.0, "macd_hist": -0.5, "macd_bias": "bearish"}
+
+
+def _bb_near_upper(close=100.0):
+    """布林通道：price 接近上軌"""
+    return {"bollinger_mid": 95.0, "bollinger_upper": 101.0, "bollinger_lower": 89.0, "bollinger_bandwidth": 0.13}
+
+
+def _bb_near_lower(close=100.0):
+    """布林通道：price 接近下軌"""
+    return {"bollinger_mid": 107.0, "bollinger_upper": 115.0, "bollinger_lower": 99.0, "bollinger_bandwidth": 0.15}
+
+
+def test_macd_bearish_below_mid_forces_defensive():
+    """MACD 翻空且價格失守布林中軌 → defensive_wait"""
+    bb = {"bollinger_mid": 105.0, "bollinger_upper": 115.0, "bollinger_lower": 95.0, "bollinger_bandwidth": 0.19}
+    tech = _base_tech_data(
+        close=103.0,  # below mid=105
+        bias=1.0,
+        rsi=48.0,
+        macd_data=_bear_macd(),
+        bb=bb,
+        sentiment_label="neutral",
+    )
+    strategy = generate_strategy(tech, {"flow_label": "neutral"})
+    assert strategy["strategy_type"] == "defensive_wait"
+
+
+def test_macd_bullish_near_upper_band_large_bias_forces_defensive():
+    """MACD 翻多但價格接近上軌且 bias > 5 → 不追價，defensive_wait"""
+    bb = {"bollinger_mid": 95.0, "bollinger_upper": 101.0, "bollinger_lower": 89.0, "bollinger_bandwidth": 0.13}
+    tech = _base_tech_data(
+        close=99.5,  # >= upper(101)*0.97=97.97, bias > 5
+        bias=6.5,
+        rsi=65.0,
+        macd_data=_bull_macd(),
+        bb=bb,
+    )
+    strategy = generate_strategy(tech, {"flow_label": "neutral"})
+    assert strategy["strategy_type"] == "defensive_wait"
+
+
+def test_bollinger_upper_alert_forces_defensive():
+    """布林上軌 + RSI > 70 + BIAS > 10 → 強制防守"""
+    bb = {"bollinger_mid": 95.0, "bollinger_upper": 101.0, "bollinger_lower": 89.0, "bollinger_bandwidth": 0.13}
+    tech = _base_tech_data(
+        close=100.5,  # >= upper(101)*0.99=99.99
+        bias=11.0,
+        rsi=75.0,
+        macd_data=_bull_macd(),
+        bb=bb,
+    )
+    strategy = generate_strategy(tech, {"flow_label": "neutral"})
+    assert strategy["strategy_type"] == "defensive_wait"
+    assert strategy["evidence_scores"]["bollinger_upper_alert"] is True
+
+
+def test_near_lower_band_macd_shrinking_adds_score():
+    """價格接近下軌且 MACD 柱狀體收縮（反彈觀察區）→ technical score 有加分"""
+    from ai_stock_sentinel.analysis.strategy_generator import _compute_evidence_scores
+    bb = {"bollinger_mid": 107.0, "bollinger_upper": 115.0, "bollinger_lower": 99.5, "bollinger_bandwidth": 0.15}
+    # close 接近下軌
+    macd_shrink = {"macd_line": -0.5, "macd_signal": -1.0, "macd_hist": -0.2, "macd_bias": "bearish"}
+    scores_with = _compute_evidence_scores(
+        bias=-5.0, rsi=35.0, close=100.0, ma5=103.0, ma20=107.0,
+        sentiment_label="neutral", flow_label="neutral",
+        macd_data=macd_shrink, bb=bb,
+    )
+    scores_without = _compute_evidence_scores(
+        bias=-5.0, rsi=35.0, close=100.0, ma5=103.0, ma20=107.0,
+        sentiment_label="neutral", flow_label="neutral",
+    )
+    assert scores_with.technical >= scores_without.technical
+
+
+def test_existing_defensive_wait_rules_unchanged():
+    """訊號衝突（positive + distribution）→ 仍強制 defensive_wait（既有規則不回歸）"""
+    tech = _base_tech_data(sentiment_label="positive")
+    strategy = generate_strategy(tech, {"flow_label": "distribution"})
+    assert strategy["strategy_type"] == "defensive_wait"
+
+
+def test_existing_bias_over_10_defensive_unchanged():
+    """bias > 10 → 仍強制 defensive_wait（既有規則不回歸）"""
+    tech = _base_tech_data(bias=12.0)
+    strategy = generate_strategy(tech, {"flow_label": "neutral"})
+    assert strategy["strategy_type"] == "defensive_wait"
+
+
+def test_macd_bullish_above_zero_contributes_to_mid_term():
+    """MACD 多頭且零軸上方，配合法人積極與均線多頭 → 有機會升至 mid_term"""
+    tech = _base_tech_data(
+        bias=2.0,
+        rsi=55.0,
+        close=100.0,
+        ma5=99.0,
+        ma20=97.0,
+        sentiment_label="positive",
+        macd_data=_bull_macd(line=2.0),
+        bb={"bollinger_mid": 95.0, "bollinger_upper": 105.0, "bollinger_lower": 85.0, "bollinger_bandwidth": 0.19},
+    )
+    strategy = generate_strategy(tech, {"flow_label": "institutional_accumulation"})
+    assert strategy["strategy_type"] in ("mid_term", "short_term")
+    assert strategy["strategy_type"] != "defensive_wait"
+
+
+def test_evidence_scores_includes_bollinger_upper_alert_key():
+    """evidence_scores 回傳 dict 應包含 bollinger_upper_alert 欄位"""
+    tech = _base_tech_data()
+    strategy = generate_strategy(tech, {"flow_label": "neutral"})
+    assert "bollinger_upper_alert" in strategy["evidence_scores"]

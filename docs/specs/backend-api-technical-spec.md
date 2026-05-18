@@ -1,8 +1,8 @@
-# AI Stock Sentinel 後端 API 技術規格（v3）
+# AI Stock Sentinel 後端 API 技術規格（v4）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-03-16
-> 更新摘要：補充 `/analyze` 與 `/analyze/position` 的策略語義邊界：`/analyze` 底部策略區塊正式定位為「新倉策略建議」，`/analyze/position` 維持持股操作建議；並明確定義 `action_plan` / `strategy_type` / `entry_zone` / `stop_loss` 為 rule-based 新倉策略輸出，非 LLM 直接產生的買賣指令。
+> 更新日期：2026-05-18
+> 更新摘要：同步技術面分析擴充完成狀態；補入 `technical_indicators` 對外欄位，顯式輸出布林通道與 MACD 數值；移除舊版範例中未實際存在的頂層 `technical` / `institutional` response 區塊；更新 `tech_insight` 範例與欄位說明，使其反映布林通道、MACD 與技術面數值卡片現況。
 
 ## 1) 目的
 
@@ -66,22 +66,9 @@ make run-api
     "day_low": 918.5,
     "volume": 28450000,
     "recent_closes": [910.0, 915.0, 920.0, 925.0],
-    "fetched_at": "2026-03-03T00:00:00+00:00"
-  },
-  "technical": {
-    "ma5": 918.4,
-    "ma20": 905.2,
-    "ma60": 880.5,
-    "bias_ma20": 2.18,
-    "rsi14": 62.3,
-    "volume_change_pct": 23.5
-  },
-  "institutional": {
-    "foreign_net": 12500,
-    "trust_net": -3200,
-    "dealer_net": 800,
-    "margin_balance_delta": 4500,
-    "short_balance_delta": -1200
+    "fetched_at": "2026-03-03T00:00:00+00:00",
+    "support_20d": 900.0,
+    "resistance_20d": 950.0
   },
   "analysis": "全文分析自然語詞結果（LLM Skeptic Mode 四步驟輸出）",
   "cleaned_news": {
@@ -104,15 +91,26 @@ make run-api
   "confidence_score": 78,
   "cross_validation_note": "三維共振，信心偏高",
   "analysis_detail": {
-    "summary": "台積電法人持續買超，RSI 動能尚未過熱，多頭格局延續。",
-    "risks": ["短線乖離偏高，留意拉回壓力"],
+    "summary": "台積電技術面維持偏多結構，MACD 仍在零軸上方，布林上緣附近短線略有過熱。",
+    "risks": ["價格靠近布林上軌，若 MACD 柱狀體收斂，短線需留意拉回壓力"],
     "technical_signal": "bullish",
     "institutional_flow": "institutional_accumulation",
     "sentiment_label": "positive",
-    "tech_insight": "均線多頭排列，RSI 62 位於健康動能區，短線無超買疑慮。",
+    "tech_insight": "均線維持多頭排列，MACD 位於零軸上方且動能仍偏多，股價貼近布林上軌，短線續強但追價風險升高。",
     "inst_insight": "外資近 5 日累計買超 12,500 張，籌碼持續沉澱，機構資金流向偏多。",
     "news_insight": "法說會利多消息帶動市場情緒正面，事件時效性已驗證（日期明確）。",
     "final_verdict": "三維訊號共振：技術面健康、籌碼面偏多、消息面正面，信心分數 78 反映訊號一致性高。"
+  },
+  "technical_indicators": {
+    "bollinger_upper": 932.41,
+    "bollinger_mid": 905.2,
+    "bollinger_lower": 878.0,
+    "bollinger_bandwidth": 0.06,
+    "bollinger_position": "near_upper",
+    "macd_line": 4.213,
+    "macd_signal": 3.105,
+    "macd_hist": 1.108,
+    "macd_bias": "bullish"
   },
   "sentiment_label": "positive",
   "action_plan": {
@@ -122,10 +120,18 @@ make run-api
     "momentum_expectation": "強（法人集結中）；若突破 950.0 壓力則動能轉強",
     "breakeven_note": "當帳面獲利達 5% 時，建議停損位上移至入場成本價",
     "conviction_level": "high",
-    "thesis_points": ["法人籌碼偏多（持續吸籌）", "均線維持多頭排列（close > MA5 > MA20）", "新聞情緒偏正向"],
+    "thesis_points": [
+      "法人籌碼偏多（持續吸籌）",
+      "均線維持多頭排列（close > MA5 > MA20）",
+      "新聞情緒偏正向"
+    ],
     "upgrade_triggers": ["突破近 20 日壓力（950.0）且量能同步放大"],
     "downgrade_triggers": ["跌破 MA20（915.0）", "法人轉賣超（出貨訊號出現）"],
-    "invalidation_conditions": ["跌破近 20 日支撐（900.0）", "RSI 快速轉弱且價格失守 MA20（915.0）", "法人由買超轉為持續賣超"],
+    "invalidation_conditions": [
+      "跌破近 20 日支撐（900.0）",
+      "RSI 快速轉弱且價格失守 MA20（915.0）",
+      "法人由買超轉為持續賣超"
+    ],
     "suggested_position_size": "20-30%"
   },
   "data_sources": ["google-news-rss", "yfinance", "twse-openapi"],
@@ -141,38 +147,45 @@ make run-api
 
 - **欄位說明**
 
-  | 欄位                       | 類型           | 說明                                                                                                                                                                                                          |
-  | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `snapshot`                 | object         | yfinance 即時快照                                                                                                                                                                                             |
-  | `analysis`                 | string         | LLM Skeptic Mode 四步驟完整分析文字                                                                                                                                                                           |
-  | `cleaned_news`             | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null                                                                                                                   |
-  | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                    |
-  | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                        |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）                                                                                                                                                            |
-  | `signal_confidence`        | int \| null    | 0–100，訊號強度（CS-4 新增；`confidence_score` 為向後相容別名）                                                                                                                                               |
-  | `confidence_score`         | int \| null    | 0–100，反映三維訊號一致性（= `signal_confidence`，向後相容）                                                                                                                                                  |
-  | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                   |
-  | `strategy_type`            | enum \| null   | `short_term` / `mid_term` / `defensive_wait`                                                                                                                                                                  |
-  | `entry_zone`               | string \| null | 建議入場區間（rule-based）                                                                                                                                                                                    |
-  | `stop_loss`                | string \| null | 防守底線／停損條件（rule-based）                                                                                                                                                                              |
-  | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                    |
-  | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位） |
-  | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                   |
-  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令                                                                             |
-  | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                        |
-  | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                    |
-  | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                  |
-  | `errors`                   | array          | 錯誤碼陣列                                                                                                                                                                                                    |
+  | 欄位                       | 類型           | 說明                                                                                                                                                                                                                                                                                            |
+  | -------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `snapshot`                 | object         | yfinance 即時快照                                                                                                                                                                                                                                                                               |
+  | `analysis`                 | string         | LLM Skeptic Mode 四步驟完整分析文字                                                                                                                                                                                                                                                             |
+  | `cleaned_news`             | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null                                                                                                                                                                                                     |
+  | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                                                                                                      |
+  | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）                                                                                                                                                                                                                                              |
+  | `signal_confidence`        | int \| null    | 0–100，訊號強度（CS-4 新增；`confidence_score` 為向後相容別名）                                                                                                                                                                                                                                 |
+  | `confidence_score`         | int \| null    | 0–100，反映三維訊號一致性（= `signal_confidence`，向後相容）                                                                                                                                                                                                                                    |
+  | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                                                                                                     |
+  | `strategy_type`            | enum \| null   | `short_term` / `mid_term` / `defensive_wait`                                                                                                                                                                                                                                                    |
+  | `entry_zone`               | string \| null | 建議入場區間（rule-based）                                                                                                                                                                                                                                                                      |
+  | `stop_loss`                | string \| null | 防守底線／停損條件（rule-based）                                                                                                                                                                                                                                                                |
+  | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                                                                                                      |
+  | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位）                                                                                   |
+  | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道與 MACD 數值（`bollinger_upper` / `bollinger_mid` / `bollinger_lower` / `bollinger_bandwidth` / `bollinger_position` / `macd_line` / `macd_signal` / `macd_hist` / `macd_bias`）                                                                                  |
+  | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
+  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令 |
+  | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                                                                                                          |
+  | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                                                                                                      |
+  | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                                                                                                    |
+  | `errors`                   | array          | 錯誤碼陣列                                                                                                                                                                                                                                                                                      |
 
 > **策略產生邊界（`POST /analyze`）**：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`、`action_plan`、`action_plan_tag` 皆由後端 Python rule-based 邏輯產出；LLM 可參與分析文字、新聞情緒或綜合敘事生成，但**不得直接輸出最終進場指令**。
 
 > **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
 >
-> - `tech_insight`：技術面獨立分析段落；禁止提及法人買賣超或新聞事件
+> - `tech_insight`：技術面獨立分析段落；可引用均線、RSI、布林通道、MACD、支撐壓力位；禁止提及法人買賣超或新聞事件
 > - `inst_insight`：籌碼面獨立分析段落；禁止提及均線數值、RSI、新聞事件
 > - `news_insight`：消息面獨立分析段落；禁止提及具體技術指標數值
 > - `final_verdict`：三維整合仲裁段落；允許跨維度推論
 >   以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
+
+> **`technical_indicators` 顯性輸出**（2026-05-18）：
+>
+> - 此欄位為 API 與前端技術指標卡片的正式資料來源。
+> - 布林通道與 MACD 數值由 Python 根據 `snapshot.recent_closes` 計算，不由 LLM 推算。
+> - 資料不足時對應欄位回傳 `null`，不影響主分析流程。
 
 ---
 
@@ -212,24 +225,9 @@ make run-api
     "day_low": 1095.0,
     "volume": 31200000,
     "recent_closes": [1090.0, 1095.0, 1100.0, 1105.0],
-    "fetched_at": "2026-03-09T00:00:00+00:00"
-  },
-  "technical": {
-    "ma5": 1098.4,
-    "ma20": 1055.2,
-    "ma60": 1010.5,
-    "bias_ma20": 4.72,
-    "rsi14": 65.1,
-    "volume_change_pct": 12.3,
+    "fetched_at": "2026-03-09T00:00:00+00:00",
     "support_20d": 1040.0,
     "resistance_20d": 1120.0
-  },
-  "institutional": {
-    "foreign_net": 18500,
-    "trust_net": 2100,
-    "dealer_net": 400,
-    "margin_balance_delta": 1200,
-    "short_balance_delta": -800
   },
   "position_analysis": {
     "entry_price": 980.0,
@@ -246,15 +244,26 @@ make run-api
   "confidence_score": 79,
   "cross_validation_note": "三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高",
   "analysis_detail": {
-    "summary": "台積電法人持續買超，RSI 動能尚未過熱，多頭格局延續。",
-    "risks": ["RSI 接近超買區間，短線留意拉回壓力"],
+    "summary": "台積電維持多頭結構，但股價接近布林上緣，需留意 MACD 動能是否收斂。",
+    "risks": ["短線若跌回布林中軌下方，持股節奏將轉保守"],
     "technical_signal": "bullish",
     "institutional_flow": "institutional_accumulation",
     "sentiment_label": "positive",
-    "tech_insight": "均線多頭排列，RSI 65 位於健康動能區，尚未進入超買。",
+    "tech_insight": "均線維持多頭排列，MACD 位於零軸上方且偏多，股價位於布林中軌之上，整體趨勢仍偏強。",
     "inst_insight": "外資近 5 日累計買超 18,500 張，籌碼持續沉澱。",
     "news_insight": "法說會消息偏正向，事件時效性已驗證。",
     "final_verdict": "三維訊號共振，持股健康，目前無出場訊號。"
+  },
+  "technical_indicators": {
+    "bollinger_upper": 1123.84,
+    "bollinger_mid": 1055.2,
+    "bollinger_lower": 986.56,
+    "bollinger_bandwidth": 0.13,
+    "bollinger_position": "above_mid",
+    "macd_line": 6.842,
+    "macd_signal": 5.774,
+    "macd_hist": 1.068,
+    "macd_bias": "bullish"
   },
   "institutional_flow_label": "institutional_accumulation",
   "action_plan": {
@@ -274,14 +283,13 @@ make run-api
   | 欄位                       | 類型           | 說明                                                                         |
   | -------------------------- | -------------- | ---------------------------------------------------------------------------- |
   | `snapshot`                 | object         | yfinance 即時快照（與 `/analyze` 相同）                                      |
-  | `technical`                | object         | 技術指標（與 `/analyze` 相同，額外含 `support_20d` / `resistance_20d`）      |
-  | `institutional`            | object         | 法人籌碼資料（與 `/analyze` 相同）                                           |
   | `position_analysis`        | object         | **持股診斷專屬**——見下方欄位細節                                             |
   | `data_confidence`          | int \| null    | 0–100，資料完整度                                                            |
   | `signal_confidence`        | int \| null    | 0–100，訊號強度                                                              |
   | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容                                              |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                      |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 System Prompt，強化出場推理）                     |
+  | `technical_indicators`     | object \| null | 技術指標顯性輸出（與 `/analyze` 相同，供前端技術指標卡片使用）               |
   | `institutional_flow_label` | enum \| null   | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral` |
   | `action_plan`              | object \| null | 持股版戰術行動（`action` 為 `續抱` / `減碼` / `出場`）                       |
   | `action_plan_tag`          | enum \| null   | `opportunity` / `overheated` / `neutral`                                     |

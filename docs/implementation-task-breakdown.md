@@ -1,7 +1,7 @@
 # AI Stock Sentinel 實作任務拆解（Execution Plan）
 
 > 版本：v2.0
-> 更新日期：2026-03-09（Phase 1~5 全數完成，302 tests passed）
+> 更新日期：2026-05-18（補入技術面分析擴充完成紀錄）
 
 ## 0) 範圍說明
 
@@ -32,7 +32,7 @@
 ## Phase 3：分析能力強化 ✅
 
 - **P3-0（籌碼 Provider 抽象層）**：`FinMindProvider`（Primary）→ `TwseOpenApiProvider`（Fallback #1）→ `TpexProvider`（Fallback #2）；Router + `.TW/.TWO` 自動分流 + Schema Mapping；42 tests
-- **P3-2（ContextGenerator）**：`generate_technical_context(df_price, inst_data)`，BIAS/RSI/均線/量能/籌碼敘事；29 tests
+- **P3-2（ContextGenerator）**：`generate_technical_context(df_price, inst_data)`，BIAS/RSI/均線/布林通道/MACD/量能/籌碼敘事；29 tests
 - **P3-3（Skeptic Mode + 信心分數）**：四步驟 Prompt + `adjust_confidence_by_divergence()` 多維加權；`score_node` 串接在 analyze 前
 - **策略建議模板**：`strategy_generator.py` rule-based `generate_strategy()`；23 tests
 - **LLM 結構化輸出**（AnalysisDetail）：JSON 解析 + fallback；`tech_insight` / `inst_insight` / `news_insight` / `final_verdict` 四欄位
@@ -44,6 +44,7 @@
 - **AnalyzeResponse**：`sentiment_label`、`action_plan`、`data_sources`、`action_plan_tag` 等頂層欄位
 
 ### Phase 3 修正輪（全數完成）
+
 - **NQ-1~6（新聞摘要品質）**：title 品質檢查、日期正規化、quality_score、前端提示
 - **ND-1~5（新聞顯示拆分）**：`news_display_items` 陣列（最多 5 筆）
 - **CS-1~5（信心分數可靠性）**：`derive_technical_score()` 多因子加權；`unknown` 機構資料處理
@@ -79,6 +80,18 @@
 
 ---
 
+## 2026-05-18：技術面分析擴充（已完成）
+
+> 計劃文件：`docs/plans/2026-05-18-技術面分析優化.md`
+
+- **Task 1~2**：共用指標與敘事層完成布林通道 / MACD 整合；`generate_technical_context()` 固定輸出 `【布林通道】`、`【MACD】` 段落
+- **Task 3~5**：Prompt、history loader、analysis cache 完成同步；昨日連續性分析可讀取 `prev_macd_bias` / `prev_bollinger_position`
+- **Task 6~7**：`derive_technical_score()` 升級為五因子加權；`technical_signal`、`confidence_score`、`strategy_generator` 正式納入布林通道與 MACD
+- **Task 8**：`AnalyzeResponse` 新增 `technical_indicators`；前端 Analyze 頁新增技術指標數值卡片
+- **測試**：補齊 `test_context_generator.py`、`test_history_loader.py`、`test_langchain_analyzer.py`、`test_nodes.py`、`test_confidence_scorer.py`、`test_strategy_generator.py` 對應案例
+
+---
+
 ## 進行中 ⏳
 
 ### 2026-03-10：Strategy Action Plan 深化
@@ -88,12 +101,14 @@
 **目標**：深化 `action_plan` 輸出，加入保本點位提示、分批操作量化文字、If-Then 情境觸發
 
 **Task 1：`action` 文字量化 + `breakeven_note` 新欄位**
+
 - `generate_action_plan()` 新增 `resistance_20d` / `support_20d` 參數
 - `action` 改為帶部位比例的描述（「分批佈局（首筆 30%）」/ 「短線進場（首筆 50%，確認站穩再加碼）」/ 「觀望（待訊號明確再試單）」）
 - `breakeven_note`：mid_term → 「當帳面獲利達 5% 時，建議停損位上移至入場成本價」；其餘 None
 - 更新測試 exact-match assertions + 新增 breakeven_note 測試
 
 **Task 2：If-Then 情境觸發（`momentum_expectation` 擴充）**
+
 - `institutional_accumulation` + `resistance_20d` → 「若突破 XXX 壓力則動能轉強」
 - `distribution` + `support_20d` → 「若跌破 XXX 支撐則轉向 Bearish」
 - `neutral` + 兩個價位 → 同時附帶突破/跌破提示
@@ -117,14 +132,17 @@
 ## Cross-cutting（跨階段）
 
 ### C-2 可觀測性與日誌
+
 - 統一 request_id；節點耗時、失敗原因
 
 ### C-3 測試策略
+
 - 單元測試：cleaner、計算工具
 - 整合測試：crawler → cleaner → analyzer
 - **規則**：每功能完成後立即補測試，PR 必須含至少一個對應測試案例
 
 ### 其他長期待辦
+
 - Docker / Railway 部署準備
 - `calculate_growth_rate` 等進階基本面指標
 - `/events`（SSE）串流支援

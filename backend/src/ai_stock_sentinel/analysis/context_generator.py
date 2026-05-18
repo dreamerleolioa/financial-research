@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from ai_stock_sentinel.analysis.metrics import ma, calc_bias, calc_rsi
+from ai_stock_sentinel.analysis.metrics import ma, calc_bias, calc_rsi, bollinger_bands, macd
 
 
 # ─── 敘事生成規則 ────────────────────────────────────────────────────────────
@@ -148,6 +148,85 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
     return summary
 
 
+# ─── 布林通道敘事 ────────────────────────────────────────────────────────────
+
+def _bollinger_narrative(close: float, bb: dict | None) -> str:
+    if bb is None:
+        return "布林通道資料不足（需至少 20 個交易日收盤價）。"
+    mid = bb["bollinger_mid"]
+    upper = bb["bollinger_upper"]
+    lower = bb["bollinger_lower"]
+    bandwidth = bb["bollinger_bandwidth"]
+
+    if mid is None or upper is None or lower is None:
+        return "布林通道資料不足，無法判斷。"
+
+    band_range = upper - lower
+    parts: list[str] = []
+
+    if band_range > 0:
+        pct_from_lower = (close - lower) / band_range
+        if close >= upper * 0.99:
+            parts.append("價格貼近上軌，短線偏熱，追價風險提高。")
+        elif close >= mid and pct_from_lower >= 0.6:
+            parts.append("價格位於中軌上方且未碰上軌，趨勢偏強但尚未極端。")
+        elif close <= lower * 1.01:
+            parts.append("價格接近下軌，偏弱或超跌，留意是否止跌反彈。")
+        else:
+            parts.append("價格位於布林中軌附近，趨勢中性。")
+    else:
+        parts.append("布林通道極度收斂，市場波動極低。")
+
+    if bandwidth is not None:
+        if bandwidth > 0.1:
+            parts.append("通道擴張，波動放大，趨勢行情可能延續。")
+        elif bandwidth < 0.03:
+            parts.append("通道收斂，波動壓縮，留意後續方向表態。")
+
+    return f"布林中軌 {mid:.2f}，上軌 {upper:.2f}，下軌 {lower:.2f}。" + "".join(parts)
+
+
+# ─── MACD 敘事 ────────────────────────────────────────────────────────────────
+
+def _macd_narrative(m: dict | None) -> str:
+    if m is None:
+        return "MACD 資料不足（需至少 35 個交易日收盤價）。"
+
+    macd_line = m["macd_line"]
+    signal = m["macd_signal"]
+    hist = m["macd_hist"]
+    bias = m["macd_bias"]
+
+    if macd_line is None or signal is None or hist is None:
+        return "MACD 資料不足，無法判斷。"
+
+    parts: list[str] = []
+
+    # 零軸位置
+    if macd_line > 0:
+        parts.append("MACD 線位於零軸上方，中期偏多。")
+    else:
+        parts.append("MACD 線位於零軸下方，中期偏弱。")
+
+    # 多空動能方向
+    if bias == "bullish":
+        if macd_line > signal:
+            parts.append("MACD 線在訊號線上方且柱狀體為正，多方動能增強。")
+        else:
+            parts.append("MACD 柱狀體轉正，多方動能開始回升。")
+    elif bias == "bearish":
+        if macd_line < signal:
+            parts.append("MACD 線在訊號線下方且柱狀體為負，空方動能主導。")
+        else:
+            parts.append("MACD 柱狀體轉負，多方動能減弱。")
+    else:
+        parts.append("MACD 柱狀體接近零軸，多空動能均衡。")
+
+    # 交叉偵測：macd_line 剛跨越 signal（透過 hist 接近 0 且 bias 剛換向無法精確偵測，
+    # 此處依 bias 方向給出方向性敘事）
+    return "".join(parts)
+
+
 # ─── 支撐壓力位敘事 ──────────────────────────────────────────────────────────
 
 def _price_level_narrative(
@@ -217,6 +296,8 @@ def generate_technical_context(
     ma60 = ma(closes, 60)
     bias = calc_bias(close, ma20) if ma20 is not None else None
     rsi = calc_rsi(closes, period=14)
+    bb = bollinger_bands(closes)
+    macd_data = macd(closes)
 
     lines = [
         f"【技術位階】當前收盤價 {close:.2f}。",
@@ -224,6 +305,8 @@ def generate_technical_context(
         f"【乖離分析】{_bias_narrative(bias)}",
         f"【RSI 動能】{_rsi_narrative(rsi)}",
         f"【量能】{_volume_narrative(volumes) if volumes else '無成交量資料。'}",
+        f"【布林通道】{_bollinger_narrative(close, bb)}",
+        f"【MACD】{_macd_narrative(macd_data)}",
     ]
     technical = " ".join(lines)
     price_level = _price_level_narrative(
