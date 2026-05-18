@@ -1,7 +1,7 @@
 # AI Stock Sentinel 開發執行手冊（Execution Playbook）
 
-> 版本：v2.0
-> 更新日期：2026-03-09（Phase 1~5 全數完成，302 tests passed）
+> 版本：v2.1
+> 更新日期：2026-05-18（補入技術面分析擴充完成紀錄）
 
 > 註：本文件保留作為開發節奏與 Gate 設計的操作手冊；實際功能進度不再集中維護於單一 tracker，請以 `docs/plans/` 下的 implementation plans 與對應 spec 為準。
 
@@ -17,6 +17,8 @@
 | Phase 6（持股診斷）       | **歷史里程碑** | 本文件狀態已過期，請改看對應 plan / spec                               |
 
 實際進度請直接查看 `docs/plans/` 下對應主題的 implementation plan；Phase 6 規格：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
+
+最近完成里程碑：`docs/plans/2026-05-18-技術面分析優化.md` 已完成，技術面分析正式納入布林通道與 MACD，並同步更新 technical_signal、confidence_score、strategy、API 顯性輸出與前端技術指標卡片。
 
 ---
 
@@ -109,6 +111,7 @@
 ### 流程步驟
 
 1. **執行回測，取得分桶勝率基線**
+
    ```bash
    python scripts/backtest_win_rate.py \
      --mode new-position \
@@ -121,6 +124,7 @@
    - 若高分桶勝率低於低分桶，或各分桶勝率無差異（< 5%）：**需進行維度分析**
 
 3. **執行維度貢獻分析腳本**（若步驟 2 發現問題）
+
    ```bash
    python scripts/analyze_confidence_breakdown.py \
      --days 90 \
@@ -152,6 +156,7 @@
      --days 90 \
      --output-json docs/research/backtest-results/new-position-post-calibration-$(date +%Y%m%d).json
    ```
+
    - 對比 baseline 與 post-calibration 的分桶勝率
    - 若高分桶勝率 >= baseline 同分桶勝率：調整成功
    - 若無改善：回滾並重新分析（`git revert` 對應 commit）
@@ -176,11 +181,11 @@
 
 ### 觸發條件判斷
 
-| 變更類型 | 版次 | 範例 |
-|---|---|---|
-| docstring / log / 非邏輯性重構 | PATCH | `1.0.0 → 1.0.1` |
+| 變更類型                                                               | 版次  | 範例            |
+| ---------------------------------------------------------------------- | ----- | --------------- |
+| docstring / log / 非邏輯性重構                                         | PATCH | `1.0.0 → 1.0.1` |
 | confidence_scorer.py 常數值、action_plan 文字模板、conviction 降級閾值 | MINOR | `1.0.0 → 1.1.0` |
-| generate_strategy() evidence scoring 核心邏輯、strategy_type 分類規則 | MAJOR | `1.0.0 → 2.0.0` |
+| generate_strategy() evidence scoring 核心邏輯、strategy_type 分類規則  | MAJOR | `1.0.0 → 2.0.0` |
 
 LLM prompt 修改不屬於策略版本，以 `PROMPT_HASH` 追蹤。
 
