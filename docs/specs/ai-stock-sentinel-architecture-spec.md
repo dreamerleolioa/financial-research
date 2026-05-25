@@ -366,7 +366,9 @@ class InstitutionalFlowProvider(Protocol):
 
 ### Prompt / CoT 設計目標
 
-輸入：清潔後新聞 ＋ **定性化技術面敘述**（由 `quantify_to_narrative` 轉換後）＋ 籌碼 JSON（全由 Python 函式計算後傳入）
+輸入：`signal_summary` 系統信號摘要 ＋ 清潔後新聞 ＋ **定性化技術面敘述**（由 `generate_technical_context` 轉換後）＋ 籌碼 JSON（全由 Python 函式計算後傳入）
+
+> **LLM input 穩定化（2026-05-25）**：`analyze_node` 在呼叫 LLM 前必須組出 compact `signal_summary`，以 JSON 字串形式放在 prompt 最前段，作為 rule-based labels 的唯一優先入口。此摘要包含 `technical_signal`、`institutional_flow`、`sentiment_label`、`confidence_score`、`cross_validation_note`、KD / ADX / OBV、MACD、布林位階、RSI、支撐壓力、消息聚合強度與策略標籤。LLM 可解釋這些欄位，但不得改寫 labels 或重新計算分數。
 
 > **消息面職責**：詳見第 1.1 節。新聞維度聚焦市場情緒事件訊號，不負責財務數字（財報數字屬基本面，目前尚未實作）。若 RSS 新聞碰巧含有財務數字，可作附帶參考，但不得以「新聞中沒有財務數字」作為降低信心分數的理由。
 
@@ -374,10 +376,11 @@ class InstitutionalFlowProvider(Protocol):
 
 1. 讀取 `cleaned_news.sentiment_label`（由 Cleaner 在 `clean_node` 已計算完畢，**LLM 不重新判斷**），理解消息面情緒傾向；新聞的核心貢獻是**市場情緒訊號**，判斷依據為事件本身的性質（政策利多/利空、法人調降/調升評等、供應鏈正面/負面消息等）
 2. 識別並標記情緒化動詞（例如：崩盤、起飛、噴出），保留事實陳述
-3. 讀取 `preprocess_node` 轉換後的技術面敘述（如「股價低於月線 6%，處短線弱勢」），理解趨勢語義
-4. 讀取籌碼面 `flow_label` 與累計數值，判斷法人方向與散戶籌碼結構
-5. **讀取 `confidence_score` 與 `cross_validation_note`**（兩者皆由前置 `score_node` 的 rule-based Python 計算完畢，LLM 不得修改分數）；據此生成 `risks` / `summary` 文案
-6. 產出結論、風險、`Technical_Signal`、`Institutional_Flow`
+3. 優先讀取 `signal_summary.rule_based_labels`，把 `technical_signal`、`institutional_flow`、`sentiment_label` 視為不可改寫的事實欄位
+4. 讀取 `preprocess_node` 轉換後的技術面敘述與 `signal_summary.technical_evidence`，理解均線、RSI、布林、MACD、KD、ADX、OBV 與支撐壓力語義
+5. 讀取籌碼面 `flow_label` 與累計數值，判斷法人方向與散戶籌碼結構
+6. **讀取 `confidence_score` 與 `cross_validation_note`**（兩者皆由前置 `score_node` 的 rule-based Python 計算完畢，LLM 不得修改分數）；據此生成 `risks` / `summary` 文案
+7. 產出結論、風險、`Technical_Signal`、`Institutional_Flow`
 
 ### System Prompt：矛盾檢查（Skeptic Mode）
 
@@ -398,7 +401,8 @@ class InstitutionalFlowProvider(Protocol):
 請針對以下三個維度產出獨立的分析段落，禁止跨維度混寫：
 
 [技術維度] tech_insight：
-- 僅參考 technical_context 中的均線排列、RSI 位階、布林通道位置、MACD 動能、支撐壓力位
+- 僅參考 signal_summary.technical_evidence 與 technical_context 中的均線排列、RSI 位階、布林通道位置、MACD 動能、KD 交叉/高低檔、ADX 趨勢強度、OBV 量價確認/背離、支撐壓力位
+- 若 KD / ADX / OBV 有資料，至少引用其中兩項；若新指標與均線、MACD 或布林通道矛盾，必須點出矛盾
 - 禁止提及法人買賣超、新聞事件等非技術資訊
 
 [籌碼維度] inst_insight：
@@ -443,7 +447,7 @@ class InstitutionalFlowProvider(Protocol):
 
 - **技術指標計算工具** `calculate_technical_indicators(symbol, window)`
   - 輸入：yfinance OHLCV DataFrame
-  - 輸出：`{ ma5, ma20, ma60, bias_ma20, rsi14, volume_change_pct, high_20d, low_20d, support_20d, resistance_20d, bollinger_mid, bollinger_upper, bollinger_lower, bollinger_bandwidth, macd_line, macd_signal, macd_hist, macd_bias }`
+  - 輸出：`{ ma5, ma20, ma60, bias_ma20, rsi14, volume_change_pct, high_20d, low_20d, support_20d, resistance_20d, bollinger_mid, bollinger_upper, bollinger_lower, bollinger_bandwidth, macd_line, macd_signal, macd_hist, macd_bias, kd_k, kd_d, kd_signal, kd_zone, adx, adx_trend_strength, adx_trend_direction, obv, obv_signal }`
   - 實作：Pandas rolling mean + RSI Wilder 平滑法
 
 - **乖離率工具** `calculate_bias(close, ma)`
@@ -502,7 +506,7 @@ class InstitutionalFlowProvider(Protocol):
 
 > **分維度分析欄位說明（Session 8 新增）**：
 >
-> - `tech_insight`：技術面獨立分析段落，聚焦均線排列、RSI 位階、布林通道位置、MACD 動能與支撐壓力解讀，**不混入籌碼或消息面**
+> - `tech_insight`：技術面獨立分析段落，聚焦均線排列、RSI 位階、布林通道位置、MACD 動能、KD 交叉/位階、ADX 趨勢強度、OBV 量價確認/背離與支撐壓力解讀，**不混入籌碼或消息面**
 > - `inst_insight`：籌碼面獨立分析段落，聚焦三大法人買賣超與融資券對作格局，**不混入技術或消息面**
 > - `news_insight`：消息面獨立分析段落，聚焦市場情緒、事件性質與時效性驗證，**不混入數值指標**
 > - `final_verdict`：綜合仲裁段落，解釋三維訊號如何導向當前信心分數與策略；此段允許跨維度整合推論
@@ -935,7 +939,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 
 - 能輸入股票代碼並觸發完整分析流程
 - 當資料不足時，系統會自動補抓後再分析
-- **技術面**：必須包含由 Python 函式計算後的 MA5/20/60、BIAS、RSI14、成交量變化數值
+- **技術面**：必須包含由 Python 函式計算後的 MA5/20/60、BIAS、RSI14、成交量變化、布林通道、MACD、KD、ADX、OBV 數值或標籤
 - **語義化翻譯層**：必須將 RSI、BIAS、MA、Institutional Flow 映射為直白中文敘事（由 `preprocess_node` rule-based 產生）
 - **技術位階**：必須包含 `high_20d`、`low_20d`、`support_20d`、`resistance_20d`
 - **籌碼面**：必須採 `FinMindProvider`（Primary）+ `TwseOpenApiProvider`（Fallback）雙軌策略，並包含三大法人合計買賣超方向及融資融券變化
@@ -960,6 +964,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
   - `data_sources`：資料來源列表
 - 所有數值指標**必須**可追溯至 yfinance / TWSE 原始資料，不得由 LLM 直接生成
 - **分維度分析**：LLM 輸出必須包含 `tech_insight`（技術面）、`inst_insight`（籌碼面）、`news_insight`（消息面）、`final_verdict`（綜合仲裁）四個獨立段落；各維度禁止跨維度混寫
+- **LLM input contract**：`analyze_node` 必須在 prompt 前段提供 `signal_summary`，且 `tech_insight` 必須優先解釋 `technical_signal` 與 KD / ADX / OBV 等 rule-based 技術證據，不得只依賴長敘事自由發揮
 - 前端可視化顯示分析過程與最終結論（含三維訊號燈號）
 
 ---

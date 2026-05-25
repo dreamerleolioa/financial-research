@@ -82,7 +82,7 @@ CREATE INDEX idx_users_email ON users (email);
 
 #### Table 1：`user_portfolio`（持倉主表）
 
-**持倉上限：每位使用者最多 5 筆 `is_active = TRUE` 的持倉。** 新增持倉時，後端須先計算該使用者目前 active 持倉數，若已達 5 筆則回傳 `HTTP 422`。
+**持倉上限：每位使用者最多 8 筆 `is_active = TRUE` 的持倉。** 新增持倉時，後端須先計算該使用者目前 active 持倉數，若已達 8 筆則回傳 `HTTP 422`。
 
 ```sql
 CREATE TABLE user_portfolio (
@@ -119,12 +119,12 @@ CREATE INDEX idx_portfolio_user_id ON user_portfolio (user_id);
 
 **持倉上限實作規格**
 
-- 上限：每位使用者最多 **5 筆** active 持倉（`is_active = TRUE`）
+- 上限：每位使用者最多 **8 筆** active 持倉（`is_active = TRUE`）
 - 新增持倉的端點（`POST /portfolio`）在寫入前執行計數查詢：
   ```python
   count = db.query(UserPortfolio).filter_by(user_id=user.id, is_active=True).count()
-  if count >= 5:
-      raise HTTPException(status_code=422, detail="最多只能追蹤 5 筆持股")
+  if count >= 8:
+      raise HTTPException(status_code=422, detail="最多只能追蹤 8 筆持股")
   ```
 - 出場（`is_active = False`）不計入上限，上限只針對 active 持倉
 
@@ -761,7 +761,7 @@ Section 4.2 的 `[Split In Batches]` 設定調整：
 └────────────┴───────┴───────────────┘
 ```
 
-**持倉上限提示**：active 持倉已達 5 筆時，「加入我的持股」按鈕顯示 tooltip「最多追蹤 5 筆持股」並 disabled。
+**持倉上限提示**：active 持倉已達 8 筆時，「加入我的持股」按鈕顯示 tooltip「最多追蹤 8 筆持股」並 disabled。
 
 ### 5.4 編輯持股
 
