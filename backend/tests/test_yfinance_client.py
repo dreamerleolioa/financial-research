@@ -10,7 +10,12 @@ from ai_stock_sentinel.models import StockSnapshot
 
 
 def _make_history(close_values: list[float], volume_values: list[int]) -> pd.DataFrame:
-    return pd.DataFrame({"Close": close_values, "Volume": volume_values})
+    return pd.DataFrame({
+        "Close": close_values,
+        "High": [value + 1 for value in close_values],
+        "Low": [value - 1 for value in close_values],
+        "Volume": volume_values,
+    })
 
 
 def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
@@ -57,6 +62,30 @@ def test_fetch_basic_snapshot_falls_back_to_history_volume_when_last_volume_miss
 
     assert snapshot.volume == 333
     assert snapshot.volume_source == "history_fallback"
+
+
+def test_fetch_basic_snapshot_includes_recent_high_low_volume_series() -> None:
+    crawler = YFinanceCrawler()
+
+    mock_info = MagicMock()
+    mock_info.currency = "TWD"
+    mock_info.last_price = 100.0
+    mock_info.previous_close = 99.0
+    mock_info.open = 98.5
+    mock_info.day_high = 101.0
+    mock_info.day_low = 98.0
+    mock_info.last_volume = 123456
+
+    mock_ticker = MagicMock()
+    mock_ticker.fast_info = mock_info
+    mock_ticker.history.return_value = _make_history([95.0, 98.0, 100.0], [111, 222, 333])
+
+    with patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker):
+        snapshot = crawler.fetch_basic_snapshot("2330.TW")
+
+    assert snapshot.recent_highs == [96.0, 99.0, 101.0]
+    assert snapshot.recent_lows == [94.0, 97.0, 99.0]
+    assert snapshot.recent_volumes == [111.0, 222.0, 333.0]
 
 
 # ─── StockSnapshot 位階欄位測試 ───────────────────────────────────────────────

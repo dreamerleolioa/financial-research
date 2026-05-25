@@ -8,7 +8,7 @@ from ai_stock_sentinel.analysis.context_generator import (
     _price_level_narrative,
     generate_technical_context,
 )
-from ai_stock_sentinel.analysis.metrics import calc_bias, calc_rsi, ma, bollinger_bands, macd
+from ai_stock_sentinel.analysis.metrics import adx, bollinger_bands, calc_bias, calc_rsi, ma, macd, obv, stochastic_kd
 
 
 # ─── ma ─────────────────────────────────────────────────────────────────────
@@ -119,10 +119,19 @@ class TestCalcRsi:
 
 # ─── generate_technical_context ─────────────────────────────────────────────
 
-def _make_df(closes: list[float], volumes: list[float] | None = None) -> pd.DataFrame:
+def _make_df(
+    closes: list[float],
+    volumes: list[float] | None = None,
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
+) -> pd.DataFrame:
     data: dict = {"Close": closes}
     if volumes:
         data["Volume"] = volumes
+    if highs:
+        data["High"] = highs
+    if lows:
+        data["Low"] = lows
     return pd.DataFrame(data)
 
 
@@ -181,10 +190,12 @@ class TestGenerateTechnicalContext:
             "margin_delta": 300.0,
             "flow_label": "institutional_accumulation",
             "source_provider": "FinMind",
+            "avg_daily_volume": 100000.0,
         }
         _, ic = generate_technical_context(df, inst)
         assert "外資" in ic
         assert "買超" in ic
+        assert "近期均量" in ic
 
     def test_institutional_context_error_case(self):
         """籌碼資料含 error 時，institutional_context 應提示失敗"""
@@ -486,3 +497,43 @@ class TestBollingerAndMacdNarrative:
         df = _make_df(closes)
         tc, _ = generate_technical_context(df)
         assert "MACD 線位於" in tc
+
+
+# ─── KD / ADX / OBV 指標測試 ─────────────────────────────────────────────────
+
+class TestKdAdxObv:
+    def test_stochastic_kd_returns_signal_fields(self):
+        closes = [float(100 + (idx % 7)) for idx in range(30)]
+        highs = [close + 2 for close in closes]
+        lows = [close - 2 for close in closes]
+        result = stochastic_kd(closes, highs, lows)
+        assert result is not None
+        assert result["kd_signal"] in ("bullish_cross", "bearish_cross", "neutral")
+        assert result["kd_zone"] in ("oversold", "overbought", "neutral")
+
+    def test_adx_returns_trend_fields(self):
+        closes = [float(100 + idx) for idx in range(40)]
+        highs = [close + 1 for close in closes]
+        lows = [close - 1 for close in closes]
+        result = adx(closes, highs, lows)
+        assert result is not None
+        assert result["trend_strength"] in ("strong", "neutral", "weak")
+        assert result["trend_direction"] in ("bullish", "bearish", "neutral")
+
+    def test_obv_detects_price_volume_confirmation(self):
+        closes = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+        volumes = [1000.0, 1200.0, 1300.0, 1400.0, 1500.0, 1600.0]
+        result = obv(closes, volumes)
+        assert result is not None
+        assert result["obv_signal"] == "price_volume_confirm"
+
+    def test_technical_context_contains_new_indicator_sections(self):
+        closes = [float(100 + idx * 0.5) for idx in range(40)]
+        highs = [close + 1 for close in closes]
+        lows = [close - 1 for close in closes]
+        volumes = [1000.0 + idx * 10 for idx in range(40)]
+        df = _make_df(closes, volumes=volumes, highs=highs, lows=lows)
+        tc, _ = generate_technical_context(df)
+        assert "【KD】" in tc
+        assert "【ADX】" in tc
+        assert "【OBV】" in tc

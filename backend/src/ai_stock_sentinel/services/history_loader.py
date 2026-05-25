@@ -9,7 +9,7 @@ import yfinance as yf
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.analysis.metrics import bollinger_bands, macd
+from ai_stock_sentinel.analysis.metrics import adx, bollinger_bands, macd, obv, stochastic_kd
 from ai_stock_sentinel.db.models import StockAnalysisCache
 
 
@@ -54,6 +54,9 @@ def load_yesterday_context(symbol: str, db: Session) -> dict | None:
         "prev_ma_alignment":      _derive_ma_alignment(indicators),
         "prev_macd_bias":         indicators.get("macd_bias"),
         "prev_bollinger_position": indicators.get("bollinger_position"),
+        "prev_kd_signal":         indicators.get("kd_signal"),
+        "prev_adx":               indicators.get("adx"),
+        "prev_obv_signal":        indicators.get("obv_signal"),
     }
 
 
@@ -113,6 +116,15 @@ def _compute_indicators_from_history(history) -> dict:
     macd_data = macd(closes)
     macd_bias_val = macd_data["macd_bias"] if macd_data else None
 
+    highs = history["High"].dropna().tolist() if "High" in history.columns else []
+    lows = history["Low"].dropna().tolist() if "Low" in history.columns else []
+    volumes = history["Volume"].dropna().tolist() if "Volume" in history.columns else []
+    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
+    aligned_volume = len(volumes) == len(closes)
+    kd_data = stochastic_kd(closes, highs, lows) if aligned_hilo else None
+    adx_data = adx(closes, highs, lows) if aligned_hilo else None
+    obv_data = obv(closes, volumes) if aligned_volume else None
+
     return {
         "ma5":                ma5,
         "ma20":               ma20,
@@ -127,6 +139,15 @@ def _compute_indicators_from_history(history) -> dict:
         "macd_signal":        macd_data["macd_signal"] if macd_data else None,
         "macd_hist":          macd_data["macd_hist"] if macd_data else None,
         "macd_bias":          macd_bias_val,
+        "kd_k":               kd_data["k"] if kd_data else None,
+        "kd_d":               kd_data["d"] if kd_data else None,
+        "kd_signal":          kd_data["kd_signal"] if kd_data else None,
+        "kd_zone":            kd_data["kd_zone"] if kd_data else None,
+        "adx":                adx_data["adx"] if adx_data else None,
+        "adx_trend_strength": adx_data["trend_strength"] if adx_data else None,
+        "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
+        "obv":                obv_data["obv"] if obv_data else None,
+        "obv_signal":         obv_data["obv_signal"] if obv_data else None,
     }
 
 

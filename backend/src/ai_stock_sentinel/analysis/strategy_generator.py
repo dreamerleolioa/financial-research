@@ -47,6 +47,9 @@ def _compute_evidence_scores(
     flow_label: str | None,
     macd_data: dict | None = None,
     bb: dict | None = None,
+    kd_data: dict | None = None,
+    adx_data: dict | None = None,
+    obv_data: dict | None = None,
 ) -> EvidenceScores:
     """計算四組 evidence score，供策略分類使用。"""
     scores = EvidenceScores()
@@ -107,6 +110,36 @@ def _compute_evidence_scores(
                 ):
                     scores.risk_penalty -= 1
 
+    # KD 低檔反轉 / 高檔轉弱
+    if kd_data is not None:
+        kd_signal = kd_data.get("kd_signal")
+        kd_zone = kd_data.get("kd_zone")
+        if kd_signal == "bullish_cross" and kd_zone == "oversold":
+            scores.technical += 1
+        elif kd_signal == "bearish_cross" and kd_zone == "overbought":
+            scores.technical -= 1
+
+    # ADX 趨勢濾網：強趨勢加權，弱趨勢降低追價信心
+    if adx_data is not None:
+        trend_strength = adx_data.get("trend_strength")
+        trend_direction = adx_data.get("trend_direction")
+        if trend_strength == "strong" and trend_direction == "bullish":
+            scores.technical += 1
+        elif trend_strength == "strong" and trend_direction == "bearish":
+            scores.technical -= 1
+        elif trend_strength == "weak" and scores.technical > 1:
+            scores.technical -= 1
+
+    # OBV 量價確認 / 背離
+    if obv_data is not None:
+        obv_signal = obv_data.get("obv_signal")
+        if obv_signal == "price_volume_confirm":
+            scores.technical += 1
+        elif obv_signal in {"bearish_divergence", "price_volume_weak"}:
+            scores.risk_penalty -= 1
+        elif obv_signal == "bullish_divergence":
+            scores.technical += 1
+
     # ── 2. flow_evidence ──────────────────────────────────────
     if flow_label == "institutional_accumulation":
         scores.flow += 2
@@ -166,6 +199,9 @@ def generate_strategy(
             - sentiment_label: str | None — "positive"/"negative"/"neutral"/None
             - macd_data: dict | None — MACD 指標 dict（macd_line/signal/hist/bias）
             - bb: dict | None — 布林通道 dict（bollinger_mid/upper/lower/bandwidth）
+            - kd_data: dict | None — KD 指標 dict（k/d/signal/zone）
+            - adx_data: dict | None — ADX 指標 dict（adx/DI/trend_strength）
+            - obv_data: dict | None — OBV 指標 dict（obv_signal）
         inst_data: 籌碼 dict，key 包含 flow_label 等，或 None。
 
     Returns:
@@ -187,6 +223,9 @@ def generate_strategy(
     sentiment_label: str | None = technical_context_data.get("sentiment_label")
     macd_data: dict | None = technical_context_data.get("macd_data")
     bb: dict | None = technical_context_data.get("bb")
+    kd_data: dict | None = technical_context_data.get("kd_data")
+    adx_data: dict | None = technical_context_data.get("adx_data")
+    obv_data: dict | None = technical_context_data.get("obv_data")
 
     flow_label: str | None = inst_data.get("flow_label") if inst_data else None
 
@@ -200,6 +239,9 @@ def generate_strategy(
         flow_label=flow_label,
         macd_data=macd_data,
         bb=bb,
+        kd_data=kd_data,
+        adx_data=adx_data,
+        obv_data=obv_data,
     )
 
     strategy_type = _determine_strategy_from_scores(

@@ -42,6 +42,15 @@ interface TechnicalIndicators {
   macd_signal: number | null;
   macd_hist: number | null;
   macd_bias: string | null;
+  kd_k: number | null;
+  kd_d: number | null;
+  kd_signal: string | null;
+  kd_zone: string | null;
+  adx: number | null;
+  adx_trend_strength: string | null;
+  adx_trend_direction: string | null;
+  obv: number | null;
+  obv_signal: string | null;
 }
 
 interface AnalyzeResponse {
@@ -148,10 +157,10 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
 
 const BOLLINGER_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
   near_upper: { label: "近上軌", cls: "bg-red-100 text-red-800" },
-  above_mid:  { label: "中軌上方", cls: "bg-emerald-100 text-emerald-800" },
-  below_mid:  { label: "中軌下方", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  above_mid: { label: "中軌上方", cls: "bg-emerald-100 text-emerald-800" },
+  below_mid: { label: "中軌下方", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
   near_lower: { label: "近下軌", cls: "bg-blue-100 text-blue-800" },
-  flat:       { label: "通道平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  flat: { label: "通道平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 const MACD_BIAS_LABEL: Record<string, { label: string; cls: string }> = {
@@ -159,6 +168,43 @@ const MACD_BIAS_LABEL: Record<string, { label: string; cls: string }> = {
   bearish: { label: "偏空", cls: "bg-red-100 text-red-800" },
   neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
+
+const KD_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
+  bullish_cross: { label: "黃金交叉", cls: "bg-emerald-100 text-emerald-800" },
+  bearish_cross: { label: "死亡交叉", cls: "bg-red-100 text-red-800" },
+  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const KD_ZONE_LABEL: Record<string, { label: string; cls: string }> = {
+  oversold: { label: "低檔區", cls: "bg-blue-100 text-blue-800" },
+  overbought: { label: "高檔區", cls: "bg-orange-100 text-orange-800" },
+  neutral: { label: "中性區", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const ADX_STRENGTH_LABEL: Record<string, { label: string; cls: string }> = {
+  strong: { label: "趨勢明確", cls: "bg-emerald-100 text-emerald-800" },
+  neutral: { label: "趨勢中等", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  weak: { label: "趨勢偏弱", cls: "bg-yellow-100 text-yellow-800" },
+};
+
+const ADX_DIRECTION_LABEL: Record<string, { label: string; cls: string }> = {
+  bullish: { label: "多方", cls: "bg-emerald-100 text-emerald-800" },
+  bearish: { label: "空方", cls: "bg-red-100 text-red-800" },
+  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const OBV_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
+  price_volume_confirm: { label: "量價確認", cls: "bg-emerald-100 text-emerald-800" },
+  bearish_divergence: { label: "量價背離", cls: "bg-red-100 text-red-800" },
+  bullish_divergence: { label: "低檔承接", cls: "bg-blue-100 text-blue-800" },
+  price_volume_weak: { label: "量價轉弱", cls: "bg-red-100 text-red-800" },
+  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+function formatIndicatorNumber(value: number | null | undefined, digits = 2): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return value.toFixed(digits);
+}
 
 function TriggersSection({
   upgradeTriggers,
@@ -627,7 +673,7 @@ export default function AnalyzePage() {
         {result?.technical_indicators && (
           <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <h3 className="mb-3 text-xs font-semibold text-text-muted">技術指標數值</h3>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
               <div>
                 <p className="text-xs text-text-muted mb-1">布林通道位階</p>
                 {result.technical_indicators.bollinger_position && BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position] ? (
@@ -641,6 +687,46 @@ export default function AnalyzePage() {
                 {result.technical_indicators.macd_bias && MACD_BIAS_LABEL[result.technical_indicators.macd_bias] ? (
                   <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MACD_BIAS_LABEL[result.technical_indicators.macd_bias].cls}`}>
                     {MACD_BIAS_LABEL[result.technical_indicators.macd_bias].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">KD 交叉</p>
+                {result.technical_indicators.kd_signal && KD_SIGNAL_LABEL[result.technical_indicators.kd_signal] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${KD_SIGNAL_LABEL[result.technical_indicators.kd_signal].cls}`}>
+                    {KD_SIGNAL_LABEL[result.technical_indicators.kd_signal].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">KD 區間</p>
+                {result.technical_indicators.kd_zone && KD_ZONE_LABEL[result.technical_indicators.kd_zone] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${KD_ZONE_LABEL[result.technical_indicators.kd_zone].cls}`}>
+                    {KD_ZONE_LABEL[result.technical_indicators.kd_zone].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">ADX 強度</p>
+                {result.technical_indicators.adx_trend_strength && ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength].cls}`}>
+                    {ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">ADX 方向</p>
+                {result.technical_indicators.adx_trend_direction && ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction].cls}`}>
+                    {ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">OBV 訊號</p>
+                {result.technical_indicators.obv_signal && OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].cls}`}>
+                    {OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].label}
                   </span>
                 ) : <span className="text-sm text-text-faint">—</span>}
               </div>
@@ -670,6 +756,24 @@ export default function AnalyzePage() {
                 <p className="text-xs text-text-muted mb-1">柱狀體</p>
                 <p className={`text-sm font-medium ${result.technical_indicators.macd_hist != null ? (result.technical_indicators.macd_hist >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
                   {result.technical_indicators.macd_hist != null ? result.technical_indicators.macd_hist.toFixed(3) : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">K / D</p>
+                <p className="text-sm font-medium text-text-primary">
+                  {result.technical_indicators.kd_k != null || result.technical_indicators.kd_d != null
+                    ? `${formatIndicatorNumber(result.technical_indicators.kd_k, 1)} / ${formatIndicatorNumber(result.technical_indicators.kd_d, 1)}`
+                    : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">ADX</p>
+                <p className="text-sm font-medium text-text-primary">{formatIndicatorNumber(result.technical_indicators.adx, 1)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">OBV</p>
+                <p className={`text-sm font-medium ${result.technical_indicators.obv != null ? (result.technical_indicators.obv >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
+                  {formatVolume(result.technical_indicators.obv)}
                 </p>
               </div>
             </div>

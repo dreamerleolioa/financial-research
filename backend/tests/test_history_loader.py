@@ -163,7 +163,12 @@ def test_backfill_yesterday_indicators_skips_when_no_cache() -> None:
 class TestComputeIndicatorsFromHistory:
     def _make_df(self, closes: list[float]):
         import pandas as pd
-        return pd.DataFrame({"Close": closes})
+        return pd.DataFrame({
+            "Close": closes,
+            "High": [close + 1 for close in closes],
+            "Low": [close - 1 for close in closes],
+            "Volume": [1000.0 + idx * 10 for idx, _ in enumerate(closes)],
+        })
 
     def test_bollinger_fields_present_with_sufficient_data(self):
         """60 筆資料 → bollinger_mid/upper/lower/position 應存在"""
@@ -218,6 +223,14 @@ class TestComputeIndicatorsFromHistory:
         result = _compute_indicators_from_history(df)
         assert result.get("bollinger_position") == "near_lower"
 
+    def test_kd_adx_obv_fields_present_with_sufficient_data(self):
+        closes = [float(100 + idx * 0.2) for idx in range(60)]
+        df = self._make_df(closes)
+        result = _compute_indicators_from_history(df)
+        assert "kd_signal" in result
+        assert "adx" in result
+        assert "obv_signal" in result
+
 
 # ─── load_yesterday_context 新欄位測試 ─────────────────────────────────────────
 
@@ -231,12 +244,18 @@ def test_load_yesterday_context_includes_macd_bias():
         "ma5": 100.0, "ma20": 98.0, "ma60": 95.0,
         "macd_bias": "bullish",
         "bollinger_position": "above_mid",
+        "kd_signal": "bullish_cross",
+        "adx": 28.5,
+        "obv_signal": "price_volume_confirm",
     }
     db = _make_db(mock_row)
     result = load_yesterday_context("2330.TW", db)
     assert result is not None
     assert result["prev_macd_bias"] == "bullish"
     assert result["prev_bollinger_position"] == "above_mid"
+    assert result["prev_kd_signal"] == "bullish_cross"
+    assert result["prev_adx"] == 28.5
+    assert result["prev_obv_signal"] == "price_volume_confirm"
 
 
 def test_load_yesterday_context_new_fields_none_when_missing():

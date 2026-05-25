@@ -33,8 +33,17 @@ class YFinanceCrawler:
             raise
 
         recent_closes = []
+        recent_highs = []
+        recent_lows = []
+        recent_volumes = []
         if not history.empty and "Close" in history.columns:
             recent_closes = [float(value) for value in history["Close"].dropna().tolist()]
+        if not history.empty and "High" in history.columns:
+            recent_highs = [float(value) for value in history["High"].dropna().tolist()]
+        if not history.empty and "Low" in history.columns:
+            recent_lows = [float(value) for value in history["Low"].dropna().tolist()]
+        if not history.empty and "Volume" in history.columns:
+            recent_volumes = [float(value) for value in history["Volume"].dropna().tolist()]
 
         volume = int(getattr(info, "last_volume", 0) or 0)
         volume_source = "realtime"
@@ -58,6 +67,9 @@ class YFinanceCrawler:
             recent_closes=recent_closes,
             fetched_at=datetime.now(timezone.utc).isoformat(),
             volume_source=volume_source,
+            recent_highs=recent_highs,
+            recent_lows=recent_lows,
+            recent_volumes=recent_volumes,
         )
         logger.info(json.dumps({
             "event": "provider_success",

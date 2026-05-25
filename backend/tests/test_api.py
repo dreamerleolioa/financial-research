@@ -279,6 +279,48 @@ def test_analyze_response_includes_strategy_fields() -> None:
     assert body["strategy_type"] == "mid_term"
 
 
+def test_analyze_response_includes_extended_technical_indicators() -> None:
+    """AnalyzeResponse technical_indicators 應包含 KD、ADX、OBV 欄位。"""
+    closes = [100.0 + idx * 0.5 for idx in range(40)]
+    snapshot = asdict(_SNAPSHOT)
+    snapshot.update({
+        "current_price": closes[-1],
+        "recent_closes": closes,
+        "recent_highs": [price + 1.0 for price in closes],
+        "recent_lows": [price - 1.0 for price in closes],
+        "recent_volumes": [1000 + idx * 10 for idx in range(40)],
+    })
+    graph = _make_graph(
+        {
+            "snapshot": snapshot,
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    indicators = response.json()["technical_indicators"]
+    assert indicators["kd_k"] is not None
+    assert indicators["kd_d"] is not None
+    assert indicators["kd_signal"] in {"bullish_cross", "bearish_cross", "neutral"}
+    assert indicators["kd_zone"] in {"oversold", "overbought", "neutral"}
+    assert indicators["adx"] is not None
+    assert indicators["adx_trend_strength"] in {"strong", "neutral", "weak"}
+    assert indicators["adx_trend_direction"] in {"bullish", "bearish", "neutral"}
+    assert indicators["obv"] is not None
+    assert indicators["obv_signal"] in {
+        "price_volume_confirm",
+        "bearish_divergence",
+        "bullish_divergence",
+        "price_volume_weak",
+        "neutral",
+    }
+
+
 # ---------------------------------------------------------------------------
 # NQ-5: cleaned_news_quality in API response
 # ---------------------------------------------------------------------------
