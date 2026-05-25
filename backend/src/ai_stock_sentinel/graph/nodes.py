@@ -9,7 +9,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence, derive_technical_score
-from ai_stock_sentinel.analysis.metrics import bollinger_bands as calc_bollinger, macd as calc_macd
+from ai_stock_sentinel.analysis.metrics import adx as calc_adx, bollinger_bands as calc_bollinger, macd as calc_macd, obv as calc_obv, stochastic_kd as calc_kd
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context, generate_fundamental_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
@@ -169,9 +169,27 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
         }
 
     recent_closes = snapshot.get("recent_closes", [])
-    df_price = pd.DataFrame({"Close": recent_closes}) if recent_closes else pd.DataFrame()
+    if recent_closes:
+        df_data: dict[str, Any] = {"Close": recent_closes}
+        recent_highs = snapshot.get("recent_highs") or []
+        recent_lows = snapshot.get("recent_lows") or []
+        recent_volumes = snapshot.get("recent_volumes") or []
+        if len(recent_highs) == len(recent_closes):
+            df_data["High"] = recent_highs
+        if len(recent_lows) == len(recent_closes):
+            df_data["Low"] = recent_lows
+        if len(recent_volumes) == len(recent_closes):
+            df_data["Volume"] = recent_volumes
+        df_price = pd.DataFrame(df_data)
+    else:
+        df_price = pd.DataFrame()
 
     inst_data: dict[str, Any] | None = state.get("institutional_flow")  # type: ignore[assignment]
+    if inst_data and not inst_data.get("error"):
+        recent_volumes = snapshot.get("recent_volumes") or []
+        if recent_volumes:
+            avg_volume = sum(float(value) for value in recent_volumes[-20:]) / len(recent_volumes[-20:])
+            inst_data = {**inst_data, "avg_daily_volume": avg_volume}
 
     try:
         technical_context, institutional_context = generate_technical_context(
@@ -239,7 +257,13 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
     return updates
 
 
-def _derive_technical_signal(closes: list[float], rsi: float | None = None) -> str:
+def _derive_technical_signal(
+    closes: list[float],
+    rsi: float | None = None,
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
+    volumes: list[float] | None = None,
+) -> str:
     """由 close/ma5/ma20/RSI/BIAS/MACD/布林通道推導 technical_signal（多條件加權）。"""
     if len(closes) < 20:
         return "sideways"
@@ -250,8 +274,23 @@ def _derive_technical_signal(closes: list[float], rsi: float | None = None) -> s
     bias = calc_bias(close, ma20) if ma20 is not None else None
     macd_data = calc_macd(closes)
     bb = calc_bollinger(closes)
+    aligned_highs = highs if highs and len(highs) == len(closes) else []
+    aligned_lows = lows if lows and len(lows) == len(closes) else []
+    aligned_volumes = volumes if volumes and len(volumes) == len(closes) else []
+    kd_data = calc_kd(closes, aligned_highs, aligned_lows) if aligned_highs and aligned_lows else None
+    adx_data = calc_adx(closes, aligned_highs, aligned_lows) if aligned_highs and aligned_lows else None
+    obv_data = calc_obv(closes, aligned_volumes) if aligned_volumes else None
 
-    tech_score = derive_technical_score(closes, rsi=rsi, bias=bias, macd_data=macd_data, bb=bb)
+    tech_score = derive_technical_score(
+        closes,
+        rsi=rsi,
+        bias=bias,
+        macd_data=macd_data,
+        bb=bb,
+        kd_data=kd_data,
+        adx_data=adx_data,
+        obv_data=obv_data,
+    )
 
     if tech_score >= 60:
         return "bullish"
@@ -289,10 +328,22 @@ def score_node(state: GraphState) -> dict[str, Any]:
     # technical_signal
     snapshot = state.get("snapshot")
     closes: list[float] = []
+    highs: list[float] = []
+    lows: list[float] = []
+    volumes: list[float] = []
     if snapshot:
         raw_closes = snapshot.get("recent_closes", [])
         closes = [float(v) for v in raw_closes if v is not None]
-    technical_signal = _derive_technical_signal(closes, rsi=state.get("rsi14"))
+        highs = [float(v) for v in snapshot.get("recent_highs", []) if v is not None]
+        lows = [float(v) for v in snapshot.get("recent_lows", []) if v is not None]
+        volumes = [float(v) for v in snapshot.get("recent_volumes", []) if v is not None]
+    technical_signal = _derive_technical_signal(
+        closes,
+        rsi=state.get("rsi14"),
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
 
     # DATE_UNKNOWN 旗標
     quality = state.get("cleaned_news_quality") or {}
@@ -305,6 +356,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
         inst_flow=inst_flow,
         technical_signal=technical_signal,
         date_unknown=date_unknown,
+        sentiment_strength=float(cleaned_news.get("sentiment_strength", 1.0)) if cleaned_news else 1.0,
     )
 
     note = result_dict["cross_validation_note"]
@@ -317,6 +369,67 @@ def score_node(state: GraphState) -> dict[str, Any]:
         "data_confidence": result_dict["data_confidence"],
         "cross_validation_note": note,
         "technical_signal": technical_signal,
+    }
+
+
+def _build_news_content(raw_item: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if raw_item.get("published_at"):
+        parts.append(f"日期: {raw_item['published_at']}")
+    if raw_item.get("title"):
+        parts.append(f"標題: {raw_item['title']}")
+    if raw_item.get("summary"):
+        parts.append(f"摘要: {raw_item['summary']}")
+    return "\n".join(parts)
+
+
+def _aggregate_cleaned_news(cleaned_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not cleaned_items:
+        return None
+
+    weights = [1.0, 0.85, 0.7, 0.55, 0.4]
+    sentiment_values = {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
+    weighted_sum = 0.0
+    total_weight = 0.0
+    counts = {"positive": 0, "neutral": 0, "negative": 0}
+
+    mentioned_numbers: list[str] = []
+    seen_numbers: set[str] = set()
+    for idx, item in enumerate(cleaned_items[:5]):
+        sentiment = item.get("sentiment_label") or "neutral"
+        if sentiment not in counts:
+            sentiment = "neutral"
+        counts[sentiment] += 1
+        weight = weights[idx] if idx < len(weights) else weights[-1]
+        weighted_sum += sentiment_values[sentiment] * weight
+        total_weight += weight
+        for number in item.get("mentioned_numbers") or []:
+            number_str = str(number)
+            if number_str not in seen_numbers:
+                seen_numbers.add(number_str)
+                mentioned_numbers.append(number_str)
+
+    sentiment_score = weighted_sum / total_weight if total_weight else 0.0
+    if sentiment_score >= 0.25:
+        aggregate_label = "positive"
+    elif sentiment_score <= -0.25:
+        aggregate_label = "negative"
+    else:
+        aggregate_label = "neutral"
+
+    sentiment_strength = 0.0
+    if aggregate_label != "neutral":
+        sentiment_strength = 1.0 + min(0.6, max(0.0, (abs(sentiment_score) - 0.25) / 0.75 * 0.6))
+
+    latest = cleaned_items[0]
+    return {
+        "date": latest.get("date", "unknown"),
+        "title": latest.get("title", "unknown"),
+        "mentioned_numbers": mentioned_numbers[:20],
+        "sentiment_label": aggregate_label,
+        "sentiment_strength": round(sentiment_strength, 2),
+        "sentiment_score": round(sentiment_score, 3),
+        "sentiment_counts": counts,
     }
 
 
@@ -342,12 +455,27 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
         parts: list[str] = []
         if cleaned.get("title"):
             parts.append(f"標題：{cleaned['title']}")
+        counts = cleaned.get("sentiment_counts")
+        if counts:
+            parts.append(
+                "新聞情緒分布："
+                f"正面 {counts.get('positive', 0)}、中性 {counts.get('neutral', 0)}、負面 {counts.get('negative', 0)}"
+            )
         nums = cleaned.get("mentioned_numbers") or []
         if nums:
             parts.append(f"新聞數值線索：{', '.join(str(n) for n in nums)}")
         sentiment = cleaned.get("sentiment_label")
         if sentiment:
-            parts.append(f"情緒判斷：{sentiment}")
+            strength = cleaned.get("sentiment_strength")
+            if strength is not None:
+                parts.append(f"聚合情緒判斷：{sentiment}（強度 {strength}）")
+            else:
+                parts.append(f"情緒判斷：{sentiment}")
+        cleaned_items = state.get("cleaned_news_items") or []
+        if cleaned_items:
+            titles = [item.get("title") for item in cleaned_items[:3] if item.get("title")]
+            if titles:
+                parts.append("代表新聞：" + "；".join(str(title) for title in titles))
         news_summary = "\n".join(parts) if parts else None
 
     position_context = None
@@ -383,13 +511,27 @@ def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner) -> dict
     """將 news_content 清潔成結構化 cleaned_news；若無 news_content 則跳過。"""
     news_content = state["news_content"]
     if not news_content:
-        return {"cleaned_news": None}
+        return {"cleaned_news": None, "cleaned_news_items": []}
     try:
-        cleaned = news_cleaner.clean(news_content)
-        return {"cleaned_news": cleaned.model_dump()}
+        raw_items = state.get("raw_news_items") or []
+        if raw_items:
+            cleaned_items: list[dict[str, Any]] = []
+            for raw_item in raw_items[:5]:
+                item_content = _build_news_content(raw_item)
+                if not item_content:
+                    continue
+                cleaned_items.append(news_cleaner.clean(item_content).model_dump())
+            return {
+                "cleaned_news": _aggregate_cleaned_news(cleaned_items),
+                "cleaned_news_items": cleaned_items,
+            }
+
+        cleaned = news_cleaner.clean(news_content).model_dump()
+        return {"cleaned_news": cleaned, "cleaned_news_items": [cleaned]}
     except Exception as exc:
         return {
             "cleaned_news": None,
+            "cleaned_news_items": [],
             "errors": state["errors"] + [{"code": "CLEAN_ERROR", "message": str(exc)}],
         }
 
@@ -469,7 +611,7 @@ def quality_gate_node(state: GraphState) -> dict[str, Any]:
 
 
 def fetch_news_node(state: GraphState, *, rss_client: RssNewsClient) -> dict[str, Any]:
-    """透過 RSS 抓取新聞，回傳 raw_news_items 與 news_content（取第一篇標題+摘要）。"""
+    """透過 RSS 抓取新聞，回傳 raw_news_items 與 news_content（最多五篇標題+摘要）。"""
     symbol = state["symbol"]
     # 用股票代碼（去掉 .TW 後綴）作查詢詞，例如 "2330 台積電"
     query = symbol.split(".")[0]
@@ -483,18 +625,19 @@ def fetch_news_node(state: GraphState, *, rss_client: RssNewsClient) -> dict[str
 
     raw_dicts = [asdict(item) for item in items]
 
-    # 將最新一篇組成結構化 news_content 供後續清潔
+    # 將最多五篇組成結構化 news_content，供後續清潔與除錯檢視。
     # 用明確欄位標籤，避免 LLM 把時間戳誤識為標題
     news_content: str | None = None
     if items:
-        first = items[0]
         parts: list[str] = []
-        if first.published_at:
-            parts.append(f"日期: {first.published_at}")
-        if first.title:
-            parts.append(f"標題: {first.title}")
-        if first.summary:
-            parts.append(f"摘要: {first.summary}")
+        for idx, item in enumerate(items[:5], start=1):
+            parts.append(f"新聞{idx}:")
+            if item.published_at:
+                parts.append(f"日期: {item.published_at}")
+            if item.title:
+                parts.append(f"標題: {item.title}")
+            if item.summary:
+                parts.append(f"摘要: {item.summary}")
         news_content = "\n".join(parts) if parts else None
 
     return {
@@ -512,6 +655,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     if snapshot:
         raw_closes = snapshot.get("recent_closes", [])
         closes = [float(v) for v in raw_closes if v is not None]
+    highs = [float(v) for v in (snapshot or {}).get("recent_highs", []) if v is not None]
+    lows = [float(v) for v in (snapshot or {}).get("recent_lows", []) if v is not None]
+    volumes = [float(v) for v in (snapshot or {}).get("recent_volumes", []) if v is not None]
 
     close: float | None = closes[-1] if closes else None
     ma5: float | None = calc_ma(closes, 5)
@@ -531,6 +677,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
 
     macd_data = calc_macd(closes) if len(closes) >= 35 else None
     bb = calc_bollinger(closes)
+    kd_data = calc_kd(closes, highs, lows) if highs and lows and len(highs) == len(closes) and len(lows) == len(closes) else None
+    adx_data = calc_adx(closes, highs, lows) if highs and lows and len(highs) == len(closes) and len(lows) == len(closes) else None
+    obv_data = calc_obv(closes, volumes) if volumes and len(volumes) == len(closes) else None
 
     technical_context_data: dict[str, Any] = {
         "bias": bias,
@@ -544,6 +693,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "sentiment_label": sentiment_label,
         "macd_data": macd_data,
         "bb": bb,
+        "kd_data": kd_data,
+        "adx_data": adx_data,
+        "obv_data": obv_data,
     }
 
     strategy = generate_strategy(technical_context_data, inst_data)

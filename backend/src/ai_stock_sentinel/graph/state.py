@@ -11,6 +11,7 @@ class _NewsStateFields(TypedDict, total=False):
     """新聞相關欄位"""
     news_content: str | None
     cleaned_news: dict[str, Any] | None
+    cleaned_news_items: list[dict[str, Any]]
     raw_news_items: list[dict[str, Any]] | None
     cleaned_news_quality: dict[str, Any] | None
     news_display: dict[str, Any] | None
@@ -81,6 +82,7 @@ class GraphState(TypedDict):
     # 新聞相關（參見 _NewsStateFields）
     news_content: str | None
     cleaned_news: dict[str, Any] | None
+    cleaned_news_items: list[dict[str, Any]]
     raw_news_items: list[dict[str, Any]] | None
     cleaned_news_quality: dict[str, Any] | None
     news_display: dict[str, Any] | None

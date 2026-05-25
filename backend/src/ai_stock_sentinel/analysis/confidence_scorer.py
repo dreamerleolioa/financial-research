@@ -12,11 +12,14 @@ def derive_technical_score(
     bias: float | None,
     macd_data: dict | None = None,
     bb: dict | None = None,
+    kd_data: dict | None = None,
+    adx_data: dict | None = None,
+    obv_data: dict | None = None,
 ) -> int:
-    """依據 RSI、BIAS、MA、MACD、布林通道五個獨立訊號計算技術面信心分數。
+    """依據 RSI、BIAS、MA、MACD、布林通道、KD、ADX、OBV 計算技術面信心分數。
 
     - 資料不足（< 20 根）→ 回傳 50
-    - score 範圍 -5 ~ +5，映射至 33 ~ 67（每格 ≈ 3.4 分）
+    - score 範圍仍夾在 -5 ~ +5，映射至 33 ~ 67（避免技術面單維過度放大）
     - 映射公式：round(50 + score * (17 / 5))
     """
     if len(closes) < 20:
@@ -86,6 +89,37 @@ def derive_technical_score(
                 elif close <= lower * 1.01 and rsi is not None and rsi < 30:
                     score += 1
 
+    # ── KD 反轉訊號 ───────────────────────────────────────────
+    if kd_data is not None:
+        kd_signal = kd_data.get("kd_signal")
+        kd_zone = kd_data.get("kd_zone")
+        if kd_signal == "bullish_cross" and kd_zone == "oversold":
+            score += 1
+        elif kd_signal == "bearish_cross" and kd_zone == "overbought":
+            score -= 1
+
+    # ── OBV 量價確認 / 背離 ───────────────────────────────────
+    if obv_data is not None:
+        obv_signal = obv_data.get("obv_signal")
+        if obv_signal == "price_volume_confirm":
+            score += 1
+        elif obv_signal in {"bearish_divergence", "price_volume_weak"}:
+            score -= 1
+        elif obv_signal == "bullish_divergence":
+            score += 1
+
+    # ── ADX 趨勢強度濾網 ─────────────────────────────────────
+    if adx_data is not None:
+        trend_strength = adx_data.get("trend_strength")
+        trend_direction = adx_data.get("trend_direction")
+        if trend_strength == "strong":
+            if trend_direction == "bullish":
+                score += 1
+            elif trend_direction == "bearish":
+                score -= 1
+        elif trend_strength == "weak":
+            score = round(score * 0.7)
+
     clamped = max(-5, min(5, score))
     return round(50 + clamped * (17 / 5))
 
@@ -125,6 +159,7 @@ def adjust_confidence_by_divergence(
     news_sentiment: str,    # "positive" | "negative" | "neutral"
     inst_flow: str,         # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral"
     technical_signal: str,  # "bullish" | "bearish" | "sideways"
+    sentiment_strength: float = 1.0,
 ) -> tuple[int, str]:
     """多維加權模型。回傳 (adjusted_score, cross_validation_note)。
 
@@ -132,7 +167,7 @@ def adjust_confidence_by_divergence(
     - 三維共振（positive + institutional_accumulation + bullish）→ 額外 +3
     - 利多出貨（positive + distribution）→ 額外 -7
     """
-    s = _SENTIMENT_SCORES.get(news_sentiment, 0)
+    s = round(_SENTIMENT_SCORES.get(news_sentiment, 0) * sentiment_strength)
     i = _INST_FLOW_SCORES.get(inst_flow, 0)
     t = _TECH_SIGNAL_SCORES.get(technical_signal, 0)
     adjustment = s + i + t
@@ -171,6 +206,7 @@ def compute_confidence(
     inst_flow: str,        # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral" | "unknown"
     technical_signal: str, # "bullish" | "bearish" | "sideways" | "unknown"
     date_unknown: bool = False,  # DATE_UNKNOWN 旗標：日期未知時額外扣 -3 分
+    sentiment_strength: float = 1.0,
 ) -> dict[str, int | str]:
     """計算 data_confidence、signal_confidence 與 cross_validation_note。
 
@@ -201,6 +237,7 @@ def compute_confidence(
         news_sentiment=news_sentiment,
         inst_flow=inst_flow,
         technical_signal=technical_signal,
+        sentiment_strength=sentiment_strength,
     )
 
     # DATE_UNKNOWN 懲罰：在各維度加總後、clamp 前扣 -3（僅影響 signal_confidence）

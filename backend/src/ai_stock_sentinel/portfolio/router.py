@@ -67,7 +67,7 @@ def add_portfolio(
 
     if active_count >= PORTFOLIO_LIMIT:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"最多只能追蹤 {PORTFOLIO_LIMIT} 筆持股",
         )
 

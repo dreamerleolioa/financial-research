@@ -112,3 +112,179 @@ def macd(
         "macd_hist": hist_val,
         "macd_bias": bias,
     }
+
+
+def stochastic_kd(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    k_period: int = 9,
+    d_period: int = 3,
+) -> dict[str, float | str | None] | None:
+    """KD 隨機指標。資料不足或高低收序列未對齊時回傳 None。"""
+    if len(closes) < k_period + d_period or len(highs) != len(closes) or len(lows) != len(closes):
+        return None
+
+    rsv_values: list[float] = []
+    for idx in range(k_period - 1, len(closes)):
+        high_window = highs[idx - k_period + 1 : idx + 1]
+        low_window = lows[idx - k_period + 1 : idx + 1]
+        highest = max(high_window)
+        lowest = min(low_window)
+        if highest == lowest:
+            rsv_values.append(50.0)
+        else:
+            rsv_values.append((closes[idx] - lowest) / (highest - lowest) * 100)
+
+    if len(rsv_values) < d_period:
+        return None
+
+    k_values: list[float] = []
+    k_prev = 50.0
+    for rsv in rsv_values:
+        k_prev = (2 * k_prev + rsv) / 3
+        k_values.append(k_prev)
+
+    d_values: list[float] = []
+    d_prev = 50.0
+    for k_value in k_values:
+        d_prev = (2 * d_prev + k_value) / 3
+        d_values.append(d_prev)
+
+    if len(k_values) < 2 or len(d_values) < 2:
+        return None
+
+    k_value = k_values[-1]
+    d_value = d_values[-1]
+    prev_k = k_values[-2]
+    prev_d = d_values[-2]
+
+    if prev_k <= prev_d and k_value > d_value:
+        signal = "bullish_cross"
+    elif prev_k >= prev_d and k_value < d_value:
+        signal = "bearish_cross"
+    else:
+        signal = "neutral"
+
+    if k_value <= 20 and d_value <= 25:
+        zone = "oversold"
+    elif k_value >= 80 and d_value >= 75:
+        zone = "overbought"
+    else:
+        zone = "neutral"
+
+    return {
+        "k": k_value,
+        "d": d_value,
+        "prev_k": prev_k,
+        "prev_d": prev_d,
+        "kd_signal": signal,
+        "kd_zone": zone,
+    }
+
+
+def adx(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    period: int = 14,
+) -> dict[str, float | str | None] | None:
+    """ADX 趨勢強度指標，回傳 ADX、+DI、-DI 與趨勢方向。"""
+    if len(closes) < period * 2 or len(highs) != len(closes) or len(lows) != len(closes):
+        return None
+
+    true_ranges: list[float] = []
+    plus_dm: list[float] = []
+    minus_dm: list[float] = []
+
+    for idx in range(1, len(closes)):
+        high_diff = highs[idx] - highs[idx - 1]
+        low_diff = lows[idx - 1] - lows[idx]
+        plus_dm.append(high_diff if high_diff > low_diff and high_diff > 0 else 0.0)
+        minus_dm.append(low_diff if low_diff > high_diff and low_diff > 0 else 0.0)
+        true_ranges.append(max(
+            highs[idx] - lows[idx],
+            abs(highs[idx] - closes[idx - 1]),
+            abs(lows[idx] - closes[idx - 1]),
+        ))
+
+    if len(true_ranges) < period:
+        return None
+
+    tr14 = sum(true_ranges[:period])
+    plus14 = sum(plus_dm[:period])
+    minus14 = sum(minus_dm[:period])
+    dx_values: list[float] = []
+
+    for idx in range(period, len(true_ranges)):
+        tr14 = tr14 - tr14 / period + true_ranges[idx]
+        plus14 = plus14 - plus14 / period + plus_dm[idx]
+        minus14 = minus14 - minus14 / period + minus_dm[idx]
+
+        if tr14 == 0:
+            plus_di = 0.0
+            minus_di = 0.0
+        else:
+            plus_di = 100 * plus14 / tr14
+            minus_di = 100 * minus14 / tr14
+
+        di_sum = plus_di + minus_di
+        dx_values.append(0.0 if di_sum == 0 else abs(plus_di - minus_di) / di_sum * 100)
+
+    if not dx_values:
+        return None
+
+    adx_value = sum(dx_values[:period]) / min(period, len(dx_values))
+    for dx in dx_values[period:]:
+        adx_value = (adx_value * (period - 1) + dx) / period
+
+    trend_strength = "strong" if adx_value >= 25 else "weak" if adx_value < 20 else "neutral"
+    direction = "bullish" if plus_di > minus_di else "bearish" if minus_di > plus_di else "neutral"
+    return {
+        "adx": adx_value,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "trend_strength": trend_strength,
+        "trend_direction": direction,
+    }
+
+
+def obv(
+    closes: list[float],
+    volumes: list[float],
+    lookback: int = 5,
+) -> dict[str, float | str | None] | None:
+    """OBV 能量潮，用來觀察量價是否確認或背離。"""
+    if len(closes) < 2 or len(volumes) != len(closes):
+        return None
+
+    values = [0.0]
+    for idx in range(1, len(closes)):
+        if closes[idx] > closes[idx - 1]:
+            values.append(values[-1] + volumes[idx])
+        elif closes[idx] < closes[idx - 1]:
+            values.append(values[-1] - volumes[idx])
+        else:
+            values.append(values[-1])
+
+    compare_idx = max(0, len(values) - 1 - lookback)
+    obv_delta = values[-1] - values[compare_idx]
+    price_delta = closes[-1] - closes[compare_idx]
+
+    if price_delta > 0 and obv_delta > 0:
+        signal = "price_volume_confirm"
+    elif price_delta > 0 and obv_delta <= 0:
+        signal = "bearish_divergence"
+    elif price_delta < 0 and obv_delta >= 0:
+        signal = "bullish_divergence"
+    elif price_delta < 0 and obv_delta < 0:
+        signal = "price_volume_weak"
+    else:
+        signal = "neutral"
+
+    return {
+        "obv": values[-1],
+        "obv_delta": obv_delta,
+        "price_delta": price_delta,
+        "obv_signal": signal,
+    }

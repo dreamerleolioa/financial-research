@@ -270,6 +270,43 @@ def test_clean_node_produces_cleaned_news_from_news_content() -> None:
     assert result["cleaned_news"]["mentioned_numbers"] == ["2,600", "18.2%"]
 
 
+def test_clean_node_aggregates_multiple_news_items() -> None:
+    mock_cleaner = MagicMock()
+    mock_cleaner.clean.side_effect = [
+        MagicMock(model_dump=lambda: {
+            "date": "2026-03-03",
+            "title": "台積電接獲大單",
+            "mentioned_numbers": ["20%"],
+            "sentiment_label": "positive",
+        }),
+        MagicMock(model_dump=lambda: {
+            "date": "2026-03-03",
+            "title": "台積電擴產",
+            "mentioned_numbers": [],
+            "sentiment_label": "positive",
+        }),
+        MagicMock(model_dump=lambda: {
+            "date": "2026-03-03",
+            "title": "台積電盤中震盪",
+            "mentioned_numbers": [],
+            "sentiment_label": "neutral",
+        }),
+    ]
+    raw_items = [
+        asdict(_make_raw_news_item(title="台積電接獲大單")),
+        asdict(_make_raw_news_item(title="台積電擴產")),
+        asdict(_make_raw_news_item(title="台積電盤中震盪")),
+    ]
+
+    state = _base_state(news_content="multiple news", raw_news_items=raw_items)
+    result = clean_node(state, news_cleaner=mock_cleaner)
+
+    assert result["cleaned_news"]["sentiment_label"] == "positive"
+    assert result["cleaned_news"]["sentiment_strength"] > 1.0
+    assert result["cleaned_news"]["sentiment_counts"] == {"positive": 2, "neutral": 1, "negative": 0}
+    assert len(result["cleaned_news_items"]) == 3
+
+
 def test_clean_node_skips_when_no_news_content() -> None:
     mock_cleaner = MagicMock()
 
@@ -324,6 +361,7 @@ def test_fetch_news_node_news_content_has_structured_labels() -> None:
     assert news_content is not None
     assert "標題:" in news_content
     assert "摘要:" in news_content
+    assert "新聞1:" in news_content
 
 
 def test_fetch_news_node_uses_symbol_prefix_as_query() -> None:

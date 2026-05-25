@@ -313,6 +313,32 @@ def test_technical_score_partial_bullish():
     assert result == 53
 
 
+def test_technical_score_uses_kd_adx_obv():
+    """KD/ADX/OBV 可共同把中性價格序列推升為偏多技術分。"""
+    closes = [100.0] * 21
+    result = derive_technical_score(
+        closes,
+        rsi=45.0,
+        bias=0.0,
+        kd_data={"kd_signal": "bullish_cross", "kd_zone": "oversold"},
+        adx_data={"trend_strength": "strong", "trend_direction": "bullish"},
+        obv_data={"obv_signal": "price_volume_confirm"},
+    )
+    assert result >= 60
+
+
+def test_sentiment_strength_scales_news_weight():
+    """多篇一致正面新聞可透過 sentiment_strength 放大消息面權重。"""
+    score, _ = adjust_confidence_by_divergence(
+        50,
+        news_sentiment="positive",
+        inst_flow="neutral",
+        technical_signal="sideways",
+        sentiment_strength=1.6,
+    )
+    assert score == 58
+
+
 # ─── compute_confidence (CS-4) ───────────────────────────────────────────────
 
 

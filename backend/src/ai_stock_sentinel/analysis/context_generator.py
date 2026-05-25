@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from ai_stock_sentinel.analysis.metrics import ma, calc_bias, calc_rsi, bollinger_bands, macd
+from ai_stock_sentinel.analysis.metrics import adx, bollinger_bands, calc_bias, calc_rsi, ma, macd, obv, stochastic_kd
 
 
 # ─── 敘事生成規則 ────────────────────────────────────────────────────────────
@@ -87,6 +87,7 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
     three_net = inst.get("three_party_net")
     consecutive = inst.get("consecutive_buy_days")
     margin_delta = inst.get("margin_delta")
+    avg_daily_volume = inst.get("avg_daily_volume")
     flow_label = inst.get("flow_label", "neutral")
     source = inst.get("source_provider", "")
     error = inst.get("error")
@@ -100,6 +101,14 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
     if three_net is not None:
         direction = "買超" if three_net >= 0 else "賣超"
         parts.append(f"三大法人近期合計{direction} {abs(three_net):.0f} 張")
+        if isinstance(avg_daily_volume, (int, float)) and avg_daily_volume > 0:
+            ratio = abs(three_net) / avg_daily_volume * 100
+            if ratio >= 5:
+                parts.append(f"法人買賣超約占近期均量 {ratio:.1f}%（相對規模偏大）")
+            elif ratio >= 1:
+                parts.append(f"法人買賣超約占近期均量 {ratio:.1f}%（具觀察意義）")
+            else:
+                parts.append(f"法人買賣超約占近期均量 {ratio:.1f}%（相對規模有限）")
 
     # 外資
     if foreign is not None:
@@ -227,6 +236,71 @@ def _macd_narrative(m: dict | None) -> str:
     return "".join(parts)
 
 
+# ─── KD / ADX / OBV 敘事 ─────────────────────────────────────────────────────
+
+def _kd_narrative(kd: dict | None) -> str:
+    if kd is None:
+        return "KD 資料不足（需最近高低收盤價）。"
+
+    k_value = kd.get("k")
+    d_value = kd.get("d")
+    signal = kd.get("kd_signal")
+    zone = kd.get("kd_zone")
+    if k_value is None or d_value is None:
+        return "KD 資料不足，無法判斷。"
+
+    parts = [f"K={k_value:.1f}、D={d_value:.1f}。"]
+    if signal == "bullish_cross" and zone == "oversold":
+        parts.append("低檔黃金交叉，短線反彈訊號較明確。")
+    elif signal == "bearish_cross" and zone == "overbought":
+        parts.append("高檔死亡交叉，短線轉弱風險升高。")
+    elif zone == "overbought":
+        parts.append("KD 位於高檔，動能強但追價需謹慎。")
+    elif zone == "oversold":
+        parts.append("KD 位於低檔，留意止跌或反彈訊號。")
+    elif signal == "bullish_cross":
+        parts.append("K 值上穿 D 值，短線動能轉強。")
+    elif signal == "bearish_cross":
+        parts.append("K 值下穿 D 值，短線動能轉弱。")
+    else:
+        parts.append("KD 無明確交叉訊號。")
+    return "".join(parts)
+
+
+def _adx_narrative(adx_data: dict | None) -> str:
+    if adx_data is None:
+        return "ADX 資料不足（需最近高低收盤價）。"
+
+    adx_value = adx_data.get("adx")
+    strength = adx_data.get("trend_strength")
+    direction = adx_data.get("trend_direction")
+    if adx_value is None:
+        return "ADX 資料不足，無法判斷趨勢強度。"
+
+    direction_text = {"bullish": "偏多", "bearish": "偏空"}.get(str(direction), "中性")
+    if strength == "strong":
+        return f"ADX {adx_value:.1f}，趨勢強度明確，方向{direction_text}。"
+    if strength == "weak":
+        return f"ADX {adx_value:.1f}，趨勢強度偏弱，盤整環境下趨勢訊號需打折。"
+    return f"ADX {adx_value:.1f}，趨勢強度中等，方向{direction_text}。"
+
+
+def _obv_narrative(obv_data: dict | None) -> str:
+    if obv_data is None:
+        return "OBV 資料不足（需成交量序列）。"
+
+    signal = obv_data.get("obv_signal")
+    if signal == "price_volume_confirm":
+        return "OBV 隨股價同步上升，量價確認多方動能。"
+    if signal == "bearish_divergence":
+        return "股價上升但 OBV 未同步走高，量價背離，需提防拉高出貨。"
+    if signal == "bullish_divergence":
+        return "股價回落但 OBV 未同步轉弱，可能有承接力道。"
+    if signal == "price_volume_weak":
+        return "OBV 隨股價同步走弱，賣壓尚未解除。"
+    return "OBV 變化中性，量價未出現明顯確認或背離。"
+
+
 # ─── 支撐壓力位敘事 ──────────────────────────────────────────────────────────
 
 def _price_level_narrative(
@@ -283,6 +357,16 @@ def generate_technical_context(
         return technical, institutional
 
     closes = [float(v) for v in df_price["Close"].dropna().tolist()]
+    highs = (
+        [float(v) for v in df_price["High"].dropna().tolist()]
+        if "High" in df_price.columns
+        else []
+    )
+    lows = (
+        [float(v) for v in df_price["Low"].dropna().tolist()]
+        if "Low" in df_price.columns
+        else []
+    )
     volumes = (
         [float(v) for v in df_price["Volume"].dropna().tolist()]
         if "Volume" in df_price.columns
@@ -298,6 +382,9 @@ def generate_technical_context(
     rsi = calc_rsi(closes, period=14)
     bb = bollinger_bands(closes)
     macd_data = macd(closes)
+    kd_data = stochastic_kd(closes, highs, lows) if highs and lows else None
+    adx_data = adx(closes, highs, lows) if highs and lows else None
+    obv_data = obv(closes, volumes) if volumes else None
 
     lines = [
         f"【技術位階】當前收盤價 {close:.2f}。",
@@ -307,6 +394,9 @@ def generate_technical_context(
         f"【量能】{_volume_narrative(volumes) if volumes else '無成交量資料。'}",
         f"【布林通道】{_bollinger_narrative(close, bb)}",
         f"【MACD】{_macd_narrative(macd_data)}",
+        f"【KD】{_kd_narrative(kd_data)}",
+        f"【ADX】{_adx_narrative(adx_data)}",
+        f"【OBV】{_obv_narrative(obv_data)}",
     ]
     technical = " ".join(lines)
     price_level = _price_level_narrative(
