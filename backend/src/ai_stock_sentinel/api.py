@@ -26,7 +26,13 @@ from ai_stock_sentinel.main import build_graph_deps
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
-from ai_stock_sentinel.analysis.metrics import bollinger_bands as _bollinger_bands, macd as _macd
+from ai_stock_sentinel.analysis.metrics import (
+    adx as _adx,
+    bollinger_bands as _bollinger_bands,
+    macd as _macd,
+    obv as _obv,
+    stochastic_kd as _stochastic_kd,
+)
 from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
@@ -70,6 +76,15 @@ class TechnicalIndicators(BaseModel):
     macd_signal: float | None = None
     macd_hist: float | None = None
     macd_bias: str | None = None
+    kd_k: float | None = None
+    kd_d: float | None = None
+    kd_signal: str | None = None
+    kd_zone: str | None = None
+    adx: float | None = None
+    adx_trend_strength: str | None = None
+    adx_trend_direction: str | None = None
+    obv: float | None = None
+    obv_signal: str | None = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -278,14 +293,20 @@ def _compute_bollinger_position(bb: dict, close_price: float | None) -> str | No
 
 
 def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
-    """從 snapshot 計算布林通道與 MACD，回傳 TechnicalIndicators 或 None。"""
+    """從 snapshot 計算技術指標，回傳 TechnicalIndicators 或 None。"""
     recent_closes = snapshot.get("recent_closes") or []
     closes = [float(v) for v in recent_closes if v is not None]
     if not closes:
         return None
+    highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
+    lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
+    volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
     bb = _bollinger_bands(closes)
     macd_data = _macd(closes)
-    if bb is None and macd_data is None:
+    kd_data = _stochastic_kd(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
+    adx_data = _adx(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
+    obv_data = _obv(closes, volumes) if len(volumes) == len(closes) else None
+    if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None:
         return None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
     return TechnicalIndicators(
@@ -298,6 +319,15 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
         macd_signal=macd_data["macd_signal"] if macd_data else None,
         macd_hist=macd_data["macd_hist"] if macd_data else None,
         macd_bias=macd_data["macd_bias"] if macd_data else None,
+        kd_k=kd_data["k"] if kd_data else None,
+        kd_d=kd_data["d"] if kd_data else None,
+        kd_signal=kd_data["kd_signal"] if kd_data else None,
+        kd_zone=kd_data["kd_zone"] if kd_data else None,
+        adx=adx_data["adx"] if adx_data else None,
+        adx_trend_strength=adx_data["trend_strength"] if adx_data else None,
+        adx_trend_direction=adx_data["trend_direction"] if adx_data else None,
+        obv=obv_data["obv"] if obv_data else None,
+        obv_signal=obv_data["obv_signal"] if obv_data else None,
     )
 
 
@@ -310,8 +340,16 @@ def _extract_indicators(result: dict) -> dict:
 
     recent_closes = snapshot.get("recent_closes") or []
     closes = [float(v) for v in recent_closes if v is not None]
+    highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
+    lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
+    volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
     bb = _bollinger_bands(closes) if closes else None
     macd_data = _macd(closes) if closes else None
+    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
+    aligned_volume = len(volumes) == len(closes)
+    kd_data = _stochastic_kd(closes, highs, lows) if aligned_hilo else None
+    adx_data = _adx(closes, highs, lows) if aligned_hilo else None
+    obv_data = _obv(closes, volumes) if aligned_volume else None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
 
     return {
@@ -334,6 +372,15 @@ def _extract_indicators(result: dict) -> dict:
         "macd_signal":        macd_data["macd_signal"] if macd_data else None,
         "macd_hist":          macd_data["macd_hist"] if macd_data else None,
         "macd_bias":          macd_data["macd_bias"] if macd_data else None,
+        "kd_k":               kd_data["k"] if kd_data else None,
+        "kd_d":               kd_data["d"] if kd_data else None,
+        "kd_signal":          kd_data["kd_signal"] if kd_data else None,
+        "kd_zone":            kd_data["kd_zone"] if kd_data else None,
+        "adx":                adx_data["adx"] if adx_data else None,
+        "adx_trend_strength": adx_data["trend_strength"] if adx_data else None,
+        "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
+        "obv":                obv_data["obv"] if obv_data else None,
+        "obv_signal":         obv_data["obv_signal"] if obv_data else None,
         "institutional": {
             "foreign_net": inst.get("foreign_net"),
             "trust_net":   inst.get("trust_net"),
