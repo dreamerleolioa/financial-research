@@ -119,7 +119,7 @@
      --output-json docs/research/backtest-results/new-position-baseline-$(date +%Y%m%d).json
    ```
 
-2. **判斷是否需要調權**（根據 `docs/specs/p0-confidence-calibration-spec.md` §6 診斷矩陣）
+2. **判斷是否需要調權**（根據 `docs/specs/ai-stock-sentinel-execution-roadmap-spec.md` §3.7 診斷矩陣）
    - 若 signal_confidence 分桶勝率呈單調遞增，且各分桶差距 > 10%：**無需調整**
    - 若高分桶勝率低於低分桶，或各分桶勝率無差異（< 5%）：**需進行維度分析**
 
@@ -150,6 +150,7 @@
    - 修改 `config.py` 中的 `STRATEGY_VERSION`
 
 8. **重新執行回測，確認改善**
+
    ```bash
    python scripts/backtest_win_rate.py \
      --mode new-position \
@@ -170,7 +171,7 @@
 
 ### 相關文件
 
-- 需求規格：`docs/specs/p0-confidence-calibration-spec.md`
+- 需求規格：`docs/specs/ai-stock-sentinel-execution-roadmap-spec.md` §3.6-3.7
 - 實作計劃：`docs/plans/2026-03-18-p0-confidence-calibration.md`
 - 維度分析腳本：`backend/scripts/analyze_confidence_breakdown.py`
 - 調權提案目錄：`docs/research/confidence-calibration-proposals/`

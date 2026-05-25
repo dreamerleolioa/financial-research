@@ -77,22 +77,22 @@
 
 **預期健康狀態：**
 
-| 分桶 | 預期勝率趨勢 |
-|---|---|
-| 80+ | 最高 |
-| 70-80 | 次高 |
-| 60-70 | 中等 |
-| <60 | 最低 |
+| 分桶  | 預期勝率趨勢 |
+| ----- | ------------ |
+| 80+   | 最高         |
+| 70-80 | 次高         |
+| 60-70 | 中等         |
+| <60   | 最低         |
 
 若勝率趨勢與分桶不成單調遞增，代表 `confidence_score` 校準問題。
 
 **診斷矩陣：**
 
-| 現象 | 可能原因 |
-|---|---|
-| 高分桶勝率低於低分桶 | 高分條件（如三維共振 bonus）不具備預測力 |
-| 各分桶勝率無差異 | 整體 confidence 計算對新倉無區分力，需重新設計 |
-| 某分桶樣本極少 | 分桶閾值不合理，或策略輸出分布集中 |
+| 現象                 | 可能原因                                       |
+| -------------------- | ---------------------------------------------- |
+| 高分桶勝率低於低分桶 | 高分條件（如三維共振 bonus）不具備預測力       |
+| 各分桶勝率無差異     | 整體 confidence 計算對新倉無區分力，需重新設計 |
+| 某分桶樣本極少       | 分桶閾值不合理，或策略輸出分布集中             |
 
 ---
 
@@ -124,20 +124,25 @@
 ## 信心分數調權提案 YYYY-MM-DD
 
 ### 發現問題
+
 - [描述具體的分桶勝率異常]
 
 ### 診斷
+
 - [描述問題來自哪個維度]
 
 ### 提案變更
-| 維度 | 現有值 | 建議值 | 理由 |
-|---|---|---|---|
-| `institutional_accumulation` | +7 | +5 | ... |
+
+| 維度                         | 現有值 | 建議值 | 理由 |
+| ---------------------------- | ------ | ------ | ---- |
+| `institutional_accumulation` | +7     | +5     | ...  |
 
 ### 預期效果
+
 - [描述預期改善方向]
 
 ### 風險
+
 - [調整後可能影響持股診斷等其他用途]
 ```
 
@@ -185,36 +190,36 @@ python scripts/backtest_win_rate.py \
 
 ## 6. 受影響模組
 
-| 模組 | 變更類型 |
-|---|---|
-| `scripts/analyze_confidence_breakdown.py` | 新建（一次性分析腳本） |
-| `analysis/confidence_scorer.py` | 權重常數調整（人工審核後） |
-| `config.py` | `STRATEGY_VERSION` minor bump |
-| `docs/research/confidence-calibration-proposals/` | 新建目錄，存放調權提案 |
-| `docs/research/backtest-results/` | 存放 post-calibration 回測結果 |
-| `docs/development-execution-playbook.md` | 補充調權流程說明 |
+| 模組                                              | 變更類型                       |
+| ------------------------------------------------- | ------------------------------ |
+| `scripts/analyze_confidence_breakdown.py`         | 新建（一次性分析腳本）         |
+| `analysis/confidence_scorer.py`                   | 權重常數調整（人工審核後）     |
+| `config.py`                                       | `STRATEGY_VERSION` minor bump  |
+| `docs/research/confidence-calibration-proposals/` | 新建目錄，存放調權提案         |
+| `docs/research/backtest-results/`                 | 存放 post-calibration 回測結果 |
+| `docs/development-execution-playbook.md`          | 補充調權流程說明               |
 
 ---
 
 ## 7. 測試計劃
 
-| 測試 | 方法 |
-|---|---|
-| 維度分析腳本可執行 | `python scripts/analyze_confidence_breakdown.py --days 90` 不報錯 |
-| 調整後回測可執行 | 修改 `confidence_scorer.py` 後回測腳本正常輸出 |
-| `STRATEGY_VERSION` 已更新 | 新分析記錄的 `strategy_version` 為新版本號 |
-| 分桶勝率改善 | post-calibration 回測的高分桶勝率 >= baseline |
+| 測試                      | 方法                                                              |
+| ------------------------- | ----------------------------------------------------------------- |
+| 維度分析腳本可執行        | `python scripts/analyze_confidence_breakdown.py --days 90` 不報錯 |
+| 調整後回測可執行          | 修改 `confidence_scorer.py` 後回測腳本正常輸出                    |
+| `STRATEGY_VERSION` 已更新 | 新分析記錄的 `strategy_version` 為新版本號                        |
+| 分桶勝率改善              | post-calibration 回測的高分桶勝率 >= baseline                     |
 
 ---
 
 ## 8. 依賴與風險
 
-| 項目 | 說明 |
-|---|---|
-| 樣本數不足 | 初期可能各分桶樣本數偏低，校準結論不可靠；應等樣本充足後再做 Task 3-4 |
+| 項目                 | 說明                                                                                               |
+| -------------------- | -------------------------------------------------------------------------------------------------- |
+| 樣本數不足           | 初期可能各分桶樣本數偏低，校準結論不可靠；應等樣本充足後再做 Task 3-4                              |
 | 權重調整影響持股診斷 | `confidence_scorer.py` 同時用於持股診斷（`/analyze/position`）；調整前需確認不影響持股端的邏輯語意 |
-| 回測期間資料品質 | 若資料源在某段期間有已知問題，回測樣本需排除該期間 |
-| 過度校準風險 | 不應根據少量樣本做多次調整（overfitting）；每次調整應至少間隔一個月的新樣本 |
+| 回測期間資料品質     | 若資料源在某段期間有已知問題，回測樣本需排除該期間                                                 |
+| 過度校準風險         | 不應根據少量樣本做多次調整（overfitting）；每次調整應至少間隔一個月的新樣本                        |
 
 ---
 
@@ -229,7 +234,7 @@ python scripts/backtest_win_rate.py \
 
 ## 10. Spec Review
 
-對應需求規格：`docs/specs/p0-confidence-calibration-spec.md`
+對應需求規格：`docs/specs/ai-stock-sentinel-execution-roadmap-spec.md` §3.6-3.7
 
 實作前請確認 spec 中以下項目無歧義：
 
@@ -244,13 +249,13 @@ python scripts/backtest_win_rate.py \
 
 ## 11. 執行進度（2026-03-18）
 
-| Task | 狀態 | 說明 |
-|---|---|---|
-| Task 1：信心分桶 vs 勝率分析 | ✅ 完成 | `backtest_win_rate.py` 新增 `confidence_bucket_multi_period_stats()`，分桶輸出與單調性診斷 |
-| Task 2：維度貢獻分析腳本 | ✅ 完成 | `scripts/analyze_confidence_breakdown.py` 建立，支援 `--days` / `--output-json`；同步修改 `api.py`、`graph/nodes.py`、`graph/state.py` 以儲存 `flow_label` / `sentiment_label` / `technical_signal` 至 `indicators` JSONB |
-| Task 3：調權提案 | ⏳ 待回測資料 | 須先執行 `backtest_win_rate.py --mode new-position --days 90` 取得分桶勝率，若發現異常才需撰寫提案 |
-| Task 4：人工審核 + 修改 + 驗證 | ⏳ 待 Task 3 + 人工審核 | 不得自動執行 |
-| Task 5：調權流程文件化 | ✅ 完成 | `docs/development-execution-playbook.md` §6 已補充 8 步驟調權流程 |
+| Task                           | 狀態                    | 說明                                                                                                                                                                                                                      |
+| ------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task 1：信心分桶 vs 勝率分析   | ✅ 完成                 | `backtest_win_rate.py` 新增 `confidence_bucket_multi_period_stats()`，分桶輸出與單調性診斷                                                                                                                                |
+| Task 2：維度貢獻分析腳本       | ✅ 完成                 | `scripts/analyze_confidence_breakdown.py` 建立，支援 `--days` / `--output-json`；同步修改 `api.py`、`graph/nodes.py`、`graph/state.py` 以儲存 `flow_label` / `sentiment_label` / `technical_signal` 至 `indicators` JSONB |
+| Task 3：調權提案               | ⏳ 待回測資料           | 須先執行 `backtest_win_rate.py --mode new-position --days 90` 取得分桶勝率，若發現異常才需撰寫提案                                                                                                                        |
+| Task 4：人工審核 + 修改 + 驗證 | ⏳ 待 Task 3 + 人工審核 | 不得自動執行                                                                                                                                                                                                              |
+| Task 5：調權流程文件化         | ✅ 完成                 | `docs/development-execution-playbook.md` §6 已補充 8 步驟調權流程                                                                                                                                                         |
 
 ### 受影響檔案（已完成部分）
 
