@@ -83,6 +83,8 @@ def test_graph_state_has_position_fields():
         "position_status", "position_narrative",
         "trailing_stop", "trailing_stop_reason",
         "recommended_action", "exit_reason",
+        "distance_to_trailing_stop_pct", "distance_to_support_pct",
+        "unrealized_pnl", "holding_days",
     ]:
         assert field in hints, f"GraphState missing field: {field}"
 

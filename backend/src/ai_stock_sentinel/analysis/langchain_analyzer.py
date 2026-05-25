@@ -19,13 +19,16 @@ _SYSTEM_PROMPT = """\
 步驟四【輸出】：只輸出有資料支撐的事實與推論，禁止補造未在輸入資料中出現的來源或數字。
 
 分維度輸出規範（禁止跨維度混寫）：
-- tech_insight：僅參考技術面資料（均線排列、RSI 位階、布林通道位置、MACD 動能、支撐壓力位）；禁止提及法人買賣超或新聞事件
+- tech_insight：僅參考技術面資料（均線排列、RSI 位階、布林通道位置、MACD 動能、KD 交叉/高低檔、ADX 趨勢強度、OBV 量價確認/背離、支撐壓力位）；禁止提及法人買賣超或新聞事件
 - inst_insight：僅參考籌碼面資料（三大法人買賣超、融資券動向）；禁止提及均線數值、RSI、新聞事件
 - news_insight：僅參考消息面資料（事件性質、市場情緒傾向）；禁止提及具體技術指標數值（如 RSI=62）
 - fundamental_insight：僅參考基本面估值資料（PE 位階、殖利率、每股盈餘趨勢）；禁止提及技術指標或法人動向
 - final_verdict：整合三維訊號，解釋為何導向當前信心分數與策略；此段允許跨維度整合推論
 
 規範：
+- 優先閱讀「系統信號摘要」。該摘要是 rule-based 計算結果，technical_signal、institutional_flow、sentiment_label、confidence_score 不得自行改寫。
+- tech_insight 必須用 2-3 句說清楚：先講技術結論，再列主要依據。若 KD / ADX / OBV 有資料，至少引用其中兩項；若與均線、MACD 或布林通道矛盾，必須點出矛盾。
+- final_verdict 必須解釋 confidence_score 的來源：說明技術、籌碼、消息面是共振、分歧，或資料不足；避免只寫「可留意」「偏中性」這類無法執行的結論。
 - LLM 不得修改 confidence_score 或 cross_validation_note，這兩個欄位由 rule-based 計算已完成。
 - 輸出格式：必須輸出合法 JSON，格式如下：
 {{
@@ -46,6 +49,12 @@ _SYSTEM_PROMPT = """\
 import hashlib as _hashlib
 PROMPT_HASH: str = _hashlib.md5(_SYSTEM_PROMPT.encode()).hexdigest()[:8]
 
+
+def _position_value(value: Any, suffix: str = "") -> str:
+    if value is None:
+        return "N/A"
+    return f"{value}{suffix}"
+
 _POSITION_SYSTEM_PROMPT = """
 你正在診斷使用者的持有倉位，而非尋找新的買點。
 
@@ -63,6 +72,9 @@ _POSITION_SYSTEM_PROMPT = """
 
 _HUMAN_PROMPT = """\
 請分析以下股票資料：
+
+【系統信號摘要（優先閱讀，不得改寫 key labels）】
+{signal_summary}
 
 【基本快照】
 - Symbol: {symbol}
@@ -128,6 +140,7 @@ class LangChainStockAnalyzer:
         cross_validation_note: str | None,
         fundamental_context: str | None = None,
         history_section: str | None = None,
+        signal_summary: str | None = None,
     ) -> None:
         combined = "".join([
             _SYSTEM_PROMPT,
@@ -146,6 +159,7 @@ class LangChainStockAnalyzer:
             cross_validation_note or "",
             fundamental_context or "",
             history_section or "",
+            signal_summary or "",
         ])
         estimated_tokens = len(combined) / 4
         estimated_cost = (estimated_tokens / 1_000_000) * self._COST_PER_MILLION_INPUT_TOKENS
@@ -177,6 +191,7 @@ class LangChainStockAnalyzer:
         fundamental_context: str | None = None,
         position_context: dict | None = None,
         prev_context: dict | None = None,
+        signal_summary: str | None = None,
     ) -> AnalysisDetail:
         if not self._has_langchain():
             return AnalysisDetail(
@@ -203,6 +218,7 @@ class LangChainStockAnalyzer:
             cross_validation_note=cross_validation_note,
             fundamental_context=fundamental_context,
             history_section=build_position_history_section(prev_context),
+            signal_summary=signal_summary,
         )
 
         output_parsers = import_module("langchain_core.output_parsers")
@@ -224,7 +240,12 @@ class LangChainStockAnalyzer:
                 f"- 當前損益：{pc.get('profit_loss_pct', 0.0):.2f}%\n"
                 f"- 倉位狀態：{pc.get('position_status', 'unknown')}（{pc.get('position_narrative', '')}）\n"
                 f"- 動態防守位：{pc.get('trailing_stop', 'N/A')}（{pc.get('trailing_stop_reason', '')}）\n"
-                f"- 系統建議動作：{pc.get('recommended_action', 'N/A')}\n\n"
+                f"- 距離防守位：{_position_value(pc.get('distance_to_trailing_stop_pct'), '%')}\n"
+                f"- 距離 20 日支撐：{_position_value(pc.get('distance_to_support_pct'), '%')}\n"
+                f"- 未實現損益：{_position_value(pc.get('unrealized_pnl'))}\n"
+                f"- 持有天數：{_position_value(pc.get('holding_days'))}\n"
+                f"- 系統建議動作：{pc.get('recommended_action', 'N/A')}\n"
+                f"- 系統出場/減碼理由：{pc.get('exit_reason', None) or '未觸發'}\n\n"
                 "請根據以上持倉資訊，從「防守」視角撰寫 tech_insight、inst_insight、final_verdict。"
                 "必須明確提示出場或減碼條件。\n"
             )
@@ -243,6 +264,7 @@ class LangChainStockAnalyzer:
             "day_low": snapshot.day_low,
             "volume": snapshot.volume,
             "recent_closes": snapshot.recent_closes,
+            "signal_summary": signal_summary or "（本次無系統信號摘要）",
             "news_summary": news_summary or "（本次無新聞摘要）",
             "technical_context": technical_context or "（無技術敘事）",
             "institutional_context": institutional_context or "（無籌碼敘事）",

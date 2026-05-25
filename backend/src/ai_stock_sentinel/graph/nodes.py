@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import date
@@ -19,6 +20,125 @@ from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
+
+
+def _round_value(value: Any, digits: int = 2) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct_distance(value: float | None, reference: float | None) -> float | None:
+    if value is None or reference in (None, 0):
+        return None
+    return round((float(value) - float(reference)) / float(reference) * 100, 2)
+
+
+def _holding_days(entry_date: str | None) -> int | None:
+    if not entry_date:
+        return None
+    try:
+        return max((date.today() - date.fromisoformat(entry_date)).days, 0)
+    except ValueError:
+        return None
+
+
+def _bollinger_position(bb: dict[str, Any] | None, close: float | None) -> str | None:
+    if not bb or close is None:
+        return None
+    upper = bb.get("bollinger_upper")
+    lower = bb.get("bollinger_lower")
+    if upper is None or lower is None:
+        return None
+    band_range = upper - lower
+    if band_range <= 0:
+        return "flat"
+    if close >= upper * 0.99:
+        return "near_upper"
+    if close <= lower * 1.01:
+        return "near_lower"
+    if close >= (lower + band_range * 0.5):
+        return "above_mid"
+    return "below_mid"
+
+
+def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str:
+    closes = [float(v) for v in snapshot.recent_closes if v is not None]
+    highs = [float(v) for v in snapshot.recent_highs if v is not None]
+    lows = [float(v) for v in snapshot.recent_lows if v is not None]
+    volumes = [float(v) for v in snapshot.recent_volumes if v is not None]
+    close = closes[-1] if closes else snapshot.current_price
+
+    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
+    aligned_volume = len(volumes) == len(closes)
+    bb = calc_bollinger(closes) if closes else None
+    macd_data = calc_macd(closes) if closes else None
+    kd_data = calc_kd(closes, highs, lows) if aligned_hilo else None
+    adx_data = calc_adx(closes, highs, lows) if aligned_hilo else None
+    obv_data = calc_obv(closes, volumes) if aligned_volume else None
+
+    cleaned_news = state.get("cleaned_news") or {}
+    inst = state.get("institutional_flow") or {}
+    action_plan = state.get("action_plan") or {}
+
+    packet = {
+        "rule_based_labels": {
+            "technical_signal": state.get("technical_signal"),
+            "institutional_flow": None if inst.get("error") else inst.get("flow_label"),
+            "sentiment_label": cleaned_news.get("sentiment_label"),
+            "confidence_score": state.get("confidence_score"),
+            "data_confidence": state.get("data_confidence"),
+            "cross_validation_note": state.get("cross_validation_note"),
+        },
+        "technical_evidence": {
+            "close": _round_value(close),
+            "ma5": _round_value(calc_ma(closes, 5)),
+            "ma20": _round_value(calc_ma(closes, 20)),
+            "ma60": _round_value(calc_ma(closes, 60)),
+            "rsi14": _round_value(state.get("rsi14")),
+            "bollinger_position": _bollinger_position(bb, close),
+            "macd_bias": macd_data.get("macd_bias") if macd_data else None,
+            "kd_signal": kd_data.get("kd_signal") if kd_data else None,
+            "kd_zone": kd_data.get("kd_zone") if kd_data else None,
+            "kd_k": _round_value(kd_data.get("k") if kd_data else None, 1),
+            "kd_d": _round_value(kd_data.get("d") if kd_data else None, 1),
+            "adx": _round_value(adx_data.get("adx") if adx_data else None, 1),
+            "adx_trend_strength": adx_data.get("trend_strength") if adx_data else None,
+            "adx_trend_direction": adx_data.get("trend_direction") if adx_data else None,
+            "obv_signal": obv_data.get("obv_signal") if obv_data else None,
+            "support_20d": _round_value(state.get("support_20d")),
+            "resistance_20d": _round_value(state.get("resistance_20d")),
+        },
+        "news_evidence": {
+            "sentiment_score": _round_value(cleaned_news.get("sentiment_score"), 3),
+            "sentiment_strength": _round_value(cleaned_news.get("sentiment_strength"), 2),
+            "sentiment_counts": cleaned_news.get("sentiment_counts"),
+        },
+        "strategy_evidence": {
+            "strategy_type": state.get("strategy_type"),
+            "action_plan_tag": state.get("action_plan_tag"),
+            "conviction_level": action_plan.get("conviction_level"),
+        },
+    }
+    if state.get("entry_price") is not None:
+        packet["position_evidence"] = {
+            "entry_price": _round_value(state.get("entry_price")),
+            "entry_date": state.get("entry_date"),
+            "quantity": state.get("quantity"),
+            "holding_days": state.get("holding_days"),
+            "profit_loss_pct": _round_value(state.get("profit_loss_pct")),
+            "position_status": state.get("position_status"),
+            "trailing_stop": _round_value(state.get("trailing_stop")),
+            "distance_to_trailing_stop_pct": _round_value(state.get("distance_to_trailing_stop_pct")),
+            "distance_to_support_pct": _round_value(state.get("distance_to_support_pct")),
+            "unrealized_pnl": _round_value(state.get("unrealized_pnl")),
+            "recommended_action": state.get("recommended_action"),
+            "exit_reason": state.get("exit_reason"),
+        }
+    return json.dumps(packet, ensure_ascii=False, sort_keys=True)
 
 
 def fetch_institutional_node(
@@ -488,10 +608,16 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
             "trailing_stop": state.get("trailing_stop"),
             "trailing_stop_reason": state.get("trailing_stop_reason"),
             "recommended_action": state.get("recommended_action"),
+            "exit_reason": state.get("exit_reason"),
+            "distance_to_trailing_stop_pct": state.get("distance_to_trailing_stop_pct"),
+            "distance_to_support_pct": state.get("distance_to_support_pct"),
+            "unrealized_pnl": state.get("unrealized_pnl"),
+            "holding_days": state.get("holding_days"),
         }
 
     result = analyzer.analyze(
         snapshot,
+        signal_summary=_build_llm_signal_summary(state, snapshot),
         news_summary=news_summary,
         technical_context=state.get("technical_context"),
         institutional_context=state.get("institutional_context"),
@@ -757,6 +883,18 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         # MA10: derive from recent_closes if available
         recent_closes_list = snapshot_d.get("recent_closes", [])
         ma10 = sum(recent_closes_list[-10:]) / len(recent_closes_list[-10:]) if len(recent_closes_list) >= 10 else current_close
+        closes = [float(value) for value in recent_closes_list if value is not None]
+        highs = [float(value) for value in snapshot_d.get("recent_highs", []) if value is not None]
+        lows = [float(value) for value in snapshot_d.get("recent_lows", []) if value is not None]
+        volumes = [float(value) for value in snapshot_d.get("recent_volumes", []) if value is not None]
+        aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
+        aligned_volume = len(volumes) == len(closes)
+        bb = calc_bollinger(closes) if closes else None
+        macd_data = calc_macd(closes) if closes else None
+        kd_data = calc_kd(closes, highs, lows) if aligned_hilo else None
+        adx_data = calc_adx(closes, highs, lows) if aligned_hilo else None
+        obv_data = calc_obv(closes, volumes) if aligned_volume else None
+        bollinger_position = _bollinger_position(bb, current_close)
 
         trailing_stop, trailing_stop_reason = compute_trailing_stop(
             profit_loss_pct=profit_loss_pct,
@@ -765,6 +903,11 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
             ma10=ma10,
             high_20d=high_20d_val,
             current_close=current_close,
+            kd_zone=kd_data.get("kd_zone") if kd_data else None,
+            macd_bias=macd_data.get("macd_bias") if macd_data else None,
+            adx_trend_strength=adx_data.get("trend_strength") if adx_data else None,
+            adx_trend_direction=adx_data.get("trend_direction") if adx_data else None,
+            obv_signal=obv_data.get("obv_signal") if obv_data else None,
         )
 
         flow_label = inst_flow.get("flow_label", "neutral") if isinstance(inst_flow, dict) else "neutral"
@@ -778,16 +921,36 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
             current_close=current_close,
             trailing_stop=trailing_stop,
             position_status=position_status,
+            kd_signal=kd_data.get("kd_signal") if kd_data else None,
+            kd_zone=kd_data.get("kd_zone") if kd_data else None,
+            macd_bias=macd_data.get("macd_bias") if macd_data else None,
+            bollinger_position=bollinger_position,
+            adx_trend_strength=adx_data.get("trend_strength") if adx_data else None,
+            adx_trend_direction=adx_data.get("trend_direction") if adx_data else None,
+            obv_signal=obv_data.get("obv_signal") if obv_data else None,
         )
+
+        quantity = state.get("quantity")
+        unrealized_pnl = None
+        if quantity is not None:
+            unrealized_pnl = round((float(current_close) - float(entry_price)) * float(quantity), 2)
 
         updates["trailing_stop"] = trailing_stop
         updates["trailing_stop_reason"] = trailing_stop_reason
         updates["recommended_action"] = recommended_action
         updates["exit_reason"] = exit_reason
+        updates["distance_to_trailing_stop_pct"] = _pct_distance(current_close, trailing_stop)
+        updates["distance_to_support_pct"] = _pct_distance(current_close, support_20d_val)
+        updates["unrealized_pnl"] = unrealized_pnl
+        updates["holding_days"] = _holding_days(state.get("entry_date"))
     else:
         updates["trailing_stop"] = None
         updates["trailing_stop_reason"] = None
         updates["recommended_action"] = None
         updates["exit_reason"] = None
+        updates["distance_to_trailing_stop_pct"] = None
+        updates["distance_to_support_pct"] = None
+        updates["unrealized_pnl"] = None
+        updates["holding_days"] = None
 
     return updates

@@ -16,7 +16,7 @@ from ai_stock_sentinel.user_models.user import User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
-PORTFOLIO_LIMIT = 5
+PORTFOLIO_LIMIT = 8
 
 
 class PortfolioCreateRequest(BaseModel):
