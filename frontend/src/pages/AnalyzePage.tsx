@@ -105,6 +105,7 @@ interface AddPortfolioForm {
   notes: string;
 }
 
+const MAX_PORTFOLIO_COUNT = 8;
 
 const SIGNAL_LABEL: Record<string, string> = {
   bullish: "看多",
@@ -366,7 +367,7 @@ export default function AnalyzePage() {
   }
 
   const isTracked = portfolioSymbols.has(symbol);
-  const portfolioFull = portfolioCount >= 5;
+  const portfolioFull = portfolioCount >= MAX_PORTFOLIO_COUNT;
   const confidenceScore = result?.confidence_score ?? null;
   const circumference = 2 * Math.PI * 52;
   const dashOffset = useMemo(
@@ -415,7 +416,7 @@ export default function AnalyzePage() {
             <button
               onClick={() => { setAddError(null); setShowAddModal(true); }}
               disabled={isTracked || portfolioFull}
-              title={isTracked ? "已追蹤" : portfolioFull ? "最多追蹤 5 筆持股" : "加入我的持股"}
+              title={isTracked ? "已追蹤" : portfolioFull ? `最多追蹤 ${MAX_PORTFOLIO_COUNT} 筆持股` : "加入我的持股"}
               className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-600 dark:text-indigo-400 dark:hover:bg-indigo-950"
             >
               {isTracked ? "已追蹤" : "加入我的持股"}

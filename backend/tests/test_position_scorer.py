@@ -19,6 +19,22 @@ class TestComputePositionMetrics:
         assert result["position_status"] == "profitable_safe"
         assert result["cost_buffer_to_support"] == pytest.approx(20.0)
 
+    def test_profitable_when_entry_below_support(self):
+        result = compute_position_metrics(
+            entry_price=900.0,
+            current_price=1000.0,
+            support_20d=960.0,
+        )
+        assert result["position_status"] == "profitable_safe"
+
+    def test_profit_but_below_support_is_at_risk(self):
+        result = compute_position_metrics(
+            entry_price=900.0,
+            current_price=950.0,
+            support_20d=960.0,
+        )
+        assert result["position_status"] == "at_risk"
+
     def test_at_risk_upper(self):
         result = compute_position_metrics(
             entry_price=980.0,
@@ -96,6 +112,31 @@ class TestComputeTrailingStop:
             current_close=1065.0,
         )
         assert stop == 1020.0  # max(1020, 1000)
+
+    def test_large_profit_uses_tighter_trailing_stop(self):
+        stop, reason = compute_trailing_stop(
+            profit_loss_pct=22.0,
+            entry_price=980.0,
+            support_20d=1050.0,
+            ma10=1120.0,
+            high_20d=1200.0,
+            current_close=1195.0,
+        )
+        assert stop == 1120.0
+        assert "20%" in reason
+
+    def test_underwater_stop_tightens_when_momentum_bearish(self):
+        stop, reason = compute_trailing_stop(
+            profit_loss_pct=-8.0,
+            entry_price=980.0,
+            support_20d=880.0,
+            ma10=920.0,
+            high_20d=1000.0,
+            current_close=900.0,
+            macd_bias="bearish",
+        )
+        assert stop == pytest.approx(980.0 * 0.95)
+        assert "-5%" in reason
 
     def test_under_water_stop(self):
         # profit < -5%: trailing_stop = entry_price * 0.93
@@ -180,6 +221,53 @@ class TestComputeRecommendedAction:
             current_close=1060.0,
             trailing_stop=980.0,
             position_status="profitable_safe",
+        )
+        assert action == "Hold"
+        assert reason is None
+
+    def test_trim_when_profitable_and_obv_weakens(self):
+        action, reason = compute_recommended_action(
+            flow_label="accumulation",
+            profit_loss_pct=8.0,
+            technical_signal="bullish",
+            current_close=1060.0,
+            trailing_stop=980.0,
+            position_status="profitable_safe",
+            obv_signal="bearish_divergence",
+        )
+        assert action == "Trim"
+        assert reason is not None
+
+    def test_trim_when_profit_overheated_without_continuation(self):
+        action, reason = compute_recommended_action(
+            flow_label="accumulation",
+            profit_loss_pct=12.0,
+            technical_signal="bullish",
+            current_close=1120.0,
+            trailing_stop=1030.0,
+            position_status="profitable_safe",
+            kd_zone="overbought",
+            bollinger_position="near_upper",
+            adx_trend_strength="weak",
+            obv_signal="neutral",
+        )
+        assert action == "Trim"
+        assert reason is not None
+
+    def test_hold_when_strong_trend_confirms_overheated_profit(self):
+        action, reason = compute_recommended_action(
+            flow_label="accumulation",
+            profit_loss_pct=12.0,
+            technical_signal="bullish",
+            current_close=1120.0,
+            trailing_stop=1030.0,
+            position_status="profitable_safe",
+            kd_zone="overbought",
+            bollinger_position="near_upper",
+            macd_bias="bullish",
+            adx_trend_strength="strong",
+            adx_trend_direction="bullish",
+            obv_signal="price_volume_confirm",
         )
         assert action == "Hold"
         assert reason is None

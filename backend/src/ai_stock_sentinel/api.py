@@ -64,6 +64,10 @@ class PositionAnalysis(BaseModel):
     trailing_stop: float | None = None
     trailing_stop_reason: str | None = None
     exit_reason: str | None = None
+    distance_to_trailing_stop_pct: float | None = None
+    distance_to_support_pct: float | None = None
+    unrealized_pnl: float | None = None
+    holding_days: int | None = None
 
 
 class TechnicalIndicators(BaseModel):
@@ -517,6 +521,32 @@ def _build_response_from_cache(
     )
 
 
+def _position_cache_matches(full_result: dict[str, Any], payload: PositionAnalyzeRequest) -> bool:
+    """Return True only when a cached position result matches the requested cost basis."""
+    def _same_price(value: Any) -> bool:
+        try:
+            return abs(float(value) - float(payload.entry_price)) < 0.0001
+        except (TypeError, ValueError):
+            return False
+
+    position_analysis = full_result.get("position_analysis")
+    if not isinstance(position_analysis, dict):
+        return False
+
+    cached_request = full_result.get("_position_request")
+    if isinstance(cached_request, dict):
+        return (
+            _same_price(cached_request.get("entry_price"))
+            and cached_request.get("entry_date") == payload.entry_date
+            and cached_request.get("quantity") == payload.quantity
+        )
+
+    if payload.entry_date is not None or payload.quantity is not None:
+        return False
+
+    return _same_price(position_analysis.get("entry_price"))
+
+
 def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
     if not INTERNAL_API_KEY:
         raise HTTPException(status_code=503, detail="Internal API key not configured")
@@ -658,6 +688,10 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
             trailing_stop=result.get("trailing_stop"),
             trailing_stop_reason=result.get("trailing_stop_reason"),
             exit_reason=result.get("exit_reason"),
+            distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
+            distance_to_support_pct=result.get("distance_to_support_pct"),
+            unrealized_pnl=result.get("unrealized_pnl"),
+            holding_days=result.get("holding_days"),
         )
 
     technical_indicators = _compute_technical_indicators(snapshot if isinstance(snapshot, dict) else {})
@@ -957,7 +991,7 @@ def analyze_position(
         hit = _handle_cache_hit(cache, now_time)
         if hit:
             full = cache.full_result or {}
-            if full.get("position_analysis") is not None:
+            if _position_cache_matches(full, payload):
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
                 return _build_response_from_cache(hit, payload.symbol, full_result=full)
 
@@ -1012,6 +1046,10 @@ def analyze_position(
         "trailing_stop_reason": None,
         "recommended_action": None,
         "exit_reason": None,
+        "distance_to_trailing_stop_pct": None,
+        "distance_to_support_pct": None,
+        "unrealized_pnl": None,
+        "holding_days": None,
         "prev_context": prev_context,
         "is_final": now_time >= MARKET_CLOSE,
     }
@@ -1030,6 +1068,12 @@ def analyze_position(
 
     is_final = now_time >= MARKET_CLOSE
     _response = _build_response(result)
+    full_result = _response.model_dump()
+    full_result["_position_request"] = {
+        "entry_price": payload.entry_price,
+        "entry_date": payload.entry_date,
+        "quantity": payload.quantity,
+    }
     upsert_analysis_cache(db, {
         "symbol":             payload.symbol,
         "signal_confidence":  result.get("signal_confidence"),
@@ -1038,7 +1082,7 @@ def analyze_position(
         "indicators":         _extract_indicators(result),
         "final_verdict":      result.get("analysis"),
         "is_final":           is_final,
-        "full_result":        _response.model_dump(),
+        "full_result":        full_result,
     })
     fetch_and_store_raw_data(
         db,

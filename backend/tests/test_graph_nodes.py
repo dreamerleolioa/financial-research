@@ -805,6 +805,9 @@ def _base_position_state():
             "current_price": 1050.0,
             "volume": 10000,
             "recent_closes": [1040.0, 1045.0, 1050.0],
+            "recent_highs": [1045.0, 1050.0, 1060.0],
+            "recent_lows": [1035.0, 1040.0, 1045.0],
+            "recent_volumes": [8000, 9000, 10000],
             "high_20d": 1060.0,
             "low_20d": 960.0,
             "support_20d": 960.0,
@@ -878,6 +881,10 @@ def test_strategy_node_computes_trailing_stop_when_position_mode():
     assert "trailing_stop_reason" in result
     assert "recommended_action" in result
     assert result["recommended_action"] in ("Hold", "Trim", "Exit")
+    assert result["distance_to_trailing_stop_pct"] is not None
+    assert result["distance_to_support_pct"] is not None
+    assert "unrealized_pnl" in result
+    assert "holding_days" in result
 
 
 # ── fetch_external_data_node concurrency ──────────────────────────────────────

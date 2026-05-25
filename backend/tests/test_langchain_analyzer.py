@@ -232,6 +232,12 @@ def test_human_prompt_contains_news_summary_section():
     assert "{news_summary}" in _HUMAN_PROMPT
 
 
+def test_human_prompt_contains_signal_summary_section():
+    """_HUMAN_PROMPT 應優先提供 rule-based 系統信號摘要。"""
+    assert "【系統信號摘要" in _HUMAN_PROMPT
+    assert "{signal_summary}" in _HUMAN_PROMPT
+
+
 def test_estimate_cost_includes_news_summary_length():
     """_estimate_cost 應將 news_summary 納入長度估算：傳入長字串時費用更高。"""
     analyzer = LangChainStockAnalyzer(llm=None)
@@ -339,6 +345,65 @@ def test_analyze_node_passes_news_summary_to_analyzer():
     assert news_summary is not None
     assert "台積電法說會利多" in news_summary
     assert "positive" in news_summary
+
+
+def test_analyze_node_passes_compact_signal_summary_to_analyzer():
+    """analyze_node 應把 rule-based 技術/籌碼/消息摘要傳給 LLM。"""
+    from unittest.mock import MagicMock
+    from ai_stock_sentinel.graph.nodes import analyze_node
+    from ai_stock_sentinel.models import StockSnapshot, AnalysisDetail
+    from dataclasses import asdict
+
+    closes = [100.0 + idx * 0.6 for idx in range(40)]
+    snapshot = StockSnapshot(
+        symbol="2330.TW", currency="TWD", current_price=closes[-1],
+        previous_close=closes[-2], day_open=closes[-1] - 1.0,
+        day_high=closes[-1] + 1.0, day_low=closes[-1] - 1.0,
+        volume=1_000_000, recent_closes=closes,
+        recent_highs=[price + 1.0 for price in closes],
+        recent_lows=[price - 1.0 for price in closes],
+        recent_volumes=[1000 + idx * 10 for idx in range(40)],
+        fetched_at="2026-03-07T00:00:00+00:00",
+    )
+    state = {
+        "snapshot": asdict(snapshot),
+        "cleaned_news": {
+            "sentiment_label": "positive",
+            "sentiment_strength": 1.4,
+            "sentiment_counts": {"positive": 3, "neutral": 1, "negative": 0},
+        },
+        "institutional_flow": {"flow_label": "institutional_accumulation"},
+        "technical_signal": "bullish",
+        "confidence_score": 72,
+        "data_confidence": 90,
+        "cross_validation_note": "技術、籌碼與消息面共振。",
+        "rsi14": 62.5,
+        "strategy_type": "mid_term",
+        "action_plan_tag": "opportunity",
+        "action_plan": {"conviction_level": "high"},
+        "technical_context": "技術面敘事",
+        "institutional_context": "籌碼面敘事",
+        "errors": [],
+    }
+
+    captured_kwargs: dict = {}
+
+    def fake_analyze(snap, **kwargs):
+        captured_kwargs.update(kwargs)
+        return AnalysisDetail(summary="test")
+
+    mock_analyzer = MagicMock()
+    mock_analyzer.analyze.side_effect = fake_analyze
+
+    analyze_node(state, analyzer=mock_analyzer)
+    signal_summary = captured_kwargs.get("signal_summary")
+    assert signal_summary is not None
+    assert '"technical_signal": "bullish"' in signal_summary
+    assert '"institutional_flow": "institutional_accumulation"' in signal_summary
+    assert '"sentiment_label": "positive"' in signal_summary
+    assert '"kd_signal"' in signal_summary
+    assert '"adx"' in signal_summary
+    assert '"obv_signal"' in signal_summary
 
 
 # ---------------------------------------------------------------------------
@@ -474,12 +539,19 @@ def test_position_prompt_injected_when_position_context_provided():
                 "trailing_stop": 980.0,
                 "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價",
                 "recommended_action": "Hold",
+                "exit_reason": None,
+                "distance_to_trailing_stop_pct": 7.14,
+                "distance_to_support_pct": 9.38,
+                "unrealized_pnl": 70000.0,
+                "holding_days": 45,
             },
         )
 
     full_text = " ".join(str(m) for m in captured_prompts)
     assert "持有倉位" in full_text or "entry_price" in full_text or "持倉" in full_text
     assert "出場" in full_text or "減碼" in full_text
+    assert "距離防守位" in full_text
+    assert "未實現損益" in full_text
 
 
 def test_analyze_without_position_context_unchanged():
@@ -548,6 +620,15 @@ def test_system_prompt_includes_bollinger_and_macd():
     from ai_stock_sentinel.analysis.langchain_analyzer import _SYSTEM_PROMPT
     assert "布林通道" in _SYSTEM_PROMPT
     assert "MACD" in _SYSTEM_PROMPT
+
+
+def test_system_prompt_includes_kd_adx_obv_rules():
+    """system prompt 的 tech_insight 規則應包含 KD、ADX、OBV。"""
+    from ai_stock_sentinel.analysis.langchain_analyzer import _SYSTEM_PROMPT
+    assert "KD" in _SYSTEM_PROMPT
+    assert "ADX" in _SYSTEM_PROMPT
+    assert "OBV" in _SYSTEM_PROMPT
+    assert "系統信號摘要" in _SYSTEM_PROMPT
 
 
 def test_history_section_includes_macd_and_bollinger_fields():

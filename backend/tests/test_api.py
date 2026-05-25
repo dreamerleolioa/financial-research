@@ -655,6 +655,10 @@ _POSITION_FINAL_STATE = {
     "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
     "recommended_action": "Hold",
     "exit_reason": None,
+    "distance_to_trailing_stop_pct": 7.14,
+    "distance_to_support_pct": 9.38,
+    "unrealized_pnl": None,
+    "holding_days": None,
     "cleaned_news": None,
     "errors": [],
     "confidence_score": 70,
@@ -728,6 +732,94 @@ def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> Non
     pa = body["position_analysis"]
     if pa["recommended_action"] in ("Trim", "Exit"):
         assert pa["exit_reason"] is not None
+
+
+def test_analyze_position_cache_hit_requires_same_entry_price(monkeypatch) -> None:
+    """Position cache must not reuse a previous result with a different cost basis."""
+    import ai_stock_sentinel.api as api_module
+    from ai_stock_sentinel.config import STRATEGY_VERSION
+
+    cache = MagicMock()
+    cache.symbol = "2330.TW"
+    cache.analysis_is_final = True
+    cache.strategy_version = STRATEGY_VERSION
+    cache.action_tag = "opportunity"
+    cache.signal_confidence = 70
+    cache.recommended_action = "Hold"
+    cache.final_verdict = "舊持股診斷"
+    cache.full_result = {
+        **_POSITION_FINAL_STATE,
+        "position_analysis": {
+            "entry_price": 980.0,
+            "recommended_action": "Hold",
+        },
+        "is_final": True,
+        "errors": [],
+    }
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: cache)
+    monkeypatch.setattr(api_module, "_check_symbol_exists", lambda symbol: None)
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+
+    graph = _make_graph({**_POSITION_FINAL_STATE, "entry_price": 900.0})
+    client = _client_with_graph(graph)
+    response = client.post("/analyze/position", json={"symbol": "2330.TW", "entry_price": 900.0})
+
+    assert response.status_code == 200
+    assert graph.invoke.called
+    assert response.json()["position_analysis"]["entry_price"] == 900.0
+
+
+def test_analyze_position_cache_hit_reuses_same_position_request(monkeypatch) -> None:
+    """A position cache hit is valid only when entry price/date/quantity match."""
+    import ai_stock_sentinel.api as api_module
+    from ai_stock_sentinel.config import STRATEGY_VERSION
+
+    full_result = {
+        **_POSITION_FINAL_STATE,
+        "position_analysis": {
+            "entry_price": 980.0,
+            "recommended_action": "Hold",
+        },
+        "_position_request": {
+            "entry_price": 980.0,
+            "entry_date": "2026-01-15",
+            "quantity": 1000,
+        },
+        "is_final": True,
+        "errors": [],
+    }
+    cache = MagicMock()
+    cache.symbol = "2330.TW"
+    cache.analysis_is_final = True
+    cache.strategy_version = STRATEGY_VERSION
+    cache.action_tag = "opportunity"
+    cache.signal_confidence = 70
+    cache.recommended_action = "Hold"
+    cache.final_verdict = "持股診斷"
+    cache.full_result = full_result
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: cache)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+
+    graph = _make_graph({})
+    client = _client_with_graph(graph)
+    response = client.post("/analyze/position", json={
+        "symbol": "2330.TW",
+        "entry_price": 980.0,
+        "entry_date": "2026-01-15",
+        "quantity": 1000,
+    })
+
+    assert response.status_code == 200
+    assert not graph.invoke.called
+    assert response.json()["position_analysis"]["entry_price"] == 980.0
 
 
 # ---------------------------------------------------------------------------

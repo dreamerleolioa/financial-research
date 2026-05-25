@@ -26,8 +26,8 @@ def _make_client(active_count: int) -> TestClient:
 
 
 def test_add_portfolio_success():
-    """active_count < 5 時應成功建立持倉，回傳 201。"""
-    client = _make_client(active_count=3)
+    """active_count < 8 時應成功建立持倉，回傳 201。"""
+    client = _make_client(active_count=7)
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
         "entry_price": 900.0,
@@ -38,8 +38,8 @@ def test_add_portfolio_success():
 
 
 def test_add_portfolio_rejects_when_limit_reached():
-    """active_count >= 5 時應回傳 422，且 detail 含 '5'。"""
-    client = _make_client(active_count=5)
+    """active_count >= 8 時應回傳 422，且 detail 含 '8'。"""
+    client = _make_client(active_count=8)
     resp = client.post("/portfolio", json={
         "symbol": "2454.TW",
         "entry_price": 800.0,
@@ -47,7 +47,7 @@ def test_add_portfolio_rejects_when_limit_reached():
         "quantity": 50,
     })
     assert resp.status_code == 422
-    assert "5" in resp.json()["detail"]
+    assert "8" in resp.json()["detail"]
 
 
 def _make_client_with_item(item: MagicMock, user_id: int = 1) -> TestClient:

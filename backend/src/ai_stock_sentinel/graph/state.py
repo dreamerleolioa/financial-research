@@ -66,6 +66,10 @@ class _PositionStateFields(TypedDict, total=False):
     trailing_stop_reason: str | None
     recommended_action: str | None
     exit_reason: str | None
+    distance_to_trailing_stop_pct: float | None
+    distance_to_support_pct: float | None
+    unrealized_pnl: float | None
+    holding_days: int | None
 
 
 # ── 實際 LangGraph 使用的狀態（平鋪，維持向後相容） ─────────────────────
@@ -131,6 +135,10 @@ class GraphState(TypedDict):
     trailing_stop_reason: str | None
     recommended_action: str | None
     exit_reason: str | None
+    distance_to_trailing_stop_pct: float | None
+    distance_to_support_pct: float | None
+    unrealized_pnl: float | None
+    holding_days: int | None
 
     # --- History Context (from stock_analysis_cache, injected before LLM call) ---
     prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值

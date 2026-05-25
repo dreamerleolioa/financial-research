@@ -13,5 +13,9 @@ class StockAnalyzer(Protocol):
         institutional_context: str | None = None,
         confidence_score: int | None = None,
         cross_validation_note: str | None = None,
+        fundamental_context: str | None = None,
+        position_context: dict | None = None,
+        prev_context: dict | None = None,
+        signal_summary: str | None = None,
     ) -> AnalysisDetail:
         ...
