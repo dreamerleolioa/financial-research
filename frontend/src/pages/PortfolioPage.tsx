@@ -291,6 +291,21 @@ const ACTION_CONFIG = {
   Exit: { label: "出場", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800" },
 } as const;
 
+const BATCH_STATUS_STYLES = {
+  running: {
+    container: "border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950",
+    text: "text-indigo-700 dark:text-indigo-300",
+  },
+  done: {
+    container: "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950",
+    text: "text-green-700 dark:text-green-300",
+  },
+  partialError: {
+    container: "border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950",
+    text: "text-yellow-700 dark:text-yellow-300",
+  },
+} as const;
+
 interface AnalysisModalProps {
   item: PortfolioItem;
   result: PositionResult | null;
@@ -463,6 +478,8 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
   );
 }
 
+type BatchStatus = "idle" | "running" | "done" | "partialError";
+
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -480,6 +497,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   // Edit / Delete modal state
   const [editItem, setEditItem] = useState<PortfolioItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<PortfolioItem | null>(null);
+
+  // Batch analysis state
+  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
+  const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
 
   useEffect(() => {
     async function load() {
@@ -508,6 +531,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     load();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
+    };
+  }, []);
+
   async function toggleHistory(id: number) {
     if (expandedId === id) {
       setExpandedId(null);
@@ -529,9 +558,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }
   }
 
-  async function openAnalysis(item: PortfolioItem) {
-    setModalItem(item);
-
+  async function runPositionAnalysis(item: PortfolioItem): Promise<void> {
     setAnalysisLoading((prev) => ({ ...prev, [item.id]: true }));
     setAnalysisError((prev) => ({ ...prev, [item.id]: null }));
     try {
@@ -551,8 +578,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       const data: PositionResult = await res.json();
       setAnalysisMap((prev) => ({ ...prev, [item.id]: data }));
 
-      // Refresh latest card entry + history panel (if expanded)
-      setHistoryMap((prev) => { const next = { ...prev }; delete next[item.id]; return next; });
+      setHistoryMap((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
       try {
         const r = await fetch(
           `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=20`,
@@ -565,13 +595,66 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         }
       } catch { /* ignore */ }
     } catch (err) {
-      setAnalysisError((prev) => ({
-        ...prev,
-        [item.id]: err instanceof Error ? err.message : "請求失敗",
-      }));
+      const msg = err instanceof Error ? err.message : "請求失敗";
+      setAnalysisError((prev) => ({ ...prev, [item.id]: msg }));
+      throw err; // re-throw so batch runner knows it failed
     } finally {
       setAnalysisLoading((prev) => ({ ...prev, [item.id]: false }));
     }
+  }
+
+  async function openAnalysis(item: PortfolioItem): Promise<void> {
+    setModalItem(item);
+    await runPositionAnalysis(item).catch(() => { });
+  }
+
+  async function runBatchAnalysis(): Promise<void> {
+    if (batchStatus === "running" || items.length === 0) return;
+
+    setBatchStatus("running");
+    setBatchProgress({ done: 0, total: items.length });
+    setBatchFailedSymbols([]);
+
+    const CONCURRENCY = 2;
+    let index = 0;
+    let completedCount = 0;
+    const failed: string[] = [];
+
+    async function runOne(item: PortfolioItem): Promise<void> {
+      if (!analysisLoading[item.id]) {
+        try {
+          await runPositionAnalysis(item);
+        } catch {
+          try {
+            await runPositionAnalysis(item);
+          } catch {
+            failed.push(item.symbol);
+          }
+        }
+      }
+      completedCount += 1;
+      setBatchProgress({ done: completedCount, total: items.length });
+    }
+
+    async function worker(): Promise<void> {
+      while (index < items.length) {
+        const item = items[index];
+        index += 1;
+        await runOne(item);
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, items.length) }, () => worker());
+    await Promise.all(workers);
+
+    setBatchFailedSymbols(failed);
+    setBatchStatus(failed.length > 0 ? "partialError" : "done");
+
+    batchTimerRef.current = setTimeout(() => {
+      setBatchStatus("idle");
+      setBatchProgress({ done: 0, total: 0 });
+      setBatchFailedSymbols([]);
+    }, 3000);
   }
 
   if (loading) {
@@ -613,6 +696,34 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           <h2 className="text-sm font-semibold text-text-primary">我的持股</h2>
           <span className="text-xs text-text-faint">共 {items.length} 筆</span>
         </div>
+
+        <button
+          onClick={runBatchAnalysis}
+          disabled={batchStatus !== "idle"}
+          className="rounded-lg bg-indigo-500 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {batchStatus === "running" ? "分析中…" : "一鍵全部分析"}
+        </button>
+
+        {batchStatus !== "idle" && (
+          <div className={`rounded-xl border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
+            <div className="flex items-center justify-between gap-3">
+              <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
+                {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
+                {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆分析結果`}
+                {batchStatus === "partialError" && `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
+              </span>
+              {batchStatus === "running" && (
+                <div className="h-1.5 w-32 overflow-hidden rounded-full bg-indigo-100 dark:bg-indigo-900">
+                  <div
+                    className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+                    style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {items.map((item) => {
           const latest = latestMap[String(item.id)];
