@@ -463,6 +463,8 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
   );
 }
 
+type BatchStatus = "idle" | "running" | "done" | "partialError";
+
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -482,7 +484,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [deleteItem, setDeleteItem] = useState<PortfolioItem | null>(null);
 
   // Batch analysis state
-  type BatchStatus = "idle" | "running" | "done" | "partialError";
+  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
@@ -512,6 +514,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       }
     }
     load();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
+    };
   }, []);
 
   async function toggleHistory(id: number) {
@@ -594,7 +602,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
     const CONCURRENCY = 2;
     let index = 0;
-    let done = 0;
+    let completedCount = 0;
     const failed: string[] = [];
 
     async function runOne(item: PortfolioItem): Promise<void> {
@@ -607,8 +615,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           failed.push(item.symbol);
         }
       }
-      done += 1;
-      setBatchProgress({ done, total: items.length });
+      completedCount += 1;
+      setBatchProgress({ done: completedCount, total: items.length });
     }
 
     async function worker(): Promise<void> {
@@ -625,7 +633,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     setBatchFailedSymbols(failed);
     setBatchStatus(failed.length > 0 ? "partialError" : "done");
 
-    setTimeout(() => {
+    batchTimerRef.current = setTimeout(() => {
       setBatchStatus("idle");
       setBatchProgress({ done: 0, total: 0 });
       setBatchFailedSymbols([]);
