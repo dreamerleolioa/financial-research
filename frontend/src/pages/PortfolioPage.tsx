@@ -481,6 +481,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [editItem, setEditItem] = useState<PortfolioItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<PortfolioItem | null>(null);
 
+  // Batch analysis state
+  type BatchStatus = "idle" | "running" | "done" | "partialError";
+  const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
+  const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
+
   useEffect(() => {
     async function load() {
       try {
@@ -577,6 +583,53 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   async function openAnalysis(item: PortfolioItem): Promise<void> {
     setModalItem(item);
     await runPositionAnalysis(item).catch(() => {});
+  }
+
+  async function runBatchAnalysis(): Promise<void> {
+    if (batchStatus === "running" || items.length === 0) return;
+
+    setBatchStatus("running");
+    setBatchProgress({ done: 0, total: items.length });
+    setBatchFailedSymbols([]);
+
+    const CONCURRENCY = 2;
+    let index = 0;
+    let done = 0;
+    const failed: string[] = [];
+
+    async function runOne(item: PortfolioItem): Promise<void> {
+      try {
+        await runPositionAnalysis(item);
+      } catch {
+        try {
+          await runPositionAnalysis(item);
+        } catch {
+          failed.push(item.symbol);
+        }
+      }
+      done += 1;
+      setBatchProgress({ done, total: items.length });
+    }
+
+    async function worker(): Promise<void> {
+      while (index < items.length) {
+        const item = items[index];
+        index += 1;
+        await runOne(item);
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, items.length) }, () => worker());
+    await Promise.all(workers);
+
+    setBatchFailedSymbols(failed);
+    setBatchStatus(failed.length > 0 ? "partialError" : "done");
+
+    setTimeout(() => {
+      setBatchStatus("idle");
+      setBatchProgress({ done: 0, total: 0 });
+      setBatchFailedSymbols([]);
+    }, 3000);
   }
 
   if (loading) {
