@@ -15,8 +15,11 @@ def derive_technical_score(
     kd_data: dict | None = None,
     adx_data: dict | None = None,
     obv_data: dict | None = None,
+    atr_data: dict | None = None,
+    mfi_data: dict | None = None,
+    donchian_data: dict | None = None,
 ) -> int:
-    """依據 RSI、BIAS、MA、MACD、布林通道、KD、ADX、OBV 計算技術面信心分數。
+    """依據 RSI、BIAS、MA、MACD、布林通道、KD、ADX、OBV、MFI、Donchian 計算技術面信心分數。
 
     - 資料不足（< 20 根）→ 回傳 50
     - score 範圍仍夾在 -5 ~ +5，映射至 33 ~ 67（避免技術面單維過度放大）
@@ -108,6 +111,22 @@ def derive_technical_score(
         elif obv_signal == "bullish_divergence":
             score += 1
 
+    # ── MFI 資金流 ───────────────────────────────────────────
+    if mfi_data is not None:
+        mfi_signal = mfi_data.get("mfi_signal")
+        if mfi_signal in {"oversold", "bullish_flow"}:
+            score += 1
+        elif mfi_signal in {"overbought", "bearish_flow"}:
+            score -= 1
+
+    # ── Donchian 突破 / 跌破 ─────────────────────────────────
+    if donchian_data is not None:
+        donchian_position = donchian_data.get("donchian_position")
+        if donchian_position == "breakout_up":
+            score += 1
+        elif donchian_position == "breakdown_down":
+            score -= 1
+
     # ── ADX 趨勢強度濾網 ─────────────────────────────────────
     if adx_data is not None:
         trend_strength = adx_data.get("trend_strength")
@@ -119,6 +138,10 @@ def derive_technical_score(
                 score -= 1
         elif trend_strength == "weak":
             score = round(score * 0.7)
+
+    # ── ATR 波動濾網 ─────────────────────────────────────────
+    if atr_data is not None and atr_data.get("volatility_level") == "high":
+        score = round(score * 0.85)
 
     clamped = max(-5, min(5, score))
     return round(50 + clamped * (17 / 5))

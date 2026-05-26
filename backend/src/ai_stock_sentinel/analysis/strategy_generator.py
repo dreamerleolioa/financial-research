@@ -50,6 +50,12 @@ def _compute_evidence_scores(
     kd_data: dict | None = None,
     adx_data: dict | None = None,
     obv_data: dict | None = None,
+    atr_data: dict | None = None,
+    mfi_data: dict | None = None,
+    donchian_data: dict | None = None,
+    flow_strength: str | None = None,
+    dominant_buyer: str | None = None,
+    dominant_seller: str | None = None,
 ) -> EvidenceScores:
     """計算四組 evidence score，供策略分類使用。"""
     scores = EvidenceScores()
@@ -140,12 +146,43 @@ def _compute_evidence_scores(
         elif obv_signal == "bullish_divergence":
             scores.technical += 1
 
+    if mfi_data is not None:
+        mfi_signal = mfi_data.get("mfi_signal")
+        if mfi_signal == "bullish_flow":
+            scores.technical += 1
+        elif mfi_signal == "overbought":
+            scores.risk_penalty -= 1
+        elif mfi_signal == "bearish_flow":
+            scores.technical -= 1
+
+    if donchian_data is not None:
+        position = donchian_data.get("donchian_position")
+        if position == "breakout_up":
+            scores.technical += 1
+        elif position == "breakdown_down":
+            scores.risk_penalty -= 2
+
+    if atr_data is not None and atr_data.get("volatility_level") == "high":
+        scores.risk_penalty -= 1
+
     # ── 2. flow_evidence ──────────────────────────────────────
     if flow_label == "institutional_accumulation":
         scores.flow += 2
     elif flow_label == "distribution":
         scores.flow -= 2
+    elif flow_label == "retail_chasing":
+        scores.flow -= 2
     # neutral → 0
+
+    if flow_strength == "strong" and flow_label == "institutional_accumulation":
+        scores.flow += 1
+    elif flow_strength == "strong" and flow_label in {"distribution", "retail_chasing"}:
+        scores.flow -= 1
+
+    if dominant_buyer == "trust":
+        scores.flow += 1
+    if dominant_seller in {"foreign", "trust"}:
+        scores.flow -= 1
 
     # ── 3. sentiment_evidence ─────────────────────────────────
     if sentiment_label == "positive":
@@ -226,8 +263,14 @@ def generate_strategy(
     kd_data: dict | None = technical_context_data.get("kd_data")
     adx_data: dict | None = technical_context_data.get("adx_data")
     obv_data: dict | None = technical_context_data.get("obv_data")
+    atr_data: dict | None = technical_context_data.get("atr_data")
+    mfi_data: dict | None = technical_context_data.get("mfi_data")
+    donchian_data: dict | None = technical_context_data.get("donchian_data")
 
     flow_label: str | None = inst_data.get("flow_label") if inst_data else None
+    flow_strength: str | None = inst_data.get("flow_strength") if inst_data else None
+    dominant_buyer: str | None = inst_data.get("dominant_buyer") if inst_data else None
+    dominant_seller: str | None = inst_data.get("dominant_seller") if inst_data else None
 
     scores = _compute_evidence_scores(
         bias=bias,
@@ -242,6 +285,12 @@ def generate_strategy(
         kd_data=kd_data,
         adx_data=adx_data,
         obv_data=obv_data,
+        atr_data=atr_data,
+        mfi_data=mfi_data,
+        donchian_data=donchian_data,
+        flow_strength=flow_strength,
+        dominant_buyer=dominant_buyer,
+        dominant_seller=dominant_seller,
     )
 
     strategy_type = _determine_strategy_from_scores(

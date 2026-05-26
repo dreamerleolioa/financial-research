@@ -28,8 +28,11 @@ from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_instit
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
 from ai_stock_sentinel.analysis.metrics import (
     adx as _adx,
+    atr as _atr,
     bollinger_bands as _bollinger_bands,
+    donchian_channel as _donchian_channel,
     macd as _macd,
+    mfi as _mfi,
     obv as _obv,
     stochastic_kd as _stochastic_kd,
 )
@@ -89,6 +92,16 @@ class TechnicalIndicators(BaseModel):
     adx_trend_direction: str | None = None
     obv: float | None = None
     obv_signal: str | None = None
+    atr: float | None = None
+    atr_pct: float | None = None
+    volatility_level: str | None = None
+    mfi: float | None = None
+    mfi_signal: str | None = None
+    donchian_upper: float | None = None
+    donchian_lower: float | None = None
+    donchian_mid: float | None = None
+    donchian_width_pct: float | None = None
+    donchian_position: str | None = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -309,8 +322,12 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
     macd_data = _macd(closes)
     kd_data = _stochastic_kd(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
     adx_data = _adx(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    obv_data = _obv(closes, volumes) if len(volumes) == len(closes) else None
-    if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None:
+    aligned_volume = len(volumes) == len(closes)
+    atr_data = _atr(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
+    mfi_data = _mfi(closes, highs, lows, volumes) if len(highs) == len(closes) and len(lows) == len(closes) and aligned_volume else None
+    donchian_data = _donchian_channel(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
+    obv_data = _obv(closes, volumes) if aligned_volume else None
+    if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None and atr_data is None and mfi_data is None and donchian_data is None:
         return None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
     return TechnicalIndicators(
@@ -332,6 +349,16 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
         adx_trend_direction=adx_data["trend_direction"] if adx_data else None,
         obv=obv_data["obv"] if obv_data else None,
         obv_signal=obv_data["obv_signal"] if obv_data else None,
+        atr=atr_data["atr"] if atr_data else None,
+        atr_pct=atr_data["atr_pct"] if atr_data else None,
+        volatility_level=atr_data["volatility_level"] if atr_data else None,
+        mfi=mfi_data["mfi"] if mfi_data else None,
+        mfi_signal=mfi_data["mfi_signal"] if mfi_data else None,
+        donchian_upper=donchian_data["donchian_upper"] if donchian_data else None,
+        donchian_lower=donchian_data["donchian_lower"] if donchian_data else None,
+        donchian_mid=donchian_data["donchian_mid"] if donchian_data else None,
+        donchian_width_pct=donchian_data["donchian_width_pct"] if donchian_data else None,
+        donchian_position=donchian_data["donchian_position"] if donchian_data else None,
     )
 
 
@@ -353,6 +380,9 @@ def _extract_indicators(result: dict) -> dict:
     aligned_volume = len(volumes) == len(closes)
     kd_data = _stochastic_kd(closes, highs, lows) if aligned_hilo else None
     adx_data = _adx(closes, highs, lows) if aligned_hilo else None
+    atr_data = _atr(closes, highs, lows) if aligned_hilo else None
+    mfi_data = _mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
+    donchian_data = _donchian_channel(closes, highs, lows) if aligned_hilo else None
     obv_data = _obv(closes, volumes) if aligned_volume else None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
 
@@ -385,10 +415,37 @@ def _extract_indicators(result: dict) -> dict:
         "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
         "obv":                obv_data["obv"] if obv_data else None,
         "obv_signal":         obv_data["obv_signal"] if obv_data else None,
+        "atr":                atr_data["atr"] if atr_data else None,
+        "atr_pct":            atr_data["atr_pct"] if atr_data else None,
+        "volatility_level":   atr_data["volatility_level"] if atr_data else None,
+        "mfi":                mfi_data["mfi"] if mfi_data else None,
+        "mfi_signal":         mfi_data["mfi_signal"] if mfi_data else None,
+        "donchian_upper":     donchian_data["donchian_upper"] if donchian_data else None,
+        "donchian_lower":     donchian_data["donchian_lower"] if donchian_data else None,
+        "donchian_mid":       donchian_data["donchian_mid"] if donchian_data else None,
+        "donchian_width_pct": donchian_data["donchian_width_pct"] if donchian_data else None,
+        "donchian_position":  donchian_data["donchian_position"] if donchian_data else None,
         "institutional": {
             "foreign_net": inst.get("foreign_net"),
             "trust_net":   inst.get("trust_net"),
             "dealer_net":  inst.get("dealer_net"),
+            "three_party_net": inst.get("three_party_net"),
+            "consecutive_buy_days": inst.get("consecutive_buy_days"),
+            "consecutive_sell_days": inst.get("consecutive_sell_days"),
+            "dominant_buyer": inst.get("dominant_buyer"),
+            "dominant_seller": inst.get("dominant_seller"),
+            "flow_strength": inst.get("flow_strength"),
+            "margin_delta": inst.get("margin_delta"),
+            "margin_balance_delta_pct": inst.get("margin_balance_delta_pct"),
+            "short_delta": inst.get("short_delta"),
+            "short_balance_delta_pct": inst.get("short_balance_delta_pct"),
+            "securities_lending_delta": inst.get("securities_lending_delta"),
+            "securities_lending_volume": inst.get("securities_lending_volume"),
+            "foreign_holding_ratio": inst.get("foreign_holding_ratio"),
+            "foreign_holding_ratio_delta_pct": inst.get("foreign_holding_ratio_delta_pct"),
+            "major_holder_ratio": inst.get("major_holder_ratio"),
+            "major_holder_ratio_delta_pct": inst.get("major_holder_ratio_delta_pct"),
+            "retail_holder_ratio_delta_pct": inst.get("retail_holder_ratio_delta_pct"),
         } if not inst.get("error") else None,
     }
 

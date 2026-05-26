@@ -8,7 +8,7 @@ from ai_stock_sentinel.analysis.context_generator import (
     _price_level_narrative,
     generate_technical_context,
 )
-from ai_stock_sentinel.analysis.metrics import adx, bollinger_bands, calc_bias, calc_rsi, ma, macd, obv, stochastic_kd
+from ai_stock_sentinel.analysis.metrics import adx, atr, bollinger_bands, calc_bias, calc_rsi, donchian_channel, ma, macd, mfi, obv, stochastic_kd
 
 
 # ─── ma ─────────────────────────────────────────────────────────────────────
@@ -25,6 +25,41 @@ class TestMa:
         # 只取最後 5 筆
         closes = [100.0, 10.0, 20.0, 30.0, 40.0, 50.0]
         assert ma(closes, 5) == pytest.approx(30.0)
+
+
+def test_atr_mfi_donchian_metrics_are_computed_from_ohlcv():
+    closes = [100 + idx * 0.8 for idx in range(25)]
+    highs = [value + 1.5 for value in closes]
+    lows = [value - 1.0 for value in closes]
+    volumes = [1000 + idx * 30 for idx in range(25)]
+
+    atr_data = atr(closes, highs, lows)
+    mfi_data = mfi(closes, highs, lows, volumes)
+    donchian_data = donchian_channel(closes, highs, lows)
+
+    assert atr_data is not None
+    assert atr_data["atr"] is not None
+    assert atr_data["volatility_level"] in {"low", "medium", "high"}
+    assert mfi_data is not None
+    assert mfi_data["mfi_signal"] in {"overbought", "bullish_flow", "neutral", "bearish_flow", "oversold"}
+    assert donchian_data is not None
+    assert donchian_data["donchian_position"] in {"breakout_up", "near_upper", "upper_half"}
+
+
+def test_generate_technical_context_includes_new_indicator_sections():
+    closes = [100 + idx * 0.6 for idx in range(25)]
+    df = pd.DataFrame({
+        "Close": closes,
+        "High": [value + 1.2 for value in closes],
+        "Low": [value - 1.0 for value in closes],
+        "Volume": [1000 + idx * 20 for idx in range(25)],
+    })
+
+    context, _ = generate_technical_context(df)
+
+    assert "【ATR】" in context
+    assert "【MFI】" in context
+    assert "【Donchian】" in context
 
 
 # ─── calc_bias ───────────────────────────────────────────────────────────────

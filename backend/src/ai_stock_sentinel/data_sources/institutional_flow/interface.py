@@ -27,7 +27,23 @@ class InstitutionalFlowData:
     # 融資融券
     margin_delta: float | None = None       # 融資餘額變化（張）
     margin_balance_delta_pct: float | None = None  # 融資餘額變化%
+    short_delta: float | None = None        # 融券餘額變化（張）
     short_balance_delta_pct: float | None = None   # 融券餘額變化%
+
+    # 借券 / 持股結構
+    securities_lending_delta: float | None = None   # 借券成交變化（張）
+    securities_lending_volume: float | None = None  # 期間借券成交量（張）
+    foreign_holding_ratio: float | None = None
+    foreign_holding_ratio_delta_pct: float | None = None
+    major_holder_ratio: float | None = None
+    major_holder_ratio_delta_pct: float | None = None
+    retail_holder_ratio_delta_pct: float | None = None
+
+    # 籌碼趨勢與主導者
+    consecutive_sell_days: int | None = None
+    dominant_buyer: str | None = None       # foreign / trust / dealer / mixed / none
+    dominant_seller: str | None = None      # foreign / trust / dealer / mixed / none
+    flow_strength: str | None = None        # strong / moderate / weak
 
     # 籌碼標籤（rule-based，非 LLM）
     flow_label: str = "neutral"  # institutional_accumulation / retail_chasing / distribution / neutral

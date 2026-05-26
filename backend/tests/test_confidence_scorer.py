@@ -502,6 +502,37 @@ def test_date_unknown_signal_confidence_clamped_at_zero():
     )
     assert result["signal_confidence"] >= 0
 
+
+def test_technical_score_uses_mfi_donchian_and_atr_volatility_filter():
+    closes = [float(100 + idx) for idx in range(25)]
+
+    bullish = derive_technical_score(
+        closes,
+        rsi=55.0,
+        bias=2.0,
+        mfi_data={"mfi_signal": "bullish_flow"},
+        donchian_data={"donchian_position": "breakout_up"},
+    )
+    high_volatility = derive_technical_score(
+        closes,
+        rsi=55.0,
+        bias=2.0,
+        mfi_data={"mfi_signal": "bullish_flow"},
+        donchian_data={"donchian_position": "breakout_up"},
+        atr_data={"volatility_level": "high"},
+    )
+    bearish = derive_technical_score(
+        [100.0] * 25,
+        rsi=55.0,
+        bias=0.0,
+        mfi_data={"mfi_signal": "bearish_flow"},
+        donchian_data={"donchian_position": "breakdown_down"},
+    )
+
+    assert bullish > 50
+    assert high_volatility < bullish
+    assert bearish < 50
+
 # ─── Phase 2: MACD 與布林通道對 derive_technical_score 的影響 ─────────────────
 
 def test_macd_bullish_above_zero_adds_score():

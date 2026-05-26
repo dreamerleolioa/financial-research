@@ -19,15 +19,15 @@ _SYSTEM_PROMPT = """\
 步驟四【輸出】：只輸出有資料支撐的事實與推論，禁止補造未在輸入資料中出現的來源或數字。
 
 分維度輸出規範（禁止跨維度混寫）：
-- tech_insight：僅參考技術面資料（均線排列、RSI 位階、布林通道位置、MACD 動能、KD 交叉/高低檔、ADX 趨勢強度、OBV 量價確認/背離、支撐壓力位）；禁止提及法人買賣超或新聞事件
-- inst_insight：僅參考籌碼面資料（三大法人買賣超、融資券動向）；禁止提及均線數值、RSI、新聞事件
+- tech_insight：僅參考技術面資料（均線排列、RSI 位階、布林通道位置、MACD 動能、KD 交叉/高低檔、ADX 趨勢強度、OBV 量價確認/背離、ATR 波動、MFI 資金流、Donchian 突破/跌破、支撐壓力位）；禁止提及法人買賣超或新聞事件
+- inst_insight：僅參考籌碼面資料（三大法人買賣超、主導買賣方、連續買賣超、融資融券、借券、外資持股、大戶/散戶持股結構）；禁止提及均線數值、RSI、新聞事件
 - news_insight：僅參考消息面資料（事件性質、市場情緒傾向）；禁止提及具體技術指標數值（如 RSI=62）
 - fundamental_insight：僅參考基本面估值資料（PE 位階、殖利率、每股盈餘趨勢）；禁止提及技術指標或法人動向
 - final_verdict：整合三維訊號，解釋為何導向當前信心分數與策略；此段允許跨維度整合推論
 
 規範：
 - 優先閱讀「系統信號摘要」。該摘要是 rule-based 計算結果，technical_signal、institutional_flow、sentiment_label、confidence_score 不得自行改寫。
-- tech_insight 必須用 2-3 句說清楚：先講技術結論，再列主要依據。若 KD / ADX / OBV 有資料，至少引用其中兩項；若與均線、MACD 或布林通道矛盾，必須點出矛盾。
+- tech_insight 必須用 2-3 句說清楚：先講技術結論，再列主要依據。若 KD / ADX / OBV / ATR / MFI / Donchian 有資料，至少引用其中三項；若與均線、MACD 或布林通道矛盾，必須點出矛盾。
 - final_verdict 必須解釋 confidence_score 的來源：說明技術、籌碼、消息面是共振、分歧，或資料不足；避免只寫「可留意」「偏中性」這類無法執行的結論。
 - LLM 不得修改 confidence_score 或 cross_validation_note，這兩個欄位由 rule-based 計算已完成。
 - 輸出格式：必須輸出合法 JSON，格式如下：

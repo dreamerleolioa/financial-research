@@ -9,6 +9,12 @@ from ai_stock_sentinel.data_sources.institutional_flow.interface import (
     InstitutionalFlowData,
     InstitutionalFlowError,
 )
+from ai_stock_sentinel.data_sources.institutional_flow.finmind_provider import (
+    _determine_flow_label,
+    _determine_flow_strength,
+    _summarize_institutional_rows,
+    _summarize_margin_rows,
+)
 from ai_stock_sentinel.data_sources.institutional_flow.router import (
     InstitutionalFlowRouter,
     _detect_market,
@@ -43,8 +49,14 @@ def _make_data(symbol: str = "2330.TW", source: str = "MockProvider", flow_label
         dealer_net_cumulative=300.0,
         three_party_net=12800.0,
         consecutive_buy_days=3,
+        consecutive_sell_days=0,
+        dominant_buyer="foreign",
+        dominant_seller="none",
+        flow_strength="strong",
         margin_delta=100.0,
         margin_balance_delta_pct=1.5,
+        short_delta=-20.0,
+        short_balance_delta_pct=-2.0,
         flow_label=flow_label,
         source_provider=source,
         warnings=[],
@@ -204,7 +216,7 @@ class TestFetchInstitutionalFlowTool:
 
         result = fetch_institutional_flow("2330.TW", days=5, router=router)
 
-        for field in ["foreign_buy", "investment_trust_buy", "dealer_buy", "margin_delta"]:
+        for field in ["foreign_buy", "investment_trust_buy", "dealer_buy", "margin_delta", "short_delta", "consecutive_sell_days", "dominant_buyer", "flow_strength"]:
             assert field in result, f"缺少欄位：{field}"
 
     def test_6488_two_uses_tpex_path(self):
@@ -262,3 +274,61 @@ class TestInstitutionalFlowDataSchema:
         assert data.investment_trust_buy is None
         assert data.dealer_buy is None
         assert data.margin_delta is None
+        assert data.short_delta is None
+        assert data.securities_lending_delta is None
+        assert data.foreign_holding_ratio_delta_pct is None
+
+
+def test_finmind_institutional_summary_detects_streak_and_dominant_actor():
+    rows = []
+    for day in range(1, 6):
+        rows.extend([
+            {"date": f"2026-03-0{day}", "name": "Foreign_Investor", "buy": 3_000_000, "sell": 1_000_000},
+            {"date": f"2026-03-0{day}", "name": "Investment_Trust", "buy": 800_000, "sell": 200_000},
+            {"date": f"2026-03-0{day}", "name": "Dealer", "buy": 100_000, "sell": 200_000},
+        ])
+
+    summary = _summarize_institutional_rows(rows, days=5)
+
+    assert summary["consecutive_buy_days"] == 5
+    assert summary["consecutive_sell_days"] == 0
+    assert summary["dominant_buyer"] == "foreign"
+    assert summary["foreign_net_cumulative"] > 0
+
+
+def test_finmind_margin_summary_and_flow_rules_cover_short_pressure():
+    rows = [
+        {
+            "MarginPurchaseTodayBalance": 1_100_000,
+            "MarginPurchaseYesterdayBalance": 1_000_000,
+            "ShortSaleTodayBalance": 150_000,
+            "ShortSaleYesterdayBalance": 100_000,
+        },
+        {
+            "MarginPurchaseTodayBalance": 1_180_000,
+            "MarginPurchaseYesterdayBalance": 1_100_000,
+            "ShortSaleTodayBalance": 220_000,
+            "ShortSaleYesterdayBalance": 150_000,
+        },
+    ]
+
+    summary = _summarize_margin_rows(rows, days=2)
+    label = _determine_flow_label(
+        three_party_net=-1200,
+        margin_balance_delta_pct=summary["margin_balance_delta_pct"],
+        short_balance_delta_pct=summary["short_balance_delta_pct"],
+        consecutive_sell_days=2,
+        dominant_seller="foreign",
+    )
+    strength = _determine_flow_strength(
+        three_party_net=-1200,
+        consecutive_buy_days=0,
+        consecutive_sell_days=2,
+        margin_balance_delta_pct=summary["margin_balance_delta_pct"],
+        short_balance_delta_pct=summary["short_balance_delta_pct"],
+    )
+
+    assert summary["margin_delta"] == pytest.approx(180.0)
+    assert summary["short_delta"] == pytest.approx(120.0)
+    assert label == "retail_chasing"
+    assert strength == "strong"

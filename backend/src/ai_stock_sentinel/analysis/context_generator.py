@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from ai_stock_sentinel.analysis.metrics import adx, bollinger_bands, calc_bias, calc_rsi, ma, macd, obv, stochastic_kd
+from ai_stock_sentinel.analysis.metrics import adx, atr, bollinger_bands, calc_bias, calc_rsi, donchian_channel, ma, macd, mfi, obv, stochastic_kd
 
 
 # ─── 敘事生成規則 ────────────────────────────────────────────────────────────
@@ -87,6 +87,15 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
     three_net = inst.get("three_party_net")
     consecutive = inst.get("consecutive_buy_days")
     margin_delta = inst.get("margin_delta")
+    short_delta = inst.get("short_delta")
+    securities_lending_delta = inst.get("securities_lending_delta")
+    foreign_holding_ratio_delta_pct = inst.get("foreign_holding_ratio_delta_pct")
+    major_holder_ratio = inst.get("major_holder_ratio")
+    major_holder_ratio_delta_pct = inst.get("major_holder_ratio_delta_pct")
+    dominant_buyer = inst.get("dominant_buyer")
+    dominant_seller = inst.get("dominant_seller")
+    consecutive_sell_days = inst.get("consecutive_sell_days")
+    flow_strength = inst.get("flow_strength")
     avg_daily_volume = inst.get("avg_daily_volume")
     flow_label = inst.get("flow_label", "neutral")
     source = inst.get("source_provider", "")
@@ -128,6 +137,13 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
     # 連買天數
     if consecutive is not None and consecutive > 0:
         parts.append(f"法人連續買超 {consecutive} 日")
+    if consecutive_sell_days is not None and consecutive_sell_days > 0:
+        parts.append(f"法人連續賣超 {consecutive_sell_days} 日")
+
+    if dominant_buyer and dominant_buyer != "none":
+        parts.append(f"主導買方為{_actor_name(dominant_buyer)}")
+    if dominant_seller and dominant_seller != "none":
+        parts.append(f"主導賣方為{_actor_name(dominant_seller)}")
 
     # 融資
     if margin_delta is not None:
@@ -135,6 +151,32 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
             parts.append(f"融資餘額增加 {margin_delta:.0f} 張（散戶追多，留意籌碼浮動）")
         elif margin_delta < 0:
             parts.append(f"融資餘額減少 {abs(margin_delta):.0f} 張（籌碼沉澱趨健康）")
+
+    if short_delta is not None:
+        if short_delta > 0:
+            parts.append(f"融券餘額增加 {short_delta:.0f} 張（空方壓力升高）")
+        elif short_delta < 0:
+            parts.append(f"融券餘額減少 {abs(short_delta):.0f} 張（空方回補）")
+
+    if securities_lending_delta is not None:
+        if securities_lending_delta > 0:
+            parts.append(f"借券成交增加 {securities_lending_delta:.0f} 張（潛在空方籌碼增加）")
+        elif securities_lending_delta < 0:
+            parts.append(f"借券成交減少 {abs(securities_lending_delta):.0f} 張（空方壓力降溫）")
+
+    if foreign_holding_ratio_delta_pct is not None:
+        direction = "上升" if foreign_holding_ratio_delta_pct > 0 else "下降"
+        parts.append(f"外資持股比例{direction} {abs(foreign_holding_ratio_delta_pct):.2f} 個百分點")
+
+    if major_holder_ratio is not None:
+        parts.append(f"大戶持股比例約 {major_holder_ratio:.2f}%")
+    if major_holder_ratio_delta_pct is not None:
+        direction = "上升" if major_holder_ratio_delta_pct > 0 else "下降"
+        parts.append(f"大戶持股比例{direction} {abs(major_holder_ratio_delta_pct):.2f} 個百分點")
+
+    if flow_strength:
+        strength_text = {"strong": "強", "moderate": "中等", "weak": "弱"}.get(str(flow_strength), str(flow_strength))
+        parts.append(f"籌碼訊號強度：{strength_text}")
 
     # 標籤補充
     label_map = {
@@ -155,6 +197,15 @@ def _inst_narrative(inst: dict[str, Any]) -> str:
         summary += f" {label_note}"
 
     return summary
+
+
+def _actor_name(actor: str) -> str:
+    return {
+        "foreign": "外資",
+        "trust": "投信",
+        "dealer": "自營商",
+        "mixed": "多方混合",
+    }.get(actor, actor)
 
 
 # ─── 布林通道敘事 ────────────────────────────────────────────────────────────
@@ -301,6 +352,56 @@ def _obv_narrative(obv_data: dict | None) -> str:
     return "OBV 變化中性，量價未出現明顯確認或背離。"
 
 
+def _atr_narrative(atr_data: dict | None) -> str:
+    if atr_data is None:
+        return "ATR 資料不足（需最近高低收盤價）。"
+    value = atr_data.get("atr")
+    pct = atr_data.get("atr_pct")
+    level = atr_data.get("volatility_level")
+    if value is None or pct is None:
+        return "ATR 資料不足，無法判斷波動風險。"
+    level_text = {"high": "偏高", "medium": "中等", "low": "偏低"}.get(str(level), "未知")
+    return f"ATR {value:.2f}（約 {pct:.2f}%），波動水準{level_text}，停損/停利需依波動調整。"
+
+
+def _mfi_narrative(mfi_data: dict | None) -> str:
+    if mfi_data is None:
+        return "MFI 資料不足（需高低收與成交量）。"
+    value = mfi_data.get("mfi")
+    signal = mfi_data.get("mfi_signal")
+    if value is None:
+        return "MFI 資料不足，無法判斷資金流。"
+    if signal == "overbought":
+        return f"MFI {value:.1f}，資金流過熱，追價風險升高。"
+    if signal == "oversold":
+        return f"MFI {value:.1f}，資金流低檔，留意反彈或賣壓鈍化。"
+    if signal == "bullish_flow":
+        return f"MFI {value:.1f}，資金流偏多，買盤推動力道尚可。"
+    if signal == "bearish_flow":
+        return f"MFI {value:.1f}，資金流偏弱，買盤支撐不足。"
+    return f"MFI {value:.1f}，資金流中性。"
+
+
+def _donchian_narrative(donchian_data: dict | None) -> str:
+    if donchian_data is None:
+        return "Donchian 通道資料不足（需最近高低價）。"
+    upper = donchian_data.get("donchian_upper")
+    lower = donchian_data.get("donchian_lower")
+    position = donchian_data.get("donchian_position")
+    if upper is None or lower is None:
+        return "Donchian 通道資料不足，無法判斷突破/跌破。"
+    text = f"20 日 Donchian 上緣 {upper:.2f}、下緣 {lower:.2f}。"
+    if position == "breakout_up":
+        return text + "收盤突破近期高檔區間，趨勢突破訊號明確。"
+    if position == "breakdown_down":
+        return text + "收盤跌破近期低檔區間，破底風險升高。"
+    if position == "near_upper":
+        return text + "價格接近區間上緣，留意是否有效突破。"
+    if position == "near_lower":
+        return text + "價格接近區間下緣，需觀察支撐是否守住。"
+    return text + "價格仍在區間內，尚未出現明確突破。"
+
+
 # ─── 支撐壓力位敘事 ──────────────────────────────────────────────────────────
 
 def _price_level_narrative(
@@ -384,6 +485,9 @@ def generate_technical_context(
     macd_data = macd(closes)
     kd_data = stochastic_kd(closes, highs, lows) if highs and lows else None
     adx_data = adx(closes, highs, lows) if highs and lows else None
+    atr_data = atr(closes, highs, lows) if highs and lows else None
+    mfi_data = mfi(closes, highs, lows, volumes) if highs and lows and volumes else None
+    donchian_data = donchian_channel(closes, highs, lows) if highs and lows else None
     obv_data = obv(closes, volumes) if volumes else None
 
     lines = [
@@ -397,6 +501,9 @@ def generate_technical_context(
         f"【KD】{_kd_narrative(kd_data)}",
         f"【ADX】{_adx_narrative(adx_data)}",
         f"【OBV】{_obv_narrative(obv_data)}",
+        f"【ATR】{_atr_narrative(atr_data)}",
+        f"【MFI】{_mfi_narrative(mfi_data)}",
+        f"【Donchian】{_donchian_narrative(donchian_data)}",
     ]
     technical = " ".join(lines)
     price_level = _price_level_narrative(
