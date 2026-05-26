@@ -529,9 +529,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }
   }
 
-  async function openAnalysis(item: PortfolioItem) {
-    setModalItem(item);
-
+  async function runPositionAnalysis(item: PortfolioItem): Promise<void> {
     setAnalysisLoading((prev) => ({ ...prev, [item.id]: true }));
     setAnalysisError((prev) => ({ ...prev, [item.id]: null }));
     try {
@@ -551,7 +549,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       const data: PositionResult = await res.json();
       setAnalysisMap((prev) => ({ ...prev, [item.id]: data }));
 
-      // Refresh latest card entry + history panel (if expanded)
       setHistoryMap((prev) => { const next = { ...prev }; delete next[item.id]; return next; });
       try {
         const r = await fetch(
@@ -565,13 +562,17 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         }
       } catch { /* ignore */ }
     } catch (err) {
-      setAnalysisError((prev) => ({
-        ...prev,
-        [item.id]: err instanceof Error ? err.message : "請求失敗",
-      }));
+      const msg = err instanceof Error ? err.message : "請求失敗";
+      setAnalysisError((prev) => ({ ...prev, [item.id]: msg }));
+      throw err; // re-throw so batch runner knows it failed
     } finally {
       setAnalysisLoading((prev) => ({ ...prev, [item.id]: false }));
     }
+  }
+
+  async function openAnalysis(item: PortfolioItem) {
+    setModalItem(item);
+    await runPositionAnalysis(item);
   }
 
   if (loading) {
