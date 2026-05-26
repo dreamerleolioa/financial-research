@@ -19,8 +19,8 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 | 維度                       | 說明                                                                                                                                                                                             | 資料來源                                                         |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
 | **消息面 (News)**          | 影響市場情緒的事件訊號（法說會、政策、產業動態、法人評等調整等），以多篇新聞聚合出 `sentiment_label` 與 `sentiment_strength`；**不涵蓋公司財務數字**（財報數字屬於基本面，需另從財報資料源取得） | Google News RSS、財經媒體 RSS                                    |
-| **技術面 (Technical)**     | MA5/20/60 均線、乖離率 (BIAS)、RSI、布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel、成交量變化、支撐壓力位                                                                                 | yfinance + Pandas 計算                                           |
-| **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、連續買賣超、主導買賣方、融資融券、借券、外資持股、大戶/散戶持股結構，並以買賣超占近期均量比例判斷相對規模                                                       | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback）              |
+| **技術面 (Technical)**     | MA5/20/60 均線、乖離率 (BIAS)、RSI、布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel、成交量變化、支撐壓力位                                                                             | yfinance + Pandas 計算                                           |
+| **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、連續買賣超、主導買賣方、融資融券、借券、外資持股、大戶/散戶持股結構，並以買賣超占近期均量比例判斷相對規模                                                  | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback）              |
 | **基本面 (Fundamental)**   | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS）                                                                                                                                     | FinMind `TaiwanStockFinancialStatements` + `TaiwanStockDividend` |
 
 建議以 **LangGraph（LangChain 延伸）** 作為 Agent 協作框架，以支援非線性流程與反饋迴圈。

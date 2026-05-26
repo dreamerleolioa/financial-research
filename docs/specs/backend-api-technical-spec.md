@@ -174,7 +174,7 @@ make run-api
   | `stop_loss`                | string \| null | 防守底線／停損條件（rule-based）                                                                                                                                                                                                                                                                |
   | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                                                                                                      |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位）                                                                                   |
-  | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                                                       |
+  | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                           |
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
   | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令 |
   | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                                                                                                          |
@@ -213,13 +213,13 @@ make run-api
 > | `adx_trend_direction`                                   | string \| null | `bullish` / `bearish` / `neutral`                                                                      |
 > | `obv`                                                   | number \| null | OBV 能量潮累積值                                                                                       |
 > | `obv_signal`                                            | string \| null | `price_volume_confirm` / `bearish_divergence` / `bullish_divergence` / `price_volume_weak` / `neutral` |
-> | `atr` / `atr_pct`                                       | number \| null | ATR 平均真實波幅與占收盤價百分比                                                                        |
+> | `atr` / `atr_pct`                                       | number \| null | ATR 平均真實波幅與占收盤價百分比                                                                       |
 > | `volatility_level`                                      | string \| null | `high` / `medium` / `low` / `unknown`                                                                  |
-> | `mfi`                                                   | number \| null | MFI 資金流量指標                                                                                        |
+> | `mfi`                                                   | number \| null | MFI 資金流量指標                                                                                       |
 > | `mfi_signal`                                            | string \| null | `overbought` / `oversold` / `bullish_flow` / `bearish_flow` / `neutral`                                |
-> | `donchian_upper` / `donchian_lower` / `donchian_mid`     | number \| null | Donchian Channel 20 日區間上緣、下緣、中線                                                               |
-> | `donchian_width_pct`                                    | number \| null | Donchian 區間寬度百分比                                                                                 |
-> | `donchian_position`                                     | string \| null | `breakout_up` / `breakdown_down` / `near_upper` / `near_lower` / `upper_half` / `lower_half` / `flat` |
+> | `donchian_upper` / `donchian_lower` / `donchian_mid`    | number \| null | Donchian Channel 20 日區間上緣、下緣、中線                                                             |
+> | `donchian_width_pct`                                    | number \| null | Donchian 區間寬度百分比                                                                                |
+> | `donchian_position`                                     | string \| null | `breakout_up` / `breakdown_down` / `near_upper` / `near_lower` / `upper_half` / `lower_half` / `flat`  |
 
 > **LLM input contract：`signal_summary`（內部欄位，非 API response）**
 >
