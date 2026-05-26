@@ -549,7 +549,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       const data: PositionResult = await res.json();
       setAnalysisMap((prev) => ({ ...prev, [item.id]: data }));
 
-      setHistoryMap((prev) => { const next = { ...prev }; delete next[item.id]; return next; });
+      setHistoryMap((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
       try {
         const r = await fetch(
           `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=20`,
@@ -570,9 +574,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }
   }
 
-  async function openAnalysis(item: PortfolioItem) {
+  async function openAnalysis(item: PortfolioItem): Promise<void> {
     setModalItem(item);
-    await runPositionAnalysis(item);
+    await runPositionAnalysis(item).catch(() => {});
   }
 
   if (loading) {
