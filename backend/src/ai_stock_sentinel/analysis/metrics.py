@@ -288,3 +288,140 @@ def obv(
         "price_delta": price_delta,
         "obv_signal": signal,
     }
+
+
+def atr(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    period: int = 14,
+) -> dict[str, float | str | None] | None:
+    """ATR 平均真實波幅，用來校準波動風險與停損距離。"""
+    if len(closes) < period + 1 or len(highs) != len(closes) or len(lows) != len(closes):
+        return None
+
+    true_ranges: list[float] = []
+    for idx in range(1, len(closes)):
+        true_ranges.append(max(
+            highs[idx] - lows[idx],
+            abs(highs[idx] - closes[idx - 1]),
+            abs(lows[idx] - closes[idx - 1]),
+        ))
+
+    if len(true_ranges) < period:
+        return None
+
+    atr_value = sum(true_ranges[:period]) / period
+    for value in true_ranges[period:]:
+        atr_value = (atr_value * (period - 1) + value) / period
+
+    close = closes[-1]
+    atr_pct = atr_value / close * 100 if close else None
+    if atr_pct is None:
+        volatility_level = "unknown"
+    elif atr_pct >= 5:
+        volatility_level = "high"
+    elif atr_pct >= 2.5:
+        volatility_level = "medium"
+    else:
+        volatility_level = "low"
+
+    return {
+        "atr": atr_value,
+        "atr_pct": atr_pct,
+        "volatility_level": volatility_level,
+    }
+
+
+def mfi(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    volumes: list[float],
+    period: int = 14,
+) -> dict[str, float | str | None] | None:
+    """MFI 資金流量指標，視為加入成交量的 RSI。"""
+    aligned = len(highs) == len(closes) and len(lows) == len(closes) and len(volumes) == len(closes)
+    if len(closes) < period + 1 or not aligned:
+        return None
+
+    typical_prices = [(highs[idx] + lows[idx] + closes[idx]) / 3 for idx in range(len(closes))]
+    positive_flow = 0.0
+    negative_flow = 0.0
+    start = len(closes) - period
+    for idx in range(start, len(closes)):
+        money_flow = typical_prices[idx] * volumes[idx]
+        if typical_prices[idx] > typical_prices[idx - 1]:
+            positive_flow += money_flow
+        elif typical_prices[idx] < typical_prices[idx - 1]:
+            negative_flow += money_flow
+
+    if negative_flow == 0:
+        mfi_value = 100.0 if positive_flow > 0 else 50.0
+    else:
+        money_ratio = positive_flow / negative_flow
+        mfi_value = 100 - (100 / (1 + money_ratio))
+
+    if mfi_value >= 80:
+        signal = "overbought"
+    elif mfi_value <= 20:
+        signal = "oversold"
+    elif mfi_value >= 60:
+        signal = "bullish_flow"
+    elif mfi_value <= 40:
+        signal = "bearish_flow"
+    else:
+        signal = "neutral"
+
+    return {
+        "mfi": mfi_value,
+        "mfi_signal": signal,
+    }
+
+
+def donchian_channel(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    period: int = 20,
+) -> dict[str, float | str | None] | None:
+    """Donchian Channel，用近 N 日高低區間判斷突破與跌破。"""
+    if len(closes) < period or len(highs) != len(closes) or len(lows) != len(closes):
+        return None
+
+    if len(closes) > period:
+        high_window = highs[-period - 1:-1]
+        low_window = lows[-period - 1:-1]
+    else:
+        high_window = highs[-period:]
+        low_window = lows[-period:]
+
+    upper = max(high_window)
+    lower = min(low_window)
+    mid = (upper + lower) / 2
+    close = closes[-1]
+    width = upper - lower
+    width_pct = width / mid * 100 if mid else None
+
+    if close > upper:
+        position = "breakout_up"
+    elif close < lower:
+        position = "breakdown_down"
+    elif width == 0:
+        position = "flat"
+    elif close >= upper - width * 0.2:
+        position = "near_upper"
+    elif close <= lower + width * 0.2:
+        position = "near_lower"
+    elif close >= mid:
+        position = "upper_half"
+    else:
+        position = "lower_half"
+
+    return {
+        "donchian_upper": upper,
+        "donchian_lower": lower,
+        "donchian_mid": mid,
+        "donchian_width_pct": width_pct,
+        "donchian_position": position,
+    }

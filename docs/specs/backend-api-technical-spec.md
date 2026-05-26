@@ -2,7 +2,7 @@
 
 > 類型：技術文件（Technical Doc）
 > 更新日期：2026-05-25
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；更新 `tech_insight` 與測試對應說明。
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；更新 `tech_insight` 與測試對應說明。
 
 ## 1) 目的
 
@@ -174,7 +174,7 @@ make run-api
   | `stop_loss`                | string \| null | 防守底線／停損條件（rule-based）                                                                                                                                                                                                                                                                |
   | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                                                                                                      |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位）                                                                                   |
-  | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                                                       |
+  | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                                                       |
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
   | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令 |
   | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                                                                                                          |
@@ -186,8 +186,8 @@ make run-api
 
 > **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
 >
-> - `tech_insight`：技術面獨立分析段落；可引用均線、RSI、布林通道、MACD、KD、ADX、OBV、支撐壓力位；禁止提及法人買賣超或新聞事件
-> - `inst_insight`：籌碼面獨立分析段落；禁止提及均線數值、RSI、新聞事件
+> - `tech_insight`：技術面獨立分析段落；可引用均線、RSI、布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel、支撐壓力位；禁止提及法人買賣超或新聞事件
+> - `inst_insight`：籌碼面獨立分析段落；可引用三大法人、連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構；禁止提及均線數值、RSI、新聞事件
 > - `news_insight`：消息面獨立分析段落；禁止提及具體技術指標數值
 > - `final_verdict`：三維整合仲裁段落；允許跨維度推論
 >   以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
@@ -195,7 +195,7 @@ make run-api
 > **`technical_indicators` 顯性輸出**（2026-05-25）：
 >
 > - 此欄位為 API 與前端技術指標卡片的正式資料來源。
-> - 布林通道與 MACD 數值由 Python 根據 `snapshot.recent_closes` 計算；KD / ADX 由 `recent_closes` + `recent_highs` + `recent_lows` 計算；OBV 由 `recent_closes` + `recent_volumes` 計算。不由 LLM 推算。
+> - 布林通道與 MACD 數值由 Python 根據 `snapshot.recent_closes` 計算；KD / ADX / ATR / Donchian Channel 由 `recent_closes` + `recent_highs` + `recent_lows` 計算；OBV 由 `recent_closes` + `recent_volumes` 計算；MFI 由 `recent_closes` + `recent_highs` + `recent_lows` + `recent_volumes` 計算。不由 LLM 推算。
 > - 資料不足時對應欄位回傳 `null`，不影響主分析流程。
 >
 > | 欄位                                                    | 類型           | 說明                                                                                                   |
@@ -213,11 +213,18 @@ make run-api
 > | `adx_trend_direction`                                   | string \| null | `bullish` / `bearish` / `neutral`                                                                      |
 > | `obv`                                                   | number \| null | OBV 能量潮累積值                                                                                       |
 > | `obv_signal`                                            | string \| null | `price_volume_confirm` / `bearish_divergence` / `bullish_divergence` / `price_volume_weak` / `neutral` |
+> | `atr` / `atr_pct`                                       | number \| null | ATR 平均真實波幅與占收盤價百分比                                                                        |
+> | `volatility_level`                                      | string \| null | `high` / `medium` / `low` / `unknown`                                                                  |
+> | `mfi`                                                   | number \| null | MFI 資金流量指標                                                                                        |
+> | `mfi_signal`                                            | string \| null | `overbought` / `oversold` / `bullish_flow` / `bearish_flow` / `neutral`                                |
+> | `donchian_upper` / `donchian_lower` / `donchian_mid`     | number \| null | Donchian Channel 20 日區間上緣、下緣、中線                                                               |
+> | `donchian_width_pct`                                    | number \| null | Donchian 區間寬度百分比                                                                                 |
+> | `donchian_position`                                     | string \| null | `breakout_up` / `breakdown_down` / `near_upper` / `near_lower` / `upper_half` / `lower_half` / `flat` |
 
 > **LLM input contract：`signal_summary`（內部欄位，非 API response）**
 >
 > - `analyze_node` 在呼叫 LLM 前會建立 compact `signal_summary`，放在 prompt 最前段。
-> - 內容包含 rule-based labels（`technical_signal` / `institutional_flow` / `sentiment_label` / `confidence_score` / `cross_validation_note`）、技術證據（布林、MACD、KD、ADX、OBV、RSI、支撐壓力）、消息面聚合與策略標籤。
+> - 內容包含 rule-based labels（`technical_signal` / `institutional_flow` / `sentiment_label` / `confidence_score` / `cross_validation_note`）、技術證據（布林、MACD、KD、ADX、OBV、ATR、MFI、Donchian、RSI、支撐壓力）、籌碼證據（連續買賣超、主導買賣方、融資融券、借券、持股結構）、消息面聚合與策略標籤。
 > - LLM 只能解釋 `signal_summary`，不得改寫 labels 或重新計算分數；此欄位不會出現在 `/analyze` 或 `/analyze/position` response。
 
 ---

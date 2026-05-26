@@ -94,6 +94,18 @@
 - 條件：`profit_loss_pct < -5%`
 - 規則：`trailing_stop = entry_price × 0.93`（預設持守成本價 -7% 以內）
 
+**技術指標升級規則（ATR / MFI / Donchian）**：
+
+- `ATR`：用 `atr` 作為防守線緩衝校準；高獲利或移動停利場景下，防守線不得低於 `current_close - 2 * ATR`，套牢防守時不得低於 `entry_price - 1.5 * ATR`。
+- `MFI`：`overbought` 視為資金流過熱，獲利部位傾向上移防守線；`bearish_flow` 視為資金流轉弱，若已有獲利則可觸發 `Trim`。
+- `Donchian Channel`：`breakdown_down` 且 OBV / MACD / KD / MFI 任一轉弱時，持股診斷可直接升級為 `Exit`。
+
+**籌碼風險升級規則**：
+
+- `flow_label = distribution` 且已有獲利 → `Trim`；若同時套牢或跌破防守線 → `Exit`。
+- 融券餘額增加、借券成交增加、法人連續賣超、主導賣方為外資/投信時，`inst_insight` 必須描述籌碼撤退或空方壓力。
+- 融資增加但法人賣超，或大戶持股下降且融資上升時，歸類為 `retail_chasing`，持股節奏需保守。
+
 ### 3.3 訊號衝突仲裁：持股初衷檢視（Skeptic Mode 升級）
 
 LLM 在 `analyze_node` 中必須執行「持股初衷檢視」邏輯：
@@ -117,6 +129,9 @@ LLM 在 `analyze_node` 中必須執行「持股初衷檢視」邏輯：
 - flow_label = distribution 且 profit_loss_pct > 0（獲利出場警示）
 - flow_label = distribution 且 position_status = under_water（停損評估）
 - technical_signal = bearish 且 close < trailing_stop（跌破防守線）
+- Donchian 跌破下緣且量價 / 資金流轉弱（出場評估）
+- MFI 過熱或資金流偏弱且已有獲利（減碼評估）
+- 融券 / 借券 / 法人連賣訊號同步惡化（減碼或出場評估）
 ```
 
 ---
@@ -259,7 +274,7 @@ class PositionState(TypedDict, total=False):
 - 當 `flow_label = distribution` 且獲利中，`exit_reason` 不得為 null
 - 前端損益對照卡正確標註成本價、防守位、支撐壓力位
 - 當 `recommended_action = Exit` 時，前端以紅色警示框顯示 `exit_reason`
-- 所有技術指標數值與籌碼數據沿用現有 `calculate_technical_indicators` 與 `fetch_institutional_flow` 工具
+- 所有技術指標數值與籌碼數據沿用現有 `calculate_technical_indicators` 與 `fetch_institutional_flow` 工具；技術面包含 ATR / MFI / Donchian，籌碼面包含連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶持股結構（資料可得時）
 
 ---
 

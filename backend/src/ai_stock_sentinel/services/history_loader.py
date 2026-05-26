@@ -9,7 +9,7 @@ import yfinance as yf
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.analysis.metrics import adx, bollinger_bands, macd, obv, stochastic_kd
+from ai_stock_sentinel.analysis.metrics import adx, atr, bollinger_bands, donchian_channel, macd, mfi, obv, stochastic_kd
 from ai_stock_sentinel.db.models import StockAnalysisCache
 
 
@@ -57,6 +57,9 @@ def load_yesterday_context(symbol: str, db: Session) -> dict | None:
         "prev_kd_signal":         indicators.get("kd_signal"),
         "prev_adx":               indicators.get("adx"),
         "prev_obv_signal":        indicators.get("obv_signal"),
+        "prev_atr_pct":           indicators.get("atr_pct"),
+        "prev_mfi_signal":        indicators.get("mfi_signal"),
+        "prev_donchian_position": indicators.get("donchian_position"),
     }
 
 
@@ -123,6 +126,9 @@ def _compute_indicators_from_history(history) -> dict:
     aligned_volume = len(volumes) == len(closes)
     kd_data = stochastic_kd(closes, highs, lows) if aligned_hilo else None
     adx_data = adx(closes, highs, lows) if aligned_hilo else None
+    atr_data = atr(closes, highs, lows) if aligned_hilo else None
+    mfi_data = mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
+    donchian_data = donchian_channel(closes, highs, lows) if aligned_hilo else None
     obv_data = obv(closes, volumes) if aligned_volume else None
 
     return {
@@ -148,6 +154,16 @@ def _compute_indicators_from_history(history) -> dict:
         "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
         "obv":                obv_data["obv"] if obv_data else None,
         "obv_signal":         obv_data["obv_signal"] if obv_data else None,
+        "atr":                atr_data["atr"] if atr_data else None,
+        "atr_pct":            atr_data["atr_pct"] if atr_data else None,
+        "volatility_level":   atr_data["volatility_level"] if atr_data else None,
+        "mfi":                mfi_data["mfi"] if mfi_data else None,
+        "mfi_signal":         mfi_data["mfi_signal"] if mfi_data else None,
+        "donchian_upper":     donchian_data["donchian_upper"] if donchian_data else None,
+        "donchian_lower":     donchian_data["donchian_lower"] if donchian_data else None,
+        "donchian_mid":       donchian_data["donchian_mid"] if donchian_data else None,
+        "donchian_width_pct": donchian_data["donchian_width_pct"] if donchian_data else None,
+        "donchian_position":  donchian_data["donchian_position"] if donchian_data else None,
     }
 
 

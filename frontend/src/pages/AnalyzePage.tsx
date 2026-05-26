@@ -51,6 +51,16 @@ interface TechnicalIndicators {
   adx_trend_direction: string | null;
   obv: number | null;
   obv_signal: string | null;
+  atr: number | null;
+  atr_pct: number | null;
+  volatility_level: string | null;
+  mfi: number | null;
+  mfi_signal: string | null;
+  donchian_upper: number | null;
+  donchian_lower: number | null;
+  donchian_mid: number | null;
+  donchian_width_pct: number | null;
+  donchian_position: string | null;
 }
 
 interface AnalyzeResponse {
@@ -200,6 +210,31 @@ const OBV_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
   bullish_divergence: { label: "低檔承接", cls: "bg-blue-100 text-blue-800" },
   price_volume_weak: { label: "量價轉弱", cls: "bg-red-100 text-red-800" },
   neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const VOLATILITY_LEVEL_LABEL: Record<string, { label: string; cls: string }> = {
+  high: { label: "高波動", cls: "bg-red-100 text-red-800" },
+  medium: { label: "中波動", cls: "bg-yellow-100 text-yellow-800" },
+  low: { label: "低波動", cls: "bg-emerald-100 text-emerald-800" },
+  unknown: { label: "未知", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const MFI_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
+  overbought: { label: "資金過熱", cls: "bg-orange-100 text-orange-800" },
+  oversold: { label: "資金低檔", cls: "bg-blue-100 text-blue-800" },
+  bullish_flow: { label: "資金偏多", cls: "bg-emerald-100 text-emerald-800" },
+  bearish_flow: { label: "資金偏弱", cls: "bg-red-100 text-red-800" },
+  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const DONCHIAN_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
+  breakout_up: { label: "突破上緣", cls: "bg-emerald-100 text-emerald-800" },
+  breakdown_down: { label: "跌破下緣", cls: "bg-red-100 text-red-800" },
+  near_upper: { label: "近上緣", cls: "bg-yellow-100 text-yellow-800" },
+  near_lower: { label: "近下緣", cls: "bg-blue-100 text-blue-800" },
+  upper_half: { label: "區間上半", cls: "bg-emerald-100 text-emerald-800" },
+  lower_half: { label: "區間下半", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  flat: { label: "區間平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 function formatIndicatorNumber(value: number | null | undefined, digits = 2): string {
@@ -732,6 +767,30 @@ export default function AnalyzePage() {
                 ) : <span className="text-sm text-text-faint">—</span>}
               </div>
               <div>
+                <p className="text-xs text-text-muted mb-1">ATR 波動</p>
+                {result.technical_indicators.volatility_level && VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].cls}`}>
+                    {VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">MFI 訊號</p>
+                {result.technical_indicators.mfi_signal && MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal].cls}`}>
+                    {MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">Donchian 位階</p>
+                {result.technical_indicators.donchian_position && DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position] ? (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position].cls}`}>
+                    {DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position].label}
+                  </span>
+                ) : <span className="text-sm text-text-faint">—</span>}
+              </div>
+              <div>
                 <p className="text-xs text-text-muted mb-1">布林上軌</p>
                 <p className="text-sm font-medium text-text-primary">{result.technical_indicators.bollinger_upper != null ? result.technical_indicators.bollinger_upper.toFixed(2) : "—"}</p>
               </div>
@@ -775,6 +834,26 @@ export default function AnalyzePage() {
                 <p className="text-xs text-text-muted mb-1">OBV</p>
                 <p className={`text-sm font-medium ${result.technical_indicators.obv != null ? (result.technical_indicators.obv >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
                   {formatVolume(result.technical_indicators.obv)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">ATR / ATR%</p>
+                <p className="text-sm font-medium text-text-primary">
+                  {result.technical_indicators.atr != null || result.technical_indicators.atr_pct != null
+                    ? `${formatIndicatorNumber(result.technical_indicators.atr, 2)} / ${formatIndicatorNumber(result.technical_indicators.atr_pct, 2)}%`
+                    : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">MFI</p>
+                <p className="text-sm font-medium text-text-primary">{formatIndicatorNumber(result.technical_indicators.mfi, 1)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-text-muted mb-1">Donchian 上 / 下緣</p>
+                <p className="text-sm font-medium text-text-primary">
+                  {result.technical_indicators.donchian_upper != null || result.technical_indicators.donchian_lower != null
+                    ? `${formatIndicatorNumber(result.technical_indicators.donchian_upper, 2)} / ${formatIndicatorNumber(result.technical_indicators.donchian_lower, 2)}`
+                    : "—"}
                 </p>
               </div>
             </div>

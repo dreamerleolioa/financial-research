@@ -10,7 +10,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from ai_stock_sentinel.analysis.confidence_scorer import BASE_CONFIDENCE, compute_confidence, derive_technical_score
-from ai_stock_sentinel.analysis.metrics import adx as calc_adx, bollinger_bands as calc_bollinger, macd as calc_macd, obv as calc_obv, stochastic_kd as calc_kd
+from ai_stock_sentinel.analysis.metrics import adx as calc_adx, atr as calc_atr, bollinger_bands as calc_bollinger, donchian_channel as calc_donchian, macd as calc_macd, mfi as calc_mfi, obv as calc_obv, stochastic_kd as calc_kd
 from ai_stock_sentinel.analysis.quality_gate import QualityGate
 from ai_stock_sentinel.analysis.context_generator import calc_bias, calc_rsi, ma as calc_ma, generate_technical_context, generate_fundamental_context
 from ai_stock_sentinel.analysis.interface import StockAnalyzer
@@ -78,6 +78,9 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
     macd_data = calc_macd(closes) if closes else None
     kd_data = calc_kd(closes, highs, lows) if aligned_hilo else None
     adx_data = calc_adx(closes, highs, lows) if aligned_hilo else None
+    atr_data = calc_atr(closes, highs, lows) if aligned_hilo else None
+    mfi_data = calc_mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
+    donchian_data = calc_donchian(closes, highs, lows) if aligned_hilo else None
     obv_data = calc_obv(closes, volumes) if aligned_volume else None
 
     cleaned_news = state.get("cleaned_news") or {}
@@ -109,6 +112,12 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
             "adx_trend_strength": adx_data.get("trend_strength") if adx_data else None,
             "adx_trend_direction": adx_data.get("trend_direction") if adx_data else None,
             "obv_signal": obv_data.get("obv_signal") if obv_data else None,
+            "atr": _round_value(atr_data.get("atr") if atr_data else None, 2),
+            "atr_pct": _round_value(atr_data.get("atr_pct") if atr_data else None, 2),
+            "volatility_level": atr_data.get("volatility_level") if atr_data else None,
+            "mfi": _round_value(mfi_data.get("mfi") if mfi_data else None, 1),
+            "mfi_signal": mfi_data.get("mfi_signal") if mfi_data else None,
+            "donchian_position": donchian_data.get("donchian_position") if donchian_data else None,
             "support_20d": _round_value(state.get("support_20d")),
             "resistance_20d": _round_value(state.get("resistance_20d")),
         },
@@ -399,6 +408,9 @@ def _derive_technical_signal(
     aligned_volumes = volumes if volumes and len(volumes) == len(closes) else []
     kd_data = calc_kd(closes, aligned_highs, aligned_lows) if aligned_highs and aligned_lows else None
     adx_data = calc_adx(closes, aligned_highs, aligned_lows) if aligned_highs and aligned_lows else None
+    atr_data = calc_atr(closes, aligned_highs, aligned_lows) if aligned_highs and aligned_lows else None
+    mfi_data = calc_mfi(closes, aligned_highs, aligned_lows, aligned_volumes) if aligned_highs and aligned_lows and aligned_volumes else None
+    donchian_data = calc_donchian(closes, aligned_highs, aligned_lows) if aligned_highs and aligned_lows else None
     obv_data = calc_obv(closes, aligned_volumes) if aligned_volumes else None
 
     tech_score = derive_technical_score(
@@ -410,6 +422,9 @@ def _derive_technical_signal(
         kd_data=kd_data,
         adx_data=adx_data,
         obv_data=obv_data,
+        atr_data=atr_data,
+        mfi_data=mfi_data,
+        donchian_data=donchian_data,
     )
 
     if tech_score >= 60:
@@ -805,6 +820,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
     bb = calc_bollinger(closes)
     kd_data = calc_kd(closes, highs, lows) if highs and lows and len(highs) == len(closes) and len(lows) == len(closes) else None
     adx_data = calc_adx(closes, highs, lows) if highs and lows and len(highs) == len(closes) and len(lows) == len(closes) else None
+    atr_data = calc_atr(closes, highs, lows) if highs and lows and len(highs) == len(closes) and len(lows) == len(closes) else None
+    mfi_data = calc_mfi(closes, highs, lows, volumes) if highs and lows and volumes and len(highs) == len(closes) and len(lows) == len(closes) and len(volumes) == len(closes) else None
+    donchian_data = calc_donchian(closes, highs, lows) if highs and lows and len(highs) == len(closes) and len(lows) == len(closes) else None
     obv_data = calc_obv(closes, volumes) if volumes and len(volumes) == len(closes) else None
 
     technical_context_data: dict[str, Any] = {
@@ -822,6 +840,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "kd_data": kd_data,
         "adx_data": adx_data,
         "obv_data": obv_data,
+        "atr_data": atr_data,
+        "mfi_data": mfi_data,
+        "donchian_data": donchian_data,
     }
 
     strategy = generate_strategy(technical_context_data, inst_data)
@@ -893,6 +914,9 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         macd_data = calc_macd(closes) if closes else None
         kd_data = calc_kd(closes, highs, lows) if aligned_hilo else None
         adx_data = calc_adx(closes, highs, lows) if aligned_hilo else None
+        atr_data = calc_atr(closes, highs, lows) if aligned_hilo else None
+        mfi_data = calc_mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
+        donchian_data = calc_donchian(closes, highs, lows) if aligned_hilo else None
         obv_data = calc_obv(closes, volumes) if aligned_volume else None
         bollinger_position = _bollinger_position(bb, current_close)
 
@@ -908,6 +932,8 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
             adx_trend_strength=adx_data.get("trend_strength") if adx_data else None,
             adx_trend_direction=adx_data.get("trend_direction") if adx_data else None,
             obv_signal=obv_data.get("obv_signal") if obv_data else None,
+            atr_value=atr_data.get("atr") if atr_data else None,
+            mfi_signal=mfi_data.get("mfi_signal") if mfi_data else None,
         )
 
         flow_label = inst_flow.get("flow_label", "neutral") if isinstance(inst_flow, dict) else "neutral"
@@ -928,6 +954,8 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
             adx_trend_strength=adx_data.get("trend_strength") if adx_data else None,
             adx_trend_direction=adx_data.get("trend_direction") if adx_data else None,
             obv_signal=obv_data.get("obv_signal") if obv_data else None,
+            mfi_signal=mfi_data.get("mfi_signal") if mfi_data else None,
+            donchian_position=donchian_data.get("donchian_position") if donchian_data else None,
         )
 
         quantity = state.get("quantity")
