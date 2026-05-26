@@ -291,6 +291,21 @@ const ACTION_CONFIG = {
   Exit: { label: "出場", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800" },
 } as const;
 
+const BATCH_STATUS_STYLES = {
+  running: {
+    container: "border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950",
+    text: "text-indigo-700 dark:text-indigo-300",
+  },
+  done: {
+    container: "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950",
+    text: "text-green-700 dark:text-green-300",
+  },
+  partialError: {
+    container: "border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950",
+    text: "text-yellow-700 dark:text-yellow-300",
+  },
+} as const;
+
 interface AnalysisModalProps {
   item: PortfolioItem;
   result: PositionResult | null;
@@ -675,19 +690,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   return (
     <>
       {batchStatus !== "idle" && (
-        <div className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
-          batchStatus === "running"
-            ? "border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
-            : batchStatus === "done"
-              ? "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950"
-              : "border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950"
-        }`}>
+        <div className={`mb-4 rounded-xl border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
           <div className="flex items-center justify-between gap-3">
-            <span className={`font-medium ${
-              batchStatus === "running" ? "text-indigo-700 dark:text-indigo-300"
-              : batchStatus === "done" ? "text-green-700 dark:text-green-300"
-              : "text-yellow-700 dark:text-yellow-300"
-            }`}>
+            <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
               {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
               {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆分析結果`}
               {batchStatus === "partialError" && `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
