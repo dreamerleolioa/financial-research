@@ -674,10 +674,48 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   return (
     <>
+      {batchStatus !== "idle" && (
+        <div className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
+          batchStatus === "running"
+            ? "border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
+            : batchStatus === "done"
+              ? "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950"
+              : "border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950"
+        }`}>
+          <div className="flex items-center justify-between gap-3">
+            <span className={`font-medium ${
+              batchStatus === "running" ? "text-indigo-700 dark:text-indigo-300"
+              : batchStatus === "done" ? "text-green-700 dark:text-green-300"
+              : "text-yellow-700 dark:text-yellow-300"
+            }`}>
+              {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
+              {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆分析結果`}
+              {batchStatus === "partialError" && `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
+            </span>
+            {batchStatus === "running" && (
+              <div className="h-1.5 w-32 overflow-hidden rounded-full bg-indigo-100 dark:bg-indigo-900">
+                <div
+                  className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+                  style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-text-primary">我的持股</h2>
-          <span className="text-xs text-text-faint">共 {items.length} 筆</span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={runBatchAnalysis}
+              disabled={batchStatus === "running"}
+              className="rounded-lg bg-indigo-500 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {batchStatus === "running" ? "分析中…" : "全部分析"}
+            </button>
+            <span className="text-xs text-text-faint">共 {items.length} 筆</span>
+          </div>
         </div>
 
         {items.map((item) => {
