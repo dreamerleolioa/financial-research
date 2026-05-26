@@ -621,13 +621,15 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     const failed: string[] = [];
 
     async function runOne(item: PortfolioItem): Promise<void> {
-      try {
-        await runPositionAnalysis(item);
-      } catch {
+      if (!analysisLoading[item.id]) {
         try {
           await runPositionAnalysis(item);
         } catch {
-          failed.push(item.symbol);
+          try {
+            await runPositionAnalysis(item);
+          } catch {
+            failed.push(item.symbol);
+          }
         }
       }
       completedCount += 1;
@@ -714,7 +716,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           <div className="flex items-center gap-3">
             <button
               onClick={runBatchAnalysis}
-              disabled={batchStatus === "running"}
+              disabled={batchStatus !== "idle"}
               className="rounded-lg bg-indigo-500 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {batchStatus === "running" ? "分析中…" : "全部分析"}
