@@ -219,6 +219,8 @@ def fetch_external_data_node(
 
 def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]:
     """抓取股票快照，回傳更新的 state keys。"""
+    if state.get("snapshot") is not None:
+        return {}
     try:
         snapshot = crawler.fetch_basic_snapshot(symbol=state["symbol"])
         return {"snapshot": asdict(snapshot), "errors": []}
@@ -236,6 +238,8 @@ def _check_sufficiency(state: GraphState) -> tuple[bool, bool, bool]:
     """
     回傳 (data_sufficient, requires_news_refresh, requires_fundamental_update)。
     """
+    if state.get("skip_ai"):
+        return True, False, False
     requires_news_refresh = False
     requires_fundamental_update = False
 
@@ -574,6 +578,11 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
     傳入 technical_context、institutional_context、confidence_score、cross_validation_note
     供 Skeptic Mode prompt 使用；LLM 不得修改分數。
     """
+    if state.get("skip_ai"):
+        return {
+            "analysis": "AI 分析已跳過，僅顯示基本面與技術指標。",
+            "analysis_detail": None,
+        }
     snapshot_dict = state["snapshot"]
     if not snapshot_dict:
         return {
@@ -651,7 +660,7 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
 def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner) -> dict[str, Any]:
     """將 news_content 清潔成結構化 cleaned_news；若無 news_content 則跳過。"""
     news_content = state["news_content"]
-    if not news_content:
+    if not news_content or state.get("skip_ai"):
         return {"cleaned_news": None, "cleaned_news_items": []}
     try:
         raw_items = state.get("raw_news_items") or []
@@ -937,7 +946,11 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         )
 
         flow_label = inst_flow.get("flow_label", "neutral") if isinstance(inst_flow, dict) else "neutral"
-        technical_signal = analysis.get("technical_signal", "neutral") if isinstance(analysis, dict) else "neutral"
+        technical_signal = (
+            analysis.get("technical_signal")
+            if isinstance(analysis, dict) and analysis.get("technical_signal")
+            else (state.get("technical_signal") or "neutral")
+        )
         position_status = state.get("position_status", "at_risk") or "at_risk"
 
         recommended_action, exit_reason = compute_recommended_action(

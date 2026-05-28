@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 class AnalyzeRequest(BaseModel):
     symbol: str = Field(default="2330.TW", min_length=1)
     news_text: str | None = None
+    skip_ai: bool = False
 
 
 class PositionAnalyzeRequest(BaseModel):
@@ -182,6 +183,19 @@ def get_raw_data(db: Session, symbol: str) -> StockRawData | None:
             StockRawData.record_date == _date.today(),
         )
     ).scalar_one_or_none()
+
+
+def get_recent_raw_data(db: Session, symbol: str, max_age_seconds: int = 600) -> StockRawData | None:
+    """查詢今日且在 N 秒內的原始數據。"""
+    raw_data = get_raw_data(db, symbol)
+    if raw_data:
+        from datetime import datetime, timezone
+        if isinstance(raw_data.fetched_at, datetime):
+            now = datetime.now(raw_data.fetched_at.tzinfo or timezone.utc)
+            age = now - raw_data.fetched_at
+            if age.total_seconds() < max_age_seconds:
+                return raw_data
+    return None
 
 
 def _handle_cache_hit(
@@ -792,21 +806,45 @@ def analyze(
     now_time = datetime.now(_TZ_TAIPEI).time()
 
     # L1：快取命中檢查
-    cache = get_analysis_cache(db, payload.symbol)
-    if cache:
-        hit = _handle_cache_hit(cache, now_time)
-        if hit:
-            _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-            return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
+    if not payload.skip_ai:
+        cache = get_analysis_cache(db, payload.symbol)
+        if cache:
+            hit = _handle_cache_hit(cache, now_time)
+            if hit:
+                _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
+                return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
-    _check_symbol_exists(payload.symbol)
+    raw_cache = get_recent_raw_data(db, payload.symbol, max_age_seconds=600)
+    cached_snapshot = None
+    cached_institutional = None
+    cached_fundamental = None
+    cached_fundamental_context = None
+
+    if raw_cache:
+        logger.info(json.dumps({
+            "event": "raw_data_cache_hit_10m",
+            "symbol": payload.symbol,
+            "fetched_at": str(raw_cache.fetched_at),
+        }))
+        cached_snapshot = raw_cache.technical
+        cached_institutional = raw_cache.institutional
+        cached_fundamental = raw_cache.fundamental
+        if cached_fundamental:
+            from ai_stock_sentinel.analysis.context_generator import generate_fundamental_context
+            try:
+                cached_fundamental_context = generate_fundamental_context(cached_fundamental)
+            except Exception:
+                pass
+    else:
+        _check_symbol_exists(payload.symbol)
+
     backfill_yesterday_indicators(db, payload.symbol)
     prev_context = load_yesterday_context(payload.symbol, db)
 
     initial_state: GraphState = {
         "symbol": payload.symbol,
         "news_content": payload.news_text,
-        "snapshot": None,
+        "snapshot": cached_snapshot,
         "analysis": None,
         "analysis_detail": None,
         "cleaned_news": None,
@@ -818,7 +856,7 @@ def analyze(
         "requires_fundamental_update": False,
         "technical_context": None,
         "institutional_context": None,
-        "institutional_flow": None,
+        "institutional_flow": cached_institutional,
         "strategy_type": None,
         "entry_zone": None,
         "stop_loss": None,
@@ -837,10 +875,11 @@ def analyze(
         "rsi14": None,
         "action_plan_tag": None,
         "action_plan": None,
-        "fundamental_data": None,
-        "fundamental_context": None,
+        "fundamental_data": cached_fundamental,
+        "fundamental_context": cached_fundamental_context,
         "prev_context": prev_context,
         "is_final": now_time >= MARKET_CLOSE,
+        "skip_ai": payload.skip_ai,
     }
 
     try:
@@ -857,25 +896,29 @@ def analyze(
 
     is_final = now_time >= MARKET_CLOSE
     _response = _build_response(result)
-    upsert_analysis_cache(db, {
-        "symbol":             payload.symbol,
-        "signal_confidence":  result.get("signal_confidence"),
-        "action_tag":         result.get("action_plan_tag"),
-        "recommended_action": result.get("recommended_action"),
-        "indicators":         _extract_indicators(result),
-        "final_verdict":      result.get("analysis"),
-        "is_final":           is_final,
-        "full_result":        _response.model_dump(),
-    })
-    fetch_and_store_raw_data(
-        db,
-        payload.symbol,
-        technical=result.get("snapshot"),
-        institutional=result.get("institutional_flow"),
-        fundamental=result.get("fundamental_data"),
-        raw_data_is_final=is_final,
-    )
-    _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
+
+    if not payload.skip_ai:
+        upsert_analysis_cache(db, {
+            "symbol":             payload.symbol,
+            "signal_confidence":  result.get("signal_confidence"),
+            "action_tag":         result.get("action_plan_tag"),
+            "recommended_action": result.get("recommended_action"),
+            "indicators":         _extract_indicators(result),
+            "final_verdict":      result.get("analysis"),
+            "is_final":           is_final,
+            "full_result":        _response.model_dump(),
+        })
+        _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
+
+    if not raw_cache:
+        fetch_and_store_raw_data(
+            db,
+            payload.symbol,
+            technical=result.get("snapshot"),
+            institutional=result.get("institutional_flow"),
+            fundamental=result.get("fundamental_data"),
+            raw_data_is_final=is_final,
+        )
 
     response = _response
     response.is_final = is_final

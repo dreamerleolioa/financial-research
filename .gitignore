@@ -38,6 +38,9 @@ htmlcov/
 # macOS
 .DS_Store
 
+# Agent
+.omo/*
+
 # VS Code
 .vscode/*
 !.vscode/settings.json

@@ -82,6 +82,7 @@ class GraphState(TypedDict):
     errors: list[dict[str, str]]
     requires_news_refresh: bool
     requires_fundamental_update: bool
+    skip_ai: bool | None
 
     # 新聞相關（參見 _NewsStateFields）
     news_content: str | None
