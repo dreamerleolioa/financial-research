@@ -814,7 +814,10 @@ def analyze(
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
                 return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
-    raw_cache = get_recent_raw_data(db, payload.symbol, max_age_seconds=600)
+    raw_cache = None
+    if payload.skip_ai:
+        raw_cache = get_recent_raw_data(db, payload.symbol, max_age_seconds=600)
+
     cached_snapshot = None
     cached_institutional = None
     cached_fundamental = None

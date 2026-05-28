@@ -51,6 +51,7 @@ make run-api
 - **欄位說明**
   - `symbol`：股票代碼，必填，最小長度 1
   - `news_text`：新聞文字，選填
+  - `skip_ai`：是否跳過 AI 分析，選填，預設為 false。若為 true，僅撈取並計算 raw data (技術指標/籌碼)，不執行 LLM 推理，以節省成本。
 
 - **Response 200（成功/可降級成功）**
 

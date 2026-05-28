@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from importlib import import_module
 from typing import Any
 
@@ -17,6 +18,9 @@ _SYSTEM_PROMPT = """\
 步驟二【對照】：將技術面訊號、籌碼面訊號、消息面情緒三方資料並列比較。
 步驟三【衝突檢查】：明確指出三方資料中是否存在矛盾或異常；若有，提出具體衝突點。
 步驟四【輸出】：只輸出有資料支撐的事實與推論，禁止補造未在輸入資料中出現的來源或數字。
+
+**優先權規則**：
+若「系統信號摘要/敘事內容」與「原始數據快照」出現矛盾，請**優先基於「原始數據快照」進行獨立分析**，並在 final_verdict 中指出敘事可能過時或計算模型限制。
 
 分維度輸出規範（禁止跨維度混寫）：
 - tech_insight：僅參考技術面資料（均線排列、RSI 位階、布林通道位置、MACD 動能、KD 交叉/高低檔、ADX 趨勢強度、OBV 量價確認/背離、ATR 波動、MFI 資金流、Donchian 突破/跌破、支撐壓力位）；禁止提及法人買賣超或新聞事件
@@ -100,7 +104,13 @@ _HUMAN_PROMPT = """\
 【交叉驗證備注】{cross_validation_note}
 
 請依步驟一至四完成分析，最後輸出 summary 與 risks。
-{history_section}"""
+{history_section}
+
+【原始數據快照 (Raw Data Snapshot)】
+以下是技術、籌碼、基本面原始計算數值：
+{raw_data_snapshot}
+
+請依步驟一至四完成分析，最後輸出 summary 與 risks。"""
 
 
 def build_position_history_section(prev_context: dict | None) -> str:
@@ -272,6 +282,12 @@ class LangChainStockAnalyzer:
             "cross_validation_note": cross_validation_note or "（無交叉驗證備注）",
             "fundamental_context": fundamental_context or "（本次無基本面資料）",
             "history_section": build_position_history_section(prev_context),
+            "raw_data_snapshot": json.dumps({
+                "snapshot": asdict(snapshot),
+                "technical_summary": technical_context,
+                "institutional_summary": institutional_context,
+                "fundamental_summary": fundamental_context,
+            }, ensure_ascii=False),
         }
         try:
             json_chain = prompt | self.llm | JsonOutputParser()
