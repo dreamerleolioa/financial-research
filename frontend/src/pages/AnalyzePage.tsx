@@ -307,6 +307,7 @@ export default function AnalyzePage() {
   const [symbol, setSymbol] = useState("2330.TW");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  const [isRawOnly, setIsRawOnly] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -361,8 +362,9 @@ export default function AnalyzePage() {
     }
   }
 
-  async function handleAnalyze() {
+  async function handleAnalyze(skipAi: boolean = false) {
     if (!symbol.trim()) return;
+    setIsRawOnly(skipAi);
 
     // 取消上一個尚未完成的請求
     abortControllerRef.current?.abort();
@@ -374,7 +376,7 @@ export default function AnalyzePage() {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ symbol: symbol.trim() }),
+        body: JSON.stringify({ symbol: symbol.trim(), skip_ai: skipAi }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -435,17 +437,24 @@ export default function AnalyzePage() {
             id="symbol"
             value={symbol}
             onChange={(e) => setSymbol(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze()}
+            onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze(true)}
             className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary ring-indigo-200 transition outline-none focus:ring-2 dark:ring-indigo-500 md:max-w-sm"
             placeholder="例如 2330.TW 或 6488.TWO"
             disabled={loading}
           />
           <button
-            onClick={handleAnalyze}
+            onClick={() => handleAnalyze(true)}
+            disabled={loading}
+            className="rounded-lg border border-indigo-600 bg-card px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-60 dark:border-indigo-400 dark:text-indigo-400"
+          >
+            {loading && isRawOnly ? "讀取中..." : "查詢個股資訊"}
+          </button>
+          <button
+            onClick={() => handleAnalyze(false)}
             disabled={loading}
             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? "分析中..." : "開始分析"}
+            {loading && !isRawOnly ? "分析中..." : "開始 AI 分析"}
           </button>
           {result && (
             <button
@@ -475,8 +484,12 @@ export default function AnalyzePage() {
         {loading ? (
           <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" style={{ animationDuration: "1s" }} />
-            <p className="text-sm font-medium text-text-primary">AI 分析中</p>
-            <p className="text-xs text-text-muted">正在抓取行情、計算指標並呼叫 AI，通常需要 15–30 秒</p>
+            <p className="text-sm font-medium text-text-primary">{isRawOnly ? "資料讀取中" : "AI 分析中"}</p>
+            <p className="text-xs text-text-muted">
+              {isRawOnly
+                ? "正在取得最新數據並計算指標，約需 1–3 秒"
+                : "正在抓取行情、計算指標並呼叫 AI，通常需要 15–30 秒"}
+            </p>
           </div>
         ) : result ? (
           result.action_plan ? (
