@@ -72,7 +72,31 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 crawl → fetch_external_data（institutional + fundamental 並行）→ judge → ...
 ```
 
-**不採用方案：** 將底層 provider 全面改為 `async def` + `httpx.AsyncClient`，改動範圍過大，風險高於收益。
+### 2.4 Raw Data 快取機制 (L2 Cache)
+
+- **機制**：查詢個股原始資料（技術指標/籌碼面/基本面）時，系統會先檢查 `stock_raw_data` 表中 10 分鐘內的最新紀錄。
+- **Raw Data Injection**：若命中快取，直接將資料注入 LangGraph `initial_state`，略過外部 API 爬取 (Crawl) 與額外資料抓取 (Fetch External Data) 節點。
+- **跳過 AI 機制**：透過 `skip_ai` 旗標，系統可短路返回處理結果，完全略過 LLM 分析 (Analyze Node) 與新聞清潔 (Clean Node)，實現毫秒級的純數據查詢。
+
+### 2.5 快取隔離機制 (Cache Isolation)
+
+- **機制**：`StockAnalysisCache` 引入 `analysis_type` 欄位，將不同分析情境的快取結果進行隔離。
+- **值定義**：
+    - `general`：對應 `/analyze`（新倉分析）的快取結果。
+    - `position`：對應 `/analyze/position`（持股診斷）的快取結果。
+- **唯一約束**：資料庫表 `StockAnalysisCache` 設有唯一約束 `uq_cache_symbol_date_type`，由 `(symbol, record_date, analysis_type)` 三欄位組成，確保同一標的、同一日期在不同分析情境下擁有獨立的快取紀錄。
+- **目的**：避免新倉分析與持股診斷的快取資料互相污染，確保分析結果的準確性與情境一致性。
+
+### 2.6 AI 分析策略優化：原始數據混合注入法 (Raw Data Hybridization)
+
+為了解決過度依賴敘事摘要導致的資訊降維 (Information Loss)，系統採用「敘事 + 原始數據表」雙軌注入模式：
+
+- **機制**：在 `langchain_analyzer.py` 的 LLM Prompt 中新增 `【原始數據快照 (Raw Data Snapshot)】` 區塊，將技術、籌碼、基本面指標序列化為 JSON 直接餵給 LLM。
+- **優勢**：
+    - 解除 LLM 的「確認偏誤」：允許 AI 基於原始數據與敘事摘要進行對照分析。
+    - 提升時序敏感度：LLM 可直接對比近期 Close/Volume 數值變化，捕捉趨勢背離。
+- **提示詞紀律**：在 System Prompt 中明確指令：*若敘事摘要與原始數據出現衝突，以原始數據快照為準進行分析。*
+- **實作規範**：禁止 LLM 改寫 rule-based 計算出的 `confidence_score` 與 `technical_signal`，僅允許對數據組合出的趨勢進行解讀。
 
 ---
 

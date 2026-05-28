@@ -78,13 +78,14 @@ class StockRawData(Base):
 class StockAnalysisCache(Base):
     __tablename__ = "stock_analysis_cache"
     __table_args__ = (
-        UniqueConstraint("symbol", "record_date", name="uq_cache_symbol_date"),
+        UniqueConstraint("symbol", "record_date", "analysis_type", name="uq_cache_symbol_date_type"),
         Index("idx_cache_indicators_gin", "indicators", postgresql_using="gin"),
     )
 
     id:                 Mapped[int]          = mapped_column(Integer, primary_key=True)
     symbol:             Mapped[str]          = mapped_column(String(20), nullable=False)
     record_date:        Mapped[date]         = mapped_column(Date, nullable=False)
+    analysis_type:      Mapped[str]          = mapped_column(String(20), nullable=False, default="general")
     signal_confidence:  Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     strategy_version:   Mapped[str | None]   = mapped_column(String(20), nullable=True)
     action_tag:         Mapped[str | None]   = mapped_column(String(20), nullable=True)

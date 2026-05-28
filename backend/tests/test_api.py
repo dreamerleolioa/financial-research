@@ -884,7 +884,7 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     cache.analysis_is_final = True
     cache.strategy_version = STRATEGY_VERSION
 
-    monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol: cache)
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol, analysis_type="general": cache)
     monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
 

@@ -165,12 +165,13 @@ class CachedAnalyzeResponse(BaseModel):
 
 # ─── 快取輔助函式 ─────────────────────────────────────────────
 
-def get_analysis_cache(db: Session, symbol: str) -> StockAnalysisCache | None:
+def get_analysis_cache(db: Session, symbol: str, analysis_type: str = "general") -> StockAnalysisCache | None:
     """查詢今日的分析結果快取（L1）。"""
     return db.execute(
         select(StockAnalysisCache).where(
             StockAnalysisCache.symbol == symbol,
             StockAnalysisCache.record_date == _date.today(),
+            StockAnalysisCache.analysis_type == analysis_type,
         )
     ).scalar_one_or_none()
 
@@ -268,19 +269,19 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
     db.execute(
         text("""
             INSERT INTO stock_analysis_cache (
-                symbol, record_date, signal_confidence, strategy_version, action_tag,
+                symbol, record_date, analysis_type, signal_confidence, strategy_version, action_tag,
                 recommended_action, indicators, final_verdict,
                 prev_action_tag, prev_confidence, analysis_is_final, full_result, updated_at
             ) VALUES (
-                :symbol, CURRENT_DATE, :signal_confidence, :strategy_version, :action_tag,
+                :symbol, CURRENT_DATE, :analysis_type, :signal_confidence, :strategy_version, :action_tag,
                 :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
                 (SELECT action_tag FROM stock_analysis_cache
-                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
+                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1 AND analysis_type = :analysis_type),
                 (SELECT signal_confidence FROM stock_analysis_cache
-                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1),
+                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1 AND analysis_type = :analysis_type),
                 :analysis_is_final, CAST(:full_result AS jsonb), NOW()
             )
-            ON CONFLICT (symbol, record_date) DO UPDATE SET
+            ON CONFLICT (symbol, record_date, analysis_type) DO UPDATE SET
                 signal_confidence  = EXCLUDED.signal_confidence,
                 strategy_version   = EXCLUDED.strategy_version,
                 action_tag         = EXCLUDED.action_tag,
@@ -293,6 +294,7 @@ def upsert_analysis_cache(db: Session, data: dict) -> None:
         """),
         {
             "symbol":             data.get("symbol"),
+            "analysis_type":      data.get("analysis_type", "general"),
             "signal_confidence":  data.get("signal_confidence"),
             "strategy_version":   STRATEGY_VERSION,
             "action_tag":         data.get("action_tag"),
@@ -807,14 +809,17 @@ def analyze(
 
     # L1：快取命中檢查
     if not payload.skip_ai:
-        cache = get_analysis_cache(db, payload.symbol)
+        cache = get_analysis_cache(db, payload.symbol, analysis_type="general")
         if cache:
             hit = _handle_cache_hit(cache, now_time)
             if hit:
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
                 return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
 
-    raw_cache = get_recent_raw_data(db, payload.symbol, max_age_seconds=600)
+    raw_cache = None
+    if payload.skip_ai:
+        raw_cache = get_recent_raw_data(db, payload.symbol, max_age_seconds=600)
+
     cached_snapshot = None
     cached_institutional = None
     cached_fundamental = None
@@ -900,6 +905,7 @@ def analyze(
     if not payload.skip_ai:
         upsert_analysis_cache(db, {
             "symbol":             payload.symbol,
+            "analysis_type":      "general",
             "signal_confidence":  result.get("signal_confidence"),
             "action_tag":         result.get("action_plan_tag"),
             "recommended_action": result.get("recommended_action"),
@@ -1085,8 +1091,8 @@ def analyze_position(
 ) -> AnalyzeResponse:
     now_time = datetime.now(_TZ_TAIPEI).time()
 
-    # L1：快取命中檢查（position 分析須確認 full_result 含 position_analysis，否則強制重跑）
-    cache = get_analysis_cache(db, payload.symbol)
+    # L1：快取命中檢查
+    cache = get_analysis_cache(db, payload.symbol, analysis_type="position")
     if cache:
         hit = _handle_cache_hit(cache, now_time)
         if hit:
@@ -1176,9 +1182,9 @@ def analyze_position(
     }
     upsert_analysis_cache(db, {
         "symbol":             payload.symbol,
+        "analysis_type":      "position",
         "signal_confidence":  result.get("signal_confidence"),
         "action_tag":         result.get("action_plan_tag"),
-        "recommended_action": result.get("recommended_action"),
         "indicators":         _extract_indicators(result),
         "final_verdict":      result.get("analysis"),
         "is_final":           is_final,
