@@ -14,6 +14,7 @@ class AnalysisDetail:
     news_insight: str | None = None
     final_verdict: str | None = None
     fundamental_insight: str | None = None
+    thought_process: str | None = None
 
 
 @dataclass(slots=True)

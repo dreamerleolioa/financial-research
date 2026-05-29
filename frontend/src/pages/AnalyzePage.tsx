@@ -19,6 +19,7 @@ interface AnalysisDetail {
   news_insight: string | null;
   final_verdict: string | null;
   fundamental_insight?: string | null;
+  thought_process?: string | null;
 }
 
 interface CleanedNewsQuality {
@@ -874,6 +875,22 @@ export default function AnalyzePage() {
             <InsightText text={result?.analysis_detail?.news_insight} />
           </article>
         </div>
+
+        {result?.analysis_detail?.thought_process && (
+          <details className="group rounded-xl border border-indigo-100 bg-indigo-50/50 p-4 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/30">
+            <summary className="flex cursor-pointer items-center justify-between text-xs font-semibold text-indigo-700 dark:text-indigo-400 select-none">
+              <span>Skeptic Mode 審查摘要</span>
+              <span className="transition-transform duration-200 group-open:-rotate-180">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </span>
+            </summary>
+            <div className="mt-3 text-sm leading-relaxed text-text-secondary border-t border-indigo-100/50 pt-3 dark:border-indigo-900/50 italic">
+              {result.analysis_detail.thought_process}
+            </div>
+          </details>
+        )}
 
         {result?.analysis_detail && (
           <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/60">
