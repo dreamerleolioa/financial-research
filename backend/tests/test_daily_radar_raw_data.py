@@ -196,6 +196,51 @@ def test_ensure_daily_radar_raw_rows_does_not_call_fetcher_when_all_selected_row
     assert [row.symbol for row in rows] == ["2317.TW", "2330.TW"]
 
 
+def test_ensure_daily_radar_raw_rows_refreshes_existing_final_institutional_payload_without_refetch(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    existing_technical = _technical_payload("2330.TW", run_date) | {"name": "cached technical"}
+    existing_row = _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=existing_technical,
+    )
+    existing_row.institutional = {"institutional_flow": {"flow_label": "stale"}}
+    existing_row.fundamental = {"margin": {"short_balance": 123}}
+    db_session.flush()
+    fresh_institutional = {
+        "flow_label": "institutional_accumulation",
+        "same_day_actor": "foreign",
+        "same_day_net_buy": 24_680.0,
+        "foreign_net_shares": 24_680.0,
+        "data_dates": {"institutional_flow": run_date.isoformat()},
+    }
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW", "2454.TW"],
+        technical_fetcher=fetcher,
+        institutional_payloads_by_symbol={"2330.TW": fresh_institutional},
+    )
+
+    assert fetcher.calls == [(["2454.TW"], run_date)]
+    assert [row.symbol for row in rows] == ["2330.TW", "2454.TW"]
+    assert rows[0].id == existing_row.id
+    assert rows[0].technical == existing_technical
+    assert rows[0].fundamental == {"margin": {"short_balance": 123}}
+    assert rows[0].raw_data_is_final is True
+    assert rows[0].institutional == fresh_institutional
+
+    stored_row = db_session.get(StockRawData, existing_row.id)
+    assert stored_row is not None
+    assert stored_row.institutional == fresh_institutional
+
+
 def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

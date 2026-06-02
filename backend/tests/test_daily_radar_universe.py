@@ -253,6 +253,30 @@ def test_finmind_same_day_leaders_rank_by_buy_sell_value_when_available() -> Non
     assert leaders[1].score == pytest.approx(50.0)
 
 
+def test_finmind_same_day_leaders_limit_is_final_combined_cap_after_ranking() -> None:
+    rows = [
+        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Foreign_Investors", buy=100, sell=0),
+        _institutional_row(row_date="2026-06-02", stock_id="2454", name="Foreign_Investors", buy=90, sell=0),
+        _institutional_row(row_date="2026-06-02", stock_id="2303", name="Foreign_Investors", buy=80, sell=0),
+        _institutional_row(row_date="2026-06-02", stock_id="3711", name="Investment_Trust", buy=95, sell=0),
+        _institutional_row(row_date="2026-06-02", stock_id="3034", name="Investment_Trust", buy=85, sell=0),
+        _institutional_row(row_date="2026-06-02", stock_id="1101", name="Investment_Trust", buy=75, sell=0),
+    ]
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
+        assert "data_id" not in params
+        assert "stock_id" not in params
+        return _FakeFinMindResponse(rows)
+
+    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
+
+    leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
+
+    assert [row.symbol for row in leaders] == ["2330.TW", "3711.TW"]
+    assert [row.rank for row in leaders] == [1, 2]
+    assert [row.actor for row in leaders] == ["foreign", "trust"]
+
+
 def test_finmind_same_day_foreign_leader_survives_trust_selling_same_symbol() -> None:
     rows = [
         _institutional_row(row_date="2026-06-02", stock_id="2330", name="Foreign_Investors", buy=100, sell=0),

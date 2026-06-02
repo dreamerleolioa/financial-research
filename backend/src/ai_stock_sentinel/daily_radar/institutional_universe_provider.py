@@ -148,6 +148,7 @@ def _rank_same_day(
     if actor_limit <= 0:
         return []
 
+    combined_limit = actor_limit
     totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     volumes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     source_dates: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
@@ -184,7 +185,7 @@ def _rank_same_day(
                     tuple(sorted(source_dates[actor][stock_id])),
                 )
             )
-        actor_scored.extend(sorted(scored, key=lambda item: (-item[2], -item[3], item[1]))[:actor_limit])
+        actor_scored.extend(sorted(scored, key=lambda item: (-item[2], -item[3], item[1])))
 
     best_by_stock: dict[str, tuple[str, str, float, float, float, tuple[str, ...]]] = {}
     for item in actor_scored:
@@ -193,7 +194,7 @@ def _rank_same_day(
         if existing is None or _same_day_sort_key(item) < _same_day_sort_key(existing):
             best_by_stock[stock_id] = item
 
-    ranked = sorted(best_by_stock.values(), key=_same_day_sort_key)
+    ranked = sorted(best_by_stock.values(), key=_same_day_sort_key)[:combined_limit]
     return [
         InstitutionalLeaderRow(
             symbol=_format_symbol(stock_id, market),

@@ -525,8 +525,8 @@ Daily Radar run status：
   "run_date": "2026-06-02",
   "market": "TW",
   "status": "completed",
-  "universe_count": 130,
-  "prefilter_count": 85,
+  "universe_count": 82,
+  "prefilter_count": 58,
   "candidate_count": 20,
   "errors": [],
   "started_at": "2026-06-02T12:30:00+00:00",
@@ -542,7 +542,7 @@ Daily Radar run status：
   | `run_date`        | string | run 日期                                          |
   | `market`          | string | 市場代碼，預設 `TW`                               |
   | `status`          | string | `completed` / `running` / `failed` / `stale_data` |
-  | `universe_count`  | int    | 雙軌 selected universe 標的數，通常最多約 150，會因重疊去重而更低 |
+  | `universe_count`  | int    | 雙軌 selected universe 標的數，通常最多約 100，會因重疊去重而更低 |
   | `prefilter_count` | int    | 通過前置條件的標的數                              |
   | `candidate_count` | int    | 產出候選標的數                                    |
   | `errors`          | array  | 執行期間累積的錯誤訊息                            |

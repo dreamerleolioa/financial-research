@@ -55,6 +55,7 @@ def ensure_daily_radar_raw_rows(
     if not ordered_symbols:
         return []
 
+    institutional_payloads = institutional_payloads_by_symbol or {}
     existing_final = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
     existing_final_symbols = {row.symbol for row in existing_final}
     missing_symbols = [symbol for symbol in ordered_symbols if symbol not in existing_final_symbols]
@@ -66,11 +67,39 @@ def ensure_daily_radar_raw_rows(
             run_date=run_date,
             symbols=missing_symbols,
             fetched_payloads=fetched_payloads,
-            institutional_payloads_by_symbol=institutional_payloads_by_symbol or {},
+            institutional_payloads_by_symbol=institutional_payloads,
         )
+    _apply_institutional_payloads(
+        session,
+        run_date=run_date,
+        symbols=ordered_symbols,
+        institutional_payloads_by_symbol=institutional_payloads,
+    )
+    if missing_symbols or institutional_payloads:
         session.flush()
 
     return get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
+
+
+def _apply_institutional_payloads(
+    session: Session,
+    *,
+    run_date: date,
+    symbols: Sequence[str],
+    institutional_payloads_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> None:
+    payload_symbols = [symbol for symbol in symbols if symbol in institutional_payloads_by_symbol]
+    if not payload_symbols:
+        return
+
+    rows = session.scalars(
+        select(StockRawData).where(
+            StockRawData.record_date == run_date,
+            StockRawData.symbol.in_(payload_symbols),
+        )
+    ).all()
+    for row in rows:
+        row.institutional = dict(institutional_payloads_by_symbol[row.symbol])
 
 
 def _store_missing_rows(

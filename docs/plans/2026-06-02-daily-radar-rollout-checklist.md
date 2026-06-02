@@ -86,7 +86,7 @@ curl -X POST "http://127.0.0.1:8000/internal/daily-radar/run" \
 9. [ ] Verify the response includes `candidate_count`.
 10. [ ] Verify the response includes `errors` or an equivalent errors summary.
 11. [ ] Verify the run can be read back through `GET /daily-radar/latest` when local persistence is available.
-12. [ ] Verify `universe_count` reflects the selected dual-track universe, usually at most around 150 before overlap and dedupe.
+12. [ ] Verify `universe_count` reflects the selected dual-track universe, usually at most around 100 before overlap and dedupe.
 
 ## Future Manual Frontend Verification
 

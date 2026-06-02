@@ -510,7 +510,18 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
     _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=date(2026, 6, 1))
     fetcher = FakeBatchTechnicalFetcher()
     provider = FakeUniverseProvider(
-        same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0), InstitutionalLeaderRow("2454.TW", 2, 82.0)],
+        same_day=[
+            InstitutionalLeaderRow(
+                "2330.TW",
+                1,
+                91.0,
+                actor="foreign",
+                net_buy=24_680.0,
+                concentration=0.11,
+                source_dates=("2026-06-01",),
+            ),
+            InstitutionalLeaderRow("2454.TW", 2, 82.0),
+        ],
         recent=[InstitutionalLeaderRow("2317.TW", 1, 1_000_000.5)],
     )
     client = _api_client(
@@ -536,6 +547,11 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
         "2454.TW",
         "2317.TW",
     ]
+    cached_institutional = client.captured_daily_radar_call["cache_rows"][0].institutional  # type: ignore[attr-defined]
+    assert cached_institutional["same_day_actor"] == "foreign"
+    assert cached_institutional["same_day_net_buy"] == pytest.approx(24_680.0)
+    assert cached_institutional["foreign_net_shares"] == pytest.approx(24_680.0)
+    assert cached_institutional["institutional_flow"]["same_day_net_buy"] == pytest.approx(24_680.0)
 
 
 def test_daily_radar_run_endpoint_returns_409_for_empty_universe_and_does_not_call_service(

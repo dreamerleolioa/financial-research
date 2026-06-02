@@ -22,7 +22,7 @@
 
 ## Implementation Note 2026-06-02
 
-Live backend default now uses a FinMind all-market dual-track universe before scoring: same-day foreign top 50 plus trust top 50 before dedupe, then recent 5-trading-day accumulation/concentration top 50. The service then backfills only missing selected-symbol OHLCV through one yfinance batch download and reuses existing final `StockRawData` rows. The earlier static symbol list path is no longer the current live default.
+Live backend default now uses a FinMind all-market dual-track universe before scoring: same-day foreign and trust positive buyers are scored, deduped by symbol with the best actor kept, ranked as one combined list, and capped at top 50, then paired with recent 5-trading-day accumulation/concentration top 50. The service then backfills only missing selected-symbol OHLCV through one yfinance batch download and reuses existing final `StockRawData` rows. The earlier static symbol list path is no longer the current live default.
 
 ## Architecture Touchpoints
 
