@@ -14,6 +14,21 @@ DAILY_RADAR_FIXTURE_FILES = (
     "margin.json",
 )
 
+FLAT_INSTITUTIONAL_FLOW_FIELDS = (
+    "flow_label",
+    "foreign_net_cumulative",
+    "trust_net_cumulative",
+    "investment_trust_buy",
+    "foreign_buy",
+    "three_party_net",
+    "consecutive_buy_days",
+    "consecutive_sell_days",
+    "dominant_buyer",
+    "flow_strength",
+    "source_provider",
+    "warnings",
+)
+
 
 @dataclass(frozen=True)
 class DailyRadarJoinedRecord:
@@ -88,7 +103,7 @@ def load_daily_radar_cache_records(rows: Iterable[Any]) -> list[dict[str, Any]]:
                 record_date=_date_to_string(_read_field(row, "record_date")),
                 ohlcv=dict(_as_mapping(technical.get("ohlcv"))),
                 indicators=dict(_as_mapping(technical.get("indicators"))),
-                institutional_flow=dict(_as_mapping(institutional_payload.get("institutional_flow"))),
+                institutional_flow=_normalize_institutional_flow(institutional_payload),
                 margin=dict(_as_mapping(fundamental.get("margin"))),
                 data_dates=_merge_mapping_data_dates(technical, institutional_payload, fundamental),
                 fixture_case=_coalesce_fixture_case(technical, institutional_payload, fundamental),
@@ -125,6 +140,31 @@ def _coalesce_fixture_case(*payloads: Mapping[str, Any]) -> str | None:
         if fixture_case is not None:
             return str(fixture_case)
     return None
+
+
+def _normalize_institutional_flow(institutional_payload: Mapping[str, Any]) -> dict[str, Any]:
+    nested_flow = dict(_as_mapping(institutional_payload.get("institutional_flow")))
+    if nested_flow:
+        return nested_flow
+
+    flat_flow = {
+        key: institutional_payload[key]
+        for key in FLAT_INSTITUTIONAL_FLOW_FIELDS
+        if key in institutional_payload and institutional_payload[key] is not None
+    }
+    _copy_alias(flat_flow, "foreign_net_shares", institutional_payload, "foreign_net_cumulative")
+    _copy_alias(flat_flow, "investment_trust_net_shares", institutional_payload, "trust_net_cumulative")
+    _copy_alias(flat_flow, "three_party_net_shares", institutional_payload, "three_party_net")
+    _copy_alias(flat_flow, "consecutive_positive_days", institutional_payload, "consecutive_buy_days")
+    _copy_alias(flat_flow, "consecutive_negative_days", institutional_payload, "consecutive_sell_days")
+    _copy_alias(flat_flow, "flow_state", institutional_payload, "flow_label")
+    return flat_flow
+
+
+def _copy_alias(target: dict[str, Any], target_key: str, source: Mapping[str, Any], source_key: str) -> None:
+    value = source.get(source_key)
+    if value is not None:
+        target[target_key] = value
 
 
 def _read_field(row: Any, field_name: str) -> Any:

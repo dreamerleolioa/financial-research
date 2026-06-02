@@ -7,10 +7,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.daily_radar.institutional_universe_provider import FinMindMarketInstitutionalUniverseProvider
+from ai_stock_sentinel.daily_radar.raw_data import (
+    BatchTechnicalFetcher,
+    YFinanceBatchTechnicalFetcher,
+    ensure_daily_radar_raw_rows,
+)
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.repository import (
     get_daily_radar_run_by_date,
-    get_final_raw_data_rows_for_date,
+    get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
     get_symbol_candidate_history,
 )
@@ -19,6 +25,11 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarRunResponse,
 )
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
+from ai_stock_sentinel.daily_radar.universe import (
+    DailyRadarUniverseEntry,
+    DailyRadarUniverseProvider,
+    select_dual_track_universe,
+)
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.db.session import get_db
 
@@ -44,6 +55,14 @@ class DailyRadarRunTriggerResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
+    return FinMindMarketInstitutionalUniverseProvider()
+
+
+def get_daily_radar_technical_fetcher() -> BatchTechnicalFetcher:
+    return YFinanceBatchTechnicalFetcher()
+
+
 @router.post(
     "/internal/daily-radar/run",
     response_model=DailyRadarRunTriggerResponse,
@@ -52,18 +71,38 @@ class DailyRadarRunTriggerResponse(BaseModel):
 def run_daily_radar_endpoint(
     payload: DailyRadarRunRequest | None = None,
     db: Session = Depends(get_db),
+    universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
+    technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
 ) -> DailyRadarRunTriggerResponse:
     request = payload or DailyRadarRunRequest()
     run_date = request.run_date or _backend_today()
-    cache_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
+    market = request.market
+    universe = select_dual_track_universe(universe_provider, run_date=run_date, market=market, track_limit=50)
+    if not universe:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Daily Radar universe is empty for {market} on {run_date.isoformat()}.",
+        )
+
+    selected_symbols = [entry.symbol for entry in universe]
+    institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
+    cache_rows = ensure_daily_radar_raw_rows(
+        db,
+        run_date,
+        selected_symbols,
+        technical_fetcher=technical_fetcher,
+        institutional_payloads_by_symbol=institutional_payloads_by_symbol,
+    )
+    if not cache_rows:
+        cache_rows = get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols)
     if not cache_rows:
         raise HTTPException(
             status_code=409,
-            detail=f"No final StockRawData rows are available for {run_date.isoformat()}.",
+            detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
         )
     run = run_daily_radar(
         run_date,
-        request.market,
+        market,
         session=db,
         cache_rows=cache_rows,
         market_context={},
@@ -125,6 +164,147 @@ def get_daily_radar_by_date_endpoint(
 
 def _backend_today() -> date:
     return date.today()
+
+
+def _institutional_payloads_by_symbol(
+    universe: list[DailyRadarUniverseEntry],
+    *,
+    run_date: date,
+) -> dict[str, dict[str, Any]]:
+    return {entry.symbol: _institutional_payload(entry, run_date=run_date) for entry in universe}
+
+
+def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) -> dict[str, Any]:
+    same_day_metrics = dict(entry.track_metrics.get("same_day_institutional") or {})
+    recent_metrics = dict(entry.track_metrics.get("recent_accumulation") or {})
+    flat_payload: dict[str, Any] = {
+        "flow_label": "institutional_accumulation",
+        "flow_state": _flow_state(entry),
+        "institutional_universe_tracks": list(entry.tracks),
+        "same_day_rank": entry.same_day_rank,
+        "recent_accumulation_rank": entry.recent_accumulation_rank,
+        "scores": _score_payload(entry),
+        "source_provider": "daily_radar_universe",
+        "data_dates": {"institutional_flow": _latest_institutional_date(entry, run_date=run_date)},
+    }
+    _merge_same_day_metrics(flat_payload, same_day_metrics)
+    _merge_recent_metrics(flat_payload, recent_metrics)
+    return flat_payload | {"institutional_flow": dict(flat_payload)}
+
+
+def _flow_state(entry: DailyRadarUniverseEntry) -> str:
+    recent_metrics = entry.track_metrics.get("recent_accumulation") or {}
+    recent_flow_state = recent_metrics.get("flow_state")
+    if recent_flow_state is not None:
+        return str(recent_flow_state)
+    recent_positive_days = _int_metric(recent_metrics.get("consecutive_buy_days"))
+    if recent_positive_days is not None:
+        return "consistent_accumulation" if recent_positive_days >= 2 else "weak_confirmation"
+
+    same_day_metrics = entry.track_metrics.get("same_day_institutional") or {}
+    same_day_flow_state = same_day_metrics.get("flow_state")
+    if same_day_flow_state is not None:
+        return str(same_day_flow_state)
+    return "weak_confirmation"
+
+
+def _score_payload(entry: DailyRadarUniverseEntry) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    _add_score(scores, "same_day_institutional", entry.same_day_score)
+    _add_score(scores, "recent_accumulation", entry.recent_accumulation_score)
+    return scores
+
+
+def _add_score(scores: dict[str, float], key: str, value: float | None) -> None:
+    if value is not None:
+        scores[key] = float(value)
+
+
+def _merge_same_day_metrics(payload: dict[str, Any], metrics: dict[str, Any]) -> None:
+    same_day_actor = _normalized_actor(metrics.get("actor"))
+    raw_same_day_net_buy = metrics.get("net_buy")
+    same_day_net_buy = _float_metric(raw_same_day_net_buy)
+    _add_payload_metric(payload, "same_day_actor", metrics.get("actor"))
+    _add_payload_metric(payload, "same_day_net_buy", raw_same_day_net_buy)
+    _add_payload_metric(payload, "same_day_concentration", metrics.get("concentration"))
+    _add_payload_metric(payload, "same_day_source_dates", _source_dates(metrics))
+    if same_day_net_buy is not None:
+        if same_day_actor == "foreign":
+            payload["foreign_net_shares"] = same_day_net_buy
+        elif same_day_actor == "trust":
+            payload["investment_trust_net_shares"] = same_day_net_buy
+
+
+def _merge_recent_metrics(payload: dict[str, Any], metrics: dict[str, Any]) -> None:
+    recent_actor = _normalized_actor(metrics.get("actor"))
+    positive_days = _int_metric(metrics.get("consecutive_buy_days"))
+    if positive_days is not None:
+        payload["consecutive_buy_days"] = positive_days
+        payload["consecutive_positive_days"] = positive_days
+
+    cumulative_net_buy = _float_metric(metrics.get("cumulative_net_buy"))
+    if cumulative_net_buy is not None:
+        payload["cumulative_net_buy"] = cumulative_net_buy
+        payload["net_buy_cumulative"] = cumulative_net_buy
+        payload["three_party_net_shares"] = cumulative_net_buy
+        if recent_actor == "foreign":
+            payload["foreign_net_shares"] = cumulative_net_buy
+        elif recent_actor == "trust":
+            payload["investment_trust_net_shares"] = cumulative_net_buy
+
+    _add_payload_metric(payload, "recent_actor", metrics.get("actor"))
+    raw_recent_concentration = metrics.get("concentration")
+    recent_concentration = _float_metric(raw_recent_concentration)
+    _add_payload_metric(payload, "recent_concentration", raw_recent_concentration)
+    _add_payload_metric(payload, "net_flow_to_avg_volume", recent_concentration)
+    _add_payload_metric(payload, "recent_source_dates", _source_dates(metrics))
+
+
+def _normalized_actor(value: Any) -> str | None:
+    if value is None:
+        return None
+    actor = str(value).strip().lower()
+    if actor in {"foreign", "trust", "institutional", "mixed"}:
+        return actor
+    return None
+
+
+def _add_payload_metric(payload: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None:
+        payload[key] = value
+
+
+def _latest_institutional_date(entry: DailyRadarUniverseEntry, *, run_date: date) -> str:
+    source_dates: list[str] = []
+    for metrics in entry.track_metrics.values():
+        source_dates.extend(_source_dates(metrics) or [])
+    return max(source_dates) if source_dates else run_date.isoformat()
+
+
+def _source_dates(metrics: dict[str, Any]) -> list[str] | None:
+    raw_dates = metrics.get("source_dates")
+    if not isinstance(raw_dates, (list, tuple)):
+        return None
+    source_dates = [str(value) for value in raw_dates if value]
+    return source_dates or None
+
+
+def _int_metric(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_metric(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _run_response(run: DailyRadarRun) -> DailyRadarRunTriggerResponse:

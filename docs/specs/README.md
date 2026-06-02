@@ -8,6 +8,7 @@
 | ---------------------------------------------- | --------------------------------------------------- | ---------------------------------- |
 | `ai-stock-sentinel-architecture-spec.md`       | 核心分析架構、四維資料流、技術/消息/籌碼/基本面規則 | 分析架構或資料流成為長期事實時     |
 | `backend-api-technical-spec.md`                | 後端 API contract、request/response schema          | API 欄位、路由、錯誤碼改變時       |
+| `daily-stock-radar-spec.md`                    | Daily Radar product/API/data-flow spec              | Daily Radar universe, scoring, data-flow, schedule, or public read behavior changes. |
 | `ai-stock-sentinel-position-diagnosis-spec.md` | 持股診斷專屬語意、出場/減碼流程                     | `/analyze/position` 行為改變時     |
 | `ai-stock-sentinel-automation-review-spec.md`  | 自動復盤、歷史紀錄、資料循環                        | 自動化 review 或每日紀錄流程改變時 |
 | `ai-stock-sentinel-execution-roadmap-spec.md`  | P0/P1/P2/P3 階段需求、驗收條件、否決決策            | 階段性需求或 roadmap 決策改變時    |

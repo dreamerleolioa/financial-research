@@ -21,6 +21,7 @@ from ai_stock_sentinel.daily_radar.repository import (
     create_daily_radar_run,
     get_daily_radar_run_by_date,
     get_final_raw_data_rows_for_date,
+    get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
     get_symbol_candidate_history,
     replace_run_candidates,
@@ -357,6 +358,31 @@ def test_repository_returns_only_final_raw_data_rows_for_requested_date_ordered_
     rows = get_final_raw_data_rows_for_date(db_session, run_date=date(2026, 6, 2))
 
     assert [row.symbol for row in rows] == ["2330.TW", "2454.TW"]
+
+
+def test_repository_returns_final_raw_data_rows_for_selected_symbols_in_selected_order(db_session: Session) -> None:
+    _add_raw_data(db_session, symbol="2454.TW", record_date=date(2026, 6, 2), is_final=True)
+    _add_raw_data(db_session, symbol="2330.TW", record_date=date(2026, 6, 2), is_final=True)
+    _add_raw_data(db_session, symbol="2317.TW", record_date=date(2026, 6, 2), is_final=False)
+    _add_raw_data(db_session, symbol="2303.TW", record_date=date(2026, 6, 1), is_final=True)
+    db_session.commit()
+
+    rows = get_final_raw_data_rows_for_symbols(
+        db_session,
+        run_date=date(2026, 6, 2),
+        symbols=["2317.TW", "2454.TW", "2330.TW", "2454.TW"],
+    )
+
+    assert [row.symbol for row in rows] == ["2454.TW", "2330.TW"]
+
+
+def test_repository_returns_empty_selected_symbol_rows_without_symbols(db_session: Session) -> None:
+    _add_raw_data(db_session, symbol="2330.TW", record_date=date(2026, 6, 2), is_final=True)
+    db_session.commit()
+
+    rows = get_final_raw_data_rows_for_symbols(db_session, run_date=date(2026, 6, 2), symbols=[])
+
+    assert rows == []
 
 
 def test_repository_public_queries_use_latest_completed_or_stale_data_run(db_session: Session) -> None:

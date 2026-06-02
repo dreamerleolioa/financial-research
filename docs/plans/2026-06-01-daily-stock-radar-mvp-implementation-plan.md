@@ -20,6 +20,10 @@
 6. 同一 `run_date` 重跑必須有明確 idempotency 策略，MVP 採「同日 latest 覆寫候選，保留 run log 狀態」作為預設。
 7. 外部 API 成本要受控。Stage 1 只讀本地快取或低成本資料，Stage 2 才對候選補齊詳細資料。
 
+## Implementation Note 2026-06-02
+
+Live backend default now uses a FinMind all-market dual-track universe before scoring: same-day foreign and trust positive buyers are scored, deduped by symbol with the best actor kept, ranked as one combined list, and capped at top 50, then paired with recent 5-trading-day accumulation/concentration top 50. The service then backfills only missing selected-symbol OHLCV through one yfinance batch download and reuses existing final `StockRawData` rows. The earlier static symbol list path is no longer the current live default.
+
 ## Architecture Touchpoints
 
 | 面向                              | 實作位置                                                                                                               | 目的                                                                                                       |
@@ -217,7 +221,7 @@
 **Implementation notes:**
 
 1. Stage 1 以 `stock_raw_data` 或既有快取為主，不對全市場逐檔打昂貴外部 API。
-2. Universe 先支援靜態 symbol list 或既有資料源，排除 ETF、權證、特別股與資料不完整標的。
+2. Current live default uses the FinMind all-market dual-track universe. Static symbol lists are not the default live entry path.
 3. Prefilter 回傳 `prefilter_status`、`prefilter_reasons`、`data_dates`。
 
 **Acceptance criteria:**
@@ -491,7 +495,7 @@
 
 1. Workflow 使用 cron 在台股收盤且資料源通常更新後執行，建議先設定台灣時間晚間。
 2. Workflow 只呼叫 Zeabur 後端 `POST /internal/daily-radar/run`。
-3. Daily Radar service 內部負責資料載入與必要補齊、Stage 1 prefilter、Stage 2 detailed scoring。
+3. Daily Radar service 內部負責雙軌 universe selection、selected-symbol OHLCV batch backfill、Stage 1 prefilter、Stage 2 detailed scoring。
 4. 若未來需要拆分預取，另建 `POST /internal/daily-radar/prefetch`，不得直接重用 `/internal/fetch-raw-data`。
 5. Secrets 建議：`ZEABUR_BACKEND_URL`、`DAILY_RADAR_INTERNAL_TOKEN`。
 6. Header 使用 `Authorization: Bearer ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}` 或後端約定的 `X-Internal-Token`。
@@ -534,7 +538,7 @@ Dedicated rollout checklist: `docs/plans/2026-06-02-daily-radar-rollout-checklis
 4. Zeabur 設定 `DAILY_RADAR_INTERNAL_TOKEN` 與資料庫連線。
 5. GitHub repository secrets 設定 `ZEABUR_BACKEND_URL` 與 `DAILY_RADAR_INTERNAL_TOKEN`。
 6. 先手動 dispatch workflow，確認單一 `POST /internal/daily-radar/run` 成功。
-7. 觀察 run log，確認資料載入與必要補齊、prefilter、scoring、candidate persistence 都完成。
+7. 觀察 run log，確認雙軌 universe selection、selected-symbol batch backfill、prefilter、scoring、candidate persistence 都完成。
 8. 觀察三個交易日 run log，確認 candidate count、stale guard、errors 摘要合理。
 
 **Acceptance criteria:**
