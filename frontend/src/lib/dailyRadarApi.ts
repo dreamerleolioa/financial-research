@@ -5,6 +5,7 @@ import type {
 } from "./dailyRadarTypes";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const NO_PUBLIC_DAILY_RADAR_RUN_DETAIL = "No public Daily Radar run is available.";
 
 export interface DailyRadarRunQuery {
   market?: string | null;
@@ -44,6 +45,14 @@ export function toDailyRadarDisplayError(error: unknown): DailyRadarDisplayError
     return { message: error.message };
   }
   return { message: "Daily Radar 觀察資料讀取失敗，請稍後再試。" };
+}
+
+export function isNoPublicDailyRadarRunUnavailableError(error: unknown): boolean {
+  return (
+    error instanceof DailyRadarApiError &&
+    error.status === 404 &&
+    error.detail === NO_PUBLIC_DAILY_RADAR_RUN_DETAIL
+  );
 }
 
 export async function fetchLatestDailyRadarRun(

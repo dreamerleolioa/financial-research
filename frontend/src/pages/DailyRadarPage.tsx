@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   fetchLatestDailyRadarRun,
+  isNoPublicDailyRadarRunUnavailableError,
   toDailyRadarDisplayError,
   type DailyRadarDisplayError,
 } from "../lib/dailyRadarApi";
@@ -665,6 +666,7 @@ export default function DailyRadarPage() {
   const [run, setRun] = useState<DailyRadarRunResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DailyRadarDisplayError | null>(null);
+  const [latestRunUnavailable, setLatestRunUnavailable] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -673,11 +675,22 @@ export default function DailyRadarPage() {
     async function loadLatestRun() {
       setLoading(true);
       setError(null);
+      setLatestRunUnavailable(false);
       try {
         const data = await fetchLatestDailyRadarRun();
-        if (!cancelled) setRun(data);
+        if (!cancelled) {
+          setRun(data);
+          setLatestRunUnavailable(false);
+        }
       } catch (err) {
-        if (!cancelled) setError(toDailyRadarDisplayError(err));
+        if (!cancelled) {
+          if (isNoPublicDailyRadarRunUnavailableError(err)) {
+            setRun(null);
+            setLatestRunUnavailable(true);
+            return;
+          }
+          setError(toDailyRadarDisplayError(err));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -711,7 +724,15 @@ export default function DailyRadarPage() {
         </div>
       </section>
 
-      {loading ? <LoadingState /> : error ? <ErrorState error={error} onRetry={() => setReloadKey((key) => key + 1)} /> : run ? <RunSummary run={run} /> : null}
+      {loading ? (
+        <LoadingState />
+      ) : error ? (
+        <ErrorState error={error} onRetry={() => setReloadKey((key) => key + 1)} />
+      ) : run ? (
+        <RunSummary run={run} />
+      ) : latestRunUnavailable ? (
+        <WholeRunEmptyState />
+      ) : null}
     </div>
   );
 }
