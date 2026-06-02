@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-05-25
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；更新 `tech_insight` 與測試對應說明。
+> 更新日期：2026-06-02
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract。
 
 ## 1) 目的
 
@@ -381,6 +381,7 @@ make run-api
 > **持股診斷 LLM 邊界**：`/analyze/position` 與 `/analyze` 共用 LangGraph 分析流程與 `signal_summary`；差異是 request 內含 `entry_price` 時，`analyze_node` 會額外建立 `position_context`，讓 LLM 以成本價、損益百分比、動態防守價、距離防守線、距離支撐、未實現損益、持有天數、`recommended_action` 與 `exit_reason` 解釋持股狀態。`recommended_action` / `trailing_stop` / `exit_reason` 仍由 Python rule-based 計算，LLM 不得覆寫。
 
 > **快取隔離與邊界**：
+>
 > - `/analyze` 使用 `analysis_type="general"`，`/analyze/position` 使用 `analysis_type="position"`。
 > - 快取鍵值包含 `symbol`、`record_date` 與 `analysis_type`，確保不同分析類型互不覆寫。
 > - **持股診斷快取邊界**：`/analyze/position` 的 L1 full_result 快取命中必須比對 `entry_price` / `entry_date` / `quantity`。同一檔股票若成本價、日期或數量不同，會強制重跑持股診斷，避免回傳其他成本基準的 `position_analysis`。
@@ -472,6 +473,112 @@ make run-api
 - **用途**：刪除個人持股紀錄，並同步刪除該使用者該股票的 `daily_analysis_log`。
 - **權限邊界**：只能刪除目前登入使用者自己的持股；非擁有者回傳 `403`。
 - **Response 204**：無 response body。
+
+---
+
+### Daily Radar endpoints
+
+Daily Radar 是每日觀察雷達，用 rule-based 流程完成候選標的篩選、排序、bucket 分類與風險標籤。LLM 不參與候選標的選擇、排名、bucket 歸類或風險判斷。
+
+Daily Radar run status：
+
+- `completed`：執行完成，公開讀取 API 可回傳此 run。
+- `running`：執行中，公開讀取 API 不回傳此 run。
+- `failed`：執行失敗，公開讀取 API 不回傳此 run。
+- `stale_data`：完成但資料日落後，公開讀取 API 可回傳此 run，前端需顯示資料新鮮度風險。
+
+公開讀取 API 只暴露 `completed` 與 `stale_data` run。
+
+#### `POST /internal/daily-radar/run`
+
+- **用途**：供 GitHub Actions 或後端排程觸發 Daily Radar run。
+- **Auth**：內部 token 必填，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
+- **環境契約**：後端必須設定 `DAILY_RADAR_INTERNAL_TOKEN`。若後端未設定此 token，回傳 `503 Service Unavailable`。
+- **Auth 錯誤**：request 未帶 token 時回傳 `401 Unauthorized`，並附 Bearer challenge；token 不符時回傳 `403 Forbidden`。
+
+- **Request Body**
+
+```json
+{
+  "run_date": "2026-06-02",
+  "market": "TW"
+}
+```
+
+- **欄位說明**
+  - `run_date`：選填，Daily Radar run 日期，未提供時由後端使用當日日期。
+  - `market`：選填，市場代碼，預設 `TW`。
+
+- **Response 200**
+
+```json
+{
+  "run_id": 123,
+  "run_date": "2026-06-02",
+  "market": "TW",
+  "status": "completed",
+  "universe_count": 1200,
+  "prefilter_count": 85,
+  "candidate_count": 20,
+  "errors": [],
+  "started_at": "2026-06-02T12:30:00+00:00",
+  "finished_at": "2026-06-02T12:31:45+00:00"
+}
+```
+
+- **Response 欄位**
+
+  | 欄位              | 類型   | 說明                                              |
+  | ----------------- | ------ | ------------------------------------------------- |
+  | `run_id`          | int    | Daily Radar run ID                                |
+  | `run_date`        | string | run 日期                                          |
+  | `market`          | string | 市場代碼，預設 `TW`                               |
+  | `status`          | string | `completed` / `running` / `failed` / `stale_data` |
+  | `universe_count`  | int    | 初始觀察池標的數                                  |
+  | `prefilter_count` | int    | 通過前置條件的標的數                              |
+  | `candidate_count` | int    | 產出候選標的數                                    |
+  | `errors`          | array  | 執行期間累積的錯誤訊息                            |
+  | `started_at`      | string | run 開始時間，ISO 8601                            |
+  | `finished_at`     | string | run 結束時間，ISO 8601；執行中可為 `null`         |
+
+#### Public Daily Radar reads
+
+公開讀取 API 不需要 `DAILY_RADAR_INTERNAL_TOKEN`。
+
+- `GET /daily-radar/latest?market=TW&bucket=&limit=`：讀取指定市場最新可公開 run 的候選標的。
+- `GET /daily-radar/{run_date}?market=TW&bucket=&limit=`：讀取指定日期與市場的候選標的。
+- `GET /daily-radar/symbol/{symbol}?market=TW&bucket=&limit=&lookback_days=`：讀取指定標的的 Daily Radar 歷史。
+
+- **Query 參數**
+  - `market`：選填，預設 `TW`。
+  - `bucket`：選填，只回傳指定 primary bucket 的候選標的。
+  - `limit`：選填，限制回傳候選標的筆數。
+  - `lookback_days`：選填，僅適用 symbol history，用於限制回看天數。
+
+- **無資料行為**
+  - `GET /daily-radar/latest`：沒有可公開 run 時回傳 `404`，message 需明確說明找不到 Daily Radar 結果。
+  - `GET /daily-radar/{run_date}`：指定日期沒有可公開 run 時回傳 `404`，message 需明確說明該日期沒有 Daily Radar 結果。
+  - `GET /daily-radar/symbol/{symbol}`：沒有歷史資料時回傳 `200`，候選資料為空陣列。
+
+- **Candidate 欄位**
+
+  | 欄位                | 類型           | 說明                          |
+  | ------------------- | -------------- | ----------------------------- |
+  | `symbol`            | string         | 股票代碼                      |
+  | `name`              | string \| null | 股票名稱                      |
+  | `primary_bucket`    | string         | 主要觀察分類                  |
+  | `secondary_buckets` | array          | 次要觀察分類                  |
+  | `observation_score` | number         | rule-based 觀察分數，用於排序 |
+  | `risk_labels`       | array          | rule-based 風險標籤           |
+  | `repeat_status`     | string \| null | 是否連續進入雷達或重新出現    |
+  | `explanation`       | string         | 候選原因摘要                  |
+  | `bucket_scores`     | object         | 各 bucket 的 rule-based 分數  |
+  | `score_breakdown`   | object         | 分數拆解，用於前端呈現與除錯  |
+  | `input_snapshot`    | object         | 產生候選時使用的輸入快照      |
+  | `data_dates`        | object         | 各資料來源對應日期            |
+  | `matched_rules`     | array          | 命中的 rule ID 或規則名稱     |
+
+> **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。
 
 ---
 

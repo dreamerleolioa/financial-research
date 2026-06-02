@@ -145,3 +145,55 @@ class BacktestResult(Base):
     )
 
     run: Mapped["BacktestRun"] = relationship(back_populates="results")
+
+
+class DailyRadarRun(Base):
+    __tablename__ = "daily_radar_runs"
+    __table_args__ = (
+        Index("idx_daily_radar_runs_run_date", "run_date"),
+    )
+
+    id:               Mapped[int]         = mapped_column(Integer, primary_key=True)
+    run_date:         Mapped[date]        = mapped_column(Date, nullable=False)
+    market:           Mapped[str]         = mapped_column(String(20), nullable=False)
+    status:           Mapped[str]         = mapped_column(String(20), nullable=False)
+    started_at:       Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    finished_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    universe_count:   Mapped[int]         = mapped_column(Integer, nullable=False, default=0)
+    prefilter_count:  Mapped[int]         = mapped_column(Integer, nullable=False, default=0)
+    candidate_count:  Mapped[int]         = mapped_column(Integer, nullable=False, default=0)
+    errors:           Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    created_at:       Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    candidates: Mapped[list["DailyRadarCandidate"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class DailyRadarCandidate(Base):
+    __tablename__ = "daily_radar_candidates"
+    __table_args__ = (
+        UniqueConstraint("run_id", "symbol", name="uq_daily_radar_candidates_run_symbol"),
+        Index("idx_daily_radar_candidates_symbol", "symbol"),
+        Index("idx_daily_radar_candidates_primary_bucket", "primary_bucket"),
+        Index("idx_daily_radar_candidates_observation_score", "observation_score"),
+    )
+
+    id:                Mapped[int]         = mapped_column(Integer, primary_key=True)
+    run_id:            Mapped[int]         = mapped_column(ForeignKey("daily_radar_runs.id"), nullable=False)
+    symbol:            Mapped[str]         = mapped_column(String(20), nullable=False)
+    name:              Mapped[str]         = mapped_column(String(100), nullable=False)
+    primary_bucket:    Mapped[str]         = mapped_column(String(40), nullable=False)
+    secondary_buckets: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    observation_score: Mapped[int]         = mapped_column(Integer, nullable=False)
+    bucket_scores:     Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    risk_labels:       Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    matched_rules:     Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    explanation:       Mapped[str]         = mapped_column(Text, nullable=False)
+    repeat_status:     Mapped[str]         = mapped_column(String(20), nullable=False)
+    score_breakdown:   Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    input_snapshot:    Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    data_dates:        Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    run: Mapped["DailyRadarRun"] = relationship(back_populates="candidates")

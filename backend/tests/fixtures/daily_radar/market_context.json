@@ -1,0 +1,45 @@
+{
+  "data_dates": {
+    "tpex_index": "2026-05-29",
+    "twse_index": "2026-05-29",
+    "volatility": "2026-05-29"
+  },
+  "fixture_version": "daily-radar-contract-v1",
+  "market": {
+    "above_ma20": true,
+    "above_ma60": true,
+    "close": 21872.0,
+    "context_note": "Index backdrop is supportive enough for observation contract fixtures.",
+    "index_symbol": "TAIEX",
+    "ma20": 21480.0,
+    "ma60": 20920.0,
+    "market_risk_flags": [],
+    "previous_close": 21640.0,
+    "volatility_state": "normal"
+  },
+  "record_date": "2026-05-29",
+  "symbol_overrides": [
+    {
+      "context_flags": [
+        "stale_data"
+      ],
+      "data_dates": {
+        "symbol_context": "2026-05-24"
+      },
+      "fixture_case": "stale_data",
+      "record_date": "2026-05-29",
+      "symbol": "1101.TW"
+    },
+    {
+      "context_flags": [
+        "data_gap"
+      ],
+      "data_dates": {
+        "symbol_context": "2026-05-29"
+      },
+      "fixture_case": "data_gap",
+      "record_date": "2026-05-29",
+      "symbol": "2603.TW"
+    }
+  ]
+}

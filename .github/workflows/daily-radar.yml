@@ -1,0 +1,60 @@
+name: Daily Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 台灣時間週一至週五 20:30，收盤與資料更新後執行
+    - cron: "30 12 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Zeabur Daily Radar 排程 ───────────────────────────────────
+  run-daily-radar:
+    name: Run Daily Radar on Zeabur
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Daily Radar
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/run"
+          response_file="$(mktemp)"
+
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data '{"market":"TW"}')"
+
+          echo "HTTP status: ${http_status}"
+
+          if jq -e . "$response_file" >/dev/null 2>&1; then
+            jq -r '
+              "run_id: \(.run_id // "n/a")",
+              "status: \(.status // "n/a")",
+              "universe_count: \(.universe_count // "n/a")",
+              "prefilter_count: \(.prefilter_count // "n/a")",
+              "candidate_count: \(.candidate_count // "n/a")",
+              "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)"
+            ' "$response_file"
+          else
+            echo "Response summary: non-JSON response"
+            python3 - <<'PY' "$response_file"
+          import sys
+          from pathlib import Path
+
+          body = Path(sys.argv[1]).read_text(errors="replace").replace("\n", " ")
+          print(f"Response preview: {body[:300]}")
+          PY
+          fi
+
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            echo "Daily Radar trigger failed with HTTP status ${http_status}"
+            exit 1
+          fi
