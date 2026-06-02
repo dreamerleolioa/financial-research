@@ -33,6 +33,12 @@ Use these checks before any live rollout. They verify the implementation shape a
 9. [ ] Confirm candidate and explanation copy stays in observation, tracking, attention, and risk language.
 10. [ ] Confirm Daily Radar contains no new 交易指令措辭、價格承諾措辭、機率承諾措辭，或方向指令語言。
 11. [ ] Confirm Daily Radar selection, ranking, bucket assignment, and risk deductions do not use LLM logic.
+12. [ ] Confirm live run uses the FinMind all-market dual-track universe, not a full configured Taiwan stock universe count.
+13. [ ] Confirm FinMind requests do not pass per-symbol params such as `stock_id`, `data_id`, or `symbol`.
+14. [ ] Confirm FinMind makes the two all-market data pulls expected by the current flow: same-day `date` and recent `date` range.
+15. [ ] Confirm yfinance runs one batch download only for selected symbols missing final raw rows.
+16. [ ] Confirm live `POST /internal/daily-radar/run` disables fixture fallback.
+17. [ ] Confirm current live run limitations are understood: no full live margin fetch yet and no full market context fetch yet.
 
 ## Local Fixture Run
 
@@ -80,6 +86,7 @@ curl -X POST "http://127.0.0.1:8000/internal/daily-radar/run" \
 9. [ ] Verify the response includes `candidate_count`.
 10. [ ] Verify the response includes `errors` or an equivalent errors summary.
 11. [ ] Verify the run can be read back through `GET /daily-radar/latest` when local persistence is available.
+12. [ ] Verify `universe_count` reflects the selected dual-track universe, usually at most around 150 before overlap and dedupe.
 
 ## Future Manual Frontend Verification
 
@@ -146,7 +153,7 @@ Inspect the GitHub Actions log and backend run log after manual dispatch. These 
 5. [ ] `prefilter_count` is present.
 6. [ ] `candidate_count` is present.
 7. [ ] `errors_count` is present.
-8. [ ] `universe_count` is consistent with the configured Taiwan stock universe for that run.
+8. [ ] `universe_count` is consistent with the selected dual-track universe for that run, not a full-market scan count.
 9. [ ] `prefilter_count` is less than or equal to `universe_count`.
 10. [ ] `candidate_count` is less than or equal to `prefilter_count`.
 11. [ ] `errors_count` is reviewed even when the workflow succeeds.
@@ -193,3 +200,4 @@ The MVP is accepted when these checks pass in the relevant environment.
 2. Keep public reads on `GET /daily-radar/latest`, `GET /daily-radar/{run_date}`, and `GET /daily-radar/symbol/{symbol}`.
 3. Keep run-log review focused on data freshness, candidate count health, source gaps, and error patterns.
 4. Treat live frontend checks, Zeabur dispatch, and DB-backed reads as future manual steps once login and DB access are ready.
+5. Treat margin and market-context gaps as known current live limitations until full live fetches are added.

@@ -73,8 +73,17 @@ backend/
 				interface.py
 				finmind_provider.py
 				tools.py
+		daily_radar/
+			router.py
+			universe.py
+			institutional_universe_provider.py
+			raw_data.py
+			data_loader.py
+			prefilter.py
+			scoring.py
+			service.py
 		db/
-			models.py               # DailyAnalysisLog / StockRawData / StockAnalysisCache
+			models.py               # DailyAnalysisLog / StockRawData / StockAnalysisCache / DailyRadarRun / DailyRadarCandidate
 			session.py
 		graph/
 			builder.py
@@ -100,6 +109,7 @@ frontend/
 			AnalyzePage.tsx
 			PortfolioPage.tsx
 			DashboardPage.tsx
+			DailyRadarPage.tsx
 			LoginPage.tsx
 			LoginCallbackPage.tsx
 		components/
@@ -109,12 +119,15 @@ frontend/
 			auth.ts
 			formatters.ts
 			historyApi.ts
+			dailyRadarApi.ts
+			dailyRadarTypes.ts
 		stores/
 			auth.tsx
 			theme.ts
 .github/
 	workflows/
 		deploy.yml              # CI/CD：測試 → GitHub Pages + Render
+		daily-radar.yml        # Daily Radar 內部排程
 docs/
 	ai-stock-sentinel-architecture-spec.md
 	specs/backend-api-technical-spec.md
@@ -133,7 +146,9 @@ Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitH
 
 > Render 免費方案閒置 15 分鐘後會 sleep，第一次呼叫需等約 30 秒喚醒。
 
-Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。
+Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。後端會自行選出雙軌 universe，對缺少資料的 selected symbols 做 yfinance OHLCV batch backfill，執行 Stage 1/2 rule-based scoring，並持久化 Daily Radar candidates。
+
+Daily Radar 的 live 資料載入有 request budget：FinMind 法人資料只用 all-market 同日查詢與近期 date-range 查詢，不做逐檔 `stock_id`、`data_id` 或 `symbol` request；yfinance 只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，既有 `StockRawData` 會重用。
 
 CI/CD 設定說明：`docs/plans/2026-03-10-cicd-github-pages-render.md`
 
@@ -269,7 +284,7 @@ make run-api
 - `POST /analyze` — 新倉策略分析
 - `POST /analyze/position` — 持股操作建議
 - `POST /internal/fetch-raw-data` — 觸發原始資料預取（內部用）
-- `POST /internal/daily-radar/run`：執行 Daily Radar 內部流程，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `POST /internal/daily-radar/run`：執行 Daily Radar 自包含內部流程，包含雙軌 universe selection、selected-symbol OHLCV batch backfill、Stage 1/2 scoring 與 candidates persistence，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單
 - `GET /daily-radar/{run_date}`：讀取指定日期 Daily Radar 候選清單
 - `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史
