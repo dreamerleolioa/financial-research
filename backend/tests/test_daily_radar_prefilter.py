@@ -94,6 +94,47 @@ def test_loader_reads_local_cache_like_rows_without_schema_or_orm_dependency() -
     assert records == [fixture_record | {"expected_bucket_seed": None, "fixture_case": None}]
 
 
+def test_loader_normalizes_flat_institutional_cache_payload_for_scoring() -> None:
+    fixture_record = _records_by_symbol()["2330.TW"]
+    cache_row = SimpleNamespace(
+        symbol=fixture_record["symbol"],
+        record_date=fixture_record["record_date"],
+        technical={
+            "name": fixture_record["name"],
+            "ohlcv": fixture_record["ohlcv"],
+            "indicators": fixture_record["indicators"],
+        },
+        institutional={
+            "flow_label": "institutional_accumulation",
+            "foreign_net_cumulative": 4200,
+            "trust_net_cumulative": 1800,
+            "investment_trust_buy": 1900,
+            "foreign_buy": 4500,
+            "three_party_net": 6500,
+            "consecutive_buy_days": 5,
+            "consecutive_sell_days": 0,
+            "dominant_buyer": "foreign",
+            "flow_strength": "strong",
+            "source_provider": "finmind",
+            "warnings": [],
+            "data_dates": {"institutional_flow": "2026-05-29"},
+        },
+        fundamental={"margin": fixture_record["margin"]},
+    )
+
+    records = load_daily_radar_cache_records([cache_row])
+
+    institutional_flow = records[0]["institutional_flow"]
+    assert institutional_flow
+    assert institutional_flow["flow_label"] == "institutional_accumulation"
+    assert institutional_flow["foreign_net_shares"] == 4200
+    assert institutional_flow["investment_trust_net_shares"] == 1800
+    assert institutional_flow["three_party_net_shares"] == 6500
+    assert institutional_flow["consecutive_positive_days"] == 5
+    assert institutional_flow["consecutive_negative_days"] == 0
+    assert institutional_flow["flow_state"] == "institutional_accumulation"
+
+
 def test_prefilter_accepts_clean_fixture_records_with_debug_and_data_dates() -> None:
     records = _records_by_symbol()
 

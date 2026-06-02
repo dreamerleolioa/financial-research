@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
+from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, StockRawData
 from ai_stock_sentinel.db.session import Base, get_db
 
@@ -91,11 +92,61 @@ def test_daily_radar_internal_auth_accepts_x_internal_token(monkeypatch) -> None
     assert response.json() == {"status": "ok"}
 
 
-def _api_client(monkeypatch, db_session: Session, run: SimpleNamespace | None = None) -> TestClient:
+class FakeUniverseProvider:
+    def __init__(
+        self,
+        *,
+        same_day: list[InstitutionalLeaderRow] | None = None,
+        recent: list[InstitutionalLeaderRow] | None = None,
+    ) -> None:
+        self.same_day = same_day if same_day is not None else [InstitutionalLeaderRow("2330.TW", 1, 91.0)]
+        self.recent = recent if recent is not None else []
+        self.calls: list[dict[str, Any]] = []
+
+    def same_day_institutional_leaders(self, *, run_date: date, market: str, limit: int) -> list[InstitutionalLeaderRow]:
+        self.calls.append({"track": "same_day", "run_date": run_date, "market": market, "limit": limit})
+        return self.same_day[:limit]
+
+    def recent_accumulation_leaders(self, *, run_date: date, market: str, limit: int) -> list[InstitutionalLeaderRow]:
+        self.calls.append({"track": "recent", "run_date": run_date, "market": market, "limit": limit})
+        return self.recent[:limit]
+
+
+class FakeBatchTechnicalFetcher:
+    def __init__(self, payloads: dict[str, dict[str, Any]] | None = None) -> None:
+        self.payloads = payloads or {}
+        self.calls: list[tuple[list[str], date]] = []
+
+    def fetch(self, symbols: list[str], *, run_date: date) -> dict[str, dict[str, Any]]:
+        self.calls.append((list(symbols), run_date))
+        return {symbol: self.payloads.get(symbol) or _technical_payload(symbol, run_date) for symbol in symbols}
+
+
+def _clear_daily_radar_api_overrides() -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    for dependency in (
+        get_db,
+        daily_radar_router.get_daily_radar_universe_provider,
+        daily_radar_router.get_daily_radar_technical_fetcher,
+    ):
+        api.app.dependency_overrides.pop(dependency, None)
+
+
+def _api_client(
+    monkeypatch,
+    db_session: Session,
+    run: SimpleNamespace | None = None,
+    *,
+    universe_provider: FakeUniverseProvider | None = None,
+    technical_fetcher: FakeBatchTechnicalFetcher | None = None,
+) -> TestClient:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     captured: dict[str, Any] = {}
+    provider = universe_provider or FakeUniverseProvider()
+    fetcher = technical_fetcher or FakeBatchTechnicalFetcher()
 
     def fake_run_daily_radar(run_date: date, market: str, **kwargs: Any) -> SimpleNamespace:
         captured["run_date"] = run_date
@@ -106,8 +157,12 @@ def _api_client(monkeypatch, db_session: Session, run: SimpleNamespace | None = 
     monkeypatch.setattr(daily_radar_router, "run_daily_radar", fake_run_daily_radar)
     monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 1))
     api.app.dependency_overrides[get_db] = lambda: db_session
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
     client = TestClient(api.app)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
+    client.fake_universe_provider = provider  # type: ignore[attr-defined]
+    client.fake_technical_fetcher = fetcher  # type: ignore[attr-defined]
     return client
 
 
@@ -129,6 +184,42 @@ def _daily_radar_run(
         started_at=datetime(2026, 6, 1, 1, 2, 3, tzinfo=timezone.utc),
         finished_at=datetime(2026, 6, 1, 1, 2, 4, tzinfo=timezone.utc),
     )
+
+
+def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
+    return {
+        "name": f"{symbol} fixture",
+        "ohlcv": {
+            "open": 100.0,
+            "high": 108.0,
+            "low": 98.0,
+            "close": 106.0,
+            "previous_close": 102.0,
+            "volume": 4_000_000,
+            "avg_volume_20": 2_000_000,
+        },
+        "indicators": {
+            "ma5": 104.0,
+            "ma20": 101.0,
+            "ma60": 96.0,
+            "rsi14": 62.0,
+            "bias20": 4.95,
+            "volume_ratio": 2.0,
+            "missing_trading_days_60": 0,
+            "mfi14": 64.0,
+            "macd": 1.2,
+            "macd_signal": 0.8,
+            "macd_histogram": 0.4,
+            "kd_k": 72.0,
+            "kd_d": 65.0,
+            "atr14": 3.2,
+            "support_level": 95.0,
+            "resistance_level": 110.0,
+            "obv": 12_000_000,
+            "obv_trend": "rising",
+        },
+        "data_dates": {"ohlcv": run_date.isoformat(), "technical_indicators": run_date.isoformat()},
+    }
 
 
 def _persist_raw_data(
@@ -162,7 +253,7 @@ def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkey
             headers={"Authorization": "Bearer test-token"},
         )
     finally:
-        api.app.dependency_overrides.pop(get_db, None)
+        _clear_daily_radar_api_overrides()
 
     assert response.status_code == 200
     captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
@@ -196,7 +287,7 @@ def test_daily_radar_run_endpoint_defaults_body_to_backend_today_and_tw(monkeypa
             headers={"X-Internal-Token": "test-token"},
         )
     finally:
-        api.app.dependency_overrides.pop(get_db, None)
+        _clear_daily_radar_api_overrides()
 
     assert response.status_code == 200
     assert client.captured_daily_radar_call["run_date"] == date(2026, 6, 1)  # type: ignore[attr-defined]
@@ -220,7 +311,7 @@ def test_daily_radar_run_endpoint_preserves_stale_data_status(monkeypatch, daily
             headers={"Authorization": "Bearer test-token"},
         )
     finally:
-        api.app.dependency_overrides.pop(get_db, None)
+        _clear_daily_radar_api_overrides()
 
     assert response.status_code == 200
     assert response.json()["status"] == "stale_data"
@@ -265,7 +356,7 @@ def public_daily_radar_client(daily_radar_db_session: Session, monkeypatch) -> T
     try:
         yield TestClient(api.app)
     finally:
-        api.app.dependency_overrides.pop(get_db, None)
+        _clear_daily_radar_api_overrides()
 
 
 def _persist_daily_radar_run(
@@ -336,33 +427,143 @@ def _persist_daily_radar_candidate(
     return candidate
 
 
-def test_daily_radar_run_endpoint_returns_409_without_final_raw_rows_and_does_not_call_service(
+def test_daily_radar_run_endpoint_backfills_missing_selected_rows_and_passes_cache_rows(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
-    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+    fetcher = FakeBatchTechnicalFetcher()
+    provider = FakeUniverseProvider(
+        same_day=[
+            InstitutionalLeaderRow(
+                "2330.TW",
+                1,
+                91.0,
+                actor="foreign",
+                net_buy=24_680.0,
+                concentration=0.11,
+                source_dates=("2026-06-01",),
+            )
+        ],
+        recent=[
+            InstitutionalLeaderRow(
+                "2317.TW",
+                1,
+                1_000_000.5,
+                actor="institutional",
+                cumulative_net_buy=12_345.0,
+                concentration=0.18,
+                consecutive_buy_days=4,
+                source_dates=("2026-05-27", "2026-05-28", "2026-05-29", "2026-06-01"),
+                flow_state="consistent_accumulation",
+            )
+        ],
+    )
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        technical_fetcher=fetcher,
+    )
 
-    called = False
-
-    def fake_run_daily_radar(*args: Any, **kwargs: Any) -> None:
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(daily_radar_router, "run_daily_radar", fake_run_daily_radar)
-    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
     try:
-        response = TestClient(api.app).post(
+        response = client.post(
             "/internal/daily-radar/run",
             json={"run_date": "2026-06-01"},
             headers={"Authorization": "Bearer test-token"},
         )
     finally:
-        api.app.dependency_overrides.pop(get_db, None)
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert fetcher.calls == [(["2330.TW", "2317.TW"], date(2026, 6, 1))]
+    captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
+    assert [row.symbol for row in captured["cache_rows"]] == ["2330.TW", "2317.TW"]
+    assert captured["cache_rows"][0].technical["ohlcv"]["close"] == 106.0
+    same_day_institutional = captured["cache_rows"][0].institutional
+    assert same_day_institutional["same_day_actor"] == "foreign"
+    assert same_day_institutional["same_day_net_buy"] == pytest.approx(24_680.0)
+    assert same_day_institutional["foreign_net_shares"] == pytest.approx(24_680.0)
+    assert "investment_trust_net_shares" not in same_day_institutional
+    recent_institutional = captured["cache_rows"][1].institutional
+    assert recent_institutional["flow_label"] == "institutional_accumulation"
+    assert recent_institutional["flow_state"] == "consistent_accumulation"
+    assert recent_institutional["institutional_universe_tracks"] == ["recent_accumulation"]
+    assert recent_institutional["recent_accumulation_rank"] == 1
+    assert recent_institutional["consecutive_buy_days"] == 4
+    assert recent_institutional["consecutive_positive_days"] == 4
+    assert recent_institutional["cumulative_net_buy"] == pytest.approx(12_345.0)
+    assert recent_institutional["net_buy_cumulative"] == pytest.approx(12_345.0)
+    assert recent_institutional["three_party_net_shares"] == pytest.approx(12_345.0)
+    assert recent_institutional["recent_concentration"] == pytest.approx(0.18)
+    assert recent_institutional["net_flow_to_avg_volume"] == pytest.approx(0.18)
+    assert recent_institutional["recent_source_dates"] == ["2026-05-27", "2026-05-28", "2026-05-29", "2026-06-01"]
+    assert recent_institutional["data_dates"]["institutional_flow"] == "2026-06-01"
+    assert "foreign_net_cumulative" not in recent_institutional
+    assert "foreign_net_shares" not in recent_institutional
+    assert "investment_trust_net_shares" not in recent_institutional
+
+
+def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_batch(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=date(2026, 6, 1))
+    fetcher = FakeBatchTechnicalFetcher()
+    provider = FakeUniverseProvider(
+        same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0), InstitutionalLeaderRow("2454.TW", 2, 82.0)],
+        recent=[InstitutionalLeaderRow("2317.TW", 1, 1_000_000.5)],
+    )
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        technical_fetcher=fetcher,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert fetcher.calls == [(["2454.TW", "2317.TW"], date(2026, 6, 1))]
+    assert [row.symbol for row in client.captured_daily_radar_call["cache_rows"]] == [  # type: ignore[attr-defined]
+        "2330.TW",
+        "2454.TW",
+        "2317.TW",
+    ]
+
+
+def test_daily_radar_run_endpoint_returns_409_for_empty_universe_and_does_not_call_service(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeUniverseProvider(same_day=[], recent=[])
+    fetcher = FakeBatchTechnicalFetcher()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        technical_fetcher=fetcher,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "No final StockRawData rows are available for 2026-06-01."}
-    assert called is False
+    assert response.json() == {"detail": "Daily Radar universe is empty for TW on 2026-06-01."}
+    assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
+    assert fetcher.calls == []
 
 
 def test_public_latest_daily_radar_returns_latest_completed_run_without_internal_token(

@@ -167,6 +167,27 @@ def get_final_raw_data_rows_for_date(session: Session, *, run_date: date) -> lis
     ).all()
 
 
+def get_final_raw_data_rows_for_symbols(
+    session: Session,
+    *,
+    run_date: date,
+    symbols: Iterable[str],
+) -> list[StockRawData]:
+    ordered_symbols = _ordered_unique_symbols(symbols)
+    if not ordered_symbols:
+        return []
+
+    rows = session.scalars(
+        select(StockRawData).where(
+            StockRawData.record_date == run_date,
+            StockRawData.raw_data_is_final.is_(True),
+            StockRawData.symbol.in_(ordered_symbols),
+        )
+    ).all()
+    rows_by_symbol = {row.symbol: row for row in rows}
+    return [rows_by_symbol[symbol] for symbol in ordered_symbols if symbol in rows_by_symbol]
+
+
 def _public_run_query(*, market: str, statuses: tuple[str, ...]):
     return (
         select(DailyRadarRun)
@@ -199,6 +220,18 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return {}
 
 
+def _ordered_unique_symbols(symbols: Iterable[str]) -> list[str]:
+    ordered_symbols: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        normalized = str(symbol).strip()
+        if not normalized or normalized in seen:
+            continue
+        ordered_symbols.append(normalized)
+        seen.add(normalized)
+    return ordered_symbols
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -208,6 +241,7 @@ __all__ = [
     "create_daily_radar_run",
     "get_daily_radar_run_by_date",
     "get_final_raw_data_rows_for_date",
+    "get_final_raw_data_rows_for_symbols",
     "get_latest_daily_radar_run",
     "get_symbol_candidate_history",
     "replace_run_candidates",
