@@ -1,0 +1,47 @@
+{
+  "fixture_version": "daily-radar-contract-v1",
+  "records": [
+    {
+      "data_dates": {
+        "candidate": "2026-05-26"
+      },
+      "fixture_case": null,
+      "name": "TSMC",
+      "observation_score": 78,
+      "primary_bucket": "institutional_accumulation",
+      "record_date": "2026-05-26",
+      "repeat_status": "repeat",
+      "risk_labels": [],
+      "symbol": "2330.TW"
+    },
+    {
+      "data_dates": {
+        "candidate": "2026-05-20"
+      },
+      "fixture_case": null,
+      "name": "UMC",
+      "observation_score": 64,
+      "primary_bucket": "support_retest",
+      "record_date": "2026-05-20",
+      "repeat_status": "cooled_down",
+      "risk_labels": [],
+      "symbol": "2303.TW"
+    },
+    {
+      "data_dates": {
+        "candidate": "2026-05-28"
+      },
+      "fixture_case": "overextended",
+      "name": "Alchip",
+      "observation_score": 58,
+      "primary_bucket": "price_volume_strengthening",
+      "record_date": "2026-05-28",
+      "repeat_status": "repeat",
+      "risk_labels": [
+        "overextended"
+      ],
+      "symbol": "3661.TW"
+    }
+  ],
+  "run_date": "2026-05-29"
+}

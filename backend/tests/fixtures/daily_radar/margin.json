@@ -1,0 +1,174 @@
+{
+  "fixture_version": "daily-radar-contract-v1",
+  "records": [
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": "institutional_accumulation",
+      "fixture_case": null,
+      "margin": {
+        "margin_balance": 8300,
+        "margin_delta": 120,
+        "margin_delta_pct": 1.4,
+        "margin_to_volume": 0.22,
+        "risk_flags": [],
+        "short_balance": 220,
+        "short_delta": -15,
+        "short_delta_pct": -0.4
+      },
+      "name": "TSMC",
+      "record_date": "2026-05-29",
+      "symbol": "2330.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": "price_volume_strengthening",
+      "fixture_case": null,
+      "margin": {
+        "margin_balance": 7100,
+        "margin_delta": 90,
+        "margin_delta_pct": 1.3,
+        "margin_to_volume": 0.18,
+        "risk_flags": [],
+        "short_balance": 180,
+        "short_delta": -12,
+        "short_delta_pct": -0.5
+      },
+      "name": "MediaTek",
+      "record_date": "2026-05-29",
+      "symbol": "2454.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": "bottoming_reversal",
+      "fixture_case": null,
+      "margin": {
+        "margin_balance": 9800,
+        "margin_delta": -260,
+        "margin_delta_pct": -2.6,
+        "margin_to_volume": 0.34,
+        "risk_flags": [],
+        "short_balance": 360,
+        "short_delta": 18,
+        "short_delta_pct": 0.3
+      },
+      "name": "Novatek",
+      "record_date": "2026-05-29",
+      "symbol": "3034.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": "support_retest",
+      "fixture_case": null,
+      "margin": {
+        "margin_balance": 42500,
+        "margin_delta": -540,
+        "margin_delta_pct": -1.3,
+        "margin_to_volume": 0.94,
+        "risk_flags": [],
+        "short_balance": 980,
+        "short_delta": 22,
+        "short_delta_pct": 0.1
+      },
+      "name": "UMC",
+      "record_date": "2026-05-29",
+      "symbol": "2303.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-24"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "stale_data",
+      "margin": {
+        "margin_balance": 6100,
+        "margin_delta": 40,
+        "margin_delta_pct": 0.7,
+        "margin_to_volume": 0.66,
+        "risk_flags": [
+          "stale_data"
+        ],
+        "short_balance": 120,
+        "short_delta": 5,
+        "short_delta_pct": 0.1
+      },
+      "name": "Taiwan Cement",
+      "record_date": "2026-05-29",
+      "symbol": "1101.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "data_gap",
+      "margin": {
+        "margin_balance": 18200,
+        "margin_delta": 1400,
+        "margin_delta_pct": 8.3,
+        "margin_to_volume": 1.18,
+        "risk_flags": [
+          "data_gap"
+        ],
+        "short_balance": 520,
+        "short_delta": -40,
+        "short_delta_pct": -0.2
+      },
+      "name": "Evergreen Marine",
+      "record_date": "2026-05-29",
+      "symbol": "2603.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "overextended",
+      "margin": {
+        "margin_balance": 12200,
+        "margin_delta": 1680,
+        "margin_delta_pct": 15.9,
+        "margin_to_volume": 4.78,
+        "risk_flags": [
+          "overextended"
+        ],
+        "short_balance": 910,
+        "short_delta": -80,
+        "short_delta_pct": -0.3
+      },
+      "name": "Alchip",
+      "record_date": "2026-05-29",
+      "symbol": "3661.TW"
+    },
+    {
+      "data_dates": {
+        "margin": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "margin_crowding",
+      "margin": {
+        "margin_balance": 92500,
+        "margin_delta": 11800,
+        "margin_delta_pct": 14.6,
+        "margin_to_volume": 4.97,
+        "risk_flags": [
+          "margin_crowding"
+        ],
+        "short_balance": 1260,
+        "short_delta": -90,
+        "short_delta_pct": -0.1
+      },
+      "name": "Walsin Lihwa",
+      "record_date": "2026-05-29",
+      "symbol": "1605.TW"
+    }
+  ],
+  "run_date": "2026-05-29"
+}

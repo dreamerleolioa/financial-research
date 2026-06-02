@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.auth.router import router as auth_router
 from ai_stock_sentinel.config import configure_logging, STRATEGY_VERSION
+from ai_stock_sentinel.daily_radar.router import router as daily_radar_router
 from ai_stock_sentinel.db.models import StockAnalysisCache, StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.graph.builder import build_graph
@@ -676,6 +677,8 @@ app.include_router(portfolio_router)
 
 from ai_stock_sentinel.portfolio.history_router import router as history_router
 app.include_router(history_router)
+
+app.include_router(daily_radar_router)
 
 
 @app.get("/health")

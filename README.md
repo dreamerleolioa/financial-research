@@ -20,7 +20,7 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 ## 需求與架構文件
 
 - 技術架構需求文件：`docs/ai-stock-sentinel-architecture-spec.md`
-- 後端 API 技術規格：`docs/backend-api-technical-spec.md`
+- 後端 API 技術規格：`docs/specs/backend-api-technical-spec.md`
 - 自動化審核規格：`docs/ai-stock-sentinel-automation-review-spec.md`
 - 持股診斷規格：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
 - 執行計劃目錄：`docs/plans/`
@@ -117,7 +117,7 @@ frontend/
 		deploy.yml              # CI/CD：測試 → GitHub Pages + Render
 docs/
 	ai-stock-sentinel-architecture-spec.md
-	backend-api-technical-spec.md
+	specs/backend-api-technical-spec.md
 	ai-stock-sentinel-automation-review-spec.md
 	ai-stock-sentinel-position-diagnosis-spec.md
 	development-execution-playbook.md
@@ -132,6 +132,8 @@ docs/
 Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages → 觸發 Render 重新部署。
 
 > Render 免費方案閒置 15 分鐘後會 sleep，第一次呼叫需等約 30 秒喚醒。
+
+Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。
 
 CI/CD 設定說明：`docs/plans/2026-03-10-cicd-github-pages-render.md`
 
@@ -169,6 +171,7 @@ CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 GOOGLE_CLIENT_ID="your_google_client_id"    # Google OAuth 登入用
 JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
+DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 ```
 
 > `.env` 不進版控。換電腦時複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
@@ -180,10 +183,12 @@ DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 
 ### CI/CD（GitHub Actions）
 
-| 類型     | 名稱                     | 用途                      |
-| -------- | ------------------------ | ------------------------- |
-| Secret   | `RENDER_DEPLOY_HOOK_URL` | 觸發 Render 重新部署      |
-| Variable | `VITE_API_URL`           | 前端 build 時注入後端 URL |
+| 類型     | 名稱                         | 用途                                              |
+| -------- | ---------------------------- | ------------------------------------------------- |
+| Secret   | `RENDER_DEPLOY_HOOK_URL`     | 觸發 Render 重新部署                              |
+| Secret   | `ZEABUR_BACKEND_URL`         | Daily Radar workflow 呼叫的 Zeabur 後端 URL       |
+| Secret   | `DAILY_RADAR_INTERNAL_TOKEN` | Daily Radar workflow 呼叫內部 API 的 Bearer token |
+| Variable | `VITE_API_URL`               | 前端 build 時注入後端 URL                         |
 
 ### 生產環境（Render Environment Variables）
 
@@ -195,6 +200,12 @@ DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 | `GOOGLE_CLIENT_ID`  | Google OAuth client ID                               |
 | `JWT_SECRET`        | JWT 簽名密鑰                                         |
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
+
+### Zeabur 後端環境變數（Daily Radar）
+
+| 名稱                         | 值                                    |
+| ---------------------------- | ------------------------------------- |
+| `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
 
 ---
 
@@ -236,6 +247,11 @@ pnpm dev
 - 歷史分析記錄列表
 - 各標的策略方向與信心分數趨勢
 
+**Daily Radar（`/daily-radar`）**
+
+- 每日觀察候選清單
+- bucket、觀察分數、風險標籤與規則命中原因
+
 **登入（`/login`）**
 
 - Google OAuth 登入流程
@@ -253,6 +269,10 @@ make run-api
 - `POST /analyze` — 新倉策略分析
 - `POST /analyze/position` — 持股操作建議
 - `POST /internal/fetch-raw-data` — 觸發原始資料預取（內部用）
+- `POST /internal/daily-radar/run`：執行 Daily Radar 內部流程，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單
+- `GET /daily-radar/{run_date}`：讀取指定日期 Daily Radar 候選清單
+- `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史
 - `GET /history/{symbol}` — 查詢歷史分析記錄
 - `GET/POST /auth/*` — Google OAuth 登入流程
 - `GET/POST /portfolio/*` — 持股管理

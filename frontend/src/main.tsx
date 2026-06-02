@@ -9,6 +9,7 @@ import LoginCallbackPage from "./pages/LoginCallbackPage.tsx";
 import AnalyzePage from "./pages/AnalyzePage.tsx";
 import PortfolioPage from "./pages/PortfolioPage.tsx";
 import DashboardPage from "./pages/DashboardPage.tsx";
+import DailyRadarPage from "./pages/DailyRadarPage.tsx";
 import { AuthProvider, useAuth } from "./stores/auth.tsx";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -39,6 +40,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/analyze" element={<AnalyzePage />} />
               <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => { }} />} />
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/daily-radar" element={<DailyRadarPage />} />
               <Route path="*" element={<Navigate to="/analyze" replace />} />
             </Route>
           </Routes>

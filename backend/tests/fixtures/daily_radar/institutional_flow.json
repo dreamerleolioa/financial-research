@@ -1,0 +1,190 @@
+{
+  "fixture_version": "daily-radar-contract-v1",
+  "records": [
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": "institutional_accumulation",
+      "fixture_case": null,
+      "institutional_flow": {
+        "consecutive_negative_days": 0,
+        "consecutive_positive_days": 5,
+        "dealer_net_shares": 350,
+        "dominant_participant": "foreign",
+        "flow_state": "consistent_accumulation",
+        "foreign_net_shares": 4200,
+        "investment_trust_net_shares": 1800,
+        "net_flow_to_avg_volume": 0.17,
+        "risk_flags": [],
+        "three_party_net_shares": 6350
+      },
+      "name": "TSMC",
+      "record_date": "2026-05-29",
+      "symbol": "2330.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": "price_volume_strengthening",
+      "fixture_case": null,
+      "institutional_flow": {
+        "consecutive_negative_days": 0,
+        "consecutive_positive_days": 3,
+        "dealer_net_shares": 210,
+        "dominant_participant": "foreign",
+        "flow_state": "volume_confirmed_accumulation",
+        "foreign_net_shares": 1600,
+        "investment_trust_net_shares": 720,
+        "net_flow_to_avg_volume": 0.21,
+        "risk_flags": [],
+        "three_party_net_shares": 2530
+      },
+      "name": "MediaTek",
+      "record_date": "2026-05-29",
+      "symbol": "2454.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": "bottoming_reversal",
+      "fixture_case": null,
+      "institutional_flow": {
+        "consecutive_negative_days": 1,
+        "consecutive_positive_days": 2,
+        "dealer_net_shares": 80,
+        "dominant_participant": "mixed",
+        "flow_state": "early_stabilization",
+        "foreign_net_shares": 260,
+        "investment_trust_net_shares": 120,
+        "net_flow_to_avg_volume": 0.06,
+        "risk_flags": [],
+        "three_party_net_shares": 460
+      },
+      "name": "Novatek",
+      "record_date": "2026-05-29",
+      "symbol": "3034.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": "support_retest",
+      "fixture_case": null,
+      "institutional_flow": {
+        "consecutive_negative_days": 0,
+        "consecutive_positive_days": 2,
+        "dealer_net_shares": 90,
+        "dominant_participant": "foreign",
+        "flow_state": "support_area_accumulation",
+        "foreign_net_shares": 880,
+        "investment_trust_net_shares": 150,
+        "net_flow_to_avg_volume": 0.02,
+        "risk_flags": [],
+        "three_party_net_shares": 1120
+      },
+      "name": "UMC",
+      "record_date": "2026-05-29",
+      "symbol": "2303.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-24"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "stale_data",
+      "institutional_flow": {
+        "consecutive_negative_days": 0,
+        "consecutive_positive_days": 1,
+        "dealer_net_shares": 20,
+        "dominant_participant": "mixed",
+        "flow_state": "neutral",
+        "foreign_net_shares": 120,
+        "investment_trust_net_shares": 40,
+        "net_flow_to_avg_volume": 0.02,
+        "risk_flags": [
+          "stale_data"
+        ],
+        "three_party_net_shares": 180
+      },
+      "name": "Taiwan Cement",
+      "record_date": "2026-05-29",
+      "symbol": "1101.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "data_gap",
+      "institutional_flow": {
+        "consecutive_negative_days": 3,
+        "consecutive_positive_days": 0,
+        "dealer_net_shares": -50,
+        "dominant_participant": "none",
+        "flow_state": "conflict",
+        "foreign_net_shares": -850,
+        "investment_trust_net_shares": -120,
+        "net_flow_to_avg_volume": -0.07,
+        "risk_flags": [
+          "data_gap"
+        ],
+        "three_party_net_shares": -1020
+      },
+      "name": "Evergreen Marine",
+      "record_date": "2026-05-29",
+      "symbol": "2603.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "overextended",
+      "institutional_flow": {
+        "consecutive_negative_days": 0,
+        "consecutive_positive_days": 4,
+        "dealer_net_shares": 35,
+        "dominant_participant": "foreign",
+        "flow_state": "late_momentum",
+        "foreign_net_shares": 520,
+        "investment_trust_net_shares": 80,
+        "net_flow_to_avg_volume": 0.24,
+        "risk_flags": [
+          "overextended"
+        ],
+        "three_party_net_shares": 635
+      },
+      "name": "Alchip",
+      "record_date": "2026-05-29",
+      "symbol": "3661.TW"
+    },
+    {
+      "data_dates": {
+        "institutional_flow": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "margin_crowding",
+      "institutional_flow": {
+        "consecutive_negative_days": 1,
+        "consecutive_positive_days": 1,
+        "dealer_net_shares": 10,
+        "dominant_participant": "mixed",
+        "flow_state": "weak_confirmation",
+        "foreign_net_shares": 110,
+        "investment_trust_net_shares": -40,
+        "net_flow_to_avg_volume": 0.01,
+        "risk_flags": [
+          "margin_crowding"
+        ],
+        "three_party_net_shares": 80
+      },
+      "name": "Walsin Lihwa",
+      "record_date": "2026-05-29",
+      "symbol": "1605.TW"
+    }
+  ],
+  "run_date": "2026-05-29"
+}

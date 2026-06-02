@@ -22,16 +22,16 @@
 
 ## Architecture Touchpoints
 
-| 面向 | 實作位置 | 目的 |
-| --- | --- | --- |
-| Backend FastAPI | `backend/src/ai_stock_sentinel/main.py`, `backend/src/ai_stock_sentinel/daily_radar/router.py` | 掛載 internal trigger endpoint 與 public read API |
-| DB models and migration | `backend/src/ai_stock_sentinel/db/models.py`, `backend/alembic/versions/*_add_daily_radar_tables.py` | 新增 `daily_radar_runs` 與 `daily_radar_candidates` |
-| Data sources | `backend/src/ai_stock_sentinel/daily_radar/data_loader.py`, `backend/src/ai_stock_sentinel/data_sources/*` | 讀取 OHLCV、法人、融資、大盤與已快取原始資料 |
-| Scoring service | `backend/src/ai_stock_sentinel/daily_radar/prefilter.py`, `scoring.py`, `explanations.py`, `cooldown.py`, `service.py` | 前置濾網、bucket 評分、風險扣分、解釋與冷卻處理 |
-| Internal trigger endpoint | `POST /internal/daily-radar/run` | GitHub Actions 使用 shared token 觸發每日掃描 |
-| Public read API | `GET /daily-radar/latest`, `GET /daily-radar/{run_date}`, `GET /daily-radar/symbol/{symbol}` | 前端查詢最新、指定日期與單股歷史 |
-| Frontend React page | `frontend/src/pages/DailyRadarPage.tsx`, `frontend/src/lib/dailyRadarApi.ts`, `frontend/src/App.tsx` | 每日雷達頁、bucket tabs、列表與細節抽屜 |
-| GitHub Actions schedule to Zeabur | `.github/workflows/daily-radar.yml` | 收盤後只呼叫 Zeabur 的 `POST /internal/daily-radar/run`，資料載入與必要補齊由 Daily Radar service 內部負責 |
+| 面向                              | 實作位置                                                                                                               | 目的                                                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Backend FastAPI                   | `backend/src/ai_stock_sentinel/main.py`, `backend/src/ai_stock_sentinel/daily_radar/router.py`                         | 掛載 internal trigger endpoint 與 public read API                                                          |
+| DB models and migration           | `backend/src/ai_stock_sentinel/db/models.py`, `backend/alembic/versions/*_add_daily_radar_tables.py`                   | 新增 `daily_radar_runs` 與 `daily_radar_candidates`                                                        |
+| Data sources                      | `backend/src/ai_stock_sentinel/daily_radar/data_loader.py`, `backend/src/ai_stock_sentinel/data_sources/*`             | 讀取 OHLCV、法人、融資、大盤與已快取原始資料                                                               |
+| Scoring service                   | `backend/src/ai_stock_sentinel/daily_radar/prefilter.py`, `scoring.py`, `explanations.py`, `cooldown.py`, `service.py` | 前置濾網、bucket 評分、風險扣分、解釋與冷卻處理                                                            |
+| Internal trigger endpoint         | `POST /internal/daily-radar/run`                                                                                       | GitHub Actions 使用 shared token 觸發每日掃描                                                              |
+| Public read API                   | `GET /daily-radar/latest`, `GET /daily-radar/{run_date}`, `GET /daily-radar/symbol/{symbol}`                           | 前端查詢最新、指定日期與單股歷史                                                                           |
+| Frontend React page               | `frontend/src/pages/DailyRadarPage.tsx`, `frontend/src/lib/dailyRadarApi.ts`, `frontend/src/App.tsx`                   | 每日雷達頁、bucket tabs、列表與細節抽屜                                                                    |
+| GitHub Actions schedule to Zeabur | `.github/workflows/daily-radar.yml`                                                                                    | 收盤後只呼叫 Zeabur 的 `POST /internal/daily-radar/run`，資料載入與必要補齊由 Daily Radar service 內部負責 |
 
 ## TDD Strategy
 
@@ -42,19 +42,51 @@
 5. 先寫前端狀態測試：loading、empty、error、stale、completed、bucket 篩選、detail drawer、文案禁詞。
 6. 實作只做到測試所要求的最小功能。每個 phase 結束後再補 integration 或手動驗收。
 
+## TODOs
+
+- [x] Setup: Normalize executable TODOs for Atlas tracking
+- [x] Task 0.1: 建立後端 Daily Radar fixture 契約
+- [x] Task 0.2: 定義 API response schema 測試
+- [x] Task 1.1: 新增 ORM model 測試
+- [x] Task 1.2: 新增 Alembic migration 測試與 migration
+- [x] Task 2.1: 建立 Daily Radar module skeleton 與 types
+- [x] Task 2.2: 實作 data loader 與 Stage 1 prefilter
+- [x] Task 2.3: 實作 bucket scoring 與 composite observation score
+- [x] Task 2.4: 實作 rule-based explanations
+- [x] Task 2.5: 實作 cooldown handling
+- [x] Task 2.6: 實作 repository 與 orchestration service
+- [x] Task 3.1: 加入 shared token internal auth
+- [x] Task 3.2: 實作 `POST /internal/daily-radar/run`
+- [x] Task 3.3: 實作 public read API
+- [x] Task 4.1: 建立 API client 與 TypeScript types
+- [x] Task 4.2: 加入 route 與 page shell
+- [x] Task 4.3: 實作 bucket tabs 與 candidate list
+- [x] Task 4.4: 實作 detail drawer
+- [x] Task 4.5: 完成 loading, empty, error, stale states 與 copy guardrails
+- [x] Task 5.1: 新增 Daily Radar cron workflow
+- [x] Task 6.1: 同步 API 與 env 文件
+- [x] Task 6.2: Rollout plan
+
+## Final Verification Wave
+
+- [ ] F1 Backend correctness
+- [ ] F2 Frontend UX/copy guardrails
+- [ ] F3 Integration/security/schedule
+- [ ] F4 Regression/build/readiness
+
 ## Test Matrix
 
-| 層級 | 測試檔案 | 覆蓋內容 | 驗收指令 |
-| --- | --- | --- | --- |
-| Backend unit | `backend/tests/test_daily_radar_prefilter.py` | 流動性、股價、資料完整度、過熱、弱勢、融資、stale hard gate | `cd backend && make test` |
-| Backend unit | `backend/tests/test_daily_radar_scoring.py` | 四個 bucket 分數、primary bucket、secondary buckets、risk penalties | `cd backend && make test` |
-| Backend unit | `backend/tests/test_daily_radar_explanations.py` | rule-based 摘要、證據點、風險標籤、禁用交易命令文案 | `cd backend && make test` |
-| Backend unit | `backend/tests/test_daily_radar_cooldown.py` | `new`, `repeat`, `upgraded`, `cooled_down` 判定 | `cd backend && make test` |
-| Backend persistence | `backend/tests/test_daily_radar_repository.py` | run log、candidate 寫入、同日重跑、日期與 symbol 查詢 | `cd backend && make test` |
-| Backend API | `backend/tests/test_daily_radar_api.py` | shared token auth、internal run、latest、date、symbol endpoints | `cd backend && make test` |
-| Frontend unit | `frontend/src/pages/DailyRadarPage.test.tsx` | loading、empty、error、stale、completed、bucket tabs、detail drawer | `cd frontend && pnpm test` if available |
-| Frontend build | existing frontend scripts | 型別、route、API client import、production build | `cd frontend && pnpm build` |
-| Schedule | `.github/workflows/daily-radar.yml` | cron、Zeabur URL、internal token secrets、單一 `POST /internal/daily-radar/run` 呼叫 | GitHub Actions dry run or workflow syntax check if available |
+| 層級                | 測試檔案                                         | 覆蓋內容                                                                             | 驗收指令                                                     |
+| ------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| Backend unit        | `backend/tests/test_daily_radar_prefilter.py`    | 流動性、股價、資料完整度、過熱、弱勢、融資、stale hard gate                          | `cd backend && make test`                                    |
+| Backend unit        | `backend/tests/test_daily_radar_scoring.py`      | 四個 bucket 分數、primary bucket、secondary buckets、risk penalties                  | `cd backend && make test`                                    |
+| Backend unit        | `backend/tests/test_daily_radar_explanations.py` | rule-based 摘要、證據點、風險標籤、禁用交易命令文案                                  | `cd backend && make test`                                    |
+| Backend unit        | `backend/tests/test_daily_radar_cooldown.py`     | `new`, `repeat`, `upgraded`, `cooled_down` 判定                                      | `cd backend && make test`                                    |
+| Backend persistence | `backend/tests/test_daily_radar_repository.py`   | run log、candidate 寫入、同日重跑、日期與 symbol 查詢                                | `cd backend && make test`                                    |
+| Backend API         | `backend/tests/test_daily_radar_api.py`          | shared token auth、internal run、latest、date、symbol endpoints                      | `cd backend && make test`                                    |
+| Frontend unit       | `frontend/src/pages/DailyRadarPage.test.tsx`     | loading、empty、error、stale、completed、bucket tabs、detail drawer                  | `cd frontend && pnpm test` if available                      |
+| Frontend build      | existing frontend scripts                        | 型別、route、API client import、production build                                     | `cd frontend && pnpm build`                                  |
+| Schedule            | `.github/workflows/daily-radar.yml`              | cron、Zeabur URL、internal token secrets、單一 `POST /internal/daily-radar/run` 呼叫 | GitHub Actions dry run or workflow syntax check if available |
 
 ## Phase 0: 契約與測試資料先行
 
@@ -62,11 +94,11 @@
 
 **Files likely touched:**
 
-* Create: `backend/tests/fixtures/daily_radar/ohlcv.json`
-* Create: `backend/tests/fixtures/daily_radar/institutional_flow.json`
-* Create: `backend/tests/fixtures/daily_radar/margin.json`
-* Create: `backend/tests/fixtures/daily_radar/market_context.json`
-* Create: `backend/tests/fixtures/daily_radar/history_candidates.json`
+- Create: `backend/tests/fixtures/daily_radar/ohlcv.json`
+- Create: `backend/tests/fixtures/daily_radar/institutional_flow.json`
+- Create: `backend/tests/fixtures/daily_radar/margin.json`
+- Create: `backend/tests/fixtures/daily_radar/market_context.json`
+- Create: `backend/tests/fixtures/daily_radar/history_candidates.json`
 
 **Tests first:**
 
@@ -83,8 +115,8 @@
 
 **Files likely touched:**
 
-* Create: `backend/tests/test_daily_radar_api_contract.py`
-* Create: `backend/src/ai_stock_sentinel/daily_radar/schemas.py`
+- Create: `backend/tests/test_daily_radar_api_contract.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/schemas.py`
 
 **Tests first:**
 
@@ -103,8 +135,8 @@
 
 **Files likely touched:**
 
-* Modify: `backend/tests/test_db_models.py`
-* Modify: `backend/src/ai_stock_sentinel/db/models.py`
+- Modify: `backend/tests/test_db_models.py`
+- Modify: `backend/src/ai_stock_sentinel/db/models.py`
 
 **Tests first:**
 
@@ -129,8 +161,8 @@
 
 **Files likely touched:**
 
-* Create: `backend/alembic/versions/*_add_daily_radar_tables.py`
-* Create: `backend/tests/test_daily_radar_repository.py`
+- Create: `backend/alembic/versions/*_add_daily_radar_tables.py`
+- Create: `backend/tests/test_daily_radar_repository.py`
 
 **Tests first:**
 
@@ -149,10 +181,10 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/__init__.py`
-* Create: `backend/src/ai_stock_sentinel/daily_radar/types.py`
-* Create: `backend/src/ai_stock_sentinel/daily_radar/constants.py`
-* Create: `backend/tests/test_daily_radar_types.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/__init__.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/types.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/constants.py`
+- Create: `backend/tests/test_daily_radar_types.py`
 
 **Tests first:**
 
@@ -169,9 +201,9 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/data_loader.py`
-* Create: `backend/src/ai_stock_sentinel/daily_radar/prefilter.py`
-* Create: `backend/tests/test_daily_radar_prefilter.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/data_loader.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/prefilter.py`
+- Create: `backend/tests/test_daily_radar_prefilter.py`
 
 **Tests first:**
 
@@ -198,8 +230,8 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/scoring.py`
-* Modify: `backend/tests/test_daily_radar_scoring.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/scoring.py`
+- Modify: `backend/tests/test_daily_radar_scoring.py`
 
 **Tests first:**
 
@@ -220,8 +252,8 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/explanations.py`
-* Create: `backend/tests/test_daily_radar_explanations.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/explanations.py`
+- Create: `backend/tests/test_daily_radar_explanations.py`
 
 **Tests first:**
 
@@ -241,8 +273,8 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/cooldown.py`
-* Create: `backend/tests/test_daily_radar_cooldown.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/cooldown.py`
+- Create: `backend/tests/test_daily_radar_cooldown.py`
 
 **Tests first:**
 
@@ -260,10 +292,10 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/repository.py`
-* Create: `backend/src/ai_stock_sentinel/daily_radar/service.py`
-* Modify: `backend/tests/test_daily_radar_repository.py`
-* Create: `backend/tests/test_daily_radar_service.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/repository.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/service.py`
+- Modify: `backend/tests/test_daily_radar_repository.py`
+- Create: `backend/tests/test_daily_radar_service.py`
 
 **Tests first:**
 
@@ -285,9 +317,9 @@
 
 **Files likely touched:**
 
-* Modify: `backend/src/ai_stock_sentinel/config.py`
-* Create: `backend/src/ai_stock_sentinel/daily_radar/auth.py`
-* Create: `backend/tests/test_daily_radar_api.py`
+- Modify: `backend/src/ai_stock_sentinel/config.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/auth.py`
+- Create: `backend/tests/test_daily_radar_api.py`
 
 **Tests first:**
 
@@ -310,9 +342,9 @@
 
 **Files likely touched:**
 
-* Create: `backend/src/ai_stock_sentinel/daily_radar/router.py`
-* Modify: `backend/src/ai_stock_sentinel/main.py` or `backend/src/ai_stock_sentinel/api.py`
-* Modify: `backend/tests/test_daily_radar_api.py`
+- Create: `backend/src/ai_stock_sentinel/daily_radar/router.py`
+- Modify: `backend/src/ai_stock_sentinel/main.py` or `backend/src/ai_stock_sentinel/api.py`
+- Modify: `backend/tests/test_daily_radar_api.py`
 
 **Tests first:**
 
@@ -330,8 +362,8 @@
 
 **Files likely touched:**
 
-* Modify: `backend/src/ai_stock_sentinel/daily_radar/router.py`
-* Modify: `backend/tests/test_daily_radar_api.py`
+- Modify: `backend/src/ai_stock_sentinel/daily_radar/router.py`
+- Modify: `backend/tests/test_daily_radar_api.py`
 
 **Tests first:**
 
@@ -352,9 +384,9 @@
 
 **Files likely touched:**
 
-* Create: `frontend/src/lib/dailyRadarApi.ts`
-* Create: `frontend/src/lib/dailyRadarTypes.ts`
-* Create: `frontend/src/lib/dailyRadarApi.test.ts` if test setup exists
+- Create: `frontend/src/lib/dailyRadarApi.ts`
+- Create: `frontend/src/lib/dailyRadarTypes.ts`
+- Create: `frontend/src/lib/dailyRadarApi.test.ts` if test setup exists
 
 **Tests first:**
 
@@ -371,9 +403,9 @@
 
 **Files likely touched:**
 
-* Create: `frontend/src/pages/DailyRadarPage.tsx`
-* Modify: `frontend/src/App.tsx`
-* Modify: `frontend/src/main.tsx` if route registry lives there
+- Create: `frontend/src/pages/DailyRadarPage.tsx`
+- Modify: `frontend/src/App.tsx`
+- Modify: `frontend/src/main.tsx` if route registry lives there
 
 **Tests first:**
 
@@ -390,9 +422,9 @@
 
 **Files likely touched:**
 
-* Modify: `frontend/src/pages/DailyRadarPage.tsx`
-* Create: `frontend/src/components/DailyRadarBucketTabs.tsx` if component split is useful
-* Create: `frontend/src/components/DailyRadarCandidateList.tsx` if component split is useful
+- Modify: `frontend/src/pages/DailyRadarPage.tsx`
+- Create: `frontend/src/components/DailyRadarBucketTabs.tsx` if component split is useful
+- Create: `frontend/src/components/DailyRadarCandidateList.tsx` if component split is useful
 
 **Tests first:**
 
@@ -410,8 +442,8 @@
 
 **Files likely touched:**
 
-* Modify: `frontend/src/pages/DailyRadarPage.tsx`
-* Create: `frontend/src/components/DailyRadarDetailDrawer.tsx` if component split is useful
+- Modify: `frontend/src/pages/DailyRadarPage.tsx`
+- Create: `frontend/src/components/DailyRadarDetailDrawer.tsx` if component split is useful
 
 **Tests first:**
 
@@ -428,8 +460,8 @@
 
 **Files likely touched:**
 
-* Modify: `frontend/src/pages/DailyRadarPage.tsx`
-* Create: `frontend/src/pages/DailyRadarPage.test.tsx` if test setup exists
+- Modify: `frontend/src/pages/DailyRadarPage.tsx`
+- Create: `frontend/src/pages/DailyRadarPage.test.tsx` if test setup exists
 
 **Tests first:**
 
@@ -448,7 +480,7 @@
 
 **Files likely touched:**
 
-* Create: `.github/workflows/daily-radar.yml`
+- Create: `.github/workflows/daily-radar.yml`
 
 **Tests first:**
 
@@ -477,9 +509,9 @@
 
 **Files likely touched:**
 
-* Modify later: `docs/specs/backend-api-technical-spec.md`
-* Modify later: `README.md` if user asks for docs sync in a later delegation
-* Modify later: `backend/.env.example` if env examples are tracked
+- Modify later: `docs/specs/backend-api-technical-spec.md`
+- Modify later: `README.md` if user asks for docs sync in a later delegation
+- Modify later: `backend/.env.example` if env examples are tracked
 
 **Tests first:**
 
@@ -491,6 +523,8 @@
 2. 實作完成後，後續 docs sync 需把落地 API contract 回填到 backend technical spec。
 
 ### Task 6.2: Rollout plan
+
+Dedicated rollout checklist: `docs/plans/2026-06-02-daily-radar-rollout-checklist.md`
 
 **Steps:**
 

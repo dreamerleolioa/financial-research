@@ -1,0 +1,310 @@
+{
+  "fixture_version": "daily-radar-contract-v1",
+  "records": [
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": "institutional_accumulation",
+      "fixture_case": null,
+      "indicators": {
+        "atr14": 18.0,
+        "bias20": 4.6,
+        "kd_d": 60.0,
+        "kd_k": 68.0,
+        "ma20": 910.0,
+        "ma5": 928.0,
+        "ma60": 862.0,
+        "macd_histogram": 0.82,
+        "mfi14": 58.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "rising",
+        "resistance_level": 972.0,
+        "rsi14": 61.5,
+        "support_level": 910.0,
+        "volume_ratio": 1.31
+      },
+      "name": "TSMC",
+      "ohlcv": {
+        "avg_volume_20": 29200000,
+        "close": 952.0,
+        "high": 956.0,
+        "low": 936.0,
+        "open": 940.0,
+        "previous_close": 938.0,
+        "turnover_value_million": 36366.4,
+        "volume": 38200000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "2330.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": "price_volume_strengthening",
+      "fixture_case": null,
+      "indicators": {
+        "atr14": 35.0,
+        "bias20": 8.3,
+        "kd_d": 68.0,
+        "kd_k": 74.0,
+        "ma20": 1162.0,
+        "ma5": 1198.0,
+        "ma60": 1095.0,
+        "macd_histogram": 1.18,
+        "mfi14": 72.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "rising",
+        "resistance_level": 1260.0,
+        "rsi14": 66.0,
+        "support_level": 1160.0,
+        "volume_ratio": 1.84
+      },
+      "name": "MediaTek",
+      "ohlcv": {
+        "avg_volume_20": 6400000,
+        "close": 1258.0,
+        "high": 1265.0,
+        "low": 1205.0,
+        "open": 1210.0,
+        "previous_close": 1208.0,
+        "turnover_value_million": 14844.4,
+        "volume": 11800000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "2454.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": "bottoming_reversal",
+      "fixture_case": null,
+      "indicators": {
+        "atr14": 12.5,
+        "bias20": -0.5,
+        "kd_d": 24.0,
+        "kd_k": 28.0,
+        "ma20": 398.0,
+        "ma5": 382.0,
+        "ma60": 432.0,
+        "macd_histogram": -0.12,
+        "mfi14": 42.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "turning_up",
+        "resistance_level": 408.0,
+        "rsi14": 47.0,
+        "support_level": 372.0,
+        "volume_ratio": 1.38
+      },
+      "name": "Novatek",
+      "ohlcv": {
+        "avg_volume_20": 5200000,
+        "close": 396.0,
+        "high": 399.5,
+        "low": 382.5,
+        "open": 386.0,
+        "previous_close": 384.0,
+        "turnover_value_million": 2851.2,
+        "volume": 7200000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "3034.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": "support_retest",
+      "fixture_case": null,
+      "indicators": {
+        "atr14": 1.2,
+        "bias20": 0.2,
+        "kd_d": 43.0,
+        "kd_k": 45.0,
+        "ma20": 49.7,
+        "ma5": 49.4,
+        "ma60": 48.8,
+        "macd_histogram": 0.08,
+        "mfi14": 51.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "flat_to_up",
+        "resistance_level": 52.0,
+        "rsi14": 52.0,
+        "support_level": 49.1,
+        "volume_ratio": 1.08
+      },
+      "name": "UMC",
+      "ohlcv": {
+        "avg_volume_20": 42000000,
+        "close": 49.8,
+        "high": 50.1,
+        "low": 48.9,
+        "open": 49.2,
+        "previous_close": 49.0,
+        "turnover_value_million": 2265.9,
+        "volume": 45500000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "2303.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-24",
+        "technical_indicators": "2026-05-24"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "stale_data",
+      "indicators": {
+        "atr14": 0.7,
+        "bias20": 1.5,
+        "kd_d": 49.0,
+        "kd_k": 50.0,
+        "ma20": 33.8,
+        "ma5": 34.0,
+        "ma60": 33.4,
+        "macd_histogram": 0.04,
+        "mfi14": 47.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "flat",
+        "resistance_level": 35.2,
+        "rsi14": 54.0,
+        "support_level": 33.6,
+        "volume_ratio": 1.06
+      },
+      "name": "Taiwan Cement",
+      "ohlcv": {
+        "avg_volume_20": 8700000,
+        "close": 34.3,
+        "high": 34.6,
+        "low": 34.0,
+        "open": 34.2,
+        "previous_close": 34.1,
+        "turnover_value_million": 315.6,
+        "volume": 9200000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "1101.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "data_gap",
+      "indicators": {
+        "atr14": 6.4,
+        "bias20": -4.9,
+        "kd_d": 38.0,
+        "kd_k": 35.0,
+        "ma20": 192.5,
+        "ma5": 188.0,
+        "ma60": 201.0,
+        "macd_histogram": -0.55,
+        "mfi14": 39.0,
+        "missing_trading_days_60": 7,
+        "obv_trend": "falling",
+        "resistance_level": 198.0,
+        "rsi14": 41.0,
+        "support_level": 180.0,
+        "volume_ratio": 0.9
+      },
+      "name": "Evergreen Marine",
+      "ohlcv": {
+        "avg_volume_20": 17200000,
+        "close": 183.0,
+        "high": 189.0,
+        "low": 181.5,
+        "open": 186.0,
+        "previous_close": 185.5,
+        "turnover_value_million": 2818.2,
+        "volume": 15400000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "2603.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "overextended",
+      "indicators": {
+        "atr14": 210.0,
+        "bias20": 24.6,
+        "kd_d": 88.0,
+        "kd_k": 92.0,
+        "ma20": 2540.0,
+        "ma5": 2830.0,
+        "ma60": 2110.0,
+        "macd_histogram": 2.45,
+        "mfi14": 91.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "rising_fast",
+        "resistance_level": 3200.0,
+        "rsi14": 84.5,
+        "support_level": 2480.0,
+        "volume_ratio": 2.6
+      },
+      "name": "Alchip",
+      "ohlcv": {
+        "avg_volume_20": 980000,
+        "close": 3165.0,
+        "high": 3180.0,
+        "low": 3005.0,
+        "open": 3020.0,
+        "previous_close": 2980.0,
+        "turnover_value_million": 8070.8,
+        "volume": 2550000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "3661.TW"
+    },
+    {
+      "data_dates": {
+        "ohlcv": "2026-05-29",
+        "technical_indicators": "2026-05-29"
+      },
+      "expected_bucket_seed": null,
+      "fixture_case": "margin_crowding",
+      "indicators": {
+        "atr14": 0.8,
+        "bias20": -2.9,
+        "kd_d": 42.0,
+        "kd_k": 38.0,
+        "ma20": 24.5,
+        "ma5": 24.1,
+        "ma60": 25.8,
+        "macd_histogram": -0.33,
+        "mfi14": 36.0,
+        "missing_trading_days_60": 0,
+        "obv_trend": "weak",
+        "resistance_level": 25.4,
+        "rsi14": 44.0,
+        "support_level": 23.2,
+        "volume_ratio": 0.87
+      },
+      "name": "Walsin Lihwa",
+      "ohlcv": {
+        "avg_volume_20": 21400000,
+        "close": 23.8,
+        "high": 24.3,
+        "low": 23.5,
+        "open": 23.9,
+        "previous_close": 23.9,
+        "turnover_value_million": 442.7,
+        "volume": 18600000
+      },
+      "record_date": "2026-05-29",
+      "symbol": "1605.TW"
+    }
+  ],
+  "run_date": "2026-05-29"
+}
