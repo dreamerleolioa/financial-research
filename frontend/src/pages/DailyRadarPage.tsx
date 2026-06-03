@@ -95,14 +95,174 @@ function formatTraceKey(value: string): string {
     .join(" ");
 }
 
-function formatTraceValue(value: unknown): string {
+const MATCHED_RULE_DETAIL_LABEL: Record<string, string> = {
+  above_ma20: "站上 MA20",
+  above_ma60: "站上 MA60",
+  atr14: "ATR 14 日波動",
+  avg_volume_20: "20 日平均量",
+  bias20: "20 日乖離率",
+  close: "收盤價",
+  consecutive_buy_days: "連續買超天數",
+  consecutive_negative_days: "連續賣超天數",
+  consecutive_positive_days: "連續買超天數",
+  context_flags: "情境旗標",
+  cumulative_net_buy: "累計買超",
+  data_dates: "資料日期",
+  days: "連續天數",
+  details: "細節",
+  flow_state: "籌碼狀態",
+  foreign_net: "外資買賣超",
+  foreign_net_shares: "外資買賣超股數",
+  high: "最高價",
+  institutional_flow: "法人籌碼",
+  institutional_universe_tracks: "法人篩選軌道",
+  investment_trust_net: "投信買賣超",
+  investment_trust_net_shares: "投信買賣超股數",
+  kd_d: "KD D 值",
+  kd_k: "KD K 值",
+  label: "標籤",
+  low: "最低價",
+  ma5: "MA5",
+  ma20: "MA20",
+  ma60: "MA60",
+  macd_histogram: "MACD 柱狀體",
+  margin_delta_pct: "融資餘額變化率",
+  margin_to_volume: "融資量能比",
+  market: "大盤背景",
+  market_risk_flags: "大盤風險旗標",
+  mfi14: "MFI 14 日資金流量",
+  missing_trading_days_60: "近 60 日缺漏交易日",
+  net_flow_to_avg_volume: "法人淨流量 / 均量",
+  obv_trend: "OBV 趨勢",
+  ohlcv: "價格量能",
+  open: "開盤價",
+  previous_close: "前一交易日收盤",
+  reason: "原因",
+  recent_accumulation_rank: "近期累積排名",
+  recent_actor: "近期主力法人",
+  recent_concentration: "近期買超集中度",
+  recent_source_dates: "近期資料來源日期",
+  resistance: "壓力價位",
+  resistance_level: "壓力價位",
+  risk_flags: "風險旗標",
+  rsi14: "RSI 14 日強弱",
+  same_day_actor: "當日主力法人",
+  same_day_concentration: "當日買超集中度",
+  same_day_net_buy: "當日買超",
+  same_day_rank: "當日法人排名",
+  same_day_source_dates: "當日資料來源日期",
+  score: "分數",
+  score_adjustment: "分數調整",
+  scores: "分數",
+  source_provider: "資料來源",
+  support: "支撐價位",
+  support_level: "支撐價位",
+  symbol_overrides: "個股情境覆寫",
+  technical_indicators: "技術指標",
+  three_party_net: "三大法人買賣超",
+  three_party_net_shares: "三大法人買賣超股數",
+  volatility_state: "波動狀態",
+  volume: "成交量",
+  volume_ratio: "量能倍數",
+};
+
+const MATCHED_RULE_VALUE_LABEL: Record<string, string> = {
+  bottoming_reversal: "低位修復",
+  conflict: "法人方向分歧",
+  consistent_accumulation: "連續累積",
+  data_gap: "資料缺口",
+  early_stabilization: "初步止穩",
+  elevated: "波動偏高",
+  falling: "轉弱下滑",
+  flat: "持平",
+  flat_to_up: "由平轉升",
+  flow_conflict: "量價籌碼分歧",
+  foreign: "外資",
+  fresh: "資料新鮮",
+  high: "高",
+  institutional: "三大法人",
+  institutional_accumulation: "法人籌碼延續",
+  institutional_flow: "法人籌碼",
+  investment_trust: "投信",
+  late_momentum: "動能偏晚",
+  margin_crowding: "融資偏擁擠",
+  market_weakness: "大盤偏弱",
+  neutral: "中性",
+  normal: "正常",
+  overextended: "短線過熱",
+  price_volume: "量價結構",
+  price_volume_strengthening: "量價結構轉強",
+  recent_accumulation: "近期累積買超",
+  rising: "走升",
+  rising_fast: "快速走升",
+  same_day_institutional: "當日法人買超",
+  same_day_net_buy: "當日買超",
+  stable: "穩定",
+  stale_core_data: "核心資料落後",
+  stale_data: "資料落後",
+  support_area_accumulation: "支撐區承接累積",
+  supportive: "支持觀察",
+  support_retest: "支撐回測",
+  technical: "技術面",
+  trust: "投信",
+  turning_up: "轉強",
+  volume_confirmed_accumulation: "量能確認累積",
+  weak: "偏弱",
+  weak_confirmation: "確認偏弱",
+};
+
+const SCORE_BREAKDOWN_LABEL: Record<string, string> = {
+  freshness: "資料新鮮度",
+  bucket_scores: "分類分數",
+  market_context: "大盤環境",
+  risk_penalties: "風險扣分",
+  risk_adjustment: "風險調整",
+  observation_score: "最終觀察分數",
+  cross_confirmation: "交叉確認",
+  primary_bucket_score: "主要分類原始分",
+  weighted_primary_bucket_score: "主要分類加權分",
+};
+
+function getCandidateDisplayName(candidate: DailyRadarCandidate): string | null {
+  const name = candidate.name.trim();
+  return name && name !== candidate.symbol ? name : null;
+}
+
+function getCandidateDisplayTitle(candidate: DailyRadarCandidate): string {
+  const displayName = getCandidateDisplayName(candidate);
+  return displayName ? `${candidate.symbol} · ${displayName}` : candidate.symbol;
+}
+
+function formatScoreBreakdownKey(value: string): string {
+  return SCORE_BREAKDOWN_LABEL[value] ?? BUCKET_LABEL[value as DailyRadarBucket] ?? RISK_LABEL[value as DailyRadarRiskLabel] ?? formatTraceKey(value);
+}
+
+function formatMatchedRuleDetailKey(value: string): string {
+  return MATCHED_RULE_DETAIL_LABEL[value] ?? BUCKET_LABEL[value as DailyRadarBucket] ?? RISK_LABEL[value as DailyRadarRiskLabel] ?? formatTraceKey(value);
+}
+
+function formatMatchedRuleValue(value: string): string {
+  return MATCHED_RULE_VALUE_LABEL[value]
+    ?? BUCKET_LABEL[value as DailyRadarBucket]
+    ?? RISK_LABEL[value as DailyRadarRiskLabel]
+    ?? value;
+}
+
+function formatTraceValue(
+  value: unknown,
+  formatKey: (key: string) => string = formatTraceKey,
+  formatStringValue: (value: string) => string = (text) => text,
+): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "number") return Number.isFinite(value) ? value.toLocaleString() : String(value);
   if (typeof value === "boolean") return value ? "是" : "否";
-  if (typeof value === "string") return value.length > 96 ? `${value.slice(0, 96)}…` : value;
+  if (typeof value === "string") {
+    const formatted = formatStringValue(value);
+    return formatted.length > 96 ? `${formatted.slice(0, 96)}…` : formatted;
+  }
   if (Array.isArray(value)) {
     if (value.length === 0) return "—";
-    const preview = value.slice(0, 4).map(formatTraceValue).join("、");
+    const preview = value.slice(0, 4).map((item) => formatTraceValue(item, formatKey, formatStringValue)).join("、");
     return value.length > 4 ? `${preview}，另 ${value.length - 4} 項` : preview;
   }
   if (isTraceRecord(value)) {
@@ -110,7 +270,7 @@ function formatTraceValue(value: unknown): string {
     if (entries.length === 0) return "—";
     const preview = entries
       .slice(0, 3)
-      .map(([key, nestedValue]) => `${formatTraceKey(key)}：${formatTraceValue(nestedValue)}`)
+      .map(([key, nestedValue]) => `${formatKey(key)}：${formatTraceValue(nestedValue, formatKey, formatStringValue)}`)
       .join("；");
     return entries.length > 3 ? `${preview}；另 ${entries.length - 3} 項` : preview;
   }
@@ -228,7 +388,17 @@ function DailyRadarBucketTabs({
   );
 }
 
-function TraceValueList({ payload, emptyText }: { payload: Record<string, unknown>; emptyText: string }) {
+function TraceValueList({
+  payload,
+  emptyText,
+  formatKey = formatTraceKey,
+  formatValue,
+}: {
+  payload: Record<string, unknown>;
+  emptyText: string;
+  formatKey?: (key: string) => string;
+  formatValue?: (value: string) => string;
+}) {
   const entries = Object.entries(payload);
 
   if (entries.length === 0) {
@@ -239,8 +409,8 @@ function TraceValueList({ payload, emptyText }: { payload: Record<string, unknow
     <dl className="grid gap-2 md:grid-cols-2">
       {entries.map(([key, value]) => (
         <div key={key} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
-          <dt className="text-xs font-medium text-text-muted">{formatTraceKey(key)}</dt>
-          <dd className="mt-1 break-words text-sm text-text-primary">{formatTraceValue(value)}</dd>
+          <dt className="text-xs font-medium text-text-muted">{formatKey(key)}</dt>
+          <dd className="mt-1 break-words text-sm text-text-primary">{formatTraceValue(value, formatKey, formatValue)}</dd>
         </div>
       ))}
     </dl>
@@ -274,49 +444,60 @@ function DailyRadarCandidateList({
         </span>
       </div>
       <div className="divide-y divide-border-subtle">
-        {candidates.map((candidate) => (
-          <button
-            key={candidate.symbol}
-            type="button"
-            aria-haspopup="dialog"
-            onClick={() => onSelectCandidate(candidate)}
-            className="block w-full px-4 py-4 text-left transition hover:bg-card-hover focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-          >
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-mono text-base font-semibold text-text-primary">{candidate.symbol}</p>
-                  <p className="text-sm font-medium text-text-secondary">{candidate.name}</p>
-                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
-                    {REPEAT_STATUS_LABEL[candidate.repeat_status]}
-                  </span>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text">
-                    {BUCKET_LABEL[candidate.primary_bucket]}
-                  </span>
-                  {candidate.risk_labels.length > 0 ? (
-                    candidate.risk_labels.map((risk) => (
-                      <span key={risk} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                        {RISK_LABEL[risk]}
+        {candidates.map((candidate) => {
+          const displayName = getCandidateDisplayName(candidate);
+
+          return (
+            <article key={candidate.symbol} className="flex flex-col gap-3 px-4 py-4 transition hover:bg-card-hover focus-within:bg-card-hover md:flex-row md:items-stretch md:justify-between">
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                onClick={() => onSelectCandidate(candidate)}
+                className="min-w-0 flex-1 rounded-lg text-left focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-mono text-base font-semibold text-text-primary">{candidate.symbol}</p>
+                      {displayName && <p className="text-sm font-medium text-text-secondary">{displayName}</p>}
+                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
+                        {REPEAT_STATUS_LABEL[candidate.repeat_status]}
                       </span>
-                    ))
-                  ) : (
-                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                      風險標籤待觀察
-                    </span>
-                  )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text">
+                        {BUCKET_LABEL[candidate.primary_bucket]}
+                      </span>
+                      {candidate.risk_labels.length > 0 ? (
+                        candidate.risk_labels.map((risk) => (
+                          <span key={risk} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            {RISK_LABEL[risk]}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                          風險標籤待觀察
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3 text-right md:min-w-28">
+                    <p className="text-xs font-medium text-text-muted">觀察分數</p>
+                    <p className="mt-1 font-mono text-2xl font-semibold text-text-primary">
+                      {candidate.observation_score.toFixed(0)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3 text-right md:min-w-28">
-                <p className="text-xs font-medium text-text-muted">觀察分數</p>
-                <p className="mt-1 font-mono text-2xl font-semibold text-text-primary">
-                  {candidate.observation_score.toFixed(0)}
-                </p>
-              </div>
-            </div>
-          </button>
-        ))}
+              </button>
+              <Link
+                to={`/analyze?symbol=${encodeURIComponent(candidate.symbol)}`}
+                className="inline-flex items-center justify-center rounded-lg border border-indigo-500/40 px-3 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:text-indigo-300 dark:hover:bg-indigo-950 md:self-center"
+              >
+                查看單股完整分析
+              </Link>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
@@ -395,7 +576,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-text-faint">候選追蹤細節</p>
               <h2 id={titleId} className="mt-1 text-xl font-semibold text-text-primary">
-                {candidate.symbol} · {candidate.name}
+                {getCandidateDisplayTitle(candidate)}
               </h2>
               <p className="mt-1 text-sm text-text-muted">追溯本次列入觀察清單的分數、規則與資料輸入。</p>
             </div>
@@ -472,14 +653,17 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
           </section>
 
           <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">Score breakdown</h3>
+            <h3 className="text-sm font-semibold text-text-primary">分數拆解</h3>
+            <p className="mt-1 text-xs leading-relaxed text-text-muted">
+              這裡說明本次觀察分數如何由資料新鮮度、分類分數、大盤環境與風險調整組合而成。
+            </p>
             <div className="mt-3">
-              <TraceValueList payload={candidate.score_breakdown} emptyText="尚未回傳分數拆解。" />
+              <TraceValueList payload={candidate.score_breakdown} emptyText="尚未回傳分數拆解。" formatKey={formatScoreBreakdownKey} />
             </div>
           </section>
 
           <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">Matched rules</h3>
+            <h3 className="text-sm font-semibold text-text-primary">命中的觀察規則</h3>
             <div className="mt-3 space-y-3">
               {candidate.matched_rules.length > 0 ? (
                 candidate.matched_rules.map((rule) => (
@@ -489,7 +673,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
                       <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">{rule.rule_id}</span>
                     </div>
                     <div className="mt-3">
-                      <TraceValueList payload={rule.details} emptyText="此規則未附加細節。" />
+                      <TraceValueList payload={rule.details} emptyText="此規則未附加細節。" formatKey={formatMatchedRuleDetailKey} formatValue={formatMatchedRuleValue} />
                     </div>
                   </article>
                 ))
@@ -522,17 +706,6 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
             </div>
           </section>
 
-          <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950">
-            <p className="text-sm leading-relaxed text-indigo-900 dark:text-indigo-200">
-              若需要延伸檢視單一標的的資料脈絡，可前往個股完整分析頁重新整理觀察素材。
-            </p>
-            <Link
-              to={`/analyze?symbol=${encodeURIComponent(candidate.symbol)}`}
-              className="mt-3 inline-flex rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-2 dark:focus:ring-offset-slate-900"
-            >
-              查看單股完整分析
-            </Link>
-          </div>
         </div>
       </aside>
     </div>
