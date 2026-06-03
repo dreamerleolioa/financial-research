@@ -169,16 +169,16 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
 };
 
 const BOLLINGER_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
-  near_upper: { label: "近上軌", cls: "bg-red-100 text-red-800" },
+  near_upper: { label: "接近上軌", cls: "bg-red-100 text-red-800" },
   above_mid: { label: "中軌上方", cls: "bg-emerald-100 text-emerald-800" },
   below_mid: { label: "中軌下方", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-  near_lower: { label: "近下軌", cls: "bg-blue-100 text-blue-800" },
+  near_lower: { label: "接近下軌", cls: "bg-blue-100 text-blue-800" },
   flat: { label: "通道平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 const MACD_BIAS_LABEL: Record<string, { label: string; cls: string }> = {
-  bullish: { label: "偏多", cls: "bg-emerald-100 text-emerald-800" },
-  bearish: { label: "偏空", cls: "bg-red-100 text-red-800" },
+  bullish: { label: "多方動能", cls: "bg-emerald-100 text-emerald-800" },
+  bearish: { label: "空方動能", cls: "bg-red-100 text-red-800" },
   neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
@@ -201,8 +201,8 @@ const ADX_STRENGTH_LABEL: Record<string, { label: string; cls: string }> = {
 };
 
 const ADX_DIRECTION_LABEL: Record<string, { label: string; cls: string }> = {
-  bullish: { label: "多方", cls: "bg-emerald-100 text-emerald-800" },
-  bearish: { label: "空方", cls: "bg-red-100 text-red-800" },
+  bullish: { label: "多方趨勢", cls: "bg-emerald-100 text-emerald-800" },
+  bearish: { label: "空方趨勢", cls: "bg-red-100 text-red-800" },
   neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
@@ -232,8 +232,8 @@ const MFI_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
 const DONCHIAN_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
   breakout_up: { label: "突破上緣", cls: "bg-emerald-100 text-emerald-800" },
   breakdown_down: { label: "跌破下緣", cls: "bg-red-100 text-red-800" },
-  near_upper: { label: "近上緣", cls: "bg-yellow-100 text-yellow-800" },
-  near_lower: { label: "近下緣", cls: "bg-blue-100 text-blue-800" },
+  near_upper: { label: "接近上緣", cls: "bg-yellow-100 text-yellow-800" },
+  near_lower: { label: "接近下緣", cls: "bg-blue-100 text-blue-800" },
   upper_half: { label: "區間上半", cls: "bg-emerald-100 text-emerald-800" },
   lower_half: { label: "區間下半", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
   flat: { label: "區間平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
@@ -648,7 +648,7 @@ export default function AnalyzePage() {
               </svg>
               <div className="absolute text-center">
                 <div className="text-xl font-semibold">{confidenceScore != null ? `${confidenceScore}%` : "—"}</div>
-                <div className="text-xs text-text-muted">Confidence</div>
+                <div className="text-xs text-text-muted">信心分數</div>
               </div>
             </div>
             {result?.cross_validation_note && <p className="mt-2 text-center text-xs text-text-muted">{result.cross_validation_note}</p>}
@@ -676,7 +676,7 @@ export default function AnalyzePage() {
 
       {result?.technical_indicators && (
         <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <h3 className="mb-3 text-xs font-semibold text-text-muted">技術指標數值</h3>
+          <h3 className="mb-3 text-xs font-semibold text-text-muted">技術指標摘要</h3>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
             <div>
               <p className="text-xs text-text-muted mb-1">布林通道位階</p>
@@ -687,7 +687,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">MACD 方向</p>
+              <p className="text-xs text-text-muted mb-1">指數平滑異同移動平均方向（MACD）</p>
               {result.technical_indicators.macd_bias && MACD_BIAS_LABEL[result.technical_indicators.macd_bias] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MACD_BIAS_LABEL[result.technical_indicators.macd_bias].cls}`}>
                   {MACD_BIAS_LABEL[result.technical_indicators.macd_bias].label}
@@ -695,7 +695,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">KD 交叉</p>
+              <p className="text-xs text-text-muted mb-1">隨機指標交叉（KD）</p>
               {result.technical_indicators.kd_signal && KD_SIGNAL_LABEL[result.technical_indicators.kd_signal] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${KD_SIGNAL_LABEL[result.technical_indicators.kd_signal].cls}`}>
                   {KD_SIGNAL_LABEL[result.technical_indicators.kd_signal].label}
@@ -703,7 +703,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">KD 區間</p>
+              <p className="text-xs text-text-muted mb-1">隨機指標區間（KD）</p>
               {result.technical_indicators.kd_zone && KD_ZONE_LABEL[result.technical_indicators.kd_zone] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${KD_ZONE_LABEL[result.technical_indicators.kd_zone].cls}`}>
                   {KD_ZONE_LABEL[result.technical_indicators.kd_zone].label}
@@ -711,7 +711,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">ADX 強度</p>
+              <p className="text-xs text-text-muted mb-1">平均趨向指標強度（ADX）</p>
               {result.technical_indicators.adx_trend_strength && ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength].cls}`}>
                   {ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength].label}
@@ -719,7 +719,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">ADX 方向</p>
+              <p className="text-xs text-text-muted mb-1">平均趨向指標方向（ADX）</p>
               {result.technical_indicators.adx_trend_direction && ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction].cls}`}>
                   {ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction].label}
@@ -727,7 +727,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">OBV 訊號</p>
+              <p className="text-xs text-text-muted mb-1">能量潮訊號（OBV）</p>
               {result.technical_indicators.obv_signal && OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].cls}`}>
                   {OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].label}
@@ -735,7 +735,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">ATR 波動</p>
+              <p className="text-xs text-text-muted mb-1">平均真實波幅（ATR）</p>
               {result.technical_indicators.volatility_level && VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].cls}`}>
                   {VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].label}
@@ -743,7 +743,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">MFI 訊號</p>
+              <p className="text-xs text-text-muted mb-1">資金流量訊號（MFI）</p>
               {result.technical_indicators.mfi_signal && MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal].cls}`}>
                   {MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal].label}
@@ -751,7 +751,7 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">Donchian 位階</p>
+              <p className="text-xs text-text-muted mb-1">唐奇安通道位階</p>
               {result.technical_indicators.donchian_position && DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position].cls}`}>
                   {DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position].label}
@@ -777,17 +777,17 @@ export default function AnalyzePage() {
               </p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">訊號線</p>
+              <p className="text-xs text-text-muted mb-1">MACD 訊號線（趨勢判斷基準）</p>
               <p className="text-sm font-medium text-text-primary">{result.technical_indicators.macd_signal != null ? result.technical_indicators.macd_signal.toFixed(3) : "—"}</p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">柱狀體</p>
+              <p className="text-xs text-text-muted mb-1">MACD 動能柱狀體（正負差值）</p>
               <p className={`text-sm font-medium ${result.technical_indicators.macd_hist != null ? (result.technical_indicators.macd_hist >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
                 {result.technical_indicators.macd_hist != null ? result.technical_indicators.macd_hist.toFixed(3) : "—"}
               </p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">K / D</p>
+              <p className="text-xs text-text-muted mb-1">隨機指標 K／D（KD）</p>
               <p className="text-sm font-medium text-text-primary">
                 {result.technical_indicators.kd_k != null || result.technical_indicators.kd_d != null
                   ? `${formatIndicatorNumber(result.technical_indicators.kd_k, 1)} / ${formatIndicatorNumber(result.technical_indicators.kd_d, 1)}`
@@ -805,7 +805,7 @@ export default function AnalyzePage() {
               </p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">ATR / ATR%</p>
+              <p className="text-xs text-text-muted mb-1">平均真實波幅／百分比（ATR）</p>
               <p className="text-sm font-medium text-text-primary">
                 {result.technical_indicators.atr != null || result.technical_indicators.atr_pct != null
                   ? `${formatIndicatorNumber(result.technical_indicators.atr, 2)} / ${formatIndicatorNumber(result.technical_indicators.atr_pct, 2)}%`
@@ -813,11 +813,11 @@ export default function AnalyzePage() {
               </p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">MFI</p>
+              <p className="text-xs text-text-muted mb-1">資金流量指標（MFI）</p>
               <p className="text-sm font-medium text-text-primary">{formatIndicatorNumber(result.technical_indicators.mfi, 1)}</p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">Donchian 上 / 下緣</p>
+              <p className="text-xs text-text-muted mb-1">唐奇安通道上／下緣</p>
               <p className="text-sm font-medium text-text-primary">
                 {result.technical_indicators.donchian_upper != null || result.technical_indicators.donchian_lower != null
                   ? `${formatIndicatorNumber(result.technical_indicators.donchian_upper, 2)} / ${formatIndicatorNumber(result.technical_indicators.donchian_lower, 2)}`

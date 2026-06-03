@@ -53,6 +53,13 @@ const RUN_STATUS_LABEL: Record<DailyRadarRunStatus, string> = {
   stale_data: "資料需留意",
 };
 
+const RUN_STATUS_HELPER: Record<DailyRadarRunStatus, string> = {
+  completed: "本次盤後雷達已完成",
+  running: "本次盤後雷達仍在整理",
+  failed: "本次掃描流程未完成",
+  stale_data: "部分資料日期落後掃描日",
+};
+
 function sortDailyRadarCandidates(candidates: DailyRadarCandidate[]): DailyRadarCandidate[] {
   return [...candidates].sort((a, b) => {
     const scoreDelta = b.observation_score - a.observation_score;
@@ -75,30 +82,81 @@ function formatDate(value: string | null | undefined): string {
   return value || "—";
 }
 
+const DATA_SOURCE_LABEL: Record<string, string> = {
+  ohlcv: "價格與成交量資料",
+  technical_indicators: "技術指標資料",
+  institutional_flow: "法人買賣超資料",
+  margin: "融資融券資料",
+  market_index: "大盤指數資料",
+  daily_radar_universe: "雷達觀察名單來源",
+};
+
 function formatDataSourceLabel(source: string): string {
-  return source
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  return DATA_SOURCE_LABEL[source] ?? `其他資料來源（${source}）`;
 }
 
 function isTraceRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const TRACE_KEY_LABEL: Record<string, string> = {
+  avg_volume_20: "20 日平均量",
+  bucket_scores: "分類分數",
+  close: "收盤價",
+  components: "組成項目",
+  consecutive_positive_days: "連續買超天數",
+  cross_confirmation: "交叉確認",
+  data_dates: "資料日期",
+  details: "細節",
+  flow_state: "籌碼狀態",
+  foreign_net_shares: "外資買賣超股數",
+  freshness: "資料新鮮度",
+  high: "最高價",
+  indicators: "技術指標",
+  institutional_flow: "法人買賣超資料",
+  investment_trust_net_shares: "投信買賣超股數",
+  label: "標籤",
+  low: "最低價",
+  ma5: "5 日均線（MA5）",
+  ma20: "20 日均線（MA20）",
+  ma60: "60 日均線（MA60）",
+  margin: "融資融券資料",
+  margin_delta_pct: "融資餘額變化率",
+  margin_to_volume: "融資量能比",
+  market_context: "大盤環境",
+  net_flow_to_avg_volume: "法人淨流量／均量",
+  observation_score: "觀察分數",
+  ohlcv: "價格與成交量資料",
+  open: "開盤價",
+  previous_close: "前一交易日收盤",
+  primary_bucket_score: "主要分類原始分",
+  resistance_level: "壓力價位",
+  risk_adjustment: "風險調整",
+  risk_penalties: "風險扣分",
+  rsi14: "14 日相對強弱指標（RSI）",
+  score: "分數",
+  source_provider: "資料來源",
+  support_level: "支撐價位",
+  three_party_net_shares: "三大法人買賣超股數",
+  volatility_state: "波動狀態",
+  volume: "成交量",
+  weighted_primary_bucket_score: "主要分類加權分",
+  atr14: "14 日平均真實波幅（ATR）",
+  mfi14: "14 日資金流量指標（MFI）",
+  obv_trend: "能量潮趨勢（OBV）",
+  macd_histogram: "指數平滑異同移動平均柱狀體（MACD）",
+  kd_k: "KD 隨機指標 K 值",
+  kd_d: "KD 隨機指標 D 值",
+};
+
 function formatTraceKey(value: string): string {
-  return value
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  return TRACE_KEY_LABEL[value] ?? `其他追蹤欄位（${value}）`;
 }
 
 const MATCHED_RULE_DETAIL_LABEL: Record<string, string> = {
-  above_ma20: "站上 MA20",
-  above_ma60: "站上 MA60",
-  atr14: "ATR 14 日波動",
+  above_ma20: "站上 20 日均線（MA20）",
+  above_ma60: "站上 60 日均線（MA60）",
+  atr14: "14 日平均真實波幅（ATR）",
   avg_volume_20: "20 日平均量",
   bias20: "20 日乖離率",
   close: "收盤價",
@@ -118,22 +176,22 @@ const MATCHED_RULE_DETAIL_LABEL: Record<string, string> = {
   institutional_universe_tracks: "法人篩選軌道",
   investment_trust_net: "投信買賣超",
   investment_trust_net_shares: "投信買賣超股數",
-  kd_d: "KD D 值",
-  kd_k: "KD K 值",
+  kd_d: "KD 隨機指標 D 值",
+  kd_k: "KD 隨機指標 K 值",
   label: "標籤",
   low: "最低價",
-  ma5: "MA5",
-  ma20: "MA20",
-  ma60: "MA60",
-  macd_histogram: "MACD 柱狀體",
+  ma5: "5 日均線（MA5）",
+  ma20: "20 日均線（MA20）",
+  ma60: "60 日均線（MA60）",
+  macd_histogram: "指數平滑異同移動平均柱狀體（MACD）",
   margin_delta_pct: "融資餘額變化率",
   margin_to_volume: "融資量能比",
   market: "大盤背景",
   market_risk_flags: "大盤風險旗標",
-  mfi14: "MFI 14 日資金流量",
+  mfi14: "14 日資金流量指標（MFI）",
   missing_trading_days_60: "近 60 日缺漏交易日",
   net_flow_to_avg_volume: "法人淨流量 / 均量",
-  obv_trend: "OBV 趨勢",
+  obv_trend: "能量潮趨勢（OBV）",
   ohlcv: "價格量能",
   open: "開盤價",
   previous_close: "前一交易日收盤",
@@ -145,7 +203,7 @@ const MATCHED_RULE_DETAIL_LABEL: Record<string, string> = {
   resistance: "壓力價位",
   resistance_level: "壓力價位",
   risk_flags: "風險旗標",
-  rsi14: "RSI 14 日強弱",
+  rsi14: "14 日相對強弱指標（RSI）",
   same_day_actor: "當日主力法人",
   same_day_concentration: "當日買超集中度",
   same_day_net_buy: "當日買超",
@@ -639,7 +697,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
           </section>
 
           <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">Bucket 分數</h3>
+            <h3 className="text-sm font-semibold text-text-primary">分類分數</h3>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
               {DAILY_RADAR_BUCKETS.map((bucket) => (
                 <div key={bucket} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
@@ -670,7 +728,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
                   <article key={rule.rule_id} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="text-sm font-semibold text-text-primary">{rule.label}</p>
-                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">{rule.rule_id}</span>
+                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">規則代碼：{rule.rule_id}</span>
                     </div>
                     <div className="mt-3">
                       <TraceValueList payload={rule.details} emptyText="此規則未附加細節。" formatKey={formatMatchedRuleDetailKey} formatValue={formatMatchedRuleValue} />
@@ -700,7 +758,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
           </section>
 
           <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">Input snapshot 摘要</h3>
+            <h3 className="text-sm font-semibold text-text-primary">輸入快照摘要</h3>
             <div className="mt-3">
               <TraceValueList payload={candidate.input_snapshot} emptyText="尚未回傳輸入快照。" />
             </div>
@@ -725,7 +783,7 @@ function LoadingState() {
 function ErrorState({ error, onRetry }: { error: DailyRadarDisplayError; onRetry: () => void }) {
   return (
     <section className="rounded-xl border border-red-200 bg-red-50 p-6 shadow-sm dark:border-red-900 dark:bg-red-950">
-      <p className="text-sm font-semibold text-red-700 dark:text-red-300">Daily Radar 暫時無法載入</p>
+      <p className="text-sm font-semibold text-red-700 dark:text-red-300">每日觀察雷達暫時無法載入</p>
       <p className="mt-2 text-sm text-red-700 dark:text-red-300">{error.message}</p>
       {error.status && (
         <p className="mt-1 text-xs text-red-600 dark:text-red-400">狀態碼：{error.status}</p>
@@ -755,7 +813,7 @@ function StaleRunDataNotice({ runDate, freshnessSummary }: { runDate: string; fr
 function WholeRunEmptyState() {
   return (
     <section className="rounded-xl border border-border bg-card p-6 text-center shadow-sm">
-      <p className="text-sm font-semibold text-text-primary">今日沒有通過濾網的高品質 setup。</p>
+      <p className="text-sm font-semibold text-text-primary">今日沒有通過濾網的高品質觀察型態。</p>
       <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-text-muted">
         這代表本次規則掃描沒有產生符合觀察門檻的追蹤候選，並非系統失敗；可持續留意後續資料同步與風險脈絡變化。
       </p>
@@ -779,7 +837,7 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
     <>
       <section className="grid gap-3 md:grid-cols-4">
         <StatCard label="最新掃描日" value={formatDate(run.run_date)} helper="盤後觀察批次" />
-        <StatCard label="掃描狀態" value={RUN_STATUS_LABEL[run.status]} helper={run.status} />
+        <StatCard label="掃描狀態" value={RUN_STATUS_LABEL[run.status]} helper={RUN_STATUS_HELPER[run.status]} />
         <StatCard label="觀察候選數" value={String(run.candidates.length)} helper="符合規則的追蹤名單" />
         <StatCard label="資料新鮮度" value={dataDateEntries.length > 0 ? "已回傳" : "待確認"} helper={freshnessSummary} />
       </section>
@@ -879,7 +937,7 @@ export default function DailyRadarPage() {
   return (
     <div className="space-y-6 px-6 py-4">
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-        <p className="text-xs font-semibold uppercase tracking-wide text-text-faint">Daily Radar</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-text-faint">盤後觀察雷達</p>
         <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <h1 className="text-xl font-semibold text-text-primary md:text-2xl">每日盤後觀察雷達</h1>
