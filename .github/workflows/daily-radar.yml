@@ -41,7 +41,11 @@ jobs:
               "universe_count: \(.universe_count // "n/a")",
               "prefilter_count: \(.prefilter_count // "n/a")",
               "candidate_count: \(.candidate_count // "n/a")",
-              "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)"
+              "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+              "detail_code: \(.detail.code // "n/a")",
+              "detail_stage: \(.detail.stage // "n/a")",
+              "detail_error_type: \(.detail.error_type // "n/a")",
+              "detail_message: \(.detail.message // .detail // "n/a")"
             ' "$response_file"
           else
             echo "Response summary: non-JSON response"

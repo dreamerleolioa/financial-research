@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.daily_radar.institutional_universe_provider import FinMindMarketInstitutionalUniverseProvider
+from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
@@ -59,7 +59,7 @@ class DailyRadarRunTriggerResponse(BaseModel):
 
 
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
-    return FinMindMarketInstitutionalUniverseProvider()
+    return TwseRwdInstitutionalUniverseProvider()
 
 
 def get_daily_radar_technical_fetcher() -> BatchTechnicalFetcher:
@@ -77,10 +77,12 @@ def run_daily_radar_endpoint(
     universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
 ) -> DailyRadarRunTriggerResponse:
+    failure_stage = "request_initialization"
     try:
         request = payload or DailyRadarRunRequest()
         run_date = request.run_date or _backend_today()
         market = request.market
+        failure_stage = "universe_selection"
         universe = select_dual_track_universe(universe_provider, run_date=run_date, market=market, track_limit=50)
         if not universe:
             raise HTTPException(
@@ -90,6 +92,7 @@ def run_daily_radar_endpoint(
 
         selected_symbols = [entry.symbol for entry in universe]
         institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
+        failure_stage = "raw_data_backfill"
         cache_rows = ensure_daily_radar_raw_rows(
             db,
             run_date,
@@ -104,6 +107,7 @@ def run_daily_radar_endpoint(
                 status_code=409,
                 detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
             )
+        failure_stage = "daily_radar_service"
         run = run_daily_radar(
             run_date,
             market,
@@ -125,6 +129,7 @@ def run_daily_radar_endpoint(
             detail={
                 "code": "daily_radar_run_failed",
                 "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+                "stage": failure_stage,
                 "error_type": exc.__class__.__name__,
             },
         ) from exc

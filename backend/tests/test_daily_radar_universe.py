@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
-    FINMIND_INSTITUTIONAL_DATASET,
-    FINMIND_MARKET_DATA_URL,
-    FinMindMarketInstitutionalUniverseProvider,
+    TWSE_FOREIGN_BUY_TOP_REPORT,
+    TWSE_TRUST_BUY_TOP_REPORT,
+    TwseRwdInstitutionalUniverseProvider,
 )
 from ai_stock_sentinel.daily_radar.universe import (
     InstitutionalLeaderRow,
@@ -52,36 +52,39 @@ def _provider(
     return _Provider(same_day_rows or [], recent_rows or [], [])
 
 
-class _FakeFinMindResponse:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self._rows = rows
+class _FakeTwseResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
 
     def raise_for_status(self) -> None:
         return None
 
     def json(self) -> dict[str, Any]:
-        return {"status": 200, "data": self._rows}
+        return self._payload
 
 
-def _institutional_row(
-    *,
-    row_date: str,
-    stock_id: str,
-    name: str,
-    buy: float,
-    sell: float,
-    volume: float | None = None,
-) -> dict[str, Any]:
-    row: dict[str, Any] = {
-        "date": row_date,
-        "stock_id": stock_id,
-        "name": name,
-        "buy": buy,
-        "sell": sell,
-    }
-    if volume is not None:
-        row["Trading_Volume"] = volume
-    return row
+def _twse_foreign_row(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return [" ", f"{stock_id}  ", "測試", "0", "0", "0", "0", "0", "0", str(buy), str(sell), str(net)]
+
+
+def _twse_trust_row(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return [" ", f"{stock_id}  ", "測試", str(buy), str(sell), str(net)]
+
+
+def _twse_marked_foreign_row(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return ["*", f"{stock_id}  ", "測試", "0", "0", "0", "0", "0", "0", str(buy), str(sell), str(net)]
+
+
+def _twse_foreign_row_without_blank(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return [f"{stock_id}  ", "測試", "0", "0", "0", "0", "0", "0", str(buy), str(sell), str(net)]
+
+
+def _twse_trust_row_without_blank(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return [f"{stock_id}  ", "測試", str(buy), str(sell), str(net)]
+
+
+def _twse_payload(rows: list[list[str]], *, stat: str = "OK") -> dict[str, Any]:
+    return {"stat": stat, "data": rows}
 
 
 def test_select_dual_track_universe_unions_top_n_tracks_with_overlap_offline(
@@ -165,35 +168,44 @@ def test_select_dual_track_universe_returns_empty_list_for_empty_provider() -> N
     assert universe == []
 
 
-def test_finmind_market_provider_fetches_all_market_rows_and_feeds_selector() -> None:
-    calls: list[dict[str, str]] = []
-    same_day_rows = [
-        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Foreign_Investors", buy=100, sell=10),
-        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Investment_Trust", buy=30, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="2454", name="Foreign_Investors", buy=60, sell=10),
-        _institutional_row(row_date="2026-06-02", stock_id="2454", name="Investment_Trust", buy=70, sell=20),
-        _institutional_row(row_date="2026-06-02", stock_id="2303", name="Dealer", buy=500, sell=0),
-    ]
-    recent_rows = [
-        _institutional_row(row_date="2026-05-29", stock_id="3711", name="Foreign_Investors", buy=30, sell=0),
-        _institutional_row(row_date="2026-06-01", stock_id="3711", name="Foreign_Investors", buy=40, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="3711", name="Investment_Trust", buy=35, sell=0),
-        _institutional_row(row_date="2026-06-01", stock_id="2330", name="Foreign_Investors", buy=10, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Foreign_Investors", buy=10, sell=0),
-    ]
+def test_twse_rwd_provider_fetches_top_buy_reports_and_feeds_selector() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+    payloads = {
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260602"): _twse_payload(
+            [
+                _twse_foreign_row(stock_id="2330", buy=100, sell=10, net=90),
+                _twse_foreign_row(stock_id="2454", buy=60, sell=10, net=50),
+            ]
+        ),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260602"): _twse_payload(
+            [
+                _twse_trust_row(stock_id="2330", buy=30, sell=0, net=30),
+                _twse_trust_row(stock_id="2454", buy=70, sell=20, net=50),
+                _twse_trust_row(stock_id="3711", buy=35, sell=0, net=35),
+            ]
+        ),
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260529"): _twse_payload(
+            [_twse_foreign_row(stock_id="3711", buy=30, sell=0, net=30)]
+        ),
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260601"): _twse_payload(
+            [_twse_foreign_row(stock_id="3711", buy=40, sell=0, net=40)]
+        ),
+    }
 
-    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
-        assert url == FINMIND_MARKET_DATA_URL
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        assert report_id in {TWSE_FOREIGN_BUY_TOP_REPORT, TWSE_TRUST_BUY_TOP_REPORT}
         assert timeout == 15
-        assert params["dataset"] == FINMIND_INSTITUTIONAL_DATASET
+        assert params["response"] == "json"
+        assert params["date"].isdigit()
+        assert len(params["date"]) == 8
+        assert "dataset" not in params
         assert "data_id" not in params
         assert "stock_id" not in params
-        calls.append(dict(params))
-        if params["start_date"] == params["end_date"]:
-            return _FakeFinMindResponse(same_day_rows)
-        return _FakeFinMindResponse(recent_rows)
+        calls.append((report_id, dict(params)))
+        return _FakeTwseResponse(payloads.get((report_id, params["date"]), _twse_payload([], stat="很抱歉，沒有符合條件的資料!")))
 
-    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
 
     universe = select_dual_track_universe(provider, date(2026, 6, 2), market="TW", track_limit=2)
 
@@ -201,50 +213,38 @@ def test_finmind_market_provider_fetches_all_market_rows_and_feeds_selector() ->
     assert universe[0].same_day_score == pytest.approx(90.0)
     assert universe[1].same_day_score == pytest.approx(50.0)
     assert universe[2].primary_track == "recent_accumulation"
-    assert calls == [
-        {
-            "dataset": FINMIND_INSTITUTIONAL_DATASET,
-            "start_date": "2026-06-02",
-            "end_date": "2026-06-02",
-            "token": "test-token",
-        },
-        {
-            "dataset": FINMIND_INSTITUTIONAL_DATASET,
-            "start_date": "2026-05-23",
-            "end_date": "2026-06-02",
-            "token": "test-token",
-        },
+    assert calls[:2] == [
+        (TWSE_FOREIGN_BUY_TOP_REPORT, {"response": "json", "date": "20260602"}),
+        (TWSE_TRUST_BUY_TOP_REPORT, {"response": "json", "date": "20260602"}),
     ]
 
 
-def test_finmind_same_day_leaders_rank_by_buy_sell_value_when_available() -> None:
-    rows = [
-        {
-            "date": "2026-06-02",
-            "stock_id": "2330",
-            "name": "Foreign_Investors",
-            "buy": 1,
-            "sell": 0,
-            "buy_value": 1_000,
-            "sell_value": 0,
-        },
-        {
-            "date": "2026-06-02",
-            "stock_id": "2454",
-            "name": "Foreign_Investors",
-            "buy": 100,
-            "sell": 0,
-            "buy_value": 50,
-            "sell_value": 0,
-        },
-    ]
+def test_twse_rwd_provider_returns_empty_for_non_ok_stat() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        return _FakeTwseResponse(_twse_payload([], stat="很抱歉，沒有符合條件的資料!"))
 
-    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
-        assert "data_id" not in params
-        assert "stock_id" not in params
-        return _FakeFinMindResponse(rows)
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
 
-    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
+    leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 6), market="TW", limit=50)
+
+    assert leaders == []
+
+
+def test_twse_same_day_leaders_parse_comma_separated_net_values() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload(
+                    [
+                        _twse_foreign_row(stock_id="2330", buy="1,000", sell="0", net="1,000"),
+                        _twse_foreign_row(stock_id="2454", buy="50", sell="0", net="50"),
+                    ]
+                )
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
 
     leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
 
@@ -253,22 +253,67 @@ def test_finmind_same_day_leaders_rank_by_buy_sell_value_when_available() -> Non
     assert leaders[1].score == pytest.approx(50.0)
 
 
-def test_finmind_same_day_leaders_limit_is_final_combined_cap_after_ranking() -> None:
-    rows = [
-        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Foreign_Investors", buy=100, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="2454", name="Foreign_Investors", buy=90, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="2303", name="Foreign_Investors", buy=80, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="3711", name="Investment_Trust", buy=95, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="3034", name="Investment_Trust", buy=85, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="1101", name="Investment_Trust", buy=75, sell=0),
+def test_twse_same_day_leaders_support_rows_without_leading_blank_column() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row_without_blank(stock_id="2330", buy="1,200", sell="200", net="1,000")])
+            )
+        return _FakeTwseResponse(
+            _twse_payload([_twse_trust_row_without_blank(stock_id="2454", buy="900", sell="100", net="800")])
+        )
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
+
+    leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
+
+    assert [(row.symbol, row.actor, row.net_buy) for row in leaders] == [
+        ("2330.TW", "foreign", 1_000.0),
+        ("2454.TW", "trust", 800.0),
     ]
 
-    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
-        assert "data_id" not in params
-        assert "stock_id" not in params
-        return _FakeFinMindResponse(rows)
 
-    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
+def test_twse_same_day_leaders_keep_stock_id_at_index_one_when_marker_column_is_present() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_marked_foreign_row(stock_id="3661", buy="44,822,002", sell="0", net="44,822,002")])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
+
+    leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=1)
+
+    assert [(row.symbol, row.actor, row.net_buy) for row in leaders] == [("3661.TW", "foreign", 44_822_002.0)]
+
+
+def test_twse_same_day_leaders_limit_is_final_combined_cap_after_ranking() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload(
+                    [
+                        _twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100),
+                        _twse_foreign_row(stock_id="2454", buy=90, sell=0, net=90),
+                        _twse_foreign_row(stock_id="2303", buy=80, sell=0, net=80),
+                    ]
+                )
+            )
+        return _FakeTwseResponse(
+            _twse_payload(
+                [
+                    _twse_trust_row(stock_id="3711", buy=95, sell=0, net=95),
+                    _twse_trust_row(stock_id="3034", buy=85, sell=0, net=85),
+                    _twse_trust_row(stock_id="1101", buy=75, sell=0, net=75),
+                ]
+            )
+        )
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
 
     leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
 
@@ -277,19 +322,21 @@ def test_finmind_same_day_leaders_limit_is_final_combined_cap_after_ranking() ->
     assert [row.actor for row in leaders] == ["foreign", "trust"]
 
 
-def test_finmind_same_day_foreign_leader_survives_trust_selling_same_symbol() -> None:
-    rows = [
-        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Foreign_Investors", buy=100, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="2330", name="Investment_Trust", buy=0, sell=150),
-        _institutional_row(row_date="2026-06-02", stock_id="2454", name="Investment_Trust", buy=80, sell=0),
-    ]
+def test_twse_same_day_foreign_leader_survives_trust_selling_same_symbol() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(_twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)]))
+        return _FakeTwseResponse(
+            _twse_payload(
+                [
+                    _twse_trust_row(stock_id="2330", buy=0, sell=150, net=-150),
+                    _twse_trust_row(stock_id="2454", buy=80, sell=0, net=80),
+                ]
+            )
+        )
 
-    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
-        assert "data_id" not in params
-        assert "stock_id" not in params
-        return _FakeFinMindResponse(rows)
-
-    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
 
     leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=50)
 
@@ -299,69 +346,42 @@ def test_finmind_same_day_foreign_leader_survives_trust_selling_same_symbol() ->
     assert leaders[0].source_dates == ("2026-06-02",)
 
 
-def test_finmind_recent_accumulation_prefers_concentration_when_volume_exists() -> None:
-    calls: list[dict[str, str]] = []
-    rows: list[dict[str, Any]] = []
-    for row_date in ["2026-05-27", "2026-05-28", "2026-05-29", "2026-06-01", "2026-06-02"]:
-        rows.append(
-            _institutional_row(
-                row_date=row_date,
-                stock_id="3711",
-                name="Foreign_Investors",
-                buy=20,
-                sell=10,
-                volume=100,
-            )
-        )
-        rows.append(
-            _institutional_row(
-                row_date=row_date,
-                stock_id="2454",
-                name="Investment_Trust",
-                buy=70,
-                sell=20,
-                volume=10_000,
-            )
-        )
+def test_twse_recent_accumulation_queries_calendar_window_and_uses_available_market_dates() -> None:
+    calls: list[tuple[str, str]] = []
+    payloads = {
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260529"): _twse_payload(
+            [
+                _twse_foreign_row(stock_id="3711", buy=30, sell=0, net=30),
+                _twse_foreign_row(stock_id="2201", buy=20, sell=0, net=20),
+            ]
+        ),
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260601"): _twse_payload(
+            [
+                _twse_foreign_row(stock_id="3711", buy=40, sell=0, net=40),
+                _twse_foreign_row(stock_id="2201", buy=20, sell=0, net=20),
+            ]
+        ),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260602"): _twse_payload(
+            [
+                _twse_trust_row(stock_id="3711", buy=35, sell=0, net=35),
+                _twse_trust_row(stock_id="2201", buy=20, sell=0, net=20),
+            ]
+        ),
+    }
 
-    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
-        assert "data_id" not in params
-        assert "stock_id" not in params
-        calls.append(dict(params))
-        return _FakeFinMindResponse(rows)
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        calls.append((report_id, params["date"]))
+        return _FakeTwseResponse(payloads.get((report_id, params["date"]), _twse_payload([], stat="很抱歉，沒有符合條件的資料!")))
 
-    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
 
     leaders = provider.recent_accumulation_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
 
-    assert [row.symbol for row in leaders] == ["3711.TW", "2454.TW"]
+    assert [row.symbol for row in leaders] == ["3711.TW", "2201.TW"]
     assert [row.rank for row in leaders] == [1, 2]
-    assert leaders[0].consecutive_buy_days == 5
-    assert leaders[0].cumulative_net_buy == pytest.approx(50.0)
-    assert leaders[0].concentration == pytest.approx(0.1)
-    assert leaders[0].source_dates == ("2026-05-27", "2026-05-28", "2026-05-29", "2026-06-01", "2026-06-02")
-    assert len(calls) == 1
-
-
-def test_finmind_recent_accumulation_falls_back_to_cumulative_net_without_volume() -> None:
-    rows = [
-        _institutional_row(row_date="2026-05-29", stock_id="1101", name="Foreign_Investors", buy=30, sell=0),
-        _institutional_row(row_date="2026-06-01", stock_id="1101", name="Foreign_Investors", buy=30, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="1101", name="Investment_Trust", buy=30, sell=0),
-        _institutional_row(row_date="2026-05-29", stock_id="2201", name="Foreign_Investors", buy=20, sell=0),
-        _institutional_row(row_date="2026-06-01", stock_id="2201", name="Foreign_Investors", buy=20, sell=0),
-        _institutional_row(row_date="2026-06-02", stock_id="2201", name="Investment_Trust", buy=20, sell=0),
-    ]
-
-    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeFinMindResponse:
-        assert "data_id" not in params
-        assert "stock_id" not in params
-        return _FakeFinMindResponse(rows)
-
-    provider = FinMindMarketInstitutionalUniverseProvider(api_token="test-token", request_get=fake_get)
-
-    leaders = provider.recent_accumulation_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
-
-    assert [row.symbol for row in leaders] == ["1101.TW", "2201.TW"]
-    assert leaders[0].score is not None
-    assert leaders[0].score > leaders[1].score
+    assert leaders[0].consecutive_buy_days == 3
+    assert leaders[0].cumulative_net_buy == pytest.approx(105.0)
+    assert leaders[0].concentration is None
+    assert leaders[0].source_dates == ("2026-05-29", "2026-06-01", "2026-06-02")
+    assert len(calls) == 22
