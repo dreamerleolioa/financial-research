@@ -7,7 +7,7 @@
     "dev": "vite",
     "serve": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "oxlint",
     "preview": "vite preview",
     "fmt": "oxfmt"
   },
@@ -29,6 +29,7 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "oxfmt": "^0.40.0",
+    "oxlint": "^1.68.0",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",
