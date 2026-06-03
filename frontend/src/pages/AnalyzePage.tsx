@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
@@ -305,10 +306,16 @@ function mapVolumeSource(value: unknown): string {
 }
 
 export default function AnalyzePage() {
-  const [symbol, setSymbol] = useState("2330.TW");
+  const [searchParams] = useSearchParams();
+  const querySymbol = searchParams.get("symbol") ?? "2330.TW";
+  const [symbol, setSymbol] = useState(querySymbol);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [isRawOnly, setIsRawOnly] = useState(false);
+
+  useEffect(() => {
+    setSymbol(querySymbol);
+  }, [querySymbol]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
