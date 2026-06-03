@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
@@ -35,6 +37,7 @@ from ai_stock_sentinel.db.session import get_db
 
 
 router = APIRouter(tags=["daily-radar"])
+logger = logging.getLogger(__name__)
 
 
 class DailyRadarRunRequest(BaseModel):
@@ -74,42 +77,57 @@ def run_daily_radar_endpoint(
     universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
 ) -> DailyRadarRunTriggerResponse:
-    request = payload or DailyRadarRunRequest()
-    run_date = request.run_date or _backend_today()
-    market = request.market
-    universe = select_dual_track_universe(universe_provider, run_date=run_date, market=market, track_limit=50)
-    if not universe:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Daily Radar universe is empty for {market} on {run_date.isoformat()}.",
-        )
+    try:
+        request = payload or DailyRadarRunRequest()
+        run_date = request.run_date or _backend_today()
+        market = request.market
+        universe = select_dual_track_universe(universe_provider, run_date=run_date, market=market, track_limit=50)
+        if not universe:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Daily Radar universe is empty for {market} on {run_date.isoformat()}.",
+            )
 
-    selected_symbols = [entry.symbol for entry in universe]
-    institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
-    cache_rows = ensure_daily_radar_raw_rows(
-        db,
-        run_date,
-        selected_symbols,
-        technical_fetcher=technical_fetcher,
-        institutional_payloads_by_symbol=institutional_payloads_by_symbol,
-    )
-    if not cache_rows:
-        cache_rows = get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols)
-    if not cache_rows:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
+        selected_symbols = [entry.symbol for entry in universe]
+        institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
+        cache_rows = ensure_daily_radar_raw_rows(
+            db,
+            run_date,
+            selected_symbols,
+            technical_fetcher=technical_fetcher,
+            institutional_payloads_by_symbol=institutional_payloads_by_symbol,
         )
-    run = run_daily_radar(
-        run_date,
-        market,
-        session=db,
-        cache_rows=cache_rows,
-        market_context={},
-        allow_fixture_fallback=False,
-    )
-    db.commit()
-    return _run_response(run)
+        if not cache_rows:
+            cache_rows = get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols)
+        if not cache_rows:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
+            )
+        run = run_daily_radar(
+            run_date,
+            market,
+            session=db,
+            cache_rows=cache_rows,
+            market_context={},
+            allow_fixture_fallback=False,
+        )
+        db.commit()
+        return _run_response(run)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        with suppress(Exception):
+            db.rollback()
+        logger.exception("Daily Radar run failed before completion")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "daily_radar_run_failed",
+                "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+                "error_type": exc.__class__.__name__,
+            },
+        ) from exc
 
 
 @router.get("/daily-radar/latest", response_model=DailyRadarRunResponse)
