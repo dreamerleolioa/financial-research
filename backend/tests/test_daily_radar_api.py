@@ -629,6 +629,7 @@ def test_daily_radar_run_endpoint_returns_json_503_when_universe_provider_fails(
         "detail": {
             "code": "daily_radar_run_failed",
             "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+            "stage": "universe_selection",
             "error_type": "RuntimeError",
         }
     }
@@ -664,6 +665,7 @@ def test_daily_radar_run_endpoint_returns_json_503_when_raw_data_backfill_fails(
         "detail": {
             "code": "daily_radar_run_failed",
             "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+            "stage": "raw_data_backfill",
             "error_type": "RuntimeError",
         }
     }
@@ -698,6 +700,7 @@ def test_daily_radar_run_endpoint_returns_json_503_when_service_fails_before_com
         "detail": {
             "code": "daily_radar_run_failed",
             "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+            "stage": "daily_radar_service",
             "error_type": "RuntimeError",
         }
     }

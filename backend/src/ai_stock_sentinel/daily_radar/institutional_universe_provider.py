@@ -6,12 +6,11 @@ from datetime import date, timedelta
 from typing import Any
 
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
-from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 
-FINMIND_INSTITUTIONAL_DATASET = "TaiwanStockInstitutionalInvestorsBuySell"
-FINMIND_MARKET_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
+TWSE_FUND_RWD_URL_TEMPLATE = "https://www.twse.com.tw/rwd/zh/fund/{report_id}"
+TWSE_FOREIGN_BUY_TOP_REPORT = "TWT38U"
+TWSE_TRUST_BUY_TOP_REPORT = "TWT44U"
 
-_FORBIDDEN_SYMBOL_PARAMS = frozenset({"data_id", "stock_id", "symbol"})
 _REQUIRED_ACTORS = frozenset({"foreign", "trust"})
 _ACTOR_ORDER = ("foreign", "trust")
 _VOLUME_FIELDS = (
@@ -54,8 +53,8 @@ _SELL_SHARE_FIELDS = ("sell", "Sell", "sell_volume", "SellVolume")
 RequestGetter = Callable[..., Any]
 
 
-class FinMindMarketInstitutionalUniverseProvider:
-    name = "FinMindMarketInstitutionalUniverseProvider"
+class TwseRwdInstitutionalUniverseProvider:
+    name = "TwseRwdInstitutionalUniverseProvider"
 
     def __init__(
         self,
@@ -66,7 +65,7 @@ class FinMindMarketInstitutionalUniverseProvider:
         recent_market_days: int = 5,
         recent_calendar_window_days: int = 10,
     ) -> None:
-        self._static_token = api_token
+        self._ignored_api_token = api_token
         self._request_get = request_get
         self._timeout = timeout
         self._recent_market_days = recent_market_days
@@ -99,44 +98,76 @@ class FinMindMarketInstitutionalUniverseProvider:
         return ranked[:limit]
 
     def _fetch_market_rows(self, *, start_date: date, end_date: date) -> list[dict[str, Any]]:
-        params: dict[str, str] = {
-            "dataset": FINMIND_INSTITUTIONAL_DATASET,
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-        }
-        token = self._get_token()
-        if token:
-            params["token"] = token
-        _assert_all_market_params(params)
+        rows: list[dict[str, Any]] = []
+        for query_date in _date_range(start_date, end_date):
+            rows.extend(self._fetch_report_rows(TWSE_FOREIGN_BUY_TOP_REPORT, query_date, actor="foreign"))
+            rows.extend(self._fetch_report_rows(TWSE_TRUST_BUY_TOP_REPORT, query_date, actor="trust"))
+        return rows
 
+    def _fetch_report_rows(self, report_id: str, query_date: date, *, actor: str) -> list[dict[str, Any]]:
+        params = {"response": "json", "date": query_date.strftime("%Y%m%d")}
         request_get = self._request_get or _import_requests_get()
-        response = request_get(FINMIND_MARKET_DATA_URL, params=params, timeout=self._timeout)
+        response = request_get(_twse_report_url(report_id), params=params, timeout=self._timeout)
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         payload = response.json() if hasattr(response, "json") else response
-        if isinstance(payload, Mapping) and payload.get("status") not in (None, 200):
-            message = payload.get("msg", "unknown FinMind error")
-            raise RuntimeError(f"FinMind institutional universe request failed: {message}")
-        data = payload.get("data", []) if isinstance(payload, Mapping) else payload
-        return [dict(row) for row in data if isinstance(row, Mapping)]
+        if not isinstance(payload, Mapping) or payload.get("stat") != "OK":
+            return []
+        data = payload.get("data", [])
+        if not isinstance(data, Sequence) or isinstance(data, (str, bytes)):
+            return []
+        return [_normalize_twse_row(row, query_date=query_date, actor=actor) for row in data if _is_twse_row(row)]
 
-    def _get_token(self) -> str:
-        return self._static_token or get_token_manager().token
+
+class FinMindMarketInstitutionalUniverseProvider(TwseRwdInstitutionalUniverseProvider):
+    name = "TwseRwdInstitutionalUniverseProvider"
 
 
 def _import_requests_get() -> RequestGetter:
     try:
         import requests
     except ImportError as exc:
-        raise RuntimeError("requests package is required for FinMind universe requests") from exc
+        raise RuntimeError("requests package is required for TWSE universe requests") from exc
     return requests.get
 
 
-def _assert_all_market_params(params: Mapping[str, object]) -> None:
-    forbidden = _FORBIDDEN_SYMBOL_PARAMS.intersection(params)
-    if forbidden:
-        forbidden_list = ", ".join(sorted(forbidden))
-        raise ValueError(f"FinMind market universe requests must not include symbol params: {forbidden_list}")
+def _twse_report_url(report_id: str) -> str:
+    return TWSE_FUND_RWD_URL_TEMPLATE.format(report_id=report_id)
+
+
+def _date_range(start_date: date, end_date: date) -> Sequence[date]:
+    if end_date < start_date:
+        return []
+    days = (end_date - start_date).days
+    return [start_date + timedelta(days=offset) for offset in range(days + 1)]
+
+
+def _is_twse_row(row: Any) -> bool:
+    return isinstance(row, Sequence) and not isinstance(row, (str, bytes))
+
+
+def _normalize_twse_row(row: Sequence[Any], *, query_date: date, actor: str) -> dict[str, Any]:
+    stock_id = _twse_cell(row, 1).strip()
+    if actor == "foreign":
+        buy_index, sell_index, net_index = 9, 10, 11
+        actor_name = "Foreign_Investors"
+    else:
+        buy_index, sell_index, net_index = 3, 4, 5
+        actor_name = "Investment_Trust"
+    return {
+        "date": query_date.isoformat(),
+        "stock_id": stock_id,
+        "name": actor_name,
+        "buy": _twse_cell(row, buy_index),
+        "sell": _twse_cell(row, sell_index),
+        "net_buy": _twse_cell(row, net_index),
+    }
+
+
+def _twse_cell(row: Sequence[Any], index: int) -> str:
+    if index >= len(row):
+        return ""
+    return str(row[index]).strip()
 
 
 def _rank_same_day(
@@ -346,7 +377,7 @@ def _first_float(row: Mapping[str, Any], keys: Sequence[str]) -> float | None:
         if value in (None, ""):
             continue
         try:
-            return float(value)
+            return float(str(value).replace(",", "").strip())
         except (TypeError, ValueError):
             continue
     return None
@@ -373,7 +404,9 @@ def _format_symbol(stock_id: str, market: str) -> str:
 
 
 __all__ = [
-    "FINMIND_INSTITUTIONAL_DATASET",
-    "FINMIND_MARKET_DATA_URL",
     "FinMindMarketInstitutionalUniverseProvider",
+    "TWSE_FOREIGN_BUY_TOP_REPORT",
+    "TWSE_FUND_RWD_URL_TEMPLATE",
+    "TWSE_TRUST_BUY_TOP_REPORT",
+    "TwseRwdInstitutionalUniverseProvider",
 ]
