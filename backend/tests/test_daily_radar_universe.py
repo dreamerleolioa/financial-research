@@ -71,6 +71,18 @@ def _twse_trust_row(*, stock_id: str, buy: str | int, sell: str | int, net: str 
     return [" ", f"{stock_id}  ", "測試", str(buy), str(sell), str(net)]
 
 
+def _twse_marked_foreign_row(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return ["*", f"{stock_id}  ", "測試", "0", "0", "0", "0", "0", "0", str(buy), str(sell), str(net)]
+
+
+def _twse_foreign_row_without_blank(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return [f"{stock_id}  ", "測試", "0", "0", "0", "0", "0", "0", str(buy), str(sell), str(net)]
+
+
+def _twse_trust_row_without_blank(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
+    return [f"{stock_id}  ", "測試", str(buy), str(sell), str(net)]
+
+
 def _twse_payload(rows: list[list[str]], *, stat: str = "OK") -> dict[str, Any]:
     return {"stat": stat, "data": rows}
 
@@ -239,6 +251,43 @@ def test_twse_same_day_leaders_parse_comma_separated_net_values() -> None:
     assert [row.symbol for row in leaders] == ["2330.TW", "2454.TW"]
     assert leaders[0].score == pytest.approx(1_000.0)
     assert leaders[1].score == pytest.approx(50.0)
+
+
+def test_twse_same_day_leaders_support_rows_without_leading_blank_column() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row_without_blank(stock_id="2330", buy="1,200", sell="200", net="1,000")])
+            )
+        return _FakeTwseResponse(
+            _twse_payload([_twse_trust_row_without_blank(stock_id="2454", buy="900", sell="100", net="800")])
+        )
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
+
+    leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=2)
+
+    assert [(row.symbol, row.actor, row.net_buy) for row in leaders] == [
+        ("2330.TW", "foreign", 1_000.0),
+        ("2454.TW", "trust", 800.0),
+    ]
+
+
+def test_twse_same_day_leaders_keep_stock_id_at_index_one_when_marker_column_is_present() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_marked_foreign_row(stock_id="3661", buy="44,822,002", sell="0", net="44,822,002")])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
+
+    leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=1)
+
+    assert [(row.symbol, row.actor, row.net_buy) for row in leaders] == [("3661.TW", "foreign", 44_822_002.0)]
 
 
 def test_twse_same_day_leaders_limit_is_final_combined_cap_after_ranking() -> None:

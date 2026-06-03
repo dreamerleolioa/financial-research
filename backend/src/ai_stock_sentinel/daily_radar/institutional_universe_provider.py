@@ -147,12 +147,13 @@ def _is_twse_row(row: Any) -> bool:
 
 
 def _normalize_twse_row(row: Sequence[Any], *, query_date: date, actor: str) -> dict[str, Any]:
-    stock_id = _twse_cell(row, 1).strip()
+    first_data_index = _twse_first_data_index(row)
+    stock_id = _twse_cell(row, first_data_index).strip()
     if actor == "foreign":
-        buy_index, sell_index, net_index = 9, 10, 11
+        buy_index, sell_index, net_index = first_data_index + 8, first_data_index + 9, first_data_index + 10
         actor_name = "Foreign_Investors"
     else:
-        buy_index, sell_index, net_index = 3, 4, 5
+        buy_index, sell_index, net_index = first_data_index + 2, first_data_index + 3, first_data_index + 4
         actor_name = "Investment_Trust"
     return {
         "date": query_date.isoformat(),
@@ -168,6 +169,11 @@ def _twse_cell(row: Sequence[Any], index: int) -> str:
     if index >= len(row):
         return ""
     return str(row[index]).strip()
+
+
+def _twse_first_data_index(row: Sequence[Any]) -> int:
+    first_cell = _twse_cell(row, 0)
+    return 0 if first_cell and first_cell[0].isdigit() else 1
 
 
 def _rank_same_day(
