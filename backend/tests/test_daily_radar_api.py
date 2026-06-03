@@ -122,6 +122,21 @@ class FakeBatchTechnicalFetcher:
         return {symbol: self.payloads.get(symbol) or _technical_payload(symbol, run_date) for symbol in symbols}
 
 
+class RaisingUniverseProvider(FakeUniverseProvider):
+    def __init__(self, message: str = "simulated FinMind outage") -> None:
+        super().__init__()
+        self.message = message
+
+    def same_day_institutional_leaders(self, *, run_date: date, market: str, limit: int) -> list[InstitutionalLeaderRow]:
+        raise RuntimeError(self.message)
+
+
+class RaisingBatchTechnicalFetcher(FakeBatchTechnicalFetcher):
+    def fetch(self, symbols: list[str], *, run_date: date) -> dict[str, dict[str, Any]]:
+        self.calls.append((list(symbols), run_date))
+        raise RuntimeError("simulated yfinance outage")
+
+
 def _clear_daily_radar_api_overrides() -> None:
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
@@ -140,6 +155,8 @@ def _api_client(
     *,
     universe_provider: FakeUniverseProvider | None = None,
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
+    raise_server_exceptions: bool = True,
+    run_error: Exception | None = None,
 ) -> TestClient:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
@@ -152,6 +169,8 @@ def _api_client(
         captured["run_date"] = run_date
         captured["market"] = market
         captured.update(kwargs)
+        if run_error is not None:
+            raise run_error
         return run or _daily_radar_run(run_date=run_date, market=market)
 
     monkeypatch.setattr(daily_radar_router, "run_daily_radar", fake_run_daily_radar)
@@ -159,7 +178,7 @@ def _api_client(
     api.app.dependency_overrides[get_db] = lambda: db_session
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
-    client = TestClient(api.app)
+    client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
     client.fake_universe_provider = provider  # type: ignore[attr-defined]
     client.fake_technical_fetcher = fetcher  # type: ignore[attr-defined]
@@ -580,6 +599,108 @@ def test_daily_radar_run_endpoint_returns_409_for_empty_universe_and_does_not_ca
     assert response.json() == {"detail": "Daily Radar universe is empty for TW on 2026-06-01."}
     assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
     assert fetcher.calls == []
+
+
+def test_daily_radar_run_endpoint_returns_json_503_when_universe_provider_fails(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    sensitive_url = "https://api.finmindtrade.com/api/v4/data?token=secret-token"
+    provider = RaisingUniverseProvider(sensitive_url)
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        raise_server_exceptions=False,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {
+        "detail": {
+            "code": "daily_radar_run_failed",
+            "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+            "error_type": "RuntimeError",
+        }
+    }
+    assert sensitive_url not in response.text
+    assert "secret-token" not in response.text
+    assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
+
+
+def test_daily_radar_run_endpoint_returns_json_503_when_raw_data_backfill_fails(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    fetcher = RaisingBatchTechnicalFetcher()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        technical_fetcher=fetcher,
+        raise_server_exceptions=False,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {
+        "detail": {
+            "code": "daily_radar_run_failed",
+            "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+            "error_type": "RuntimeError",
+        }
+    }
+    assert fetcher.calls == [(["2330.TW"], date(2026, 6, 1))]
+    assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
+
+
+def test_daily_radar_run_endpoint_returns_json_503_when_service_fails_before_completion(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_raw_data(daily_radar_db_session, record_date=date(2026, 6, 1))
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        raise_server_exceptions=False,
+        run_error=RuntimeError("simulated service pre-run failure"),
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {
+        "detail": {
+            "code": "daily_radar_run_failed",
+            "message": "Daily Radar run failed before completion. Check backend logs for the root cause.",
+            "error_type": "RuntimeError",
+        }
+    }
 
 
 def test_public_latest_daily_radar_returns_latest_completed_run_without_internal_token(
