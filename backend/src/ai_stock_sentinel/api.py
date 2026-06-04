@@ -35,6 +35,7 @@ from ai_stock_sentinel.analysis.metrics import (
     atr as _atr,
     bollinger_bands as _bollinger_bands,
     donchian_channel as _donchian_channel,
+    ma as _ma,
     macd as _macd,
     mfi as _mfi,
     obv as _obv,
@@ -79,6 +80,13 @@ class PositionAnalysis(BaseModel):
 
 
 class TechnicalIndicators(BaseModel):
+    ma5: float | None = None
+    ma20: float | None = None
+    ma60: float | None = None
+    high_20d: float | None = None
+    low_20d: float | None = None
+    high_60d: float | None = None
+    low_60d: float | None = None
     bollinger_upper: float | None = None
     bollinger_mid: float | None = None
     bollinger_lower: float | None = None
@@ -353,7 +361,17 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
     if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None and atr_data is None and mfi_data is None and donchian_data is None:
         return None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
+    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
+    high_source = highs if aligned_hilo else closes
+    low_source = lows if aligned_hilo else closes
     return TechnicalIndicators(
+        ma5=_ma(closes, 5),
+        ma20=_ma(closes, 20),
+        ma60=_ma(closes, 60),
+        high_20d=max(high_source[-20:]) if len(high_source) >= 20 else None,
+        low_20d=min(low_source[-20:]) if len(low_source) >= 20 else None,
+        high_60d=max(high_source[-60:]) if len(high_source) >= 60 else None,
+        low_60d=min(low_source[-60:]) if len(low_source) >= 60 else None,
         bollinger_upper=bb["bollinger_upper"] if bb else None,
         bollinger_mid=bb["bollinger_mid"] if bb else None,
         bollinger_lower=bb["bollinger_lower"] if bb else None,
@@ -411,11 +429,17 @@ def _extract_indicators(result: dict) -> dict:
     donchian_data = _donchian_channel(closes, highs, lows) if aligned_hilo else None
     obv_data = _obv(closes, volumes) if aligned_volume else None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
+    high_source = highs if aligned_hilo else closes
+    low_source = lows if aligned_hilo else closes
 
     return {
-        "ma5":                snapshot.get("ma5"),
-        "ma20":               snapshot.get("ma20"),
-        "ma60":               snapshot.get("ma60"),
+        "ma5":                _ma(closes, 5),
+        "ma20":               _ma(closes, 20),
+        "ma60":               _ma(closes, 60),
+        "high_20d":           max(high_source[-20:]) if len(high_source) >= 20 else None,
+        "low_20d":            min(low_source[-20:]) if len(low_source) >= 20 else None,
+        "high_60d":           max(high_source[-60:]) if len(high_source) >= 60 else None,
+        "low_60d":            min(low_source[-60:]) if len(low_source) >= 60 else None,
         "rsi_14":             result.get("rsi14"),
         "close_price":        snapshot.get("current_price"),
         "volume_ratio":       snapshot.get("volume_ratio"),
