@@ -1,11 +1,27 @@
 # backend/tests/test_portfolio_history.py
+from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.db.models import DailyAnalysisLog, UserPortfolio
+from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.user_models.user import User
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_for_sqlite(type_, compiler, **kw):
+    return "JSON"
 
 
 def _make_client(portfolio=None, records=None, total=0):
@@ -76,6 +92,31 @@ def test_history_returns_records():
     assert len(data["records"]) == 1
 
 
+def test_history_returns_records_for_closed_portfolio():
+    from datetime import date
+    mock_portfolio = MagicMock()
+    mock_portfolio.user_id = 1
+    mock_portfolio.symbol = "2330.TW"
+    mock_portfolio.is_active = False
+
+    mock_record = MagicMock()
+    mock_record.record_date = date(2026, 3, 10)
+    mock_record.signal_confidence = 72.5
+    mock_record.action_tag = "Exit"
+    mock_record.recommended_action = "出場"
+    mock_record.indicators = {}
+    mock_record.final_verdict = "已觸發出場條件"
+    mock_record.prev_action_tag = "Hold"
+    mock_record.prev_confidence = 68.0
+
+    client = _make_client(portfolio=mock_portfolio, records=[mock_record], total=1)
+    resp = client.get("/portfolio/1/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["symbol"] == "2330.TW"
+    assert data["records"][0]["action_tag"] == "Exit"
+
+
 def test_history_returns_empty_when_no_records():
     """無紀錄時回傳 total=0、records=[]。"""
     mock_portfolio = MagicMock()
@@ -97,3 +138,200 @@ def test_history_supports_pagination():
     client = _make_client(portfolio=mock_portfolio, records=[], total=0)
     resp = client.get("/portfolio/1/history?limit=5&offset=10")
     assert resp.status_code == 200
+
+
+@pytest.fixture()
+def portfolio_history_db_session() -> Session:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(
+        engine,
+        tables=[User.__table__, UserPortfolio.__table__, DailyAnalysisLog.__table__],
+    )
+    with Session(engine) as session:
+        yield session
+
+
+@pytest.fixture()
+def portfolio_history_client(portfolio_history_db_session: Session) -> TestClient:
+    api.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    api.app.dependency_overrides[get_db] = lambda: portfolio_history_db_session
+    try:
+        yield TestClient(api.app)
+    finally:
+        api.app.dependency_overrides.pop(get_current_user, None)
+        api.app.dependency_overrides.pop(get_db, None)
+
+
+def _persist_user(session: Session) -> None:
+    session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    session.flush()
+
+
+def _persist_portfolio(
+    session: Session,
+    *,
+    portfolio_id: int,
+    entry_date: date,
+    exit_date: date | None,
+    is_active: bool,
+) -> UserPortfolio:
+    portfolio = UserPortfolio(
+        id=portfolio_id,
+        user_id=1,
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=entry_date,
+        exit_date=exit_date,
+        is_active=is_active,
+    )
+    session.add(portfolio)
+    session.flush()
+    return portfolio
+
+
+def _persist_log(session: Session, record_date: date, action_tag: str) -> None:
+    session.add(DailyAnalysisLog(
+        user_id=1,
+        symbol="2330.TW",
+        record_date=record_date,
+        signal_confidence=70,
+        action_tag=action_tag,
+        recommended_action=action_tag,
+        indicators={},
+        final_verdict=action_tag,
+    ))
+
+
+def test_history_scopes_closed_portfolio_to_own_holding_window(
+    portfolio_history_client: TestClient,
+    portfolio_history_db_session: Session,
+):
+    _persist_user(portfolio_history_db_session)
+    closed = _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=101,
+        entry_date=date(2026, 1, 1),
+        exit_date=date(2026, 1, 31),
+        is_active=False,
+    )
+    _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=102,
+        entry_date=date(2026, 3, 1),
+        exit_date=None,
+        is_active=True,
+    )
+    _persist_log(portfolio_history_db_session, date(2025, 12, 31), "BeforeEntry")
+    _persist_log(portfolio_history_db_session, date(2026, 1, 15), "ClosedWindow")
+    _persist_log(portfolio_history_db_session, date(2026, 2, 1), "AfterExit")
+    _persist_log(portfolio_history_db_session, date(2026, 3, 10), "NewEntry")
+    portfolio_history_db_session.commit()
+
+    response = portfolio_history_client.get(f"/portfolio/{closed.id}/history")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert [record["action_tag"] for record in data["records"]] == ["ClosedWindow"]
+
+
+def test_history_scopes_active_reentry_to_post_entry_logs(
+    portfolio_history_client: TestClient,
+    portfolio_history_db_session: Session,
+):
+    _persist_user(portfolio_history_db_session)
+    _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=201,
+        entry_date=date(2026, 1, 1),
+        exit_date=date(2026, 1, 31),
+        is_active=False,
+    )
+    active = _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=202,
+        entry_date=date(2026, 3, 1),
+        exit_date=None,
+        is_active=True,
+    )
+    _persist_log(portfolio_history_db_session, date(2026, 1, 15), "ClosedWindow")
+    _persist_log(portfolio_history_db_session, date(2026, 2, 20), "BetweenHoldings")
+    _persist_log(portfolio_history_db_session, date(2026, 3, 10), "ActiveWindow")
+    portfolio_history_db_session.commit()
+
+    response = portfolio_history_client.get(f"/portfolio/{active.id}/history")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert [record["action_tag"] for record in data["records"]] == ["ActiveWindow"]
+
+
+def test_latest_history_returns_null_for_reentry_with_only_stale_logs(
+    portfolio_history_client: TestClient,
+    portfolio_history_db_session: Session,
+):
+    _persist_user(portfolio_history_db_session)
+    _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=301,
+        entry_date=date(2026, 1, 1),
+        exit_date=date(2026, 1, 31),
+        is_active=False,
+    )
+    active = _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=302,
+        entry_date=date(2026, 3, 1),
+        exit_date=None,
+        is_active=True,
+    )
+    _persist_log(portfolio_history_db_session, date(2026, 1, 15), "ClosedWindow")
+    _persist_log(portfolio_history_db_session, date(2026, 2, 20), "BetweenHoldings")
+    portfolio_history_db_session.commit()
+
+    response = portfolio_history_client.get("/portfolio/latest-history")
+
+    assert response.status_code == 200
+    assert response.json() == {str(active.id): None}
+
+
+def test_latest_history_returns_post_entry_log_for_reentry(
+    portfolio_history_client: TestClient,
+    portfolio_history_db_session: Session,
+):
+    _persist_user(portfolio_history_db_session)
+    _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=401,
+        entry_date=date(2026, 1, 1),
+        exit_date=date(2026, 1, 31),
+        is_active=False,
+    )
+    active = _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=402,
+        entry_date=date(2026, 3, 1),
+        exit_date=None,
+        is_active=True,
+    )
+    _persist_log(portfolio_history_db_session, date(2026, 1, 15), "ClosedWindow")
+    _persist_log(portfolio_history_db_session, date(2026, 3, 10), "ActiveWindow")
+    portfolio_history_db_session.commit()
+
+    response = portfolio_history_client.get("/portfolio/latest-history")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data[str(active.id)]["record_date"] == "2026-03-10"
+    assert data[str(active.id)]["action_tag"] == "ActiveWindow"

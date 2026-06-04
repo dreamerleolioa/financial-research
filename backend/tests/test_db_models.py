@@ -19,7 +19,27 @@ def test_user_table_exists_in_base():
 
 def test_user_portfolio_model_columns():
     cols = {c.name for c in UserPortfolio.__table__.columns}
-    assert {"id", "user_id", "symbol", "entry_price", "quantity", "entry_date", "is_active"} <= cols
+    assert {
+        "id", "user_id", "symbol", "entry_price", "quantity", "entry_date", "is_active",
+        "exit_date", "exit_price", "exit_quantity", "exit_fees", "exit_taxes",
+        "realized_pnl", "realized_return_pct", "holding_days",
+    } <= cols
+
+
+def test_user_portfolio_has_active_only_unique_index():
+    unique_constraints = {
+        constraint.name
+        for constraint in UserPortfolio.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    indexes = {index.name: index for index in UserPortfolio.__table__.indexes}
+    active_index = indexes["uq_portfolio_user_symbol_active"]
+
+    assert "uq_portfolio_user_symbol" not in unique_constraints
+    assert active_index.unique is True
+    assert tuple(column.name for column in active_index.columns) == ("user_id", "symbol")
+    assert str(active_index.dialect_options["postgresql"]["where"]) == "is_active = true"
+    assert str(active_index.dialect_options["sqlite"]["where"]) == "is_active = 1"
 
 
 def test_daily_analysis_log_has_analysis_is_final():

@@ -2,15 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
-
-interface PortfolioItem {
-  id: number;
-  symbol: string;
-  entry_price: number;
-  quantity: number;
-  entry_date: string;
-  notes: string | null;
-}
+import type { ClosedPortfolioItem, PortfolioItem } from "../lib/portfolioTypes";
 
 interface HistoryEntry {
   record_date: string;
@@ -48,6 +40,10 @@ interface PositionResult {
 
 interface PortfolioPageProps {
   onNavigateAnalyze: (symbol: string) => void;
+}
+
+function getTodayDateString(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────
@@ -192,6 +188,177 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
               {saving ? "儲存中…" : "儲存"}
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface ClosePositionModalProps {
+  item: PortfolioItem;
+  onClose: () => void;
+  onClosed: (closed: ClosedPortfolioItem) => void;
+}
+
+function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
+  const [exitDate, setExitDate] = useState(getTodayDateString());
+  const [exitPrice, setExitPrice] = useState("");
+  const [exitQuantity, setExitQuantity] = useState(String(item.quantity));
+  const [fees, setFees] = useState("0");
+  const [taxes, setTaxes] = useState("0");
+  const [closing, setClosing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function handleClosePosition() {
+    setError(null);
+    setClosing(true);
+    const parsedExitPrice = parseFloat(exitPrice);
+    const parsedExitQuantity = parseInt(exitQuantity, 10);
+    const parsedFees = parseFloat(fees);
+    const parsedTaxes = parseFloat(taxes);
+    if (
+      !Number.isFinite(parsedExitPrice)
+      || !Number.isFinite(parsedExitQuantity)
+      || !Number.isFinite(parsedFees)
+      || !Number.isFinite(parsedTaxes)
+    ) {
+      setError("請完整填寫有效的出場價格、股數、手續費與交易稅。");
+      setClosing(false);
+      return;
+    }
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/close`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          exit_date: exitDate,
+          exit_price: parsedExitPrice,
+          exit_quantity: parsedExitQuantity,
+          fees: parsedFees,
+          taxes: parsedTaxes,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const closed: ClosedPortfolioItem = await res.json();
+      onClosed(closed);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "結案失敗");
+      setClosing(false);
+    }
+  }
+
+  return (
+    <div
+      ref={backdropRef}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+    >
+      <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
+          <div>
+            <p className="font-semibold text-text-primary">出場 / 結案 · {item.symbol}</p>
+            <p className="text-xs text-text-faint">
+              持有 {item.quantity} 股，成本 {formatPrice(item.entry_price, item.symbol)}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            MVP 目前僅支援完整結案，出場股數請維持等於持有股數；若不一致後端會拒絕此操作。
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">出場日期</span>
+              <input
+                type="date"
+                value={exitDate}
+                onChange={(e) => setExitDate(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">出場價格</span>
+              <input
+                type="number"
+                step="0.01"
+                value={exitPrice}
+                onChange={(e) => setExitPrice(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">出場股數</span>
+              <input
+                type="number"
+                step="1"
+                value={exitQuantity}
+                onChange={(e) => setExitQuantity(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">手續費</span>
+              <input
+                type="number"
+                step="0.01"
+                value={fees}
+                onChange={(e) => setFees(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">交易稅</span>
+              <input
+                type="number"
+                step="0.01"
+                value={taxes}
+                onChange={(e) => setTaxes(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+          </div>
+          {error && (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
+          >
+            取消
+          </button>
+          <button
+            onClick={handleClosePosition}
+            disabled={closing}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {closing ? "結案中…" : "確認結案"}
+          </button>
         </div>
       </div>
     </div>
@@ -496,6 +663,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   // Edit / Delete modal state
   const [editItem, setEditItem] = useState<PortfolioItem | null>(null);
+  const [closeItem, setCloseItem] = useState<PortfolioItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<PortfolioItem | null>(null);
 
   // Batch analysis state
@@ -657,6 +825,36 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }, 3000);
   }
 
+  function handlePositionClosed(closed: ClosedPortfolioItem) {
+    setItems((prev) => prev.filter((item) => item.id !== closed.id));
+    setExpandedId((prev) => (prev === closed.id ? null : prev));
+    setHistoryMap((prev) => {
+      const next = { ...prev };
+      delete next[closed.id];
+      return next;
+    });
+    setLatestMap((prev) => {
+      const next = { ...prev };
+      delete next[String(closed.id)];
+      return next;
+    });
+    setAnalysisMap((prev) => {
+      const next = { ...prev };
+      delete next[closed.id];
+      return next;
+    });
+    setAnalysisLoading((prev) => {
+      const next = { ...prev };
+      delete next[closed.id];
+      return next;
+    });
+    setAnalysisError((prev) => {
+      const next = { ...prev };
+      delete next[closed.id];
+      return next;
+    });
+  }
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -681,17 +879,15 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     );
   }
 
-  if (items.length === 0) {
-    return (
-      <div className="rounded-xl border border-border bg-card p-6 text-center text-sm text-text-faint shadow-sm">
-        尚無追蹤中的持股。請至「個股分析」頁新增。
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="space-y-4">
+        {items.length === 0 ? (
+          <div className="rounded-xl border border-border bg-card p-6 text-center text-sm text-text-faint shadow-sm">
+            尚無追蹤中的持股。請至「個股分析」頁新增。
+          </div>
+        ) : (
+          <>
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-text-primary">我的持股</h2>
           <span className="text-xs text-text-faint">共 {items.length} 筆</span>
@@ -811,6 +1007,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   </button>
                   <div className="ml-auto flex items-center gap-1">
                     <button
+                      onClick={() => setCloseItem(item)}
+                      className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:bg-indigo-900"
+                    >
+                      出場 / 結案
+                    </button>
+                    <button
                       onClick={() => setEditItem(item)}
                       title="編輯持股"
                       className="rounded-lg p-2 text-text-faint hover:bg-card-hover hover:text-text-secondary"
@@ -884,6 +1086,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
             </article>
           );
         })}
+          </>
+        )}
       </div>
 
       {modalItem && (
@@ -902,6 +1106,17 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           onClose={() => setEditItem(null)}
           onSaved={(updated) => {
             setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+          }}
+        />
+      )}
+
+      {closeItem && (
+        <ClosePositionModal
+          item={closeItem}
+          onClose={() => setCloseItem(null)}
+          onClosed={(closed) => {
+            handlePositionClosed(closed);
+            setCloseItem(null);
           }}
         />
       )}

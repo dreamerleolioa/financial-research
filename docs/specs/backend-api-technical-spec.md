@@ -390,7 +390,7 @@ make run-api
 
 ### `GET /portfolio`
 
-- **用途**：列出目前登入使用者的 active 持股清單。
+- **用途**：列出目前登入使用者的 active 持股清單，只回傳 `is_active = TRUE` 的持股。
 - **Response 200**
 
 ```json
@@ -405,6 +405,36 @@ make run-api
   }
 ]
 ```
+
+### `GET /portfolio/closed`
+
+- **用途**：列出目前登入使用者已結案持股清單。
+- **查詢邏輯**：只回傳 `current_user.id` 的 inactive 持股，條件為 `is_active = FALSE` 且 `exit_date` 不為 null，排序為 `exit_date DESC`、`updated_at DESC`。
+- **Response 200**
+
+```json
+[
+  {
+    "id": 42,
+    "symbol": "2330.TW",
+    "entry_price": 900.0,
+    "quantity": 1000,
+    "entry_date": "2026-01-15",
+    "is_active": false,
+    "exit_date": "2026-06-01",
+    "exit_price": 980.0,
+    "exit_quantity": 1000,
+    "exit_fees": 142.0,
+    "exit_taxes": 2940.0,
+    "realized_pnl": 76918.0,
+    "realized_return_pct": 8.5464,
+    "holding_days": 137,
+    "notes": "長期核心持股"
+  }
+]
+```
+
+- **Response 欄位**：`id`、`symbol`、`entry_price`、`quantity`、`entry_date`、`is_active`、`exit_date`、`exit_price`、`exit_quantity`、`exit_fees`、`exit_taxes`、`realized_pnl`、`realized_return_pct`、`holding_days`、`notes`。
 
 ### `POST /portfolio`
 
@@ -468,9 +498,49 @@ make run-api
 }
 ```
 
+### `POST /portfolio/{portfolio_id}/close`
+
+- **用途**：將目前登入使用者的一筆 active 持股出場結案，保留持股與歷史診斷紀錄。
+- **權限邊界**：只能結案目前登入使用者自己的持股；非擁有者回傳 `403`。
+
+- **Request Body**
+
+```json
+{
+  "exit_date": "2026-06-01",
+  "exit_price": 980.0,
+  "exit_quantity": 1000,
+  "fees": 142.0,
+  "taxes": 2940.0
+}
+```
+
+- **欄位說明**
+  - `exit_date`：出場日期，必填，ISO 8601 日期字串。
+  - `exit_price`：出場價格，必填，需大於 0。
+  - `exit_quantity`：出場股數，必填，需大於 0。
+  - `fees`：手續費，選填，需大於或等於 0，預設 0。
+  - `taxes`：交易稅，選填，需大於或等於 0，預設 0。
+
+- **計算邏輯**
+  - `realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`
+  - `realized_return_pct = realized_pnl / (entry_price * exit_quantity) * 100`
+  - `holding_days = exit_date - entry_date` 的天數
+  - 結案成功後設定 `is_active = FALSE`，並回傳序列化後的 closed portfolio。
+
+- **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
+
+- **錯誤行為**
+  - 已結案持股回傳 `409`，訊息為 `持倉已關閉`。
+  - `exit_quantity` 不等於原始 `quantity` 時回傳 `422`，訊息為 `MVP 僅支援全數平倉`。
+  - `exit_date` 早於 `entry_date` 時回傳 `422`，訊息為 `出場日期不可早於進場日期`。
+
+- **歷史保留**：此端點不刪除 `daily_analysis_log`，結案後仍可保留歷史診斷。
+
 ### `DELETE /portfolio/{portfolio_id}`
 
 - **用途**：刪除個人持股紀錄，並同步刪除該使用者該股票的 `daily_analysis_log`。
+- **資料行為**：此端點仍為硬刪除，會刪除 `user_portfolio` 與對應的 `daily_analysis_log`，不同於結案端點。
 - **權限邊界**：只能刪除目前登入使用者自己的持股；非擁有者回傳 `403`。
 - **Response 204**：無 response body。
 
