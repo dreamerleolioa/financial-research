@@ -108,6 +108,7 @@ frontend/
 		pages/
 			AnalyzePage.tsx
 			PortfolioPage.tsx
+			ClosedPortfolioPage.tsx
 			DashboardPage.tsx
 			DailyRadarPage.tsx
 			LoginPage.tsx
@@ -119,6 +120,7 @@ frontend/
 			auth.ts
 			formatters.ts
 			historyApi.ts
+			portfolioTypes.ts
 			dailyRadarApi.ts
 			dailyRadarTypes.ts
 		stores/

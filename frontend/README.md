@@ -26,7 +26,12 @@ pnpm lint
 
 ## 目前頁面內容
 
-- 股票代碼輸入框（MVP）
-- 信心指數圓形元件
-- 雜訊過濾左右對照
-- 分析路徑圖
+目前頁面包含：
+
+- `/analyze`：新倉分析與加入持股
+- `/portfolio`：未結案持股列表、診斷歷史、編輯與出場結案
+- `/portfolio/closed`：已結案持股紀錄與已實現損益篩選
+- `/daily-radar`：每日觀察候選清單
+- `/login`：Google OAuth 登入
+
+安裝、開發、build、preview 與 lint 仍使用上方 pnpm 指令。
