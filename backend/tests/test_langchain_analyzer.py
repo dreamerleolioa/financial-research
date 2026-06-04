@@ -354,15 +354,15 @@ def test_analyze_node_passes_compact_signal_summary_to_analyzer():
     from ai_stock_sentinel.models import StockSnapshot, AnalysisDetail
     from dataclasses import asdict
 
-    closes = [100.0 + idx * 0.6 for idx in range(40)]
+    closes = [100.0 + idx for idx in range(70)]
     snapshot = StockSnapshot(
         symbol="2330.TW", currency="TWD", current_price=closes[-1],
         previous_close=closes[-2], day_open=closes[-1] - 1.0,
         day_high=closes[-1] + 1.0, day_low=closes[-1] - 1.0,
         volume=1_000_000, recent_closes=closes,
-        recent_highs=[price + 1.0 for price in closes],
-        recent_lows=[price - 1.0 for price in closes],
-        recent_volumes=[1000 + idx * 10 for idx in range(40)],
+        recent_highs=[price + 10.0 for price in closes],
+        recent_lows=[price - 10.0 for price in closes],
+        recent_volumes=[1000 + idx * 10 for idx in range(70)],
         fetched_at="2026-03-07T00:00:00+00:00",
     )
     state = {
@@ -404,6 +404,11 @@ def test_analyze_node_passes_compact_signal_summary_to_analyzer():
     assert '"kd_signal"' in signal_summary
     assert '"adx"' in signal_summary
     assert '"obv_signal"' in signal_summary
+    technical_evidence = json.loads(signal_summary)["technical_evidence"]
+    assert technical_evidence["high_20d"] == 179.0
+    assert technical_evidence["low_20d"] == 140.0
+    assert technical_evidence["high_60d"] == 179.0
+    assert technical_evidence["low_60d"] == 100.0
 
 
 # ---------------------------------------------------------------------------
