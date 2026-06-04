@@ -76,6 +76,31 @@ def test_history_returns_records():
     assert len(data["records"]) == 1
 
 
+def test_history_returns_records_for_closed_portfolio():
+    from datetime import date
+    mock_portfolio = MagicMock()
+    mock_portfolio.user_id = 1
+    mock_portfolio.symbol = "2330.TW"
+    mock_portfolio.is_active = False
+
+    mock_record = MagicMock()
+    mock_record.record_date = date(2026, 3, 10)
+    mock_record.signal_confidence = 72.5
+    mock_record.action_tag = "Exit"
+    mock_record.recommended_action = "出場"
+    mock_record.indicators = {}
+    mock_record.final_verdict = "已觸發出場條件"
+    mock_record.prev_action_tag = "Hold"
+    mock_record.prev_confidence = 68.0
+
+    client = _make_client(portfolio=mock_portfolio, records=[mock_record], total=1)
+    resp = client.get("/portfolio/1/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["symbol"] == "2330.TW"
+    assert data["records"][0]["action_tag"] == "Exit"
+
+
 def test_history_returns_empty_when_no_records():
     """無紀錄時回傳 total=0、records=[]。"""
     mock_portfolio = MagicMock()

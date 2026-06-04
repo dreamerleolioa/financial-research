@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,34 @@ class PortfolioCreateRequest(BaseModel):
     entry_date: date
     quantity: int = 0
     notes: str | None = None
+
+
+class ClosePortfolioRequest(BaseModel):
+    exit_date: date
+    exit_price: float = Field(gt=0)
+    exit_quantity: int = Field(gt=0)
+    fees: float = Field(default=0.0, ge=0)
+    taxes: float = Field(default=0.0, ge=0)
+
+
+def _serialize_portfolio(item: UserPortfolio) -> dict:
+    return {
+        "id": item.id,
+        "symbol": item.symbol,
+        "entry_price": float(item.entry_price),
+        "quantity": item.quantity,
+        "entry_date": item.entry_date.isoformat() if hasattr(item.entry_date, "isoformat") else item.entry_date,
+        "is_active": item.is_active,
+        "exit_date": item.exit_date.isoformat() if item.exit_date and hasattr(item.exit_date, "isoformat") else item.exit_date,
+        "exit_price": float(item.exit_price) if item.exit_price is not None else None,
+        "exit_quantity": item.exit_quantity,
+        "exit_fees": float(item.exit_fees) if item.exit_fees is not None else None,
+        "exit_taxes": float(item.exit_taxes) if item.exit_taxes is not None else None,
+        "realized_pnl": float(item.realized_pnl) if item.realized_pnl is not None else None,
+        "realized_return_pct": float(item.realized_return_pct) if item.realized_return_pct is not None else None,
+        "holding_days": item.holding_days,
+        "notes": item.notes,
+    }
 
 
 @router.get("")
@@ -50,6 +79,22 @@ def list_portfolio(
         }
         for r in rows
     ]
+
+
+@router.get("/closed")
+def list_closed_portfolio(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = db.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == current_user.id,
+            UserPortfolio.is_active == False,
+            UserPortfolio.exit_date.is_not(None),
+        ).order_by(UserPortfolio.exit_date.desc(), UserPortfolio.updated_at.desc())
+    ).scalars().all()
+
+    return [_serialize_portfolio(row) for row in rows]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -123,6 +168,49 @@ def update_portfolio(
         "entry_date":  item.entry_date.isoformat() if hasattr(item.entry_date, "isoformat") else item.entry_date,
         "notes":       item.notes,
     }
+
+
+@router.post("/{portfolio_id}/close")
+def close_portfolio(
+    portfolio_id: int,
+    payload: ClosePortfolioRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = db.get(UserPortfolio, portfolio_id)
+    if not item or item.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限")
+
+    if not item.is_active:
+        raise HTTPException(status_code=409, detail="持倉已關閉")
+
+    if payload.exit_quantity != item.quantity:
+        raise HTTPException(status_code=422, detail="MVP 僅支援全數平倉")
+
+    if payload.exit_date < item.entry_date:
+        raise HTTPException(status_code=422, detail="出場日期不可早於進場日期")
+
+    exit_price = Decimal(str(payload.exit_price))
+    entry_price = Decimal(str(item.entry_price))
+    exit_quantity = Decimal(payload.exit_quantity)
+    fees = Decimal(str(payload.fees))
+    taxes = Decimal(str(payload.taxes))
+    realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes
+    realized_return_pct = realized_pnl / (entry_price * exit_quantity) * Decimal("100")
+
+    item.is_active = False
+    item.exit_date = payload.exit_date
+    item.exit_price = exit_price
+    item.exit_quantity = payload.exit_quantity
+    item.exit_fees = fees
+    item.exit_taxes = taxes
+    item.realized_pnl = realized_pnl
+    item.realized_return_pct = realized_return_pct
+    item.holding_days = (payload.exit_date - item.entry_date).days
+    item.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(item)
+    return _serialize_portfolio(item)
 
 
 @router.delete("/{portfolio_id}", status_code=204)

@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric,
-    String, Text, UniqueConstraint,
+    String, Text, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,7 +19,14 @@ from ai_stock_sentinel.user_models.user import User  # noqa: F401  re-export for
 class UserPortfolio(Base):
     __tablename__ = "user_portfolio"
     __table_args__ = (
-        UniqueConstraint("user_id", "symbol", name="uq_portfolio_user_symbol"),
+        Index(
+            "uq_portfolio_user_symbol_active",
+            "user_id",
+            "symbol",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
     )
 
     id:          Mapped[int]        = mapped_column(Integer, primary_key=True)
@@ -29,6 +36,14 @@ class UserPortfolio(Base):
     quantity:    Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
     entry_date:  Mapped[date]       = mapped_column(Date, nullable=False)
     is_active:   Mapped[bool]       = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    exit_date:   Mapped[date | None] = mapped_column(Date, nullable=True)
+    exit_price:  Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    exit_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exit_fees:   Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    exit_taxes:  Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    realized_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    holding_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes:       Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

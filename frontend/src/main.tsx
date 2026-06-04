@@ -7,8 +7,8 @@ import App from "./App.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
 import LoginCallbackPage from "./pages/LoginCallbackPage.tsx";
 import AnalyzePage from "./pages/AnalyzePage.tsx";
+import ClosedPortfolioPage from "./pages/ClosedPortfolioPage.tsx";
 import PortfolioPage from "./pages/PortfolioPage.tsx";
-import DashboardPage from "./pages/DashboardPage.tsx";
 import DailyRadarPage from "./pages/DailyRadarPage.tsx";
 import { AuthProvider, useAuth } from "./stores/auth.tsx";
 
@@ -39,7 +39,7 @@ createRoot(document.getElementById("root")!).render(
               <Route index element={<Navigate to="/analyze" replace />} />
               <Route path="/analyze" element={<AnalyzePage />} />
               <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => { }} />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/portfolio/closed" element={<ClosedPortfolioPage />} />
               <Route path="/daily-radar" element={<DailyRadarPage />} />
               <Route path="*" element={<Navigate to="/analyze" replace />} />
             </Route>

@@ -248,19 +248,21 @@ pnpm dev
 - 新聞卡片（RSS 標題、日期、原文連結；多筆列表來自 `news_display_items`，最多 5 筆）
 - 新聞摘要品質提示（`quality_score < 60` 時顯示警告）
 - 錯誤 banner + loading 狀態
+- 底層保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart.tsx`，供後續嵌入個股歷史分析趨勢
 
 **持股管理頁（`/portfolio`）**
 
-- 持股列表與持股診斷入口
+- 現有持股列表與持股診斷入口
 - 倉位狀態卡（獲利安全區 / 成本邊緣 / 套牢防守；顯示成本價 / 現價 / 損益%）
 - 操作建議卡（續抱 / 減碼 / 出場；顯示動態防守位）
 - 出場警示 banner（`exit_reason` 非 null 時紅色顯示）
+- 出場 / 結案流程：輸入出場日期、價格、股數、手續費與交易稅，後端計算已實現損益、報酬率與持有天數
 - 四維分析卡（技術面防守 / 主力動向 / 消息面風險 / 基本面）+ 綜合研判
 
-**復盤儀表板（`/dashboard`）**
+**已結案持股頁（`/portfolio/closed`）**
 
-- 歷史分析記錄列表
-- 各標的策略方向與信心分數趨勢
+- 獨立頁面保留結案紀錄與歷史診斷，不再把出場等同刪除追蹤
+- 期間篩選：1天 / 1週 / 1月 / 1季 / 1年，並顯示篩選後的 `已實現損益` 總計
 
 **Daily Radar（`/daily-radar`）**
 
@@ -290,7 +292,7 @@ make run-api
 - `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史
 - `GET /history/{symbol}` — 查詢歷史分析記錄
 - `GET/POST /auth/*` — Google OAuth 登入流程
-- `GET/POST /portfolio/*` — 持股管理
+- `GET/POST /portfolio/*` — 持股管理、持股診斷歷史、出場結案與已結案紀錄
 
 範例：
 

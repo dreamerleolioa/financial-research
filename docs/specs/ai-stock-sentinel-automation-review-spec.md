@@ -959,7 +959,7 @@ correlation_matrix = {
 
 | 任務           | 說明                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
-| 前端復盤儀表板 | 視覺化信心分數時序、訊號轉向歷史                                                         |
+| 個股歷史趨勢元件 | 保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart`，後續嵌入 Analyze / Portfolio，而非獨立主入口 |
 | 編輯持股       | `PUT /portfolio/{id}`：修改成本價、股數、日期、備註；儲存後提示重新觸發分析              |
 | 刪除持股       | `DELETE /portfolio/{id}`：硬刪 `user_portfolio` + `daily_analysis_log`，需使用者確認彈窗 |
 

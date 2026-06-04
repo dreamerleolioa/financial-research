@@ -1,5 +1,6 @@
 # backend/tests/test_portfolio_router.py
 from unittest.mock import MagicMock
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,6 +64,16 @@ def _make_client_with_item(item: MagicMock, user_id: int = 1) -> TestClient:
     return TestClient(app)
 
 
+def _make_client_with_db(mock_db: MagicMock, user_id: int = 1) -> TestClient:
+    mock_user = MagicMock()
+    mock_user.id = user_id
+
+    app = api.app
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides[get_db] = lambda: mock_db
+    return TestClient(app)
+
+
 def _make_portfolio_item(user_id: int = 1) -> MagicMock:
     item = MagicMock()
     item.id = 42
@@ -70,7 +81,16 @@ def _make_portfolio_item(user_id: int = 1) -> MagicMock:
     item.symbol = "2330.TW"
     item.entry_price = 900.0
     item.quantity = 100
-    item.entry_date = "2026-01-01"
+    item.entry_date = date(2026, 1, 1)
+    item.is_active = True
+    item.exit_date = None
+    item.exit_price = None
+    item.exit_quantity = None
+    item.exit_fees = None
+    item.exit_taxes = None
+    item.realized_pnl = None
+    item.realized_return_pct = None
+    item.holding_days = None
     item.notes = None
     return item
 
@@ -118,6 +138,127 @@ def test_delete_portfolio_forbidden():
     client = _make_client_with_item(item, user_id=1)
     resp = client.delete("/portfolio/42")
     assert resp.status_code == 403
+
+
+def test_close_portfolio_success():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+        "fees": 10.0,
+        "taxes": 5.0,
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_active"] is False
+    assert data["exit_date"] == "2026-01-11"
+    assert data["exit_price"] == 950.0
+    assert data["exit_quantity"] == 100
+    assert data["exit_fees"] == 10.0
+    assert data["exit_taxes"] == 5.0
+    assert data["realized_pnl"] == 4985.0
+    assert data["realized_return_pct"] == pytest.approx(5.5389, abs=0.0001)
+    assert data["holding_days"] == 10
+    assert item.is_active is False
+
+
+def test_close_portfolio_forbidden():
+    item = _make_portfolio_item(user_id=99)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 403
+
+
+def test_close_portfolio_rejects_already_closed():
+    item = _make_portfolio_item(user_id=1)
+    item.is_active = False
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 409
+
+
+def test_close_portfolio_rejects_partial_close():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 50,
+    })
+
+    assert resp.status_code == 422
+
+
+def test_close_portfolio_rejects_exit_date_before_entry_date():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2025-12-31",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 422
+
+
+def test_close_portfolio_does_not_execute_daily_analysis_log_delete():
+    item = _make_portfolio_item(user_id=1)
+    mock_db = MagicMock()
+    mock_db.get.return_value = item
+    client = _make_client_with_db(mock_db, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 200
+    mock_db.execute.assert_not_called()
+    mock_db.delete.assert_not_called()
+
+
+def test_list_closed_portfolio_returns_realized_fields():
+    item = _make_portfolio_item(user_id=1)
+    item.is_active = False
+    item.exit_date = date(2026, 1, 11)
+    item.exit_price = 950.0
+    item.exit_quantity = 100
+    item.exit_fees = 10.0
+    item.exit_taxes = 5.0
+    item.realized_pnl = 4985.0
+    item.realized_return_pct = 5.5389
+    item.holding_days = 10
+
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [item]
+    mock_db = MagicMock()
+    mock_db.execute.return_value = result
+    client = _make_client_with_db(mock_db, user_id=1)
+
+    resp = client.get("/portfolio/closed")
+
+    assert resp.status_code == 200
+    assert resp.json()[0]["realized_pnl"] == 4985.0
+    assert resp.json()[0]["holding_days"] == 10
 
 
 # ── Task 2: GET /portfolio/latest-history ────────────────────

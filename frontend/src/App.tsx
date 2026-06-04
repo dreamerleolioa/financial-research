@@ -83,6 +83,7 @@ export default function App() {
           </NavLink>
           <NavLink
             to="/portfolio"
+            end
             className={({ isActive }) =>
               `rounded-lg px-4 py-2 text-sm font-medium transition ${isActive
                 ? "bg-indigo-600 text-white"
@@ -93,7 +94,7 @@ export default function App() {
             我的持股
           </NavLink>
           <NavLink
-            to="/dashboard"
+            to="/portfolio/closed"
             className={({ isActive }) =>
               `rounded-lg px-4 py-2 text-sm font-medium transition ${isActive
                 ? "bg-indigo-600 text-white"
@@ -101,7 +102,7 @@ export default function App() {
               }`
             }
           >
-            復盤儀表板
+            已結案持股
           </NavLink>
           <NavLink
             to="/daily-radar"
