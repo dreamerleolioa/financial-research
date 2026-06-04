@@ -22,10 +22,13 @@ This is a third analysis perspective, separate from existing analysis flows:
 
 The review must not become an all-trades dashboard in the first version. Every review is scoped to exactly one closed `UserPortfolio` row.
 
+For partial exits, one closed row represents one realized exit batch. MVP reviews each exit batch independently. The closed portfolio UI should group exit batches that share the same `position_group_id`, but each batch still has its own review. A future lifecycle review can analyze the grouped position as a whole.
+
 ## Non-Goals
 
 - Do not analyze the user's overall trading behavior across all trades.
 - Do not compute global mistake statistics or leaderboard-style summaries.
+- Do not analyze the full lifecycle of a multi-exit position in MVP.
 - Do not depend on `DailyAnalysisLog` being present for every holding day.
 - Do not infer that the user ignored system advice unless such advice was actually recorded and explicitly included in a later version.
 - Do not ask the LLM to inspect raw K-line arrays and invent conclusions.
@@ -57,6 +60,14 @@ The review engine should fetch or reconstruct the historical price path between 
 
 `DailyAnalysisLog` can be added later as optional context, but it should not block or define the MVP because users may not run analysis every day.
 
+Partial-exit semantics:
+
+- MVP review unit: one closed `UserPortfolio` row equals one realized exit batch.
+- If a user exits the same original position in two batches, the MVP produces two separate reviews.
+- This matches current portfolio behavior, where partial close creates a separate inactive row for the closed slice.
+- Frontend MVP should group closed rows by `position_group_id` for display so multiple exit batches do not look like unrelated trades.
+- A future lifecycle review can aggregate all exit batches that share the same `position_group_id`.
+
 Two safeguards are part of the MVP design, not future enhancements:
 
 1. Point-in-time review: each review stage must only use information that would have been available at that stage.
@@ -65,15 +76,17 @@ Two safeguards are part of the MVP design, not future enhancements:
 ## Proposed User Flow
 
 1. User opens `/portfolio/closed`.
-2. Each closed trade row has a `檢討分析` action.
-3. User clicks the action for one trade.
-4. Frontend calls `POST /portfolio/{portfolio_id}/review`.
-5. Backend validates that the portfolio row belongs to the user and is closed.
-6. Backend returns an existing saved review if one already exists.
-7. If no saved review exists, backend loads historical OHLCV data from entry date to exit date.
-8. Backend computes deterministic review metrics, tags, and an evidence payload.
-9. Backend saves the review and evidence payload to `trade_review`.
-10. Frontend displays a review modal or expanded panel for that trade, including a copyable indicator/evidence block.
+2. Closed rows are grouped by `position_group_id`.
+3. Each group header represents one original position lifecycle visually, with total realized PnL and exit batch count.
+4. Each exit batch row inside the group has its own `檢討分析` action.
+5. User clicks the action for one exit batch.
+6. Frontend calls `POST /portfolio/{portfolio_id}/review` for that exit batch.
+7. Backend validates that the portfolio row belongs to the user and is closed.
+8. Backend returns an existing saved review if one already exists.
+9. If no saved review exists, backend loads historical OHLCV data from entry date to exit date.
+10. Backend computes deterministic review metrics, tags, and an evidence payload.
+11. Backend saves the review and evidence payload to `trade_review`.
+12. Frontend displays a review modal or expanded panel for that exit batch, including a copyable indicator/evidence block.
 
 ## Proposed Backend API
 
@@ -107,6 +120,7 @@ Response shape:
   "review_id": 456,
   "portfolio_id": 123,
   "symbol": "2330.TW",
+  "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "review_version": "trade-review-v1",
   "created_at": "2026-06-04T10:30:00Z",
   "data_quality": {
@@ -162,6 +176,7 @@ Response shape:
   "evidence_payload": {
     "trade": {
       "symbol": "2330.TW",
+      "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
       "entry_date": "2026-01-05",
       "entry_price": 980.0,
       "exit_date": "2026-02-14",
@@ -451,10 +466,31 @@ trade_review
   updated_at
 ```
 
+Also add a grouping field to `user_portfolio`:
+
+```text
+user_portfolio.position_group_id UUID or VARCHAR
+```
+
+`position_group_id` behavior:
+
+- New active positions receive a new group id when created.
+- Partial-close rows inherit the source active row's group id.
+- Remaining active rows keep the same group id after quantity is reduced.
+- Full-close rows keep their existing group id.
+- Existing rows should be backfilled with a unique group id per existing row during migration.
+
+Why add this now:
+
+- Partial exits are common.
+- The current schema can represent partial closes, but it does not explicitly connect closed slices back to the same original position lifecycle.
+- Adding the group id now does not expand MVP review behavior, but prevents future lifecycle review from needing unreliable matching by `symbol`, `entry_date`, and `entry_price`.
+
 Recommended constraints and indexes:
 
 - Unique: `(user_id, portfolio_id)` so one closed trade has one default review.
 - Index: `symbol` for future lookup/debugging.
+- Index: `user_portfolio.position_group_id` for future lifecycle review.
 - Foreign key: `portfolio_id -> user_portfolio.id`.
 
 Persistence behavior:
@@ -500,6 +536,7 @@ Purpose:
 Minimum evidence sections:
 
 - `trade`: symbol, entry/exit dates, entry/exit prices, return, holding days.
+- `position_group_id`: grouping id for future lifecycle review. MVP should display/review only the current closed batch.
 - `path_metrics`: max profit, max drawdown, profit giveback, highest/lowest close during holding.
 - `entry_indicators`: point-in-time indicators computed using data up to `entry_date`.
 - `exit_indicators`: point-in-time indicators computed using data up to `exit_date`.
@@ -527,7 +564,16 @@ frontend/src/pages/ClosedPortfolioPage.tsx
 
 MVP UI proposal:
 
-- Add `檢討分析` button to each closed trade row.
+- Group closed rows by `position_group_id`.
+- Show a group header for each original position lifecycle:
+  - symbol
+  - entry date
+  - entry price
+  - total closed quantity
+  - total realized PnL across visible exit batches
+  - exit batch count
+- Show child rows for each closed exit batch inside the group.
+- Add `檢討分析` button to each exit batch row, not only to the group header.
 - Open a modal or expandable panel.
 - Show loading state only when the review is generated for the first time.
 - Show data quality warning first if price data is incomplete.
@@ -539,13 +585,15 @@ MVP UI proposal:
   - `下次規則`
 - Add `複製指標資料` button for `evidence_payload`.
 - If a saved review exists, open it directly without recomputation.
+- Make the UI copy clear: group header is a visual grouping only; the analysis is still per exit batch.
 
-Keep the page single-trade focused. Do not add aggregate charts in this task.
+Keep the page single-trade focused. Do not add aggregate charts or lifecycle review in this task.
 
 ## Testing Plan
 
 Backend tests:
 
+- Migration/model tests for `position_group_id` existence and partial-close inheritance.
 - `trade_review.py` unit tests for metrics and classifications.
 - API tests for closed-only authorization and response shape.
 - Persistence tests: first request creates `trade_review`, second request returns saved result without recomputing.
@@ -554,10 +602,13 @@ Backend tests:
 - Transaction tests: if evidence or review generation fails, no partial `trade_review` row is committed.
 - Data quality tests for insufficient price history.
 - Partial close tests to ensure review uses the closed slice, not the remaining active row.
+- Partial close tests to ensure source active row and generated closed row share the same `position_group_id`.
 
 Frontend tests or manual checks:
 
-- Closed trade row shows review button.
+- Closed rows with the same `position_group_id` render under the same group header.
+- Each exit batch row shows its own review button.
+- Group header does not show a lifecycle review button in MVP.
 - Review modal loads and renders all sections.
 - Copy evidence button copies pretty-printed JSON.
 - Error state appears when backend returns insufficient data or HTTP error.
@@ -577,16 +628,34 @@ cd frontend && pnpm build
 3. Should entry/exit analysis use execution price directly, or nearest trading day's close when dates fall on non-trading days?
 4. Should the review compare against the user's `notes` field if notes contain an entry thesis?
 5. Should a future `refresh` create a new historical review version or overwrite the existing row with an updated `review_version`?
+6. Should future lifecycle review be a separate endpoint such as `GET /portfolio/group/{position_group_id}/review`?
 
 ## Suggested MVP Cut
 
 The smallest useful version:
 
 1. Add backend rule engine for one closed trade.
-2. Add `trade_review` table and migration.
-3. Add `POST /portfolio/{id}/review` to create-or-return one saved review.
-4. Add `GET /portfolio/{id}/review` to read the saved review.
-5. Return structured JSON with data quality, trade result, entry review, holding review, exit review, operation review, and `evidence_payload`.
-6. Add a closed-row review modal in `/portfolio/closed`.
-7. Add `複製指標資料` for the evidence payload.
-8. Do not use LLM in the first implementation.
+2. Add `position_group_id` to `user_portfolio` and ensure partial closes inherit it.
+3. Add `trade_review` table and migration.
+4. Add `POST /portfolio/{id}/review` to create-or-return one saved review for one closed row.
+5. Add `GET /portfolio/{id}/review` to read the saved review.
+6. Return structured JSON with data quality, trade result, entry review, holding review, exit review, operation review, `position_group_id`, and `evidence_payload`.
+7. Group `/portfolio/closed` rows by `position_group_id` for display.
+8. Add an exit-batch review modal in `/portfolio/closed`.
+9. Add `複製指標資料` for the evidence payload.
+10. Do not use LLM in the first implementation.
+11. Do not implement full position lifecycle review in MVP.
+
+## Future: Position Lifecycle Review
+
+Lifecycle review is intentionally out of MVP scope.
+
+Future behavior:
+
+- Group all active/closed rows sharing the same `position_group_id`.
+- Review the whole original position from first entry to final exit.
+- Compare multiple exit batches as one operation sequence.
+- Evaluate whether partial exits protected profit, exited too early, or improved risk control.
+- Consider optional LLM narrative because multi-step exit sequencing is harder to summarize with pure labels alone.
+
+The lifecycle review should still use Python-computed metrics first. LLM, if used, should summarize objective batch facts rather than invent trade reasoning.
