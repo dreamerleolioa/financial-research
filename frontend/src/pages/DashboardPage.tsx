@@ -87,7 +87,7 @@ export default function DashboardPage() {
           </h2>
           {entries.some((e) => !e.analysis_is_final) && (
             <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              含未定稿分析點；這類資料可能來自盤中查詢，或該日雖然 raw data
+              含未定稿分析點；這類資料可能來自盤中查詢，或該日雖然原始行情資料
               已收盤定稿，但分析尚未重跑，虛線外圈標記僅供參考，不代表收盤定論。
             </p>
           )}
@@ -168,7 +168,7 @@ export default function DashboardPage() {
                   <span className="text-sm text-text-primary">信心 {e.signal_confidence ?? "—"}</span>
                   {e.indicators?.rsi_14 != null && (
                     <span className="text-xs text-text-muted">
-                      RSI {String(e.indicators.rsi_14)}
+                      14 日相對強弱指標（RSI）：{String(e.indicators.rsi_14)}
                     </span>
                   )}
                 </div>
