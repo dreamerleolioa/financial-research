@@ -239,8 +239,11 @@ Phase 1-3 後端 API 已完成。
   4. 複製指標資料可用
   5. 原本期間篩選與 realized PnL summary 還正常
 - 完成後停止。
-  Phase 5 Prompt
-  請只實作 Single Trade Review 的 Phase 5：收斂與文件同步，不新增功能。
+
+---
+
+Phase 5 Prompt
+請只實作 Single Trade Review 的 Phase 5：收斂與文件同步，不新增功能。
 
 參考文件：
 docs/plans/2026-06-04-single-trade-review-analysis.md
