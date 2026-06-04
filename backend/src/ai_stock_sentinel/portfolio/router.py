@@ -22,7 +22,7 @@ PORTFOLIO_LIMIT = 8
 
 class PortfolioCreateRequest(BaseModel):
     symbol: str
-    entry_price: float
+    entry_price: float = Field(gt=0)
     entry_date: date
     quantity: int = 0
     notes: str | None = None
@@ -137,7 +137,7 @@ def add_portfolio(
 
 
 class UpdatePortfolioRequest(BaseModel):
-    entry_price: float
+    entry_price: float = Field(gt=0)
     quantity: int
     entry_date: date
     notes: str | None = None
@@ -192,6 +192,8 @@ def close_portfolio(
 
     exit_price = Decimal(str(payload.exit_price))
     entry_price = Decimal(str(item.entry_price))
+    if entry_price <= 0:
+        raise HTTPException(status_code=422, detail="成本價必須大於 0")
     exit_quantity = Decimal(payload.exit_quantity)
     fees = Decimal(str(payload.fees))
     taxes = Decimal(str(payload.taxes))

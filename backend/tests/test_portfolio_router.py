@@ -51,6 +51,20 @@ def test_add_portfolio_rejects_when_limit_reached():
     assert "8" in resp.json()["detail"]
 
 
+@pytest.mark.parametrize("entry_price", [0, -1])
+def test_add_portfolio_rejects_non_positive_entry_price(entry_price):
+    client = _make_client(active_count=7)
+
+    resp = client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": entry_price,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+    })
+
+    assert resp.status_code == 422
+
+
 def _make_client_with_item(item: MagicMock, user_id: int = 1) -> TestClient:
     mock_user = MagicMock()
     mock_user.id = user_id
@@ -120,6 +134,21 @@ def test_update_portfolio_forbidden():
         "entry_date": "2026-02-01",
     })
     assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("entry_price", [0, -1])
+def test_update_portfolio_rejects_non_positive_entry_price(entry_price):
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.put("/portfolio/42", json={
+        "entry_price": entry_price,
+        "quantity": 200,
+        "entry_date": "2026-02-01",
+        "notes": "加碼",
+    })
+
+    assert resp.status_code == 422
 
 
 # ── Task 6: DELETE /portfolio/{id} ──────────────────────────
@@ -219,6 +248,25 @@ def test_close_portfolio_rejects_exit_date_before_entry_date():
     assert resp.status_code == 422
 
 
+def test_close_portfolio_rejects_legacy_zero_entry_price_without_commit():
+    item = _make_portfolio_item(user_id=1)
+    item.entry_price = 0
+    mock_db = MagicMock()
+    mock_db.get.return_value = item
+    client = _make_client_with_db(mock_db, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "成本價必須大於 0"
+    assert item.is_active is True
+    mock_db.commit.assert_not_called()
+
+
 def test_close_portfolio_does_not_execute_daily_analysis_log_delete():
     item = _make_portfolio_item(user_id=1)
     mock_db = MagicMock()
@@ -312,8 +360,11 @@ def test_latest_history_returns_latest_per_portfolio():
     portfolio = MagicMock()
     portfolio.id = 42
     portfolio.symbol = "2330.TW"
+    portfolio.entry_date = date(2026, 3, 1)
+    portfolio.exit_date = None
 
     log_row = {
+        "portfolio_id": 42,
         "symbol": "2330.TW",
         "record_date": date(2026, 3, 10),
         "signal_confidence": 75.0,
