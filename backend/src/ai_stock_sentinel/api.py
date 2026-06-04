@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
@@ -10,7 +11,9 @@ from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -94,6 +97,9 @@ class TechnicalIndicators(BaseModel):
     adx_trend_direction: str | None = None
     obv: float | None = None
     obv_signal: str | None = None
+    obv_trend_20d: str | None = None
+    obv_trend_mid_long: str | None = None
+    obv_trend_mid_long_window: str | None = None
     atr: float | None = None
     atr_pct: float | None = None
     volatility_level: str | None = None
@@ -366,6 +372,9 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
         adx_trend_direction=adx_data["trend_direction"] if adx_data else None,
         obv=obv_data["obv"] if obv_data else None,
         obv_signal=obv_data["obv_signal"] if obv_data else None,
+        obv_trend_20d=obv_data["obv_trend_20d"] if obv_data else None,
+        obv_trend_mid_long=obv_data["obv_trend_mid_long"] if obv_data else None,
+        obv_trend_mid_long_window=obv_data["obv_trend_mid_long_window"] if obv_data else None,
         atr=atr_data["atr"] if atr_data else None,
         atr_pct=atr_data["atr_pct"] if atr_data else None,
         volatility_level=atr_data["volatility_level"] if atr_data else None,
@@ -432,6 +441,9 @@ def _extract_indicators(result: dict) -> dict:
         "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
         "obv":                obv_data["obv"] if obv_data else None,
         "obv_signal":         obv_data["obv_signal"] if obv_data else None,
+        "obv_trend_20d":      obv_data["obv_trend_20d"] if obv_data else None,
+        "obv_trend_mid_long": obv_data["obv_trend_mid_long"] if obv_data else None,
+        "obv_trend_mid_long_window": obv_data["obv_trend_mid_long_window"] if obv_data else None,
         "atr":                atr_data["atr"] if atr_data else None,
         "atr_pct":            atr_data["atr_pct"] if atr_data else None,
         "volatility_level":   atr_data["volatility_level"] if atr_data else None,
@@ -658,6 +670,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Stock Sentinel API", version="v1", lifespan=lifespan)
+
+
+def _sanitize_validation_error_value(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _sanitize_validation_error_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_validation_error_value(item) for item in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": _sanitize_validation_error_value(exc.errors())},
+    )
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]

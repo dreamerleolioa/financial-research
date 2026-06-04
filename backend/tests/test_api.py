@@ -319,6 +319,9 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
         "price_volume_weak",
         "neutral",
     }
+    assert indicators["obv_trend_20d"] in {"rising", "falling", "flat"}
+    assert indicators["obv_trend_mid_long"] is None
+    assert indicators["obv_trend_mid_long_window"] is None
 
 
 # ---------------------------------------------------------------------------

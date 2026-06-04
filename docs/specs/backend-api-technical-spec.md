@@ -518,21 +518,22 @@ make run-api
 - **欄位說明**
   - `exit_date`：出場日期，必填，ISO 8601 日期字串。
   - `exit_price`：出場價格，必填，需大於 0。
-  - `exit_quantity`：出場股數，必填，需大於 0。
+  - `exit_quantity`：出場股數，必填，需大於 0，且不可大於目前 active 持有股數。
   - `fees`：手續費，選填，需大於或等於 0，預設 0。
   - `taxes`：交易稅，選填，需大於或等於 0，預設 0。
 
 - **計算邏輯**
-  - `realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`
-  - `realized_return_pct = realized_pnl / (entry_price * exit_quantity) * 100`
+  - 已實現損益採平均成本法計算：`realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`
+  - 已實現報酬率採本次出場股數的成本基準計算：`realized_return_pct = realized_pnl / (entry_price * exit_quantity) * 100`
   - `holding_days = exit_date - entry_date` 的天數
-  - 結案成功後設定 `is_active = FALSE`，並回傳序列化後的 closed portfolio。
+  - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
+  - `exit_quantity < quantity` 時為部分平倉：原 active 持股保留並扣減 `quantity`，另建立一筆 `is_active = FALSE` 的 closed portfolio 紀錄，該 inactive 紀錄代表本次出場股數，response 回傳新建立的 closed portfolio。
 
 - **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
 
 - **錯誤行為**
   - 已結案持股回傳 `409`，訊息為 `持倉已關閉`。
-  - `exit_quantity` 不等於原始 `quantity` 時回傳 `422`，訊息為 `MVP 僅支援全數平倉`。
+  - `exit_quantity` 大於目前 active 持有股數時回傳 `422`，訊息為 `出場股數不可大於持有股數`。
   - `exit_date` 早於 `entry_date` 時回傳 `422`，訊息為 `出場日期不可早於進場日期`。
 
 - **歷史保留**：此端點不刪除 `daily_analysis_log`，結案後仍可保留歷史診斷。

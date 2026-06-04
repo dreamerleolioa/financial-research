@@ -53,6 +53,9 @@ interface TechnicalIndicators {
   adx_trend_direction: string | null;
   obv: number | null;
   obv_signal: string | null;
+  obv_trend_20d: string | null;
+  obv_trend_mid_long: string | null;
+  obv_trend_mid_long_window: string | null;
   atr: number | null;
   atr_pct: number | null;
   volatility_level: string | null;
@@ -212,6 +215,12 @@ const OBV_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
   bullish_divergence: { label: "低檔承接", cls: "bg-blue-100 text-blue-800" },
   price_volume_weak: { label: "量價轉弱", cls: "bg-red-100 text-red-800" },
   neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
+const OBV_TREND_LABEL: Record<string, { label: string; cls: string }> = {
+  rising: { label: "上升", cls: "bg-emerald-100 text-emerald-800" },
+  falling: { label: "下降", cls: "bg-red-100 text-red-800" },
+  flat: { label: "盤整", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 const VOLATILITY_LEVEL_LABEL: Record<string, { label: string; cls: string }> = {
@@ -735,6 +744,23 @@ export default function AnalyzePage() {
               ) : <span className="text-sm text-text-faint">—</span>}
             </div>
             <div>
+              <p className="text-xs text-text-muted mb-1">OBV 20 日趨勢</p>
+              {result.technical_indicators.obv_trend_20d && OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d] ? (
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d].cls}`}>
+                  {OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d].label}
+                </span>
+              ) : <span className="text-sm text-text-faint">—</span>}
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">OBV 中長期趨勢</p>
+              {result.technical_indicators.obv_trend_mid_long && OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long] ? (
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long].cls}`}>
+                  {OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long].label}
+                  {result.technical_indicators.obv_trend_mid_long_window ? `（${result.technical_indicators.obv_trend_mid_long_window}）` : ""}
+                </span>
+              ) : <span className="text-sm text-text-faint">資料不足</span>}
+            </div>
+            <div>
               <p className="text-xs text-text-muted mb-1">平均真實波幅（ATR）</p>
               {result.technical_indicators.volatility_level && VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level] ? (
                 <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].cls}`}>
@@ -799,8 +825,8 @@ export default function AnalyzePage() {
               <p className="text-sm font-medium text-text-primary">{formatIndicatorNumber(result.technical_indicators.adx, 1)}</p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">OBV</p>
-              <p className={`text-sm font-medium ${result.technical_indicators.obv != null ? (result.technical_indicators.obv >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
+              <p className="text-xs text-text-muted mb-1">OBV 累積值參考</p>
+              <p className="text-sm font-medium text-text-secondary">
                 {formatVolume(result.technical_indicators.obv)}
               </p>
             </div>

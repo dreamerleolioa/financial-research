@@ -562,6 +562,24 @@ class TestKdAdxObv:
         assert result is not None
         assert result["obv_signal"] == "price_volume_confirm"
 
+    def test_obv_returns_20d_and_mid_long_trends(self):
+        closes = [100.0 + idx for idx in range(130)]
+        volumes = [1000.0 for _ in closes]
+        result = obv(closes, volumes)
+        assert result is not None
+        assert result["obv_signal"] == "price_volume_confirm"
+        assert result["obv_trend_20d"] == "rising"
+        assert result["obv_trend_mid_long"] == "rising"
+        assert result["obv_trend_mid_long_window"] == "120d"
+
+    def test_obv_marks_trend_flat_when_net_change_is_small(self):
+        closes = [100.0 + (idx % 2) for idx in range(40)]
+        volumes = [1000.0 for _ in closes]
+        result = obv(closes, volumes)
+        assert result is not None
+        assert result["obv_trend_20d"] == "flat"
+        assert result["obv_trend_mid_long"] is None
+
     def test_technical_context_contains_new_indicator_sections(self):
         closes = [float(100 + idx * 0.5) for idx in range(40)]
         highs = [close + 1 for close in closes]
@@ -572,3 +590,4 @@ class TestKdAdxObv:
         assert "【KD】" in tc
         assert "【ADX】" in tc
         assert "【OBV】" in tc
+        assert "20 日 OBV 趨勢" in tc

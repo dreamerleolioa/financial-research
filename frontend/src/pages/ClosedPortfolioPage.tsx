@@ -19,6 +19,30 @@ const PERIOD_OPTIONS: PeriodOption[] = [
   { key: "1y", label: "1年", days: 365 },
 ];
 
+const SELECTED_PERIOD_STORAGE_KEY = "closedPortfolio.selectedPeriod";
+
+function isValidPeriodKey(value: string | null): value is PeriodKey {
+  return PERIOD_OPTIONS.some((option) => option.key === value);
+}
+
+function readStoredPeriod(): PeriodKey {
+  try {
+    const storedPeriod = window.localStorage.getItem(SELECTED_PERIOD_STORAGE_KEY);
+    return isValidPeriodKey(storedPeriod) ? storedPeriod : "1m";
+  } catch {
+    return "1m";
+  }
+}
+
+function writeStoredPeriod(period: PeriodKey): boolean {
+  try {
+    window.localStorage.setItem(SELECTED_PERIOD_STORAGE_KEY, period);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function toLocalDate(value: string): Date | null {
   const [yearText, monthText, dayText] = value.slice(0, 10).split("-");
   const year = Number(yearText);
@@ -43,9 +67,13 @@ function isWithinPeriod(exitDate: string, days: number, today: Date): boolean {
 
 export default function ClosedPortfolioPage() {
   const [items, setItems] = useState<ClosedPortfolioItem[]>([]);
-  const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>("1m");
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>(readStoredPeriod);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    writeStoredPeriod(selectedPeriod);
+  }, [selectedPeriod]);
 
   useEffect(() => {
     let cancelled = false;

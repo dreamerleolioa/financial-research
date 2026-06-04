@@ -1,13 +1,19 @@
 # backend/tests/test_portfolio_router.py
-from unittest.mock import MagicMock
 from datetime import date
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
-from ai_stock_sentinel.db.session import get_db
+from ai_stock_sentinel.db.session import Base, get_db
+from ai_stock_sentinel.db.models import UserPortfolio
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.user_models.user import User
 
 
 def _make_client(active_count: int) -> TestClient:
@@ -69,8 +75,12 @@ def _make_client_with_item(item: MagicMock, user_id: int = 1) -> TestClient:
     mock_user = MagicMock()
     mock_user.id = user_id
 
+    locked_result = MagicMock()
+    locked_result.scalar_one_or_none.return_value = item if item.user_id == user_id else None
+
     mock_db = MagicMock()
     mock_db.get.return_value = item
+    mock_db.execute.return_value = locked_result
 
     app = api.app
     app.dependency_overrides[get_current_user] = lambda: mock_user
@@ -222,15 +232,95 @@ def test_close_portfolio_rejects_already_closed():
     assert resp.status_code == 409
 
 
-def test_close_portfolio_rejects_partial_close():
+def test_close_portfolio_partial_close_success():
     item = _make_portfolio_item(user_id=1)
-    client = _make_client_with_item(item, user_id=1)
+    item.notes = "初始筆記"
+    locked_result = MagicMock()
+    locked_result.scalar_one_or_none.return_value = item
+    mock_db = MagicMock()
+    mock_db.execute.return_value = locked_result
+    client = _make_client_with_db(mock_db, user_id=1)
 
     resp = client.post("/portfolio/42/close", json={
         "exit_date": "2026-01-11",
         "exit_price": 950.0,
         "exit_quantity": 50,
+        "fees": 10.0,
+        "taxes": 5.0,
     })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_active"] is False
+    assert data["quantity"] == 50
+    assert data["exit_date"] == "2026-01-11"
+    assert data["exit_price"] == 950.0
+    assert data["exit_quantity"] == 50
+    assert data["exit_fees"] == 10.0
+    assert data["exit_taxes"] == 5.0
+    assert data["realized_pnl"] == 2485.0
+    assert data["realized_return_pct"] == pytest.approx(5.5222, abs=0.0001)
+    assert data["holding_days"] == 10
+    assert item.is_active is True
+    assert item.quantity == 50
+    closed_item = mock_db.add.call_args.args[0]
+    assert isinstance(closed_item, UserPortfolio)
+    assert closed_item.user_id == item.user_id
+    assert closed_item.symbol == item.symbol
+    assert closed_item.entry_price == item.entry_price
+    assert closed_item.entry_date == item.entry_date
+    assert closed_item.notes == item.notes
+    assert closed_item.is_active is False
+    assert closed_item.quantity == 50
+    assert closed_item.exit_quantity == 50
+    mock_db.commit.assert_called_once()
+
+
+def test_close_portfolio_rejects_over_quantity_without_commit():
+    item = _make_portfolio_item(user_id=1)
+    locked_result = MagicMock()
+    locked_result.scalar_one_or_none.return_value = item
+    mock_db = MagicMock()
+    mock_db.execute.return_value = locked_result
+    client = _make_client_with_db(mock_db, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 101,
+    })
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "出場股數不可大於持有股數"
+    assert item.is_active is True
+    assert item.quantity == 100
+    mock_db.add.assert_not_called()
+    mock_db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("exit_price", "Infinity"),
+    ("fees", "NaN"),
+    ("taxes", "Infinity"),
+])
+def test_close_portfolio_rejects_non_finite_numbers(field, value):
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+    payload = {
+        "exit_date": '"2026-01-11"',
+        "exit_price": "950.0",
+        "exit_quantity": "100",
+        "fees": "0",
+        "taxes": "0",
+    }
+    payload[field] = value
+    body = "{" + ",".join(f'"{key}":{raw_value}' for key, raw_value in payload.items()) + "}"
+
+    resp = client.post(
+        "/portfolio/42/close",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
 
     assert resp.status_code == 422
 
@@ -251,8 +341,10 @@ def test_close_portfolio_rejects_exit_date_before_entry_date():
 def test_close_portfolio_rejects_legacy_zero_entry_price_without_commit():
     item = _make_portfolio_item(user_id=1)
     item.entry_price = 0
+    locked_result = MagicMock()
+    locked_result.scalar_one_or_none.return_value = item
     mock_db = MagicMock()
-    mock_db.get.return_value = item
+    mock_db.execute.return_value = locked_result
     client = _make_client_with_db(mock_db, user_id=1)
 
     resp = client.post("/portfolio/42/close", json={
@@ -269,8 +361,10 @@ def test_close_portfolio_rejects_legacy_zero_entry_price_without_commit():
 
 def test_close_portfolio_does_not_execute_daily_analysis_log_delete():
     item = _make_portfolio_item(user_id=1)
+    locked_result = MagicMock()
+    locked_result.scalar_one_or_none.return_value = item
     mock_db = MagicMock()
-    mock_db.get.return_value = item
+    mock_db.execute.return_value = locked_result
     client = _make_client_with_db(mock_db, user_id=1)
 
     resp = client.post("/portfolio/42/close", json={
@@ -280,8 +374,77 @@ def test_close_portfolio_does_not_execute_daily_analysis_log_delete():
     })
 
     assert resp.status_code == 200
-    mock_db.execute.assert_not_called()
     mock_db.delete.assert_not_called()
+
+
+@pytest.fixture()
+def portfolio_db_session() -> Session:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__])
+    with Session(engine) as session:
+        yield session
+
+
+@pytest.fixture()
+def portfolio_db_client(portfolio_db_session: Session) -> TestClient:
+    api.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    api.app.dependency_overrides[get_db] = lambda: portfolio_db_session
+    try:
+        yield TestClient(api.app)
+    finally:
+        api.app.dependency_overrides.pop(get_current_user, None)
+        api.app.dependency_overrides.pop(get_db, None)
+
+
+def test_close_portfolio_partial_close_persists_active_and_closed_rows(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        notes="核心持股",
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 40,
+        "fees": 10.0,
+        "taxes": 5.0,
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] != 42
+    assert data["is_active"] is False
+    assert data["quantity"] == 40
+    assert data["exit_quantity"] == 40
+    assert data["realized_pnl"] == 1985.0
+
+    rows = portfolio_db_session.execute(
+        select(UserPortfolio).order_by(UserPortfolio.is_active.desc(), UserPortfolio.id.asc())
+    ).scalars().all()
+    assert len(rows) == 2
+    active, closed = rows
+    assert active.id == 42
+    assert active.is_active is True
+    assert active.quantity == 60
+    assert active.exit_date is None
+    assert closed.is_active is False
+    assert closed.quantity == 40
+    assert closed.exit_quantity == 40
+    assert closed.notes == "核心持股"
 
 
 def test_list_closed_portfolio_returns_realized_fields():

@@ -39,6 +39,7 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
 
     assert snapshot.volume == 123456
     assert snapshot.volume_source == "realtime"
+    mock_ticker.history.assert_called_once_with(period="1y", interval="1d")
 
 
 def test_fetch_basic_snapshot_falls_back_to_history_volume_when_last_volume_missing() -> None:
