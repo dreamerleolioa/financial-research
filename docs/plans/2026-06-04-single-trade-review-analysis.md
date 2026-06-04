@@ -57,6 +57,11 @@ The review engine should fetch or reconstruct the historical price path between 
 
 `DailyAnalysisLog` can be added later as optional context, but it should not block or define the MVP because users may not run analysis every day.
 
+Two safeguards are part of the MVP design, not future enhancements:
+
+1. Point-in-time review: each review stage must only use information that would have been available at that stage.
+2. Market-regime-aware rules: indicator rules must be interpreted differently in trend, range, strong momentum, weak downtrend, and high-volatility regimes.
+
 ## Proposed User Flow
 
 1. User opens `/portfolio/closed`.
@@ -64,17 +69,19 @@ The review engine should fetch or reconstruct the historical price path between 
 3. User clicks the action for one trade.
 4. Frontend calls `POST /portfolio/{portfolio_id}/review`.
 5. Backend validates that the portfolio row belongs to the user and is closed.
-6. Backend loads historical OHLCV data from entry date to exit date.
-7. Backend computes deterministic review metrics and tags.
-8. Frontend displays a review modal or expanded panel for that trade.
+6. Backend returns an existing saved review if one already exists.
+7. If no saved review exists, backend loads historical OHLCV data from entry date to exit date.
+8. Backend computes deterministic review metrics, tags, and an evidence payload.
+9. Backend saves the review and evidence payload to `trade_review`.
+10. Frontend displays a review modal or expanded panel for that trade, including a copyable indicator/evidence block.
 
 ## Proposed Backend API
 
 ### `POST /portfolio/{portfolio_id}/review`
 
-Generate or refresh a review for one closed portfolio row.
+Generate the first review for one closed portfolio row, or return the existing saved review.
 
-Initial behavior can be stateless and compute on demand. Persistence can be added after the review schema stabilizes.
+MVP behavior is persisted by default. A closed trade should normally be reviewed once, then reopened from the saved `trade_review` row. Re-analysis can be added later as an explicit action, but should not happen silently on every click.
 
 Request body for MVP:
 
@@ -91,12 +98,17 @@ Possible future request fields:
 }
 ```
 
+`refresh` is intentionally future-only. If added, it should create or update a review with a new `review_version`, not silently mutate historical output without version context.
+
 Response shape:
 
 ```json
 {
+  "review_id": 456,
   "portfolio_id": 123,
   "symbol": "2330.TW",
+  "review_version": "trade-review-v1",
+  "created_at": "2026-06-04T10:30:00Z",
   "data_quality": {
     "price_data_available": true,
     "trading_days": 28,
@@ -147,13 +159,57 @@ Response shape:
       "若跌破 MA20 且量能放大，下次不等待基本面敘事來合理化持有。"
     ]
   },
+  "evidence_payload": {
+    "trade": {
+      "symbol": "2330.TW",
+      "entry_date": "2026-01-05",
+      "entry_price": 980.0,
+      "exit_date": "2026-02-14",
+      "exit_price": 1040.0,
+      "return_pct": 6.12,
+      "holding_days": 40
+    },
+    "path_metrics": {
+      "max_profit_pct": 12.4,
+      "max_drawdown_pct": -4.8,
+      "profit_giveback_pct": 6.2
+    },
+    "entry_indicators": {
+      "ma20": 950.0,
+      "ma60": 910.0,
+      "rsi14": 72.0,
+      "macd_bias": "bullish",
+      "volume_ratio": 1.8,
+      "market_regime": "strong_momentum"
+    },
+    "exit_indicators": {
+      "ma20": 1055.0,
+      "ma60": 990.0,
+      "rsi14": 48.0,
+      "macd_bias": "bearish",
+      "volume_ratio": 1.3,
+      "market_regime": "uptrend"
+    },
+    "detected_events": [
+      {
+        "date": "2026-02-07",
+        "type": "macd_bearish_turn"
+      },
+      {
+        "date": "2026-02-10",
+        "type": "profit_giveback"
+      }
+    ]
+  },
   "llm_summary": null
 }
 ```
 
 ### `GET /portfolio/{portfolio_id}/review`
 
-Optional for a later persistence phase. Returns the latest stored review if a `trade_review` table is introduced.
+Return the saved review for one closed portfolio row.
+
+If no review exists yet, return `404` or a structured empty state so the frontend can show `尚未產生檢討分析` and offer the generate action.
 
 ## Review Engine Modules
 
@@ -188,6 +244,25 @@ def build_trade_review(portfolio: UserPortfolio, prices: pd.DataFrame) -> dict:
 ## Technical Rule Categories
 
 The first version should keep rules explainable and testable.
+
+Before applying entry, holding, or exit classifications, compute a lightweight `market_regime` so rules do not treat every market condition the same way.
+
+Possible `market_regime` values:
+
+- `uptrend`: price structure and moving averages show a sustained upward trend.
+- `downtrend`: price structure and moving averages show sustained weakness.
+- `range_bound`: price oscillates within a range and moving-average signals are less reliable.
+- `strong_momentum`: trend is extended and overbought indicators may remain elevated.
+- `high_volatility`: ATR or wide daily ranges make simple MA breaks noisier.
+- `insufficient_data`: not enough history to classify regime.
+
+Example regime adjustments:
+
+- In `uptrend`, MA20 breaks and MACD cooling are more meaningful for exit review.
+- In `range_bound`, MA20 crosses should be treated as lower-confidence noise unless the range boundary also breaks.
+- In `strong_momentum`, RSI/KD overbought alone should not be labeled as a sell mistake; require price/volume divergence, MA5/MA10 loss, or failed breakout evidence.
+- In `downtrend`, rebound entries should be reviewed more strictly and require stronger confirmation.
+- In `high_volatility`, ATR-adjusted thresholds should reduce false breakdown classifications.
 
 ### Entry Classifications
 
@@ -270,6 +345,63 @@ Examples:
 
 No review should claim a signal occurred if the data was not available.
 
+## Bias Control: Point-in-Time Review
+
+The review must avoid hindsight bias. The system may report full-trade outcome metrics, but it must not use future candles to judge what the user should have known at entry or exit.
+
+Stage-specific data windows:
+
+| Review Stage | Allowed Data Window | Forbidden Use |
+| --- | --- | --- |
+| Entry review | Data available up to and including `entry_date` | Do not use post-entry highs/lows to say the entry was obviously good or bad. |
+| Holding review | Data from after entry up to before/at exit, evaluated chronologically | Do not assume the final exit result was knowable during earlier holding days. |
+| Exit review | Data available up to and including `exit_date` | Do not use post-exit price movement unless a future version explicitly adds a separate missed-opportunity section. |
+| Trade result summary | Full trade window from entry through exit | May report max profit, max drawdown, and profit giveback, but only as outcome facts. |
+
+Examples of acceptable wording:
+
+- "Entry was technically extended based on information available at entry."
+- "The trade later reached a larger unrealized profit, but this is reported as an outcome metric, not as proof that the entry decision was wrong."
+- "Exit occurred after MA20 weakness had already appeared by the exit date."
+
+Examples of forbidden wording:
+
+- "You should have known at entry that the stock would later reverse."
+- "The correct exit was the exact high of the trade window."
+- "This was a mistake because the stock rose after exit" unless post-exit analysis is explicitly enabled as a different feature.
+
+Implementation guidance:
+
+- Indicator snapshots for entry classification must be computed on a sliced price frame ending at `entry_date`.
+- Exit classification must be computed on a sliced price frame ending at `exit_date`.
+- Holding path events should be detected in chronological order and returned with event dates.
+- Full-window max profit/drawdown should live under `trade_result`, not under entry or exit judgment.
+
+## Rule Confidence and Caveats
+
+Every classification should carry enough context for the frontend to avoid presenting it as an absolute verdict.
+
+Suggested fields:
+
+```json
+{
+  "classification": "chase_entry",
+  "confidence": "medium",
+  "market_regime": "strong_momentum",
+  "caveats": [
+    "RSI was elevated, but strong momentum regimes can remain overbought longer than expected."
+  ]
+}
+```
+
+Suggested confidence levels:
+
+- `high`: multiple aligned signals support the classification and data quality is sufficient.
+- `medium`: classification is supported, but market regime or missing secondary signals reduce certainty.
+- `low`: limited data, conflicting indicators, or noisy regime.
+
+Frontend copy should prefer measured language such as "偏向", "可能", "需注意" for low/medium confidence results.
+
 ## LLM Policy
 
 LLM is optional and should not be part of the MVP critical path.
@@ -299,11 +431,11 @@ OHLCV history
 
 ## Persistence Decision
 
-MVP can compute on demand and avoid a new table while the review schema is still being discussed.
+MVP should persist the review result.
 
-Add persistence only after the response shape stabilizes.
+Reason: this feature is a completed-trade retrospective, not live market analysis. A user usually expects the same closed trade review to remain stable when reopened. The generated review should also preserve the exact indicator/evidence payload used at the time, so the user can copy it into another AI agent or external tool.
 
-Future table candidate:
+Add a new table:
 
 ```text
 trade_review
@@ -313,21 +445,77 @@ trade_review
   symbol
   review_version
   review_result JSONB
+  evidence_payload JSONB
   llm_summary TEXT NULL
   created_at
   updated_at
 ```
 
-Reasons to persist later:
+Recommended constraints and indexes:
+
+- Unique: `(user_id, portfolio_id)` so one closed trade has one default review.
+- Index: `symbol` for future lookup/debugging.
+- Foreign key: `portfolio_id -> user_portfolio.id`.
+
+Persistence behavior:
+
+- `POST /portfolio/{portfolio_id}/review` creates the review when missing.
+- If a review already exists, `POST` returns the saved result instead of recalculating.
+- `GET /portfolio/{portfolio_id}/review` returns the saved result.
+- Future `refresh` behavior must be explicit and version-aware.
+- Save must be atomic: `review_result` and `evidence_payload` are inserted in the same DB transaction. If any step fails, rollback and leave no partial `trade_review` row.
+
+Reasons to persist in MVP:
 
 - Avoid recalculating expensive historical data.
 - Preserve the review generated under a specific rule version.
-- Support future manual notes or user feedback.
+- Preserve the exact evidence payload used by the review.
+- Let users repeatedly reopen or copy the same review without drift.
 
-Reasons not to persist in MVP:
+Schema flexibility:
 
-- Schema is still likely to change.
-- The first version should prioritize validating usefulness of the rule output.
+- Keep detailed output in `review_result` and `evidence_payload` JSONB so the first version can evolve without frequent column migrations.
+- Store `review_version` as a string constant such as `trade-review-v1` to distinguish old reviews from future rule updates.
+- Do not store full OHLCV/K-line arrays in `trade_review`. Store only summarized metrics, point-in-time indicators, detected events, and data quality notes.
+- If a future version needs full historical candles, store them in a dedicated raw-data table or reuse `StockRawData`; do not duplicate them inside every review row.
+
+Atomic save requirements:
+
+- Build `review_result` and `evidence_payload` fully in memory first.
+- Validate both payloads contain required top-level keys before DB insert.
+- Insert `trade_review` only after both payloads are complete.
+- Commit once after insert succeeds.
+- Roll back on any exception and return an error response; do not persist partial analysis.
+
+## Evidence Package
+
+The review must include a copyable `evidence_payload` separate from the user-facing review text.
+
+Purpose:
+
+- Make the analysis transparent and inspectable.
+- Let the user copy objective trade metrics and indicators into another AI agent.
+- Avoid black-box conclusions; every review should be traceable to concrete values.
+
+Minimum evidence sections:
+
+- `trade`: symbol, entry/exit dates, entry/exit prices, return, holding days.
+- `path_metrics`: max profit, max drawdown, profit giveback, highest/lowest close during holding.
+- `entry_indicators`: point-in-time indicators computed using data up to `entry_date`.
+- `exit_indicators`: point-in-time indicators computed using data up to `exit_date`.
+- `market_regime`: regime labels used for entry/exit classification.
+- `detected_events`: chronological holding-period events with dates and event types.
+- `data_quality`: missing data notes and confidence limitations.
+
+Storage boundary:
+
+- Include indicator values and derived events only.
+- Do not include full daily OHLCV arrays.
+- Do not include raw news, raw LLM prompts, or unrelated portfolio history.
+- Keep event lists concise and capped if needed, for example top 20 chronologically important events.
+- Prefer scalar values, labels, and short descriptions so the payload remains easy to copy into other AI agents.
+
+Frontend should provide a `複製指標資料` action that copies a pretty-printed JSON payload.
 
 ## Frontend UX
 
@@ -341,7 +529,7 @@ MVP UI proposal:
 
 - Add `檢討分析` button to each closed trade row.
 - Open a modal or expandable panel.
-- Show loading state while the review is generated.
+- Show loading state only when the review is generated for the first time.
 - Show data quality warning first if price data is incomplete.
 - Split the review into four sections:
   - `交易結果`
@@ -349,6 +537,8 @@ MVP UI proposal:
   - `持有路徑`
   - `出場檢討`
   - `下次規則`
+- Add `複製指標資料` button for `evidence_payload`.
+- If a saved review exists, open it directly without recomputation.
 
 Keep the page single-trade focused. Do not add aggregate charts in this task.
 
@@ -358,6 +548,10 @@ Backend tests:
 
 - `trade_review.py` unit tests for metrics and classifications.
 - API tests for closed-only authorization and response shape.
+- Persistence tests: first request creates `trade_review`, second request returns saved result without recomputing.
+- Evidence tests: response includes copyable `evidence_payload` with trade, path metrics, entry indicators, exit indicators, and detected events.
+- Storage boundary tests: `evidence_payload` does not include full OHLCV arrays or raw K-line series.
+- Transaction tests: if evidence or review generation fails, no partial `trade_review` row is committed.
 - Data quality tests for insufficient price history.
 - Partial close tests to ensure review uses the closed slice, not the remaining active row.
 
@@ -365,6 +559,7 @@ Frontend tests or manual checks:
 
 - Closed trade row shows review button.
 - Review modal loads and renders all sections.
+- Copy evidence button copies pretty-printed JSON.
 - Error state appears when backend returns insufficient data or HTTP error.
 - Existing period filter and realized PnL summary remain unchanged.
 
@@ -377,18 +572,21 @@ cd frontend && pnpm build
 
 ## Open Discussion Questions
 
-1. Should MVP compute review on demand only, or create `trade_review` persistence immediately?
-2. Which classifications should be shown to the user in Chinese labels first?
-3. Should the first version include optional `llm_summary`, or keep it fully rule-based?
-4. Should entry/exit analysis use execution price directly, or nearest trading day's close when dates fall on non-trading days?
-5. Should the review compare against the user's `notes` field if notes contain an entry thesis?
+1. Which classifications should be shown to the user in Chinese labels first?
+2. Should the first version include optional `llm_summary`, or keep it fully rule-based?
+3. Should entry/exit analysis use execution price directly, or nearest trading day's close when dates fall on non-trading days?
+4. Should the review compare against the user's `notes` field if notes contain an entry thesis?
+5. Should a future `refresh` create a new historical review version or overwrite the existing row with an updated `review_version`?
 
 ## Suggested MVP Cut
 
 The smallest useful version:
 
 1. Add backend rule engine for one closed trade.
-2. Add `POST /portfolio/{id}/review` without persistence.
-3. Return structured JSON with data quality, trade result, entry review, holding review, exit review, and operation review.
-4. Add a closed-row review modal in `/portfolio/closed`.
-5. Do not use LLM in the first implementation.
+2. Add `trade_review` table and migration.
+3. Add `POST /portfolio/{id}/review` to create-or-return one saved review.
+4. Add `GET /portfolio/{id}/review` to read the saved review.
+5. Return structured JSON with data quality, trade result, entry review, holding review, exit review, operation review, and `evidence_payload`.
+6. Add a closed-row review modal in `/portfolio/closed`.
+7. Add `複製指標資料` for the evidence payload.
+8. Do not use LLM in the first implementation.
