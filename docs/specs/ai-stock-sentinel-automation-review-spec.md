@@ -769,7 +769,7 @@ Section 4.2 的 `[Split In Batches]` 設定調整：
 
 ### 5.4 出場 / 結案流程
 
-出場與刪除是不同動作。出場結案會保留 `user_portfolio` 與 `daily_analysis_log`，並把該筆紀錄移出 active 持股列表。
+出場與刪除是不同動作。出場結案會保留 `user_portfolio` 與 `daily_analysis_log`。部分出場時，active 持股保留並扣減股數；全數出場時，該筆紀錄移出 active 持股列表。
 
 **API**：`POST /portfolio/{id}/close`
 
@@ -779,15 +779,18 @@ Section 4.2 的 `[Split In Batches]` 設定調整：
 | -------- | ----------------- | --------------------- |
 | 出場日期 | `exit_date`       | 必填，不可早於購入日期 |
 | 出場價格 | `exit_price`      | 必填，需大於 0        |
-| 出場股數 | `exit_quantity`   | 必填，MVP 僅支援全數平倉 |
+| 出場股數 | `exit_quantity`   | 必填，需大於 0，且不可大於目前持有股數，可部分或全數出場 |
 | 手續費   | `fees`            | 選填，預設 0          |
 | 交易稅   | `taxes`           | 選填，預設 0          |
 
 **互動邏輯**：
 
 - 點擊「出場 / 結案」開啟 Modal，預設帶入目前持有股數。
+- 使用者可輸入小於目前持有股數的出場股數，執行部分出場。
+- 若出場股數大於目前持有股數，前端阻擋送出並提示 `出場股數不可大於持有股數`。
 - 送出成功後，後端計算已實現損益、報酬率與持有天數。
-- 成功結案後，該筆持股從 `/portfolio` active 清單移除，歷史診斷紀錄保留。
+- 部分出場成功後，原 active 持股保留在 `/portfolio`，股數更新為扣減後數量；後端 response 回傳本次新建立的 inactive closed row，前端以原 active row id 做清單 reconciliation。
+- 全數出場成功後，該筆持股從 `/portfolio` active 清單移除，歷史診斷紀錄保留。
 
 ### 5.5 已結案持股頁（`/portfolio/closed`）
 

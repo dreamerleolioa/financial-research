@@ -304,6 +304,13 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
 
     assert response.status_code == 200
     indicators = response.json()["technical_indicators"]
+    assert indicators["ma5"] is not None
+    assert indicators["ma20"] is not None
+    assert indicators["ma60"] is None
+    assert indicators["high_20d"] is not None
+    assert indicators["low_20d"] is not None
+    assert indicators["high_60d"] is None
+    assert indicators["low_60d"] is None
     assert indicators["kd_k"] is not None
     assert indicators["kd_d"] is not None
     assert indicators["kd_signal"] in {"bullish_cross", "bearish_cross", "neutral"}
@@ -319,6 +326,9 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
         "price_volume_weak",
         "neutral",
     }
+    assert indicators["obv_trend_20d"] in {"rising", "falling", "flat"}
+    assert indicators["obv_trend_mid_long"] is None
+    assert indicators["obv_trend_mid_long_window"] is None
 
 
 # ---------------------------------------------------------------------------

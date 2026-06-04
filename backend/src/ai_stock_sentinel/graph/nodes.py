@@ -74,6 +74,8 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
 
     aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
     aligned_volume = len(volumes) == len(closes)
+    high_source = highs if aligned_hilo else closes
+    low_source = lows if aligned_hilo else closes
     bb = calc_bollinger(closes) if closes else None
     macd_data = calc_macd(closes) if closes else None
     kd_data = calc_kd(closes, highs, lows) if aligned_hilo else None
@@ -101,6 +103,10 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
             "ma5": _round_value(calc_ma(closes, 5)),
             "ma20": _round_value(calc_ma(closes, 20)),
             "ma60": _round_value(calc_ma(closes, 60)),
+            "high_20d": _round_value(max(high_source[-20:]) if len(high_source) >= 20 else None),
+            "low_20d": _round_value(min(low_source[-20:]) if len(low_source) >= 20 else None),
+            "high_60d": _round_value(max(high_source[-60:]) if len(high_source) >= 60 else None),
+            "low_60d": _round_value(min(low_source[-60:]) if len(low_source) >= 60 else None),
             "rsi14": _round_value(state.get("rsi14")),
             "bollinger_position": _bollinger_position(bb, close),
             "macd_bias": macd_data.get("macd_bias") if macd_data else None,
@@ -112,6 +118,9 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
             "adx_trend_strength": adx_data.get("trend_strength") if adx_data else None,
             "adx_trend_direction": adx_data.get("trend_direction") if adx_data else None,
             "obv_signal": obv_data.get("obv_signal") if obv_data else None,
+            "obv_trend_20d": obv_data.get("obv_trend_20d") if obv_data else None,
+            "obv_trend_mid_long": obv_data.get("obv_trend_mid_long") if obv_data else None,
+            "obv_trend_mid_long_window": obv_data.get("obv_trend_mid_long_window") if obv_data else None,
             "atr": _round_value(atr_data.get("atr") if atr_data else None, 2),
             "atr_pct": _round_value(atr_data.get("atr_pct") if atr_data else None, 2),
             "volatility_level": atr_data.get("volatility_level") if atr_data else None,

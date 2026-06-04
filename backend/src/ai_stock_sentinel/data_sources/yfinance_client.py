@@ -22,7 +22,7 @@ class YFinanceCrawler:
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.fast_info
-            history = ticker.history(period="3mo", interval="1d")
+            history = ticker.history(period="1y", interval="1d")
         except Exception as exc:
             logger.warning(json.dumps({
                 "event": "provider_failure",

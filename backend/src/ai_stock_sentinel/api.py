@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
@@ -10,7 +11,9 @@ from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -32,6 +35,7 @@ from ai_stock_sentinel.analysis.metrics import (
     atr as _atr,
     bollinger_bands as _bollinger_bands,
     donchian_channel as _donchian_channel,
+    ma as _ma,
     macd as _macd,
     mfi as _mfi,
     obv as _obv,
@@ -76,6 +80,13 @@ class PositionAnalysis(BaseModel):
 
 
 class TechnicalIndicators(BaseModel):
+    ma5: float | None = None
+    ma20: float | None = None
+    ma60: float | None = None
+    high_20d: float | None = None
+    low_20d: float | None = None
+    high_60d: float | None = None
+    low_60d: float | None = None
     bollinger_upper: float | None = None
     bollinger_mid: float | None = None
     bollinger_lower: float | None = None
@@ -94,6 +105,9 @@ class TechnicalIndicators(BaseModel):
     adx_trend_direction: str | None = None
     obv: float | None = None
     obv_signal: str | None = None
+    obv_trend_20d: str | None = None
+    obv_trend_mid_long: str | None = None
+    obv_trend_mid_long_window: str | None = None
     atr: float | None = None
     atr_pct: float | None = None
     volatility_level: str | None = None
@@ -347,7 +361,17 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
     if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None and atr_data is None and mfi_data is None and donchian_data is None:
         return None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
+    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
+    high_source = highs if aligned_hilo else closes
+    low_source = lows if aligned_hilo else closes
     return TechnicalIndicators(
+        ma5=_ma(closes, 5),
+        ma20=_ma(closes, 20),
+        ma60=_ma(closes, 60),
+        high_20d=max(high_source[-20:]) if len(high_source) >= 20 else None,
+        low_20d=min(low_source[-20:]) if len(low_source) >= 20 else None,
+        high_60d=max(high_source[-60:]) if len(high_source) >= 60 else None,
+        low_60d=min(low_source[-60:]) if len(low_source) >= 60 else None,
         bollinger_upper=bb["bollinger_upper"] if bb else None,
         bollinger_mid=bb["bollinger_mid"] if bb else None,
         bollinger_lower=bb["bollinger_lower"] if bb else None,
@@ -366,6 +390,9 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
         adx_trend_direction=adx_data["trend_direction"] if adx_data else None,
         obv=obv_data["obv"] if obv_data else None,
         obv_signal=obv_data["obv_signal"] if obv_data else None,
+        obv_trend_20d=obv_data["obv_trend_20d"] if obv_data else None,
+        obv_trend_mid_long=obv_data["obv_trend_mid_long"] if obv_data else None,
+        obv_trend_mid_long_window=obv_data["obv_trend_mid_long_window"] if obv_data else None,
         atr=atr_data["atr"] if atr_data else None,
         atr_pct=atr_data["atr_pct"] if atr_data else None,
         volatility_level=atr_data["volatility_level"] if atr_data else None,
@@ -402,11 +429,17 @@ def _extract_indicators(result: dict) -> dict:
     donchian_data = _donchian_channel(closes, highs, lows) if aligned_hilo else None
     obv_data = _obv(closes, volumes) if aligned_volume else None
     bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
+    high_source = highs if aligned_hilo else closes
+    low_source = lows if aligned_hilo else closes
 
     return {
-        "ma5":                snapshot.get("ma5"),
-        "ma20":               snapshot.get("ma20"),
-        "ma60":               snapshot.get("ma60"),
+        "ma5":                _ma(closes, 5),
+        "ma20":               _ma(closes, 20),
+        "ma60":               _ma(closes, 60),
+        "high_20d":           max(high_source[-20:]) if len(high_source) >= 20 else None,
+        "low_20d":            min(low_source[-20:]) if len(low_source) >= 20 else None,
+        "high_60d":           max(high_source[-60:]) if len(high_source) >= 60 else None,
+        "low_60d":            min(low_source[-60:]) if len(low_source) >= 60 else None,
         "rsi_14":             result.get("rsi14"),
         "close_price":        snapshot.get("current_price"),
         "volume_ratio":       snapshot.get("volume_ratio"),
@@ -432,6 +465,9 @@ def _extract_indicators(result: dict) -> dict:
         "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
         "obv":                obv_data["obv"] if obv_data else None,
         "obv_signal":         obv_data["obv_signal"] if obv_data else None,
+        "obv_trend_20d":      obv_data["obv_trend_20d"] if obv_data else None,
+        "obv_trend_mid_long": obv_data["obv_trend_mid_long"] if obv_data else None,
+        "obv_trend_mid_long_window": obv_data["obv_trend_mid_long_window"] if obv_data else None,
         "atr":                atr_data["atr"] if atr_data else None,
         "atr_pct":            atr_data["atr_pct"] if atr_data else None,
         "volatility_level":   atr_data["volatility_level"] if atr_data else None,
@@ -658,6 +694,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Stock Sentinel API", version="v1", lifespan=lifespan)
+
+
+def _sanitize_validation_error_value(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _sanitize_validation_error_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_validation_error_value(item) for item in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": _sanitize_validation_error_value(exc.errors())},
+    )
 
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]

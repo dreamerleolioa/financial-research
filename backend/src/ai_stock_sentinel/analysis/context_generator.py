@@ -341,15 +341,31 @@ def _obv_narrative(obv_data: dict | None) -> str:
         return "OBV 資料不足（需成交量序列）。"
 
     signal = obv_data.get("obv_signal")
+    trend_20d = _obv_trend_text(obv_data.get("obv_trend_20d"), "20 日")
+    mid_long_window = obv_data.get("obv_trend_mid_long_window")
+    mid_long_label = f"中長期（{mid_long_window}）" if mid_long_window else "中長期"
+    mid_long_trend = _obv_trend_text(obv_data.get("obv_trend_mid_long"), mid_long_label)
+    suffix = "" if not trend_20d and not mid_long_trend else f" {', '.join(part for part in [trend_20d, mid_long_trend] if part)}。"
     if signal == "price_volume_confirm":
-        return "OBV 隨股價同步上升，量價確認多方動能。"
+        return f"OBV 隨股價同步上升，量價確認多方動能。{suffix}"
     if signal == "bearish_divergence":
-        return "股價上升但 OBV 未同步走高，量價背離，需提防拉高出貨。"
+        return f"股價上升但 OBV 未同步走高，量價背離，需提防拉高出貨。{suffix}"
     if signal == "bullish_divergence":
-        return "股價回落但 OBV 未同步轉弱，可能有承接力道。"
+        return f"股價回落但 OBV 未同步轉弱，可能有承接力道。{suffix}"
     if signal == "price_volume_weak":
-        return "OBV 隨股價同步走弱，賣壓尚未解除。"
-    return "OBV 變化中性，量價未出現明顯確認或背離。"
+        return f"OBV 隨股價同步走弱，賣壓尚未解除。{suffix}"
+    return f"OBV 變化中性，量價未出現明顯確認或背離。{suffix}"
+
+
+def _obv_trend_text(trend: object, label: str) -> str | None:
+    text = {
+        "rising": "上升",
+        "falling": "下降",
+        "flat": "盤整",
+    }.get(str(trend))
+    if text is None:
+        return None
+    return f"{label} OBV 趨勢{text}"
 
 
 def _atr_narrative(atr_data: dict | None) -> str:

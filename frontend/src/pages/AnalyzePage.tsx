@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice, formatVolume } from "../lib/formatters";
@@ -35,6 +35,13 @@ interface NewsDisplayItem {
 }
 
 interface TechnicalIndicators {
+  ma5: number | null;
+  ma20: number | null;
+  ma60: number | null;
+  high_20d: number | null;
+  low_20d: number | null;
+  high_60d: number | null;
+  low_60d: number | null;
   bollinger_upper: number | null;
   bollinger_mid: number | null;
   bollinger_lower: number | null;
@@ -53,6 +60,9 @@ interface TechnicalIndicators {
   adx_trend_direction: string | null;
   obv: number | null;
   obv_signal: string | null;
+  obv_trend_20d: string | null;
+  obv_trend_mid_long: string | null;
+  obv_trend_mid_long_window: string | null;
   atr: number | null;
   atr_pct: number | null;
   volatility_level: string | null;
@@ -214,6 +224,12 @@ const OBV_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
   neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
+const OBV_TREND_LABEL: Record<string, { label: string; cls: string }> = {
+  rising: { label: "上升", cls: "bg-emerald-100 text-emerald-800" },
+  falling: { label: "下降", cls: "bg-red-100 text-red-800" },
+  flat: { label: "盤整", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+};
+
 const VOLATILITY_LEVEL_LABEL: Record<string, { label: string; cls: string }> = {
   high: { label: "高波動", cls: "bg-red-100 text-red-800" },
   medium: { label: "中波動", cls: "bg-yellow-100 text-yellow-800" },
@@ -296,13 +312,6 @@ function TriggersSection({
       )}
     </div>
   );
-}
-
-function mapVolumeSource(value: unknown): string {
-  if (value === "realtime") return "即時成交量";
-  if (value === "history_fallback") return "歷史資料回填";
-  if (value === "unavailable") return "暫無資料";
-  return "未知來源";
 }
 
 export default function AnalyzePage() {
@@ -414,11 +423,6 @@ export default function AnalyzePage() {
   const isTracked = portfolioSymbols.has(symbol);
   const portfolioFull = portfolioCount >= MAX_PORTFOLIO_COUNT;
   const confidenceScore = result?.confidence_score ?? null;
-  const circumference = 2 * Math.PI * 52;
-  const dashOffset = useMemo(
-    () => (confidenceScore != null ? circumference * (1 - confidenceScore / 100) : circumference),
-    [circumference, confidenceScore],
-  );
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
 
@@ -501,95 +505,126 @@ export default function AnalyzePage() {
           </div>
         ) : result ? (
           result.action_plan ? (
-            <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="space-y-4">
+                <div className="rounded-lg border border-border bg-card-hover/70 p-3">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px] md:items-center">
+                    <div>
+                      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                        <p className="text-xs font-semibold text-text-muted">信心指數</p>
+                        {result.action_plan.conviction_level && CONVICTION_BADGE[result.action_plan.conviction_level] && (
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[result.action_plan.conviction_level].cls}`}>
+                            {CONVICTION_BADGE[result.action_plan.conviction_level].label}
+                          </span>
+                        )}
+                        {result.data_confidence != null && result.data_confidence < 60 && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                            資料不足 {result.data_confidence}%
+                          </span>
+                        )}
+                      </div>
+                      {result.cross_validation_note && <p className="text-xs text-text-muted">{result.cross_validation_note}</p>}
+                    </div>
+                    <div>
+                      <div className="mb-1 flex items-baseline justify-between gap-3">
+                        <span className="text-xs text-text-muted">信心分數</span>
+                        <span className="text-xl font-semibold text-text-primary">{confidenceScore != null ? `${confidenceScore}%` : "—"}</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-border">
+                        <div
+                          className="h-2 rounded-full bg-indigo-600 transition-all"
+                          style={{ width: `${Math.max(0, Math.min(confidenceScore ?? 0, 100))}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
-              {/* 段落一：建議動作 */}
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm font-medium text-text-primary flex-1">
-                  {result.action_plan.action}
-                </p>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {!result.is_final && (
-                    <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800">
-                      盤中版
-                    </span>
+                <div className="space-y-4">
+                  {/* 段落一：建議動作 */}
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-text-primary flex-1">
+                      {result.action_plan.action}
+                    </p>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {!result.is_final && (
+                        <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800">
+                          盤中版
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 段落二：主要理由 */}
+                  {result.action_plan.thesis_points && result.action_plan.thesis_points.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-text-muted mb-1.5">主要理由</p>
+                      <ul className="space-y-1">
+                        {result.action_plan.thesis_points.map((point, i) => (
+                          <li key={i} className="flex gap-1.5 text-sm text-text-primary">
+                            <span className="text-text-muted shrink-0">·</span>
+                            {point}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
-                  {result.action_plan.conviction_level && CONVICTION_BADGE[result.action_plan.conviction_level] && (
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[result.action_plan.conviction_level].cls}`}>
-                      {CONVICTION_BADGE[result.action_plan.conviction_level].label}
-                    </span>
+
+                  {/* 段落三：關鍵價位 */}
+                  <div className="rounded-lg bg-card-hover p-3 grid grid-cols-2 gap-2">
+                    <p className="text-xs font-semibold text-text-muted col-span-2 mb-0.5">關鍵價位</p>
+                    {result.action_plan.target_zone && (
+                      <div>
+                        <p className="text-xs text-text-muted">進場區間</p>
+                        <p className="text-sm font-medium text-text-primary">{result.action_plan.target_zone}</p>
+                      </div>
+                    )}
+                    {result.action_plan.defense_line && (
+                      <div>
+                        <p className="text-xs text-text-muted">停損位</p>
+                        <p className="text-sm font-medium text-text-primary">{result.action_plan.defense_line}</p>
+                      </div>
+                    )}
+                    {result.action_plan.momentum_expectation && (
+                      <div className="col-span-2">
+                        <p className="text-xs text-text-muted">動能預期</p>
+                        <p className="text-sm text-text-primary">{result.action_plan.momentum_expectation}</p>
+                      </div>
+                    )}
+                    {result.action_plan.suggested_position_size && (
+                      <div className="col-span-2">
+                        <p className="text-xs text-text-muted">建議部位規模</p>
+                        <p className="text-sm text-text-primary">{result.action_plan.suggested_position_size}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 段落四：失效條件 */}
+                  {result.action_plan.invalidation_conditions && result.action_plan.invalidation_conditions.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-text-muted mb-1.5">失效條件</p>
+                      <ul className="space-y-1">
+                        {result.action_plan.invalidation_conditions.map((cond, i) => (
+                          <li key={i} className="flex gap-1.5 text-sm text-text-primary">
+                            <span className="text-rose-400 shrink-0">⚠</span>
+                            {cond}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
+
+                  {/* 可收合：條件變化 */}
+                  <TriggersSection
+                    upgradeTriggers={result.action_plan.upgrade_triggers}
+                    downgradeTriggers={result.action_plan.downgrade_triggers}
+                  />
                 </div>
               </div>
-
-              {/* 段落二：主要理由 */}
-              {result.action_plan.thesis_points && result.action_plan.thesis_points.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-text-muted mb-1.5">主要理由</p>
-                  <ul className="space-y-1">
-                    {result.action_plan.thesis_points.map((point, i) => (
-                      <li key={i} className="flex gap-1.5 text-sm text-text-primary">
-                        <span className="text-text-muted shrink-0">·</span>
-                        {point}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* 段落三：關鍵價位 */}
-              <div className="rounded-lg bg-card-hover p-3 grid grid-cols-2 gap-2">
-                <p className="text-xs font-semibold text-text-muted col-span-2 mb-0.5">關鍵價位</p>
-                {result.action_plan.target_zone && (
-                  <div>
-                    <p className="text-xs text-text-muted">進場區間</p>
-                    <p className="text-sm font-medium text-text-primary">{result.action_plan.target_zone}</p>
-                  </div>
-                )}
-                {result.action_plan.defense_line && (
-                  <div>
-                    <p className="text-xs text-text-muted">停損位</p>
-                    <p className="text-sm font-medium text-text-primary">{result.action_plan.defense_line}</p>
-                  </div>
-                )}
-                {result.action_plan.momentum_expectation && (
-                  <div className="col-span-2">
-                    <p className="text-xs text-text-muted">動能預期</p>
-                    <p className="text-sm text-text-primary">{result.action_plan.momentum_expectation}</p>
-                  </div>
-                )}
-                {result.action_plan.suggested_position_size && (
-                  <div className="col-span-2">
-                    <p className="text-xs text-text-muted">建議部位規模</p>
-                    <p className="text-sm text-text-primary">{result.action_plan.suggested_position_size}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* 段落四：失效條件 */}
-              {result.action_plan.invalidation_conditions && result.action_plan.invalidation_conditions.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-text-muted mb-1.5">失效條件</p>
-                  <ul className="space-y-1">
-                    {result.action_plan.invalidation_conditions.map((cond, i) => (
-                      <li key={i} className="flex gap-1.5 text-sm text-text-primary">
-                        <span className="text-rose-400 shrink-0">⚠</span>
-                        {cond}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* 可收合：條件變化 */}
-              <TriggersSection
-                upgradeTriggers={result.action_plan.upgrade_triggers}
-                downgradeTriggers={result.action_plan.downgrade_triggers}
-              />
 
               {/* 免責聲明（移至底部） */}
               {result.intraday_disclaimer && (
-                <p className="text-xs text-text-muted border-t border-border pt-2">
+                <p className="mt-4 text-xs text-text-muted border-t border-border pt-2">
                   {result.intraday_disclaimer}
                 </p>
               )}
@@ -637,47 +672,42 @@ export default function AnalyzePage() {
         </div>
       )}
 
-      <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <article className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-          <h2 className="mb-3 text-sm font-semibold text-text-primary">信心指數</h2>
-          <div className="flex flex-col items-center">
-            <div className="relative flex items-center justify-center">
-              <svg width="120" height="120" viewBox="0 0 140 140" className="-rotate-90">
-                <circle cx="70" cy="70" r="52" strokeWidth="12" className="fill-none stroke-border" />
-                <circle cx="70" cy="70" r="52" strokeWidth="12" strokeLinecap="round" className="fill-none stroke-indigo-600" strokeDasharray={circumference} strokeDashoffset={dashOffset} style={{ transition: "stroke-dashoffset 0.5s ease" }} />
-              </svg>
-              <div className="absolute text-center">
-                <div className="text-xl font-semibold">{confidenceScore != null ? `${confidenceScore}%` : "—"}</div>
-                <div className="text-xs text-text-muted">信心分數</div>
-              </div>
-            </div>
-            {result?.cross_validation_note && <p className="mt-2 text-center text-xs text-text-muted">{result.cross_validation_note}</p>}
-            {result?.data_confidence != null && result.data_confidence < 60 && (
-              <p className="mt-1 text-center text-xs text-text-faint">⚠️ 資料不足（{result.data_confidence}%）</p>
-            )}
-          </div>
-        </article>
-
-        <article className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-          <h2 className="mb-3 text-sm font-semibold text-text-primary">快照資訊</h2>
-          {result ? (
-            <dl className="space-y-2 text-sm text-text-secondary">
-              <div className="flex justify-between"><dt className="text-text-muted">代碼</dt><dd className="font-medium">{String(snapshot.symbol ?? "—")}</dd></div>
-              <div className="flex justify-between"><dt className="text-text-muted">現價</dt><dd className="font-medium">{formatPrice(snapshot.current_price as number | null | undefined, snapshot.symbol as string | undefined)}</dd></div>
-              <div className="flex justify-between"><dt className="text-text-muted">成交量</dt><dd className="font-medium">{formatVolume(snapshot.volume)}</dd></div>
-              <div className="flex justify-between"><dt className="text-text-muted">成交量來源</dt><dd className="font-medium">{mapVolumeSource(snapshot.volume_source)}</dd></div>
-            </dl>
-          ) : (
-            <p className="text-sm text-text-faint">請先執行分析。</p>
-          )}
-        </article>
-      </section>
-
-
       {result?.technical_indicators && (
         <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
           <h3 className="mb-3 text-xs font-semibold text-text-muted">技術指標摘要</h3>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
+            <div>
+              <p className="text-xs text-text-muted mb-1">現價</p>
+              <p className="text-sm font-medium text-text-primary">{formatPrice(snapshot.current_price as number | null | undefined, snapshot.symbol as string | undefined)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">成交量</p>
+              <p className="text-sm font-medium text-text-primary">{formatVolume(snapshot.volume)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">均線 MA5／20／60</p>
+              <p className="text-sm font-medium text-text-primary">
+                {result.technical_indicators.ma5 != null || result.technical_indicators.ma20 != null || result.technical_indicators.ma60 != null
+                  ? `${formatPrice(result.technical_indicators.ma5, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.ma20, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.ma60, snapshot.symbol as string | undefined)}`
+                  : "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">20 日最高／最低</p>
+              <p className="text-sm font-medium text-text-primary">
+                {result.technical_indicators.high_20d != null || result.technical_indicators.low_20d != null
+                  ? `${formatPrice(result.technical_indicators.high_20d, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.low_20d, snapshot.symbol as string | undefined)}`
+                  : "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">60 日最高／最低</p>
+              <p className="text-sm font-medium text-text-primary">
+                {result.technical_indicators.high_60d != null || result.technical_indicators.low_60d != null
+                  ? `${formatPrice(result.technical_indicators.high_60d, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.low_60d, snapshot.symbol as string | undefined)}`
+                  : "資料不足"}
+              </p>
+            </div>
             <div>
               <p className="text-xs text-text-muted mb-1">布林通道位階</p>
               {result.technical_indicators.bollinger_position && BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position] ? (
@@ -733,6 +763,23 @@ export default function AnalyzePage() {
                   {OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].label}
                 </span>
               ) : <span className="text-sm text-text-faint">—</span>}
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">OBV 20 日趨勢</p>
+              {result.technical_indicators.obv_trend_20d && OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d] ? (
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d].cls}`}>
+                  {OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d].label}
+                </span>
+              ) : <span className="text-sm text-text-faint">—</span>}
+            </div>
+            <div>
+              <p className="text-xs text-text-muted mb-1">OBV 中長期趨勢</p>
+              {result.technical_indicators.obv_trend_mid_long && OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long] ? (
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long].cls}`}>
+                  {OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long].label}
+                  {result.technical_indicators.obv_trend_mid_long_window ? `（${result.technical_indicators.obv_trend_mid_long_window}）` : ""}
+                </span>
+              ) : <span className="text-sm text-text-faint">資料不足</span>}
             </div>
             <div>
               <p className="text-xs text-text-muted mb-1">平均真實波幅（ATR）</p>
@@ -799,8 +846,8 @@ export default function AnalyzePage() {
               <p className="text-sm font-medium text-text-primary">{formatIndicatorNumber(result.technical_indicators.adx, 1)}</p>
             </div>
             <div>
-              <p className="text-xs text-text-muted mb-1">OBV</p>
-              <p className={`text-sm font-medium ${result.technical_indicators.obv != null ? (result.technical_indicators.obv >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}>
+              <p className="text-xs text-text-muted mb-1">OBV 累積值參考</p>
+              <p className="text-sm font-medium text-text-secondary">
                 {formatVolume(result.technical_indicators.obv)}
               </p>
             </div>

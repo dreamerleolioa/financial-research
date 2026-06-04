@@ -197,7 +197,7 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
 interface ClosePositionModalProps {
   item: PortfolioItem;
   onClose: () => void;
-  onClosed: (closed: ClosedPortfolioItem) => void;
+  onClosed: (sourceItem: PortfolioItem, closed: ClosedPortfolioItem) => void;
 }
 
 function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps) {
@@ -221,21 +221,38 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
 
   async function handleClosePosition() {
     setError(null);
-    setClosing(true);
-    const parsedExitPrice = parseFloat(exitPrice);
-    const parsedExitQuantity = parseInt(exitQuantity, 10);
-    const parsedFees = parseFloat(fees);
-    const parsedTaxes = parseFloat(taxes);
-    if (
-      !Number.isFinite(parsedExitPrice)
-      || !Number.isFinite(parsedExitQuantity)
-      || !Number.isFinite(parsedFees)
-      || !Number.isFinite(parsedTaxes)
-    ) {
+    const parseRequiredNumber = (value: string): number | null => {
+      const trimmedValue = value.trim();
+      if (trimmedValue === "") return null;
+      const parsedValue = Number(trimmedValue);
+      return Number.isFinite(parsedValue) ? parsedValue : null;
+    };
+    const parsedExitPrice = parseRequiredNumber(exitPrice);
+    const parsedExitQuantity = parseRequiredNumber(exitQuantity);
+    const parsedFees = parseRequiredNumber(fees);
+    const parsedTaxes = parseRequiredNumber(taxes);
+    if (parsedExitPrice == null || parsedExitQuantity == null || parsedFees == null || parsedTaxes == null) {
       setError("請完整填寫有效的出場價格、股數、手續費與交易稅。");
-      setClosing(false);
       return;
     }
+    if (parsedExitPrice <= 0) {
+      setError("出場價格必須大於 0。");
+      return;
+    }
+    if (!Number.isInteger(parsedExitQuantity) || parsedExitQuantity <= 0) {
+      setError("出場股數必須是大於 0 的整數。");
+      return;
+    }
+    if (parsedExitQuantity > item.quantity) {
+      setError("出場股數不可超過目前持有股數。");
+      return;
+    }
+    if (parsedFees < 0 || parsedTaxes < 0) {
+      setError("手續費與交易稅不可小於 0。");
+      return;
+    }
+
+    setClosing(true);
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/close`, {
         method: "POST",
@@ -250,7 +267,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const closed: ClosedPortfolioItem = await res.json();
-      onClosed(closed);
+      onClosed(item, closed);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "結案失敗");
@@ -285,7 +302,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
 
         <div className="space-y-4 p-5">
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            MVP 目前僅支援完整結案，出場股數請維持等於持有股數；若不一致後端會拒絕此操作。
+            可輸入部分或全部出場股數。部分出場會保留剩餘持股，全部出場則移至已結案紀錄。
           </div>
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1">
@@ -825,32 +842,42 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }, 3000);
   }
 
-  function handlePositionClosed(closed: ClosedPortfolioItem) {
-    setItems((prev) => prev.filter((item) => item.id !== closed.id));
-    setExpandedId((prev) => (prev === closed.id ? null : prev));
+  function handlePositionClosed(sourceItem: PortfolioItem, closed: ClosedPortfolioItem) {
+    const sourceId = sourceItem.id;
+
+    setItems((prev) => {
+      const currentItem = prev.find((item) => item.id === sourceId) ?? sourceItem;
+      const remainingQuantity = currentItem.quantity - closed.exit_quantity;
+      return remainingQuantity <= 0
+        ? prev.filter((item) => item.id !== sourceId)
+        : prev.map((item) => (item.id === sourceId ? { ...item, quantity: remainingQuantity } : item));
+    });
+
+    setExpandedId((prev) => (prev === sourceId ? null : prev));
     setHistoryMap((prev) => {
       const next = { ...prev };
-      delete next[closed.id];
+      delete next[sourceId];
       return next;
     });
     setLatestMap((prev) => {
       const next = { ...prev };
-      delete next[String(closed.id)];
+      delete next[String(sourceId)];
       return next;
     });
+
     setAnalysisMap((prev) => {
       const next = { ...prev };
-      delete next[closed.id];
+      delete next[sourceId];
       return next;
     });
     setAnalysisLoading((prev) => {
       const next = { ...prev };
-      delete next[closed.id];
+      delete next[sourceId];
       return next;
     });
     setAnalysisError((prev) => {
       const next = { ...prev };
-      delete next[closed.id];
+      delete next[sourceId];
       return next;
     });
   }
@@ -1114,8 +1141,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <ClosePositionModal
           item={closeItem}
           onClose={() => setCloseItem(null)}
-          onClosed={(closed) => {
-            handlePositionClosed(closed);
+          onClosed={(sourceItem, closed) => {
+            handlePositionClosed(sourceItem, closed);
             setCloseItem(null);
           }}
         />

@@ -282,12 +282,46 @@ def obv(
     else:
         signal = "neutral"
 
+    trend_20d = _obv_trend(values, volumes, 20)
+    mid_long_window = _obv_mid_long_window(len(values))
+    mid_long_trend = _obv_trend(values, volumes, mid_long_window) if mid_long_window is not None else None
+
     return {
         "obv": values[-1],
         "obv_delta": obv_delta,
         "price_delta": price_delta,
         "obv_signal": signal,
+        "obv_trend_20d": trend_20d,
+        "obv_trend_mid_long": mid_long_trend,
+        "obv_trend_mid_long_window": f"{mid_long_window}d" if mid_long_window is not None else None,
     }
+
+
+def _obv_trend(
+    values: list[float],
+    volumes: list[float],
+    lookback: int,
+    flat_ratio: float = 0.05,
+) -> str | None:
+    if lookback <= 0 or len(values) <= lookback or len(volumes) != len(values):
+        return None
+
+    compare_idx = len(values) - 1 - lookback
+    delta = values[-1] - values[compare_idx]
+    volume_base = sum(abs(volume) for volume in volumes[compare_idx + 1:])
+    if volume_base <= 0:
+        return "flat"
+    if abs(delta) / volume_base <= flat_ratio:
+        return "flat"
+    return "rising" if delta > 0 else "falling"
+
+
+def _obv_mid_long_window(length: int) -> int | None:
+    if length >= 241:
+        return 240
+    if length >= 121:
+        return 120
+    return None
 
 
 def atr(
