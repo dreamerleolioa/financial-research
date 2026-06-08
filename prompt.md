@@ -30,23 +30,24 @@
 12. 不可要求使用者手動輸入證券交易稅；交易稅預設必須由系統依 market/product/broker 設定計算，且仍相容既有 close flow。
 13. 不可把台灣股票稅費規則寫成永久硬編碼常數；台股預設值只能是 configurable market/product/broker defaults。
 14. broker handling fee 與 securities transaction tax 必須清楚分離：position_event.fees 記錄券商手續費，position_event.taxes 記錄交易稅。
+15. position_event 必須視為 append-only event ledger；不得直接修改或刪除既有 event，修正只能以 manual_adjustment 或 manual_record_correction 追加事件表示。
 
 本階段必做範圍：
 1. 新增 PositionEvent model。
 2. 新增 Alembic migration。
 3. 新增必要 indexes，至少包含 user_id、position_group_id、symbol、event_date。
-4. position_event 至少支援 id、user_id、position_group_id、symbol、event_type、event_date、price、quantity、fees、taxes、source_portfolio_id、reason_category、reason_code、plan_adherence、confidence_level、note、source、data_quality_note、created_at、updated_at。
+4. position_event 至少支援 id、user_id、position_group_id、symbol、event_type、event_date、price、quantity、fees、taxes、source_portfolio_id、note、source、data_quality_note、created_at、updated_at。
 5. event_type 至少支援 initial_entry、add_entry、partial_exit、full_exit、manual_adjustment。
 6. source 至少支援 synthetic_from_portfolio_row、user_backfilled、user_recorded_at_event_time、manual_record_correction、not_recorded。
 7. 新增 conservative backfill：active row -> synthetic initial_entry；full-close row -> synthetic initial_entry + full_exit；partial-close row -> synthetic partial_exit，依 position_group_id 串接。
 8. backfilled events 必須標記 source = synthetic_from_portfolio_row。
-9. backfilled intent fields 必須是 not_recorded 或 decision_context: insufficient，不可假裝知道使用者原始意圖。
+9. backfilled events 必須用 source/data_quality_note 標示 synthetic provenance，不可補假的 reason、plan 或使用者原始意圖。
 10. 建立新持股時寫入 initial_entry event。
 11. partial close 時寫入 partial_exit event。
 12. full close 時寫入 full_exit event。
 13. 保持現有 create/close API response shape 不變。
 14. create/close dual-write event 時，系統預設計算並記錄 fees 與 taxes；不得把證券交易稅改成 required manual input。
-15. broker handling fee 計算要支援 broker fee rate、fee discount、minimum fee、actual-fee override。
+15. broker handling fee 計算要支援 broker fee rate、fee discount、minimum fee、actual-fee override；若現有 close flow 已有手續費輸入，僅作為 actual-fee override 使用，不改 API response shape。
 16. sell-side transaction tax 要依 product/market/broker rules 計算；台灣普通股賣出證交稅約 0.3% 只能作為 configurable default example，不可寫死成永久 Taiwan-only 行為。
 
 測試要求：
@@ -202,12 +203,13 @@
 3. 不可改變 /portfolio/{portfolio_id}/review。
 4. 不可接 LLM。
 5. 不可 assign lifecycle classifications。
-6. 不可在 evidence payload 中保存完整 OHLCV / K-line arrays。
-7. 不可用未來資料批評早期 entry/exit decision。
-8. 不可宣稱精準高點或低點就是唯一正確操作點；高低點只能作為 outcome facts。
-9. 若沒有 decision context，必須輸出 decision_context: insufficient，不可推論使用者意圖。
-10. fees/taxes 使用 ledger 金額；若缺漏，可依 Phase A 的可設定規則補 calculated default，但必須標明 data_quality。
-11. score-like metrics 可計算與保存為 internal/advanced trace，但不可把未校準的 0-100 分數設計成預設使用者決策主訊號。
+6. 不可保存 position_lifecycle_review；本階段只產生 deterministic metrics/evidence 給後續 Phase D/E 使用。
+7. 不可在 evidence payload 中保存完整 OHLCV / K-line arrays。
+8. 不可用未來資料批評早期 entry/exit decision。
+9. 不可宣稱精準高點或低點就是唯一正確操作點；高低點只能作為 outcome facts。
+10. 若沒有 decision context，必須輸出 decision_context: insufficient，不可推論使用者意圖。
+11. fees/taxes 使用 ledger 金額；若缺漏，可依 Phase A 的可設定規則補 calculated default，但必須標明 data_quality。
+12. score-like metrics 可計算與保存為 internal/advanced trace，但不可把未校準的 0-100 分數設計成預設使用者決策主訊號。
 
 本階段必做範圍：
 1. 新增獨立 lifecycle analysis module。
@@ -276,10 +278,11 @@
 2. 新增 exit sequence classifications，例如 disciplined_scale_out、premature_scale_out、late_scale_out、risk_reduction_exit、incoherent_exit_sequence、insufficient_data。
 3. 新增 lifecycle classifications，例如 coherent_position_management、good_entry_poor_exit、weak_entry_saved_by_exit、overtraded_position、held_winner_well、gave_back_winner、averaged_down_failed、insufficient_data。
 4. 每個 classification 必須包含 classification、confidence、supporting_signals、conflicting_signals、caveats、source_events。
-5. 新增 fixed template output，至少包含 overall conclusion、what worked、what needs review、event-level evidence、next-operation rules、data quality notes。
-6. 每一句 template 都必須可追溯到 event、metric、classification 或 recorded reason。
-7. Classification rule shape 必須覆蓋需求文件中的代表規則：averaging_down_into_weakness、disciplined_scale_out、premature_scale_out。
-8. 若 template 需要呈現信心或品質，使用 high/medium/low、insufficient、needs_review 等 label；raw score 只能放在 advanced trace 或 evidence payload。
+5. 新增 reusable entry-event 與 exit-event review fragments，讓 lifecycle result 可以解釋 individual buy/sell decisions；本階段不新增 standalone event-review API 或 persistence。
+6. 新增 fixed template output，至少包含 overall conclusion、what worked、what needs review、event-level evidence、next-operation rules、data quality notes。
+7. 每一句 template 都必須可追溯到 event、metric、classification 或 recorded reason。
+8. Classification rule shape 必須覆蓋需求文件中的代表規則：averaging_down_into_weakness、disciplined_scale_out、premature_scale_out。
+9. 若 template 需要呈現信心或品質，使用 high/medium/low、insufficient、needs_review 等 label；raw score 只能放在 advanced trace 或 evidence payload。
 
 測試要求：
 - averaging down below MA20 with weak regime -> averaging_down_into_weakness。
@@ -287,6 +290,7 @@
 - high percentage trim during strong uptrend without invalidation -> premature_scale_out。
 - late exits after major giveback or breakdown -> late_scale_out。
 - coherent event sequence with plan adherence and controlled sizing -> coherent_position_management。
+- entry-event / exit-event review fragments 可追溯到 source event、point-in-time indicators、recorded reason 或 data_quality note。
 - insufficient decision context 不會被硬判斷成使用者犯錯。
 - saved fixture 對同一 event sequence 產出穩定 classification。
 - template sections 完整且引用 source events/metrics。
@@ -340,13 +344,14 @@
 5. POST 若已存在 saved review，直接回傳既有 review，不要 silently recompute。
 6. review_result 與 evidence_payload 必須同一 transaction 寫入。
 7. lifecycle review 必須保存到獨立 position_lifecycle_review，不污染 trade_review。
-8. endpoint 必須只允許目前登入使用者操作自己的 group。
+8. position_lifecycle_review 必須包含 review_version，並用 position_group_id + review_version 或等效唯一策略避免同版重複保存。
+9. endpoint 必須只允許目前登入使用者操作自己的 group。
 
 前端必做範圍：
 1. 在 /portfolio/closed group header 增加 整體部位檢討 action。
 2. 每個 exit batch row 的 檢討分析 button 保留不變。
 3. lifecycle modal/page 顯示 chronological timeline、整體結果、分批進場檢討、持倉管理檢討、分批出場檢討、下次操作規則、資料品質。
-4. timeline 中每個 event 可展開顯示 point-in-time indicators 與 market regime snapshot。
+4. timeline 中每個 event 可展開顯示 point-in-time indicators、market regime snapshot 與 Phase D 產生的 event-level review fragment。
 5. UI 必須清楚區分單筆出場檢討與整體部位檢討。
 6. 顯示 review provenance：real events / synthetic events / mixed provenance。
 7. 提供 copyable evidence payload。
@@ -356,6 +361,7 @@
 
 測試與 QA 要求：
 - API tests 覆蓋 saved review persistence、不重算、權限、transaction atomicity。
+- API tests 覆蓋 review_version 與同版 review 不重複保存。
 - frontend build/typecheck 使用專案既有命令執行；請先查看 frontend/package.json。
 - frontend manual QA 覆蓋 closed group header 可開 lifecycle review、exit batch row 仍可開 Single Trade Review、timeline 正確顯示 events、event 可展開 point-in-time indicators、evidence payload 可複製、insufficient decision context 有清楚提示。
 - frontend manual QA 覆蓋 lifecycle review 預設畫面以 labels/reasons/caveats 為主，不以 raw 0-100 score 作為主視覺。

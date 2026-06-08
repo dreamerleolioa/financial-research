@@ -742,20 +742,24 @@ Do not auto-default intent-sensitive fields such as `reason_code`, `plan_adheren
 - Compute point-in-time indicator snapshots per event.
 - Compute R-multiple, MAE, MFE, MFE capture rate, exposure curve, and plan adherence metrics when enough data exists.
 - Keep score-like metrics as internal or advanced trace fields unless later calibrated and promoted.
-- Persist lifecycle review separately from `trade_review`.
+- Produce deterministic metrics and evidence payloads for later lifecycle review persistence, but do not save lifecycle reviews in this phase.
 
 ### Phase D: Deterministic Classification And Template Review
 
 - Add rule-based entry sequence, exit sequence, lifecycle, and plan-adherence classifications.
 - Add fixed template output for overall conclusion, strengths, issues, evidence, and next-operation rules.
+- Add reusable entry-event and exit-event review fragments so the lifecycle result can explain individual buy/sell decisions without a separate event-review API yet.
 - Ensure every template sentence traces back to event data, metrics, classifications, or recorded reasons.
 - Make templates lead with tiers, labels, reasons, caveats, and source events rather than exact `0-100` scores.
 - Keep `llm_summary` disabled by default.
 
 ### Phase E: Lifecycle Review UI
 
+- Persist lifecycle reviews separately from `trade_review`, including `review_version`, `review_result`, and `evidence_payload`.
+- Keep refresh/recompute explicit and version-aware; the first saved review should not be silently overwritten.
 - Add group-level lifecycle review action.
 - Show timeline-based review.
+- Show event-level review fragments inside the lifecycle timeline, while keeping standalone entry/exit event review APIs as future extension unless explicitly scoped.
 - Add copyable lifecycle evidence payload.
 - Show whether the review is based on real events, synthetic events, or mixed provenance.
 - Default UI should show tiers, labels, reasons, and data-quality warnings; raw score breakdown belongs only in advanced trace or evidence payload.
