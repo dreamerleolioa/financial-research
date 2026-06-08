@@ -307,6 +307,29 @@ accurate metrics -> stable classifications -> clear templates
 - Stable classifications: every label is produced by explicit rules and returns the same result for the same event sequence.
 - Clear templates: every user-facing sentence traces back to a metric, event, classification, or recorded reason.
 
+## Score Visibility Boundary
+
+The system should keep a scoring engine, but raw scores should not become the primary user-facing decision surface.
+
+Internal scores are still useful and should remain available for:
+
+- ranking events, reviews, or candidates.
+- deterministic guardrails and downgrade rules.
+- backtesting, calibration, and future threshold review.
+- debugging classification behavior.
+- advanced trace and evidence inspection.
+
+Default user-facing lifecycle review should prefer:
+
+- tiers such as `high` / `medium` / `low`.
+- labels such as `disciplined_scale_out`, `premature_scale_out`, or `decision_context: insufficient`.
+- supporting signals, conflicting signals, caveats, and source events.
+- concrete reasons and next-operation rules.
+
+Exact `0-100` values such as `decision_quality_score`, `plan_adherence_score`, `signal_confidence`, or future lifecycle sub-scores should be treated as internal or advanced trace fields unless they have been calibrated and deliberately promoted into product language.
+
+Do not present raw scores as win rate, alpha probability, recommendation strength, or investment advice. Until calibration proves predictive value, the score language should mean `signal strength` or `rule confidence`, not expected return.
+
 ## Operation Reason Taxonomy
 
 Each entry, add, trim, and exit event should store fixed reason fields. Free-text notes are useful, but fixed values are required for reliable analysis.
@@ -470,6 +493,8 @@ Additional metrics to support professional review:
 - `benchmark_relative_return_pct`
 - `sector_relative_return_pct`
 
+`plan_adherence_score`, `decision_quality_score`, and any future lifecycle score are trace fields first. They may drive deterministic tiers or labels, but the default review should not lead with exact `0-100` score values.
+
 Classification examples should be rule-driven.
 
 Example `averaging_down_into_weakness` rule shape:
@@ -505,7 +530,7 @@ AND reason_code not in target_reached / planned_scale_out / risk_reduction
 Every classification should include:
 
 - `classification`
-- `confidence`
+- `confidence` as a tier or calibrated label, not a prominent raw score
 - `supporting_signals`
 - `conflicting_signals`
 - `caveats`
@@ -523,6 +548,8 @@ Template output should include:
 - Event-level evidence.
 - Next-operation rules.
 - Data quality notes.
+
+Template output should lead with labels, reasons, and caveats. If numeric scores are included, they should appear only as secondary trace detail or advanced evidence, not as the headline conclusion.
 
 Example template shape:
 
@@ -565,6 +592,7 @@ Forbidden LLM responsibilities:
 - Infer user intent when no reason or plan was recorded.
 - Judge an action using future data that was unavailable at the event date.
 - Replace deterministic template output as the source of truth.
+- Turn raw internal scores into advisory claims, win-rate claims, or stronger conviction than the deterministic labels support.
 
 Product recommendation:
 
@@ -611,6 +639,8 @@ Suggested future UI:
   - `分批出場檢討`
   - `下次操作規則`
   - `資料品質`
+- Default presentation should show tiers, labels, reasons, and source events rather than raw `0-100` lifecycle scores.
+- Raw score breakdowns may be available in a collapsed advanced trace or copyable evidence payload, but should not be the primary visual hierarchy.
 
 The UI must clearly distinguish:
 
@@ -711,6 +741,7 @@ Do not auto-default intent-sensitive fields such as `reason_code`, `plan_adheren
 - Compute lifecycle metrics from event chronology.
 - Compute point-in-time indicator snapshots per event.
 - Compute R-multiple, MAE, MFE, MFE capture rate, exposure curve, and plan adherence metrics when enough data exists.
+- Keep score-like metrics as internal or advanced trace fields unless later calibrated and promoted.
 - Persist lifecycle review separately from `trade_review`.
 
 ### Phase D: Deterministic Classification And Template Review
@@ -718,6 +749,7 @@ Do not auto-default intent-sensitive fields such as `reason_code`, `plan_adheren
 - Add rule-based entry sequence, exit sequence, lifecycle, and plan-adherence classifications.
 - Add fixed template output for overall conclusion, strengths, issues, evidence, and next-operation rules.
 - Ensure every template sentence traces back to event data, metrics, classifications, or recorded reasons.
+- Make templates lead with tiers, labels, reasons, caveats, and source events rather than exact `0-100` scores.
 - Keep `llm_summary` disabled by default.
 
 ### Phase E: Lifecycle Review UI
@@ -726,12 +758,14 @@ Do not auto-default intent-sensitive fields such as `reason_code`, `plan_adheren
 - Show timeline-based review.
 - Add copyable lifecycle evidence payload.
 - Show whether the review is based on real events, synthetic events, or mixed provenance.
+- Default UI should show tiers, labels, reasons, and data-quality warnings; raw score breakdown belongs only in advanced trace or evidence payload.
 - Clearly separate single exit-batch review from whole-lifecycle review.
 
 ### Phase F: Optional Narrative Layer
 
 - Add optional LLM summary only after deterministic metrics and classifications are stable.
 - LLM must summarize structured facts, not compute signals or invent intent.
+- LLM must not convert raw scores into advisory confidence, win-rate language, or stronger claims than the deterministic labels support.
 
 ## Test-First Acceptance Plan
 
@@ -744,6 +778,7 @@ Future implementation should be test-first. Suggested acceptance areas:
 - Fee/tax tests: broker handling fees and transaction taxes are calculated separately by default, Taiwan securities transaction tax is not required as manual input, actual broker fee override is supported, and calculated amounts are still persisted as event-ledger fields.
 - Classification tests: averaging down, disciplined scaling in, premature scale out, late scale out, and coherent management return stable labels for fixed fixtures.
 - Template tests: output includes overall conclusion, strengths, issues, evidence, next-operation rules, and data-quality notes.
+- Score visibility tests or review checks: default templates and UI should not lead with exact raw `0-100` scores; raw score breakdown belongs to advanced trace or evidence payload.
 - API contract tests: group event timeline and lifecycle review endpoints return saved reviews and do not silently recompute existing versions.
 - Frontend tests or manual QA: timeline shows entries/adds/exits, group-level review is visually distinct from exit-batch review, and copyable evidence payload works.
 
@@ -771,6 +806,7 @@ After those decisions are stable, promote the durable API/data contracts into `d
 - Do not infer user strategy from price data alone.
 - Do not add global all-trades statistics as part of lifecycle review.
 - Do not require LLM summary for the first lifecycle review version.
+- Do not make exact raw scores the primary lifecycle review UI unless calibration and product language have been accepted.
 
 ## Open Questions
 

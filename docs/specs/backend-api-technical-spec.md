@@ -102,7 +102,7 @@ make run-api
     "tech_insight": "均線維持多頭排列，MACD 偏多且 OBV 顯示量價確認，ADX 顯示趨勢明確；但 KD 位於高檔區且股價貼近布林上軌，短線續強同時追價風險升高。",
     "inst_insight": "外資近 5 日累計買超 12,500 張，籌碼持續沉澱，機構資金流向偏多。",
     "news_insight": "法說會利多消息帶動市場情緒正面，事件時效性已驗證（日期明確）。",
-    "final_verdict": "三維訊號共振：技術面健康、籌碼面偏多、消息面正面，信心分數 78 反映訊號一致性高。"
+    "final_verdict": "三維訊號共振：技術面健康、籌碼面偏多、消息面正面，訊號一致性偏高；仍需留意短線追價風險。"
   },
   "technical_indicators": {
     "bollinger_upper": 932.41,
@@ -166,9 +166,9 @@ make run-api
   | `cleaned_news`             | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null                                                                                                                                                                                                     |
   | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                                                                                                      |
   | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）                                                                                                                                                                                                                                              |
-  | `signal_confidence`        | int \| null    | 0–100，訊號強度（CS-4 新增；`confidence_score` 為向後相容別名）                                                                                                                                                                                                                                 |
-  | `confidence_score`         | int \| null    | 0–100，反映三維訊號一致性（= `signal_confidence`，向後相容）                                                                                                                                                                                                                                    |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）；前端預設應轉成資料品質提示                                                                                                                                                                                                                   |
+  | `signal_confidence`        | int \| null    | 0–100，內部訊號強度（CS-4 新增；`confidence_score` 為向後相容別名），用於 guardrail、校準與 trace                                                                                                                                                                                                 |
+  | `confidence_score`         | int \| null    | 0–100，內部三維訊號一致性（= `signal_confidence`，向後相容）；不應作為預設前台 headline                                                                                                                                                                                                          |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                                                                                                     |
   | `strategy_type`            | enum \| null   | `short_term` / `mid_term` / `defensive_wait`                                                                                                                                                                                                                                                    |
   | `entry_zone`               | string \| null | 建議入場區間（rule-based）                                                                                                                                                                                                                                                                      |
@@ -338,9 +338,9 @@ make run-api
   | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
   | `snapshot`                 | object         | yfinance 即時快照（與 `/analyze` 相同）                                                          |
   | `position_analysis`        | object         | **持股診斷專屬**——見下方欄位細節                                                                 |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度                                                                                |
-  | `signal_confidence`        | int \| null    | 0–100，訊號強度                                                                                  |
-  | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容                                                                  |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度；前端預設應轉成資料品質提示                                                     |
+  | `signal_confidence`        | int \| null    | 0–100，內部訊號強度，用於 guardrail、校準與 trace                                                  |
+  | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容；不應作為預設前台 headline                                        |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                                          |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 context + `signal_summary`，強化持股健康度與出場推理）                |
   | `technical_indicators`     | object \| null | 技術指標顯性輸出（與 `/analyze` 相同，包含布林通道、MACD、KD、ADX、OBV，供前端技術指標卡片使用） |
@@ -837,17 +837,17 @@ Daily Radar run status：
   | `name`              | string \| null | 股票名稱                      |
   | `primary_bucket`    | string         | 主要觀察分類                  |
   | `secondary_buckets` | array          | 次要觀察分類                  |
-  | `observation_score` | number         | rule-based 觀察分數，用於排序 |
+  | `observation_score` | number         | rule-based 內部觀察分數，用於排序、校準與 trace，不是預設前台 headline |
   | `risk_labels`       | array          | rule-based 風險標籤           |
   | `repeat_status`     | string \| null | 是否連續進入雷達或重新出現    |
   | `explanation`       | string         | 候選原因摘要                  |
-  | `bucket_scores`     | object         | 各 bucket 的 rule-based 分數  |
-  | `score_breakdown`   | object         | 分數拆解，用於前端呈現與除錯  |
+  | `bucket_scores`     | object         | 各 bucket 的 rule-based 內部分數 |
+  | `score_breakdown`   | object         | 分數拆解，用於 advanced trace / debug evidence；前端預設應摘要為等級、理由與風險 |
   | `input_snapshot`    | object         | 產生候選時使用的輸入快照      |
   | `data_dates`        | object         | 各資料來源對應日期            |
   | `matched_rules`     | array          | 命中的 rule ID 或規則名稱     |
 
-> **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。
+> **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。Raw scores 保留於 API 作為內部排序、校準、回測與 traceability；一般使用者介面應優先顯示觀察等級、bucket、風險標籤與命中原因。
 
 ---
 

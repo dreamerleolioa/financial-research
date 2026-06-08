@@ -207,6 +207,7 @@
 8. 不可宣稱精準高點或低點就是唯一正確操作點；高低點只能作為 outcome facts。
 9. 若沒有 decision context，必須輸出 decision_context: insufficient，不可推論使用者意圖。
 10. fees/taxes 使用 ledger 金額；若缺漏，可依 Phase A 的可設定規則補 calculated default，但必須標明 data_quality。
+11. score-like metrics 可計算與保存為 internal/advanced trace，但不可把未校準的 0-100 分數設計成預設使用者決策主訊號。
 
 本階段必做範圍：
 1. 新增獨立 lifecycle analysis module。
@@ -220,6 +221,7 @@
 9. evidence payload 只能保存 summarized metrics、event list、indicator snapshots、capped detected event list、market regime snapshots at each entry/exit event、data quality notes。
 10. evidence payload 禁止保存 full OHLCV arrays、raw K-line series、raw LLM prompts、未記錄的 inferred user intent。
 11. 資料不足時回傳 explicit data_quality notes，不要硬判斷。
+12. plan_adherence_score、decision_quality_score 與其他 lifecycle score 必須被標記為 internal/advanced trace；若要對使用者呈現，預設轉成 high/medium/low、label、reason、caveat，而不是裸露精確分數。
 
 測試要求：
 - weighted average cost 正確。
@@ -232,6 +234,7 @@
 - evidence payload 不含完整 OHLCV arrays。
 - evidence payload 包含 capped detected events、market regime snapshots、data_quality notes。
 - insufficient data 會產生 data_quality notes。
+- score-like metrics 不會被預設 template/UI 當成 headline 0-100 分數；raw score breakdown 只進 advanced trace 或 evidence payload。
 - 現有 test_trade_review.py 與 test_portfolio_router.py 仍通過。
 
 完成後停止。不要實作 Phase D、Phase E、Phase F、classification/template review、lifecycle review UI 或 LLM summary。
@@ -266,6 +269,7 @@
 8. 不可輸出空泛建議，例如「下次小心一點」。建議必須具體到下次交易可執行。
 9. fees/taxes 只能作為已記錄或系統計算的事實成本，不可用它推論使用者意圖。
 10. 不可宣稱精準高點或低點就是唯一正確操作點；只能以 metrics/evidence 描述是否有 giveback、risk reduction 或 premature scale-out 訊號。
+11. Template 不可用精確 0-100 分數作為 headline conclusion；必須優先使用 tiers、labels、reasons、caveats、source events。
 
 本階段必做範圍：
 1. 新增 entry sequence classifications，例如 disciplined_scaling_in、chasing_scale_in、averaging_down_into_weakness、early_probe_then_confirm、oversized_initial_entry、insufficient_data。
@@ -275,6 +279,7 @@
 5. 新增 fixed template output，至少包含 overall conclusion、what worked、what needs review、event-level evidence、next-operation rules、data quality notes。
 6. 每一句 template 都必須可追溯到 event、metric、classification 或 recorded reason。
 7. Classification rule shape 必須覆蓋需求文件中的代表規則：averaging_down_into_weakness、disciplined_scale_out、premature_scale_out。
+8. 若 template 需要呈現信心或品質，使用 high/medium/low、insufficient、needs_review 等 label；raw score 只能放在 advanced trace 或 evidence payload。
 
 測試要求：
 - averaging down below MA20 with weak regime -> averaging_down_into_weakness。
@@ -285,6 +290,7 @@
 - insufficient decision context 不會被硬判斷成使用者犯錯。
 - saved fixture 對同一 event sequence 產出穩定 classification。
 - template sections 完整且引用 source events/metrics。
+- template headline 不顯示未校準 raw 0-100 分數；若有 raw score，僅出現在 trace/evidence 區塊。
 - 現有 test_trade_review.py 與 test_portfolio_router.py 仍通過。
 
 完成後停止。不要實作 Phase E、Phase F、lifecycle review API/UI 或 LLM summary。
@@ -324,6 +330,7 @@
 8. 不可接 LLM，不可新增 llm_summary。
 9. UI 必須清楚區分：單筆出場檢討 = one sell decision；整體部位檢討 = whole multi-entry/multi-exit lifecycle。
 10. fees/taxes 顯示為 event ledger 中的成本事實，不要求使用者手動輸入交易稅。
+11. UI 預設不可把 raw 0-100 score 當成主視覺；應優先呈現 tiers、labels、reasons、source events、data-quality warnings。
 
 後端必做範圍：
 1. 新增 GET /portfolio/groups/{position_group_id}/lifecycle-review。
@@ -345,11 +352,13 @@
 7. 提供 copyable evidence payload。
 8. insufficient decision context 必須有清楚提示。
 9. 若本階段穩定了 lifecycle API request/response shape、review versioning 或 UI contract，請同步更新 docs/specs/backend-api-technical-spec.md 或在回報中明確標示尚未 promotion。
+10. 若顯示 score breakdown，必須放在 collapsed advanced trace 或 evidence payload，不可放在預設 summary headline。
 
 測試與 QA 要求：
 - API tests 覆蓋 saved review persistence、不重算、權限、transaction atomicity。
 - frontend build/typecheck 使用專案既有命令執行；請先查看 frontend/package.json。
 - frontend manual QA 覆蓋 closed group header 可開 lifecycle review、exit batch row 仍可開 Single Trade Review、timeline 正確顯示 events、event 可展開 point-in-time indicators、evidence payload 可複製、insufficient decision context 有清楚提示。
+- frontend manual QA 覆蓋 lifecycle review 預設畫面以 labels/reasons/caveats 為主，不以 raw 0-100 score 作為主視覺。
 - 現有 test_trade_review.py 與 test_portfolio_router.py 仍通過。
 
 完成後停止。不要實作 Phase F 或任何 LLM summary。
@@ -388,17 +397,20 @@
 8. 若 evidence payload 顯示 decision_context: insufficient，LLM 摘要必須保留此限制，不可補故事。
 9. 不可改變 Single Trade Review row-scoped 行為。
 10. 不可改變 lifecycle review saved-review 不重算語意。
+11. LLM 不可把 raw score 改寫成勝率、alpha、推薦強度或比 deterministic label 更強的投資判斷。
 
 本階段必做範圍：
 1. 新增 optional llm_summary 欄位的生成/顯示流程。
 2. llm_summary 必須只根據 deterministic review_result 與 evidence_payload。
 3. 若 deterministic result 不存在，不可直接用 LLM 生成 lifecycle review。
 4. UI 必須清楚標示 LLM summary 是 narrative helper，不是 source of truth。
+5. llm_summary 應摘要 labels、reasons、caveats、source events；不要主打未校準 raw 0-100 score。
 
 測試與 QA 要求：
 - LLM prompt/input 不包含完整 OHLCV arrays。
 - LLM summary 不會改變 deterministic classifications。
 - decision_context insufficient 時 summary 不會推論未記錄 intent。
+- raw score 不會被 LLM summary 轉成勝率、推薦強度或更高信心敘事。
 - saved review 行為仍不 silently recompute。
 - 現有 backend/frontend 相關測試仍通過。
 

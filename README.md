@@ -243,7 +243,7 @@ pnpm dev
 **新倉分析頁（`/analyze`）**
 
 - 股票代碼輸入框 + 一鍵分析
-- 信心指數圓形元件（動態，含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示）
+- 訊號強度與資料品質提示（含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示；raw score 保留為內部排序、校準與 advanced trace）
 - 快照資訊（symbol / current_price / volume）
 - 分析報告四維小卡（技術面 / 籌碼面 / 基本面 / 消息面）+ 綜合仲裁全寬卡
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
@@ -269,7 +269,7 @@ pnpm dev
 **Daily Radar（`/daily-radar`）**
 
 - 每日觀察候選清單
-- bucket、觀察分數、風險標籤與規則命中原因
+- bucket、觀察等級、風險標籤與規則命中原因；raw observation score 用於內部排序與 advanced trace
 
 **登入（`/login`）**
 
