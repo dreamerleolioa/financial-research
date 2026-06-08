@@ -544,17 +544,17 @@ export default function ClosedPortfolioPage() {
               此期間尚無已結案持股。
             </div>
           ) : (
-            <div className="divide-y divide-border-subtle">
+            <div className="space-y-4 p-4">
               {groupedItems.map((group) => {
                 const groupIsProfit = group.totalRealizedPnl >= 0;
                 const groupResultClass = groupIsProfit ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
                 return (
-                  <article key={group.position_group_id} className="bg-card">
-                    <div className="border-b border-border-subtle bg-surface px-4 py-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div>
+                  <article key={group.position_group_id} className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                    <div className="border-b border-border bg-surface px-4 py-4 sm:px-5">
+                      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                        <div className="border-l-4 border-l-indigo-500 pl-3 dark:border-l-indigo-400">
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-semibold text-text-primary">{group.symbol}</p>
+                            <p className="font-mono text-lg font-semibold text-text-primary">{group.symbol}</p>
                             <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
                               進場 {group.entry_date}
                             </span>
@@ -562,60 +562,65 @@ export default function ClosedPortfolioPage() {
                               成本 {formatPrice(group.entry_price, group.symbol)}
                             </span>
                           </div>
-                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-text-muted sm:grid-cols-3">
-                            <span>總出場 {group.totalClosedQuantity} 股</span>
-                            <span>出場批次 {group.exitBatchCount} 筆</span>
-                            <span className={`font-mono font-semibold ${groupResultClass}`}>{getSignedPriceText(group.totalRealizedPnl, group.symbol)}</span>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs text-text-muted">
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">總出場 {group.totalClosedQuantity} 股</span>
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">出場批次 {group.exitBatchCount} 筆</span>
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1 font-mono text-text-faint">
+                              Group {group.position_group_id.slice(0, 8)}
+                            </span>
                           </div>
                         </div>
-                        <div className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-text-faint">
-                          Group {group.position_group_id.slice(0, 8)}
+                        <div className="rounded-xl border border-border bg-card px-4 py-3 text-left shadow-sm md:text-right">
+                          <p className="text-xs font-medium text-text-muted">股票總已實現損益</p>
+                          <p className={`mt-1 font-mono text-lg font-semibold ${groupResultClass}`}>{getSignedPriceText(group.totalRealizedPnl, group.symbol)}</p>
                         </div>
                       </div>
                     </div>
 
-                    <div className="divide-y divide-border-subtle">
-                      {group.items.map((item) => {
-                        const isProfit = item.realized_pnl >= 0;
-                        const resultClass = isProfit ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
-                        const isReviewLoading = reviewLoading[item.id] ?? false;
-                        return (
-                          <div key={item.id} className="px-4 py-3">
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="font-semibold text-text-primary">出場批次 #{item.id}</p>
-                                  <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                                    {item.entry_date} → {item.exit_date}
-                                  </span>
-                                  <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                                    持有 {item.holding_days} 天
-                                  </span>
+                    <div className="bg-card p-3 sm:p-4">
+                      <div className="space-y-2 border-l border-border-subtle pl-3 sm:pl-4">
+                        {group.items.map((item) => {
+                          const isProfit = item.realized_pnl >= 0;
+                          const resultClass = isProfit ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                          const isReviewLoading = reviewLoading[item.id] ?? false;
+                          return (
+                            <div key={item.id} className="rounded-lg border border-border-subtle bg-surface px-3 py-3 shadow-sm sm:px-4">
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-semibold text-text-primary">出場批次 #{item.id}</p>
+                                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                                      {item.entry_date} → {item.exit_date}
+                                    </span>
+                                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                                      持有 {item.holding_days} 天
+                                    </span>
+                                  </div>
+                                  <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs text-text-muted">
+                                    <span>{formatPrice(item.entry_price, item.symbol)} → {formatPrice(item.exit_price, item.symbol)}</span>
+                                    <span>出場 {item.exit_quantity} 股</span>
+                                    <span>費稅 {formatPrice(item.exit_fees + item.exit_taxes, item.symbol)}</span>
+                                  </div>
                                 </div>
-                                <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs text-text-muted">
-                                  <span>{formatPrice(item.entry_price, item.symbol)} → {formatPrice(item.exit_price, item.symbol)}</span>
-                                  <span>出場 {item.exit_quantity} 股</span>
-                                  <span>費稅 {formatPrice(item.exit_fees + item.exit_taxes, item.symbol)}</span>
+                                <div className="flex items-center justify-between gap-3 sm:justify-end">
+                                  <div className="text-left sm:text-right">
+                                    <p className={`font-mono text-sm font-semibold ${resultClass}`}>{getSignedPriceText(item.realized_pnl, item.symbol)}</p>
+                                    <p className={`font-mono text-xs ${resultClass}`}>{getSignedPercentText(item.realized_return_pct)}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => void openReview(item)}
+                                    disabled={isReviewLoading}
+                                    className="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs font-medium text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                                  >
+                                    {isReviewLoading ? "載入中…" : "檢討分析"}
+                                  </button>
                                 </div>
-                              </div>
-                              <div className="flex items-center justify-between gap-3 sm:justify-end">
-                                <div className="text-left sm:text-right">
-                                  <p className={`font-mono text-sm font-semibold ${resultClass}`}>{getSignedPriceText(item.realized_pnl, item.symbol)}</p>
-                                  <p className={`font-mono text-xs ${resultClass}`}>{getSignedPercentText(item.realized_return_pct)}</p>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => void openReview(item)}
-                                  disabled={isReviewLoading}
-                                  className="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs font-medium text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-indigo-300 dark:hover:bg-indigo-950"
-                                >
-                                  {isReviewLoading ? "載入中…" : "檢討分析"}
-                                </button>
                               </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
                   </article>
                 );
