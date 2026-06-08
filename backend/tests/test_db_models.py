@@ -1,10 +1,13 @@
 # backend/tests/test_db_models.py
+import uuid
+
 from ai_stock_sentinel.db.models import (
     DailyAnalysisLog,
     DailyRadarCandidate,
     DailyRadarRun,
     StockAnalysisCache,
     StockRawData,
+    TradeReview,
     UserPortfolio,
 )
 from ai_stock_sentinel.db.session import Base
@@ -22,8 +25,19 @@ def test_user_portfolio_model_columns():
     assert {
         "id", "user_id", "symbol", "entry_price", "quantity", "entry_date", "is_active",
         "exit_date", "exit_price", "exit_quantity", "exit_fees", "exit_taxes",
-        "realized_pnl", "realized_return_pct", "holding_days",
+        "realized_pnl", "realized_return_pct", "holding_days", "position_group_id",
     } <= cols
+
+
+def test_user_portfolio_position_group_id_default_is_unique_uuid() -> None:
+    first = UserPortfolio.__table__.c.position_group_id.default.arg(None)
+    second = UserPortfolio.__table__.c.position_group_id.default.arg(None)
+
+    assert len(first) == 36
+    assert len(second) == 36
+    assert uuid.UUID(first).version == 4
+    assert uuid.UUID(second).version == 4
+    assert first != second
 
 
 def test_user_portfolio_has_active_only_unique_index():
@@ -40,6 +54,59 @@ def test_user_portfolio_has_active_only_unique_index():
     assert tuple(column.name for column in active_index.columns) == ("user_id", "symbol")
     assert str(active_index.dialect_options["postgresql"]["where"]) == "is_active = true"
     assert str(active_index.dialect_options["sqlite"]["where"]) == "is_active = 1"
+
+
+def test_trade_review_model_columns_and_unique_portfolio() -> None:
+    cols = {c.name for c in TradeReview.__table__.columns}
+    unique_constraints = {
+        constraint.name
+        for constraint in TradeReview.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert {
+        "id", "portfolio_id", "user_id", "position_group_id",
+        "symbol", "review_version", "review_result", "evidence_payload",
+        "llm_summary", "created_at", "updated_at",
+    } <= cols
+    assert "uq_trade_review_portfolio_id" in unique_constraints
+
+
+def test_trade_review_json_payload_fields_are_required_and_present() -> None:
+    review_result = {
+        "data_quality": {},
+        "trade_result": {},
+        "entry_review": {},
+        "holding_review": {},
+        "exit_review": {},
+        "operation_review": {},
+    }
+    evidence_payload = {
+        "trade": {},
+        "position_group_id": "group-1",
+        "path_metrics": {},
+        "entry_indicators": {},
+        "exit_indicators": {},
+        "detected_events": [],
+        "data_quality": {},
+    }
+    review = TradeReview(
+        portfolio_id=1,
+        user_id=1,
+        position_group_id="group-1",
+        symbol="2330.TW",
+        review_version="trade-review-v1",
+        review_result=review_result,
+        evidence_payload=evidence_payload,
+        llm_summary=None,
+    )
+
+    assert set(review.review_result) == set(review_result)
+    assert set(review.evidence_payload) == set(evidence_payload)
+    assert TradeReview.__table__.c.review_result.nullable is False
+    assert TradeReview.__table__.c.evidence_payload.nullable is False
+    assert isinstance(TradeReview.__table__.c.review_result.type, JSONB)
+    assert isinstance(TradeReview.__table__.c.evidence_payload.type, JSONB)
 
 
 def test_daily_analysis_log_has_analysis_is_final():

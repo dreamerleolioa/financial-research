@@ -2,18 +2,26 @@
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.db.session import Base, get_db
-from ai_stock_sentinel.db.models import UserPortfolio
+from ai_stock_sentinel.db.models import TradeReview, UserPortfolio
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.user_models.user import User
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_type, compiler, **kw):
+    return "JSON"
 
 
 def _make_client(active_count: int) -> TestClient:
@@ -42,6 +50,21 @@ def test_add_portfolio_success():
         "quantity": 100,
     })
     assert resp.status_code == 201
+
+
+def test_add_portfolio_assigns_position_group_id_uuid():
+    client = _make_client(active_count=7)
+    resp = client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+    })
+
+    assert resp.status_code == 201
+    mock_db = api.app.dependency_overrides[get_db]()
+    entry = mock_db.add.call_args.args[0]
+    assert uuid.UUID(entry.position_group_id).version == 4
 
 
 def test_add_portfolio_rejects_when_limit_reached():
@@ -102,6 +125,7 @@ def _make_portfolio_item(user_id: int = 1) -> MagicMock:
     item = MagicMock()
     item.id = 42
     item.user_id = user_id
+    item.position_group_id = "group-42"
     item.symbol = "2330.TW"
     item.entry_price = 900.0
     item.quantity = 100
@@ -202,6 +226,8 @@ def test_close_portfolio_success():
     assert data["realized_pnl"] == 4985.0
     assert data["realized_return_pct"] == pytest.approx(5.5389, abs=0.0001)
     assert data["holding_days"] == 10
+    assert data["position_group_id"] == "group-42"
+    assert item.position_group_id == "group-42"
     assert item.is_active is False
 
 
@@ -261,11 +287,13 @@ def test_close_portfolio_partial_close_success():
     assert data["realized_pnl"] == 2485.0
     assert data["realized_return_pct"] == pytest.approx(5.5222, abs=0.0001)
     assert data["holding_days"] == 10
+    assert data["position_group_id"] == "group-42"
     assert item.is_active is True
     assert item.quantity == 50
     closed_item = mock_db.add.call_args.args[0]
     assert isinstance(closed_item, UserPortfolio)
     assert closed_item.user_id == item.user_id
+    assert closed_item.position_group_id == item.position_group_id
     assert closed_item.symbol == item.symbol
     assert closed_item.entry_price == item.entry_price
     assert closed_item.entry_date == item.entry_date
@@ -384,7 +412,7 @@ def portfolio_db_session() -> Session:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__])
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, TradeReview.__table__])
     with Session(engine) as session:
         yield session
 
@@ -445,6 +473,158 @@ def test_close_portfolio_partial_close_persists_active_and_closed_rows(
     assert closed.quantity == 40
     assert closed.exit_quantity == 40
     assert closed.notes == "核心持股"
+    assert active.position_group_id == closed.position_group_id
+
+
+def test_close_portfolio_full_close_preserves_position_group_id(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-full-close",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 200
+    assert resp.json()["position_group_id"] == "group-full-close"
+    row = portfolio_db_session.get(UserPortfolio, 42)
+    assert row.position_group_id == "group-full-close"
+
+
+def _add_closed_portfolio(
+    session: Session,
+    portfolio_id: int = 42,
+    user_id: int = 1,
+    position_group_id: str = "group-review",
+) -> UserPortfolio:
+    item = UserPortfolio(
+        id=portfolio_id,
+        user_id=user_id,
+        position_group_id=position_group_id,
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 11),
+        exit_price=950,
+        exit_quantity=100,
+        realized_pnl=5000,
+        realized_return_pct=5.5556,
+        holding_days=10,
+    )
+    session.add(item)
+    session.commit()
+    return item
+
+
+def test_create_trade_review_first_post_creates_minimal_saved_review(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["portfolio_id"] == 42
+    assert data["user_id"] == 1
+    assert data["position_group_id"] == "group-review"
+    assert data["symbol"] == "2330.TW"
+    assert data["review_version"] == "trade-review-v1"
+    assert data["llm_summary"] is None
+    assert set(data["review_result"]) == {
+        "data_quality", "trade_result", "entry_review", "holding_review", "exit_review", "operation_review",
+    }
+    assert set(data["evidence_payload"]) == {
+        "trade", "position_group_id", "path_metrics", "entry_indicators", "exit_indicators", "detected_events", "data_quality",
+    }
+    assert data["evidence_payload"]["position_group_id"] == "group-review"
+    reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
+    assert len(reviews) == 1
+    assert reviews[0].review_result == data["review_result"]
+    assert reviews[0].evidence_payload == data["evidence_payload"]
+
+
+def test_create_trade_review_second_post_returns_existing_without_duplicate(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+
+    first = portfolio_db_client.post("/portfolio/42/review")
+    second = portfolio_db_client.post("/portfolio/42/review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
+    assert len(reviews) == 1
+
+
+def test_get_trade_review_returns_existing_review(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    created = portfolio_db_client.post("/portfolio/42/review").json()
+
+    resp = portfolio_db_client.get("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert resp.json() == created
+
+
+def test_create_trade_review_rejects_active_portfolio(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 422
+    assert portfolio_db_session.execute(select(TradeReview)).scalars().all() == []
+
+
+def test_create_trade_review_rejects_other_user_portfolio(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
+    _add_closed_portfolio(portfolio_db_session, portfolio_id=42, user_id=2)
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 403
+    assert portfolio_db_session.execute(select(TradeReview)).scalars().all() == []
 
 
 def test_list_closed_portfolio_returns_realized_fields():
@@ -470,6 +650,7 @@ def test_list_closed_portfolio_returns_realized_fields():
     assert resp.status_code == 200
     assert resp.json()[0]["realized_pnl"] == 4985.0
     assert resp.json()[0]["holding_days"] == 10
+    assert resp.json()[0]["position_group_id"] == "group-42"
 
 
 # ── Task 2: GET /portfolio/latest-history ────────────────────

@@ -1,6 +1,7 @@
 # backend/src/ai_stock_sentinel/db/models.py
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -31,6 +32,7 @@ class UserPortfolio(Base):
 
     id:          Mapped[int]        = mapped_column(Integer, primary_key=True)
     user_id:     Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    position_group_id: Mapped[str]  = mapped_column(String(36), nullable=False, default=lambda: str(uuid.uuid4()))
     symbol:      Mapped[str]        = mapped_column(String(20), nullable=False)
     entry_price: Mapped[float]      = mapped_column(Numeric(10, 2), nullable=False)
     quantity:    Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
@@ -47,6 +49,25 @@ class UserPortfolio(Base):
     notes:       Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class TradeReview(Base):
+    __tablename__ = "trade_review"
+    __table_args__ = (
+        UniqueConstraint("portfolio_id", name="uq_trade_review_portfolio_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("user_portfolio.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    position_group_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    review_version: Mapped[str] = mapped_column(String(30), nullable=False, default="trade-review-v1")
+    review_result: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class DailyAnalysisLog(Base):
