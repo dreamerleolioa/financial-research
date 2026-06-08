@@ -543,7 +543,8 @@ def _detect_holding_events(portfolio: UserPortfolio, rows: list[StockRawData]) -
             if len(events) >= MAX_DETECTED_EVENTS:
                 return events
 
-        running_high = max(running_high, close) if running_high is not None else close
+        if in_holding_window:
+            running_high = max(running_high, close) if running_high is not None else close
         prior_closes.append(close)
         if volume is not None:
             prior_volumes.append(volume)

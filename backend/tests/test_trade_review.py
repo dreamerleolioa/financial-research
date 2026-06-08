@@ -265,6 +265,30 @@ def test_holding_detected_events_are_capped_and_concise(db_session: Session):
     assert not _contains_forbidden_ohlcv_key(events)
 
 
+def test_holding_events_ignore_pre_entry_high_when_tracking_running_high(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    exit_date = date(2026, 3, 3)
+    portfolio = _portfolio(
+        entry_date=entry_date,
+        exit_date=exit_date,
+        entry_price=100,
+        exit_price=104,
+        realized_return_pct=4,
+        holding_days=2,
+    )
+    db_session.add(portfolio)
+    pre_entry = [150] * 59
+    holding = [100, 106, 104]
+    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    event_types = [event["type"] for event in review_result["holding_review"]["detected_events"]]
+    assert "new_high_continuation" in event_types
+    assert "profit_giveback" not in event_types
+
+
 def test_insufficient_data_adds_notes_and_insufficient_data(db_session: Session):
     portfolio = _portfolio()
     db_session.add(portfolio)
