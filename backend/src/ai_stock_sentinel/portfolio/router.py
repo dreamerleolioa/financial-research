@@ -1,6 +1,7 @@
 # backend/src/ai_stock_sentinel/portfolio/router.py
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -9,15 +10,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
-from ai_stock_sentinel.db.models import UserPortfolio
+from ai_stock_sentinel.db.models import TradeReview, UserPortfolio
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.user_models.user import User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 PORTFOLIO_LIMIT = 8
+TRADE_REVIEW_VERSION = "trade-review-v1"
 
 
 class PortfolioCreateRequest(BaseModel):
@@ -39,6 +42,7 @@ class ClosePortfolioRequest(BaseModel):
 def _serialize_portfolio(item: UserPortfolio) -> dict:
     return {
         "id": item.id,
+        "position_group_id": item.position_group_id,
         "symbol": item.symbol,
         "entry_price": float(item.entry_price),
         "quantity": item.quantity,
@@ -54,6 +58,36 @@ def _serialize_portfolio(item: UserPortfolio) -> dict:
         "holding_days": item.holding_days,
         "notes": item.notes,
     }
+
+
+def _serialize_trade_review(review: TradeReview) -> dict:
+    return {
+        "id": review.id,
+        "portfolio_id": review.portfolio_id,
+        "user_id": review.user_id,
+        "position_group_id": review.position_group_id,
+        "symbol": review.symbol,
+        "review_version": review.review_version,
+        "review_result": review.review_result,
+        "evidence_payload": review.evidence_payload,
+        "llm_summary": review.llm_summary,
+        "created_at": review.created_at.isoformat() if review.created_at and hasattr(review.created_at, "isoformat") else review.created_at,
+        "updated_at": review.updated_at.isoformat() if review.updated_at and hasattr(review.updated_at, "isoformat") else review.updated_at,
+    }
+
+
+def _get_reviewable_portfolio(db: Session, portfolio_id: int, user_id: int) -> UserPortfolio:
+    item = db.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.id == portfolio_id,
+            UserPortfolio.user_id == user_id,
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=403, detail="無權限")
+    if item.is_active or item.exit_date is None:
+        raise HTTPException(status_code=422, detail="僅可審核已結案持倉")
+    return item
 
 
 @router.get("")
@@ -97,6 +131,57 @@ def list_closed_portfolio(
     return [_serialize_portfolio(row) for row in rows]
 
 
+@router.get("/{portfolio_id}/review")
+def get_trade_review(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_reviewable_portfolio(db, portfolio_id, current_user.id)
+    review = db.execute(
+        select(TradeReview).where(
+            TradeReview.portfolio_id == portfolio_id,
+            TradeReview.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="尚未建立交易審核")
+    return _serialize_trade_review(review)
+
+
+@router.post("/{portfolio_id}/review")
+def create_trade_review(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id)
+    existing_review = db.execute(
+        select(TradeReview).where(
+            TradeReview.portfolio_id == portfolio_id,
+            TradeReview.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if existing_review:
+        return _serialize_trade_review(existing_review)
+
+    review_result, evidence_payload = build_trade_review_payload(db, item)
+    review = TradeReview(
+        portfolio_id=item.id,
+        user_id=item.user_id,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        review_version=TRADE_REVIEW_VERSION,
+        review_result=review_result,
+        evidence_payload=evidence_payload,
+        llm_summary=None,
+    )
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+    return _serialize_trade_review(review)
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def add_portfolio(
     payload: PortfolioCreateRequest,
@@ -124,6 +209,7 @@ def add_portfolio(
 
     entry = UserPortfolio(
         user_id=current_user.id,
+        position_group_id=str(uuid.uuid4()),
         symbol=payload.symbol,
         entry_price=payload.entry_price,
         entry_date=payload.entry_date,
@@ -228,6 +314,7 @@ def close_portfolio(
     item.updated_at = updated_at
     closed_item = UserPortfolio(
         user_id=item.user_id,
+        position_group_id=item.position_group_id,
         symbol=item.symbol,
         entry_price=item.entry_price,
         quantity=payload.exit_quantity,
