@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
 from ai_stock_sentinel.db.models import TradeReview, UserPortfolio
@@ -56,29 +57,6 @@ def _serialize_portfolio(item: UserPortfolio) -> dict:
         "realized_return_pct": float(item.realized_return_pct) if item.realized_return_pct is not None else None,
         "holding_days": item.holding_days,
         "notes": item.notes,
-    }
-
-
-def _minimal_review_result() -> dict:
-    return {
-        "data_quality": {"status": "placeholder"},
-        "trade_result": {"status": "placeholder"},
-        "entry_review": {"status": "placeholder"},
-        "holding_review": {"status": "placeholder"},
-        "exit_review": {"status": "placeholder"},
-        "operation_review": {"status": "placeholder"},
-    }
-
-
-def _minimal_evidence_payload(item: UserPortfolio) -> dict:
-    return {
-        "trade": _serialize_portfolio(item),
-        "position_group_id": item.position_group_id,
-        "path_metrics": {},
-        "entry_indicators": {},
-        "exit_indicators": {},
-        "detected_events": [],
-        "data_quality": {"status": "placeholder"},
     }
 
 
@@ -187,14 +165,15 @@ def create_trade_review(
     if existing_review:
         return _serialize_trade_review(existing_review)
 
+    review_result, evidence_payload = build_trade_review_payload(db, item)
     review = TradeReview(
         portfolio_id=item.id,
         user_id=item.user_id,
         position_group_id=item.position_group_id,
         symbol=item.symbol,
         review_version=TRADE_REVIEW_VERSION,
-        review_result=_minimal_review_result(),
-        evidence_payload=_minimal_evidence_payload(item),
+        review_result=review_result,
+        evidence_payload=evidence_payload,
         llm_summary=None,
     )
     db.add(review)

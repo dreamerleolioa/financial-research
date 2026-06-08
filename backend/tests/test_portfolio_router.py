@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.db.session import Base, get_db
-from ai_stock_sentinel.db.models import TradeReview, UserPortfolio
+from ai_stock_sentinel.db.models import StockRawData, TradeReview, UserPortfolio
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.user_models.user import User
 
@@ -412,7 +412,10 @@ def portfolio_db_session() -> Session:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, TradeReview.__table__])
+    Base.metadata.create_all(
+        engine,
+        tables=[User.__table__, UserPortfolio.__table__, TradeReview.__table__, StockRawData.__table__],
+    )
     with Session(engine) as session:
         yield session
 
@@ -531,12 +534,43 @@ def _add_closed_portfolio(
     return item
 
 
-def test_create_trade_review_first_post_creates_minimal_saved_review(
+def _add_raw_rows(
+    session: Session,
+    *,
+    symbol: str = "2330.TW",
+    start: date = date(2026, 1, 1),
+    closes: list[float] | None = None,
+) -> None:
+    for offset, close in enumerate(closes or [900, 930, 880, 960, 950]):
+        record_date = start.toordinal() + offset
+        date_value = date.fromordinal(record_date)
+        session.add(StockRawData(
+            symbol=symbol,
+            record_date=date_value,
+            technical={
+                "ohlcv": {
+                    "open": close,
+                    "high": close + 5,
+                    "low": close - 5,
+                    "close": close,
+                    "volume": 1000 + offset,
+                    "avg_volume_20": 1000,
+                },
+                "indicators": {},
+                "data_dates": {"ohlcv": date_value.isoformat()},
+            },
+            raw_data_is_final=True,
+        ))
+    session.commit()
+
+
+def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_payload(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
 
     resp = portfolio_db_client.post("/portfolio/42/review")
 
@@ -551,10 +585,29 @@ def test_create_trade_review_first_post_creates_minimal_saved_review(
     assert set(data["review_result"]) == {
         "data_quality", "trade_result", "entry_review", "holding_review", "exit_review", "operation_review",
     }
+    assert data["review_result"]["entry_review"]["classification"] in {
+        "breakout_entry", "pullback_entry", "chase_entry", "weak_entry", "range_entry", "insufficient_data",
+    }
+    assert set(data["review_result"]["entry_review"]) >= {
+        "classification", "confidence", "market_regime", "supporting_signals", "conflicting_signals", "caveats",
+    }
+    assert data["review_result"]["holding_review"]["detected_events"] == data["evidence_payload"]["detected_events"]
+    assert data["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
+    assert "market_regime" in data["review_result"]["operation_review"]
+    assert data["review_result"]["trade_result"]["realized_return_pct"] == pytest.approx(5.5556)
+    assert data["review_result"]["trade_result"]["entry_date"] == "2026-01-01"
+    assert data["review_result"]["trade_result"]["exit_date"] == "2026-01-11"
+    assert data["review_result"]["trade_result"]["realized_pnl"] == 5000
+    assert data["review_result"]["trade_result"]["max_profit_pct"] == pytest.approx(6.6667)
+    assert data["review_result"]["trade_result"]["max_drawdown_pct"] == pytest.approx(-2.2222)
+    assert data["review_result"]["trade_result"]["profit_giveback_pct"] == pytest.approx(1.1111)
     assert set(data["evidence_payload"]) == {
-        "trade", "position_group_id", "path_metrics", "entry_indicators", "exit_indicators", "detected_events", "data_quality",
+        "trade", "position_group_id", "path_metrics", "entry_indicators", "exit_indicators", "detected_events", "data_quality", "source_data",
     }
     assert data["evidence_payload"]["position_group_id"] == "group-review"
+    assert data["evidence_payload"]["trade"]["position_group_id"] == "group-review"
+    assert data["evidence_payload"]["trade"]["return_pct"] == pytest.approx(5.5556)
+    assert data["evidence_payload"]["path_metrics"]["highest_close_during_holding"] == 960
     reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
     assert len(reviews) == 1
     assert reviews[0].review_result == data["review_result"]
@@ -569,13 +622,74 @@ def test_create_trade_review_second_post_returns_existing_without_duplicate(
     _add_closed_portfolio(portfolio_db_session)
 
     first = portfolio_db_client.post("/portfolio/42/review")
+    _add_raw_rows(portfolio_db_session)
     second = portfolio_db_client.post("/portfolio/42/review")
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.json() == first.json()
+    assert second.json()["review_result"]["trade_result"]["max_profit_pct"] is None
     reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
     assert len(reviews) == 1
+
+
+def test_create_trade_review_partial_close_uses_closed_slice_not_same_group_batch(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-partial-review",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+    _add_raw_rows(portfolio_db_session)
+
+    close_resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-05",
+        "exit_price": 950.0,
+        "exit_quantity": 40,
+    })
+    assert close_resp.status_code == 200
+    closed_id = close_resp.json()["id"]
+    portfolio_db_session.add(UserPortfolio(
+        id=99,
+        user_id=1,
+        position_group_id="group-partial-review",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=60,
+        entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 11),
+        exit_price=1000,
+        exit_quantity=60,
+        realized_pnl=6000,
+        realized_return_pct=11.1111,
+        holding_days=10,
+    ))
+    portfolio_db_session.commit()
+
+    review_resp = portfolio_db_client.post(f"/portfolio/{closed_id}/review")
+
+    assert review_resp.status_code == 200
+    evidence = review_resp.json()["evidence_payload"]
+    assert evidence["trade"]["id"] == closed_id
+    assert evidence["trade"]["quantity"] == 40
+    assert evidence["trade"]["exit_quantity"] == 40
+    assert evidence["trade"]["position_group_id"] == "group-partial-review"
+    assert review_resp.json()["review_result"]["operation_review"]["reviewed_portfolio_id"] == closed_id
+    assert evidence["path_metrics"]["highest_close_during_holding"] == 960
+    rows = portfolio_db_session.execute(
+        select(UserPortfolio).where(UserPortfolio.position_group_id == "group-partial-review")
+    ).scalars().all()
+    assert len(rows) == 3
+    assert {row.is_active for row in rows} == {True, False}
 
 
 def test_get_trade_review_returns_existing_review(
