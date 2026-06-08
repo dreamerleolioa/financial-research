@@ -1,6 +1,6 @@
 # Single Trade Review Analysis Implementation Plan
 
-> Status: Draft for discussion
+> Status: Implemented through Phase 5; this document is synchronized to the current MVP contract.
 > Date: 2026-06-04
 > Scope: Review one closed trade at a time using price/volume technical evidence. No aggregate user behavior analysis in MVP.
 
@@ -18,7 +18,7 @@ This is a third analysis perspective, separate from existing analysis flows:
 | --- | --- | --- |
 | New position analysis | `POST /analyze`, `/analyze` | Is this stock worth watching or entering now? |
 | Active position diagnosis | `POST /analyze/position`, `/portfolio` | For a currently held position, should I hold, trim, or exit? |
-| Single trade review | New review endpoint, `/portfolio/closed` | For this completed trade, what did the operation do well or poorly? |
+| Single trade review | `GET/POST /portfolio/{portfolio_id}/review`, `/portfolio/closed` | For this completed trade, what did the operation do well or poorly? |
 
 The review must not become an all-trades dashboard in the first version. Every review is scoped to exactly one closed `UserPortfolio` row.
 
@@ -80,11 +80,11 @@ Two safeguards are part of the MVP design, not future enhancements:
 3. Each group header represents one original position lifecycle visually, with total realized PnL and exit batch count.
 4. Each exit batch row inside the group has its own `檢討分析` action.
 5. User clicks the action for one exit batch.
-6. Frontend calls `POST /portfolio/{portfolio_id}/review` for that exit batch.
+6. Frontend first calls `GET /portfolio/{portfolio_id}/review` for that exit batch.
 7. Backend validates that the portfolio row belongs to the user and is closed.
 8. Backend returns an existing saved review if one already exists.
-9. If no saved review exists, backend loads historical OHLCV data from entry date to exit date.
-10. Backend computes deterministic review metrics, tags, and an evidence payload.
+9. If no saved review exists, the frontend calls `POST /portfolio/{portfolio_id}/review` with no request body.
+10. Backend loads historical OHLCV data up to `exit_date`, computes deterministic review metrics, tags, market regime labels, and an evidence payload.
 11. Backend saves the review and evidence payload to `trade_review`.
 12. Frontend displays a review modal or expanded panel for that exit batch, including a copyable indicator/evidence block.
 
@@ -96,11 +96,7 @@ Generate the first review for one closed portfolio row, or return the existing s
 
 MVP behavior is persisted by default. A closed trade should normally be reviewed once, then reopened from the saved `trade_review` row. Re-analysis can be added later as an explicit action, but should not happen silently on every click.
 
-Request body for MVP:
-
-```json
-{}
-```
+Request body for MVP: none. The current frontend sends an empty POST body and the backend does not require request fields.
 
 Possible future request fields:
 
@@ -113,68 +109,108 @@ Possible future request fields:
 
 `refresh` is intentionally future-only. If added, it should create or update a review with a new `review_version`, not silently mutate historical output without version context.
 
-Response shape:
+Implemented response shape:
 
 ```json
 {
-  "review_id": 456,
+  "id": 456,
   "portfolio_id": 123,
+  "user_id": 1,
   "symbol": "2330.TW",
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "review_version": "trade-review-v1",
-  "created_at": "2026-06-04T10:30:00Z",
-  "data_quality": {
-    "price_data_available": true,
-    "trading_days": 28,
-    "missing_days": 0,
-    "notes": []
-  },
-  "trade_result": {
-    "entry_date": "2026-01-05",
-    "exit_date": "2026-02-14",
-    "entry_price": 980.0,
-    "exit_price": 1040.0,
-    "holding_days": 40,
-    "realized_pnl": 60000.0,
-    "realized_return_pct": 6.12,
-    "max_profit_pct": 12.4,
-    "max_drawdown_pct": -4.8,
-    "max_runup_price": 1102.0,
-    "max_drawdown_price": 933.0
-  },
-  "entry_review": {
-    "classification": "breakout_entry",
-    "summary": "進場位於短期均線上方，屬突破後進場。",
-    "signals": ["price_above_ma20", "volume_expansion"],
-    "warnings": []
-  },
-  "holding_review": {
-    "summary": "持有期間曾有明顯浮盈，回撤未跌破主要防守線。",
-    "risk_events": [
-      {
-        "date": "2026-01-28",
-        "type": "ma20_break_test",
-        "description": "盤中接近 MA20，但收盤未有效跌破。"
+  "review_result": {
+    "data_quality": {
+      "status": "ok",
+      "notes": [],
+      "insufficient_data": []
+    },
+    "trade_result": {
+      "entry_date": "2026-01-05",
+      "exit_date": "2026-02-14",
+      "entry_price": 980.0,
+      "exit_price": 1040.0,
+      "holding_days": 40,
+      "realized_pnl": 60000.0,
+      "realized_return_pct": 6.12,
+      "max_profit_pct": 12.4,
+      "max_drawdown_pct": -4.8,
+      "profit_giveback_pct": 6.2,
+      "highest_close_during_holding": 1102.0,
+      "lowest_close_during_holding": 933.0,
+      "entry_indicators": {
+        "as_of_date": "2026-01-05",
+        "ma20": 950.0,
+        "ma60": 910.0,
+        "rsi14": 72.0,
+        "volume_ratio": 1.8,
+        "entry_vs_ma20_pct": 3.16,
+        "entry_vs_ma60_pct": 7.69,
+        "market_regime": "strong_momentum"
+      },
+      "exit_indicators": {
+        "as_of_date": "2026-02-14",
+        "ma20": 1055.0,
+        "ma60": 990.0,
+        "rsi14": 48.0,
+        "volume_ratio": 1.3,
+        "exit_vs_ma20_pct": -1.42,
+        "exit_vs_ma60_pct": 5.05,
+        "market_regime": "uptrend"
       }
-    ]
-  },
-  "exit_review": {
-    "classification": "profit_protection_exit",
-    "summary": "出場仍保留獲利，但相對最高價有回吐。",
-    "signals": ["below_recent_high", "macd_cooling"],
-    "warnings": ["gave_back_profit"]
-  },
-  "operation_review": {
-    "primary_issue": "exit_timing",
-    "mistake_tags": ["gave_back_profit"],
-    "good_behavior_tags": ["profitable_exit", "held_above_support"],
-    "next_time_rules": [
-      "已有 10% 以上浮盈且 MACD 動能轉弱時，至少先設定移動停利。",
-      "若跌破 MA20 且量能放大，下次不等待基本面敘事來合理化持有。"
-    ]
+    },
+    "entry_review": {
+      "classification": "breakout_entry",
+      "confidence": "medium",
+      "market_regime": "strong_momentum",
+      "supporting_signals": ["Entry close broke above the recent 20-row high."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "summary": "Entry leaned breakout with price and volume confirmation."
+    },
+    "holding_review": {
+      "market_regime": "uptrend",
+      "confidence": "medium",
+      "detected_events": [
+        {
+          "date": "2026-02-10",
+          "type": "profit_giveback",
+          "summary": "Close gave back at least 5% from the holding-period high.",
+          "evidence": { "close": 1040.0 }
+        }
+      ],
+      "event_count": 1,
+      "risk_event_count": 1,
+      "supporting_signals": ["Detected profit_giveback on 2026-02-10."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "summary": "Chronological holding review uses capped technical events only."
+    },
+    "exit_review": {
+      "classification": "profit_protection_exit",
+      "confidence": "medium",
+      "market_regime": "uptrend",
+      "supporting_signals": ["Exit protected realized gains after momentum cooled or giveback appeared."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "summary": "Exit protected profit after cooling or giveback evidence."
+    },
+    "operation_review": {
+      "classification": "rule_based_trade_review",
+      "confidence": "medium",
+      "market_regime": "uptrend",
+      "supporting_signals": ["Review scope is the current closed portfolio row only."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "reviewed_portfolio_id": 123,
+      "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+      "scope": "current_closed_row_only",
+      "summary": "Operation review preserves the existing persistence/API boundary and does not aggregate same-group rows."
+    }
   },
   "evidence_payload": {
     "trade": {
+      "id": 123,
       "symbol": "2330.TW",
       "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
       "entry_date": "2026-01-05",
@@ -193,7 +229,6 @@ Response shape:
       "ma20": 950.0,
       "ma60": 910.0,
       "rsi14": 72.0,
-      "macd_bias": "bullish",
       "volume_ratio": 1.8,
       "market_regime": "strong_momentum"
     },
@@ -201,30 +236,43 @@ Response shape:
       "ma20": 1055.0,
       "ma60": 990.0,
       "rsi14": 48.0,
-      "macd_bias": "bearish",
       "volume_ratio": 1.3,
       "market_regime": "uptrend"
     },
     "detected_events": [
       {
-        "date": "2026-02-07",
-        "type": "macd_bearish_turn"
-      },
-      {
         "date": "2026-02-10",
-        "type": "profit_giveback"
+        "type": "profit_giveback",
+        "summary": "Close gave back at least 5% from the holding-period high.",
+        "evidence": { "close": 1040.0 }
       }
-    ]
+    ],
+    "data_quality": {
+      "status": "ok",
+      "notes": [],
+      "insufficient_data": []
+    },
+    "source_data": {
+      "symbol": "2330.TW",
+      "rows_up_to_exit": 80,
+      "holding_rows": 28,
+      "first_record_date": "2025-11-01",
+      "last_record_date": "2026-02-14"
+    }
   },
-  "llm_summary": null
+  "llm_summary": null,
+  "created_at": "2026-06-04T10:30:00Z",
+  "updated_at": "2026-06-04T10:30:00Z"
 }
 ```
+
+The user-facing review sections are nested under `review_result`. `evidence_payload` is persisted and returned separately so the frontend can copy objective evidence JSON. The current implementation sets `llm_summary` to `null` and does not call an LLM.
 
 ### `GET /portfolio/{portfolio_id}/review`
 
 Return the saved review for one closed portfolio row.
 
-If no review exists yet, return `404` or a structured empty state so the frontend can show `尚未產生檢討分析` and offer the generate action.
+If no review exists yet, return `404` with detail `尚未建立交易審核`; the frontend then calls `POST /portfolio/{portfolio_id}/review` to generate and persist the first review.
 
 ## Review Engine Modules
 

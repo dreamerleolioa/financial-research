@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-02
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract。
+> 更新日期：2026-06-08
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract 與 closed portfolio `position_group_id` 欄位。
 
 ## 1) 目的
 
@@ -416,6 +416,7 @@ make run-api
 [
   {
     "id": 42,
+    "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
     "entry_price": 900.0,
     "quantity": 1000,
@@ -434,7 +435,7 @@ make run-api
 ]
 ```
 
-- **Response 欄位**：`id`、`symbol`、`entry_price`、`quantity`、`entry_date`、`is_active`、`exit_date`、`exit_price`、`exit_quantity`、`exit_fees`、`exit_taxes`、`realized_pnl`、`realized_return_pct`、`holding_days`、`notes`。
+- **Response 欄位**：`id`、`position_group_id`、`symbol`、`entry_price`、`quantity`、`entry_date`、`is_active`、`exit_date`、`exit_price`、`exit_quantity`、`exit_fees`、`exit_taxes`、`realized_pnl`、`realized_return_pct`、`holding_days`、`notes`。
 
 ### `POST /portfolio`
 
@@ -537,6 +538,195 @@ make run-api
   - `exit_date` 早於 `entry_date` 時回傳 `422`，訊息為 `出場日期不可早於進場日期`。
 
 - **歷史保留**：此端點不刪除 `daily_analysis_log`，結案後仍可保留歷史診斷。
+
+### `GET /portfolio/{portfolio_id}/review`
+
+- **用途**：讀取一筆已結案持股的已保存 Single Trade Review。
+- **權限邊界**：只能讀取目前登入使用者自己的 closed portfolio row；非擁有者回傳 `403`。
+- **資料邊界**：review 單位是一筆 closed `UserPortfolio` row，也就是一次 realized exit batch；不合併同 `position_group_id` 的其他出場批次，也不做 lifecycle review。
+- **Response 200**：回傳欄位同 `POST /portfolio/{portfolio_id}/review`。
+- **錯誤行為**：
+  - 目標持股仍為 active 或沒有 `exit_date` 時回傳 `422`，訊息為 `僅可審核已結案持倉`。
+  - 尚未建立 review 時回傳 `404`，訊息為 `尚未建立交易審核`。
+
+### `POST /portfolio/{portfolio_id}/review`
+
+- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在 saved review，直接回傳既有 review，不重新產生。
+- **Request Body**：無必填欄位；目前 frontend 送出空 POST body。
+- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`，第二次以後 POST 回傳既有資料；沒有 refresh 或重新分析行為。
+- **LLM 邊界**：目前不呼叫 LLM，`llm_summary` 固定為 `null`。
+- **Evidence 邊界**：`evidence_payload` 只存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、source summary；不存完整 OHLCV/K-line arrays、raw news、raw LLM prompts 或 unrelated portfolio history。
+
+- **Response 200**
+
+```json
+{
+  "id": 456,
+  "portfolio_id": 123,
+  "user_id": 1,
+  "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+  "symbol": "2330.TW",
+  "review_version": "trade-review-v1",
+  "review_result": {
+    "data_quality": {
+      "status": "ok",
+      "notes": [],
+      "insufficient_data": []
+    },
+    "trade_result": {
+      "entry_date": "2026-01-05",
+      "exit_date": "2026-02-14",
+      "entry_price": 980.0,
+      "exit_price": 1040.0,
+      "realized_pnl": 60000.0,
+      "realized_return_pct": 6.12,
+      "holding_days": 40,
+      "max_profit_pct": 12.4,
+      "max_drawdown_pct": -4.8,
+      "profit_giveback_pct": 6.2,
+      "highest_close_during_holding": 1102.0,
+      "lowest_close_during_holding": 933.0,
+      "entry_indicators": {
+        "as_of_date": "2026-01-05",
+        "ma20": 950.0,
+        "ma60": 910.0,
+        "rsi14": 72.0,
+        "volume_ratio": 1.8,
+        "entry_vs_ma20_pct": 3.16,
+        "entry_vs_ma60_pct": 7.69,
+        "market_regime": "strong_momentum"
+      },
+      "exit_indicators": {
+        "as_of_date": "2026-02-14",
+        "ma20": 1055.0,
+        "ma60": 990.0,
+        "rsi14": 48.0,
+        "volume_ratio": 1.3,
+        "exit_vs_ma20_pct": -1.42,
+        "exit_vs_ma60_pct": 5.05,
+        "market_regime": "uptrend"
+      }
+    },
+    "entry_review": {
+      "classification": "breakout_entry",
+      "confidence": "medium",
+      "market_regime": "strong_momentum",
+      "supporting_signals": ["Entry close broke above the recent 20-row high."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "summary": "Entry leaned breakout with price and volume confirmation."
+    },
+    "holding_review": {
+      "market_regime": "uptrend",
+      "confidence": "medium",
+      "detected_events": [
+        {
+          "date": "2026-02-10",
+          "type": "profit_giveback",
+          "summary": "Close gave back at least 5% from the holding-period high.",
+          "evidence": { "close": 1040.0 }
+        }
+      ],
+      "event_count": 1,
+      "risk_event_count": 1,
+      "supporting_signals": ["Detected profit_giveback on 2026-02-10."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "summary": "Chronological holding review uses capped technical events only."
+    },
+    "exit_review": {
+      "classification": "profit_protection_exit",
+      "confidence": "medium",
+      "market_regime": "uptrend",
+      "supporting_signals": ["Exit protected realized gains after momentum cooled or giveback appeared."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "summary": "Exit protected profit after cooling or giveback evidence."
+    },
+    "operation_review": {
+      "classification": "rule_based_trade_review",
+      "confidence": "medium",
+      "market_regime": "uptrend",
+      "supporting_signals": ["Review scope is the current closed portfolio row only."],
+      "conflicting_signals": [],
+      "caveats": [],
+      "reviewed_portfolio_id": 123,
+      "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+      "scope": "current_closed_row_only",
+      "summary": "Operation review preserves the existing persistence/API boundary and does not aggregate same-group rows."
+    }
+  },
+  "evidence_payload": {
+    "trade": {
+      "id": 123,
+      "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+      "symbol": "2330.TW",
+      "entry_price": 980.0,
+      "entry_date": "2026-01-05",
+      "exit_date": "2026-02-14",
+      "exit_price": 1040.0,
+      "return_pct": 6.12,
+      "holding_days": 40
+    },
+    "path_metrics": {
+      "max_profit_pct": 12.4,
+      "max_drawdown_pct": -4.8,
+      "profit_giveback_pct": 6.2
+    },
+    "entry_indicators": {
+      "ma20": 950.0,
+      "ma60": 910.0,
+      "rsi14": 72.0,
+      "volume_ratio": 1.8,
+      "market_regime": "strong_momentum"
+    },
+    "exit_indicators": {
+      "ma20": 1055.0,
+      "ma60": 990.0,
+      "rsi14": 48.0,
+      "volume_ratio": 1.3,
+      "market_regime": "uptrend"
+    },
+    "detected_events": [
+      {
+        "date": "2026-02-10",
+        "type": "profit_giveback",
+        "summary": "Close gave back at least 5% from the holding-period high.",
+        "evidence": { "close": 1040.0 }
+      }
+    ],
+    "data_quality": {
+      "status": "ok",
+      "notes": [],
+      "insufficient_data": []
+    },
+    "source_data": {
+      "symbol": "2330.TW",
+      "rows_up_to_exit": 80,
+      "holding_rows": 28,
+      "first_record_date": "2025-11-01",
+      "last_record_date": "2026-02-14"
+    }
+  },
+  "llm_summary": null,
+  "created_at": "2026-06-04T10:30:00Z",
+  "updated_at": "2026-06-04T10:30:00Z"
+}
+```
+
+- **主要欄位說明**
+  - `review_result.data_quality.status`：`ok` 或 `insufficient`。
+  - `entry_review.classification`：`breakout_entry` / `pullback_entry` / `chase_entry` / `weak_entry` / `range_entry` / `insufficient_data`。
+  - `exit_review.classification`：`profit_protection_exit` / `stop_loss_exit` / `late_stop_exit` / `early_profit_exit` / `panic_exit` / `technical_break_exit` / `insufficient_data`。
+  - `confidence`：`high` / `medium` / `low`。
+  - `market_regime`：`uptrend` / `downtrend` / `range_bound` / `strong_momentum` / `high_volatility` / `insufficient_data`。
+  - `holding_review.detected_events`：最多保留重要 holding events，event item 不包含完整 K 線序列。
+
+### Closed portfolio grouping behavior
+
+- `/portfolio/closed` 回傳的每筆 closed portfolio 皆包含 `position_group_id`。
+- 前端 `/portfolio/closed` 依可見 rows 的 `position_group_id` 做視覺分組，group header 顯示 symbol、entry date、entry price、可見批次 total closed quantity、可見批次 total realized PnL、exit batch count。
+- `檢討分析` 按鈕只出現在每個 exit batch child row；group header 不提供 lifecycle review 或 group-level review action。
 
 ### `DELETE /portfolio/{portfolio_id}`
 
