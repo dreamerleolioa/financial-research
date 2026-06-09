@@ -9,6 +9,7 @@ import type {
   TradeReviewResponse,
   TradeReviewResultMetrics,
   TradeReviewSection,
+  TradeReviewUserReadableConclusion,
 } from "../lib/portfolioTypes";
 
 type PeriodKey = "1d" | "1w" | "1m" | "1q" | "1y";
@@ -50,6 +51,127 @@ const PERIOD_OPTIONS: PeriodOption[] = [
 ];
 
 const SELECTED_PERIOD_STORAGE_KEY = "closedPortfolio.selectedPeriod";
+
+const CLASSIFICATION_LABEL: Record<string, string> = {
+  strong_entry: "進場品質佳",
+  good_entry: "進場品質佳",
+  acceptable_entry: "進場尚可",
+  neutral_entry: "進場中性",
+  weak_entry: "進場偏弱",
+  late_entry: "進場偏晚",
+  early_entry: "進場偏早",
+  chasing_entry: "追高進場",
+  chase_entry: "追高進場",
+  breakout_entry: "突破進場",
+  pullback_entry: "回測進場",
+  range_entry: "區間進場",
+  insufficient_data: "資料不足",
+  strong_hold: "持有紀律佳",
+  good_hold: "持有紀律佳",
+  acceptable_hold: "持有尚可",
+  neutral_hold: "持有中性",
+  weak_hold: "持有偏弱",
+  overheld: "持有過久",
+  premature_exit: "出場偏早",
+  good_exit: "出場品質佳",
+  planned_exit: "依計畫出場",
+  profit_taking_exit: "獲利了結出場",
+  profit_protection_exit: "保護獲利出場",
+  stop_loss_exit: "停損出場",
+  late_stop_exit: "偏晚停損出場",
+  early_profit_exit: "偏早獲利出場",
+  technical_break_exit: "技術破位出場",
+  panic_exit: "情緒性出場",
+  weak_exit: "出場偏弱",
+  rule_based_trade_review: "規則化檢討",
+  disciplined_operation: "操作紀律佳",
+  rule_followed: "規則執行到位",
+  rule_violation: "規則執行偏離",
+  needs_improvement: "需改善操作",
+};
+
+const CONFIDENCE_LABEL: Record<string, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+  strong: "高",
+  moderate: "中",
+  weak: "低",
+};
+
+const MARKET_REGIME_LABEL: Record<string, string> = {
+  bullish: "多頭環境",
+  bearish: "空頭環境",
+  sideways: "盤整環境",
+  neutral: "中性環境",
+  uptrend: "上升趨勢",
+  downtrend: "下降趨勢",
+  range_bound: "區間震盪",
+  consolidation: "整理盤",
+  high_volatility: "高波動環境",
+  strong_momentum: "強動能環境",
+  insufficient_data: "資料不足",
+  medium_volatility: "中波動環境",
+  low_volatility: "低波動環境",
+  risk_on: "風險偏好升溫",
+  risk_off: "風險偏好降溫",
+};
+
+const DETECTED_EVENT_TYPE_LABEL: Record<string, string> = {
+  ma5_break: "5 日均線破位",
+  ma20_break: "20 日均線破位",
+  ma60_break: "60 日均線破位",
+  new_high_continuation: "持有期間創高",
+  volume_down_day: "放量下跌",
+  support_break: "跌破近期支撐",
+  rsi_overheated: "RSI 過熱",
+  ma5_reclaim: "站回 5 日均線",
+  ma20_reclaim: "站回 20 日均線",
+  ma60_reclaim: "站回 60 日均線",
+  stop_loss_hit: "觸及停損",
+  trailing_stop_hit: "觸及移動停利",
+  profit_target_hit: "達到停利目標",
+  profit_giveback: "獲利回吐",
+  drawdown_alert: "回撤警示",
+  high_volatility: "高波動事件",
+  volume_spike: "量能放大",
+  gap_down: "跳空下跌",
+  gap_up: "跳空上漲",
+};
+
+const DATA_QUALITY_STATUS_LABEL: Record<string, string> = {
+  sufficient: "資料充足",
+  partial: "資料部分不足",
+  insufficient: "資料不足",
+  unavailable: "資料不可用",
+  complete: "資料完整",
+};
+
+const INSUFFICIENT_DATA_LABEL: Record<string, string> = {
+  entry_indicators: "進場技術指標",
+  exit_indicators: "出場技術指標",
+  path_metrics: "持有期間路徑指標",
+  detected_events: "持有期間偵測事件",
+  source_data: "原始行情資料",
+  ohlcv: "價格與成交量資料",
+  price_data: "價格資料",
+  volume_data: "成交量資料",
+  technical_indicators: "技術指標資料",
+  institutional_flow: "法人買賣超資料",
+  market_context: "大盤環境資料",
+  entry_date: "進場日期資料",
+  exit_date: "出場日期資料",
+  holding_path_prices: "持有期間價格資料",
+  entry_price: "進場價格資料",
+  entry_ma20: "進場 MA20",
+  entry_ma60: "進場 MA60",
+  entry_rsi14: "進場 RSI14",
+  entry_volume_ratio: "進場量比",
+  exit_ma20: "出場 MA20",
+  exit_ma60: "出場 MA60",
+  exit_rsi14: "出場 RSI14",
+  exit_volume_ratio: "出場量比",
+};
 
 function isValidPeriodKey(value: string | null): value is PeriodKey {
   return PERIOD_OPTIONS.some((option) => option.key === value);
@@ -143,6 +265,30 @@ function formatPlainValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+function formatClassificationLabel(value: string): string {
+  return CLASSIFICATION_LABEL[value] ?? "其他檢討分類";
+}
+
+function formatConfidenceLabel(value: string): string {
+  return CONFIDENCE_LABEL[value] ?? "其他";
+}
+
+function formatMarketRegimeLabel(value: string): string {
+  return MARKET_REGIME_LABEL[value] ?? "其他市場環境";
+}
+
+function formatDetectedEventTypeLabel(value: string): string {
+  return DETECTED_EVENT_TYPE_LABEL[value] ?? "其他偵測事件";
+}
+
+function formatDataQualityStatusLabel(value: string): string {
+  return DATA_QUALITY_STATUS_LABEL[value] ?? "其他資料狀態";
+}
+
+function formatInsufficientDataLabel(value: string): string {
+  return INSUFFICIENT_DATA_LABEL[value] ?? "其他資料項目";
+}
+
 function getStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -186,6 +332,42 @@ function TradeResultSection({ metrics, symbol }: { metrics: TradeReviewResultMet
   );
 }
 
+function UserReadableConclusionCard({ conclusion }: { conclusion: TradeReviewUserReadableConclusion | undefined }) {
+  if (!conclusion) return null;
+
+  return (
+    <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-text-primary">交易檢討結論</h3>
+        {conclusion.overall_verdict && (
+          <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+            {conclusion.overall_verdict}
+          </span>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+        <p className="text-xs font-medium text-text-muted">整體結論</p>
+        <p className="mt-1 text-base font-semibold text-text-primary">
+          {conclusion.overall_verdict_label || "尚無整體結論。"}
+        </p>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-border-subtle bg-surface px-3 py-2">
+        <p className="text-xs font-medium text-text-muted">一句話原因</p>
+        <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+          {conclusion.one_sentence_reason || "尚無一句話原因。"}
+        </p>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <ReviewSignalList label="判斷依據" values={conclusion.evidence} />
+        <ReviewSignalList label="下次規則" values={conclusion.next_time_rules} />
+      </div>
+    </article>
+  );
+}
+
 function ReviewSignalList({ label, values }: { label: string; values: string[] | undefined }) {
   if (!values || values.length === 0) return null;
   return (
@@ -218,7 +400,7 @@ function DetectedEventsList({ events }: { events: Record<string, unknown>[] | un
             <div key={`${type}-${date ?? index}`} className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-text-secondary">
               <div className="flex flex-wrap items-center gap-2">
                 {date && <span className="font-mono text-text-faint">{date}</span>}
-                <span className="font-medium text-text-primary">{type}</span>
+                <span className="font-medium text-text-primary">{formatDetectedEventTypeLabel(type)}</span>
               </div>
               {description && <p className="mt-1 leading-relaxed text-text-muted">{description}</p>}
             </div>
@@ -237,17 +419,17 @@ function ReviewSectionCard({ title, section }: { title: string; section: TradeRe
         <div className="flex flex-wrap gap-1.5">
           {section?.classification && (
             <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-              {section.classification}
+              {formatClassificationLabel(section.classification)}
             </span>
           )}
           {section?.confidence && (
             <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
-              信心 {section.confidence}
+              信心 {formatConfidenceLabel(section.confidence)}
             </span>
           )}
           {section?.market_regime && (
             <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-              {section.market_regime}
+              {formatMarketRegimeLabel(section.market_regime)}
             </span>
           )}
         </div>
@@ -269,12 +451,12 @@ function ReviewSectionCard({ title, section }: { title: string; section: TradeRe
 
 function DataQualitySection({ dataQuality }: { dataQuality: TradeReviewDataQuality }) {
   const notes = getStringArray(dataQuality.notes);
-  const insufficientData = getStringArray(dataQuality.insufficient_data);
+  const insufficientData = getStringArray(dataQuality.insufficient_data).map(formatInsufficientDataLabel);
   return (
     <article className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm dark:border-amber-800 dark:bg-amber-950">
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">資料品質提示</h3>
-        {dataQuality.status && <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">{dataQuality.status}</span>}
+        {dataQuality.status && <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">{formatDataQualityStatusLabel(dataQuality.status)}</span>}
       </div>
       {notes.length > 0 && <ReviewSignalList label="提示" values={notes} />}
       {insufficientData.length > 0 && <ReviewSignalList label="資料不足欄位" values={insufficientData} />}
@@ -363,11 +545,12 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
                 </button>
               </div>
 
+              <UserReadableConclusionCard conclusion={result.user_readable_conclusion} />
               <TradeResultSection metrics={result.trade_result} symbol={item.symbol} />
               <ReviewSectionCard title="進場檢討" section={result.entry_review} />
-              <ReviewSectionCard title="持有路徑" section={result.holding_review} />
+              <ReviewSectionCard title="持有期間檢討" section={result.holding_review} />
               <ReviewSectionCard title="出場檢討" section={result.exit_review} />
-              <ReviewSectionCard title="下次規則" section={result.operation_review} />
+              <ReviewSectionCard title="整體操作檢討" section={result.operation_review} />
               {hasDataQualityPrompt(result.data_quality) && result.data_quality && <DataQualitySection dataQuality={result.data_quality} />}
             </>
           )}

@@ -66,9 +66,18 @@ export interface TradeReviewHoldingSection extends TradeReviewSection {
   risk_event_count?: number;
 }
 
+export interface TradeReviewUserReadableConclusion {
+  overall_verdict: string;
+  overall_verdict_label: string;
+  one_sentence_reason: string;
+  evidence: string[];
+  next_time_rules: string[];
+}
+
 export interface TradeReviewResult {
   data_quality?: TradeReviewDataQuality;
   trade_result?: TradeReviewResultMetrics;
+  user_readable_conclusion?: TradeReviewUserReadableConclusion;
   entry_review?: TradeReviewSection;
   holding_review?: TradeReviewHoldingSection;
   exit_review?: TradeReviewSection;

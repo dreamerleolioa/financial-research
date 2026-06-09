@@ -2,7 +2,7 @@
 
 > 類型：技術文件（Technical Doc）
 > 更新日期：2026-06-08
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract 與 closed portfolio `position_group_id` 欄位。
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論。
 
 ## 1) 目的
 
@@ -654,6 +654,20 @@ make run-api
       "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
       "scope": "current_closed_row_only",
       "summary": "Operation review preserves the existing persistence/API boundary and does not aggregate same-group rows."
+    },
+    "user_readable_conclusion": {
+      "overall_verdict": "reasonable",
+      "overall_verdict_label": "這次出場合理",
+      "one_sentence_reason": "這筆交易有保住已實現獲利，出場前也已出現動能降溫或獲利回吐跡象。",
+      "evidence": [
+        "已實現報酬率 6.12%",
+        "持有期間最高收盤價 1102.0，出場價 1040.0",
+        "持有期間偵測到 profit_giveback 事件"
+      ],
+      "next_time_rules": [
+        "下次獲利拉開後，先設定可接受的回吐比例。",
+        "若動能降溫伴隨獲利回吐，優先檢查是否該分批保護獲利。"
+      ]
     }
   },
   "evidence_payload": {
@@ -716,11 +730,15 @@ make run-api
 
 - **主要欄位說明**
   - `review_result.data_quality.status`：`ok` 或 `insufficient`。
+  - `review_result.user_readable_conclusion`：前端「交易檢討結論」的資料來源，包含 `overall_verdict`、`overall_verdict_label`、`one_sentence_reason`、`evidence`、`next_time_rules`。
+  - `review_result.user_readable_conclusion.overall_verdict`：`early` / `reasonable` / `late` / `insufficient`。
   - `entry_review.classification`：`breakout_entry` / `pullback_entry` / `chase_entry` / `weak_entry` / `range_entry` / `insufficient_data`。
   - `exit_review.classification`：`profit_protection_exit` / `stop_loss_exit` / `late_stop_exit` / `early_profit_exit` / `panic_exit` / `technical_break_exit` / `insufficient_data`。
   - `confidence`：`high` / `medium` / `low`。
   - `market_regime`：`uptrend` / `downtrend` / `range_bound` / `strong_momentum` / `high_volatility` / `insufficient_data`。
   - `holding_review.detected_events`：最多保留重要 holding events，event item 不包含完整 K 線序列。
+
+> **Single Trade Review 結論邊界**：`review_result.user_readable_conclusion` 是 `review_result` JSONB 內的 additive 欄位，不需資料庫 migration。它由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，不新增 `llm_summary`，也不需要將 `review_version` 從 `trade-review-v1` 升版。若資料不足，`overall_verdict` 回傳 `insufficient`，並在 `evidence` 與 `next_time_rules` 說明限制。
 
 ### Closed portfolio grouping behavior
 

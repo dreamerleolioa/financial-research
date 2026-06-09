@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.db.models import StockRawData, TradeReview, UserPortfolio
 from ai_stock_sentinel.auth.dependencies import get_current_user
@@ -421,7 +422,8 @@ def portfolio_db_session() -> Session:
 
 
 @pytest.fixture()
-def portfolio_db_client(portfolio_db_session: Session) -> TestClient:
+def portfolio_db_client(portfolio_db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", lambda *_args, **_kwargs: None)
     api.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     api.app.dependency_overrides[get_db] = lambda: portfolio_db_session
     try:
@@ -564,6 +566,30 @@ def _add_raw_rows(
     session.commit()
 
 
+def _add_snapshot_raw_rows(
+    session: Session,
+    *,
+    symbol: str = "2330.TW",
+) -> None:
+    for record_date, closes in [
+        (date(2026, 1, 1), list(range(1, 65))),
+        (date(2026, 1, 11), list(range(1, 65)) + [950]),
+    ]:
+        session.add(StockRawData(
+            symbol=symbol,
+            record_date=record_date,
+            technical={
+                "current_price": closes[-1],
+                "recent_closes": closes,
+                "recent_highs": [close + 5 for close in closes],
+                "recent_lows": [close - 5 for close in closes],
+                "recent_volumes": [1000 + offset for offset, _ in enumerate(closes)],
+            },
+            raw_data_is_final=True,
+        ))
+    session.commit()
+
+
 def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_payload(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -583,7 +609,7 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
     assert data["review_version"] == "trade-review-v1"
     assert data["llm_summary"] is None
     assert set(data["review_result"]) == {
-        "data_quality", "trade_result", "entry_review", "holding_review", "exit_review", "operation_review",
+        "data_quality", "trade_result", "entry_review", "holding_review", "exit_review", "operation_review", "user_readable_conclusion",
     }
     assert data["review_result"]["entry_review"]["classification"] in {
         "breakout_entry", "pullback_entry", "chase_entry", "weak_entry", "range_entry", "insufficient_data",
@@ -594,6 +620,12 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
     assert data["review_result"]["holding_review"]["detected_events"] == data["evidence_payload"]["detected_events"]
     assert data["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
     assert "market_regime" in data["review_result"]["operation_review"]
+    assert set(data["review_result"]["user_readable_conclusion"]) == {
+        "overall_verdict", "overall_verdict_label", "one_sentence_reason", "evidence", "next_time_rules",
+    }
+    assert data["review_result"]["user_readable_conclusion"]["overall_verdict"] in {
+        "early", "reasonable", "late", "insufficient",
+    }
     assert data["review_result"]["trade_result"]["realized_return_pct"] == pytest.approx(5.5556)
     assert data["review_result"]["trade_result"]["entry_date"] == "2026-01-01"
     assert data["review_result"]["trade_result"]["exit_date"] == "2026-01-11"
@@ -612,6 +644,79 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
     assert len(reviews) == 1
     assert reviews[0].review_result == data["review_result"]
     assert reviews[0].evidence_payload == data["evidence_payload"]
+
+
+def test_create_trade_review_accepts_snapshot_raw_data_without_ohlcv_and_persists_once(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_snapshot_raw_rows(portfolio_db_session)
+
+    first = portfolio_db_client.post("/portfolio/42/review")
+    second = portfolio_db_client.post("/portfolio/42/review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    data = first.json()
+    assert second.json() == data
+    assert data["review_version"] == "trade-review-v1"
+    assert data["review_result"]["trade_result"]["entry_indicators"]["ma20"] is not None
+    assert data["review_result"]["trade_result"]["exit_indicators"]["ma20"] is not None
+    assert data["review_result"]["data_quality"]["status"] == "ok"
+    reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
+    assert len(reviews) == 1
+
+
+def test_create_trade_review_calls_market_data_ensure_before_first_save(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = []
+
+    def spy_ensure(_db: Session, item: UserPortfolio) -> None:
+        calls.append(item.id)
+
+    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", spy_ensure)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert calls == [42]
+
+
+def test_create_trade_review_existing_review_skips_market_data_ensure(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_ensure(_db: Session, _item: UserPortfolio) -> None:
+        raise AssertionError("existing review must not trigger market data ensure")
+
+    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", fail_ensure)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = _add_closed_portfolio(portfolio_db_session)
+    portfolio_db_session.add(TradeReview(
+        portfolio_id=item.id,
+        user_id=item.user_id,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        review_version="trade-review-v1",
+        review_result={"existing": True},
+        evidence_payload={"existing": True},
+        llm_summary=None,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert resp.json()["review_result"] == {"existing": True}
 
 
 def test_create_trade_review_second_post_returns_existing_without_duplicate(

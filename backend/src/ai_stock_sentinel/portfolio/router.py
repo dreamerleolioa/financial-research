@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload
+from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
 from ai_stock_sentinel.db.models import TradeReview, UserPortfolio
@@ -165,6 +165,7 @@ def create_trade_review(
     if existing_review:
         return _serialize_trade_review(existing_review)
 
+    ensure_trade_review_market_data(db, item)
     review_result, evidence_payload = build_trade_review_payload(db, item)
     review = TradeReview(
         portfolio_id=item.id,
