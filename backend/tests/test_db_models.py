@@ -1,17 +1,29 @@
 # backend/tests/test_db_models.py
 import uuid
 
+from sqlalchemy import CheckConstraint, UniqueConstraint
 from ai_stock_sentinel.db.models import (
     DailyAnalysisLog,
     DailyRadarCandidate,
     DailyRadarRun,
+    POSITION_EVENT_CONFIDENCE_LEVELS,
+    POSITION_EVENT_ENTRY_REASON_CODES,
+    POSITION_EVENT_EXIT_REASON_CODES,
+    POSITION_EVENT_PLAN_ADHERENCE_VALUES,
+    POSITION_EVENT_REASON_CATEGORIES,
+    POSITION_LIFECYCLE_HOLDING_PERIODS,
+    POSITION_LIFECYCLE_SETUP_TYPES,
+    POSITION_EVENT_SOURCES,
+    POSITION_EVENT_TYPES,
+    PositionEvent,
+    PositionLifecyclePlan,
+    PositionLifecycleReview,
     StockAnalysisCache,
     StockRawData,
     TradeReview,
     UserPortfolio,
 )
 from ai_stock_sentinel.db.session import Base
-from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 
 
@@ -107,6 +119,175 @@ def test_trade_review_json_payload_fields_are_required_and_present() -> None:
     assert TradeReview.__table__.c.evidence_payload.nullable is False
     assert isinstance(TradeReview.__table__.c.review_result.type, JSONB)
     assert isinstance(TradeReview.__table__.c.evidence_payload.type, JSONB)
+
+
+def test_position_lifecycle_review_model_columns_unique_constraint_and_indexes() -> None:
+    cols = {c.name for c in PositionLifecycleReview.__table__.columns}
+    unique_constraints = {
+        constraint.name
+        for constraint in PositionLifecycleReview.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    index_columns = {
+        index.name: tuple(column.name for column in index.columns)
+        for index in PositionLifecycleReview.__table__.indexes
+    }
+
+    assert {
+        "id", "user_id", "position_group_id", "symbol", "review_version",
+        "review_result", "evidence_payload", "llm_summary", "created_at", "updated_at",
+    } <= cols
+    assert "portfolio_id" not in cols
+    assert "uq_position_lifecycle_review_user_group_version" in unique_constraints
+    assert index_columns["idx_position_lifecycle_review_user_id"] == ("user_id",)
+    assert index_columns["idx_position_lifecycle_review_position_group_id"] == ("position_group_id",)
+    assert index_columns["idx_position_lifecycle_review_symbol"] == ("symbol",)
+    assert index_columns["idx_position_lifecycle_review_user_group"] == ("user_id", "position_group_id")
+
+
+def test_position_lifecycle_review_json_payload_fields_are_required_and_present() -> None:
+    review_result = {
+        "position_group_id": "group-1",
+        "symbol": "2330.TW",
+        "lifecycle_review": {},
+        "data_quality": {},
+    }
+    evidence_payload = {
+        "position_group_id": "group-1",
+        "symbol": "2330.TW",
+        "metrics": {},
+        "events": [],
+        "data_quality": {},
+    }
+    review = PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-1",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result=review_result,
+        evidence_payload=evidence_payload,
+        llm_summary=None,
+    )
+
+    assert set(review.review_result) == set(review_result)
+    assert set(review.evidence_payload) == set(evidence_payload)
+    assert PositionLifecycleReview.__table__.c.review_result.nullable is False
+    assert PositionLifecycleReview.__table__.c.evidence_payload.nullable is False
+    assert isinstance(PositionLifecycleReview.__table__.c.review_result.type, JSONB)
+    assert isinstance(PositionLifecycleReview.__table__.c.evidence_payload.type, JSONB)
+
+
+def test_position_event_model_columns_indexes_and_supported_values() -> None:
+    cols = {c.name for c in PositionEvent.__table__.columns}
+    index_columns = {
+        index.name: tuple(column.name for column in index.columns)
+        for index in PositionEvent.__table__.indexes
+    }
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in PositionEvent.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert {
+        "id", "user_id", "position_group_id", "symbol", "event_type", "event_date",
+        "price", "quantity", "fees", "taxes", "source_portfolio_id", "note",
+        "reason_category", "reason_code", "plan_adherence", "confidence_level",
+        "source", "data_quality_note", "created_at", "updated_at",
+    } <= cols
+    assert POSITION_EVENT_TYPES == (
+        "initial_entry", "add_entry", "partial_exit", "full_exit", "manual_adjustment",
+    )
+    assert POSITION_EVENT_SOURCES == (
+        "synthetic_from_portfolio_row", "user_backfilled", "user_recorded_at_event_time",
+        "manual_record_correction", "not_recorded",
+    )
+    assert index_columns["idx_position_event_user_id"] == ("user_id",)
+    assert index_columns["idx_position_event_position_group_id"] == ("position_group_id",)
+    assert index_columns["idx_position_event_symbol"] == ("symbol",)
+    assert index_columns["idx_position_event_event_date"] == ("event_date",)
+    assert index_columns["idx_position_event_user_group_date"] == ("user_id", "position_group_id", "event_date")
+    assert all(event_type in check_constraints["ck_position_event_event_type"] for event_type in POSITION_EVENT_TYPES)
+    assert all(source in check_constraints["ck_position_event_source"] for source in POSITION_EVENT_SOURCES)
+    assert all(category in check_constraints["ck_position_event_reason_category"] for category in POSITION_EVENT_REASON_CATEGORIES)
+    assert all(code in check_constraints["ck_position_event_reason_code"] for code in POSITION_EVENT_ENTRY_REASON_CODES)
+    assert all(code in check_constraints["ck_position_event_reason_code"] for code in POSITION_EVENT_EXIT_REASON_CODES)
+    assert all(value in check_constraints["ck_position_event_plan_adherence"] for value in POSITION_EVENT_PLAN_ADHERENCE_VALUES)
+    assert all(level in check_constraints["ck_position_event_confidence_level"] for level in POSITION_EVENT_CONFIDENCE_LEVELS)
+
+
+def test_position_event_decision_fields_are_intent_sensitive_and_nullable() -> None:
+    event = PositionEvent(
+        user_id=1,
+        position_group_id="group-1",
+        symbol="2330.TW",
+        event_type="initial_entry",
+        event_date="2026-01-01",
+        price=900,
+        quantity=100,
+        source="user_recorded_at_event_time",
+    )
+
+    assert event.reason_category is None
+    assert event.reason_code is None
+    assert event.plan_adherence is None
+    assert event.confidence_level is None
+    assert PositionEvent.__table__.c.reason_category.nullable is True
+    assert PositionEvent.__table__.c.reason_code.nullable is True
+    assert PositionEvent.__table__.c.plan_adherence.nullable is True
+    assert PositionEvent.__table__.c.confidence_level.nullable is True
+
+
+def test_position_lifecycle_plan_model_fields_allowed_values_and_indexes() -> None:
+    cols = {c.name for c in PositionLifecyclePlan.__table__.columns}
+    index_columns = {
+        index.name: tuple(column.name for column in index.columns)
+        for index in PositionLifecyclePlan.__table__.indexes
+    }
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in PositionLifecyclePlan.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    unique_constraints = {
+        constraint.name
+        for constraint in PositionLifecyclePlan.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert {
+        "id", "user_id", "position_group_id", "symbol", "source_portfolio_id",
+        "thesis", "setup_type", "planned_holding_period", "planned_invalidation",
+        "planned_stop_price", "planned_target_or_scale_out_rule", "planned_risk_amount",
+        "planned_risk_pct", "position_sizing_rationale", "source", "created_after_entry",
+        "created_at", "updated_at",
+    } <= cols
+    assert "uq_position_lifecycle_plan_group" in unique_constraints
+    assert index_columns["idx_position_lifecycle_plan_user_id"] == ("user_id",)
+    assert index_columns["idx_position_lifecycle_plan_position_group_id"] == ("position_group_id",)
+    assert index_columns["idx_position_lifecycle_plan_symbol"] == ("symbol",)
+    assert all(setup_type in check_constraints["ck_position_lifecycle_plan_setup_type"] for setup_type in POSITION_LIFECYCLE_SETUP_TYPES)
+    assert all(period in check_constraints["ck_position_lifecycle_plan_holding_period"] for period in POSITION_LIFECYCLE_HOLDING_PERIODS)
+    assert all(source in check_constraints["ck_position_lifecycle_plan_source"] for source in POSITION_EVENT_SOURCES)
+
+
+def test_position_lifecycle_plan_intent_sensitive_fields_are_nullable() -> None:
+    plan = PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-1",
+        symbol="2330.TW",
+        source="user_backfilled",
+        created_after_entry=True,
+    )
+
+    assert plan.thesis is None
+    assert plan.setup_type is None
+    assert plan.planned_holding_period is None
+    assert plan.planned_invalidation is None
+    assert plan.planned_stop_price is None
+    assert plan.planned_risk_pct is None
+    assert plan.source == "user_backfilled"
+    assert plan.created_after_entry is True
 
 
 def test_daily_analysis_log_has_analysis_is_final():

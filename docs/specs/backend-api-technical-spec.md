@@ -2,7 +2,7 @@
 
 > 類型：技術文件（Technical Doc）
 > 更新日期：2026-06-08
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論。
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract。
 
 ## 1) 目的
 
@@ -744,7 +744,164 @@ make run-api
 
 - `/portfolio/closed` 回傳的每筆 closed portfolio 皆包含 `position_group_id`。
 - 前端 `/portfolio/closed` 依可見 rows 的 `position_group_id` 做視覺分組，group header 顯示 symbol、entry date、entry price、可見批次 total closed quantity、可見批次 total realized PnL、exit batch count。
-- `檢討分析` 按鈕只出現在每個 exit batch child row；group header 不提供 lifecycle review 或 group-level review action。
+- `檢討分析` 按鈕只出現在每個 exit batch child row，語義是 Single Trade Review：一筆 closed portfolio row / one sell decision。
+- group header 提供 `整體部位檢討`，語義是 Position Lifecycle Review：同一 `position_group_id` 下的 multi-entry / multi-exit lifecycle。
+- group header 也保留 `操作時間線`，可只檢視 event ledger，不等同 lifecycle review。
+
+### `GET /portfolio/groups/{position_group_id}/lifecycle-review`
+
+- **用途**：讀取同一 `position_group_id` 的已保存 Position Lifecycle Review。
+- **權限邊界**：只能讀取目前登入使用者自己的 position group；非擁有者回傳 `403`。
+- **資料邊界**：review 單位是整個 position group lifecycle，不與 `/portfolio/{portfolio_id}/review` 共用 endpoint，也不寫入 `trade_review`。
+- **Response 200**：回傳欄位同 `POST /portfolio/groups/{position_group_id}/lifecycle-review`。
+- **404**：目前登入使用者擁有該 group 但尚未建立 saved lifecycle review 時，回傳 `404`。
+
+### `POST /portfolio/groups/{position_group_id}/lifecycle-review`
+
+- **用途**：為同一 `position_group_id` 建立 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在，直接回傳既有 review，不重新產生。
+- **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 回傳既有資料；第一版不提供 refresh/recompute 行為。
+- **版本策略**：`review_version` 為 `position-lifecycle-review-v1`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。
+- **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit refresh/recompute contract。
+- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、source summary 與 data quality；不存完整 OHLCV/K-line arrays、raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
+- **Response 200**
+
+```json
+{
+  "id": 789,
+  "user_id": 1,
+  "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+  "symbol": "2330.TW",
+  "review_version": "position-lifecycle-review-v1",
+  "review_result": {
+    "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+    "symbol": "2330.TW",
+    "lifecycle_metrics": {
+      "total_realized_pnl": 12000.0,
+      "total_return_pct_on_weighted_cost": 5.42,
+      "weighted_average_entry_price": 900.0,
+      "profit_giveback_pct": 8.5
+    },
+    "entry_sequence": {
+      "entry_count": 2,
+      "add_entry_count": 1,
+      "average_down_count": 0,
+      "add_after_breakdown_count": 0
+    },
+    "exit_sequence": {
+      "exit_count": 2,
+      "partial_exit_count": 1,
+      "percentage_sold_before_peak": 40.0,
+      "percentage_sold_after_breakdown": 0.0,
+      "profit_protected_by_partial_exits": 8000.0
+    },
+    "advanced_internal": {
+      "plan_adherence_score": 75.0,
+      "decision_quality_score": 68.2
+    },
+    "event_indicator_snapshots": [
+      {
+        "event_key": "id:101",
+        "event_type": "initial_entry",
+        "event_date": "2026-01-05",
+        "ma20": 880.0,
+        "ma60": 850.0,
+        "rsi14": 61.0,
+        "event_price_vs_ma20_pct": 2.27,
+        "market_regime": "uptrend"
+      }
+    ],
+    "event_facts": [
+      {
+        "event_key": "id:101",
+        "id": 101,
+        "event_type": "initial_entry",
+        "event_date": "2026-01-05",
+        "price": 900.0,
+        "quantity": 100,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "reason_code": "breakout_confirmation",
+        "plan_adherence": "yes",
+        "source": "user_recorded_at_event_time"
+      }
+    ],
+    "decision_context": {
+      "status": "present",
+      "has_plan": true,
+      "source": "user_backfilled",
+      "created_after_entry": false
+    },
+    "data_quality": {
+      "status": "ok",
+      "notes": [],
+      "insufficient_data": []
+    },
+    "lifecycle_review": {
+      "classification": {
+        "primary_label": "disciplined_scale_out",
+        "labels": ["disciplined_scale_out", "coherent_position_management"],
+        "tier": "constructive",
+        "reasons": [
+          {
+            "text": "Partial exits protected realized profit before the position was fully closed.",
+            "source_refs": ["exit_sequence.partial_exit_count", "exit_sequence.profit_protected_by_partial_exits"]
+          }
+        ],
+        "caveats": [],
+        "source_refs": ["exit_sequence.partial_exit_count", "exit_sequence.profit_protected_by_partial_exits"]
+      },
+      "overall_conclusion": {
+        "text": "Lifecycle review tier is constructive; primary classification is disciplined_scale_out.",
+        "source_refs": ["exit_sequence.partial_exit_count", "exit_sequence.profit_protected_by_partial_exits"]
+      },
+      "what_worked": [],
+      "what_needs_review": [],
+      "event_level_evidence": [],
+      "next_operation_rules": [],
+      "data_quality_notes": []
+    }
+  },
+  "evidence_payload": {
+    "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+    "symbol": "2330.TW",
+    "metrics": {
+      "lifecycle": {},
+      "entry_sequence": {},
+      "exit_sequence": {},
+      "advanced_internal": {}
+    },
+    "events": [],
+    "indicator_snapshots": [],
+    "detected_events": [],
+    "market_regime_snapshots": [],
+    "source_data": {
+      "symbol": "2330.TW",
+      "event_count": 4,
+      "market_row_count": 80,
+      "plan_present": true
+    },
+    "data_quality": {
+      "status": "ok",
+      "notes": [],
+      "insufficient_data": []
+    }
+  },
+  "llm_summary": null,
+  "created_at": "2026-06-09T10:30:00Z",
+  "updated_at": "2026-06-09T10:30:00Z"
+}
+```
+
+- **主要欄位說明**
+  - `review_result.lifecycle_review.classification.primary_label`：主要 lifecycle 分類，例如 `averaging_down_into_weakness`、`disciplined_scale_out`、`risk_reduction_exit`、`premature_scale_out`、`late_scale_out`、`coherent_position_management`、`insufficient_data`。
+  - `review_result.lifecycle_review.classification.tier`：前端預設 summary 使用的 tier，例如 `needs_review`、`insufficient_context`、`constructive`、`mixed`。
+  - `review_result.lifecycle_review.*.source_refs`：每段固定模板文字的來源指標、事件或分類 trace。前端可顯示來源，但不應要求使用者解讀 raw score。
+  - `review_result.event_indicator_snapshots`：每個 entry/exit event 的 point-in-time 技術指標與 market regime snapshot，不包含完整 K 線序列。
+  - `review_result.event_facts[].fees` / `taxes`：event ledger 中已保存或系統計算的成本事實；不表示本端點要求使用者手動輸入交易稅。
+  - `review_result.decision_context.status`：若為 `insufficient`，前端需明確提示不要推論未記錄意圖。
+
+> **Position Lifecycle Review 邊界**：本端點與 Single Trade Review 分離。`/portfolio/{portfolio_id}/review` 繼續代表 one sell decision；`/portfolio/groups/{position_group_id}/lifecycle-review` 代表 whole multi-entry/multi-exit lifecycle。兩者資料表、endpoint 與 review version 均不同。
 
 ### `DELETE /portfolio/{portfolio_id}`
 

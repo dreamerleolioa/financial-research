@@ -1,5 +1,5 @@
 # backend/tests/test_portfolio_router.py
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -15,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 from ai_stock_sentinel import api
 from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
-from ai_stock_sentinel.db.models import StockRawData, TradeReview, UserPortfolio
+from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, PositionLifecycleReview, StockRawData, TradeReview, UserPortfolio
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.user_models.user import User
 
@@ -64,7 +65,7 @@ def test_add_portfolio_assigns_position_group_id_uuid():
 
     assert resp.status_code == 201
     mock_db = api.app.dependency_overrides[get_db]()
-    entry = mock_db.add.call_args.args[0]
+    entry = next(call.args[0] for call in mock_db.add.call_args_list if isinstance(call.args[0], UserPortfolio))
     assert uuid.UUID(entry.position_group_id).version == 4
 
 
@@ -157,6 +158,33 @@ def test_update_portfolio_success():
         "notes": "加碼",
     })
     assert resp.status_code == 200
+
+
+def test_update_portfolio_does_not_write_add_entry_event(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-update-no-event",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42", json={
+        "entry_price": 950.0,
+        "quantity": 200,
+        "entry_date": "2026-02-01",
+        "notes": "record correction only",
+    })
+
+    assert resp.status_code == 200
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
 
 
 def test_update_portfolio_forbidden():
@@ -291,7 +319,7 @@ def test_close_portfolio_partial_close_success():
     assert data["position_group_id"] == "group-42"
     assert item.is_active is True
     assert item.quantity == 50
-    closed_item = mock_db.add.call_args.args[0]
+    closed_item = next(call.args[0] for call in mock_db.add.call_args_list if isinstance(call.args[0], UserPortfolio))
     assert isinstance(closed_item, UserPortfolio)
     assert closed_item.user_id == item.user_id
     assert closed_item.position_group_id == item.position_group_id
@@ -415,7 +443,15 @@ def portfolio_db_session() -> Session:
     )
     Base.metadata.create_all(
         engine,
-        tables=[User.__table__, UserPortfolio.__table__, TradeReview.__table__, StockRawData.__table__],
+        tables=[
+            User.__table__,
+            UserPortfolio.__table__,
+            PositionEvent.__table__,
+            PositionLifecyclePlan.__table__,
+            PositionLifecycleReview.__table__,
+            TradeReview.__table__,
+            StockRawData.__table__,
+        ],
     )
     with Session(engine) as session:
         yield session
@@ -480,6 +516,15 @@ def test_close_portfolio_partial_close_persists_active_and_closed_rows(
     assert closed.notes == "核心持股"
     assert active.position_group_id == closed.position_group_id
 
+    events = portfolio_db_session.execute(select(PositionEvent).order_by(PositionEvent.id)).scalars().all()
+    assert len(events) == 1
+    assert events[0].event_type == "partial_exit"
+    assert events[0].source == "user_recorded_at_event_time"
+    assert events[0].source_portfolio_id == closed.id
+    assert events[0].quantity == 40
+    assert float(events[0].fees) == 10.0
+    assert float(events[0].taxes) == 5.0
+
 
 def test_close_portfolio_full_close_preserves_position_group_id(
     portfolio_db_client: TestClient,
@@ -507,6 +552,343 @@ def test_close_portfolio_full_close_preserves_position_group_id(
     assert resp.json()["position_group_id"] == "group-full-close"
     row = portfolio_db_session.get(UserPortfolio, 42)
     assert row.position_group_id == "group-full-close"
+    events = portfolio_db_session.execute(select(PositionEvent)).scalars().all()
+    assert len(events) == 1
+    assert events[0].event_type == "full_exit"
+    assert events[0].source_portfolio_id == 42
+
+
+def test_decision_context_status_reports_missing_plan_without_changing_portfolio_response(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-missing-plan",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    portfolio_resp = portfolio_db_client.get("/portfolio")
+    status_resp = portfolio_db_client.get("/portfolio/decision-context-status")
+
+    assert portfolio_resp.status_code == 200
+    assert set(portfolio_resp.json()[0]) == {"id", "symbol", "entry_price", "quantity", "entry_date", "notes"}
+    assert status_resp.status_code == 200
+    assert status_resp.json() == {
+        "42": {
+            "portfolio_id": 42,
+            "position_group_id": "group-missing-plan",
+            "symbol": "2330.TW",
+            "has_operation_plan": False,
+            "operation_plan_status": "missing",
+            "missing_operation_plan": True,
+            "decision_context": "insufficient",
+            "source": None,
+            "created_after_entry": None,
+            "planned_invalidation_present": False,
+        }
+    }
+
+
+def test_decision_context_status_reads_user_backfilled_plan(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-backfilled-plan",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-backfilled-plan",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        thesis="Breakout follow-through after consolidation.",
+        setup_type="breakout",
+        planned_holding_period="swing",
+        planned_invalidation="Close below MA20 with institutional distribution.",
+        source="user_backfilled",
+        created_after_entry=True,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/decision-context-status")
+
+    assert resp.status_code == 200
+    data = resp.json()["42"]
+    assert data["has_operation_plan"] is True
+    assert data["operation_plan_status"] == "present"
+    assert data["missing_operation_plan"] is False
+    assert data["decision_context"] == "present"
+    assert data["source"] == "user_backfilled"
+    assert data["created_after_entry"] is True
+    assert data["planned_invalidation_present"] is True
+
+
+def test_position_group_events_returns_owned_timeline_in_stable_chronological_order(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-events",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(UserPortfolio(
+        id=99,
+        user_id=2,
+        position_group_id="group-events",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add_all([
+        PositionEvent(
+            id=30,
+            user_id=1,
+            position_group_id="group-events",
+            symbol="2330.TW",
+            event_type="manual_adjustment",
+            event_date=date(2026, 1, 1),
+            price=905.125,
+            quantity=5,
+            fees=1.5,
+            taxes=0.25,
+            source_portfolio_id=42,
+            note="tie-break",
+            reason_category="record_correction",
+            reason_code="manual_record_correction",
+            plan_adherence="partial",
+            confidence_level="medium",
+            source="manual_record_correction",
+            data_quality_note="manual note",
+            created_at=datetime(2026, 1, 1, 9, 0, 0),
+            updated_at=datetime(2026, 1, 1, 9, 5, 0),
+        ),
+        PositionEvent(
+            id=10,
+            user_id=1,
+            position_group_id="group-events",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=100,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+            created_at=datetime(2026, 1, 1, 9, 0, 0),
+            updated_at=datetime(2026, 1, 1, 9, 0, 0),
+        ),
+        PositionEvent(
+            id=20,
+            user_id=1,
+            position_group_id="group-events",
+            symbol="2330.TW",
+            event_type="add_entry",
+            event_date=date(2026, 1, 1),
+            price=910,
+            quantity=20,
+            fees=2,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+            created_at=datetime(2026, 1, 1, 10, 0, 0),
+            updated_at=datetime(2026, 1, 1, 10, 0, 0),
+        ),
+        PositionEvent(
+            id=40,
+            user_id=1,
+            position_group_id="group-events",
+            symbol="2330.TW",
+            event_type="partial_exit",
+            event_date=date(2026, 1, 2),
+            price=950,
+            quantity=50,
+            fees=10,
+            taxes=5,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+            created_at=datetime(2026, 1, 2, 9, 0, 0),
+            updated_at=datetime(2026, 1, 2, 9, 0, 0),
+        ),
+        PositionEvent(
+            id=50,
+            user_id=2,
+            position_group_id="group-events",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=999,
+            quantity=1,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=99,
+            note="other-user-secret",
+            source="user_recorded_at_event_time",
+            created_at=datetime(2026, 1, 1, 8, 0, 0),
+            updated_at=datetime(2026, 1, 1, 8, 0, 0),
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/groups/group-events/events")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert set(data) == {"position_group_id", "symbol", "events"}
+    assert data["position_group_id"] == "group-events"
+    assert data["symbol"] == "2330.TW"
+    assert [event["id"] for event in data["events"]] == [10, 30, 20, 40]
+    assert "other-user-secret" not in resp.text
+    assert set(data["events"][0]) == {
+        "id", "position_group_id", "symbol", "event_type", "event_date", "price", "quantity", "fees", "taxes",
+        "source_portfolio_id", "note", "reason_category", "reason_code", "plan_adherence", "confidence_level", "source",
+        "data_quality_note", "created_at", "updated_at",
+    }
+    assert data["events"][1] == {
+        "id": 30,
+        "position_group_id": "group-events",
+        "symbol": "2330.TW",
+        "event_type": "manual_adjustment",
+        "event_date": "2026-01-01",
+        "price": 905.125,
+        "quantity": 5,
+        "fees": 1.5,
+        "taxes": 0.25,
+        "source_portfolio_id": 42,
+        "note": "tie-break",
+        "reason_category": "record_correction",
+        "reason_code": "manual_record_correction",
+        "plan_adherence": "partial",
+        "confidence_level": "medium",
+        "source": "manual_record_correction",
+        "data_quality_note": "manual note",
+        "created_at": "2026-01-01T09:00:00",
+        "updated_at": "2026-01-01T09:05:00",
+    }
+
+
+def test_position_group_events_forbids_unowned_group_without_leaking_events(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=99,
+        user_id=2,
+        position_group_id="foreign-group",
+        symbol="2454.TW",
+        entry_price=800,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(PositionEvent(
+        user_id=2,
+        position_group_id="foreign-group",
+        symbol="2454.TW",
+        event_type="initial_entry",
+        event_date=date(2026, 1, 1),
+        price=800,
+        quantity=100,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=99,
+        note="do-not-leak",
+        source="user_recorded_at_event_time",
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/groups/foreign-group/events")
+
+    assert resp.status_code == 403
+    assert "foreign-group" not in resp.text
+    assert "2454.TW" not in resp.text
+    assert "do-not-leak" not in resp.text
+
+
+def test_add_portfolio_persists_initial_entry_event_and_response_shape(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+        "notes": "核心持股",
+    })
+
+    assert resp.status_code == 201
+    assert set(resp.json()) == {"id", "symbol"}
+    assert resp.json()["symbol"] == "2330.TW"
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.event_type == "initial_entry"
+    assert event.source == "user_recorded_at_event_time"
+    assert event.symbol == "2330.TW"
+    assert event.quantity == 100
+    assert float(event.price) == 900.0
+    assert float(event.fees) == 0.0
+    assert float(event.taxes) == 0.0
+
+
+def test_close_without_manual_tax_keeps_row_compatible_and_calculates_event_tax(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-tax-default",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_fees"] == 0.0
+    assert data["exit_taxes"] == 0.0
+    assert data["realized_pnl"] == 5000.0
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.event_type == "full_exit"
+    assert float(event.fees) == 135.38
+    assert float(event.taxes) == 285.0
 
 
 def _add_closed_portfolio(
@@ -588,6 +970,311 @@ def _add_snapshot_raw_rows(
             raw_data_is_final=True,
         ))
     session.commit()
+
+
+def _add_lifecycle_group(
+    session: Session,
+    *,
+    user_id: int = 1,
+    position_group_id: str = "group-life-review",
+    symbol: str = "2330.TW",
+) -> UserPortfolio:
+    item = UserPortfolio(
+        id=77,
+        user_id=user_id,
+        position_group_id=position_group_id,
+        symbol=symbol,
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    )
+    session.add(item)
+    session.add(PositionEvent(
+        user_id=user_id,
+        position_group_id=position_group_id,
+        symbol=symbol,
+        event_type="initial_entry",
+        event_date=date(2026, 1, 1),
+        price=900,
+        quantity=100,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=77,
+        source="user_recorded_at_event_time",
+    ))
+    session.commit()
+    return item
+
+
+def _lifecycle_payload(position_group_id: str = "group-life-review") -> tuple[dict, dict]:
+    return (
+        {
+            "position_group_id": position_group_id,
+            "symbol": "2330.TW",
+            "lifecycle_review": {"classification": {"tier": "constructive"}},
+            "data_quality": {"status": "ok"},
+        },
+        {
+            "position_group_id": position_group_id,
+            "symbol": "2330.TW",
+            "metrics": {"lifecycle": {}},
+            "events": [{"event_type": "initial_entry"}],
+            "data_quality": {"status": "ok"},
+        },
+    )
+
+
+def test_create_position_lifecycle_review_first_post_saves_result_and_evidence_payload(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = []
+
+    def fake_builder(db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        calls.append((db, user_id, position_group_id))
+        return _lifecycle_payload(position_group_id)
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fake_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "portfolio_id" not in data
+    assert data["user_id"] == 1
+    assert data["position_group_id"] == "group-life-review"
+    assert data["symbol"] == "2330.TW"
+    assert data["review_version"] == "position-lifecycle-review-v1"
+    assert data["llm_summary"] is None
+    assert data["review_result"]["lifecycle_review"]["classification"]["tier"] == "constructive"
+    assert data["evidence_payload"]["events"] == [{"event_type": "initial_entry"}]
+    assert calls == [(portfolio_db_session, 1, "group-life-review")]
+    reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
+    assert len(reviews) == 1
+    assert reviews[0].review_result == data["review_result"]
+    assert reviews[0].evidence_payload == data["evidence_payload"]
+
+
+def test_get_position_lifecycle_review_returns_existing_review(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        portfolio_router_module,
+        "build_position_lifecycle_analysis",
+        lambda _db, *, user_id, position_group_id: _lifecycle_payload(position_group_id),
+    )
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    created = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review").json()
+
+    resp = portfolio_db_client.get("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    assert resp.json() == created
+
+
+def test_get_position_lifecycle_review_missing_owned_group_returns_404(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+
+    resp = portfolio_db_client.get("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 404
+    assert portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all() == []
+
+
+def test_create_position_lifecycle_review_existing_review_skips_recompute_and_duplicate(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        raise AssertionError("existing lifecycle review must not be recomputed")
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result={"existing": True},
+        evidence_payload={"existing": True},
+        llm_summary=None,
+    ))
+    portfolio_db_session.commit()
+
+    first = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+    second = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["review_result"] == {"existing": True}
+    reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
+    assert len(reviews) == 1
+
+
+def test_position_lifecycle_review_forbids_unowned_group_without_building(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        raise AssertionError("forbidden lifecycle review must not build")
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
+    _add_lifecycle_group(portfolio_db_session, user_id=2, position_group_id="foreign-life-group", symbol="2454.TW")
+
+    get_resp = portfolio_db_client.get("/portfolio/groups/foreign-life-group/lifecycle-review")
+    post_resp = portfolio_db_client.post("/portfolio/groups/foreign-life-group/lifecycle-review")
+
+    assert get_resp.status_code == 403
+    assert post_resp.status_code == 403
+    assert portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all() == []
+
+
+def test_create_position_lifecycle_review_builder_failure_rolls_back_without_partial_review(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        raise RuntimeError("builder failed")
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+
+    with pytest.raises(RuntimeError, match="builder failed"):
+        portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all() == []
+
+
+def test_create_position_lifecycle_review_commit_failure_rolls_back_pending_review(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rollback_calls = []
+    original_rollback = portfolio_db_session.rollback
+
+    def fail_commit() -> None:
+        raise RuntimeError("commit failed")
+
+    def spy_rollback() -> None:
+        rollback_calls.append(True)
+        original_rollback()
+
+    monkeypatch.setattr(
+        portfolio_router_module,
+        "build_position_lifecycle_analysis",
+        lambda _db, *, user_id, position_group_id: _lifecycle_payload(position_group_id),
+    )
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    monkeypatch.setattr(portfolio_db_session, "commit", fail_commit)
+    monkeypatch.setattr(portfolio_db_session, "rollback", spy_rollback)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert rollback_calls == [True]
+    assert portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all() == []
+
+
+def test_position_lifecycle_review_unique_owner_group_version_allows_only_one_current_version(
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result={"first": True},
+        evidence_payload={"first": True},
+    ))
+    portfolio_db_session.commit()
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result={"second": True},
+        evidence_payload={"second": True},
+    ))
+
+    with pytest.raises(IntegrityError):
+        portfolio_db_session.commit()
+    portfolio_db_session.rollback()
+
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v2",
+        review_result={"second_version": True},
+        evidence_payload={"second_version": True},
+    ))
+    portfolio_db_session.commit()
+
+    reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
+    assert len(reviews) == 2
+
+
+def test_position_lifecycle_review_does_not_change_single_trade_review_behavior(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        portfolio_router_module,
+        "build_position_lifecycle_analysis",
+        lambda _db, *, user_id, position_group_id: _lifecycle_payload(position_group_id),
+    )
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = _add_closed_portfolio(portfolio_db_session, position_group_id="group-compatible-review")
+    portfolio_db_session.add(PositionEvent(
+        user_id=1,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        event_type="initial_entry",
+        event_date=item.entry_date,
+        price=item.entry_price,
+        quantity=item.quantity,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=item.id,
+        source="user_recorded_at_event_time",
+    ))
+    portfolio_db_session.commit()
+    _add_raw_rows(portfolio_db_session)
+
+    lifecycle_resp = portfolio_db_client.post("/portfolio/groups/group-compatible-review/lifecycle-review")
+    trade_resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert lifecycle_resp.status_code == 200
+    assert trade_resp.status_code == 200
+    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v1"
+    assert trade_resp.json()["review_version"] == "trade-review-v1"
+    assert trade_resp.json()["portfolio_id"] == 42
+    assert trade_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
+    assert len(portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()) == 1
+    assert len(portfolio_db_session.execute(select(TradeReview)).scalars().all()) == 1
 
 
 def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_payload(
@@ -795,6 +1482,44 @@ def test_create_trade_review_partial_close_uses_closed_slice_not_same_group_batc
     ).scalars().all()
     assert len(rows) == 3
     assert {row.is_active for row in rows} == {True, False}
+
+
+def test_partial_close_group_timeline_and_single_trade_review_remain_usable(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-partial-timeline",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+    _add_raw_rows(portfolio_db_session)
+
+    close_resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-05",
+        "exit_price": 950.0,
+        "exit_quantity": 40,
+    })
+    assert close_resp.status_code == 200
+    closed_id = close_resp.json()["id"]
+
+    timeline_resp = portfolio_db_client.get("/portfolio/groups/group-partial-timeline/events")
+    review_resp = portfolio_db_client.post(f"/portfolio/{closed_id}/review")
+
+    assert timeline_resp.status_code == 200
+    events = timeline_resp.json()["events"]
+    assert [event["event_type"] for event in events] == ["partial_exit"]
+    assert events[0]["source_portfolio_id"] == closed_id
+    assert events[0]["quantity"] == 40
+    assert review_resp.status_code == 200
+    assert review_resp.json()["portfolio_id"] == closed_id
+    assert review_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
 
 
 def test_get_trade_review_returns_existing_review(
