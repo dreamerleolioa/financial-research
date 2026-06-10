@@ -1650,6 +1650,8 @@ def test_create_position_lifecycle_review_existing_review_skips_recompute_and_du
     monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     _add_lifecycle_group(portfolio_db_session)
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event.updated_at = datetime(2026, 1, 1, 9, 0, 0)
     portfolio_db_session.add(PositionLifecycleReview(
         user_id=1,
         position_group_id="group-life-review",
@@ -1658,6 +1660,8 @@ def test_create_position_lifecycle_review_existing_review_skips_recompute_and_du
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary=None,
+        created_at=datetime(2026, 1, 1, 10, 0, 0),
+        updated_at=datetime(2026, 1, 1, 10, 0, 0),
     ))
     portfolio_db_session.commit()
 
@@ -1670,6 +1674,117 @@ def test_create_position_lifecycle_review_existing_review_skips_recompute_and_du
     assert first.json()["review_result"] == {"existing": True}
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
+
+
+def test_create_position_lifecycle_review_recomputes_stale_existing_review_after_later_event_update(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = []
+
+    def fake_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        calls.append((user_id, position_group_id))
+        return (
+            {"rebuilt": "event", "position_group_id": position_group_id},
+            {"source": "event", "events": [{"event_type": "full_exit"}]},
+        )
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fake_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event.updated_at = datetime(2026, 1, 1, 10, 0, 0)
+    portfolio_db_session.add(PositionLifecycleReview(
+        id=7,
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="OLD.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result={"existing": True},
+        evidence_payload={"existing": True},
+        llm_summary="old summary",
+        created_at=datetime(2026, 1, 1, 8, 0, 0),
+        updated_at=datetime(2026, 1, 1, 9, 0, 0),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert calls == [(1, "group-life-review")]
+    assert data["id"] == 7
+    assert data["symbol"] == "2330.TW"
+    assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
+    assert data["evidence_payload"] == {"source": "event", "events": [{"event_type": "full_exit"}]}
+    assert data["llm_summary"] is None
+    reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
+    assert len(reviews) == 1
+    assert reviews[0].id == 7
+    assert reviews[0].review_result == data["review_result"]
+    assert reviews[0].evidence_payload == data["evidence_payload"]
+
+
+def test_create_position_lifecycle_review_recomputes_stale_existing_review_after_later_plan_update(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = []
+
+    def fake_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        calls.append((user_id, position_group_id))
+        return (
+            {"rebuilt": "plan", "position_group_id": position_group_id},
+            {"source": "plan", "plan": {"planned_holding_period": "long_term"}},
+        )
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fake_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event.updated_at = datetime(2026, 1, 1, 8, 30, 0)
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        source_portfolio_id=77,
+        planned_holding_period="long_term",
+        source="user_backfilled",
+        created_after_entry=True,
+        created_at=datetime(2026, 1, 1, 8, 0, 0),
+        updated_at=datetime(2026, 1, 1, 10, 0, 0),
+    ))
+    portfolio_db_session.add(PositionLifecycleReview(
+        id=8,
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="OLD.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result={"existing": True},
+        evidence_payload={"existing": True},
+        llm_summary="old summary",
+        created_at=datetime(2026, 1, 1, 8, 0, 0),
+        updated_at=datetime(2026, 1, 1, 9, 0, 0),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert calls == [(1, "group-life-review")]
+    assert data["id"] == 8
+    assert data["symbol"] == "2330.TW"
+    assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
+    assert data["evidence_payload"] == {"source": "plan", "plan": {"planned_holding_period": "long_term"}}
+    assert data["llm_summary"] is None
+    reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
+    assert len(reviews) == 1
+    assert reviews[0].id == 8
+    assert reviews[0].review_result == data["review_result"]
+    assert reviews[0].evidence_payload == data["evidence_payload"]
 
 
 def test_position_lifecycle_review_forbids_unowned_group_without_building(

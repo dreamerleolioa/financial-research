@@ -971,7 +971,7 @@ make run-api
 
 ### `GET /portfolio/groups/{position_group_id}/lifecycle-review`
 
-- **用途**：讀取同一 `position_group_id` 的已保存 Position Lifecycle Review。
+- **用途**：讀取同一 `position_group_id` 的已保存 Position Lifecycle Review；此端點只讀取已保存結果，不觸發 freshness 檢查或重算。
 - **權限邊界**：只能讀取目前登入使用者自己的 position group；非擁有者回傳 `403`。
 - **資料邊界**：review 單位是整個 position group lifecycle，不與 `/portfolio/{portfolio_id}/review` 共用 endpoint，也不寫入 `trade_review`。
 - **Response 200**：回傳欄位同 `POST /portfolio/groups/{position_group_id}/lifecycle-review`。
@@ -979,11 +979,11 @@ make run-api
 
 ### `POST /portfolio/groups/{position_group_id}/lifecycle-review`
 
-- **用途**：為同一 `position_group_id` 建立 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在，直接回傳既有 review，不重新產生。
+- **用途**：為同一 `position_group_id` 建立或更新 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在且來源資料未變，直接回傳既有 review。
 - **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
-- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 回傳既有資料；第一版不提供 refresh/recompute 行為。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 會比較同一使用者與 `position_group_id` 下 `PositionEvent.updated_at` 與 `PositionLifecyclePlan.updated_at` 的最新時間；若來源資料比 saved review 更新，重建 `review_result` / `evidence_payload` 並更新同一筆 `position_lifecycle_review`，避免部分出場後新增事件或事後補填 plan 時持續讀到 stale lifecycle review。
 - **版本策略**：`review_version` 為 `position-lifecycle-review-v1`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。
-- **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit refresh/recompute contract。
+- **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
 - **Evidence 邊界**：`evidence_payload` 只存 compact event facts、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、source summary 與 data quality；不存完整 OHLCV/K-line arrays、raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
 - **Response 200**
 

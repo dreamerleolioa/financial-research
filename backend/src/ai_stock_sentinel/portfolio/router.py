@@ -373,6 +373,39 @@ def _get_position_lifecycle_review(db: Session, position_group_id: str, user_id:
     ).scalar_one_or_none()
 
 
+def _as_comparable_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _get_position_lifecycle_source_updated_at(db: Session, position_group_id: str, user_id: int) -> datetime | None:
+    latest_event_updated_at = db.execute(
+        select(func.max(PositionEvent.updated_at)).where(
+            PositionEvent.user_id == user_id,
+            PositionEvent.position_group_id == position_group_id,
+        )
+    ).scalar_one_or_none()
+    latest_plan_updated_at = db.execute(
+        select(func.max(PositionLifecyclePlan.updated_at)).where(
+            PositionLifecyclePlan.user_id == user_id,
+            PositionLifecyclePlan.position_group_id == position_group_id,
+        )
+    ).scalar_one_or_none()
+    updated_ats = [updated_at for updated_at in (latest_event_updated_at, latest_plan_updated_at) if updated_at is not None]
+    if not updated_ats:
+        return None
+    return max(updated_ats, key=_as_comparable_datetime)
+
+
+def _position_lifecycle_review_is_fresh(review: PositionLifecycleReview, source_updated_at: datetime | None) -> bool:
+    if source_updated_at is None:
+        return True
+    if review.updated_at is None:
+        return False
+    return _as_comparable_datetime(source_updated_at) <= _as_comparable_datetime(review.updated_at)
+
+
 @router.get("")
 def list_portfolio(
     db: Session = Depends(get_db),
@@ -570,7 +603,8 @@ def create_position_lifecycle_review(
 ):
     group = _get_owned_position_group(db, position_group_id, current_user.id)
     existing_review = _get_position_lifecycle_review(db, position_group_id, current_user.id)
-    if existing_review:
+    source_updated_at = _get_position_lifecycle_source_updated_at(db, position_group_id, current_user.id)
+    if existing_review and _position_lifecycle_review_is_fresh(existing_review, source_updated_at):
         return _serialize_position_lifecycle_review(existing_review)
 
     try:
@@ -579,16 +613,24 @@ def create_position_lifecycle_review(
             user_id=current_user.id,
             position_group_id=position_group_id,
         )
-        review = PositionLifecycleReview(
-            user_id=current_user.id,
-            position_group_id=position_group_id,
-            symbol=group.symbol,
-            review_version=POSITION_LIFECYCLE_REVIEW_VERSION,
-            review_result=review_result,
-            evidence_payload=evidence_payload,
-            llm_summary=None,
-        )
-        db.add(review)
+        if existing_review:
+            review = existing_review
+            review.symbol = group.symbol
+            review.review_result = review_result
+            review.evidence_payload = evidence_payload
+            review.llm_summary = None
+            review.updated_at = datetime.now(timezone.utc)
+        else:
+            review = PositionLifecycleReview(
+                user_id=current_user.id,
+                position_group_id=position_group_id,
+                symbol=group.symbol,
+                review_version=POSITION_LIFECYCLE_REVIEW_VERSION,
+                review_result=review_result,
+                evidence_payload=evidence_payload,
+                llm_summary=None,
+            )
+            db.add(review)
         db.commit()
         db.refresh(review)
     except Exception:

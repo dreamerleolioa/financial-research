@@ -1684,10 +1684,6 @@ export default function ClosedPortfolioPage() {
 
   async function fetchLifecycleReview(positionGroupId: string): Promise<PositionLifecycleReviewResponse> {
     const reviewUrl = `${import.meta.env.VITE_API_URL}/portfolio/groups/${positionGroupId}/lifecycle-review`;
-    const getResponse = await fetch(reviewUrl, { headers: authHeaders() });
-    if (getResponse.ok) return await getResponse.json() as PositionLifecycleReviewResponse;
-    if (getResponse.status !== 404) throw new Error(`HTTP ${getResponse.status}`);
-
     const postResponse = await fetch(reviewUrl, {
       method: "POST",
       headers: authHeaders(),
@@ -1699,7 +1695,6 @@ export default function ClosedPortfolioPage() {
   async function openLifecycleReview(group: ClosedPortfolioGroup): Promise<void> {
     setSelectedLifecycleGroup(group);
     setLifecycleCopyStatus((prev) => ({ ...prev, [group.position_group_id]: "idle" }));
-    if (lifecycleReviewMap[group.position_group_id]) return;
 
     setLifecycleReviewLoading((prev) => ({ ...prev, [group.position_group_id]: true }));
     setLifecycleReviewError((prev) => ({ ...prev, [group.position_group_id]: null }));

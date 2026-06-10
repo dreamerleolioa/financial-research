@@ -610,12 +610,13 @@ GET /portfolio/groups/{position_group_id}/lifecycle-review
 POST /portfolio/groups/{position_group_id}/lifecycle-review
 ```
 
-Behavior should mirror the MVP persistence rule:
+Behavior should mirror the MVP persistence rule, with the later stale-review correction that saved reviews are reused only while their event-ledger and lifecycle-plan inputs remain unchanged:
 
 - `GET` returns a saved review if present.
 - `POST` creates the first saved review if absent.
-- If a saved review exists, `POST` returns it rather than silently recomputing.
-- Future refresh must be explicit and version-aware.
+- If a saved review exists and its source event/plan watermarks are unchanged, `POST` returns it rather than recomputing.
+- If later `PositionEvent` rows or a `PositionLifecyclePlan` backfill/update are newer than the saved review, `POST` recomputes and updates the same versioned review row so the whole-lifecycle analysis reflects the current ledger.
+- Future narrative/LLM refresh must be explicit and version-aware.
 - Save `review_result` and `evidence_payload` atomically.
 
 ## Frontend UX
@@ -756,7 +757,7 @@ Do not auto-default intent-sensitive fields such as `reason_code`, `plan_adheren
 ### Phase E: Lifecycle Review UI
 
 - Persist lifecycle reviews separately from `trade_review`, including `review_version`, `review_result`, and `evidence_payload`.
-- Keep refresh/recompute explicit and version-aware; the first saved review should not be silently overwritten.
+- Keep source freshness explicit: unchanged event/plan inputs reuse the saved review, while later ledger or plan updates recompute the same deterministic review version in place.
 - Add group-level lifecycle review action.
 - Show timeline-based review.
 - Show event-level review fragments inside the lifecycle timeline, while keeping standalone entry/exit event review APIs as future extension unless explicitly scoped.
