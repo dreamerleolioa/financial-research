@@ -168,6 +168,14 @@ def _build_lifecycle_review(
     realized_pnl = _number(lifecycle_metrics.get("total_realized_pnl"))
     plan_adherence_score = _number(advanced_internal.get("plan_adherence_score"))
     decision_context_insufficient = decision_context.get("status") != "present"
+    decision_context_backfilled = (
+        decision_context.get("source") == "user_backfilled"
+        or decision_context.get("created_after_entry") is True
+    )
+    planned_holding_period = decision_context.get("planned_holding_period")
+    add_entry_condition = decision_context.get("add_entry_condition")
+    default_stop_rule = decision_context.get("default_stop_rule")
+    total_holding_days = lifecycle_metrics.get("total_holding_days_from_first_entry")
 
     if not event_facts or entry_sequence.get("entry_count", 0) == 0:
         _append_label(labels, "insufficient_data")
@@ -187,11 +195,70 @@ def _build_lifecycle_review(
         caveats.append(item)
         data_quality_notes.append(item)
 
+    if decision_context_backfilled:
+        item = _text_item(
+            "此操作計畫為使用者事後補填，可改善未來檢討脈絡，但不視為原始進場當下已存在的計畫。",
+            ["decision_context.source", "decision_context.created_after_entry"],
+        )
+        caveats.append(item)
+        data_quality_notes.append(item)
+
     if average_down_count > 0 and add_after_breakdown_count > 0:
         _append_label(labels, "averaging_down_into_weakness")
         item = _text_item(
             "加碼序列出現攤平，而且加碼時價格低於 MA20 或處於下降趨勢，屬於弱勢中加碼。",
             ["entry_sequence.average_down_count", "entry_sequence.add_after_breakdown_count"],
+        )
+        reasons.append(item)
+        what_needs_review.append(item)
+
+    ma20_support_events = _ma20_pullback_support_events(event_facts, snapshot_by_key)
+    if ma20_support_events:
+        _append_label(labels, "ma20_pullback_supported")
+        refs = _event_and_snapshot_refs(ma20_support_events)
+        item = _text_item(
+            "進場原因代碼記錄為拉回守住 MA20，且事件當下價格位於 MA20 附近或上方，形成可追溯的正向進場支撐。",
+            refs + ["event_facts.reason_code", "event_indicator_snapshots.event_price_vs_ma20_pct"],
+        )
+        reasons.append(item)
+        what_worked.append(item)
+
+    add_entry_plan_violations = _add_entry_plan_violation_events(
+        event_facts,
+        snapshot_by_key,
+        add_entry_condition,
+    )
+    if add_entry_plan_violations:
+        _append_label(labels, "add_entry_plan_violation")
+        refs = _event_and_snapshot_refs(add_entry_plan_violations)
+        item = _text_item(
+            "加碼條件記錄為不攤平，但加碼事件價格低於前一次進場且事件當下低於 MA20，屬於固定加碼條件的違反。",
+            refs + ["decision_context.add_entry_condition", "event_indicator_snapshots.event_price_vs_ma20_pct"],
+        )
+        reasons.append(item)
+        what_needs_review.append(item)
+
+    stop_rule_violations = _unacted_stop_rule_break_events(
+        event_facts,
+        snapshot_by_key,
+        default_stop_rule,
+    )
+    if stop_rule_violations:
+        _append_label(labels, "unacted_stop_rule_break")
+        refs = _event_and_snapshot_refs(stop_rule_violations)
+        item = _text_item(
+            "預設停損規則為跌破 MA20，出場事件當下已低於 MA20，但沒有記錄已執行停損原因或計畫遵循，需檢討是否延遲處理。",
+            refs + ["decision_context.default_stop_rule", "event_facts.reason_code", "event_facts.plan_adherence"],
+        )
+        reasons.append(item)
+        what_needs_review.append(item)
+
+    holding_period_review = _holding_period_review(planned_holding_period, total_holding_days)
+    if holding_period_review is not None:
+        _append_label(labels, "holding_period_needs_review")
+        item = _text_item(
+            holding_period_review,
+            ["decision_context.planned_holding_period", "lifecycle_metrics.total_holding_days_from_first_entry"],
         )
         reasons.append(item)
         what_needs_review.append(item)
@@ -339,9 +406,13 @@ def _append_label(labels: list[str], label: str) -> None:
 def _primary_lifecycle_label(labels: list[str]) -> str:
     for label in (
         "premature_scale_out",
+        "unacted_stop_rule_break",
+        "add_entry_plan_violation",
         "late_scale_out",
         "averaging_down_into_weakness",
+        "holding_period_needs_review",
         "insufficient_data",
+        "ma20_pullback_supported",
         "risk_reduction_exit",
         "disciplined_scale_out",
         "coherent_position_management",
@@ -352,11 +423,18 @@ def _primary_lifecycle_label(labels: list[str]) -> str:
 
 
 def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
-    if primary_label in {"premature_scale_out", "late_scale_out", "averaging_down_into_weakness"}:
+    if primary_label in {
+        "premature_scale_out",
+        "unacted_stop_rule_break",
+        "add_entry_plan_violation",
+        "late_scale_out",
+        "averaging_down_into_weakness",
+        "holding_period_needs_review",
+    }:
         return "needs_review"
     if primary_label == "insufficient_data" or "insufficient_data" in labels:
         return "insufficient_context"
-    if primary_label in {"disciplined_scale_out", "coherent_position_management"}:
+    if primary_label in {"ma20_pullback_supported", "disciplined_scale_out", "coherent_position_management"}:
         return "constructive"
     return "mixed"
 
@@ -365,6 +443,10 @@ def _lifecycle_label_text(label: str) -> str:
     return {
         "insufficient_data": "資料不足",
         "averaging_down_into_weakness": "弱勢中攤平加碼",
+        "add_entry_plan_violation": "違反加碼計畫",
+        "ma20_pullback_supported": "拉回守住 MA20 支撐",
+        "unacted_stop_rule_break": "停損規則未明確執行",
+        "holding_period_needs_review": "持有週期需檢討",
         "disciplined_scale_out": "分批出場保護獲利",
         "risk_reduction_exit": "破位後降低風險",
         "premature_scale_out": "可能過早減碼",
@@ -396,10 +478,25 @@ def _event_evidence_item(event: dict[str, Any], snapshot: dict[str, Any] | None)
 
 def _next_operation_rules(labels: list[str], decision_context_insufficient: bool) -> list[dict[str, Any]]:
     rules: list[dict[str, Any]] = []
+    if "add_entry_plan_violation" in labels:
+        rules.append(_text_item(
+            "若計畫寫明不攤平，未來加碼前必須先確認價格沒有低於前次進場且仍守在 MA20 附近或上方。",
+            ["decision_context.add_entry_condition", "event_indicator_snapshots.event_price_vs_ma20_pct"],
+        ))
     if "averaging_down_into_weakness" in labels:
         rules.append(_text_item(
             "下次若要加碼虧損部位，應先記錄明確的轉強觸發條件，避免在弱勢中單純攤平。",
             ["entry_sequence.average_down_count", "entry_sequence.add_after_breakdown_count"],
+        ))
+    if "unacted_stop_rule_break" in labels:
+        rules.append(_text_item(
+            "若預設停損是跌破 MA20，出場或未出場的當下紀錄應明確標示停損原因與是否符合計畫。",
+            ["decision_context.default_stop_rule", "event_facts.reason_code", "event_facts.plan_adherence"],
+        ))
+    if "holding_period_needs_review" in labels:
+        rules.append(_text_item(
+            "下次建立計畫時，將預期持有週期與檢查節奏一起記錄，避免事後把短線、中線或長期計畫混用。",
+            ["decision_context.planned_holding_period", "lifecycle_metrics.total_holding_days_from_first_entry"],
         ))
     if "late_scale_out" in labels:
         rules.append(_text_item(
@@ -426,6 +523,90 @@ def _next_operation_rules(labels: list[str], decision_context_insufficient: bool
 
 def _event_fact_ref(event: dict[str, Any]) -> str:
     return f"event_facts.{event.get('event_key')}"
+
+
+def _event_and_snapshot_refs(events: list[dict[str, Any]]) -> list[str]:
+    refs: list[str] = []
+    for event in events:
+        refs.append(_event_fact_ref(event))
+        refs.append(f"event_indicator_snapshots.{event['event_key']}")
+    return _unique_refs(refs)
+
+
+def _ma20_pullback_support_events(
+    event_facts: list[dict[str, Any]],
+    snapshot_by_key: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    supported = []
+    for event in event_facts:
+        if event.get("event_type") not in ENTRY_TYPES:
+            continue
+        if event.get("reason_code") != "pullback_held_ma20":
+            continue
+        vs_ma20 = _number(snapshot_by_key.get(event["event_key"], {}).get("event_price_vs_ma20_pct"))
+        if vs_ma20 is not None and vs_ma20 >= -2.0:
+            supported.append(event)
+    return supported
+
+
+def _add_entry_plan_violation_events(
+    event_facts: list[dict[str, Any]],
+    snapshot_by_key: dict[str, dict[str, Any]],
+    add_entry_condition: Any,
+) -> list[dict[str, Any]]:
+    if add_entry_condition != "no_averaging_down":
+        return []
+    previous_entry_price = None
+    violations = []
+    for event in event_facts:
+        if event.get("event_type") not in ENTRY_TYPES:
+            continue
+        price = _number(event.get("price"))
+        if event.get("event_type") == "add_entry" and price is not None and previous_entry_price is not None:
+            vs_ma20 = _number(snapshot_by_key.get(event["event_key"], {}).get("event_price_vs_ma20_pct"))
+            if price < previous_entry_price and _is_negative(vs_ma20):
+                violations.append(event)
+        if price is not None:
+            previous_entry_price = price
+    return violations
+
+
+def _unacted_stop_rule_break_events(
+    event_facts: list[dict[str, Any]],
+    snapshot_by_key: dict[str, dict[str, Any]],
+    default_stop_rule: Any,
+) -> list[dict[str, Any]]:
+    if default_stop_rule != "break_ma20":
+        return []
+    acted_stop_reasons = {"ma20_lost", "stop_loss", "support_broken", "risk_reduction"}
+    violations = []
+    for event in event_facts:
+        if event.get("event_type") not in EXIT_TYPES:
+            continue
+        vs_ma20 = _number(snapshot_by_key.get(event["event_key"], {}).get("event_price_vs_ma20_pct"))
+        if not _is_negative(vs_ma20):
+            continue
+        if event.get("reason_code") in acted_stop_reasons:
+            continue
+        if event.get("plan_adherence") in {"yes", "partial"}:
+            continue
+        violations.append(event)
+    return violations
+
+
+def _holding_period_review(planned_holding_period: Any, total_holding_days: Any) -> str | None:
+    days = _number(total_holding_days)
+    if planned_holding_period in {None, "not_recorded"} or days is None:
+        return None
+    if planned_holding_period == "short_term" and days > 30:
+        return "計畫持有週期為短線，但實際持有天數明顯超過短線範圍；這不是硬性錯誤，但需要檢討是否有更新計畫。"
+    if planned_holding_period == "swing" and (days < 5 or days > 90):
+        return "計畫持有週期為波段，但實際持有天數落在波段常見範圍外；需檢討出場節奏是否符合原先檢查週期。"
+    if planned_holding_period == "medium_term" and (days < 14 or days > 150):
+        return "計畫持有週期為中線，但實際持有天數與中線計畫差距較大；需檢討是否有紀錄策略轉換。"
+    if planned_holding_period == "long_term" and days < 30:
+        return "計畫持有週期為長期，但實際持有時間偏短；這只能標示為需檢討，不能直接判定出場錯誤。"
+    return None
 
 
 def _text_item(text: str, source_refs: list[str]) -> dict[str, Any]:
@@ -1039,12 +1220,23 @@ def _market_regime_snapshots(snapshots: list[dict[str, Any]]) -> list[dict[str, 
 def _build_decision_context(plan: Any, data_quality: dict[str, Any]) -> dict[str, Any]:
     if plan is None:
         _add_note(data_quality, "decision_context", "No PositionLifecyclePlan row was available; decision context is insufficient.")
-        return {"status": "insufficient", "has_plan": False, "source": None, "created_after_entry": None}
+        return {
+            "status": "insufficient",
+            "has_plan": False,
+            "source": None,
+            "created_after_entry": None,
+            "planned_holding_period": None,
+            "default_stop_rule": None,
+            "add_entry_condition": None,
+        }
     return {
         "status": "present",
         "has_plan": True,
         "source": _event_value(plan, "source"),
         "created_after_entry": _event_value(plan, "created_after_entry"),
+        "planned_holding_period": _event_value(plan, "planned_holding_period"),
+        "default_stop_rule": _event_value(plan, "default_stop_rule"),
+        "add_entry_condition": _event_value(plan, "add_entry_condition"),
     }
 
 

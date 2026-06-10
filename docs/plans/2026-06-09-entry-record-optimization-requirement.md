@@ -47,14 +47,14 @@ The system must not infer user intent from price movement, PnL, or later outcome
 
 ## Minimal User Input
 
-When creating a new position, the user should provide four additional fields:
+When creating a new position, the user should provide four fixed-option primary fields:
 
 1. Entry reason
 2. Planned holding period
 3. Default stop rule
 4. Add-entry condition
 
-These fields should use fixed options. Optional notes may exist, but they are secondary and must not replace fixed options.
+These four fields are the minimum required entry context. Optional notes may exist, but they are secondary only. A note cannot satisfy, replace, or override the fixed options, and it must not become the primary data source for review.
 
 ## Fixed Option Taxonomy
 
@@ -160,9 +160,11 @@ The system should preserve provenance:
 | `manual_record_correction` | User corrected a record manually. |
 | `not_recorded` | Context was not recorded. |
 
-Backfilled plans must not be treated as original pre-entry plans.
+Backfilled plans can improve future review quality, but they must not be treated as original entry-time intent.
 
 ## Review Semantics
+
+Post-trade behavior review and original strategy correctness review are different questions. Existing lifecycle review can evaluate what happened after entry. Original strategy correctness requires fixed-option context recorded at event time and must not be inferred from price movement, PnL, or later outcomes.
 
 With this requirement, future lifecycle review can distinguish:
 
@@ -172,11 +174,13 @@ With this requirement, future lifecycle review can distinguish:
 - strategy failure vs execution deviation
 - insufficient context vs recorded plan followed
 
-If fixed fields are missing, lifecycle review should continue to work but must show:
+If fixed event-time fields are missing, lifecycle review should continue to work but must show:
 
 ```text
 decision_context: insufficient
 ```
+
+This remains true when only optional notes exist, provenance is `synthetic_from_portfolio_row` or `not_recorded`, or the plan was backfilled after entry.
 
 ## Phased Delivery
 
@@ -187,10 +191,11 @@ Goal:
 - Finalize this requirement document.
 - Confirm fixed options and non-goals.
 - Do not touch backend or frontend implementation.
+- Do not add migrations, change API behavior, promote this to docs/specs, or execute Phase A, B, C, D, E, or F.
 
 Expected outcome:
 
-- This document becomes the source of truth for later implementation prompts.
+- This documentation-only phase makes the requirement precise enough for later implementation prompts.
 
 ### Phase A: Fixed Option Taxonomy And Validation Contract
 
@@ -275,11 +280,25 @@ Expected outcome:
 | Persist backfilled plans as original intent | No | Prevents false historical accuracy. |
 | Infer add-entry from portfolio edit | No | Avoids accidental intent creation. |
 | Promote immediately to specs | No | Keep in docs/plans until behavior stabilizes. |
+| Keep `entry_reason` single-select | Yes | Matches the implemented scalar enum contract and keeps entry capture lightweight. |
+| Keep `add_entry_condition` single-select | Yes | Matches the implemented scalar enum contract and avoids ambiguous plan-adherence interpretation. |
+| Split `no_averaging_down` into a standalone toggle | No | Keep it as one `add_entry_condition` option for v1; revisit only if product needs independent scale-in policy controls. |
+| Store system-derived stop reference price at entry time | No for v1 | Store the fixed stop rule enum only; reference prices can be recomputed from point-in-time market data and should not be promoted until explicitly implemented. |
+| Import `/analyze` action plan into entry form | No for v1 | Avoid converting system suggestions into user intent; any future prefill must require explicit user confirmation before saving. |
 
-## Open Questions
+## Resolved Phase F Follow-Up Questions
 
-1. Should `entry_reason` be single-select only in v1?
-2. Should `add_entry_condition` allow multiple selections?
-3. Should `no_averaging_down` be a standalone toggle rather than an option?
-4. Should system-derived stop rules store the computed reference price at entry time?
-5. Should `/analyze` action_plan be optionally imported into the entry form as prefilled values?
+### Phase F Promotion Review Result
+
+Completed on 2026-06-10 after Phase A-E behavior stabilized. The following implemented contracts were promoted to durable specs:
+
+- `docs/specs/backend-api-technical-spec.md` now records the stable API/schema contracts for `entry_record` on `POST /portfolio`, `GET /portfolio/decision-context-status`, `GET /portfolio/{portfolio_id}/lifecycle-plan`, `PUT /portfolio/{portfolio_id}/lifecycle-plan/backfill`, `POST /portfolio/{portfolio_id}/add-entry`, `GET /portfolio/groups/{position_group_id}/events`, and lifecycle review `decision_context` fixed-option fields.
+- `docs/specs/ai-stock-sentinel-architecture-spec.md` now records the stable architecture semantics for fixed-options-first entry context, optional notes as secondary data, provenance, backfilled plan caveats, `decision_context: insufficient`, deterministic lifecycle labels, raw-score visibility, and the no-LLM intent inference boundary.
+
+The discussion context in this plan remains intact. The product/design questions below were resolved after Phase F and should not be treated as new implementation scope.
+
+1. `entry_reason` remains single-select in v1.
+2. `add_entry_condition` remains single-select in v1.
+3. `no_averaging_down` remains an `add_entry_condition` option, not a standalone toggle.
+4. System-derived stop rules do not store computed entry-time reference prices in v1.
+5. `/analyze` action plan is not imported into the entry form in v1; future prefill, if added, must require explicit user confirmation before saving user intent.

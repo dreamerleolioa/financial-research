@@ -85,6 +85,10 @@ POSITION_EVENT_ENTRY_REASON_CODES = (
     "pullback_held_ma20",
     "institutional_flow_strengthened",
     "fundamental_thesis_improved",
+    "event_or_news_catalyst",
+    "long_term_accumulation",
+    "value_revaluation",
+    "other",
     "planned_scale_in",
     "averaging_down",
     "chasing_momentum",
@@ -140,6 +144,30 @@ POSITION_LIFECYCLE_HOLDING_PERIODS = (
     "swing",
     "medium_term",
     "long_term",
+    "not_recorded",
+)
+
+POSITION_LIFECYCLE_DEFAULT_STOP_RULES = (
+    "break_20d_low",
+    "break_ma20",
+    "break_ma60",
+    "cost_minus_pct",
+    "fixed_price",
+    "no_stop_recorded",
+    "not_recorded",
+)
+
+POSITION_LIFECYCLE_ADD_ENTRY_CONDITIONS = (
+    "no_add_entry",
+    "breakout_above_prior_high",
+    "pullback_holds_ma20",
+    "pullback_holds_support",
+    "institutional_flow_continues",
+    "profit_threshold_reached",
+    "data_quality_complete_only",
+    "no_averaging_down",
+    "custom_plan_required",
+    "not_recorded",
 )
 
 
@@ -217,6 +245,14 @@ class PositionLifecyclePlan(Base):
             name="ck_position_lifecycle_plan_holding_period",
         ),
         CheckConstraint(
+            _nullable_in_constraint("default_stop_rule", POSITION_LIFECYCLE_DEFAULT_STOP_RULES),
+            name="ck_position_lifecycle_plan_default_stop_rule",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("add_entry_condition", POSITION_LIFECYCLE_ADD_ENTRY_CONDITIONS),
+            name="ck_position_lifecycle_plan_add_entry_condition",
+        ),
+        CheckConstraint(
             "source IN ('synthetic_from_portfolio_row', 'user_backfilled', 'user_recorded_at_event_time', 'manual_record_correction', 'not_recorded')",
             name="ck_position_lifecycle_plan_source",
         ),
@@ -233,6 +269,8 @@ class PositionLifecyclePlan(Base):
     thesis: Mapped[str | None] = mapped_column(Text, nullable=True)
     setup_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     planned_holding_period: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    default_stop_rule: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    add_entry_condition: Mapped[str | None] = mapped_column(String(40), nullable=True)
     planned_invalidation: Mapped[str | None] = mapped_column(Text, nullable=True)
     planned_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     planned_target_or_scale_out_rule: Mapped[str | None] = mapped_column(Text, nullable=True)

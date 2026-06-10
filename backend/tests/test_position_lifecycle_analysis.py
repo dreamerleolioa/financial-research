@@ -109,7 +109,10 @@ def _plan(**overrides):
         "symbol": "2330.TW",
         "planned_risk_amount": 200,
         "planned_stop_price": 90,
-        "source": "user_backfilled",
+        "planned_holding_period": None,
+        "default_stop_rule": None,
+        "add_entry_condition": None,
+        "source": "user_recorded_at_event_time",
         "created_after_entry": False,
         "thesis": "excluded thesis",
         "planned_invalidation": "excluded invalidation",
@@ -218,6 +221,52 @@ def test_entry_and_exit_sequence_metrics():
     assert exit_sequence["percentage_sold_after_breakdown"] == pytest.approx(75)
     assert exit_sequence["profit_protected_by_partial_exits"] == pytest.approx(121.25)
     assert exit_sequence["residual_position_giveback_pct"] == pytest.approx(0)
+
+
+def test_entry_sequence_add_entry_count_is_zero_for_initial_entry_only():
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[_event(1, "initial_entry", date(2026, 1, 10), 100, 10)],
+        market_rows=[_snapshot_row(date(2026, 1, 10), list(range(81, 101)))],
+    )
+
+    assert result["entry_sequence"]["entry_count"] == 1
+    assert result["entry_sequence"]["add_entry_count"] == 0
+
+
+def test_entry_sequence_add_entry_count_counts_multiple_explicit_add_entries():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10),
+        _event(2, "add_entry", date(2026, 1, 11), 105, 5, plan_adherence="yes", reason_code="planned_scale_in"),
+        _event(3, "add_entry", date(2026, 1, 12), 95, 5, plan_adherence="no", reason_code="averaging_down"),
+        _event(4, "partial_exit", date(2026, 1, 13), 110, 5),
+        _event(5, "manual_adjustment", date(2026, 1, 14), 108, 1),
+    ]
+
+    result, evidence = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), list(range(81, 101))),
+            _snapshot_row(date(2026, 1, 11), list(range(86, 106))),
+            _snapshot_row(date(2026, 1, 12), list(range(76, 96))),
+            _snapshot_row(date(2026, 1, 13), list(range(91, 111))),
+            _snapshot_row(date(2026, 1, 14), list(range(89, 109))),
+        ],
+    )
+
+    assert result["entry_sequence"]["entry_count"] == 3
+    assert result["entry_sequence"]["add_entry_count"] == 2
+    assert evidence["metrics"]["entry_sequence"]["add_entry_count"] == 2
+    assert [event["event_type"] for event in evidence["events"]] == [
+        "initial_entry",
+        "add_entry",
+        "add_entry",
+        "partial_exit",
+        "manual_adjustment",
+    ]
 
 
 def test_advanced_internal_risk_path_and_scores():
@@ -374,6 +423,9 @@ def test_insufficient_market_data_preserves_ledger_metrics_and_marks_context_ins
         "has_plan": False,
         "source": None,
         "created_after_entry": None,
+        "planned_holding_period": None,
+        "default_stop_rule": None,
+        "add_entry_condition": None,
     }
     assert evidence["metrics"]["advanced_internal"]["planned_1r_amount"] is None
     assert "intent" not in str(evidence).lower()
@@ -417,6 +469,199 @@ def test_lifecycle_review_classifies_phase_d_patterns_and_template_refs():
     assert any("減碼或出場觸發條件" in item["text"] for item in review["next_operation_rules"])
     assert any("資料品質" in item["text"] for item in review["data_quality_notes"])
     assert any("發生 initial_entry" in item["text"] for item in review["event_level_evidence"])
+
+
+def test_lifecycle_review_includes_backfilled_plan_provenance_caveat():
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=_base_events(),
+        market_rows=_base_rows(),
+        plan=_plan(source="user_backfilled", created_after_entry=True),
+    )
+
+    review = result["lifecycle_review"]
+    assert result["decision_context"] == {
+        "status": "present",
+        "has_plan": True,
+        "source": "user_backfilled",
+        "created_after_entry": True,
+        "planned_holding_period": None,
+        "default_stop_rule": None,
+        "add_entry_condition": None,
+    }
+    assert any("事後補填" in caveat["text"] for caveat in review["classification"]["caveats"])
+    assert any("不視為原始進場" in item["text"] for item in review["data_quality_notes"])
+
+
+def test_lifecycle_review_phase_e_no_averaging_down_plan_flags_lower_add_below_ma20():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0),
+        _event(2, "add_entry", date(2026, 1, 11), 95, 5, fees=0, taxes=0),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 20),
+            _snapshot_row(date(2026, 1, 11), [100] * 19 + [95]),
+        ],
+        plan=_plan(add_entry_condition="no_averaging_down"),
+    )
+
+    review = result["lifecycle_review"]
+    assert result["decision_context"]["add_entry_condition"] == "no_averaging_down"
+    assert review["classification"]["tier"] == "needs_review"
+    assert "add_entry_plan_violation" in review["classification"]["labels"]
+    assert any("加碼條件記錄為不攤平" in item["text"] for item in review["classification"]["reasons"])
+    assert any("event_facts.id:2" in item["source_refs"] for item in review["classification"]["reasons"])
+    assert _all_text_items_have_source_refs(review)
+
+
+def test_lifecycle_review_phase_e_pullback_held_ma20_reason_adds_traceable_positive_support():
+    events = [
+        _event(
+            1,
+            "initial_entry",
+            date(2026, 1, 10),
+            101,
+            10,
+            fees=0,
+            taxes=0,
+            reason_code="pullback_held_ma20",
+        ),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[_snapshot_row(date(2026, 1, 10), [100] * 19 + [101])],
+        plan=_plan(),
+    )
+
+    review = result["lifecycle_review"]
+    assert "ma20_pullback_supported" in review["classification"]["labels"]
+    assert any("拉回守住 MA20" in item["text"] for item in review["classification"]["reasons"])
+    assert any("拉回守住 MA20" in item["text"] for item in review["what_worked"])
+    support_reason = next(item for item in review["classification"]["reasons"] if "拉回守住 MA20" in item["text"])
+    assert "event_facts.id:1" in support_reason["source_refs"]
+    assert "event_indicator_snapshots.id:1" in support_reason["source_refs"]
+
+
+def test_lifecycle_review_phase_e_break_ma20_stop_rule_without_acted_context_needs_review():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "full_exit", date(2026, 1, 11), 101, 10, fees=0, taxes=0),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 20),
+            _snapshot_row(date(2026, 1, 11), [105] * 19 + [101]),
+        ],
+        plan=_plan(default_stop_rule="break_ma20"),
+    )
+
+    review = result["lifecycle_review"]
+    assert result["decision_context"]["default_stop_rule"] == "break_ma20"
+    assert review["classification"]["tier"] == "needs_review"
+    assert "unacted_stop_rule_break" in review["classification"]["labels"]
+    assert any("預設停損規則為跌破 MA20" in item["text"] for item in review["what_needs_review"])
+
+
+def test_lifecycle_review_phase_e_planned_holding_period_needs_review_without_hard_judgment():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "full_exit", date(2026, 3, 20), 112, 10, fees=0, taxes=0, plan_adherence="partial"),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 20),
+            _snapshot_row(date(2026, 3, 20), [112] * 20),
+        ],
+        plan=_plan(planned_holding_period="short_term"),
+    )
+
+    review = result["lifecycle_review"]
+    assert result["decision_context"]["planned_holding_period"] == "short_term"
+    assert "holding_period_needs_review" in review["classification"]["labels"]
+    assert review["classification"]["tier"] == "needs_review"
+    assert any("不是硬性錯誤" in item["text"] for item in review["classification"]["reasons"])
+    assert any(
+        "decision_context.planned_holding_period" in item["source_refs"]
+        for item in review["classification"]["reasons"]
+    )
+
+
+def test_lifecycle_review_phase_e_missing_decision_context_does_not_hard_judge_fixed_option_violations():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0),
+        _event(2, "full_exit", date(2026, 1, 11), 101, 10, fees=0, taxes=0),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 20),
+            _snapshot_row(date(2026, 1, 11), [105] * 19 + [101]),
+        ],
+        plan=None,
+    )
+
+    classification = result["lifecycle_review"]["classification"]
+    assert result["decision_context"] == {
+        "status": "insufficient",
+        "has_plan": False,
+        "source": None,
+        "created_after_entry": None,
+        "planned_holding_period": None,
+        "default_stop_rule": None,
+        "add_entry_condition": None,
+    }
+    assert classification["primary_label"] == "insufficient_data"
+    assert classification["tier"] == "insufficient_context"
+    assert "add_entry_plan_violation" not in classification["labels"]
+    assert "unacted_stop_rule_break" not in classification["labels"]
+
+
+def test_lifecycle_review_phase_e_backfilled_plan_keeps_provenance_caveat_with_fixed_facts():
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=_base_events(),
+        market_rows=_base_rows(),
+        plan=_plan(
+            source="user_backfilled",
+            created_after_entry=True,
+            planned_holding_period="swing",
+            default_stop_rule="break_ma20",
+            add_entry_condition="no_averaging_down",
+        ),
+    )
+
+    assert result["decision_context"] == {
+        "status": "present",
+        "has_plan": True,
+        "source": "user_backfilled",
+        "created_after_entry": True,
+        "planned_holding_period": "swing",
+        "default_stop_rule": "break_ma20",
+        "add_entry_condition": "no_averaging_down",
+    }
+    assert any("事後補填" in caveat["text"] for caveat in result["lifecycle_review"]["classification"]["caveats"])
+    assert not _contains_forbidden_key(result)
 
 
 def test_lifecycle_review_premature_scale_out_requires_recorded_context():

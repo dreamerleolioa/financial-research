@@ -187,6 +187,158 @@ def test_update_portfolio_does_not_write_add_entry_event(
     assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
 
 
+def test_add_entry_endpoint_creates_add_entry_event_and_updates_active_row(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-entry",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-10",
+        "price": 1000.0,
+        "quantity": 50,
+        "fees": 20.0,
+        "taxes": 0.0,
+        "reason_code": "planned_scale_in",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
+        "note": "confirmed scale-in",
+    })
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert set(data) == {"portfolio", "event"}
+    assert data["portfolio"] == {
+        "id": 42,
+        "symbol": "2330.TW",
+        "entry_price": 933.33,
+        "quantity": 150,
+        "entry_date": "2026-01-01",
+        "notes": None,
+    }
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.event_type == "add_entry"
+    assert event.source == "user_recorded_at_event_time"
+    assert event.source_portfolio_id == 42
+    assert event.event_date == date(2026, 1, 10)
+    assert float(event.price) == 1000.0
+    assert event.quantity == 50
+    assert float(event.fees) == 20.0
+    assert float(event.taxes) == 0.0
+    assert event.reason_category == "plan_execution"
+    assert event.reason_code == "planned_scale_in"
+    assert event.plan_adherence == "yes"
+    assert event.confidence_level == "high"
+    assert event.note == "confirmed scale-in"
+    item = portfolio_db_session.get(UserPortfolio, 42)
+    assert item.quantity == 150
+    assert float(item.entry_price) == 933.33
+
+
+def test_add_entry_endpoint_can_save_plan_adherence_no_for_condition_violation(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-entry-no",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-10",
+        "price": 850.0,
+        "quantity": 20,
+        "reason_code": "averaging_down",
+        "plan_adherence": "no",
+        "confidence_level": "low",
+    })
+
+    assert resp.status_code == 201
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.event_type == "add_entry"
+    assert event.reason_code == "averaging_down"
+    assert event.plan_adherence == "no"
+    assert event.confidence_level == "low"
+    assert event.source == "user_recorded_at_event_time"
+
+
+def test_add_entry_endpoint_rejects_invalid_fixed_option_without_event(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-entry-invalid",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-10",
+        "price": 1000.0,
+        "quantity": 50,
+        "reason_code": "price_went_down",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
+    })
+
+    assert resp.status_code == 422
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+
+
+def test_add_entry_endpoint_rejects_closed_position_without_event(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-entry-closed",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 5),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-10",
+        "price": 1000.0,
+        "quantity": 50,
+        "reason_code": "planned_scale_in",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
+    })
+
+    assert resp.status_code == 409
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+
+
 def test_update_portfolio_forbidden():
     """非持倉擁有者呼叫 PUT /portfolio/{id} 應回傳 403。"""
     item = _make_portfolio_item(user_id=99)
@@ -629,12 +781,263 @@ def test_decision_context_status_reads_user_backfilled_plan(
     assert resp.status_code == 200
     data = resp.json()["42"]
     assert data["has_operation_plan"] is True
-    assert data["operation_plan_status"] == "present"
+    assert data["operation_plan_status"] == "backfilled"
     assert data["missing_operation_plan"] is False
     assert data["decision_context"] == "present"
     assert data["source"] == "user_backfilled"
     assert data["created_after_entry"] is True
     assert data["planned_invalidation_present"] is True
+
+
+def test_decision_context_status_reads_event_time_plan_as_present(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-present-plan",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-present-plan",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_holding_period="swing",
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/decision-context-status")
+
+    assert resp.status_code == 200
+    data = resp.json()["42"]
+    assert data["operation_plan_status"] == "present"
+    assert data["decision_context"] == "present"
+    assert data["source"] == "user_recorded_at_event_time"
+    assert data["created_after_entry"] is False
+
+
+def test_backfill_lifecycle_plan_saves_user_backfilled_provenance(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-backfill-save",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42/lifecycle-plan/backfill", json={
+        "thesis": "Breakout continuation recorded after entry.",
+        "setup_type": "breakout",
+        "planned_holding_period": "swing",
+        "default_stop_rule": "break_ma20",
+        "add_entry_condition": "pullback_holds_ma20",
+        "planned_invalidation": "Close below MA20 with distribution.",
+        "planned_stop_price": 880.0,
+        "planned_target_or_scale_out_rule": "Trim near prior resistance.",
+        "planned_risk_amount": 5000.0,
+        "planned_risk_pct": 1.25,
+        "position_sizing_rationale": "Initial probe only.",
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["portfolio_id"] == 42
+    assert data["position_group_id"] == "group-backfill-save"
+    assert data["source"] == "user_backfilled"
+    assert data["created_after_entry"] is True
+    assert data["setup_type"] == "breakout"
+    assert data["planned_holding_period"] == "swing"
+    assert data["default_stop_rule"] == "break_ma20"
+    assert data["add_entry_condition"] == "pullback_holds_ma20"
+    assert data["planned_stop_price"] == 880.0
+    assert data["planned_risk_amount"] == 5000.0
+    assert data["planned_risk_pct"] == 1.25
+    plan = portfolio_db_session.execute(select(PositionLifecyclePlan)).scalar_one()
+    assert plan.source == "user_backfilled"
+    assert plan.created_after_entry is True
+    assert plan.source_portfolio_id == 42
+
+
+def test_backfill_lifecycle_plan_rejects_invalid_fixed_option_without_plan(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-backfill-invalid",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42/lifecycle-plan/backfill", json={
+        "setup_type": "price_went_down",
+    })
+
+    assert resp.status_code == 422
+    assert portfolio_db_session.execute(select(PositionLifecyclePlan)).scalars().all() == []
+
+
+def test_backfill_lifecycle_plan_does_not_replace_event_time_plan(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-original-plan",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-original-plan",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_holding_period="swing",
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42/lifecycle-plan/backfill", json={
+        "planned_holding_period": "long_term",
+    })
+
+    assert resp.status_code == 409
+    plan = portfolio_db_session.execute(select(PositionLifecyclePlan)).scalar_one()
+    assert plan.source == "user_recorded_at_event_time"
+    assert plan.created_after_entry is False
+    assert plan.planned_holding_period == "swing"
+
+
+def test_missing_lifecycle_plan_does_not_block_close_or_lifecycle_review(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        portfolio_router_module,
+        "build_position_lifecycle_analysis",
+        lambda _db, *, user_id, position_group_id: _lifecycle_payload(position_group_id),
+    )
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-missing-nonblocking",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    close_resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+    })
+    lifecycle_resp = portfolio_db_client.post("/portfolio/groups/group-missing-nonblocking/lifecycle-review")
+
+    assert close_resp.status_code == 200
+    assert lifecycle_resp.status_code == 200
+    assert portfolio_db_session.execute(select(PositionLifecyclePlan)).scalars().all() == []
+
+
+def test_lifecycle_plan_endpoint_exposes_original_add_entry_condition_without_changing_list_shape(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-condition",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-add-condition",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        add_entry_condition="no_averaging_down",
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.commit()
+
+    list_resp = portfolio_db_client.get("/portfolio")
+    plan_resp = portfolio_db_client.get("/portfolio/42/lifecycle-plan")
+
+    assert list_resp.status_code == 200
+    assert set(list_resp.json()[0]) == {"id", "symbol", "entry_price", "quantity", "entry_date", "notes"}
+    assert plan_resp.status_code == 200
+    assert plan_resp.json() == {
+        "portfolio_id": 42,
+        "position_group_id": "group-add-condition",
+        "symbol": "2330.TW",
+        "thesis": None,
+        "setup_type": None,
+        "planned_holding_period": None,
+        "default_stop_rule": None,
+        "add_entry_condition": "no_averaging_down",
+        "planned_invalidation": None,
+        "planned_stop_price": None,
+        "planned_target_or_scale_out_rule": None,
+        "planned_risk_amount": None,
+        "planned_risk_pct": None,
+        "position_sizing_rationale": None,
+        "source": "user_recorded_at_event_time",
+        "created_after_entry": False,
+    }
+
+
+def test_lifecycle_plan_endpoint_returns_null_add_entry_condition_when_plan_missing(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-no-plan",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/42/lifecycle-plan")
+
+    assert resp.status_code == 200
+    assert resp.json()["add_entry_condition"] is None
 
 
 def test_position_group_events_returns_owned_timeline_in_stable_chronological_order(
@@ -856,6 +1259,151 @@ def test_add_portfolio_persists_initial_entry_event_and_response_shape(
     assert float(event.price) == 900.0
     assert float(event.fees) == 0.0
     assert float(event.taxes) == 0.0
+
+
+def test_add_portfolio_with_entry_record_persists_event_time_context(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+        "notes": "legacy note",
+        "entry_record": {
+            "entry_reason": "breakout_confirmation",
+            "planned_holding_period": "swing",
+            "default_stop_rule": "break_ma20",
+            "add_entry_condition": "pullback_holds_ma20",
+            "note": "event-time note",
+        },
+    })
+
+    assert resp.status_code == 201
+    assert set(resp.json()) == {"id", "symbol"}
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.event_type == "initial_entry"
+    assert event.reason_code == "breakout_confirmation"
+    assert event.reason_category == "technical"
+    assert event.source == "user_recorded_at_event_time"
+    assert event.note == "event-time note"
+    plan = portfolio_db_session.execute(select(PositionLifecyclePlan)).scalar_one()
+    assert plan.planned_holding_period == "swing"
+    assert plan.default_stop_rule == "break_ma20"
+    assert plan.add_entry_condition == "pullback_holds_ma20"
+    assert plan.source == "user_recorded_at_event_time"
+    assert plan.created_after_entry is False
+
+
+def test_add_portfolio_without_entry_record_does_not_create_lifecycle_plan_or_intent_defaults(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+        "notes": "legacy note",
+    })
+
+    assert resp.status_code == 201
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.note == "legacy note"
+    assert event.reason_category is None
+    assert event.reason_code is None
+    assert portfolio_db_session.execute(select(PositionLifecyclePlan)).scalars().all() == []
+
+
+def test_add_portfolio_entry_record_not_recorded_preserves_explicit_not_recorded_category(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+        "entry_record": {
+            "entry_reason": "not_recorded",
+            "note": "User mentioned breakout in free text only.",
+        },
+    })
+
+    assert resp.status_code == 201
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.reason_category == "not_recorded"
+    assert event.reason_code is None
+
+
+def test_add_portfolio_entry_record_note_does_not_infer_fixed_options(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+        "entry_record": {
+            "planned_holding_period": "medium_term",
+            "note": "Breakout above prior high, stop below MA20, add on pullback.",
+        },
+    })
+
+    assert resp.status_code == 201
+    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    assert event.note == "Breakout above prior high, stop below MA20, add on pullback."
+    assert event.reason_category is None
+    assert event.reason_code is None
+    plan = portfolio_db_session.execute(select(PositionLifecyclePlan)).scalar_one()
+    assert plan.planned_holding_period == "medium_term"
+    assert plan.default_stop_rule is None
+    assert plan.add_entry_condition is None
+
+
+def test_add_portfolio_rejects_invalid_entry_record_fixed_option(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 100,
+        "entry_record": {"default_stop_rule": "trailing_stop"},
+    })
+
+    assert resp.status_code == 422
+    assert portfolio_db_session.execute(select(UserPortfolio)).scalars().all() == []
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+    assert portfolio_db_session.execute(select(PositionLifecyclePlan)).scalars().all() == []
 
 
 def test_close_without_manual_tax_keeps_row_compatible_and_calculates_event_tax(

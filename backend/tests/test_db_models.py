@@ -11,6 +11,8 @@ from ai_stock_sentinel.db.models import (
     POSITION_EVENT_EXIT_REASON_CODES,
     POSITION_EVENT_PLAN_ADHERENCE_VALUES,
     POSITION_EVENT_REASON_CATEGORIES,
+    POSITION_LIFECYCLE_ADD_ENTRY_CONDITIONS,
+    POSITION_LIFECYCLE_DEFAULT_STOP_RULES,
     POSITION_LIFECYCLE_HOLDING_PERIODS,
     POSITION_LIFECYCLE_SETUP_TYPES,
     POSITION_EVENT_SOURCES,
@@ -257,7 +259,8 @@ def test_position_lifecycle_plan_model_fields_allowed_values_and_indexes() -> No
 
     assert {
         "id", "user_id", "position_group_id", "symbol", "source_portfolio_id",
-        "thesis", "setup_type", "planned_holding_period", "planned_invalidation",
+        "thesis", "setup_type", "planned_holding_period", "default_stop_rule",
+        "add_entry_condition", "planned_invalidation",
         "planned_stop_price", "planned_target_or_scale_out_rule", "planned_risk_amount",
         "planned_risk_pct", "position_sizing_rationale", "source", "created_after_entry",
         "created_at", "updated_at",
@@ -268,6 +271,8 @@ def test_position_lifecycle_plan_model_fields_allowed_values_and_indexes() -> No
     assert index_columns["idx_position_lifecycle_plan_symbol"] == ("symbol",)
     assert all(setup_type in check_constraints["ck_position_lifecycle_plan_setup_type"] for setup_type in POSITION_LIFECYCLE_SETUP_TYPES)
     assert all(period in check_constraints["ck_position_lifecycle_plan_holding_period"] for period in POSITION_LIFECYCLE_HOLDING_PERIODS)
+    assert all(rule in check_constraints["ck_position_lifecycle_plan_default_stop_rule"] for rule in POSITION_LIFECYCLE_DEFAULT_STOP_RULES)
+    assert all(condition in check_constraints["ck_position_lifecycle_plan_add_entry_condition"] for condition in POSITION_LIFECYCLE_ADD_ENTRY_CONDITIONS)
     assert all(source in check_constraints["ck_position_lifecycle_plan_source"] for source in POSITION_EVENT_SOURCES)
 
 
@@ -283,6 +288,8 @@ def test_position_lifecycle_plan_intent_sensitive_fields_are_nullable() -> None:
     assert plan.thesis is None
     assert plan.setup_type is None
     assert plan.planned_holding_period is None
+    assert plan.default_stop_rule is None
+    assert plan.add_entry_condition is None
     assert plan.planned_invalidation is None
     assert plan.planned_stop_price is None
     assert plan.planned_risk_pct is None

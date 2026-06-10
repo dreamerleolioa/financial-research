@@ -111,6 +111,66 @@ export interface TradeReviewResponse {
   updated_at: string;
 }
 
+export const ENTRY_RECORD_REASON_VALUES = [
+  'breakout_confirmation',
+  'pullback_held_support',
+  'pullback_held_ma20',
+  'institutional_flow_strengthened',
+  'fundamental_thesis_improved',
+  'event_or_news_catalyst',
+  'long_term_accumulation',
+  'value_revaluation',
+  'other',
+  'not_recorded',
+] as const;
+
+export type EntryRecordReason = (typeof ENTRY_RECORD_REASON_VALUES)[number];
+
+export const PLANNED_HOLDING_PERIOD_VALUES = [
+  'short_term',
+  'swing',
+  'medium_term',
+  'long_term',
+  'not_recorded',
+] as const;
+
+export type PlannedHoldingPeriod = (typeof PLANNED_HOLDING_PERIOD_VALUES)[number];
+
+export const DEFAULT_STOP_RULE_VALUES = [
+  'break_20d_low',
+  'break_ma20',
+  'break_ma60',
+  'cost_minus_pct',
+  'fixed_price',
+  'no_stop_recorded',
+  'not_recorded',
+] as const;
+
+export type DefaultStopRule = (typeof DEFAULT_STOP_RULE_VALUES)[number];
+
+export const ADD_ENTRY_CONDITION_VALUES = [
+  'no_add_entry',
+  'breakout_above_prior_high',
+  'pullback_holds_ma20',
+  'pullback_holds_support',
+  'institutional_flow_continues',
+  'profit_threshold_reached',
+  'data_quality_complete_only',
+  'no_averaging_down',
+  'custom_plan_required',
+  'not_recorded',
+] as const;
+
+export type AddEntryCondition = (typeof ADD_ENTRY_CONDITION_VALUES)[number];
+
+export interface EntryRecordContext {
+  entry_reason?: EntryRecordReason | null;
+  planned_holding_period?: PlannedHoldingPeriod | null;
+  default_stop_rule?: DefaultStopRule | null;
+  add_entry_condition?: AddEntryCondition | null;
+  note?: string | null;
+}
+
 export type ReasonCategory =
   | 'technical'
   | 'institutional_flow'
@@ -122,16 +182,41 @@ export type ReasonCategory =
   | 'record_correction'
   | 'not_recorded';
 
-export type EntryReasonCode =
-  | 'breakout_confirmation'
-  | 'pullback_held_support'
-  | 'pullback_held_ma20'
-  | 'institutional_flow_strengthened'
-  | 'fundamental_thesis_improved'
-  | 'planned_scale_in'
-  | 'averaging_down'
-  | 'chasing_momentum'
-  | 'manual_record_correction';
+export const ENTRY_REASON_CODE_VALUES = [
+  'breakout_confirmation',
+  'pullback_held_support',
+  'pullback_held_ma20',
+  'institutional_flow_strengthened',
+  'fundamental_thesis_improved',
+  'event_or_news_catalyst',
+  'long_term_accumulation',
+  'value_revaluation',
+  'other',
+  'planned_scale_in',
+  'averaging_down',
+  'chasing_momentum',
+  'manual_record_correction',
+] as const;
+
+export type EntryReasonCode = (typeof ENTRY_REASON_CODE_VALUES)[number];
+
+export const ADD_ENTRY_REASON_CODE_VALUES = [
+  'breakout_confirmation',
+  'pullback_held_support',
+  'pullback_held_ma20',
+  'institutional_flow_strengthened',
+  'fundamental_thesis_improved',
+  'event_or_news_catalyst',
+  'long_term_accumulation',
+  'value_revaluation',
+  'other',
+  'planned_scale_in',
+  'averaging_down',
+  'chasing_momentum',
+  'not_recorded',
+] as const;
+
+export type AddEntryReasonCode = (typeof ADD_ENTRY_REASON_CODE_VALUES)[number];
 
 export type ExitReasonCode =
   | 'target_reached'
@@ -148,9 +233,13 @@ export type ExitReasonCode =
   | 'emotional_exit'
   | 'manual_record_correction';
 
-export type PlanAdherence = 'yes' | 'partial' | 'no' | 'not_recorded';
+export const PLAN_ADHERENCE_VALUES = ['yes', 'partial', 'no', 'not_recorded'] as const;
 
-export type DecisionConfidenceLevel = 'high' | 'medium' | 'low' | 'not_recorded';
+export type PlanAdherence = (typeof PLAN_ADHERENCE_VALUES)[number];
+
+export const DECISION_CONFIDENCE_LEVEL_VALUES = ['high', 'medium', 'low', 'not_recorded'] as const;
+
+export type DecisionConfidenceLevel = (typeof DECISION_CONFIDENCE_LEVEL_VALUES)[number];
 
 export type PositionEventType =
   | 'initial_entry'
@@ -324,6 +413,9 @@ export interface PositionLifecycleDecisionContext {
   has_plan?: boolean;
   source?: string | null;
   created_after_entry?: boolean | null;
+  planned_holding_period?: PlannedHoldingPeriod | null;
+  default_stop_rule?: DefaultStopRule | null;
+  add_entry_condition?: AddEntryCondition | null;
   [key: string]: unknown;
 }
 
@@ -395,20 +487,21 @@ export interface PositionLifecycleReviewResponse {
   updated_at: string;
 }
 
-export type LifecycleSetupType =
-  | 'breakout'
-  | 'pullback'
-  | 'mean_reversion'
-  | 'value_revaluation'
-  | 'earnings_or_event'
-  | 'momentum_continuation'
-  | 'long_term_accumulation'
-  | 'defensive_rebalance'
-  | 'other';
+export const LIFECYCLE_SETUP_TYPE_VALUES = [
+  'breakout',
+  'pullback',
+  'mean_reversion',
+  'value_revaluation',
+  'earnings_or_event',
+  'momentum_continuation',
+  'long_term_accumulation',
+  'defensive_rebalance',
+  'other',
+] as const;
 
-export type PlannedHoldingPeriod = 'short_term' | 'swing' | 'medium_term' | 'long_term';
+export type LifecycleSetupType = (typeof LIFECYCLE_SETUP_TYPE_VALUES)[number];
 
-export type OperationPlanStatus = 'missing' | 'present';
+export type OperationPlanStatus = 'missing' | 'present' | 'backfilled';
 
 export type DecisionContextStatus = 'insufficient' | 'present';
 
@@ -426,3 +519,38 @@ export interface PortfolioDecisionContextStatus {
 }
 
 export type PortfolioDecisionContextStatusMap = Record<string, PortfolioDecisionContextStatus>;
+
+export interface LifecyclePlanResponse {
+  portfolio_id: number;
+  position_group_id: string;
+  symbol: string;
+  thesis: string | null;
+  setup_type: LifecycleSetupType | null;
+  planned_holding_period: PlannedHoldingPeriod | null;
+  default_stop_rule: DefaultStopRule | null;
+  add_entry_condition: AddEntryCondition | null;
+  planned_invalidation: string | null;
+  planned_stop_price: number | null;
+  planned_target_or_scale_out_rule: string | null;
+  planned_risk_amount: number | null;
+  planned_risk_pct: number | null;
+  position_sizing_rationale: string | null;
+  source: string | null;
+  created_after_entry: boolean | null;
+}
+
+export interface BackfillLifecyclePlanRequest {
+  thesis?: string;
+  setup_type?: LifecycleSetupType;
+  planned_holding_period?: PlannedHoldingPeriod;
+  default_stop_rule?: DefaultStopRule;
+  add_entry_condition?: AddEntryCondition;
+  planned_invalidation?: string;
+  planned_stop_price?: number;
+  planned_target_or_scale_out_rule?: string;
+  planned_risk_amount?: number;
+  planned_risk_pct?: number;
+  position_sizing_rationale?: string;
+}
+
+export type BackfillLifecyclePlanResponse = LifecyclePlanResponse;

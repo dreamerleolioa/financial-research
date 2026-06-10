@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-08
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract。
+> 更新日期：2026-06-10
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract。
 
 ## 1) 目的
 
@@ -450,7 +450,14 @@ make run-api
   "entry_price": 900.0,
   "entry_date": "2026-01-15",
   "quantity": 1000,
-  "notes": "長期核心持股"
+  "notes": "長期核心持股",
+  "entry_record": {
+    "entry_reason": "pullback_held_ma20",
+    "planned_holding_period": "swing",
+    "default_stop_rule": "break_ma20",
+    "add_entry_condition": "no_averaging_down",
+    "note": "拉回月線守住後建立首筆部位"
+  }
 }
 ```
 
@@ -469,6 +476,104 @@ make run-api
   - `entry_date`：購入日期，必填，ISO 8601 日期字串
   - `quantity`：持有數量，選填，未提供時預設 0
   - `notes`：備註，選填
+  - `entry_record`：選填的進場決策脈絡，若提供則必須符合 `EntryRecordContext` schema；固定選項是未來 lifecycle review 的主要決策資料來源，`note` 僅為補充，不取代固定選項。
+
+- **`EntryRecordContext` 欄位**
+
+  | 欄位 | 類型 | 允許值 / 說明 |
+  | --- | --- | --- |
+  | `entry_reason` | enum \| null | `breakout_confirmation` / `pullback_held_support` / `pullback_held_ma20` / `institutional_flow_strengthened` / `fundamental_thesis_improved` / `event_or_news_catalyst` / `long_term_accumulation` / `value_revaluation` / `other` / `not_recorded` |
+  | `planned_holding_period` | enum \| null | `short_term` / `swing` / `medium_term` / `long_term` / `not_recorded` |
+  | `default_stop_rule` | enum \| null | `break_20d_low` / `break_ma20` / `break_ma60` / `cost_minus_pct` / `fixed_price` / `no_stop_recorded` / `not_recorded` |
+  | `add_entry_condition` | enum \| null | `no_add_entry` / `breakout_above_prior_high` / `pullback_holds_ma20` / `pullback_holds_support` / `institutional_flow_continues` / `profit_threshold_reached` / `data_quality_complete_only` / `no_averaging_down` / `custom_plan_required` / `not_recorded` |
+  | `note` | string \| null | 使用者補充文字；不得作為固定選項缺漏時的替代決策依據。 |
+
+- **事件與計畫寫入語義**
+  - 成功建立持股時會寫入 `position_event`，`event_type = initial_entry`，`source = user_recorded_at_event_time`。
+  - 若 `entry_record.entry_reason` 有記錄且不是 `not_recorded`，會寫入 initial entry event 的 `reason_category` 與 `reason_code`。
+  - 若 `entry_record` 明確帶入 `planned_holding_period`、`default_stop_rule` 或 `add_entry_condition` 任一欄位，會建立 `position_lifecycle_plan`，`source = user_recorded_at_event_time`，`created_after_entry = false`。
+  - 不提供 `entry_record` 或只提供選填 notes 時，不得推論使用者意圖；後續 lifecycle review 需以 `decision_context.status = insufficient` 或既有資料品質 caveat 呈現限制。
+
+### `GET /portfolio/decision-context-status`
+
+- **用途**：列出目前登入使用者 active 持股的 operation plan / decision context 狀態，用於前端提示是否需要補填操作計畫。
+- **Response 200**：以 portfolio id 字串為 key 的 map。
+
+```json
+{
+  "42": {
+    "portfolio_id": 42,
+    "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+    "symbol": "2330.TW",
+    "has_operation_plan": true,
+    "operation_plan_status": "backfilled",
+    "missing_operation_plan": false,
+    "decision_context": "present",
+    "source": "user_backfilled",
+    "created_after_entry": true,
+    "planned_invalidation_present": true
+  }
+}
+```
+
+- **欄位說明**
+  - `operation_plan_status`：`missing` / `present` / `backfilled`。
+  - `decision_context`：`present` / `insufficient`。沒有 lifecycle plan 時為 `insufficient`，前端與 review 不得推論未記錄意圖。
+  - `source`：`user_recorded_at_event_time` / `user_backfilled` / `synthetic_from_portfolio_row` / `manual_record_correction` / `not_recorded` / `null`。
+  - `created_after_entry`：plan 是否在進場後補填；`true` 時不得視為原始進場當下已存在的計畫。
+  - `planned_invalidation_present`：目前 plan 是否有 `planned_invalidation` 文字。
+
+### `GET /portfolio/{portfolio_id}/lifecycle-plan`
+
+- **用途**：讀取目前登入使用者某筆持股所屬 `position_group_id` 的 lifecycle plan。若尚無 plan，欄位回傳 `null`。
+- **權限邊界**：只能讀取目前登入使用者自己的持股；非擁有者回傳 `403`。
+- **Response 200**
+
+```json
+{
+  "portfolio_id": 42,
+  "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+  "symbol": "2330.TW",
+  "thesis": "拉回月線守住後建立首筆部位",
+  "setup_type": "pullback",
+  "planned_holding_period": "swing",
+  "default_stop_rule": "break_ma20",
+  "add_entry_condition": "no_averaging_down",
+  "planned_invalidation": "跌破 MA20 且法人轉弱",
+  "planned_stop_price": null,
+  "planned_target_or_scale_out_rule": null,
+  "planned_risk_amount": null,
+  "planned_risk_pct": null,
+  "position_sizing_rationale": null,
+  "source": "user_backfilled",
+  "created_after_entry": true
+}
+```
+
+### `PUT /portfolio/{portfolio_id}/lifecycle-plan/backfill`
+
+- **用途**：為既有 active 持股補填 lifecycle plan，改善未來 review context，但不把補填內容當成原始進場當下意圖。
+- **權限與狀態邊界**：只能補填目前登入使用者自己的 active 持股；非擁有者回傳 `403`，已結案持股回傳 `409`。
+- **衝突行為**：若已存在 `source != user_backfilled` 的原始進場計畫，回傳 `409`，訊息為 `已有原始進場計畫，不可改為事後補填`。
+- **Request Body**
+
+```json
+{
+  "thesis": "拉回月線守住後建立首筆部位",
+  "setup_type": "pullback",
+  "planned_holding_period": "swing",
+  "default_stop_rule": "break_ma20",
+  "add_entry_condition": "no_averaging_down",
+  "planned_invalidation": "跌破 MA20 且法人轉弱",
+  "planned_stop_price": 142.5,
+  "planned_target_or_scale_out_rule": "先在前高附近減碼一半",
+  "planned_risk_amount": 5000,
+  "planned_risk_pct": 1.0,
+  "position_sizing_rationale": "首筆試單，確認後再加碼"
+}
+```
+
+- **Response 200**：回傳欄位同 `GET /portfolio/{portfolio_id}/lifecycle-plan`，且 `source = user_backfilled`、`created_after_entry = true`。
 
 ### `PUT /portfolio/{portfolio_id}`
 
@@ -496,6 +601,78 @@ make run-api
   "quantity": 1200,
   "entry_date": "2026-02-01",
   "notes": "調整成本後續追蹤"
+}
+```
+
+### `POST /portfolio/{portfolio_id}/add-entry`
+
+- **用途**：為 active 持股建立明確加碼事件；此端點是記錄 add-entry intent 的唯一入口之一，不從一般 `PUT /portfolio/{portfolio_id}` 數量變更推論加碼。
+- **權限與狀態邊界**：只能加碼目前登入使用者自己的 active 持股；非擁有者回傳 `403`，已結案持股回傳 `409`。
+- **Request Body**
+
+```json
+{
+  "event_date": "2026-02-01",
+  "price": 920.0,
+  "quantity": 500,
+  "fees": null,
+  "taxes": null,
+  "reason_code": "planned_scale_in",
+  "plan_adherence": "yes",
+  "confidence_level": "medium",
+  "note": "拉回不破 MA20 後依計畫加碼"
+}
+```
+
+- **欄位說明**
+  - `event_date`：加碼日期，必填，不可早於初始進場日期；違反時回傳 `422`，訊息為 `加碼日期不可早於初始進場日期`。
+  - `price`：加碼價格，必填，需大於 0。
+  - `quantity`：加碼股數，必填，需大於 0。
+  - `fees`：手續費，選填，未提供時依 broker fee rule 計算 event ledger fee。
+  - `taxes`：交易稅，選填，未提供時 add-entry event 稅額為 0。
+  - `reason_code`：`breakout_confirmation` / `pullback_held_support` / `pullback_held_ma20` / `institutional_flow_strengthened` / `fundamental_thesis_improved` / `event_or_news_catalyst` / `long_term_accumulation` / `value_revaluation` / `other` / `planned_scale_in` / `averaging_down` / `chasing_momentum` / `not_recorded`。
+  - `plan_adherence`：`yes` / `partial` / `no` / `not_recorded`。
+  - `confidence_level`：`high` / `medium` / `low` / `not_recorded`。
+  - `note`：選填補充文字；不替代固定選項。
+
+- **行為與計算邊界**
+  - 會以平均成本法更新 active portfolio 的 `entry_price` 與 `quantity`。
+  - 會寫入 `position_event`，`event_type = add_entry`，`source = user_recorded_at_event_time`，並保存 `reason_code`、`plan_adherence`、`confidence_level`、`fees`、`taxes`。
+  - `not_recorded` reason 會保留為未記錄脈絡，不推論使用者加碼意圖。
+
+- **Response 201**
+
+```json
+{
+  "portfolio": {
+    "id": 42,
+    "symbol": "2330.TW",
+    "entry_price": 906.6667,
+    "quantity": 1500,
+    "entry_date": "2026-01-15",
+    "notes": "長期核心持股"
+  },
+  "event": {
+    "id": 101,
+    "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+    "symbol": "2330.TW",
+    "event_type": "add_entry",
+    "event_date": "2026-02-01",
+    "price": 920.0,
+    "quantity": 500,
+    "fees": 653.0,
+    "taxes": 0.0,
+    "source_portfolio_id": 42,
+    "note": "拉回不破 MA20 後依計畫加碼",
+    "reason_category": "plan_execution",
+    "reason_code": "planned_scale_in",
+    "plan_adherence": "yes",
+    "confidence_level": "medium",
+    "source": "user_recorded_at_event_time",
+    "data_quality_note": null,
+    "created_at": "2026-06-10T10:30:00Z",
+    "updated_at": "2026-06-10T10:30:00Z"
+  }
 }
 ```
 
@@ -748,6 +925,50 @@ make run-api
 - group header 提供 `整體部位檢討`，語義是 Position Lifecycle Review：同一 `position_group_id` 下的 multi-entry / multi-exit lifecycle。
 - group header 也保留 `操作時間線`，可只檢視 event ledger，不等同 lifecycle review。
 
+### `GET /portfolio/groups/{position_group_id}/events`
+
+- **用途**：讀取同一 `position_group_id` 的 event ledger timeline，供 closed portfolio group 的操作時間線與 lifecycle review trace 使用。
+- **權限邊界**：只能讀取目前登入使用者自己的 position group；非擁有者回傳 `403`。
+- **排序**：`event_date ASC`、`created_at ASC`、`id ASC`。
+- **Response 200**
+
+```json
+{
+  "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+  "symbol": "2330.TW",
+  "events": [
+    {
+      "id": 101,
+      "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+      "symbol": "2330.TW",
+      "event_type": "initial_entry",
+      "event_date": "2026-01-15",
+      "price": 900.0,
+      "quantity": 1000,
+      "fees": 0.0,
+      "taxes": 0.0,
+      "source_portfolio_id": 42,
+      "note": "拉回月線守住後建立首筆部位",
+      "reason_category": "technical",
+      "reason_code": "pullback_held_ma20",
+      "plan_adherence": null,
+      "confidence_level": null,
+      "source": "user_recorded_at_event_time",
+      "data_quality_note": null,
+      "created_at": "2026-06-10T10:30:00Z",
+      "updated_at": "2026-06-10T10:30:00Z"
+    }
+  ]
+}
+```
+
+- **Event enum contract**
+  - `event_type`：`initial_entry` / `add_entry` / `partial_exit` / `full_exit` / `manual_adjustment`。
+  - `source`：`synthetic_from_portfolio_row` / `user_backfilled` / `user_recorded_at_event_time` / `manual_record_correction` / `not_recorded`。
+  - `reason_category`：`technical` / `institutional_flow` / `fundamental` / `news` / `risk_control` / `plan_execution` / `emotional` / `record_correction` / `not_recorded` / `null`。
+  - `plan_adherence`：`yes` / `partial` / `no` / `not_recorded` / `null`。
+  - `confidence_level`：`high` / `medium` / `low` / `not_recorded` / `null`。
+
 ### `GET /portfolio/groups/{position_group_id}/lifecycle-review`
 
 - **用途**：讀取同一 `position_group_id` 的已保存 Position Lifecycle Review。
@@ -830,7 +1051,10 @@ make run-api
       "status": "present",
       "has_plan": true,
       "source": "user_backfilled",
-      "created_after_entry": false
+      "created_after_entry": true,
+      "planned_holding_period": "swing",
+      "default_stop_rule": "break_ma20",
+      "add_entry_condition": "no_averaging_down"
     },
     "data_quality": {
       "status": "ok",
@@ -899,7 +1123,10 @@ make run-api
   - `review_result.lifecycle_review.*.source_refs`：每段固定模板文字的來源指標、事件或分類 trace。前端可顯示來源，但不應要求使用者解讀 raw score。
   - `review_result.event_indicator_snapshots`：每個 entry/exit event 的 point-in-time 技術指標與 market regime snapshot，不包含完整 K 線序列。
   - `review_result.event_facts[].fees` / `taxes`：event ledger 中已保存或系統計算的成本事實；不表示本端點要求使用者手動輸入交易稅。
-  - `review_result.decision_context.status`：若為 `insufficient`，前端需明確提示不要推論未記錄意圖。
+  - `review_result.decision_context.status`：`present` / `insufficient`。若為 `insufficient`，前端需明確提示不要推論未記錄意圖。
+  - `review_result.decision_context.source` / `created_after_entry`：用於標示 plan provenance；`source = user_backfilled` 或 `created_after_entry = true` 時必須顯示事後補填 caveat，不可視為原始 entry-time intent。
+  - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts，可被 deterministic lifecycle review 引用，但缺漏或 `not_recorded` 時不得用未記錄 intent 補判。
+  - Phase E 已穩定的 lifecycle review labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；這些 labels 需以 `reasons`、`caveats`、`source_refs` 追溯到 `event_facts`、`event_indicator_snapshots` 或 `decision_context`，不得使用未來資料批評 entry-time decision，也不得以 raw 0-100 score 作為預設主視覺。
 
 > **Position Lifecycle Review 邊界**：本端點與 Single Trade Review 分離。`/portfolio/{portfolio_id}/review` 繼續代表 one sell decision；`/portfolio/groups/{position_group_id}/lifecycle-review` 代表 whole multi-entry/multi-exit lifecycle。兩者資料表、endpoint 與 review version 均不同。
 

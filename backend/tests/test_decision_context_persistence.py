@@ -80,6 +80,8 @@ def test_lifecycle_plan_fields_can_be_saved_and_read_as_user_backfilled() -> Non
             thesis="Institutional accumulation after base breakout.",
             setup_type="breakout",
             planned_holding_period="swing",
+            default_stop_rule="break_ma20",
+            add_entry_condition="pullback_holds_ma20",
             planned_invalidation="Close below MA20 with institutional distribution.",
             planned_stop_price=880,
             planned_target_or_scale_out_rule="Trim half near prior resistance.",
@@ -96,6 +98,8 @@ def test_lifecycle_plan_fields_can_be_saved_and_read_as_user_backfilled() -> Non
     assert plan.thesis == "Institutional accumulation after base breakout."
     assert plan.setup_type == "breakout"
     assert plan.planned_holding_period == "swing"
+    assert plan.default_stop_rule == "break_ma20"
+    assert plan.add_entry_condition == "pullback_holds_ma20"
     assert plan.planned_invalidation == "Close below MA20 with institutional distribution."
     assert float(plan.planned_stop_price) == 880.0
     assert plan.planned_target_or_scale_out_rule == "Trim half near prior resistance."

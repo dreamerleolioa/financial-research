@@ -756,6 +756,39 @@ class InstitutionalFlowProvider(Protocol):
 > - `holding_period`：依 `strategy_type` 輸出可執行時間窗（例：`7-10 交易日`、`4-8 週`），不可只寫「短期/中期」
 > - 上述欄位必須由 Python 工具先算出硬數值，再交由 LLM 做文字說明
 
+### 3.3 Entry Record 與生命週期決策脈絡（2026-06-10 promoted）
+
+Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後行為檢討」分離為穩定架構事實。生命週期檢討可以重建價格路徑與 event sequence，但只有在使用者明確記錄 fixed options 或 lifecycle plan 時，才可檢討 plan adherence；系統不得從 PnL、後續漲跌或事後結果反推未記錄意圖。
+
+**資料捕捉原則：**
+
+- 進場與加碼決策採 `fixed options first -> optional note second`。固定選項是 deterministic review 的主要資料來源；free-text note 只能補充，不可取代或覆寫固定選項。
+- 新建持股的最小 entry context 包含 `entry_reason`、`planned_holding_period`、`default_stop_rule`、`add_entry_condition`。缺漏欄位保持缺漏，不以預設 intent 補齊。
+- 加碼必須透過明確 add-entry flow 記錄 `reason_code`、`plan_adherence`、`confidence_level`；一般持股 row update 不推論為加碼決策。
+- Single Trade Review 維持 row-scoped one sell decision；Position Lifecycle Review 才檢討同一 `position_group_id` 的 multi-entry / multi-exit lifecycle。
+
+**Provenance 與 decision context：**
+
+| Source | 架構語意 |
+| --- | --- |
+| `user_recorded_at_event_time` | 使用者在進場或事件當下記錄，才可作為原始 event-time intent。 |
+| `user_backfilled` | 使用者在進場後補填；可改善未來檢討脈絡，但必須顯示事後補填 caveat。 |
+| `synthetic_from_portfolio_row` | 系統由既有 portfolio row 重建的 event fact；不得視為使用者原始決策。 |
+| `manual_record_correction` | 使用者手動修正紀錄。 |
+| `not_recorded` | 決策脈絡未記錄。 |
+
+`decision_context.status = insufficient` 是正式語意，不是錯誤狀態。當 lifecycle plan 缺失、只有 optional note、或資料 provenance 不足以代表原始意圖時，review 仍可輸出價格路徑與 event facts，但必須以 caveats 說明限制，且不得判斷使用者是否遵循未記錄計畫。
+
+Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
+
+**Deterministic lifecycle review 邊界：**
+
+- Lifecycle review 使用 event ledger、point-in-time indicator snapshots、fixed option plan facts 與 source refs 產生 labels、reasons、caveats、next-operation rules。
+- 已穩定的 fixed-option labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`。
+- `holding_period_needs_review` 是檢討提示，不是硬性錯誤；不得宣稱精準高低點或單一時間點是唯一正確操作。
+- Raw 0-100 lifecycle scores 保留於 `advanced_internal` / evidence trace，用於 guardrail、debug、校準與 future review；預設 UI 與 user-facing copy 需以 tier、label、reason、caveat、source event 呈現。
+- LLM 不參與 intent capture、metric calculation、classification assignment 或 missing-intent inference。未來若加入 narrative summary，必須只摘要 deterministic review facts，且不得升級為判斷來源。
+
 ---
 
 ## 4. 前端展示需求（React + Tailwind）

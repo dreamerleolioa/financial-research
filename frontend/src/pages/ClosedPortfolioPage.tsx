@@ -3,7 +3,10 @@ import type { MouseEvent } from "react";
 import { authHeaders } from "../lib/auth";
 import { formatPrice } from "../lib/formatters";
 import type {
+  AddEntryCondition,
   ClosedPortfolioItem,
+  DefaultStopRule,
+  EntryRecordReason,
   LifecycleTextItem,
   PositionEvent,
   PositionGroupEventsResponse,
@@ -14,6 +17,7 @@ import type {
   PositionLifecycleExitSequence,
   PositionLifecycleMetrics,
   PositionLifecycleReviewResponse,
+  PlannedHoldingPeriod,
   TradeReviewDataQuality,
   TradeReviewHoldingSection,
   TradeReviewResponse,
@@ -68,6 +72,11 @@ interface LifecycleReviewModalProps {
   copyStatus: CopyStatus;
   onCopyEvidence: () => void;
   onClose: () => void;
+}
+
+interface LifecyclePlanRelationGroup {
+  label: string;
+  items: LifecycleTextItem[];
 }
 
 const PERIOD_OPTIONS: PeriodOption[] = [
@@ -126,6 +135,10 @@ const LIFECYCLE_CLASSIFICATION_LABEL: Record<string, string> = {
   premature_scale_out: "可能過早減碼",
   late_scale_out: "出場偏晚",
   coherent_position_management: "部位管理一致",
+  add_entry_plan_violation: "加碼計畫偏離",
+  ma20_pullback_supported: "回測 20 日線獲得支持",
+  unacted_stop_rule_break: "停損規則觸發後未行動",
+  holding_period_needs_review: "持有期間需檢討",
 };
 
 const LIFECYCLE_TIER_LABEL: Record<string, string> = {
@@ -282,6 +295,10 @@ const TIMELINE_REASON_CODE_LABEL: Record<string, string> = {
   pullback_held_ma20: "回測守住 20 日線",
   institutional_flow_strengthened: "法人籌碼轉強",
   fundamental_thesis_improved: "基本面假設改善",
+  event_or_news_catalyst: "事件／消息催化",
+  long_term_accumulation: "長期分批佈局",
+  value_revaluation: "價值重估",
+  other: "其他固定理由",
   planned_scale_in: "依計畫加碼",
   averaging_down: "攤平加碼",
   chasing_momentum: "追逐動能",
@@ -298,6 +315,50 @@ const TIMELINE_REASON_CODE_LABEL: Record<string, string> = {
   stop_loss: "停損",
   emotional_exit: "情緒性出場",
   manual_record_correction: "手動紀錄修正",
+  not_recorded: "未記錄",
+};
+
+const ENTRY_RECORD_REASON_LABEL: Record<EntryRecordReason, string> = {
+  breakout_confirmation: "突破確認",
+  pullback_held_support: "回測守住支撐",
+  pullback_held_ma20: "回測守住 20 日線",
+  institutional_flow_strengthened: "法人籌碼轉強",
+  fundamental_thesis_improved: "基本面假設改善",
+  event_or_news_catalyst: "事件／消息催化",
+  long_term_accumulation: "長期分批佈局",
+  value_revaluation: "價值重估",
+  other: "其他固定理由",
+  not_recorded: "未記錄",
+};
+
+const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
+  short_term: "短線（數日內）",
+  swing: "波段（數週）",
+  medium_term: "中期（數月）",
+  long_term: "長期（半年以上）",
+  not_recorded: "未記錄",
+};
+
+const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
+  break_20d_low: "跌破 20 日低點",
+  break_ma20: "跌破 20 日線",
+  break_ma60: "跌破 60 日線",
+  cost_minus_pct: "成本下方固定百分比",
+  fixed_price: "固定價格停損",
+  no_stop_recorded: "未設定停損",
+  not_recorded: "未記錄",
+};
+
+const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
+  no_add_entry: "不加碼",
+  breakout_above_prior_high: "突破前高再加碼",
+  pullback_holds_ma20: "回測守住 20 日線",
+  pullback_holds_support: "回測守住支撐",
+  institutional_flow_continues: "法人籌碼延續",
+  profit_threshold_reached: "達成獲利門檻",
+  data_quality_complete_only: "資料完整才加碼",
+  no_averaging_down: "不攤平",
+  custom_plan_required: "需另訂自訂計畫",
   not_recorded: "未記錄",
 };
 
@@ -436,6 +497,26 @@ function formatLifecycleClassificationLabel(value: string | null | undefined): s
   return LIFECYCLE_CLASSIFICATION_LABEL[value] ?? `其他生命週期分類（${value}）`;
 }
 
+function formatEntryRecordReason(value: string | null | undefined): string {
+  if (!value) return "未記錄";
+  return (ENTRY_RECORD_REASON_LABEL as Record<string, string>)[value] ?? formatTimelineReasonCode(value);
+}
+
+function formatPlannedHoldingPeriod(value: string | null | undefined): string {
+  if (!value) return "未記錄";
+  return (PLANNED_HOLDING_PERIOD_LABEL as Record<string, string>)[value] ?? `其他持有期間（${value}）`;
+}
+
+function formatDefaultStopRule(value: string | null | undefined): string {
+  if (!value) return "未記錄";
+  return (DEFAULT_STOP_RULE_LABEL as Record<string, string>)[value] ?? `其他停損規則（${value}）`;
+}
+
+function formatAddEntryCondition(value: string | null | undefined): string {
+  if (!value) return "未記錄";
+  return (ADD_ENTRY_CONDITION_LABEL as Record<string, string>)[value] ?? `其他加碼條件（${value}）`;
+}
+
 function formatLifecycleTierLabel(value: string | null | undefined): string {
   if (!value) return "尚無層級";
   return LIFECYCLE_TIER_LABEL[value] ?? `其他層級（${value}）`;
@@ -481,11 +562,46 @@ function hasLifecycleDecisionContextWarning(review: PositionLifecycleReviewRespo
   return result?.decision_context?.status !== "present" || labels.includes("insufficient_data");
 }
 
+function hasBackfilledLifecyclePlanCaveat(review: PositionLifecycleReviewResponse | null): boolean {
+  const decisionContext = review?.review_result.decision_context;
+  return decisionContext?.source === "user_backfilled" || decisionContext?.created_after_entry === true;
+}
+
 function getLifecycleEvidenceForEvent(items: LifecycleTextItem[] | undefined, event: PositionLifecycleEventFact): LifecycleTextItem[] {
   if (!items || !event.event_key) return [];
   const factRef = `event_facts.${event.event_key}`;
   const snapshotRef = `event_indicator_snapshots.${event.event_key}`;
   return items.filter((item) => item.source_refs.includes(factRef) || item.source_refs.includes(snapshotRef));
+}
+
+function getInitialEntryEventFact(events: PositionLifecycleEventFact[]): PositionLifecycleEventFact | undefined {
+  return events.find((event) => event.event_type === "initial_entry");
+}
+
+function hasLifecyclePlanRelationSourceRefs(item: LifecycleTextItem): boolean {
+  return item.source_refs.some(
+    (sourceRef) => sourceRef.startsWith("event_facts.")
+      || sourceRef.startsWith("event_indicator_snapshots.")
+      || sourceRef.startsWith("decision_context"),
+  );
+}
+
+function getLifecyclePlanRelationGroups(review: PositionLifecycleReviewResponse): LifecyclePlanRelationGroup[] {
+  const lifecycleReview = review.review_result.lifecycle_review;
+  const classification = lifecycleReview?.classification;
+  const groups: LifecyclePlanRelationGroup[] = [
+    { label: "分類依據", items: classification?.reasons ?? [] },
+    { label: "判讀限制", items: classification?.caveats ?? [] },
+    { label: "做得好的地方", items: lifecycleReview?.what_worked ?? [] },
+    { label: "需要檢討的地方", items: lifecycleReview?.what_needs_review ?? [] },
+  ];
+
+  return groups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(hasLifecyclePlanRelationSourceRefs),
+    }))
+    .filter((group) => group.items.length > 0);
 }
 
 function formatSourceRefs(sourceRefs: string[] | undefined): string {
@@ -732,6 +848,101 @@ function LifecycleTextItemList({ label, items, emptyText }: { label: string; ite
         </div>
       ) : (
         <p className="mt-2 text-sm text-text-faint">{emptyText ?? "尚無資料。"}</p>
+      )}
+    </article>
+  );
+}
+
+function LifecyclePlanFactCard({ label, value, sourceRefs }: { label: string; value: string; sourceRefs: string[] | undefined }) {
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+      <p className="text-xs text-text-faint">{label}</p>
+      <p className="mt-1 text-sm font-medium text-text-primary">{value}</p>
+      <LifecycleSourceRefs sourceRefs={sourceRefs} />
+    </div>
+  );
+}
+
+function LifecyclePlanReviewRelationSection({ review }: { review: PositionLifecycleReviewResponse }) {
+  const result = review.review_result;
+  const eventFacts = result.event_facts ?? [];
+  const initialEntry = getInitialEntryEventFact(eventFacts);
+  const decisionContext = result.decision_context;
+  const lifecycleLabels = result.lifecycle_review?.classification?.labels ?? [];
+  const relationGroups = getLifecyclePlanRelationGroups(review);
+  const decisionContextSourceRefs = decisionContext
+    ? {
+        plannedHoldingPeriod: ["decision_context.planned_holding_period"],
+        defaultStopRule: ["decision_context.default_stop_rule"],
+        addEntryCondition: ["decision_context.add_entry_condition"],
+      }
+    : {
+        plannedHoldingPeriod: undefined,
+        defaultStopRule: undefined,
+        addEntryCondition: undefined,
+      };
+
+  return (
+    <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-text-primary">原始計畫與檢討關聯</h3>
+          <p className="mt-1 text-xs leading-relaxed text-text-muted">
+            只呈現已保存的初始進場事件與 decision_context 固定欄位，並列出引用事件、指標快照或 plan 欄位的 lifecycle 結論片段。
+          </p>
+        </div>
+        <span className="w-fit rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">lifecycle-only</span>
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+        <LifecyclePlanFactCard
+          label="初始進場理由"
+          value={formatEntryRecordReason(initialEntry?.reason_code)}
+          sourceRefs={initialEntry?.event_key ? [`event_facts.${initialEntry.event_key}`] : undefined}
+        />
+        <LifecyclePlanFactCard
+          label="預計持有期間"
+          value={formatPlannedHoldingPeriod(decisionContext?.planned_holding_period)}
+          sourceRefs={decisionContextSourceRefs.plannedHoldingPeriod}
+        />
+        <LifecyclePlanFactCard
+          label="預設停損規則"
+          value={formatDefaultStopRule(decisionContext?.default_stop_rule)}
+          sourceRefs={decisionContextSourceRefs.defaultStopRule}
+        />
+        <LifecyclePlanFactCard
+          label="加碼條件"
+          value={formatAddEntryCondition(decisionContext?.add_entry_condition)}
+          sourceRefs={decisionContextSourceRefs.addEntryCondition}
+        />
+      </div>
+
+      {lifecycleLabels.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs font-medium text-text-muted">Lifecycle labels</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {lifecycleLabels.map((label) => (
+              <span key={label} className="rounded-md bg-badge-neutral-bg px-2 py-1 text-xs text-badge-neutral-text">
+                {formatLifecycleClassificationLabel(label)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {relationGroups.length > 0 ? (
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          {relationGroups.map((group) => (
+            <div key={group.label} className="space-y-2">
+              <p className="text-xs font-medium text-text-muted">{group.label}</p>
+              {group.items.map((item, index) => <LifecycleTextItemBlock key={`${group.label}-${index}`} item={item} />)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">
+          尚無引用 event_facts、event_indicator_snapshots 或 decision_context 的關聯片段。
+        </p>
       )}
     </article>
   );
@@ -1240,6 +1451,7 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
   const snapshots = result?.event_indicator_snapshots ?? [];
   const provenance = getLifecycleProvenance(eventFacts);
   const hasDecisionWarning = hasLifecycleDecisionContextWarning(review);
+  const hasBackfilledCaveat = hasBackfilledLifecyclePlanCaveat(review);
 
   return (
     <div
@@ -1319,6 +1531,13 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
                 </div>
               )}
 
+              {hasBackfilledCaveat && (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 shadow-sm dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300">
+                  事後補填 plan caveat：此 lifecycle review 使用了使用者事後補填的 operation plan。它可改善檢討脈絡，但不代表原始進場當下已存在同一份計畫。
+                </div>
+              )}
+
+              <LifecyclePlanReviewRelationSection review={review} />
               <LifecycleOverallSection review={review} />
               <LifecyclePerspectives metrics={result.lifecycle_metrics} entrySequence={result.entry_sequence} exitSequence={result.exit_sequence} />
               <div className="grid gap-3 md:grid-cols-2">
