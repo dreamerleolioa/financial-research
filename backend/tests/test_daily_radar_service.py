@@ -82,7 +82,9 @@ def test_run_daily_radar_orchestrates_fixture_prefilter_scoring_explanations_and
     assert first.matched_rules
     assert first.score_breakdown["observation_score"] == first.observation_score
     assert first.input_snapshot["ohlcv"]
+    assert first.input_snapshot["market_context"]["regime"] == "constructive"
     assert first.data_dates["ohlcv"] == "2026-05-29"
+    assert first.data_dates["market_index"] == "2026-05-29"
 
 
 def test_run_daily_radar_marks_stale_data_when_no_fresh_candidate_can_be_persisted(db_session: Session) -> None:
@@ -151,6 +153,40 @@ def test_run_daily_radar_summarizes_per_symbol_errors_without_failing_full_run(
     assert [candidate.symbol for candidate in run.candidates] == ["2330.TW"]
 
 
+def test_run_daily_radar_persists_universe_track_trace_in_candidate_input_snapshot(db_session: Session) -> None:
+    record = deepcopy(_joined_record("2454.TW"))
+    record["institutional_flow"] |= {
+        "universe_primary_track": "price_volume",
+        "institutional_universe_tracks": ["price_volume", "reversal"],
+        "universe_track_metrics": {
+            "price_volume": {"rank": 1, "score": 90.0, "matched": True},
+            "support_retake": {"score": 0.0, "matched": False, "missing_data": True},
+        },
+        "scores": {"price_volume": 90.0, "reversal": 70.0},
+    }
+
+    run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+    )
+    db_session.commit()
+
+    assert run.status == "completed"
+    candidate = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == run.id).one()
+    assert candidate.input_snapshot["universe"] == {
+        "universe_primary_track": "price_volume",
+        "institutional_universe_tracks": ["price_volume", "reversal"],
+        "universe_track_metrics": {
+            "price_volume": {"rank": 1, "score": 90.0, "matched": True},
+            "support_retake": {"score": 0.0, "matched": False, "missing_data": True},
+        },
+        "scores": {"price_volume": 90.0, "reversal": 70.0},
+    }
+
+
 def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_choose_latest(
     db_session: Session,
 ) -> None:
@@ -169,6 +205,10 @@ def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_cho
     assert [run.id for run in runs] == [first.id, second.id]
     assert all(run.status == "completed" for run in runs)
     assert len({candidate.run_id for candidate in db_session.scalars(select(DailyRadarCandidate)).all()}) == 2
+
+
+def _joined_record(symbol: str) -> dict[str, Any]:
+    return next(record for record in load_daily_radar_fixture_records(FIXTURE_DIR) if record["symbol"] == symbol)
 
 
 def test_run_daily_radar_with_fixture_fallback_disabled_does_not_load_default_fixtures(

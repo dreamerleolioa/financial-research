@@ -14,6 +14,7 @@ from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
 )
 from ai_stock_sentinel.daily_radar.universe import (
     InstitutionalLeaderRow,
+    select_daily_radar_universe,
     select_dual_track_universe,
 )
 
@@ -85,6 +86,37 @@ def _twse_trust_row_without_blank(*, stock_id: str, buy: str | int, sell: str | 
 
 def _twse_payload(rows: list[list[str]], *, stat: str = "OK") -> dict[str, Any]:
     return {"stat": stat, "data": rows}
+
+
+def _technical_record(
+    symbol: str,
+    *,
+    close: float = 106.0,
+    previous_close: float = 102.0,
+    low: float = 98.0,
+    volume_ratio: float = 1.6,
+    ma5: float = 104.0,
+    ma20: float = 101.0,
+    support_level: float = 97.0,
+    kd_k: float = 32.0,
+    kd_d: float = 28.0,
+    rsi14: float = 48.0,
+    macd_histogram: float = 0.05,
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "ohlcv": {"close": close, "previous_close": previous_close, "low": low},
+        "indicators": {
+            "volume_ratio": volume_ratio,
+            "ma5": ma5,
+            "ma20": ma20,
+            "support_level": support_level,
+            "kd_k": kd_k,
+            "kd_d": kd_d,
+            "rsi14": rsi14,
+            "macd_histogram": macd_histogram,
+        },
+    }
 
 
 def test_select_dual_track_universe_unions_top_n_tracks_with_overlap_offline(
@@ -166,6 +198,67 @@ def test_select_dual_track_universe_returns_empty_list_for_empty_provider() -> N
     universe = select_dual_track_universe(provider, date(2026, 6, 2))
 
     assert universe == []
+
+
+def test_select_dual_track_universe_keeps_legacy_institutional_only_metrics_shape() -> None:
+    provider = _provider(same_day_rows=[InstitutionalLeaderRow("2330.TW", rank=1, score=120.0)])
+
+    universe = select_dual_track_universe(provider, date(2026, 6, 2))
+
+    assert universe[0].tracks == ("same_day_institutional",)
+    assert set(universe[0].track_metrics) == {"same_day_institutional"}
+
+
+def test_select_daily_radar_universe_merges_daily_trigger_tracks_deterministically() -> None:
+    provider = _provider(
+        same_day_rows=[
+            InstitutionalLeaderRow("2330.TW", rank=1, score=120.0),
+            InstitutionalLeaderRow("2454.TW", rank=2, score=110.0),
+        ],
+        recent_rows=[InstitutionalLeaderRow("2303.TW", rank=1, score=70.0)],
+    )
+    technical_records = [
+        _technical_record("2454.TW", close=110.0, previous_close=105.0, volume_ratio=1.8, ma5=108.0, ma20=103.0),
+        _technical_record("1101.TW", close=52.0, previous_close=50.0, volume_ratio=1.3, ma5=51.0, ma20=49.0, kd_k=70.0, kd_d=80.0, rsi14=70.0, macd_histogram=-1.0),
+        _technical_record("3034.TW", close=84.0, previous_close=82.0, low=79.0, volume_ratio=0.8, ma5=70.0, ma20=90.0, support_level=78.0, kd_k=30.0, kd_d=24.0, rsi14=44.0),
+        _technical_record("2303.TW", close=52.0, previous_close=48.0, support_level=50.0, kd_k=60.0, kd_d=62.0, ma5=49.0, ma20=50.0, volume_ratio=1.1),
+    ]
+
+    universe = select_daily_radar_universe(
+        provider,
+        date(2026, 6, 2),
+        market="TW",
+        track_limit=2,
+        technical_records=technical_records,
+    )
+
+    assert [entry.symbol for entry in universe] == ["2330.TW", "2454.TW", "2303.TW", "1101.TW", "3034.TW"]
+    assert [entry.rank for entry in universe] == [1, 2, 3, 4, 5]
+    assert universe[1].primary_track == "same_day_institutional"
+    assert universe[1].tracks[:2] == ("same_day_institutional", "price_volume")
+    assert universe[1].track_metrics["price_volume"]["rank"] == 1
+    assert universe[1].track_metrics["price_volume"]["score"] > universe[3].track_metrics["price_volume"]["score"]
+    assert universe[2].tracks == ("recent_accumulation", "support_retake")
+    assert universe[2].track_metrics["support_retake"]["matched"] is True
+    assert universe[3].primary_track == "price_volume"
+    assert universe[4].primary_track == "reversal"
+
+
+def test_select_daily_radar_universe_keeps_missing_trigger_trace_for_selected_symbols() -> None:
+    provider = _provider(same_day_rows=[InstitutionalLeaderRow("2330.TW", rank=1, score=120.0)])
+
+    universe = select_daily_radar_universe(
+        provider,
+        date(2026, 6, 2),
+        technical_records=[{"symbol": "2330.TW", "ohlcv": {"close": 100.0}, "indicators": {}}],
+    )
+
+    assert universe[0].tracks == ("same_day_institutional",)
+    price_volume_trace = universe[0].track_metrics["price_volume"]
+    assert price_volume_trace["matched"] is False
+    assert price_volume_trace["missing_data"] is True
+    assert price_volume_trace["reason"] == "insufficient_technical_data"
+    assert "ohlcv.previous_close" in price_volume_trace["missing_fields"]
 
 
 def test_twse_rwd_provider_fetches_top_buy_reports_and_feeds_selector() -> None:

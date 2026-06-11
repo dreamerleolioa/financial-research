@@ -1,5 +1,6 @@
 {
   "data_dates": {
+    "market_index": "2026-05-29",
     "tpex_index": "2026-05-29",
     "twse_index": "2026-05-29",
     "volatility": "2026-05-29"
@@ -10,11 +11,14 @@
     "above_ma60": true,
     "close": 21872.0,
     "context_note": "Index backdrop is supportive enough for observation contract fixtures.",
+    "data_date": "2026-05-29",
+    "freshness": "fresh",
     "index_symbol": "TAIEX",
     "ma20": 21480.0,
     "ma60": 20920.0,
     "market_risk_flags": [],
     "previous_close": 21640.0,
+    "regime": "constructive",
     "volatility_state": "normal"
   },
   "record_date": "2026-05-29",

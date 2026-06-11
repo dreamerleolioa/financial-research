@@ -10,6 +10,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
+from ai_stock_sentinel.daily_radar.market_context import (
+    MarketIndexContextProvider,
+    YFinanceMarketIndexContextProvider,
+)
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
@@ -18,6 +22,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.repository import (
     get_daily_radar_run_by_date,
+    get_final_raw_data_rows_for_date,
     get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
     get_symbol_candidate_history,
@@ -30,7 +35,7 @@ from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseEntry,
     DailyRadarUniverseProvider,
-    select_dual_track_universe,
+    select_daily_radar_universe,
 )
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.db.session import get_db
@@ -66,6 +71,10 @@ def get_daily_radar_technical_fetcher() -> BatchTechnicalFetcher:
     return YFinanceBatchTechnicalFetcher()
 
 
+def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
+    return YFinanceMarketIndexContextProvider()
+
+
 @router.post(
     "/internal/daily-radar/run",
     response_model=DailyRadarRunTriggerResponse,
@@ -76,6 +85,7 @@ def run_daily_radar_endpoint(
     db: Session = Depends(get_db),
     universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
+    market_context_provider: MarketIndexContextProvider = Depends(get_daily_radar_market_context_provider),
 ) -> DailyRadarRunTriggerResponse:
     failure_stage = "request_initialization"
     try:
@@ -83,7 +93,14 @@ def run_daily_radar_endpoint(
         run_date = request.run_date or _backend_today()
         market = request.market
         failure_stage = "universe_selection"
-        universe = select_dual_track_universe(universe_provider, run_date=run_date, market=market, track_limit=50)
+        existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
+        universe = select_daily_radar_universe(
+            universe_provider,
+            run_date=run_date,
+            market=market,
+            track_limit=50,
+            technical_records=existing_technical_rows,
+        )
         if not universe:
             raise HTTPException(
                 status_code=409,
@@ -107,13 +124,15 @@ def run_daily_radar_endpoint(
                 status_code=409,
                 detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
             )
+        failure_stage = "market_context"
+        market_context = dict(market_context_provider.build(run_date=run_date, market=market))
         failure_stage = "daily_radar_service"
         run = run_daily_radar(
             run_date,
             market,
             session=db,
             cache_rows=cache_rows,
-            market_context={},
+            market_context=market_context,
             allow_fixture_fallback=False,
         )
         db.commit()
@@ -203,7 +222,9 @@ def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) ->
     flat_payload: dict[str, Any] = {
         "flow_label": "institutional_accumulation",
         "flow_state": _flow_state(entry),
+        "universe_primary_track": entry.primary_track,
         "institutional_universe_tracks": list(entry.tracks),
+        "universe_track_metrics": {track: dict(metrics) for track, metrics in entry.track_metrics.items()},
         "same_day_rank": entry.same_day_rank,
         "recent_accumulation_rank": entry.recent_accumulation_rank,
         "scores": _score_payload(entry),
@@ -228,6 +249,8 @@ def _flow_state(entry: DailyRadarUniverseEntry) -> str:
     same_day_flow_state = same_day_metrics.get("flow_state")
     if same_day_flow_state is not None:
         return str(same_day_flow_state)
+    if not any(track in {"same_day_institutional", "recent_accumulation"} for track in entry.tracks):
+        return "technical_trigger"
     return "weak_confirmation"
 
 
@@ -235,6 +258,8 @@ def _score_payload(entry: DailyRadarUniverseEntry) -> dict[str, float]:
     scores: dict[str, float] = {}
     _add_score(scores, "same_day_institutional", entry.same_day_score)
     _add_score(scores, "recent_accumulation", entry.recent_accumulation_score)
+    for track, metrics in entry.track_metrics.items():
+        _add_score(scores, track, metrics.get("score"))
     return scores
 
 

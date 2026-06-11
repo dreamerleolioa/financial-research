@@ -125,7 +125,8 @@ def test_ensure_daily_radar_raw_rows_fetches_missing_symbols_once_and_preserves_
                 "three_party_net": 6500,
                 "consecutive_buy_days": 5,
                 "data_dates": {"institutional_flow": run_date.isoformat()},
-            }
+            },
+            "9999.TW": {"universe_primary_track": "price_volume"},
         },
     )
 
@@ -148,6 +149,8 @@ def test_ensure_daily_radar_raw_rows_fetches_missing_symbols_once_and_preserves_
     assert "stale_core_data" not in {reason["code"] for reason in prefilter_result["prefilter_reasons"]}
     assert loaded_by_symbol["2454.TW"]["margin"] == {}
     assert loaded_by_symbol["2454.TW"]["data_dates"]["margin"] == run_date.isoformat()
+    assert "9999.TW" not in loaded_by_symbol
+    assert db_session.query(StockRawData).filter(StockRawData.symbol == "9999.TW").one_or_none() is None
 
 
 def test_ensure_daily_radar_raw_rows_updates_non_final_rows_without_refetching_final_rows(

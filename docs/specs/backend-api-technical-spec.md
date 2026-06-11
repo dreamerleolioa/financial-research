@@ -1158,14 +1158,14 @@ Daily Radar run status：
 - **Auth**：內部 token 必填，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
 - **環境契約**：後端必須設定 `DAILY_RADAR_INTERNAL_TOKEN`。若後端未設定此 token，回傳 `503 Service Unavailable`。
 - **Auth 錯誤**：request 未帶 token 時回傳 `401 Unauthorized`，並附 Bearer challenge；token 不符時回傳 `403 Forbidden`。
-- **後端 orchestration**：live run 會自行選出雙軌 universe，對 selected symbols 補齊缺少的 OHLCV，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
+- **後端 orchestration**：live run 會自行選出 multi-track universe（保留 `same_day_institutional`、`recent_accumulation`，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對 selected symbols 補齊缺少的 OHLCV，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
 - **Fixture fallback**：live run 關閉 fixture fallback，只使用 live provider 與既有 final `StockRawData`。
 - **409 Conflict**：selected universe 為空，或嘗試 backfill 後 selected symbols 仍沒有 final `StockRawData` rows 時回傳。
 - **公開 schema**：後端資料流改為自包含流程後，public Daily Radar read endpoints 與 candidate response schema 不變。
 - **資料源 request budget**：
   - FinMind：只使用 all-market `TaiwanStockInstitutionalInvestorsBuySell`。同日法人 leaders 用 `date = run_date`，近期累積 leaders 用 `run_date - 10 calendar days` 到 `run_date` 的 date range，再在記憶體中取最近 5 個市場交易日。不得傳 `stock_id`、`data_id`、`symbol` 等逐檔參數。
   - yfinance：只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用。
-  - Live limits：目前不抓完整 live margin，也不帶完整 market context。回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale。
+  - Live limits：目前不抓完整 live margin；market context 僅使用固定大盤指數設定。回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale。
 
 - **Request Body**
 
@@ -1205,7 +1205,7 @@ Daily Radar run status：
   | `run_date`        | string | run 日期                                          |
   | `market`          | string | 市場代碼，預設 `TW`                               |
   | `status`          | string | `completed` / `running` / `failed` / `stale_data` |
-  | `universe_count`  | int    | 雙軌 selected universe 標的數，通常最多約 100，會因重疊去重而更低 |
+  | `universe_count`  | int    | Multi-track selected universe 標的數，會因軌道重疊去重而低於各軌 limit 加總 |
   | `prefilter_count` | int    | 通過前置條件的標的數                              |
   | `candidate_count` | int    | 產出候選標的數                                    |
   | `errors`          | array  | 執行期間累積的錯誤訊息                            |

@@ -243,7 +243,10 @@ def test_daily_radar_auxiliary_fixtures_cover_market_context_and_history() -> No
 
     assert market_context["record_date"] == "2026-05-29"
     assert market_context["data_dates"]
+    assert market_context["data_dates"]["market_index"] == "2026-05-29"
     assert market_context["market"]["index_symbol"] == "TAIEX"
+    assert market_context["market"]["regime"] == "constructive"
+    assert market_context["market"]["freshness"] == "fresh"
     assert market_context["market"]["volatility_state"] == "normal"
     assert {override["fixture_case"] for override in market_context["symbol_overrides"]} == {
         "stale_data",
@@ -313,8 +316,11 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["bucket_scores"] == result["bucket_scores"]
     assert breakdown["cross_confirmation"]["components"]
     assert breakdown["market_context"]["label"] == "supportive"
+    assert breakdown["market_context"]["details"]["regime"] == "constructive"
     assert breakdown["freshness"]["label"] == "fresh"
     assert breakdown["risk_penalties"] == []
+    assert result["data_dates"]["market_index"] == "2026-05-29"
+    assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
 
 
 @pytest.mark.parametrize(
@@ -368,6 +374,32 @@ def test_daily_radar_scoring_applies_flow_conflict_and_market_weakness_penalties
     assert "market_weakness" in weak_market["risk_labels"]
     assert weak_market["observation_score"] < clean["observation_score"]
     assert weak_market["score_breakdown"]["market_context"]["label"] == "weak"
+    assert any(
+        penalty["label"] == "market_weakness"
+        and penalty["details"]["market"]["market_risk_flags"] == ["market_weakness"]
+        for penalty in weak_market["score_breakdown"]["risk_penalties"]
+    )
+
+
+def test_daily_radar_scoring_keeps_missing_market_context_neutral_without_faking_signal() -> None:
+    missing_context = {
+        "record_date": "2026-05-29",
+        "data_dates": {},
+        "market": {
+            "index_symbol": "TAIEX",
+            "regime": "unknown",
+            "freshness": "missing",
+            "missing_reason": "market_index_ohlcv_missing",
+            "market_risk_flags": ["market_context_missing"],
+        },
+    }
+
+    result = score_daily_radar_record(_joined_records_by_symbol()["2330.TW"], market_context=missing_context)
+
+    assert "market_weakness" not in result["risk_labels"]
+    assert result["score_breakdown"]["market_context"]["label"] == "neutral"
+    assert result["score_breakdown"]["market_context"]["score"] == 0
+    assert result["input_snapshot"]["market_context"]["missing_reason"] == "market_index_ohlcv_missing"
 
 
 def test_daily_radar_scoring_output_uses_observation_risk_language_only() -> None:

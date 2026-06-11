@@ -120,11 +120,12 @@ def score_daily_radar_record(
             "risk_adjustment": risk_adjustment,
             "observation_score": observation_score,
         },
-        "data_dates": dict(normalized["data_dates"]),
+        "data_dates": _candidate_data_dates(normalized["data_dates"], market_context),
         "input_snapshot": {
             "ohlcv": dict(ohlcv),
             "indicators": dict(indicators),
             "institutional_flow": dict(flow),
+            "universe": _universe_trace(flow),
             "margin": dict(margin),
             "market_context": dict(_mapping(market_context).get("market", {})),
         },
@@ -446,6 +447,28 @@ def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "institutional_flow": flow,
         "margin": margin,
         "data_dates": _mapping(record.get("data_dates")),
+    }
+
+
+def _candidate_data_dates(
+    record_data_dates: Mapping[str, Any],
+    market_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    data_dates = dict(record_data_dates)
+    data_dates.update(dict(_mapping(_mapping(market_context).get("data_dates"))))
+    return data_dates
+
+
+def _universe_trace(flow: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: flow[key]
+        for key in (
+            "universe_primary_track",
+            "institutional_universe_tracks",
+            "universe_track_metrics",
+            "scores",
+        )
+        if key in flow
     }
 
 

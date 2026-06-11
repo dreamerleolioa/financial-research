@@ -122,6 +122,16 @@ class FakeBatchTechnicalFetcher:
         return {symbol: self.payloads.get(symbol) or _technical_payload(symbol, run_date) for symbol in symbols}
 
 
+class FakeMarketIndexContextProvider:
+    def __init__(self, context: dict[str, Any] | None = None) -> None:
+        self.context = context or _market_context()
+        self.calls: list[dict[str, Any]] = []
+
+    def build(self, *, run_date: date, market: str) -> dict[str, Any]:
+        self.calls.append({"run_date": run_date, "market": market})
+        return dict(self.context)
+
+
 class RaisingUniverseProvider(FakeUniverseProvider):
     def __init__(self, message: str = "simulated FinMind outage") -> None:
         super().__init__()
@@ -144,6 +154,7 @@ def _clear_daily_radar_api_overrides() -> None:
         get_db,
         daily_radar_router.get_daily_radar_universe_provider,
         daily_radar_router.get_daily_radar_technical_fetcher,
+        daily_radar_router.get_daily_radar_market_context_provider,
     ):
         api.app.dependency_overrides.pop(dependency, None)
 
@@ -155,6 +166,7 @@ def _api_client(
     *,
     universe_provider: FakeUniverseProvider | None = None,
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
+    market_context_provider: FakeMarketIndexContextProvider | None = None,
     raise_server_exceptions: bool = True,
     run_error: Exception | None = None,
 ) -> TestClient:
@@ -164,6 +176,7 @@ def _api_client(
     captured: dict[str, Any] = {}
     provider = universe_provider or FakeUniverseProvider()
     fetcher = technical_fetcher or FakeBatchTechnicalFetcher()
+    context_provider = market_context_provider or FakeMarketIndexContextProvider()
 
     def fake_run_daily_radar(run_date: date, market: str, **kwargs: Any) -> SimpleNamespace:
         captured["run_date"] = run_date
@@ -178,10 +191,12 @@ def _api_client(
     api.app.dependency_overrides[get_db] = lambda: db_session
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_context_provider] = lambda: context_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
     client.fake_universe_provider = provider  # type: ignore[attr-defined]
     client.fake_technical_fetcher = fetcher  # type: ignore[attr-defined]
+    client.fake_market_context_provider = context_provider  # type: ignore[attr-defined]
     return client
 
 
@@ -241,6 +256,28 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
     }
 
 
+def _market_context() -> dict[str, Any]:
+    return {
+        "record_date": "2026-05-29",
+        "data_dates": {"market_index": "2026-05-29"},
+        "market": {
+            "index_symbol": "TAIEX",
+            "yfinance_symbol": "^TWII",
+            "regime": "constructive",
+            "freshness": "fresh",
+            "data_date": "2026-05-29",
+            "close": 21872.0,
+            "previous_close": 21640.0,
+            "ma20": 21480.0,
+            "ma60": 20920.0,
+            "above_ma20": True,
+            "above_ma60": True,
+            "volatility_state": "normal",
+            "market_risk_flags": [],
+        },
+    }
+
+
 def _persist_raw_data(
     session: Session,
     *,
@@ -280,7 +317,8 @@ def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkey
     assert captured["market"] == "US"
     assert captured["session"] is daily_radar_db_session
     assert captured["cache_rows"] == [raw_row]
-    assert captured["market_context"] == {}
+    assert client.fake_market_context_provider.calls == [{"run_date": date(2026, 5, 29), "market": "US"}]  # type: ignore[attr-defined]
+    assert captured["market_context"] == _market_context()
     assert captured["allow_fixture_fallback"] is False
     assert response.json() == {
         "run_id": 42,
@@ -571,6 +609,59 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
     assert cached_institutional["same_day_net_buy"] == pytest.approx(24_680.0)
     assert cached_institutional["foreign_net_shares"] == pytest.approx(24_680.0)
     assert cached_institutional["institutional_flow"]["same_day_net_buy"] == pytest.approx(24_680.0)
+    backfilled_institutional = client.captured_daily_radar_call["cache_rows"][1].institutional  # type: ignore[attr-defined]
+    assert "technical_record_missing" not in {
+        metrics.get("reason")
+        for metrics in backfilled_institutional["universe_track_metrics"].values()
+        if isinstance(metrics, dict)
+    }
+
+
+def test_daily_radar_run_endpoint_adds_local_cache_daily_trigger_tracks_without_extra_fetch(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    daily_radar_db_session.add(
+        StockRawData(
+            symbol="2454.TW",
+            record_date=run_date,
+            technical=_technical_payload("2454.TW", run_date),
+            institutional={},
+            fundamental={"margin": {}},
+            raw_data_is_final=True,
+        )
+    )
+    daily_radar_db_session.commit()
+    fetcher = FakeBatchTechnicalFetcher()
+    provider = FakeUniverseProvider(same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0)], recent=[])
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        technical_fetcher=fetcher,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    captured_rows = client.captured_daily_radar_call["cache_rows"]  # type: ignore[attr-defined]
+    assert [row.symbol for row in captured_rows] == ["2330.TW", "2454.TW"]
+    trigger_payload = captured_rows[1].institutional
+    assert trigger_payload["universe_primary_track"] == "price_volume"
+    assert trigger_payload["institutional_universe_tracks"] == ["price_volume"]
+    assert trigger_payload["flow_state"] == "technical_trigger"
+    assert trigger_payload["universe_track_metrics"]["price_volume"]["matched"] is True
+    assert trigger_payload["universe_track_metrics"]["support_retake"]["matched"] is False
+    assert trigger_payload["scores"]["price_volume"] > 0
 
 
 def test_daily_radar_run_endpoint_returns_409_for_empty_universe_and_does_not_call_service(

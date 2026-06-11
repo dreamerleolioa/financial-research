@@ -26,6 +26,12 @@ FLAT_INSTITUTIONAL_FLOW_FIELDS = (
     "dominant_buyer",
     "flow_strength",
     "source_provider",
+    "universe_primary_track",
+    "institutional_universe_tracks",
+    "universe_track_metrics",
+    "same_day_rank",
+    "recent_accumulation_rank",
+    "scores",
     "warnings",
 )
 
