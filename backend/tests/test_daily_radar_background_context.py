@@ -19,6 +19,12 @@ from ai_stock_sentinel.daily_radar.background_context import (
     build_background_context_labels,
     update_background_chip_context_cache,
 )
+from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
+from ai_stock_sentinel.daily_radar.finmind_background_context import (
+    FINMIND_BACKGROUND_CONTEXT_CONSUMERS,
+    FinMindBackgroundChipContextProvider,
+)
+from ai_stock_sentinel.daily_radar.tdcc_background_context import TdccWeeklyMajorHoldersProvider
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
     get_shared_background_context_trace_by_symbol,
@@ -70,6 +76,27 @@ class FixtureBackgroundProvider:
             for symbol in symbols
             for context_type in context_types
         ]
+
+
+class _FakeFinMindResponse:
+    def __init__(self, body: dict, *, status_code: int = 200) -> None:
+        self._body = body
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self) -> dict:
+        return self._body
+
+
+class _FakeTextResponse:
+    def __init__(self, text: str) -> None:
+        self.content = text.encode("utf-8-sig")
+
+    def raise_for_status(self) -> None:
+        return None
 
 
 def _load_background_context_migration() -> ModuleType:
@@ -420,6 +447,258 @@ def test_update_background_chip_context_cache_fixture_flow_writes_selected_symbo
         context_types=["weekly_major_holders", "full_margin"],
     )
     assert [context["freshness"] for context in traces["2330.TW"]] == ["fresh", "fresh"]
+
+
+def test_finmind_background_provider_builds_full_margin_and_lending_payloads() -> None:
+    calls: list[dict] = []
+
+    def fake_get(url: str, *, params: dict, timeout: int):
+        calls.append(dict(params))
+        if params["dataset"] == "TaiwanStockMarginPurchaseShortSale":
+            return _FakeFinMindResponse(
+                {
+                    "status": 200,
+                    "data": [
+                        {
+                            "date": "2026-06-09",
+                            "stock_id": "2330",
+                            "MarginPurchaseTodayBalance": 1100,
+                            "MarginPurchaseYesterdayBalance": 1000,
+                            "ShortSaleTodayBalance": 70,
+                            "ShortSaleYesterdayBalance": 50,
+                        },
+                        {
+                            "date": "2026-06-10",
+                            "stock_id": "2330",
+                            "MarginPurchaseTodayBalance": 1200,
+                            "MarginPurchaseYesterdayBalance": 1100,
+                            "ShortSaleTodayBalance": 80,
+                            "ShortSaleYesterdayBalance": 70,
+                        },
+                    ],
+                }
+            )
+        if params["dataset"] == "TaiwanStockSecuritiesLending":
+            return _FakeFinMindResponse(
+                {
+                    "status": 200,
+                    "data": [
+                        {"date": "2026-06-09", "stock_id": "2330", "volume": 100},
+                        {"date": "2026-06-09", "stock_id": "2330", "volume": 200},
+                        {"date": "2026-06-10", "stock_id": "2330", "volume": 50},
+                        {"date": "2026-06-10", "stock_id": "2330", "volume": 75},
+                    ],
+                }
+            )
+        raise AssertionError(f"unexpected dataset {params['dataset']}")
+
+    provider = FinMindBackgroundChipContextProvider(
+        api_token="test-token",
+        request_get=fake_get,
+        lookback_trading_days=5,
+    )
+
+    payloads = list(
+        provider.fetch(
+            symbols=["2330.TW"],
+            context_types=["full_margin", "lending", "weekly_major_holders"],
+            run_date=date(2026, 6, 11),
+            market="TW",
+        )
+    )
+
+    by_type = {payload.context_type: payload for payload in payloads}
+    assert set(by_type) == {"full_margin", "lending", "weekly_major_holders"}
+    assert [call["dataset"] for call in calls] == [
+        "TaiwanStockMarginPurchaseShortSale",
+        "TaiwanStockSecuritiesLending",
+    ]
+
+    full_margin = by_type["full_margin"]
+    assert full_margin.freshness == "fresh"
+    assert full_margin.as_of_date == date(2026, 6, 10)
+    assert full_margin.applicable_consumers == FINMIND_BACKGROUND_CONTEXT_CONSUMERS
+    assert full_margin.payload["latest_margin_balance"] == 1200.0
+    assert full_margin.payload["margin_balance_delta"] == 200.0
+    assert full_margin.payload["margin_balance_delta_pct"] == pytest.approx(20.0)
+    assert full_margin.payload["latest_short_balance"] == 80.0
+    assert full_margin.payload["short_balance_delta"] == 30.0
+    assert full_margin.replay_key == "background_context:2330.TW:full_margin:2026-06-10"
+
+    lending = by_type["lending"]
+    assert lending.freshness == "fresh"
+    assert lending.as_of_date == date(2026, 6, 10)
+    assert lending.payload["latest_daily_lending_volume"] == 125.0
+    assert lending.payload["period_lending_volume"] == 425.0
+    assert lending.payload["lending_volume_delta"] == -175.0
+    assert lending.payload["daily_point_count"] == 2
+    assert lending.replay_key == "background_context:2330.TW:lending:2026-06-10"
+
+    weekly = by_type["weekly_major_holders"]
+    assert weekly.freshness == "missing"
+    assert weekly.missing_reason == "provider_deferred"
+    assert weekly.payload == {}
+
+
+def test_finmind_background_provider_marks_dataset_errors_as_missing() -> None:
+    def fake_get(url: str, *, params: dict, timeout: int):
+        return _FakeFinMindResponse(
+            {"status": 400, "msg": "Your level is free. Please update your user level."}
+        )
+
+    provider = FinMindBackgroundChipContextProvider(api_token="test-token", request_get=fake_get)
+
+    payload = next(
+        iter(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["full_margin"],
+                run_date=date(2026, 6, 11),
+                market="TW",
+            )
+        )
+    )
+
+    assert payload.context_type == "full_margin"
+    assert payload.freshness == "missing"
+    assert payload.missing_reason == "finmind_access_required"
+    assert payload.source["dataset"] == "TaiwanStockMarginPurchaseShortSale"
+
+
+def test_finmind_background_provider_fatal_request_errors_fail_update(db_session: Session) -> None:
+    def fake_get(url: str, *, params: dict, timeout: int):
+        raise RuntimeError("network down")
+
+    provider = FinMindBackgroundChipContextProvider(api_token="test-token", request_get=fake_get)
+
+    result = update_background_chip_context_cache(
+        db_session,
+        run_date=date(2026, 6, 11),
+        market="TW",
+        provider=provider,
+        symbols=["2330.TW"],
+        context_types=["full_margin"],
+    )
+
+    assert result["status"] == "failed"
+    assert result["records_written"] == 0
+    assert result["errors"][0]["code"] == "background_context_provider_failed"
+    assert result["errors"][0]["error_type"] == "_FinMindDatasetError"
+
+
+def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selected_symbols() -> None:
+    calls: list[str] = []
+    csv_text = """資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%
+20260605,2330  ,1,2160807,254859798,0.98
+20260605,2330  ,9,3997,279407327,1.07
+20260605,2330  ,12,563,276059662,1.06
+20260605,2330  ,13,348,240919588,0.92
+20260605,2330  ,14,209,186766182,0.72
+20260605,2330  ,15,1499,22151774520,85.42
+20260605,2330  ,17,2678648,25932524521,100.00
+20260605,2454  ,12,100,1000000,2.50
+20260605,2454  ,15,10,9000000,22.50
+20260605,2454  ,17,2000,40000000,100.00
+"""
+
+    def fake_get(url: str, *, timeout: int):
+        calls.append(url)
+        return _FakeTextResponse(csv_text)
+
+    provider = TdccWeeklyMajorHoldersProvider(request_get=fake_get)
+
+    payloads = list(
+        provider.fetch(
+            symbols=["2330.TW", "2454.TW", "9999.TW"],
+            context_types=["weekly_major_holders"],
+            run_date=date(2026, 6, 11),
+            market="TW",
+        )
+    )
+
+    assert len(calls) == 1
+    by_symbol = {payload.symbol: payload for payload in payloads}
+    tsmc = by_symbol["2330.TW"]
+    assert tsmc.context_type == "weekly_major_holders"
+    assert tsmc.freshness == "fresh"
+    assert tsmc.as_of_date == date(2026, 6, 5)
+    assert tsmc.applicable_consumers == FINMIND_BACKGROUND_CONTEXT_CONSUMERS
+    assert tsmc.payload["major_holder_levels"] == [12, 13, 14, 15]
+    assert tsmc.payload["major_holder_ratio"] == pytest.approx(88.12)
+    assert tsmc.payload["major_holder_people"] == 2619
+    assert tsmc.payload["major_holder_shares"] == 22855519952
+    assert tsmc.payload["retail_holder_ratio"] == pytest.approx(2.05)
+    assert tsmc.payload["total_people"] == 2678648
+    assert tsmc.payload["total_shares"] == 25932524521
+    assert tsmc.replay_key == "background_context:2330.TW:weekly_major_holders:2026-06-05"
+    assert by_symbol["2454.TW"].payload["major_holder_ratio"] == pytest.approx(25.0)
+    assert by_symbol["9999.TW"].freshness == "missing"
+    assert by_symbol["9999.TW"].missing_reason == "tdcc_symbol_not_found"
+
+
+def test_default_background_provider_writes_finmind_and_tdcc_contexts(db_session: Session) -> None:
+    class FakeFinMindProvider:
+        def fetch(self, *, symbols: list[str], context_types: list[str], run_date: date, market: str):
+            return [
+                BackgroundContextPayload(
+                    symbol=symbol,
+                    context_type=context_type,
+                    applicable_consumers=FINMIND_BACKGROUND_CONTEXT_CONSUMERS,
+                    source={"domain": "background_context", "provider": "fake_finmind", "market": market},
+                    as_of_date=run_date,
+                    freshness="fresh",
+                    payload={"provider": "fake_finmind"},
+                    missing_reason=None,
+                    replay_key=f"background_context:{symbol}:{context_type}:{run_date.isoformat()}",
+                )
+                for symbol in symbols
+                for context_type in context_types
+            ]
+
+    class FakeTdccProvider:
+        def fetch(self, *, symbols: list[str], context_types: list[str], run_date: date, market: str):
+            return [
+                BackgroundContextPayload(
+                    symbol=symbol,
+                    context_type="weekly_major_holders",
+                    applicable_consumers=FINMIND_BACKGROUND_CONTEXT_CONSUMERS,
+                    source={"domain": "background_context", "provider": "fake_tdcc", "market": market},
+                    as_of_date=run_date,
+                    freshness="fresh",
+                    payload={"major_holder_ratio": 42.0},
+                    missing_reason=None,
+                    replay_key=f"background_context:{symbol}:weekly_major_holders:{run_date.isoformat()}",
+                )
+                for symbol in symbols
+            ]
+
+    provider = DefaultBackgroundChipContextProvider(
+        finmind_provider=FakeFinMindProvider(),  # type: ignore[arg-type]
+        tdcc_provider=FakeTdccProvider(),  # type: ignore[arg-type]
+    )
+
+    result = update_background_chip_context_cache(
+        db_session,
+        run_date=date(2026, 6, 11),
+        market="TW",
+        provider=provider,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders", "lending", "full_margin"],
+    )
+    db_session.commit()
+
+    assert result["status"] == "completed"
+    assert result["records_written"] == 3
+    traces = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders", "lending", "full_margin"],
+    )
+    by_type = {context["context_type"]: context for context in traces["2330.TW"]}
+    assert by_type["weekly_major_holders"]["source"]["provider"] == "fake_tdcc"
+    assert by_type["weekly_major_holders"]["payload"] == {"major_holder_ratio": 42.0}
+    assert by_type["lending"]["source"]["provider"] == "fake_finmind"
+    assert by_type["full_margin"]["source"]["provider"] == "fake_finmind"
 
 
 def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> None:

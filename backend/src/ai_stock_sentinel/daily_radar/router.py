@@ -22,9 +22,9 @@ from ai_stock_sentinel.daily_radar.raw_data import (
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundChipContextProvider,
-    StubBackgroundChipContextProvider,
     update_background_chip_context_cache,
 )
+from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
     get_daily_radar_run_by_date,
@@ -100,7 +100,7 @@ def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
 
 
 def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
-    return StubBackgroundChipContextProvider()
+    return DefaultBackgroundChipContextProvider()
 
 
 @router.post(
