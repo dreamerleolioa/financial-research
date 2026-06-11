@@ -290,7 +290,86 @@ def test_run_daily_radar_attaches_background_context_without_changing_score_or_b
             "payload": {"major_holder_ratio": 0.58},
         }
     ]
+    assert with_background.input_snapshot["background_context_labels"] == [
+        {
+            "context_type": "weekly_major_holders",
+            "label": "大戶持股背景資料未更新",
+            "source": {"domain": "background_context", "provider": "fixture_cache"},
+            "as_of_date": "2026-05-24",
+            "freshness": "stale",
+            "missing_reason": "source_stale",
+            "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+            "applicable_consumers": ["daily_radar"],
+        }
+    ]
     assert with_background.data_dates["background_context"] == "2026-05-24"
+
+
+def test_run_daily_radar_ranking_is_unchanged_when_background_context_is_removed(db_session: Session) -> None:
+    records = [
+        deepcopy(record)
+        for record in load_daily_radar_fixture_records(FIXTURE_DIR)
+        if record["symbol"] in {"2330.TW", "2454.TW", "3034.TW"}
+    ]
+    market_context = {"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}}
+
+    baseline_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=records,
+        market_context=market_context,
+    )
+    background_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=records,
+        market_context=market_context,
+        background_contexts_by_symbol={
+            "2330.TW": [
+                {
+                    "context_type": "weekly_major_holders",
+                    "source": {"domain": "background_context", "provider": "fixture_cache"},
+                    "as_of_date": "2026-05-24",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+                    "applicable_consumers": ["daily_radar"],
+                    "payload": {"major_holder_ratio": 0.58},
+                }
+            ],
+            "2454.TW": [
+                {
+                    "context_type": "lending",
+                    "source": {"domain": "background_context", "provider": "fixture_cache"},
+                    "as_of_date": None,
+                    "freshness": "missing",
+                    "missing_reason": "context_cache_missing",
+                    "replay_key": "background_context:2454.TW:lending:missing",
+                    "applicable_consumers": ["daily_radar"],
+                    "payload": {},
+                }
+            ],
+        },
+    )
+    db_session.commit()
+
+    baseline = db_session.scalars(
+        select(DailyRadarCandidate)
+        .where(DailyRadarCandidate.run_id == baseline_run.id)
+        .order_by(DailyRadarCandidate.observation_score.desc(), DailyRadarCandidate.symbol.asc())
+    ).all()
+    with_background = db_session.scalars(
+        select(DailyRadarCandidate)
+        .where(DailyRadarCandidate.run_id == background_run.id)
+        .order_by(DailyRadarCandidate.observation_score.desc(), DailyRadarCandidate.symbol.asc())
+    ).all()
+
+    assert [(candidate.symbol, candidate.observation_score, candidate.primary_bucket) for candidate in with_background] == [
+        (candidate.symbol, candidate.observation_score, candidate.primary_bucket) for candidate in baseline
+    ]
+    assert any(candidate.input_snapshot.get("background_context_labels") for candidate in with_background)
 
 
 def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_choose_latest(

@@ -479,6 +479,7 @@ def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRe
         input_snapshot=dict(candidate.input_snapshot or {}),
         data_dates=_date_mapping(candidate.data_dates or {}),
         matched_rules=_matched_rules(candidate.matched_rules or []),
+        background_context_labels=_background_context_labels(candidate.input_snapshot),
     )
 
 
@@ -497,6 +498,7 @@ def _history_response(item: dict[str, Any]) -> dict[str, Any]:
         "score_breakdown": dict(item.get("score_breakdown") or {}),
         "input_snapshot": dict(item.get("input_snapshot") or {}),
         "data_dates": {key: value.isoformat() for key, value in _date_mapping(item.get("data_dates") or {}).items()},
+        "background_context_labels": _background_context_labels(item.get("input_snapshot")),
     }
     scoring_version = item.get("scoring_version") or _trace_version(item.get("score_breakdown"), "scoring_version")
     rule_version = item.get("rule_version") or _trace_version(item.get("score_breakdown"), "rule_version")
@@ -521,6 +523,15 @@ def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:
         else:
             rules.append({"rule_id": str(rule), "label": str(rule), "details": {}})
     return rules
+
+
+def _background_context_labels(input_snapshot: Any) -> list[dict[str, Any]]:
+    if not isinstance(input_snapshot, dict):
+        return []
+    labels = input_snapshot.get("background_context_labels")
+    if not isinstance(labels, list):
+        return []
+    return [dict(label) for label in labels if isinstance(label, dict)]
 
 
 def _trace_version(payload: Any, key: str) -> str | None:

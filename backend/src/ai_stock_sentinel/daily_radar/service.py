@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status
+from ai_stock_sentinel.daily_radar.background_context import build_background_context_labels
 from ai_stock_sentinel.daily_radar.data_loader import (
     load_daily_radar_cache_records,
     load_daily_radar_fixture_records,
@@ -240,6 +241,7 @@ def _with_background_contexts(
         next_candidate = dict(candidate)
         input_snapshot = dict(_mapping(next_candidate.get("input_snapshot")))
         input_snapshot["background_context"] = contexts
+        input_snapshot["background_context_labels"] = build_background_context_labels(contexts)
         next_candidate["input_snapshot"] = input_snapshot
 
         data_dates = dict(_mapping(next_candidate.get("data_dates")))

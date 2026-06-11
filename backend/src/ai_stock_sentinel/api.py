@@ -45,6 +45,11 @@ from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
 )
+from ai_stock_sentinel.shared_context import (
+    SHARED_CONTEXT_CONSUMER_ANALYZE,
+    SHARED_CONTEXT_CONSUMER_POSITION,
+    read_shared_context_for_symbol as _read_shared_context_for_symbol,
+)
 from ai_stock_sentinel.user_models.user import User
 
 configure_logging()
@@ -143,6 +148,7 @@ class AnalyzeResponse(BaseModel):
     data_sources: list[str] = Field(default_factory=list)
     fundamental_data: dict[str, Any] | None = None
     position_analysis: PositionAnalysis | None = None
+    shared_context: dict[str, Any] | None = None
     technical_indicators: TechnicalIndicators | None = None
     is_final: bool = True
     intraday_disclaimer: str | None = None
@@ -657,6 +663,21 @@ def _position_cache_matches(full_result: dict[str, Any], payload: PositionAnalyz
     return _same_price(position_analysis.get("entry_price"))
 
 
+def _with_shared_context(
+    response: AnalyzeResponse,
+    db: Session,
+    *,
+    symbol: str,
+    consumer: str,
+) -> AnalyzeResponse:
+    response.shared_context = _read_shared_context_for_symbol(
+        db,
+        symbol=symbol,
+        consumer=consumer,
+    )
+    return response
+
+
 def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
     if not INTERNAL_API_KEY:
         raise HTTPException(status_code=503, detail="Internal API key not configured")
@@ -871,7 +892,12 @@ def analyze(
             hit = _handle_cache_hit(cache, now_time)
             if hit:
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-                return _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result)
+                return _with_shared_context(
+                    _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result),
+                    db,
+                    symbol=payload.symbol,
+                    consumer=SHARED_CONTEXT_CONSUMER_ANALYZE,
+                )
 
     raw_cache = None
     if payload.skip_ai:
@@ -986,7 +1012,12 @@ def analyze(
     response = _response
     response.is_final = is_final
     response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
-    return response
+    return _with_shared_context(
+        response,
+        db,
+        symbol=payload.symbol,
+        consumer=SHARED_CONTEXT_CONSUMER_ANALYZE,
+    )
 
 
 @app.post("/internal/fetch-raw-data")
@@ -1203,7 +1234,12 @@ def analyze_position(
             full = cache.full_result or {}
             if _position_cache_matches(full, payload):
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-                return _build_response_from_cache(hit, payload.symbol, full_result=full)
+                return _with_shared_context(
+                    _build_response_from_cache(hit, payload.symbol, full_result=full),
+                    db,
+                    symbol=payload.symbol,
+                    consumer=SHARED_CONTEXT_CONSUMER_POSITION,
+                )
 
     _check_symbol_exists(payload.symbol)
     backfill_yesterday_indicators(db, payload.symbol)
@@ -1307,4 +1343,9 @@ def analyze_position(
     response = _response
     response.is_final = is_final
     response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
-    return response
+    return _with_shared_context(
+        response,
+        db,
+        symbol=payload.symbol,
+        consumer=SHARED_CONTEXT_CONSUMER_POSITION,
+    )

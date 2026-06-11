@@ -642,7 +642,15 @@ def _persist_daily_radar_candidate(
     score: int,
     primary_bucket: str = "institutional_accumulation",
     secondary_buckets: list[str] | None = None,
+    background_context_labels: list[dict[str, Any]] | None = None,
 ) -> DailyRadarCandidate:
+    input_snapshot: dict[str, Any] = {
+        "symbol": symbol,
+        "close": 980,
+        "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
+    }
+    if background_context_labels is not None:
+        input_snapshot["background_context_labels"] = background_context_labels
     candidate = DailyRadarCandidate(
         run_id=run.id,
         symbol=symbol,
@@ -662,11 +670,7 @@ def _persist_daily_radar_candidate(
         explanation="Rule-based observation summary for public API tests.",
         repeat_status="new",
         score_breakdown={"observation_score": score, "bucket_scores": {primary_bucket: score}},
-        input_snapshot={
-            "symbol": symbol,
-            "close": 980,
-            "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
-        },
+        input_snapshot=input_snapshot,
         data_dates={"ohlcv": run.run_date.isoformat(), "institutional_flow": run.run_date.isoformat()},
     )
     session.add(candidate)
@@ -1005,7 +1009,34 @@ def test_public_latest_daily_radar_returns_latest_completed_run_without_internal
         created_at=datetime(2026, 6, 2, 9, 0, tzinfo=timezone.utc),
     )
     _persist_daily_radar_candidate(daily_radar_db_session, latest, symbol="2454.TW", score=88)
-    _persist_daily_radar_candidate(daily_radar_db_session, latest, symbol="2317.TW", score=93)
+    _persist_daily_radar_candidate(
+        daily_radar_db_session,
+        latest,
+        symbol="2317.TW",
+        score=93,
+        background_context_labels=[
+            {
+                "context_type": "weekly_major_holders",
+                "label": "大戶持股集中背景",
+                "source": {"domain": "background_context", "provider": "fixture_cache"},
+                "as_of_date": "2026-05-31",
+                "freshness": "fresh",
+                "missing_reason": None,
+                "replay_key": "background_context:2317.TW:weekly_major_holders:2026-05-31",
+                "applicable_consumers": ["daily_radar"],
+            },
+            {
+                "context_type": "full_margin",
+                "label": "完整融資融券背景資料未更新",
+                "source": {"domain": "background_context", "provider": "fixture_cache"},
+                "as_of_date": None,
+                "freshness": "missing",
+                "missing_reason": "context_cache_missing",
+                "replay_key": "background_context:2317.TW:full_margin:missing",
+                "applicable_consumers": ["daily_radar"],
+            },
+        ],
+    )
     _persist_daily_radar_run(
         daily_radar_db_session,
         run_date=date(2026, 6, 3),
@@ -1027,6 +1058,14 @@ def test_public_latest_daily_radar_returns_latest_completed_run_without_internal
     assert first["bucket_scores"] == {"institutional_accumulation": 93, "price_volume_strengthening": 83}
     assert first["input_snapshot"]["symbol"] == "2317.TW"
     assert first["data_dates"]["ohlcv"] == "2026-06-02"
+    assert [label["context_type"] for label in first["background_context_labels"]] == [
+        "weekly_major_holders",
+        "full_margin",
+    ]
+    assert first["background_context_labels"][0]["freshness"] == "fresh"
+    assert first["background_context_labels"][1]["freshness"] == "missing"
+    assert first["background_context_labels"][1]["missing_reason"] == "context_cache_missing"
+    assert payload["candidates"][1]["background_context_labels"] == []
 
 
 def test_public_daily_radar_by_date_uses_latest_public_run_and_bucket_limit_filters(
@@ -1109,6 +1148,7 @@ def test_public_daily_radar_symbol_history_returns_recent_public_candidates_with
                 "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
             },
             "data_dates": {"ohlcv": "2026-06-02", "institutional_flow": "2026-06-02"},
+            "background_context_labels": [],
         }
     ]
 

@@ -15,6 +15,19 @@ from ai_stock_sentinel.daily_radar.repository import (
 )
 
 
+BACKGROUND_CONTEXT_LABELS: dict[str, str] = {
+    "weekly_major_holders": "大戶持股集中背景",
+    "lending": "借券空方壓力背景",
+    "full_margin": "完整融資融券背景",
+}
+
+BACKGROUND_CONTEXT_MISSING_LABELS: dict[str, str] = {
+    "weekly_major_holders": "大戶持股背景資料未更新",
+    "lending": "借券背景資料未更新",
+    "full_margin": "完整融資融券背景資料未更新",
+}
+
+
 @dataclass(frozen=True)
 class BackgroundContextPayload:
     symbol: str
@@ -138,6 +151,37 @@ def update_background_chip_context_cache(
     }
 
 
+def build_background_context_labels(
+    contexts: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    labels: list[dict[str, Any]] = []
+    for context in contexts:
+        context_type = str(context.get("context_type") or "").strip()
+        if not context_type:
+            continue
+        freshness = str(context.get("freshness") or "unknown")
+        missing_reason = context.get("missing_reason")
+        is_missing = freshness == "missing" or missing_reason is not None
+        label = (
+            BACKGROUND_CONTEXT_MISSING_LABELS.get(context_type)
+            if is_missing
+            else BACKGROUND_CONTEXT_LABELS.get(context_type)
+        ) or f"背景脈絡：{context_type}"
+        labels.append(
+            {
+                "context_type": context_type,
+                "label": label,
+                "source": dict(_mapping(context.get("source"))),
+                "as_of_date": context.get("as_of_date"),
+                "freshness": freshness,
+                "missing_reason": str(missing_reason) if missing_reason is not None else None,
+                "replay_key": str(context.get("replay_key") or ""),
+                "applicable_consumers": _list_of_strings(context.get("applicable_consumers")),
+            }
+        )
+    return labels
+
+
 def _latest_daily_radar_symbols(session: Session, *, market: str) -> list[str]:
     latest_run = get_latest_daily_radar_run(session, market=market)
     if latest_run is None:
@@ -157,9 +201,24 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _list_of_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
 __all__ = [
+    "BACKGROUND_CONTEXT_LABELS",
+    "BACKGROUND_CONTEXT_MISSING_LABELS",
     "BackgroundChipContextProvider",
     "BackgroundContextPayload",
     "StubBackgroundChipContextProvider",
+    "build_background_context_labels",
     "update_background_chip_context_cache",
 ]

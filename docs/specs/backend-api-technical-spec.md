@@ -2,7 +2,7 @@
 
 > 類型：技術文件（Technical Doc）
 > 更新日期：2026-06-11
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract。
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract。
 
 ## 1) 目的
 
@@ -178,12 +178,15 @@ make run-api
   | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                           |
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
   | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令 |
+  | `shared_context`           | object \| null | Phase 2C shared background context read payload；只作 evidence/caveat 與資料完整度 trace，不參與 LLM 數值計算、ranking、bucket、`action_plan` 或 rule-based 欄位覆寫 |
   | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                                                                                                          |
   | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                                                                                                      |
   | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                                                                                                    |
   | `errors`                   | array          | 錯誤碼陣列                                                                                                                                                                                                                                                                                      |
 
 > **策略產生邊界（`POST /analyze`）**：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`、`action_plan`、`action_plan_tag` 皆由後端 Python rule-based 邏輯產出；LLM 可參與分析文字、新聞情緒或綜合敘事生成，但**不得直接輸出最終進場指令**。
+
+> **Shared context read contract（Phase 2C）**：`shared_context` 由 `shared_background_contexts` cache 以 selected symbol 批次/單檔讀取產生，欄位包含 `version`（目前 `shared-context-read-v1`）、`symbol`、`consumer`、`contexts[]`、`caveats[]` 與 `data_quality`。`contexts[]`/`caveats[]` 使用 consumer-neutral 欄位：`context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers`；資料缺漏或 stale 時以 caveat 呈現且 `data_quality.blocking=false`。此 payload 在 response 組裝階段附加，不進入 LangGraph initial state 或 LLM prompt，不觸發 weekly major holders、lending、full margin 的即時逐檔昂貴查詢。
 
 > **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
 >
@@ -344,6 +347,7 @@ make run-api
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                                          |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 context + `signal_summary`，強化持股健康度與出場推理）                |
   | `technical_indicators`     | object \| null | 技術指標顯性輸出（與 `/analyze` 相同，包含布林通道、MACD、KD、ADX、OBV，供前端技術指標卡片使用） |
+  | `shared_context`           | object \| null | Phase 2C shared background context read payload；只作持股風險 caveat 與資料完整度 trace，不覆寫 `recommended_action`、`trailing_stop` 或 `exit_reason` |
   | `institutional_flow_label` | enum \| null   | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                     |
   | `action_plan`              | object \| null | 持股版戰術行動（`action` 為 `續抱` / `減碼` / `出場`）                                           |
   | `action_plan_tag`          | enum \| null   | `opportunity` / `overheated` / `neutral`                                                         |
@@ -379,6 +383,8 @@ make run-api
 > - 其他 → `Hold`
 
 > **持股診斷 LLM 邊界**：`/analyze/position` 與 `/analyze` 共用 LangGraph 分析流程與 `signal_summary`；差異是 request 內含 `entry_price` 時，`analyze_node` 會額外建立 `position_context`，讓 LLM 以成本價、損益百分比、動態防守價、距離防守線、距離支撐、未實現損益、持有天數、`recommended_action` 與 `exit_reason` 解釋持股狀態。`recommended_action` / `trailing_stop` / `exit_reason` 仍由 Python rule-based 計算，LLM 不得覆寫。
+
+> **Shared context 邊界（Phase 2C）**：`/analyze/position` 的 `shared_context.consumer = "position_analysis"`。Shared context 只由 shared cache 讀取並附加於 response，作為 weekly major holders、lending、full margin 等背景 caveat 與資料品質說明；它不進入 position scorer，不改 `position_status`、`recommended_action`、`trailing_stop`、`trailing_stop_reason`、`exit_reason` 或任何持股診斷 rule-based 欄位。Missing/stale context 非阻塞，必須以 `freshness` / `missing_reason` / `data_quality` 表示。
 
 > **快取隔離與邊界**：
 >
@@ -511,7 +517,20 @@ make run-api
     "decision_context": "present",
     "source": "user_backfilled",
     "created_after_entry": true,
-    "planned_invalidation_present": true
+    "planned_invalidation_present": true,
+    "shared_context": {
+      "version": "shared-context-read-v1",
+      "symbol": "2330.TW",
+      "consumer": "portfolio_diagnosis",
+      "reference_date": "2026-06-11",
+      "point_in_time": true,
+      "contexts": [],
+      "caveats": [],
+      "data_quality": {
+        "status": "missing",
+        "blocking": false
+      }
+    }
   }
 }
 ```
@@ -522,6 +541,7 @@ make run-api
   - `source`：`user_recorded_at_event_time` / `user_backfilled` / `synthetic_from_portfolio_row` / `manual_record_correction` / `not_recorded` / `null`。
   - `created_after_entry`：plan 是否在進場後補填；`true` 時不得視為原始進場當下已存在的計畫。
   - `planned_invalidation_present`：目前 plan 是否有 `planned_invalidation` 文字。
+  - `shared_context`：Phase 2D portfolio diagnosis shared context reference。只讀 `shared_background_contexts` cache，作為 evidence/caveat 與資料品質說明；不得轉成 portfolio action、加減碼指令或交易建議。Active portfolio 最多 8 筆，因此此 read path 為 bounded cache read，不觸發 weekly major holders、lending、full margin 即時逐檔 provider。
 
 ### `GET /portfolio/{portfolio_id}/lifecycle-plan`
 
@@ -984,7 +1004,8 @@ make run-api
 - **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 會比較同一使用者與 `position_group_id` 下 `PositionEvent.updated_at` 與 `PositionLifecyclePlan.updated_at` 的最新時間；若來源資料比 saved review 更新，重建 `review_result` / `evidence_payload` 並更新同一筆 `position_lifecycle_review`，避免部分出場後新增事件或事後補填 plan 時持續讀到 stale lifecycle review。
 - **版本策略**：`review_version` 為 `position-lifecycle-review-v1`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。
 - **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
-- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、source summary 與 data quality；不存完整 OHLCV/K-line arrays、raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
+- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、Phase 2D point-in-time shared context references、source summary 與 data quality；不存完整 OHLCV/K-line arrays、raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
+- **Shared context point-in-time 邊界（Phase 2D）**：`review_result.shared_context` 與 `evidence_payload.shared_context` 以每個 `PositionEvent.event_date` 作為 `reference_date`，只引用 `as_of_date <= event_date` 的 shared background context。若 latest cache 的 `as_of_date` 晚於事件日，會以 `missing_reason = "future_context_excluded"` 保留 caveat，並保留原始 excluded `as_of_date` trace；不得使用該未來資料批評 entry/exit-time decision。Shared context 只作 evidence/caveat/data quality，不改 `lifecycle_review.classification.primary_label`、tier、deterministic metrics 或 fixed-option decision-context 判讀。
 - **Response 200**
 
 ```json
@@ -1123,6 +1144,7 @@ make run-api
   - `review_result.lifecycle_review.*.source_refs`：每段固定模板文字的來源指標、事件或分類 trace。前端可顯示來源，但不應要求使用者解讀 raw score。
   - `review_result.event_indicator_snapshots`：每個 entry/exit event 的 point-in-time 技術指標與 market regime snapshot，不包含完整 K 線序列。
   - `review_result.event_facts[].fees` / `taxes`：event ledger 中已保存或系統計算的成本事實；不表示本端點要求使用者手動輸入交易稅。
+  - `review_result.shared_context` / `evidence_payload.shared_context`：每個事件的 shared context read payload，包含 `source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `data_quality`；missing/stale/future-excluded 均非阻塞。
   - `review_result.decision_context.status`：`present` / `insufficient`。若為 `insufficient`，前端需明確提示不要推論未記錄意圖。
   - `review_result.decision_context.source` / `created_after_entry`：用於標示 plan provenance；`source = user_backfilled` 或 `created_after_entry = true` 時必須顯示事後補填 caveat，不可視為原始 entry-time intent。
   - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts，可被 deterministic lifecycle review 引用，但缺漏或 `not_recorded` 時不得用未記錄 intent 補判。
@@ -1241,7 +1263,7 @@ Daily Radar run status：
   | `name`              | string \| null | 股票名稱                      |
   | `primary_bucket`    | string         | 主要觀察分類                  |
   | `secondary_buckets` | array          | 次要觀察分類                  |
-  | `observation_score` | number         | rule-based 內部觀察分數，用於排序、校準與 trace，不是預設前台 headline |
+  | `observation_score` | number         | rule-based 內部排序分，用於排序、校準與 trace，不是勝率、推薦分數或預設前台 headline |
   | `risk_labels`       | array          | rule-based 風險標籤           |
   | `repeat_status`     | string \| null | 是否連續進入雷達或重新出現    |
   | `explanation`       | string         | 候選原因摘要                  |
@@ -1252,10 +1274,12 @@ Daily Radar run status：
   | `input_snapshot`    | object         | 產生候選時使用的輸入快照；包含 market context、relative strength、版本資訊與 replayable evidence |
   | `data_dates`        | object         | 各資料來源對應日期            |
   | `matched_rules`     | array          | 命中的 rule ID 或規則名稱     |
+  | `background_context_labels` | array | Phase 2B shared background context labels，用於 Daily Radar detail surface，不參與分數或排序 |
 
 - **Trace contract**
   - `input_snapshot.market_context` 至少可表示固定 benchmark 的 `regime`、`freshness`、`data_date`、均線位置、波動狀態與 risk flags。
   - `input_snapshot.background_context[]` 可表示 Phase 2A shared background context cache trace，包含 `context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `payload`。Missing/stale context 不改 `observation_score`、bucket、risk labels 或排序。
+  - `background_context_labels[]` 由 background context trace 派生，包含 `context_type`、`label`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `applicable_consumers`。目前 labels 包含 weekly major holders 背景持股集中脈絡、lending 借券空方壓力背景、full margin 完整融資融券背景。這些 labels 是 context/detail surface，不是交易 action、portfolio recommendation 或 score driver。
   - `score_breakdown.relative_strength` 表示 benchmark symbol、lookback window、candidate return、benchmark return、relative value、score impact、freshness、data dates、aligned dates 與 missing reason。資料不足時 `relative_value` 為 `null`，不可補 0 假裝中性。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
   - Current version trace：`daily-radar-scoring-v2.1c` / `daily-radar-rules-v2.1c`。
@@ -1299,7 +1323,7 @@ Daily Radar run status：
 
 Provider failure 以 `status: "failed"` 與 `errors[]` 記錄，response 仍是 200，避免背景更新失敗阻塞 existing daily run。正式 workflow 為 `.github/workflows/daily-radar-chip-context.yml`，使用 `ZEABUR_BACKEND_URL` 與 `DAILY_RADAR_INTERNAL_TOKEN` secrets，不硬編 secret。
 
-> **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。Raw scores 保留於 API 作為內部排序、校準、回測與 traceability；一般使用者介面應優先顯示觀察等級、bucket、風險標籤與命中原因。
+> **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。Raw scores 保留於 API 作為內部排序、校準、回測與 traceability；一般使用者介面應優先顯示觀察等級、bucket、風險標籤與命中原因，若顯示 `observation_score` 應標示為內部排序分，不得稱為勝率、推薦分數或保證性結果。
 
 ---
 

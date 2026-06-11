@@ -14,7 +14,7 @@ from ai_stock_sentinel.analysis.position_lifecycle import (
     build_position_lifecycle_analysis,
     build_position_lifecycle_analysis_from_rows,
 )
-from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData
+from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, SharedBackgroundContext, StockRawData
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.user_models.user import User
 
@@ -33,7 +33,13 @@ def db_session() -> Session:
     )
     Base.metadata.create_all(
         engine,
-        tables=[User.__table__, PositionEvent.__table__, PositionLifecyclePlan.__table__, StockRawData.__table__],
+        tables=[
+            User.__table__,
+            PositionEvent.__table__,
+            PositionLifecyclePlan.__table__,
+            StockRawData.__table__,
+            SharedBackgroundContext.__table__,
+        ],
     )
     with Session(engine) as session:
         yield session
@@ -360,9 +366,12 @@ def test_lifecycle_evidence_payload_contains_copyable_ai_context_fields():
         "indicator_snapshots",
         "detected_events",
         "market_regime_snapshots",
+        "shared_context",
         "source_data",
         "data_quality",
     }
+    assert evidence["shared_context"]["point_in_time"] is True
+    assert evidence["shared_context"]["data_quality"]["blocking"] is False
     assert set(evidence["metrics"]) == {"lifecycle", "entry_sequence", "exit_sequence", "advanced_internal"}
     assert evidence["metrics"]["lifecycle"]["total_realized_pnl"] == pytest.approx(-109)
     assert evidence["metrics"]["entry_sequence"]["average_down_count"] == 1
@@ -733,6 +742,85 @@ def test_lifecycle_review_classifies_coherent_position_management():
 
     assert result["lifecycle_review"]["classification"]["primary_label"] == "coherent_position_management"
     assert result["lifecycle_review"]["classification"]["tier"] == "constructive"
+
+
+def test_lifecycle_shared_context_caveat_does_not_override_classification():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "full_exit", date(2026, 1, 11), 110, 10, fees=0, taxes=0, plan_adherence="yes"),
+    ]
+    base_result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[_row(date(2026, 1, 10), 100), _row(date(2026, 1, 11), 110)],
+        plan=_plan(),
+    )
+    shared_context = {
+        "version": "lifecycle-shared-context-v1",
+        "consumer": "lifecycle_review",
+        "point_in_time": True,
+        "events": [
+            {
+                "event_key": "id:1",
+                "event_type": "initial_entry",
+                "event_date": "2026-01-10",
+                "shared_context": {
+                    "version": "shared-context-read-v1",
+                    "symbol": "2330.TW",
+                    "consumer": "lifecycle_review",
+                    "reference_date": "2026-01-10",
+                    "point_in_time": True,
+                    "contexts": [
+                        {
+                            "context_type": "lending",
+                            "source": {"domain": "background_context", "provider": "fixture"},
+                            "as_of_date": None,
+                            "freshness": "missing",
+                            "missing_reason": "context_cache_missing",
+                            "replay_key": "background_context:2330.TW:lending:missing",
+                            "applicable_consumers": ["lifecycle_review"],
+                            "payload": {},
+                        }
+                    ],
+                    "caveats": [],
+                    "data_quality": {
+                        "status": "missing",
+                        "freshness_counts": {"fresh": 0, "stale": 0, "missing": 1, "unknown": 0},
+                        "missing_reasons": ["context_cache_missing"],
+                        "blocking": False,
+                        "point_in_time": True,
+                    },
+                },
+            }
+        ],
+        "data_quality": {
+            "status": "missing",
+            "freshness_counts": {"fresh": 0, "stale": 0, "missing": 1, "unknown": 0},
+            "missing_reasons": ["context_cache_missing"],
+            "blocking": False,
+            "point_in_time": True,
+        },
+    }
+
+    result, evidence = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[_row(date(2026, 1, 10), 100), _row(date(2026, 1, 11), 110)],
+        plan=_plan(),
+        shared_context=shared_context,
+    )
+
+    assert result["lifecycle_review"]["classification"]["primary_label"] == (
+        base_result["lifecycle_review"]["classification"]["primary_label"]
+    )
+    assert result["lifecycle_review"]["classification"]["tier"] == (
+        base_result["lifecycle_review"]["classification"]["tier"]
+    )
+    assert result["shared_context"] == shared_context
+    assert evidence["shared_context"] == shared_context
+    assert any("shared context" in item["text"] for item in result["lifecycle_review"]["classification"]["caveats"])
 
 
 def test_db_builder_scopes_user_group_and_performs_no_writes(db_session: Session):

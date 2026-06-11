@@ -51,6 +51,17 @@ export interface DailyRadarRelativeStrengthTrace {
   replay_key?: string;
 }
 
+export interface DailyRadarBackgroundContextLabel {
+  context_type: string;
+  label: string;
+  source: DailyRadarTracePayload;
+  as_of_date?: string | null;
+  freshness: string;
+  missing_reason?: string | null;
+  replay_key: string;
+  applicable_consumers: string[];
+}
+
 export interface DailyRadarMatchedRule {
   rule_id: string;
   label: string;
@@ -73,6 +84,7 @@ export interface DailyRadarCandidate {
   input_snapshot: DailyRadarTracePayload;
   data_dates: DailyRadarDateMap;
   matched_rules: DailyRadarMatchedRule[];
+  background_context_labels: DailyRadarBackgroundContextLabel[];
 }
 
 export interface DailyRadarRunResponse {
@@ -99,4 +111,5 @@ export interface DailyRadarSymbolHistoryItem {
   score_breakdown: DailyRadarTracePayload;
   input_snapshot: DailyRadarTracePayload;
   data_dates: DailyRadarDateMap;
+  background_context_labels: DailyRadarBackgroundContextLabel[];
 }

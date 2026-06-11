@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundContextPayload,
+    build_background_context_labels,
     update_background_chip_context_cache,
 )
 from ai_stock_sentinel.daily_radar.repository import (
@@ -235,6 +236,60 @@ def test_shared_background_context_trace_has_no_daily_radar_ui_or_ranking_fields
     assert "primary_bucket" not in trace
     assert "ui_label" not in trace
     assert "recommended_action" not in trace
+
+
+def test_background_context_labels_are_consumer_neutral_and_include_missing_trace() -> None:
+    labels = build_background_context_labels(
+        [
+            {
+                "context_type": "weekly_major_holders",
+                "source": {"domain": "background_context", "provider": "fixture"},
+                "as_of_date": "2026-05-31",
+                "freshness": "fresh",
+                "missing_reason": None,
+                "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-31",
+                "applicable_consumers": ["daily_radar"],
+                "payload": {"major_holder_ratio": 0.61},
+            },
+            {
+                "context_type": "full_margin",
+                "source": {"domain": "background_context", "provider": "fixture"},
+                "as_of_date": None,
+                "freshness": "missing",
+                "missing_reason": "context_cache_missing",
+                "replay_key": "background_context:2330.TW:full_margin:missing",
+                "applicable_consumers": ["daily_radar"],
+                "payload": {},
+            },
+        ]
+    )
+
+    assert labels == [
+        {
+            "context_type": "weekly_major_holders",
+            "label": "大戶持股集中背景",
+            "source": {"domain": "background_context", "provider": "fixture"},
+            "as_of_date": "2026-05-31",
+            "freshness": "fresh",
+            "missing_reason": None,
+            "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-31",
+            "applicable_consumers": ["daily_radar"],
+        },
+        {
+            "context_type": "full_margin",
+            "label": "完整融資融券背景資料未更新",
+            "source": {"domain": "background_context", "provider": "fixture"},
+            "as_of_date": None,
+            "freshness": "missing",
+            "missing_reason": "context_cache_missing",
+            "replay_key": "background_context:2330.TW:full_margin:missing",
+            "applicable_consumers": ["daily_radar"],
+        },
+    ]
+    for label in labels:
+        assert "observation_score" not in label
+        assert "primary_bucket" not in label
+        assert "recommended_action" not in label
 
 
 def test_update_background_chip_context_cache_fixture_flow_writes_selected_symbols(db_session: Session) -> None:

@@ -251,6 +251,71 @@ def test_analyze_response_includes_analysis_detail() -> None:
     assert detail["technical_signal"] == "bullish"
 
 
+def test_analyze_response_includes_shared_context_without_passing_it_to_graph(monkeypatch) -> None:
+    """Shared context is response evidence only, not graph/LLM input."""
+    import ai_stock_sentinel.api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "_read_shared_context_for_symbol",
+        lambda db, *, symbol, consumer: {
+            "version": "shared-context-read-v1",
+            "symbol": symbol,
+            "consumer": consumer,
+            "contexts": [
+                {
+                    "context_type": "weekly_major_holders",
+                    "source": {"domain": "background_context", "provider": "fixture"},
+                    "as_of_date": "2026-06-07",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-06-07",
+                    "applicable_consumers": ["analyze"],
+                    "payload": {"major_holder_ratio": 0.61},
+                }
+            ],
+            "caveats": [
+                {
+                    "context_type": "weekly_major_holders",
+                    "label": "大戶持股集中背景",
+                    "source": {"domain": "background_context", "provider": "fixture"},
+                    "as_of_date": "2026-06-07",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-06-07",
+                    "applicable_consumers": ["analyze"],
+                }
+            ],
+            "data_quality": {
+                "status": "fresh",
+                "freshness_counts": {"fresh": 1, "stale": 0, "missing": 0, "unknown": 0},
+                "missing_reasons": [],
+                "blocking": False,
+            },
+        },
+    )
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shared_context"]["version"] == "shared-context-read-v1"
+    assert body["shared_context"]["consumer"] == "analyze"
+    assert body["shared_context"]["caveats"][0]["context_type"] == "weekly_major_holders"
+    graph_input = graph.invoke.call_args.args[0]
+    assert "shared_context" not in graph_input
+    assert "background_context" not in graph_input
+
+
 def test_analyze_response_includes_strategy_fields() -> None:
     """AnalyzeResponse 必須包含 strategy/confidence 欄位（值可為 None）。"""
     graph = _make_graph(
@@ -745,6 +810,70 @@ def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> Non
         assert pa["exit_reason"] is not None
 
 
+def test_analyze_position_shared_context_does_not_override_rule_based_fields(monkeypatch) -> None:
+    """Shared context can surface caveats but must not change deterministic position fields."""
+    import ai_stock_sentinel.api as api_module
+
+    monkeypatch.setattr(
+        api_module,
+        "_read_shared_context_for_symbol",
+        lambda db, *, symbol, consumer: {
+            "version": "shared-context-read-v1",
+            "symbol": symbol,
+            "consumer": consumer,
+            "contexts": [
+                {
+                    "context_type": "lending",
+                    "source": {"domain": "background_context", "provider": "fixture"},
+                    "as_of_date": "2026-06-07",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:lending:2026-06-07",
+                    "applicable_consumers": ["position_analysis"],
+                    "payload": {"short_pressure": "elevated"},
+                }
+            ],
+            "caveats": [
+                {
+                    "context_type": "lending",
+                    "label": "借券空方壓力背景",
+                    "source": {"domain": "background_context", "provider": "fixture"},
+                    "as_of_date": "2026-06-07",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:lending:2026-06-07",
+                    "applicable_consumers": ["position_analysis"],
+                }
+            ],
+            "data_quality": {
+                "status": "fresh",
+                "freshness_counts": {"fresh": 1, "stale": 0, "missing": 0, "unknown": 0},
+                "missing_reasons": [],
+                "blocking": False,
+            },
+        },
+    )
+    graph = _make_graph(_POSITION_FINAL_STATE)
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze/position", json={
+        "symbol": "2330.TW",
+        "entry_price": 980.0,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shared_context"]["consumer"] == "position_analysis"
+    assert body["shared_context"]["caveats"][0]["context_type"] == "lending"
+    pa = body["position_analysis"]
+    assert pa["recommended_action"] == _POSITION_FINAL_STATE["recommended_action"]
+    assert pa["trailing_stop"] == _POSITION_FINAL_STATE["trailing_stop"]
+    assert pa["exit_reason"] == _POSITION_FINAL_STATE["exit_reason"]
+    graph_input = graph.invoke.call_args.args[0]
+    assert "shared_context" not in graph_input
+    assert "background_context" not in graph_input
+
+
 def test_analyze_position_cache_hit_requires_same_entry_price(monkeypatch) -> None:
     """Position cache must not reuse a previous result with a different cost basis."""
     import ai_stock_sentinel.api as api_module
@@ -831,6 +960,77 @@ def test_analyze_position_cache_hit_reuses_same_position_request(monkeypatch) ->
     assert response.status_code == 200
     assert not graph.invoke.called
     assert response.json()["position_analysis"]["entry_price"] == 980.0
+
+
+def test_shared_context_read_reports_missing_and_stale_without_blocking(monkeypatch) -> None:
+    import ai_stock_sentinel.shared_context as shared_context_module
+
+    monkeypatch.setattr(
+        shared_context_module,
+        "get_shared_background_context_trace_by_symbol",
+        lambda db, *, symbols, consumer: {
+            symbols[0]: [
+                {
+                    "context_type": "weekly_major_holders",
+                    "source": {"domain": "background_context", "provider": "fixture"},
+                    "as_of_date": "2026-05-31",
+                    "freshness": "stale",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-31",
+                    "applicable_consumers": [consumer],
+                    "payload": {"major_holder_ratio": 0.61},
+                },
+                {
+                    "context_type": "full_margin",
+                    "source": {
+                        "domain": "background_context",
+                        "provider": "shared_background_context_cache",
+                        "status": "cache_miss",
+                    },
+                    "as_of_date": None,
+                    "freshness": "missing",
+                    "missing_reason": "context_cache_missing",
+                    "replay_key": "background_context:2330.TW:full_margin:missing",
+                    "applicable_consumers": [consumer],
+                    "payload": {},
+                },
+            ]
+        },
+    )
+
+    payload = shared_context_module.read_shared_context_for_symbol(
+        MagicMock(),
+        symbol="2330.TW",
+        consumer="analyze",
+    )
+
+    assert payload["consumer"] == "analyze"
+    assert payload["data_quality"]["status"] == "partial"
+    assert payload["data_quality"]["blocking"] is False
+    assert payload["data_quality"]["freshness_counts"]["stale"] == 1
+    assert payload["data_quality"]["freshness_counts"]["missing"] == 1
+    assert payload["data_quality"]["missing_reasons"] == ["context_cache_missing"]
+    assert payload["caveats"][1]["missing_reason"] == "context_cache_missing"
+
+
+def test_shared_context_read_failure_returns_nonblocking_caveat(monkeypatch) -> None:
+    import ai_stock_sentinel.shared_context as shared_context_module
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(shared_context_module, "get_shared_background_context_trace_by_symbol", _raise)
+
+    payload = shared_context_module.read_shared_context_for_symbol(
+        MagicMock(),
+        symbol="2330.TW",
+        consumer="position_analysis",
+    )
+
+    assert payload["consumer"] == "position_analysis"
+    assert payload["data_quality"]["status"] == "missing"
+    assert payload["data_quality"]["blocking"] is False
+    assert payload["caveats"][0]["missing_reason"] == "context_cache_read_failed"
 
 
 # ---------------------------------------------------------------------------

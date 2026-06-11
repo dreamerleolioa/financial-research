@@ -89,6 +89,34 @@ def _candidate_payload() -> dict[str, Any]:
                 }
             ]
         },
+        "background_context_labels": [
+            {
+                "context_type": "weekly_major_holders",
+                "label": "大戶持股集中背景",
+                "source": {
+                    "domain": "background_context",
+                    "provider": "shared_background_context_cache",
+                },
+                "as_of_date": "2026-05-31",
+                "freshness": "fresh",
+                "missing_reason": None,
+                "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-31",
+                "applicable_consumers": ["daily_radar"],
+            },
+            {
+                "context_type": "full_margin",
+                "label": "完整融資融券背景資料未更新",
+                "source": {
+                    "domain": "background_context",
+                    "provider": "shared_background_context_cache",
+                },
+                "as_of_date": None,
+                "freshness": "missing",
+                "missing_reason": "context_cache_missing",
+                "replay_key": "background_context:2330.TW:full_margin:missing",
+                "applicable_consumers": ["daily_radar"],
+            },
+        ],
         "data_dates": {"ohlcv": date(2026, 6, 1), "relative_strength": date(2026, 6, 1)},
         "matched_rules": [
             DailyRadarMatchedRule(
@@ -146,6 +174,7 @@ def test_daily_radar_run_response_contains_required_contract_keys() -> None:
         "scoring_version",
         "rule_version",
         "matched_rules",
+        "background_context_labels",
     }
 
 
@@ -177,6 +206,11 @@ def test_daily_radar_candidate_constrains_shared_contract_values() -> None:
     assert candidate.rule_version == "daily-radar-rules-v2.1c"
     assert candidate.input_snapshot["evidence"][0]["applicable_consumers"] == ["daily_radar"]
     assert candidate.score_breakdown["relative_strength"]["benchmark_symbol"] == "TAIEX"
+    assert candidate.background_context_labels[0]["context_type"] == "weekly_major_holders"
+    assert candidate.background_context_labels[0]["freshness"] == "fresh"
+    assert candidate.background_context_labels[1]["context_type"] == "full_margin"
+    assert candidate.background_context_labels[1]["freshness"] == "missing"
+    assert candidate.background_context_labels[1]["missing_reason"] == "context_cache_missing"
 
     with pytest.raises(ValidationError):
         DailyRadarCandidateResponse(**(_candidate_payload() | {"primary_bucket": "unsupported_bucket"}))

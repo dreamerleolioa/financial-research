@@ -7,10 +7,10 @@ from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS
 
 
 BUCKET_SETUP_TEMPLATES: Final[dict[str, str]] = {
-    "institutional_accumulation": "法人籌碼延續觀察：{display_name} 目前歸類於法人籌碼延續型，觀察分數為 {score}。",
-    "price_volume_strengthening": "量價結構轉強觀察：{display_name} 目前歸類於量價結構轉強型，觀察分數為 {score}。",
-    "bottoming_reversal": "低位修復觀察：{display_name} 目前歸類於低位修復型，觀察分數為 {score}。",
-    "support_retest": "支撐回測觀察：{display_name} 目前歸類於支撐回測型，觀察分數為 {score}。",
+    "institutional_accumulation": "法人籌碼延續觀察：{display_name} 目前歸類於法人籌碼延續型，內部排序分為 {score}。",
+    "price_volume_strengthening": "量價結構轉強觀察：{display_name} 目前歸類於量價結構轉強型，內部排序分為 {score}。",
+    "bottoming_reversal": "低位修復觀察：{display_name} 目前歸類於低位修復型，內部排序分為 {score}。",
+    "support_retest": "支撐回測觀察：{display_name} 目前歸類於支撐回測型，內部排序分為 {score}。",
 }
 
 BUCKET_FOCUS_TEMPLATES: Final[dict[str, str]] = {

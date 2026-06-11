@@ -38,10 +38,11 @@ Use these checks before any live rollout. They verify the implementation shape a
 14. [ ] Confirm yfinance runs one batch download only for selected symbols missing final raw rows.
 15. [ ] Confirm yfinance market index fetch is limited to the configured benchmark for the market (`TAIEX` / `^TWII` for TW; `SPX` / `^GSPC` for US).
 16. [ ] Confirm live `POST /internal/daily-radar/run` disables fixture fallback.
-17. [ ] Confirm current live run limitations are understood: Phase 2A has shared background context cache foundation, but no full live margin provider data and no Phase 2B background labels yet.
+17. [ ] Confirm current live run limitations are understood: Phase 2A has shared background context cache foundation, Phase 2B adds Daily Radar background labels, and Phase 2C/2D consumers read shared context as evidence/caveats only; full live margin provider data still depends on future provider work.
 18. [ ] Confirm candidate trace includes market regime, relative strength or missing reason, scoring/rule version, score breakdown, data dates, and replayable evidence.
 19. [ ] Confirm Phase 2A background context route exists: `.github/workflows/daily-radar-chip-context.yml` calls `POST /internal/daily-radar/chip-context/update` with existing backend URL/internal token secrets.
 20. [ ] Confirm Daily Radar main run only reads `shared_background_contexts` cache for selected symbols and does not call weekly major holders, lending, or full margin providers.
+21. [ ] Confirm background labels are detail/context fields only and do not affect `observation_score`, bucket, risk labels, or ranking.
 
 ## Local Fixture Run
 
@@ -60,6 +61,7 @@ Run this only in a local backend environment with Daily Radar fixtures and servi
 7. [ ] Verify each candidate includes market regime, relative strength trace or explicit missing reason, `scoring_version`, `rule_version`, and replayable evidence.
 8. [ ] Run `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` and verify the report is deterministic JSON with explicit skip reasons.
 9. [ ] Run a repository/updater fixture flow for shared background context cache and verify fresh, stale, and missing cache traces can be read back.
+10. [ ] Verify Daily Radar candidate detail/API response includes `background_context_labels` with context type, freshness, missing reason, source, and replay key.
 
 ## Local FastAPI Internal Endpoint Check
 
@@ -202,6 +204,7 @@ The MVP is accepted when these checks pass in the relevant environment.
 18. [ ] Candidate trace includes market regime, relative strength or missing reason, scoring/rule version, data dates, score breakdown, matched rules, and replayable evidence.
 19. [ ] Calibration report can be rerun from fixtures or persisted snapshots and preserves skip reasons for insufficient data.
 20. [ ] Background chip context cache update can be triggered independently and failure does not block an existing Daily Radar run.
+21. [ ] Background context labels are visible in Daily Radar detail/API trace and remain separate from daily trigger signals and scoring.
 
 ## Rollout Notes
 
@@ -209,4 +212,4 @@ The MVP is accepted when these checks pass in the relevant environment.
 2. Keep public reads on `GET /daily-radar/latest`, `GET /daily-radar/{run_date}`, and `GET /daily-radar/symbol/{symbol}`.
 3. Keep run-log review focused on data freshness, candidate count health, source gaps, and error patterns.
 4. Treat live frontend checks, Zeabur dispatch, and DB-backed reads as future manual steps once login and DB access are ready.
-5. Treat full margin provider data and Phase 2B background labels as known current live limitations until those phases are added; Phase 2A only establishes the shared cache foundation and missing/stale trace.
+5. Treat full margin provider data as a known current live limitation until provider work is added. Phase 2C/2D shared context consumers are now read/reference only and must keep deterministic action, verdict, classification, and lifecycle replay fields unchanged.

@@ -10,6 +10,7 @@ import {
   DAILY_RADAR_BUCKETS,
   type DailyRadarBucket,
   type DailyRadarCandidate,
+  type DailyRadarBackgroundContextLabel,
   type DailyRadarDateMap,
   type DailyRadarRepeatStatus,
   type DailyRadarRiskLabel,
@@ -44,6 +45,19 @@ const REPEAT_STATUS_CLASS: Record<DailyRadarRepeatStatus, string> = {
   repeat: "bg-badge-neutral-bg text-badge-neutral-text",
   upgraded: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   cooled_down: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+};
+
+const BACKGROUND_CONTEXT_TYPE_LABEL: Record<string, string> = {
+  weekly_major_holders: "大戶持股背景",
+  lending: "借券背景",
+  full_margin: "完整融資融券背景",
+};
+
+const BACKGROUND_CONTEXT_FRESHNESS_LABEL: Record<string, string> = {
+  fresh: "資料可用",
+  stale: "資料偏舊",
+  missing: "資料缺口",
+  unknown: "狀態未明",
 };
 
 const RUN_STATUS_LABEL: Record<DailyRadarRunStatus, string> = {
@@ -111,6 +125,8 @@ const TRACE_KEY_LABEL: Record<string, string> = {
   flow_state: "籌碼狀態",
   foreign_net_shares: "外資買賣超股數",
   freshness: "資料新鮮度",
+  background_context: "背景脈絡",
+  background_context_labels: "背景脈絡標籤",
   high: "最高價",
   indicators: "技術指標",
   institutional_flow: "法人買賣超資料",
@@ -125,7 +141,7 @@ const TRACE_KEY_LABEL: Record<string, string> = {
   margin_to_volume: "融資量能比",
   market_context: "大盤環境",
   net_flow_to_avg_volume: "法人淨流量／均量",
-  observation_score: "觀察分數",
+  observation_score: "內部排序分",
   ohlcv: "價格與成交量資料",
   open: "開盤價",
   previous_close: "前一交易日收盤",
@@ -269,13 +285,27 @@ const MATCHED_RULE_VALUE_LABEL: Record<string, string> = {
   weak_confirmation: "確認偏弱",
 };
 
+function formatBackgroundContextType(value: string): string {
+  return BACKGROUND_CONTEXT_TYPE_LABEL[value] ?? formatTraceKey(value);
+}
+
+function formatBackgroundFreshness(value: string): string {
+  return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? formatMatchedRuleValue(value);
+}
+
+function backgroundLabelClass(label: DailyRadarBackgroundContextLabel): string {
+  if (label.freshness === "fresh") return "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200";
+  if (label.freshness === "stale") return "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
+  return "border-border-subtle bg-surface text-text-secondary";
+}
+
 const SCORE_BREAKDOWN_LABEL: Record<string, string> = {
   freshness: "資料新鮮度",
   bucket_scores: "分類分數",
   market_context: "大盤環境",
   risk_penalties: "風險扣分",
   risk_adjustment: "風險調整",
-  observation_score: "最終觀察分數",
+  observation_score: "內部排序分",
   cross_confirmation: "交叉確認",
   primary_bucket_score: "主要分類原始分",
   weighted_primary_bucket_score: "主要分類加權分",
@@ -475,6 +505,50 @@ function TraceValueList({
   );
 }
 
+function BackgroundContextLabels({ labels }: { labels: DailyRadarBackgroundContextLabel[] }) {
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <h3 className="text-sm font-semibold text-text-primary">背景脈絡</h3>
+      <p className="mt-1 text-xs leading-relaxed text-text-muted">
+        這些項目來自 shared background context cache，用於補充背景資料，不參與每日排序與內部排序分。
+      </p>
+      <div className="mt-3 grid gap-2">
+        {labels.length > 0 ? (
+          labels.map((label) => (
+            <article key={`${label.context_type}:${label.replay_key}`} className={`rounded-lg border px-3 py-3 ${backgroundLabelClass(label)}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md bg-white/60 px-2 py-0.5 text-xs font-medium text-current dark:bg-white/10">
+                  {formatBackgroundContextType(label.context_type)}
+                </span>
+                <span className="text-xs font-medium text-current">{formatBackgroundFreshness(label.freshness)}</span>
+              </div>
+              <p className="mt-2 text-sm font-semibold text-current">{label.label}</p>
+              <dl className="mt-2 grid gap-2 text-xs md:grid-cols-2">
+                <div>
+                  <dt className="font-medium opacity-70">資料日期</dt>
+                  <dd className="mt-0.5">{formatDate(label.as_of_date)}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium opacity-70">缺資料原因</dt>
+                  <dd className="mt-0.5">{label.missing_reason || "—"}</dd>
+                </div>
+                <div className="md:col-span-2">
+                  <dt className="font-medium opacity-70">回放鍵</dt>
+                  <dd className="mt-0.5 break-all font-mono">{label.replay_key || "—"}</dd>
+                </div>
+              </dl>
+            </article>
+          ))
+        ) : (
+          <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">
+            尚未回傳背景脈絡標籤。
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DailyRadarCandidateList({
   candidates,
   onSelectCandidate,
@@ -495,7 +569,7 @@ function DailyRadarCandidateList({
       <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
         <div>
           <h2 className="text-sm font-semibold text-text-primary">候選觀察清單</h2>
-          <p className="mt-1 text-xs text-text-muted">依觀察分數排序，分數相同時依代號排序。</p>
+          <p className="mt-1 text-xs text-text-muted">依內部排序分排列；分數只作排序與 trace，不代表勝率或交易建議。</p>
         </div>
         <span className="rounded-full bg-badge-neutral-bg px-3 py-1 text-xs font-medium text-badge-neutral-text">
           共 {candidates.length} 筆
@@ -540,7 +614,7 @@ function DailyRadarCandidateList({
                     </div>
                   </div>
                   <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3 text-right md:min-w-28">
-                    <p className="text-xs font-medium text-text-muted">觀察分數</p>
+                    <p className="text-xs font-medium text-text-muted">內部排序分</p>
                     <p className="mt-1 font-mono text-2xl font-semibold text-text-primary">
                       {candidate.observation_score.toFixed(0)}
                     </p>
@@ -655,7 +729,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
         <div className="space-y-5 px-5 py-5">
           <section className="grid gap-3 md:grid-cols-3">
             <div className="rounded-xl border border-border bg-surface p-4">
-              <p className="text-xs font-medium text-text-muted">觀察分數</p>
+              <p className="text-xs font-medium text-text-muted">內部排序分</p>
               <p className="mt-2 font-mono text-3xl font-semibold text-text-primary">{candidate.observation_score.toFixed(0)}</p>
             </div>
             <div className="rounded-xl border border-border bg-surface p-4 md:col-span-2">
@@ -710,10 +784,12 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
             </div>
           </section>
 
+          <BackgroundContextLabels labels={candidate.background_context_labels} />
+
           <section className="rounded-xl border border-border bg-card p-4">
             <h3 className="text-sm font-semibold text-text-primary">分數拆解</h3>
             <p className="mt-1 text-xs leading-relaxed text-text-muted">
-              這裡說明本次觀察分數如何由資料新鮮度、分類分數、大盤環境與風險調整組合而成。
+              這裡說明本次內部排序分如何由資料新鮮度、分類分數、大盤環境與風險調整組合而成。
             </p>
             <div className="mt-3">
               <TraceValueList payload={candidate.score_breakdown} emptyText="尚未回傳分數拆解。" formatKey={formatScoreBreakdownKey} />

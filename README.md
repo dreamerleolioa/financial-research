@@ -150,7 +150,7 @@ Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitH
 
 Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。後端會自行選出 multi-track universe（保留法人雙軌，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對缺少資料的 selected symbols 做 yfinance OHLCV batch backfill，執行 Stage 1/2 rule-based scoring，並持久化 Daily Radar candidates。
 
-Daily Radar 的 live 資料載入有 request budget：法人 universe 目前使用 TWSE RWD fund reports `TWT38U` / `TWT44U` 的 report-level 查詢，不做逐檔法人 request；yfinance 只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，既有 `StockRawData` 會重用；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Phase 2A 起，weekly major holders、lending 與 full margin context 的正式更新路徑是獨立 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 寫入 shared background context cache；Daily Radar 主流程只讀 cache，不即時逐檔呼叫這些 provider。
+Daily Radar 的 live 資料載入有 request budget：法人 universe 目前使用 TWSE RWD fund reports `TWT38U` / `TWT44U` 的 report-level 查詢，不做逐檔法人 request；yfinance 只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，既有 `StockRawData` 會重用；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Phase 2A 起，weekly major holders、lending 與 full margin context 的正式更新路徑是獨立 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 寫入 shared background context cache；Daily Radar 主流程只讀 cache，不即時逐檔呼叫這些 provider。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action、verdict、classification 或 lifecycle replay。
 
 CI/CD 設定說明：`docs/plans/2026-03-10-cicd-github-pages-render.md`
 
@@ -269,8 +269,8 @@ pnpm dev
 **Daily Radar（`/daily-radar`）**
 
 - 每日觀察候選清單
-- bucket、觀察等級、風險標籤與規則命中原因；raw observation score 用於內部排序與 advanced trace
-- candidate trace 包含 market regime、relative strength 或缺資料原因、scoring/rule version、score breakdown、data dates、replayable evidence 與 shared background context cache trace
+- bucket、觀察等級、風險標籤與規則命中原因；`observation_score` 只作內部排序、校準與 advanced trace，不代表勝率或交易建議
+- candidate trace 包含 market regime、relative strength 或缺資料原因、scoring/rule version、score breakdown、data dates、replayable evidence、shared background context cache trace 與 background context labels
 
 **登入（`/login`）**
 

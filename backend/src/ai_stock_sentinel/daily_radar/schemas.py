@@ -67,6 +67,18 @@ class DailyRadarCandidateResponse(BaseModel):
                         "details": {"close_above_ma20": True, "volume_ratio": 1.42},
                     }
                 ],
+                "background_context_labels": [
+                    {
+                        "context_type": "weekly_major_holders",
+                        "label": "大戶持股集中背景",
+                        "source": {"domain": "background_context", "provider": "shared_background_context_cache"},
+                        "as_of_date": "2026-05-31",
+                        "freshness": "fresh",
+                        "missing_reason": None,
+                        "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-31",
+                        "applicable_consumers": ["daily_radar"],
+                    }
+                ],
             }
         }
     )
@@ -98,6 +110,7 @@ class DailyRadarCandidateResponse(BaseModel):
     input_snapshot: dict[str, Any] = Field(default_factory=dict)
     data_dates: dict[str, date] = Field(default_factory=dict)
     matched_rules: list[DailyRadarMatchedRule] = Field(default_factory=list)
+    background_context_labels: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DailyRadarRunResponse(BaseModel):

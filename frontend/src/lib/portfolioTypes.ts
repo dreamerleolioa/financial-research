@@ -1,3 +1,5 @@
+import type { SharedContextReadPayload } from "./sharedContextTypes";
+
 export interface PortfolioItem {
   id: number;
   symbol: string;
@@ -450,9 +452,25 @@ export interface PositionLifecycleReviewResult {
   event_indicator_snapshots?: PositionLifecycleEventIndicatorSnapshot[];
   event_facts?: PositionLifecycleEventFact[];
   decision_context?: PositionLifecycleDecisionContext;
+  shared_context?: PositionLifecycleSharedContext;
   data_quality?: PositionLifecycleDataQuality;
   lifecycle_review?: PositionLifecycleReview;
   [key: string]: unknown;
+}
+
+export interface PositionLifecycleSharedContextEvent {
+  event_key: string;
+  event_type: string | null;
+  event_date: string | null;
+  shared_context: SharedContextReadPayload;
+}
+
+export interface PositionLifecycleSharedContext {
+  version: string;
+  consumer: "lifecycle_review" | string;
+  point_in_time: boolean;
+  events: PositionLifecycleSharedContextEvent[];
+  data_quality: SharedContextReadPayload["data_quality"];
 }
 
 export interface PositionLifecycleReviewEvidencePayload {
@@ -469,6 +487,7 @@ export interface PositionLifecycleReviewEvidencePayload {
   indicator_snapshots?: PositionLifecycleEventIndicatorSnapshot[];
   detected_events?: Record<string, unknown>[];
   market_regime_snapshots?: Record<string, unknown>[];
+  shared_context?: PositionLifecycleSharedContext;
   source_data?: Record<string, unknown>;
   data_quality?: PositionLifecycleDataQuality;
   [key: string]: unknown;
@@ -516,6 +535,7 @@ export interface PortfolioDecisionContextStatus {
   source: string | null;
   created_after_entry: boolean | null;
   planned_invalidation_present: boolean;
+  shared_context?: SharedContextReadPayload | null;
 }
 
 export type PortfolioDecisionContextStatusMap = Record<string, PortfolioDecisionContextStatus>;
