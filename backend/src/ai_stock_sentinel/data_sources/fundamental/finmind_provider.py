@@ -3,13 +3,13 @@ import logging
 import statistics
 from datetime import date, timedelta
 
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
 from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.data_sources.fundamental.interface import (
     FundamentalData, FundamentalError,
 )
 
 logger = logging.getLogger(__name__)
-_FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
 
 def _safe_float(v) -> float | None:
@@ -22,36 +22,21 @@ def _safe_float(v) -> float | None:
 class FinMindFundamentalProvider:
     name = "FinMindFundamental"
 
-    def __init__(self, api_token: str = "") -> None:
+    def __init__(self, api_token: str = "", client: FinMindClient | None = None) -> None:
         # api_token 僅供測試用靜態覆蓋；正式使用時留空，由 token manager 動態取得
         self._static_token = api_token
-
-    def _get_token(self) -> str:
-        return self._static_token or get_token_manager().token
+        self._client = client or FinMindClient(api_token=api_token)
 
     def _fetch_dataset(self, dataset: str, stock_id: str, start_date: str, end_date: str) -> list[dict]:
         try:
-            import requests
-        except ImportError as e:
-            raise FundamentalError("MISSING_DEPENDENCY", "requests 未安裝", self.name) from e
-
-        params = {
-            "dataset": dataset,
-            "data_id": stock_id,
-            "start_date": start_date,
-            "end_date": end_date,
-            "token": self._get_token(),
-        }
-        resp = requests.get(_FINMIND_API, params=params, timeout=15)
-        if resp.status_code == 402:
-            raise FundamentalError(
-                code="FINMIND_TOKEN_EXPIRED",
-                message=f"FinMind token 過期或無效（402），dataset={dataset}",
-                provider=self.name,
+            return self._client.fetch_data(
+                dataset=dataset,
+                data_id=stock_id,
+                start_date=start_date,
+                end_date=end_date,
             )
-        resp.raise_for_status()
-        body = resp.json()
-        return body.get("data", [])
+        except FinMindClientError as exc:
+            raise _fundamental_error_from_client_error(exc, provider=self.name) from exc
 
     def _fetch_historical_prices(self, symbol: str, quarter_dates: list[str]) -> dict[str, float]:
         """
@@ -91,7 +76,7 @@ class FinMindFundamentalProvider:
         try:
             return self._fetch_inner(symbol=symbol, current_price=current_price)
         except FundamentalError as exc:
-            if exc.code == "FINMIND_TOKEN_EXPIRED" and not self._static_token:
+            if exc.code == "FINMIND_TOKEN_EXPIRED" and not self._static_token and not self._client.uses_static_token:
                 logger.warning("[FinMindFundamentalProvider] token 過期（402），嘗試自動刷新後重試")
                 get_token_manager().invalidate()
                 return self._fetch_inner(symbol=symbol, current_price=current_price)
@@ -218,3 +203,31 @@ class FinMindFundamentalProvider:
             source_provider=self.name,
             warnings=warnings,
         )
+
+
+def _fundamental_error_from_client_error(exc: FinMindClientError, *, provider: str) -> FundamentalError:
+    if exc.code == "missing_dependency":
+        return FundamentalError("MISSING_DEPENDENCY", "requests 未安裝", provider)
+    if exc.code == "quota_or_token_error":
+        return FundamentalError(
+            code="FINMIND_TOKEN_EXPIRED",
+            message=f"FinMind token 過期、無效或 quota 已滿（402），dataset={exc.dataset}",
+            provider=provider,
+        )
+    if exc.code == "quota_exceeded":
+        return FundamentalError(
+            code="FINMIND_QUOTA_EXCEEDED",
+            message=f"FinMind request budget 已滿（dataset={exc.dataset}）",
+            provider=provider,
+        )
+    if exc.code == "api_error":
+        return FundamentalError(
+            code="FINMIND_API_ERROR",
+            message=f"FinMind API 回傳錯誤（dataset={exc.dataset}）：{exc.message}",
+            provider=provider,
+        )
+    return FundamentalError(
+        code="FINMIND_REQUEST_ERROR",
+        message=f"FinMind API 請求失敗（dataset={exc.dataset}）：{exc.message}",
+        provider=provider,
+    )

@@ -27,6 +27,14 @@ BACKGROUND_CONTEXT_MISSING_LABELS: dict[str, str] = {
     "full_margin": "完整融資融券背景資料未更新",
 }
 
+BACKGROUND_CONTEXT_ALL_CONSUMERS = (
+    "daily_radar",
+    "analyze",
+    "position_analysis",
+    "portfolio_diagnosis",
+    "lifecycle_review",
+)
+
 
 @dataclass(frozen=True)
 class BackgroundContextPayload:
@@ -214,6 +222,7 @@ def _list_of_strings(value: Any) -> list[str]:
 
 
 __all__ = [
+    "BACKGROUND_CONTEXT_ALL_CONSUMERS",
     "BACKGROUND_CONTEXT_LABELS",
     "BACKGROUND_CONTEXT_MISSING_LABELS",
     "BackgroundChipContextProvider",
