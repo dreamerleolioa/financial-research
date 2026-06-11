@@ -107,7 +107,8 @@ Done when:
 
 Goal:
 
-- Build deterministic offline validation for Daily Radar candidates.
+- Build deterministic forward validation for Daily Radar candidates.
+- Provide a cloud internal API that validates matured production candidates after daily market data updates.
 - Evaluate 5/10/20 trading-day forward behavior.
 - Preserve missing/stale/future-data skip reasons.
 
@@ -140,10 +141,20 @@ Non-goals:
 - Do not advertise win rate.
 - Do not use future data to reconstruct the candidate reason.
 
+Required trigger surfaces:
+
+- Local CLI for fixture, local development, and regression testing only.
+- Cloud internal API for official production validation, for example `POST /internal/daily-radar/forward-validation/run`.
+- The official validation source must be cloud production DB snapshots and market data, not local fixture files.
+- The internal API should run in `mode: due`, finding historical candidates whose 5/10/20 trading-day windows have matured by `as_of_date`.
+- The validation write path must be idempotent by candidate/window/validation version.
+
 Done when:
 
-- A single command can output stable JSON.
+- A local fixture command can output stable JSON for tests.
+- The cloud internal API can process due production candidates and return validated/skipped counts.
 - Fixture tests prove outcome math and skip reasons.
+- API tests prove idempotency, due-window selection, and skip-reason handling.
 - Documentation states this is calibration research, not performance marketing.
 
 ### Phase 2: Entry Strategy Context Audit And Gap Closure
@@ -190,6 +201,7 @@ Goal:
 
 - Give every scoring signal a tier, owner, and validation status.
 - Use forward validation/ablation to demote weak or low-sample rules.
+- Provide a monthly cloud rule-review workflow that produces the report the user can hand back for strategy optimization.
 
 Rule tiers:
 
@@ -211,6 +223,21 @@ Done when:
 - Rule registry covers scoring drivers.
 - Ablation report is deterministic.
 - Candidate traces can explain historical rule version and rule code.
+- A monthly internal API or cloud job can generate rule-review JSON and Markdown from production validation results.
+- The monthly report is delivered as a GitHub Actions artifact or equivalent downloadable artifact.
+- The report clearly separates automated recommendations from human-approved versioned strategy updates.
+
+Official report delivery:
+
+- Local CLI reports are development artifacts only.
+- Formal monthly rule-review reports must be produced by cloud backend using production DB.
+- GitHub Actions should call the cloud internal API instead of reading production DB directly unless the workflow has approved DB access.
+- Suggested endpoint: `POST /internal/daily-radar/rule-review/monthly`.
+- Suggested artifact outputs:
+  - `reports/daily-radar/monthly/YYYY-MM-forward-validation.json`
+  - `reports/daily-radar/monthly/YYYY-MM-rule-review.md`
+  - `reports/daily-radar/monthly/YYYY-MM-rule-review.json`
+- The user should be able to download the monthly artifact and provide it for a versioned strategy update plan.
 
 ### Phase 4: Risk Language Alignment
 
