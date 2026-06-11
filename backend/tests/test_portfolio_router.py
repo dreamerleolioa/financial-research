@@ -16,7 +16,16 @@ from sqlalchemy.pool import StaticPool
 from ai_stock_sentinel import api
 from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
-from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, PositionLifecycleReview, StockRawData, TradeReview, UserPortfolio
+from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
+from ai_stock_sentinel.db.models import (
+    PositionEvent,
+    PositionLifecyclePlan,
+    PositionLifecycleReview,
+    SharedBackgroundContext,
+    StockRawData,
+    TradeReview,
+    UserPortfolio,
+)
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.user_models.user import User
 
@@ -603,6 +612,7 @@ def portfolio_db_session() -> Session:
             PositionLifecycleReview.__table__,
             TradeReview.__table__,
             StockRawData.__table__,
+            SharedBackgroundContext.__table__,
         ],
     )
     with Session(engine) as session:
@@ -732,20 +742,58 @@ def test_decision_context_status_reports_missing_plan_without_changing_portfolio
     assert portfolio_resp.status_code == 200
     assert set(portfolio_resp.json()[0]) == {"id", "symbol", "entry_price", "quantity", "entry_date", "notes"}
     assert status_resp.status_code == 200
-    assert status_resp.json() == {
-        "42": {
-            "portfolio_id": 42,
-            "position_group_id": "group-missing-plan",
-            "symbol": "2330.TW",
-            "has_operation_plan": False,
-            "operation_plan_status": "missing",
-            "missing_operation_plan": True,
-            "decision_context": "insufficient",
-            "source": None,
-            "created_after_entry": None,
-            "planned_invalidation_present": False,
-        }
-    }
+    data = status_resp.json()["42"]
+    assert data["portfolio_id"] == 42
+    assert data["position_group_id"] == "group-missing-plan"
+    assert data["symbol"] == "2330.TW"
+    assert data["has_operation_plan"] is False
+    assert data["operation_plan_status"] == "missing"
+    assert data["missing_operation_plan"] is True
+    assert data["decision_context"] == "insufficient"
+    assert data["source"] is None
+    assert data["created_after_entry"] is None
+    assert data["planned_invalidation_present"] is False
+    assert data["shared_context"]["consumer"] == "portfolio_diagnosis"
+
+
+def test_decision_context_status_attaches_shared_context_without_portfolio_action(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-shared-context",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["portfolio_diagnosis"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 1, 2),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.61},
+        missing_reason=None,
+    )
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/decision-context-status")
+
+    assert resp.status_code == 200
+    data = resp.json()["42"]
+    shared_context = data["shared_context"]
+    assert shared_context["consumer"] == "portfolio_diagnosis"
+    assert shared_context["contexts"][0]["context_type"] == "weekly_major_holders"
+    assert shared_context["contexts"][0]["payload"] == {"major_holder_ratio": 0.61}
+    assert "portfolio_action" not in data
+    assert "recommended_action" not in data
+    assert "action" not in shared_context
 
 
 def test_decision_context_status_reads_user_backfilled_plan(
@@ -1604,6 +1652,107 @@ def test_create_position_lifecycle_review_first_post_saves_result_and_evidence_p
     assert len(reviews) == 1
     assert reviews[0].review_result == data["review_result"]
     assert reviews[0].evidence_payload == data["evidence_payload"]
+
+
+def test_position_lifecycle_review_excludes_future_shared_context(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 2, 1),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.72},
+        missing_reason=None,
+    )
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    shared_context = data["evidence_payload"]["shared_context"]
+    event_context = shared_context["events"][0]["shared_context"]
+    weekly_context = next(
+        context
+        for context in event_context["contexts"]
+        if context["context_type"] == "weekly_major_holders"
+    )
+    assert weekly_context["missing_reason"] == "future_context_excluded"
+    assert weekly_context["payload"] == {}
+    assert weekly_context["source"]["excluded_as_of_date"] == "2026-02-01"
+    caveats = data["review_result"]["lifecycle_review"]["classification"]["caveats"]
+    assert any("未來資料" in item["text"] for item in caveats)
+    assert data["review_result"]["lifecycle_review"]["classification"]["primary_label"] != "future_context_excluded"
+
+
+def test_position_lifecycle_review_uses_historical_shared_context_before_future_context(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2025, 12, 31),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.57},
+        missing_reason=None,
+    )
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 2, 1),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.72},
+        missing_reason=None,
+    )
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    event_context = data["evidence_payload"]["shared_context"]["events"][0]["shared_context"]
+    weekly_context = next(
+        context
+        for context in event_context["contexts"]
+        if context["context_type"] == "weekly_major_holders"
+    )
+    assert weekly_context["as_of_date"] == "2025-12-31"
+    assert weekly_context["payload"] == {"major_holder_ratio": 0.57}
+    assert weekly_context["missing_reason"] is None
+
+
+def test_position_lifecycle_review_missing_shared_context_is_nonblocking(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    shared_context = data["review_result"]["shared_context"]
+    assert shared_context["consumer"] == "lifecycle_review"
+    assert shared_context["data_quality"]["blocking"] is False
+    assert "context_cache_missing" in shared_context["data_quality"]["missing_reasons"]
+    assert data["review_version"] == "position-lifecycle-review-v1"
 
 
 def test_get_position_lifecycle_review_returns_existing_review(

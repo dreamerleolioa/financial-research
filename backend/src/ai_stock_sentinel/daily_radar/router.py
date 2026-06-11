@@ -10,16 +10,28 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
+from ai_stock_sentinel.daily_radar.market_context import (
+    MarketIndexContextProvider,
+    YFinanceMarketIndexContextProvider,
+)
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
 )
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
+from ai_stock_sentinel.daily_radar.background_context import (
+    BackgroundChipContextProvider,
+    StubBackgroundChipContextProvider,
+    update_background_chip_context_cache,
+)
 from ai_stock_sentinel.daily_radar.repository import (
+    BACKGROUND_CONTEXT_TYPES,
     get_daily_radar_run_by_date,
+    get_final_raw_data_rows_for_date,
     get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
+    get_shared_background_context_trace_by_symbol,
     get_symbol_candidate_history,
 )
 from ai_stock_sentinel.daily_radar.schemas import (
@@ -30,7 +42,7 @@ from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseEntry,
     DailyRadarUniverseProvider,
-    select_dual_track_universe,
+    select_daily_radar_universe,
 )
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.db.session import get_db
@@ -58,12 +70,37 @@ class DailyRadarRunTriggerResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class DailyRadarChipContextUpdateRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    symbols: list[str] | None = None
+    context_types: list[str] = Field(default_factory=lambda: list(BACKGROUND_CONTEXT_TYPES))
+
+
+class DailyRadarChipContextUpdateResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    run_date: date
+    market: str
+    symbol_count: int
+    context_types: list[str]
+    records_written: int
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
     return TwseRwdInstitutionalUniverseProvider()
 
 
 def get_daily_radar_technical_fetcher() -> BatchTechnicalFetcher:
     return YFinanceBatchTechnicalFetcher()
+
+
+def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
+    return YFinanceMarketIndexContextProvider()
+
+
+def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
+    return StubBackgroundChipContextProvider()
 
 
 @router.post(
@@ -76,6 +113,7 @@ def run_daily_radar_endpoint(
     db: Session = Depends(get_db),
     universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
+    market_context_provider: MarketIndexContextProvider = Depends(get_daily_radar_market_context_provider),
 ) -> DailyRadarRunTriggerResponse:
     failure_stage = "request_initialization"
     try:
@@ -83,7 +121,14 @@ def run_daily_radar_endpoint(
         run_date = request.run_date or _backend_today()
         market = request.market
         failure_stage = "universe_selection"
-        universe = select_dual_track_universe(universe_provider, run_date=run_date, market=market, track_limit=50)
+        existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
+        universe = select_daily_radar_universe(
+            universe_provider,
+            run_date=run_date,
+            market=market,
+            track_limit=50,
+            technical_records=existing_technical_rows,
+        )
         if not universe:
             raise HTTPException(
                 status_code=409,
@@ -91,6 +136,13 @@ def run_daily_radar_endpoint(
             )
 
         selected_symbols = [entry.symbol for entry in universe]
+        background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
+            db,
+            symbols=selected_symbols,
+            context_types=BACKGROUND_CONTEXT_TYPES,
+            reference_date=run_date,
+            point_in_time=True,
+        )
         institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
         failure_stage = "raw_data_backfill"
         cache_rows = ensure_daily_radar_raw_rows(
@@ -107,13 +159,16 @@ def run_daily_radar_endpoint(
                 status_code=409,
                 detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
             )
+        failure_stage = "market_context"
+        market_context = dict(market_context_provider.build(run_date=run_date, market=market))
         failure_stage = "daily_radar_service"
         run = run_daily_radar(
             run_date,
             market,
             session=db,
             cache_rows=cache_rows,
-            market_context={},
+            market_context=market_context,
+            background_contexts_by_symbol=background_contexts_by_symbol,
             allow_fixture_fallback=False,
         )
         db.commit()
@@ -135,7 +190,39 @@ def run_daily_radar_endpoint(
         ) from exc
 
 
-@router.get("/daily-radar/latest", response_model=DailyRadarRunResponse)
+@router.post(
+    "/internal/daily-radar/chip-context/update",
+    response_model=DailyRadarChipContextUpdateResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def update_daily_radar_chip_context_endpoint(
+    payload: DailyRadarChipContextUpdateRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
+) -> DailyRadarChipContextUpdateResponse:
+    request = payload or DailyRadarChipContextUpdateRequest()
+    run_date = request.run_date or _backend_today()
+    result = update_background_chip_context_cache(
+        db,
+        run_date=run_date,
+        market=request.market,
+        provider=provider,
+        symbols=request.symbols,
+        context_types=request.context_types,
+    )
+    db.commit()
+    return DailyRadarChipContextUpdateResponse(
+        status=result["status"],
+        run_date=run_date,
+        market=str(result["market"]),
+        symbol_count=int(result["symbol_count"]),
+        context_types=list(result["context_types"]),
+        records_written=int(result["records_written"]),
+        errors=list(result["errors"]),
+    )
+
+
+@router.get("/daily-radar/latest", response_model=DailyRadarRunResponse, response_model_exclude_none=True)
 def get_latest_daily_radar_endpoint(
     market: str = Query(default="TW", min_length=1, max_length=20),
     bucket: str | None = Query(default=None, min_length=1, max_length=40),
@@ -168,7 +255,7 @@ def get_daily_radar_symbol_history_endpoint(
     return filtered[:limit]
 
 
-@router.get("/daily-radar/{run_date}", response_model=DailyRadarRunResponse)
+@router.get("/daily-radar/{run_date}", response_model=DailyRadarRunResponse, response_model_exclude_none=True)
 def get_daily_radar_by_date_endpoint(
     run_date: date,
     market: str = Query(default="TW", min_length=1, max_length=20),
@@ -203,7 +290,9 @@ def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) ->
     flat_payload: dict[str, Any] = {
         "flow_label": "institutional_accumulation",
         "flow_state": _flow_state(entry),
+        "universe_primary_track": entry.primary_track,
         "institutional_universe_tracks": list(entry.tracks),
+        "universe_track_metrics": {track: dict(metrics) for track, metrics in entry.track_metrics.items()},
         "same_day_rank": entry.same_day_rank,
         "recent_accumulation_rank": entry.recent_accumulation_rank,
         "scores": _score_payload(entry),
@@ -228,6 +317,8 @@ def _flow_state(entry: DailyRadarUniverseEntry) -> str:
     same_day_flow_state = same_day_metrics.get("flow_state")
     if same_day_flow_state is not None:
         return str(same_day_flow_state)
+    if not any(track in {"same_day_institutional", "recent_accumulation"} for track in entry.tracks):
+        return "technical_trigger"
     return "weak_confirmation"
 
 
@@ -235,6 +326,8 @@ def _score_payload(entry: DailyRadarUniverseEntry) -> dict[str, float]:
     scores: dict[str, float] = {}
     _add_score(scores, "same_day_institutional", entry.same_day_score)
     _add_score(scores, "recent_accumulation", entry.recent_accumulation_score)
+    for track, metrics in entry.track_metrics.items():
+        _add_score(scores, track, metrics.get("score"))
     return scores
 
 
@@ -381,16 +474,19 @@ def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRe
         risk_labels=list(candidate.risk_labels or []),
         repeat_status=candidate.repeat_status,
         explanation=candidate.explanation,
+        scoring_version=_trace_version(candidate.score_breakdown, "scoring_version"),
+        rule_version=_trace_version(candidate.score_breakdown, "rule_version"),
         bucket_scores=dict(candidate.bucket_scores or {}),
         score_breakdown=dict(candidate.score_breakdown or {}),
         input_snapshot=dict(candidate.input_snapshot or {}),
         data_dates=_date_mapping(candidate.data_dates or {}),
         matched_rules=_matched_rules(candidate.matched_rules or []),
+        background_context_labels=_background_context_labels(candidate.input_snapshot),
     )
 
 
 def _history_response(item: dict[str, Any]) -> dict[str, Any]:
-    return {
+    response = {
         "symbol": item["symbol"],
         "name": item["name"],
         "record_date": item["record_date"],
@@ -404,7 +500,15 @@ def _history_response(item: dict[str, Any]) -> dict[str, Any]:
         "score_breakdown": dict(item.get("score_breakdown") or {}),
         "input_snapshot": dict(item.get("input_snapshot") or {}),
         "data_dates": {key: value.isoformat() for key, value in _date_mapping(item.get("data_dates") or {}).items()},
+        "background_context_labels": _background_context_labels(item.get("input_snapshot")),
     }
+    scoring_version = item.get("scoring_version") or _trace_version(item.get("score_breakdown"), "scoring_version")
+    rule_version = item.get("rule_version") or _trace_version(item.get("score_breakdown"), "rule_version")
+    if scoring_version is not None:
+        response["scoring_version"] = scoring_version
+    if rule_version is not None:
+        response["rule_version"] = rule_version
+    return response
 
 
 def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:
@@ -421,6 +525,21 @@ def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:
         else:
             rules.append({"rule_id": str(rule), "label": str(rule), "details": {}})
     return rules
+
+
+def _background_context_labels(input_snapshot: Any) -> list[dict[str, Any]]:
+    if not isinstance(input_snapshot, dict):
+        return []
+    labels = input_snapshot.get("background_context_labels")
+    if not isinstance(labels, list):
+        return []
+    return [dict(label) for label in labels if isinstance(label, dict)]
+
+
+def _trace_version(payload: Any, key: str) -> str | None:
+    if isinstance(payload, dict) and payload.get(key) is not None:
+        return str(payload[key])
+    return None
 
 
 def _matches_bucket(item: dict[str, Any], bucket: str | None) -> bool:

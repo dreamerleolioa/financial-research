@@ -7,10 +7,10 @@ from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS
 
 
 BUCKET_SETUP_TEMPLATES: Final[dict[str, str]] = {
-    "institutional_accumulation": "法人籌碼延續觀察：{display_name} 目前歸類於法人籌碼延續型，觀察分數為 {score}。",
-    "price_volume_strengthening": "量價結構轉強觀察：{display_name} 目前歸類於量價結構轉強型，觀察分數為 {score}。",
-    "bottoming_reversal": "低位修復觀察：{display_name} 目前歸類於低位修復型，觀察分數為 {score}。",
-    "support_retest": "支撐回測觀察：{display_name} 目前歸類於支撐回測型，觀察分數為 {score}。",
+    "institutional_accumulation": "法人籌碼延續觀察：{display_name} 目前歸類於法人籌碼延續型，內部排序分為 {score}。",
+    "price_volume_strengthening": "量價結構轉強觀察：{display_name} 目前歸類於量價結構轉強型，內部排序分為 {score}。",
+    "bottoming_reversal": "低位修復觀察：{display_name} 目前歸類於低位修復型，內部排序分為 {score}。",
+    "support_retest": "支撐回測觀察：{display_name} 目前歸類於支撐回測型，內部排序分為 {score}。",
 }
 
 BUCKET_FOCUS_TEMPLATES: Final[dict[str, str]] = {
@@ -95,6 +95,15 @@ def _evidence_points(
     bucket_score = _number(bucket_scores.get(primary_bucket))
     if bucket_score is not None:
         evidence.append(f"分數結構：主要觀察類型分數 {bucket_score:g}。")
+
+    relative_strength = _mapping(score_breakdown.get("relative_strength"))
+    relative_value = _number(relative_strength.get("relative_value"))
+    benchmark_symbol = str(relative_strength.get("benchmark_symbol") or "大盤")
+    if relative_value is not None and str(relative_strength.get("freshness") or "") == "fresh":
+        direction = "高於" if relative_value >= 0 else "低於"
+        evidence.append(f"相對表現：近 {relative_strength.get('lookback_days')} 個可對齊交易日{direction} {benchmark_symbol} {abs(relative_value) * 100:.2f} 個百分點。")
+    elif relative_strength.get("missing_reason"):
+        evidence.append(f"相對表現：資料不足，原因為 {relative_strength.get('missing_reason')}。")
 
     cross_confirmation = _number(score_breakdown.get("cross_confirmation"))
     if cross_confirmation is not None:

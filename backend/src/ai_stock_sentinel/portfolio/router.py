@@ -19,6 +19,10 @@ from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, Po
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.portfolio.entry_record_contract import EntryRecordContext
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee, calculate_sell_transaction_tax
+from ai_stock_sentinel.shared_context import (
+    SHARED_CONTEXT_CONSUMER_PORTFOLIO,
+    read_shared_context_for_symbol,
+)
 from ai_stock_sentinel.user_models.user import User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
@@ -232,7 +236,12 @@ def _serialize_lifecycle_plan(item: UserPortfolio, plan: PositionLifecyclePlan |
     }
 
 
-def _serialize_decision_context_status(item: UserPortfolio, plan: PositionLifecyclePlan | None) -> dict:
+def _serialize_decision_context_status(
+    item: UserPortfolio,
+    plan: PositionLifecyclePlan | None,
+    *,
+    shared_context: dict | None = None,
+) -> dict:
     operation_plan_status = "missing"
     if plan is not None:
         operation_plan_status = "backfilled" if plan.source == "user_backfilled" or plan.created_after_entry else "present"
@@ -247,6 +256,7 @@ def _serialize_decision_context_status(item: UserPortfolio, plan: PositionLifecy
         "source": plan.source if plan is not None else None,
         "created_after_entry": plan.created_after_entry if plan is not None else None,
         "planned_invalidation_present": bool(plan and plan.planned_invalidation),
+        "shared_context": shared_context,
     }
 
 
@@ -470,8 +480,24 @@ def list_decision_context_status(
         ).scalars().all()
     plan_by_group = {plan.position_group_id: plan for plan in plans}
 
+    reference_date = date.today()
+    shared_context_by_portfolio_id = {
+        row.id: read_shared_context_for_symbol(
+            db,
+            symbol=row.symbol,
+            consumer=SHARED_CONTEXT_CONSUMER_PORTFOLIO,
+            reference_date=reference_date,
+            point_in_time=True,
+        )
+        for row in rows
+    }
+
     return {
-        str(row.id): _serialize_decision_context_status(row, plan_by_group.get(row.position_group_id))
+        str(row.id): _serialize_decision_context_status(
+            row,
+            plan_by_group.get(row.position_group_id),
+            shared_context=shared_context_by_portfolio_id.get(row.id),
+        )
         for row in rows
     }
 

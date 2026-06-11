@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status
+from ai_stock_sentinel.daily_radar.background_context import build_background_context_labels
 from ai_stock_sentinel.daily_radar.data_loader import (
     load_daily_radar_cache_records,
     load_daily_radar_fixture_records,
@@ -39,6 +40,7 @@ def run_daily_radar(
     records: Iterable[Mapping[str, Any]] | None = None,
     cache_rows: Iterable[Any] | None = None,
     market_context: Mapping[str, Any] | None = None,
+    background_contexts_by_symbol: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
     history_candidates: Iterable[Mapping[str, Any]] | None = None,
     candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
     allow_fixture_fallback: bool = True,
@@ -52,6 +54,7 @@ def run_daily_radar(
             records=records,
             cache_rows=cache_rows,
             market_context=market_context,
+            background_contexts_by_symbol=background_contexts_by_symbol,
             history_candidates=history_candidates,
             candidate_limit=candidate_limit,
             allow_fixture_fallback=allow_fixture_fallback,
@@ -66,6 +69,7 @@ def run_daily_radar(
             records=records,
             cache_rows=cache_rows,
             market_context=market_context,
+            background_contexts_by_symbol=background_contexts_by_symbol,
             history_candidates=history_candidates,
             candidate_limit=candidate_limit,
             allow_fixture_fallback=allow_fixture_fallback,
@@ -83,6 +87,7 @@ def _run_daily_radar_with_session(
     records: Iterable[Mapping[str, Any]] | None,
     cache_rows: Iterable[Any] | None,
     market_context: Mapping[str, Any] | None,
+    background_contexts_by_symbol: Mapping[str, Iterable[Mapping[str, Any]]] | None,
     history_candidates: Iterable[Mapping[str, Any]] | None,
     candidate_limit: int,
     allow_fixture_fallback: bool,
@@ -121,6 +126,10 @@ def _run_daily_radar_with_session(
             prefilter_by_symbol=prefilter_by_symbol,
             market_context=active_market_context,
             errors=errors,
+        )
+        scored_candidates = _with_background_contexts(
+            scored_candidates,
+            background_contexts_by_symbol=background_contexts_by_symbol,
         )
         history = list(history_candidates) if history_candidates is not None else _history_from_repository_or_fixture(
             session,
@@ -213,6 +222,41 @@ def _with_explanations(
     return explained
 
 
+def _with_background_contexts(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    background_contexts_by_symbol: Mapping[str, Iterable[Mapping[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    if not background_contexts_by_symbol:
+        return [dict(candidate) for candidate in candidates]
+
+    enriched: list[dict[str, Any]] = []
+    for candidate in candidates:
+        symbol = str(candidate.get("symbol") or "")
+        contexts = [dict(context) for context in background_contexts_by_symbol.get(symbol, [])]
+        if not contexts:
+            enriched.append(dict(candidate))
+            continue
+
+        next_candidate = dict(candidate)
+        input_snapshot = dict(_mapping(next_candidate.get("input_snapshot")))
+        input_snapshot["background_context"] = contexts
+        input_snapshot["background_context_labels"] = build_background_context_labels(contexts)
+        next_candidate["input_snapshot"] = input_snapshot
+
+        data_dates = dict(_mapping(next_candidate.get("data_dates")))
+        context_dates = [
+            str(context.get("as_of_date"))
+            for context in contexts
+            if context.get("as_of_date") is not None
+        ]
+        if context_dates:
+            data_dates["background_context"] = max(context_dates)
+        next_candidate["data_dates"] = data_dates
+        enriched.append(next_candidate)
+    return enriched
+
+
 def _prefilter_errors(prefilter_results: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     for result in prefilter_results:
@@ -231,6 +275,12 @@ def _prefilter_errors(prefilter_results: Iterable[Mapping[str, Any]]) -> list[di
             }
         )
     return errors
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
 
 
 def _history_from_repository_or_fixture(

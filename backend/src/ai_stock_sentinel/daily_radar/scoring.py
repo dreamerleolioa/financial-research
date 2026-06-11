@@ -6,12 +6,21 @@ from datetime import date
 from typing import Any, cast
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS, DAILY_RADAR_RISK_LABELS
+from ai_stock_sentinel.daily_radar.relative_strength import (
+    DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS,
+    calculate_relative_strength,
+)
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
+
+
+SCORING_VERSION = "daily-radar-scoring-v2.1c"
+RULE_VERSION = "daily-radar-rules-v2.1c"
 
 
 @dataclass(frozen=True)
 class ScoringConfig:
     secondary_bucket_threshold: int = 55
+    relative_strength_lookback_days: int = DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS
 
 
 def score_daily_radar_records(
@@ -79,6 +88,11 @@ def score_daily_radar_record(
     cross_confirmation = _cross_confirmation(ohlcv, indicators, flow)
     market_component = _market_context_component(market_context, risk_labels)
     freshness_component = _freshness_component(risk_labels)
+    relative_strength_component = _relative_strength_component(
+        normalized,
+        market_context=market_context,
+        lookback_days=active_config.relative_strength_lookback_days,
+    )
     risk_adjustment = sum(int(penalty["score_adjustment"]) for penalty in risk_penalties)
     primary_bucket_score = bucket_scores[primary_bucket]
     weighted_primary_bucket_score = round(primary_bucket_score * 0.8)
@@ -87,6 +101,7 @@ def score_daily_radar_record(
         + int(cross_confirmation["score"])
         + int(market_component["score"])
         + int(freshness_component["score"])
+        + int(relative_strength_component["score"])
         + risk_adjustment
     )
 
@@ -108,25 +123,38 @@ def score_daily_radar_record(
         "risk_labels": risk_labels,
         "repeat_status": "new",
         "explanation": "",
+        "scoring_version": SCORING_VERSION,
+        "rule_version": RULE_VERSION,
         "matched_rules": matched_rules,
         "score_breakdown": {
+            "scoring_version": SCORING_VERSION,
+            "rule_version": RULE_VERSION,
             "bucket_scores": bucket_scores,
             "primary_bucket_score": primary_bucket_score,
             "weighted_primary_bucket_score": weighted_primary_bucket_score,
             "cross_confirmation": cross_confirmation,
             "market_context": market_component,
+            "relative_strength": relative_strength_component,
             "freshness": freshness_component,
             "risk_penalties": risk_penalties,
             "risk_adjustment": risk_adjustment,
             "observation_score": observation_score,
         },
-        "data_dates": dict(normalized["data_dates"]),
+        "data_dates": _candidate_data_dates(normalized["data_dates"], market_context, relative_strength_component),
         "input_snapshot": {
+            "versions": {
+                "scoring_version": SCORING_VERSION,
+                "rule_version": RULE_VERSION,
+            },
             "ohlcv": dict(ohlcv),
             "indicators": dict(indicators),
+            "price_history": _price_history_trace(normalized["price_history"]),
             "institutional_flow": dict(flow),
+            "universe": _universe_trace(flow),
             "margin": dict(margin),
             "market_context": dict(_mapping(market_context).get("market", {})),
+            "relative_strength": relative_strength_component,
+            "evidence": [_relative_strength_evidence(normalized["symbol"], relative_strength_component)],
         },
     }
 
@@ -443,9 +471,112 @@ def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "record_date": str(record.get("record_date")),
         "ohlcv": ohlcv,
         "indicators": indicators,
+        "price_history": _as_list(source_record.get("price_history") if source_record else record.get("price_history")),
         "institutional_flow": flow,
         "margin": margin,
         "data_dates": _mapping(record.get("data_dates")),
+    }
+
+
+def _candidate_data_dates(
+    record_data_dates: Mapping[str, Any],
+    market_context: Mapping[str, Any] | None,
+    relative_strength: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    data_dates = dict(record_data_dates)
+    data_dates.update(dict(_mapping(_mapping(market_context).get("data_dates"))))
+    data_dates.update(dict(_mapping(_mapping(relative_strength).get("data_dates"))))
+    return data_dates
+
+
+def _relative_strength_component(
+    record: Mapping[str, Any],
+    *,
+    market_context: Mapping[str, Any] | None,
+    lookback_days: int,
+) -> dict[str, Any]:
+    run_date = _parse_date(str(record.get("record_date")))
+    benchmark = _mapping(_mapping(market_context).get("benchmark"))
+    market = _mapping(_mapping(market_context).get("market"))
+    benchmark_symbol = str(
+        benchmark.get("symbol")
+        or market.get("index_symbol")
+        or "UNKNOWN_BENCHMARK"
+    )
+    if run_date is None:
+        return {
+            "benchmark_symbol": benchmark_symbol,
+            "lookback_days": lookback_days,
+            "candidate_return": None,
+            "benchmark_return": None,
+            "relative_value": None,
+            "score": 0,
+            "weight": 1.0,
+            "freshness": "missing",
+            "missing_reason": "record_date_missing",
+            "data_dates": {},
+            "aligned_dates": [],
+        }
+    return calculate_relative_strength(
+        symbol=str(record.get("symbol")),
+        candidate_price_history=_as_mapping_list(record.get("price_history")),
+        benchmark_price_history=_as_mapping_list(benchmark.get("price_history")),
+        benchmark_symbol=benchmark_symbol,
+        run_date=run_date,
+        lookback_days=lookback_days,
+        benchmark_data_date=market.get("data_date") or _mapping(benchmark.get("data_dates")).get("market_index"),
+    )
+
+
+def _relative_strength_evidence(symbol: str, relative_strength: Mapping[str, Any]) -> dict[str, Any]:
+    data_dates = _mapping(relative_strength.get("data_dates"))
+    benchmark_symbol = str(relative_strength.get("benchmark_symbol") or "UNKNOWN_BENCHMARK")
+    lookback_days = _int(relative_strength.get("lookback_days"))
+    replay_key = relative_strength.get("replay_key") or f"relative_strength:{symbol}:{benchmark_symbol}:missing:L{lookback_days}"
+    return {
+        "evidence_type": "relative_strength",
+        "source": {
+            "domain": "daily_trigger_signal",
+            "provider": "deterministic_relative_strength",
+            "benchmark_symbol": benchmark_symbol,
+        },
+        "as_of_date": data_dates.get("relative_strength") or data_dates.get("relative_strength_benchmark"),
+        "freshness": str(relative_strength.get("freshness") or "missing"),
+        "missing_reason": relative_strength.get("missing_reason"),
+        "replay_key": str(replay_key),
+        "applicable_consumers": ["daily_radar"],
+        "details": {
+            "lookback_days": lookback_days,
+            "candidate_return": relative_strength.get("candidate_return"),
+            "benchmark_return": relative_strength.get("benchmark_return"),
+            "relative_value": relative_strength.get("relative_value"),
+            "score": relative_strength.get("score"),
+        },
+    }
+
+
+def _price_history_trace(price_history: list[Any]) -> dict[str, Any]:
+    price_dates = [
+        parsed
+        for item in _as_mapping_list(price_history)
+        if (parsed := _parse_date(str(item.get("date")))) is not None
+    ]
+    return {
+        "points": len(price_dates),
+        "latest_date": max(price_dates).isoformat() if price_dates else None,
+    }
+
+
+def _universe_trace(flow: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: flow[key]
+        for key in (
+            "universe_primary_track",
+            "institutional_universe_tracks",
+            "universe_track_metrics",
+            "scores",
+        )
+        if key in flow
     }
 
 
@@ -553,6 +684,10 @@ def _as_list(value: Any) -> list[Any]:
     return []
 
 
+def _as_mapping_list(value: Any) -> list[Mapping[str, Any]]:
+    return [item for item in _as_list(value) if isinstance(item, Mapping)]
+
+
 def _float(value: Any) -> float:
     if isinstance(value, bool) or value is None:
         return 0.0
@@ -577,7 +712,9 @@ def _clamp_score(value: int) -> int:
 
 
 __all__ = [
+    "RULE_VERSION",
     "ScoringConfig",
+    "SCORING_VERSION",
     "score_daily_radar_record",
     "score_daily_radar_records",
 ]

@@ -26,6 +26,12 @@ FLAT_INSTITUTIONAL_FLOW_FIELDS = (
     "dominant_buyer",
     "flow_strength",
     "source_provider",
+    "universe_primary_track",
+    "institutional_universe_tracks",
+    "universe_track_metrics",
+    "same_day_rank",
+    "recent_accumulation_rank",
+    "scores",
     "warnings",
 )
 
@@ -37,6 +43,7 @@ class DailyRadarJoinedRecord:
     record_date: str
     ohlcv: dict[str, Any]
     indicators: dict[str, Any]
+    price_history: list[dict[str, Any]]
     institutional_flow: dict[str, Any]
     margin: dict[str, Any]
     data_dates: dict[str, str]
@@ -52,6 +59,7 @@ class DailyRadarJoinedRecord:
             "record_date": self.record_date,
             "ohlcv": dict(self.ohlcv),
             "indicators": dict(self.indicators),
+            "price_history": list(self.price_history),
             "institutional_flow": dict(self.institutional_flow),
             "margin": dict(self.margin),
             "data_dates": dict(self.data_dates),
@@ -78,6 +86,7 @@ def load_daily_radar_fixture_records(fixture_dir: str | Path) -> list[dict[str, 
                 record_date=str(ohlcv_record["record_date"]),
                 ohlcv=dict(ohlcv_record["ohlcv"]),
                 indicators=dict(ohlcv_record["indicators"]),
+                price_history=list(_as_list(ohlcv_record.get("price_history"))),
                 institutional_flow=dict(flow_record["institutional_flow"]),
                 margin=dict(margin_record["margin"]),
                 data_dates=_merge_data_dates(ohlcv_record, flow_record, margin_record),
@@ -103,6 +112,7 @@ def load_daily_radar_cache_records(rows: Iterable[Any]) -> list[dict[str, Any]]:
                 record_date=_date_to_string(_read_field(row, "record_date")),
                 ohlcv=dict(_as_mapping(technical.get("ohlcv"))),
                 indicators=dict(_as_mapping(technical.get("indicators"))),
+                price_history=list(_as_list(technical.get("price_history"))),
                 institutional_flow=_normalize_institutional_flow(institutional_payload),
                 margin=dict(_as_mapping(fundamental.get("margin"))),
                 data_dates=_merge_mapping_data_dates(technical, institutional_payload, fundamental),
@@ -177,6 +187,12 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
     return {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return []
 
 
 def _date_to_string(value: Any) -> str:

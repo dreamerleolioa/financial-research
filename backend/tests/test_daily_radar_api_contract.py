@@ -46,10 +46,24 @@ def _candidate_payload() -> dict[str, Any]:
         "risk_labels": [DAILY_RADAR_RISK_LABELS[3]],
         "repeat_status": DAILY_RADAR_REPEAT_STATUSES[0],
         "explanation": "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。",
+        "scoring_version": "daily-radar-scoring-v2.1c",
+        "rule_version": "daily-radar-rules-v2.1c",
         "score_breakdown": {
+            "scoring_version": "daily-radar-scoring-v2.1c",
+            "rule_version": "daily-radar-rules-v2.1c",
             "bucket_scores": {
                 DAILY_RADAR_BUCKETS[1]: 82,
                 DAILY_RADAR_BUCKETS[0]: 68,
+            },
+            "relative_strength": {
+                "benchmark_symbol": "TAIEX",
+                "lookback_days": 20,
+                "candidate_return": 0.06,
+                "benchmark_return": 0.03,
+                "relative_value": 0.03,
+                "score": 3,
+                "freshness": "fresh",
+                "replay_key": "relative_strength:2330.TW:TAIEX:2026-06-01:L20",
             },
             "cross_confirmation": 6,
             "market_context": 2,
@@ -57,6 +71,53 @@ def _candidate_payload() -> dict[str, Any]:
             "risk_adjustment": -3,
             "observation_score": 82,
         },
+        "input_snapshot": {
+            "evidence": [
+                {
+                    "evidence_type": "relative_strength",
+                    "source": {
+                        "domain": "daily_trigger_signal",
+                        "provider": "deterministic_relative_strength",
+                        "benchmark_symbol": "TAIEX",
+                    },
+                    "as_of_date": "2026-06-01",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "relative_strength:2330.TW:TAIEX:2026-06-01:L20",
+                    "applicable_consumers": ["daily_radar"],
+                    "details": {"relative_value": 0.03, "score": 3},
+                }
+            ]
+        },
+        "background_context_labels": [
+            {
+                "context_type": "weekly_major_holders",
+                "label": "大戶持股集中背景",
+                "source": {
+                    "domain": "background_context",
+                    "provider": "shared_background_context_cache",
+                },
+                "as_of_date": "2026-05-31",
+                "freshness": "fresh",
+                "missing_reason": None,
+                "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-31",
+                "applicable_consumers": ["daily_radar"],
+            },
+            {
+                "context_type": "full_margin",
+                "label": "完整融資融券背景資料未更新",
+                "source": {
+                    "domain": "background_context",
+                    "provider": "shared_background_context_cache",
+                },
+                "as_of_date": None,
+                "freshness": "missing",
+                "missing_reason": "context_cache_missing",
+                "replay_key": "background_context:2330.TW:full_margin:missing",
+                "applicable_consumers": ["daily_radar"],
+            },
+        ],
+        "data_dates": {"ohlcv": date(2026, 6, 1), "relative_strength": date(2026, 6, 1)},
         "matched_rules": [
             DailyRadarMatchedRule(
                 rule_id="price_volume_close_above_ma20",
@@ -110,7 +171,10 @@ def test_daily_radar_run_response_contains_required_contract_keys() -> None:
         "repeat_status",
         "explanation",
         "score_breakdown",
+        "scoring_version",
+        "rule_version",
         "matched_rules",
+        "background_context_labels",
     }
 
 
@@ -138,6 +202,15 @@ def test_daily_radar_candidate_constrains_shared_contract_values() -> None:
     assert candidate.secondary_buckets[0] in DAILY_RADAR_BUCKETS
     assert candidate.risk_labels[0] in DAILY_RADAR_RISK_LABELS
     assert candidate.repeat_status in DAILY_RADAR_REPEAT_STATUSES
+    assert candidate.scoring_version == "daily-radar-scoring-v2.1c"
+    assert candidate.rule_version == "daily-radar-rules-v2.1c"
+    assert candidate.input_snapshot["evidence"][0]["applicable_consumers"] == ["daily_radar"]
+    assert candidate.score_breakdown["relative_strength"]["benchmark_symbol"] == "TAIEX"
+    assert candidate.background_context_labels[0]["context_type"] == "weekly_major_holders"
+    assert candidate.background_context_labels[0]["freshness"] == "fresh"
+    assert candidate.background_context_labels[1]["context_type"] == "full_margin"
+    assert candidate.background_context_labels[1]["freshness"] == "missing"
+    assert candidate.background_context_labels[1]["missing_reason"] == "context_cache_missing"
 
     with pytest.raises(ValidationError):
         DailyRadarCandidateResponse(**(_candidate_payload() | {"primary_bucket": "unsupported_bucket"}))

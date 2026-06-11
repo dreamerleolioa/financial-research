@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
+import type { SharedContextReadPayload } from "../lib/sharedContextTypes";
 import {
   ADD_ENTRY_CONDITION_VALUES,
   ADD_ENTRY_REASON_CODE_VALUES,
@@ -51,6 +52,7 @@ interface PositionResult {
   snapshot: { current_price?: number;[key: string]: unknown };
   position_analysis: PositionAnalysis | null;
   confidence_score: number | null;
+  shared_context?: SharedContextReadPayload | null;
   analysis_detail: {
     technical_signal: string;
     institutional_flow: string | null;

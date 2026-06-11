@@ -9,6 +9,11 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData
+from ai_stock_sentinel.shared_context import (
+    SHARED_CONTEXT_CONSUMER_LIFECYCLE,
+    aggregate_shared_context_quality,
+    read_shared_context_for_symbol,
+)
 
 
 ENTRY_TYPES = {"initial_entry", "add_entry"}
@@ -50,6 +55,11 @@ def build_position_lifecycle_analysis(
                 )
                 .order_by(StockRawData.record_date.asc())
             ).scalars().all()
+        shared_context = _build_event_shared_context(
+            db,
+            symbol=symbol or "",
+            events=events,
+        )
 
     return build_position_lifecycle_analysis_from_rows(
         position_group_id=position_group_id,
@@ -57,6 +67,7 @@ def build_position_lifecycle_analysis(
         events=events,
         market_rows=market_rows,
         plan=plan,
+        shared_context=shared_context,
     )
 
 
@@ -67,6 +78,7 @@ def build_position_lifecycle_analysis_from_rows(
     events,
     market_rows=(),
     plan=None,
+    shared_context: dict[str, Any] | None = None,
 ) -> tuple[dict, dict]:
     ordered_events = _sort_events(list(events or ()))
     ordered_rows = _sort_market_rows(list(market_rows or ()))
@@ -91,6 +103,7 @@ def build_position_lifecycle_analysis_from_rows(
     detected_events = _detect_market_events(ordered_events, ordered_rows)
     market_regime_snapshots = _market_regime_snapshots(event_snapshots)
     decision_context = _build_decision_context(plan, data_quality)
+    shared_context_payload = shared_context or _empty_lifecycle_shared_context(symbol)
     source_data = _source_data(symbol, ordered_events, ordered_rows, plan)
     event_facts = _compact_events(ordered_events)
     finalized_data_quality = _finalize_data_quality(data_quality)
@@ -103,6 +116,7 @@ def build_position_lifecycle_analysis_from_rows(
         event_facts,
         decision_context,
         finalized_data_quality,
+        shared_context_payload,
     )
 
     result = {
@@ -115,6 +129,7 @@ def build_position_lifecycle_analysis_from_rows(
         "event_indicator_snapshots": event_snapshots,
         "event_facts": event_facts,
         "decision_context": decision_context,
+        "shared_context": shared_context_payload,
         "data_quality": finalized_data_quality,
         "lifecycle_review": lifecycle_review,
     }
@@ -131,6 +146,7 @@ def build_position_lifecycle_analysis_from_rows(
         "indicator_snapshots": event_snapshots,
         "detected_events": detected_events,
         "market_regime_snapshots": market_regime_snapshots,
+        "shared_context": shared_context_payload,
         "source_data": source_data,
         "data_quality": result["data_quality"],
     }
@@ -146,6 +162,7 @@ def _build_lifecycle_review(
     event_facts: list[dict[str, Any]],
     decision_context: dict[str, Any],
     data_quality: dict[str, Any],
+    shared_context: dict[str, Any],
 ) -> dict[str, Any]:
     labels: list[str] = []
     reasons: list[dict[str, Any]] = []
@@ -202,6 +219,11 @@ def _build_lifecycle_review(
         )
         caveats.append(item)
         data_quality_notes.append(item)
+
+    shared_context_note = _shared_context_data_quality_note(shared_context)
+    if shared_context_note is not None:
+        caveats.append(shared_context_note)
+        data_quality_notes.append(shared_context_note)
 
     if average_down_count > 0 and add_after_breakdown_count > 0:
         _append_label(labels, "averaging_down_into_weakness")
@@ -1249,6 +1271,86 @@ def _source_data(symbol: str, events: list[Any], rows: list[Any], plan: Any) -> 
         "last_market_date": _date_to_iso(_event_value(rows[-1], "record_date")) if rows else None,
         "plan_present": plan is not None,
     }
+
+
+def _build_event_shared_context(
+    db: Session,
+    *,
+    symbol: str,
+    events: list[Any],
+) -> dict[str, Any]:
+    if not symbol or not events:
+        return _empty_lifecycle_shared_context(symbol)
+
+    event_contexts: list[dict[str, Any]] = []
+    for index, event in enumerate(_sort_events(events)):
+        event_date = _event_value(event, "event_date")
+        shared_context = read_shared_context_for_symbol(
+            db,
+            symbol=symbol,
+            consumer=SHARED_CONTEXT_CONSUMER_LIFECYCLE,
+            reference_date=event_date if isinstance(event_date, date) else None,
+            point_in_time=True,
+        )
+        event_contexts.append(
+            {
+                "event_key": _event_key(event, index),
+                "event_type": _event_value(event, "event_type"),
+                "event_date": _date_to_iso(event_date),
+                "shared_context": shared_context,
+            }
+        )
+
+    return {
+        "version": "lifecycle-shared-context-v1",
+        "consumer": SHARED_CONTEXT_CONSUMER_LIFECYCLE,
+        "point_in_time": True,
+        "events": event_contexts,
+        "data_quality": aggregate_shared_context_quality(
+            [
+                item["shared_context"]
+                for item in event_contexts
+                if isinstance(item.get("shared_context"), dict)
+            ]
+        ),
+    }
+
+
+def _empty_lifecycle_shared_context(symbol: str) -> dict[str, Any]:
+    return {
+        "version": "lifecycle-shared-context-v1",
+        "consumer": SHARED_CONTEXT_CONSUMER_LIFECYCLE,
+        "point_in_time": True,
+        "events": [],
+        "data_quality": {
+            "status": "unknown",
+            "freshness_counts": {"fresh": 0, "stale": 0, "missing": 0, "unknown": 0},
+            "missing_reasons": ["events_missing"] if not symbol else [],
+            "blocking": False,
+            "point_in_time": True,
+        },
+    }
+
+
+def _shared_context_data_quality_note(shared_context: dict[str, Any]) -> dict[str, Any] | None:
+    data_quality = shared_context.get("data_quality") if isinstance(shared_context, dict) else None
+    if not isinstance(data_quality, dict):
+        return None
+    missing_reasons = [str(reason) for reason in data_quality.get("missing_reasons") or []]
+    status = data_quality.get("status")
+    if status not in {"missing", "partial"} and not missing_reasons:
+        return None
+
+    if "future_context_excluded" in missing_reasons:
+        text = "部分 shared context 的資料日期晚於事件日期，已排除以避免使用未來資料回評當時決策。"
+    elif missing_reasons:
+        text = "部分 shared context 缺漏或過舊，本次生命週期檢討只把它作為資料品質 caveat。"
+    else:
+        text = "部分 shared context 非 fresh，本次生命週期檢討只把它作為資料品質 caveat。"
+    return _text_item(
+        text,
+        ["shared_context.events", "shared_context.data_quality"],
+    )
 
 
 def _sort_events(events: list[Any]) -> list[Any]:

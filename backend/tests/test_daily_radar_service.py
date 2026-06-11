@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import socket
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +82,9 @@ def test_run_daily_radar_orchestrates_fixture_prefilter_scoring_explanations_and
     assert first.matched_rules
     assert first.score_breakdown["observation_score"] == first.observation_score
     assert first.input_snapshot["ohlcv"]
+    assert first.input_snapshot["market_context"]["regime"] == "constructive"
     assert first.data_dates["ohlcv"] == "2026-05-29"
+    assert first.data_dates["market_index"] == "2026-05-29"
 
 
 def test_run_daily_radar_marks_stale_data_when_no_fresh_candidate_can_be_persisted(db_session: Session) -> None:
@@ -151,6 +153,225 @@ def test_run_daily_radar_summarizes_per_symbol_errors_without_failing_full_run(
     assert [candidate.symbol for candidate in run.candidates] == ["2330.TW"]
 
 
+def test_run_daily_radar_persists_universe_track_trace_in_candidate_input_snapshot(db_session: Session) -> None:
+    record = deepcopy(_joined_record("2454.TW"))
+    record["institutional_flow"] |= {
+        "universe_primary_track": "price_volume",
+        "institutional_universe_tracks": ["price_volume", "reversal"],
+        "universe_track_metrics": {
+            "price_volume": {"rank": 1, "score": 90.0, "matched": True},
+            "support_retake": {"score": 0.0, "matched": False, "missing_data": True},
+        },
+        "scores": {"price_volume": 90.0, "reversal": 70.0},
+    }
+
+    run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+    )
+    db_session.commit()
+
+    assert run.status == "completed"
+    candidate = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == run.id).one()
+    assert candidate.input_snapshot["universe"] == {
+        "universe_primary_track": "price_volume",
+        "institutional_universe_tracks": ["price_volume", "reversal"],
+        "universe_track_metrics": {
+            "price_volume": {"rank": 1, "score": 90.0, "matched": True},
+            "support_retake": {"score": 0.0, "matched": False, "missing_data": True},
+        },
+        "scores": {"price_volume": 90.0, "reversal": 70.0},
+    }
+
+
+def test_run_daily_radar_persists_relative_strength_version_and_replayable_evidence(db_session: Session) -> None:
+    record = deepcopy(_joined_record("2330.TW"))
+    record["price_history"] = _price_history(date(2026, 5, 9), [100.0 + index for index in range(21)])
+    market_context = {
+        "market": {
+            "index_symbol": "TAIEX",
+            "data_date": "2026-05-29",
+            "regime": "constructive",
+            "freshness": "fresh",
+            "above_ma20": True,
+            "above_ma60": True,
+            "volatility_state": "normal",
+            "market_risk_flags": [],
+        },
+        "benchmark": {
+            "symbol": "TAIEX",
+            "yfinance_symbol": "^TWII",
+            "price_history": _price_history(date(2026, 5, 9), [100.0 + index * 0.25 for index in range(21)]),
+            "data_dates": {"market_index": "2026-05-29"},
+        },
+        "data_dates": {"market_index": "2026-05-29"},
+    }
+
+    run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context=market_context,
+    )
+    db_session.commit()
+
+    assert run.status == "completed"
+    candidate = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == run.id).one()
+    relative_strength = candidate.score_breakdown["relative_strength"]
+    evidence = candidate.input_snapshot["evidence"][0]
+
+    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.1c"
+    assert relative_strength["benchmark_symbol"] == "TAIEX"
+    assert relative_strength["lookback_days"] == 20
+    assert relative_strength["relative_value"] > 0
+    assert relative_strength["score"] == 6
+    assert candidate.data_dates["relative_strength"] == "2026-05-29"
+    assert evidence["evidence_type"] == "relative_strength"
+    assert evidence["as_of_date"] == "2026-05-29"
+    assert evidence["freshness"] == "fresh"
+    assert evidence["replay_key"] == "relative_strength:2330.TW:TAIEX:2026-05-29:L20"
+    assert evidence["applicable_consumers"] == ["daily_radar"]
+
+
+def test_run_daily_radar_attaches_background_context_without_changing_score_or_bucket(db_session: Session) -> None:
+    record = deepcopy(_joined_record("2330.TW"))
+
+    baseline_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+    )
+    background_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+        background_contexts_by_symbol={
+            "2330.TW": [
+                {
+                    "context_type": "weekly_major_holders",
+                    "source": {"domain": "background_context", "provider": "fixture_cache"},
+                    "as_of_date": "2026-05-24",
+                    "freshness": "stale",
+                    "missing_reason": "source_stale",
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+                    "applicable_consumers": ["daily_radar"],
+                    "payload": {"major_holder_ratio": 0.58},
+                }
+            ]
+        },
+    )
+    db_session.commit()
+
+    baseline = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == baseline_run.id).one()
+    with_background = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == background_run.id).one()
+
+    assert with_background.observation_score == baseline.observation_score
+    assert with_background.primary_bucket == baseline.primary_bucket
+    assert with_background.secondary_buckets == baseline.secondary_buckets
+    assert with_background.risk_labels == baseline.risk_labels
+    assert with_background.input_snapshot["background_context"] == [
+        {
+            "context_type": "weekly_major_holders",
+            "source": {"domain": "background_context", "provider": "fixture_cache"},
+            "as_of_date": "2026-05-24",
+            "freshness": "stale",
+            "missing_reason": "source_stale",
+            "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+            "applicable_consumers": ["daily_radar"],
+            "payload": {"major_holder_ratio": 0.58},
+        }
+    ]
+    assert with_background.input_snapshot["background_context_labels"] == [
+        {
+            "context_type": "weekly_major_holders",
+            "label": "大戶持股背景資料未更新",
+            "source": {"domain": "background_context", "provider": "fixture_cache"},
+            "as_of_date": "2026-05-24",
+            "freshness": "stale",
+            "missing_reason": "source_stale",
+            "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+            "applicable_consumers": ["daily_radar"],
+        }
+    ]
+    assert with_background.data_dates["background_context"] == "2026-05-24"
+
+
+def test_run_daily_radar_ranking_is_unchanged_when_background_context_is_removed(db_session: Session) -> None:
+    records = [
+        deepcopy(record)
+        for record in load_daily_radar_fixture_records(FIXTURE_DIR)
+        if record["symbol"] in {"2330.TW", "2454.TW", "3034.TW"}
+    ]
+    market_context = {"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}}
+
+    baseline_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=records,
+        market_context=market_context,
+    )
+    background_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=records,
+        market_context=market_context,
+        background_contexts_by_symbol={
+            "2330.TW": [
+                {
+                    "context_type": "weekly_major_holders",
+                    "source": {"domain": "background_context", "provider": "fixture_cache"},
+                    "as_of_date": "2026-05-24",
+                    "freshness": "fresh",
+                    "missing_reason": None,
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+                    "applicable_consumers": ["daily_radar"],
+                    "payload": {"major_holder_ratio": 0.58},
+                }
+            ],
+            "2454.TW": [
+                {
+                    "context_type": "lending",
+                    "source": {"domain": "background_context", "provider": "fixture_cache"},
+                    "as_of_date": None,
+                    "freshness": "missing",
+                    "missing_reason": "context_cache_missing",
+                    "replay_key": "background_context:2454.TW:lending:missing",
+                    "applicable_consumers": ["daily_radar"],
+                    "payload": {},
+                }
+            ],
+        },
+    )
+    db_session.commit()
+
+    baseline = db_session.scalars(
+        select(DailyRadarCandidate)
+        .where(DailyRadarCandidate.run_id == baseline_run.id)
+        .order_by(DailyRadarCandidate.observation_score.desc(), DailyRadarCandidate.symbol.asc())
+    ).all()
+    with_background = db_session.scalars(
+        select(DailyRadarCandidate)
+        .where(DailyRadarCandidate.run_id == background_run.id)
+        .order_by(DailyRadarCandidate.observation_score.desc(), DailyRadarCandidate.symbol.asc())
+    ).all()
+
+    assert [(candidate.symbol, candidate.observation_score, candidate.primary_bucket) for candidate in with_background] == [
+        (candidate.symbol, candidate.observation_score, candidate.primary_bucket) for candidate in baseline
+    ]
+    assert any(candidate.input_snapshot.get("background_context_labels") for candidate in with_background)
+
+
 def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_choose_latest(
     db_session: Session,
 ) -> None:
@@ -169,6 +390,17 @@ def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_cho
     assert [run.id for run in runs] == [first.id, second.id]
     assert all(run.status == "completed" for run in runs)
     assert len({candidate.run_id for candidate in db_session.scalars(select(DailyRadarCandidate)).all()}) == 2
+
+
+def _joined_record(symbol: str) -> dict[str, Any]:
+    return next(record for record in load_daily_radar_fixture_records(FIXTURE_DIR) if record["symbol"] == symbol)
+
+
+def _price_history(start: date, closes: list[float]) -> list[dict[str, Any]]:
+    return [
+        {"date": (start + timedelta(days=index)).isoformat(), "close": close}
+        for index, close in enumerate(closes)
+    ]
 
 
 def test_run_daily_radar_with_fixture_fallback_disabled_does_not_load_default_fixtures(

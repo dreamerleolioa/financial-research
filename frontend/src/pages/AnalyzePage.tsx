@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
+import type { SharedContextReadPayload } from "../lib/sharedContextTypes";
 import {
   ADD_ENTRY_CONDITION_VALUES,
   DEFAULT_STOP_RULE_VALUES,
@@ -129,6 +130,7 @@ interface AnalyzeResponse {
     dividend_yield?: number | null;
     yield_signal?: string | null;
   } | null;
+  shared_context?: SharedContextReadPayload | null;
 }
 
 interface AddPortfolioForm {

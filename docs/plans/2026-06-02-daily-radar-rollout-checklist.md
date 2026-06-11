@@ -33,12 +33,18 @@ Use these checks before any live rollout. They verify the implementation shape a
 9. [ ] Confirm candidate and explanation copy stays in observation, tracking, attention, and risk language.
 10. [ ] Confirm Daily Radar contains no new 交易指令措辭、價格承諾措辭、機率承諾措辭，或方向指令語言。
 11. [ ] Confirm Daily Radar selection, ranking, bucket assignment, and risk deductions do not use LLM logic.
-12. [ ] Confirm live run uses the FinMind all-market dual-track universe, not a full configured Taiwan stock universe count.
-13. [ ] Confirm FinMind requests do not pass per-symbol params such as `stock_id`, `data_id`, or `symbol`.
-14. [ ] Confirm FinMind makes the two all-market data pulls expected by the current flow: same-day `date` and recent `date` range.
-15. [ ] Confirm yfinance runs one batch download only for selected symbols missing final raw rows.
+12. [ ] Confirm live run uses TWSE RWD fund reports (`TWT38U` / `TWT44U`) plus local final `StockRawData` technical trigger tracks, not a full configured Taiwan stock universe scan.
+13. [ ] Confirm TWSE RWD institutional report calls are report-level calls, not selected-symbol institutional requests.
+14. [ ] Confirm yfinance runs one batch download only for selected symbols missing final raw rows.
+15. [ ] Confirm yfinance market index fetch is limited to the configured benchmark for the market (`TAIEX` / `^TWII` for TW; `SPX` / `^GSPC` for US).
 16. [ ] Confirm live `POST /internal/daily-radar/run` disables fixture fallback.
-17. [ ] Confirm current live run limitations are understood: no full live margin fetch yet and no full market context fetch yet.
+17. [ ] Confirm current live run limitations are understood: Phase 2A has shared background context cache foundation, Phase 2B adds Daily Radar background labels, and Phase 2C/2D consumers read shared context as evidence/caveats only; full live margin provider data still depends on future provider work.
+18. [ ] Confirm candidate trace includes market regime, relative strength or missing reason, scoring/rule version, score breakdown, data dates, and replayable evidence.
+19. [ ] Confirm Phase 2A background context route exists: `.github/workflows/daily-radar-chip-context.yml` calls `POST /internal/daily-radar/chip-context/update` with existing backend URL/internal token secrets.
+20. [ ] Confirm Daily Radar main run only reads `shared_background_contexts` cache for selected symbols and does not call weekly major holders, lending, or full margin providers.
+21. [ ] Confirm background labels are detail/context fields only and do not affect `observation_score`, bucket, risk labels, or ranking.
+22. [ ] Confirm shared background context read paths respect `applicable_consumers`; non-applicable rows return explicit non-blocking caveats.
+23. [ ] Confirm lifecycle review point-in-time shared context can select historical `as_of_date <= event_date` rows instead of only latest cache.
 
 ## Local Fixture Run
 
@@ -54,6 +60,11 @@ Run this only in a local backend environment with Daily Radar fixtures and servi
    4. `support_retest`
 5. [ ] Verify rejected symbols carry observable risk or data reasons such as stale data, data gaps, overextended structure, market weakness, or margin crowding.
 6. [ ] Verify each candidate includes `primary_bucket`, `secondary_buckets`, `observation_score`, `risk_labels`, `matched_rules`, `score_breakdown`, `explanation`, and `data_dates`.
+7. [ ] Verify each candidate includes market regime, relative strength trace or explicit missing reason, `scoring_version`, `rule_version`, and replayable evidence.
+8. [ ] Run `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` and verify the report is deterministic JSON with explicit skip reasons.
+9. [ ] Run a repository/updater fixture flow for shared background context cache and verify fresh, stale, and missing cache traces can be read back.
+10. [ ] Verify Daily Radar candidate detail/API response includes `background_context_labels` with context type, freshness, missing reason, source, and replay key.
+11. [ ] Verify chip-context workflow fails the scheduled job when endpoint JSON returns `status: failed`, while existing daily run remains non-blocking.
 
 ## Local FastAPI Internal Endpoint Check
 
@@ -86,7 +97,7 @@ curl -X POST "http://127.0.0.1:8000/internal/daily-radar/run" \
 9. [ ] Verify the response includes `candidate_count`.
 10. [ ] Verify the response includes `errors` or an equivalent errors summary.
 11. [ ] Verify the run can be read back through `GET /daily-radar/latest` when local persistence is available.
-12. [ ] Verify `universe_count` reflects the selected dual-track universe, usually at most around 100 before overlap and dedupe.
+12. [ ] Verify `universe_count` reflects the selected multi-track universe, not a full-market scan count.
 
 ## Future Manual Frontend Verification
 
@@ -153,7 +164,7 @@ Inspect the GitHub Actions log and backend run log after manual dispatch. These 
 5. [ ] `prefilter_count` is present.
 6. [ ] `candidate_count` is present.
 7. [ ] `errors_count` is present.
-8. [ ] `universe_count` is consistent with the selected dual-track universe for that run, not a full-market scan count.
+8. [ ] `universe_count` is consistent with the selected multi-track universe for that run, not a full-market scan count.
 9. [ ] `prefilter_count` is less than or equal to `universe_count`.
 10. [ ] `candidate_count` is less than or equal to `prefilter_count`.
 11. [ ] `errors_count` is reviewed even when the workflow succeeds.
@@ -193,6 +204,11 @@ The MVP is accepted when these checks pass in the relevant environment.
 15. [ ] Explanations use rule-based templates.
 16. [ ] Copy uses observation-language wording and risk-language wording.
 17. [ ] Copy avoids 交易指令措辭、價格承諾措辭與機率承諾措辭。
+18. [ ] Candidate trace includes market regime, relative strength or missing reason, scoring/rule version, data dates, score breakdown, matched rules, and replayable evidence.
+19. [ ] Calibration report can be rerun from fixtures or persisted snapshots and preserves skip reasons for insufficient data.
+20. [ ] Background chip context cache update can be triggered independently and failure does not block an existing Daily Radar run.
+21. [ ] Background context labels are visible in Daily Radar detail/API trace and remain separate from daily trigger signals and scoring.
+22. [ ] Shared context historical rows, consumer scope filtering, and lifecycle point-in-time replay are covered by tests.
 
 ## Rollout Notes
 
@@ -200,4 +216,4 @@ The MVP is accepted when these checks pass in the relevant environment.
 2. Keep public reads on `GET /daily-radar/latest`, `GET /daily-radar/{run_date}`, and `GET /daily-radar/symbol/{symbol}`.
 3. Keep run-log review focused on data freshness, candidate count health, source gaps, and error patterns.
 4. Treat live frontend checks, Zeabur dispatch, and DB-backed reads as future manual steps once login and DB access are ready.
-5. Treat margin and market-context gaps as known current live limitations until full live fetches are added.
+5. Treat full margin provider data as a known current live limitation until provider work is added. Phase 2C/2D shared context consumers are now read/reference only and must keep deterministic action, verdict, classification, and lifecycle replay fields unchanged.

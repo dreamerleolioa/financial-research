@@ -15,8 +15,10 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
+from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
+from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, StockRawData
+from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
 from ai_stock_sentinel.db.session import Base, get_db
 
 
@@ -122,6 +124,16 @@ class FakeBatchTechnicalFetcher:
         return {symbol: self.payloads.get(symbol) or _technical_payload(symbol, run_date) for symbol in symbols}
 
 
+class FakeMarketIndexContextProvider:
+    def __init__(self, context: dict[str, Any] | None = None) -> None:
+        self.context = context or _market_context()
+        self.calls: list[dict[str, Any]] = []
+
+    def build(self, *, run_date: date, market: str) -> dict[str, Any]:
+        self.calls.append({"run_date": run_date, "market": market})
+        return dict(self.context)
+
+
 class RaisingUniverseProvider(FakeUniverseProvider):
     def __init__(self, message: str = "simulated FinMind outage") -> None:
         super().__init__()
@@ -137,6 +149,55 @@ class RaisingBatchTechnicalFetcher(FakeBatchTechnicalFetcher):
         raise RuntimeError("simulated yfinance outage")
 
 
+class FakeBackgroundChipContextProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def fetch(
+        self,
+        *,
+        symbols: list[str],
+        context_types: list[str],
+        run_date: date,
+        market: str,
+    ) -> list[BackgroundContextPayload]:
+        self.calls.append(
+            {
+                "symbols": list(symbols),
+                "context_types": list(context_types),
+                "run_date": run_date,
+                "market": market,
+            }
+        )
+        return [
+            BackgroundContextPayload(
+                symbol=symbol,
+                context_type=context_type,
+                applicable_consumers=("daily_radar",),
+                source={"domain": "background_context", "provider": "fixture_provider"},
+                as_of_date=run_date,
+                freshness="fresh",
+                payload={"label": f"{context_type}_fixture"},
+                missing_reason=None,
+                replay_key=f"background_context:{symbol}:{context_type}:{run_date.isoformat()}",
+            )
+            for symbol in symbols
+            for context_type in context_types
+        ]
+
+
+class RaisingBackgroundChipContextProvider:
+    def fetch(
+        self,
+        *,
+        symbols: list[str],
+        context_types: list[str],
+        run_date: date,
+        market: str,
+    ) -> list[BackgroundContextPayload]:
+        raise RuntimeError("simulated chip context outage")
+
+
 def _clear_daily_radar_api_overrides() -> None:
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
@@ -144,6 +205,8 @@ def _clear_daily_radar_api_overrides() -> None:
         get_db,
         daily_radar_router.get_daily_radar_universe_provider,
         daily_radar_router.get_daily_radar_technical_fetcher,
+        daily_radar_router.get_daily_radar_market_context_provider,
+        daily_radar_router.get_daily_radar_background_chip_context_provider,
     ):
         api.app.dependency_overrides.pop(dependency, None)
 
@@ -155,6 +218,7 @@ def _api_client(
     *,
     universe_provider: FakeUniverseProvider | None = None,
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
+    market_context_provider: FakeMarketIndexContextProvider | None = None,
     raise_server_exceptions: bool = True,
     run_error: Exception | None = None,
 ) -> TestClient:
@@ -164,6 +228,7 @@ def _api_client(
     captured: dict[str, Any] = {}
     provider = universe_provider or FakeUniverseProvider()
     fetcher = technical_fetcher or FakeBatchTechnicalFetcher()
+    context_provider = market_context_provider or FakeMarketIndexContextProvider()
 
     def fake_run_daily_radar(run_date: date, market: str, **kwargs: Any) -> SimpleNamespace:
         captured["run_date"] = run_date
@@ -178,10 +243,12 @@ def _api_client(
     api.app.dependency_overrides[get_db] = lambda: db_session
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_context_provider] = lambda: context_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
     client.fake_universe_provider = provider  # type: ignore[attr-defined]
     client.fake_technical_fetcher = fetcher  # type: ignore[attr-defined]
+    client.fake_market_context_provider = context_provider  # type: ignore[attr-defined]
     return client
 
 
@@ -241,6 +308,28 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
     }
 
 
+def _market_context() -> dict[str, Any]:
+    return {
+        "record_date": "2026-05-29",
+        "data_dates": {"market_index": "2026-05-29"},
+        "market": {
+            "index_symbol": "TAIEX",
+            "yfinance_symbol": "^TWII",
+            "regime": "constructive",
+            "freshness": "fresh",
+            "data_date": "2026-05-29",
+            "close": 21872.0,
+            "previous_close": 21640.0,
+            "ma20": 21480.0,
+            "ma60": 20920.0,
+            "above_ma20": True,
+            "above_ma60": True,
+            "volatility_state": "normal",
+            "market_risk_flags": [],
+        },
+    }
+
+
 def _persist_raw_data(
     session: Session,
     *,
@@ -280,7 +369,8 @@ def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkey
     assert captured["market"] == "US"
     assert captured["session"] is daily_radar_db_session
     assert captured["cache_rows"] == [raw_row]
-    assert captured["market_context"] == {}
+    assert client.fake_market_context_provider.calls == [{"run_date": date(2026, 5, 29), "market": "US"}]  # type: ignore[attr-defined]
+    assert captured["market_context"] == _market_context()
     assert captured["allow_fixture_fallback"] is False
     assert response.json() == {
         "run_id": 42,
@@ -294,6 +384,63 @@ def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkey
         "started_at": "2026-06-01T01:02:03Z",
         "finished_at": "2026-06-01T01:02:04Z",
     }
+
+
+def test_daily_radar_run_endpoint_reads_background_context_cache_without_provider_calls(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    raw_row = _persist_raw_data(daily_radar_db_session, record_date=date(2026, 5, 29))
+    upsert_shared_background_context(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture_cache"},
+        as_of_date=date(2026, 5, 25),
+        freshness="fresh",
+        payload={"top_holders_stable": True},
+        replay_key="background_context:2330.TW:weekly_major_holders:2026-05-25",
+    )
+    upsert_shared_background_context(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "future_fixture_cache"},
+        as_of_date=date(2026, 6, 2),
+        freshness="fresh",
+        payload={"top_holders_stable": False, "future_only": True},
+        replay_key="background_context:2330.TW:weekly_major_holders:2026-06-02",
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = (
+        lambda: RaisingBackgroundChipContextProvider()
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-05-29", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
+    assert captured["cache_rows"] == [raw_row]
+    contexts = captured["background_contexts_by_symbol"]["2330.TW"]
+    weekly_context = next(context for context in contexts if context["context_type"] == "weekly_major_holders")
+    assert weekly_context["freshness"] == "fresh"
+    assert weekly_context["payload"] == {"top_holders_stable": True}
+    assert weekly_context["as_of_date"] == "2026-05-25"
+    missing_context = next(context for context in contexts if context["context_type"] == "lending")
+    assert missing_context["freshness"] == "missing"
+    assert missing_context["missing_reason"] == "context_cache_missing"
 
 
 def test_daily_radar_run_endpoint_defaults_body_to_backend_today_and_tw(monkeypatch, daily_radar_db_session: Session) -> None:
@@ -345,6 +492,96 @@ def test_daily_radar_run_endpoint_rejects_missing_token_on_real_route(monkeypatc
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
+def test_daily_radar_chip_context_update_endpoint_requires_internal_auth(monkeypatch) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+
+    response = TestClient(api.app).post("/internal/daily-radar/chip-context/update")
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_daily_radar_chip_context_update_endpoint_writes_cache_records(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    provider = FakeBackgroundChipContextProvider()
+    monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 2))
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/chip-context/update",
+            json={
+                "run_date": "2026-06-02",
+                "market": "TW",
+                "symbols": ["2330.TW", "2330.TW", "2454.TW"],
+                "context_types": ["weekly_major_holders", "lending"],
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "completed",
+        "run_date": "2026-06-02",
+        "market": "TW",
+        "symbol_count": 2,
+        "context_types": ["weekly_major_holders", "lending"],
+        "records_written": 4,
+        "errors": [],
+    }
+    assert provider.calls == [
+        {
+            "symbols": ["2330.TW", "2454.TW"],
+            "context_types": ["weekly_major_holders", "lending"],
+            "run_date": date(2026, 6, 2),
+            "market": "TW",
+        }
+    ]
+    rows = daily_radar_db_session.query(SharedBackgroundContext).all()
+    assert {(row.symbol, row.context_type, row.freshness) for row in rows} == {
+        ("2330.TW", "weekly_major_holders", "fresh"),
+        ("2330.TW", "lending", "fresh"),
+        ("2454.TW", "weekly_major_holders", "fresh"),
+        ("2454.TW", "lending", "fresh"),
+    }
+
+
+def test_daily_radar_chip_context_update_endpoint_records_provider_failure(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = (
+        lambda: RaisingBackgroundChipContextProvider()
+    )
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/chip-context/update",
+            json={"run_date": "2026-06-02", "symbols": ["2330.TW"]},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["records_written"] == 0
+    assert body["errors"][0]["code"] == "background_context_provider_failed"
+
+
 @pytest.fixture()
 def daily_radar_db_session() -> Session:
     engine = create_engine(
@@ -359,7 +596,12 @@ def daily_radar_db_session() -> Session:
 
     Base.metadata.create_all(
         engine,
-        tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__, StockRawData.__table__],
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            SharedBackgroundContext.__table__,
+            StockRawData.__table__,
+        ],
     )
     with Session(engine) as session:
         yield session
@@ -412,7 +654,15 @@ def _persist_daily_radar_candidate(
     score: int,
     primary_bucket: str = "institutional_accumulation",
     secondary_buckets: list[str] | None = None,
+    background_context_labels: list[dict[str, Any]] | None = None,
 ) -> DailyRadarCandidate:
+    input_snapshot: dict[str, Any] = {
+        "symbol": symbol,
+        "close": 980,
+        "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
+    }
+    if background_context_labels is not None:
+        input_snapshot["background_context_labels"] = background_context_labels
     candidate = DailyRadarCandidate(
         run_id=run.id,
         symbol=symbol,
@@ -432,11 +682,7 @@ def _persist_daily_radar_candidate(
         explanation="Rule-based observation summary for public API tests.",
         repeat_status="new",
         score_breakdown={"observation_score": score, "bucket_scores": {primary_bucket: score}},
-        input_snapshot={
-            "symbol": symbol,
-            "close": 980,
-            "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
-        },
+        input_snapshot=input_snapshot,
         data_dates={"ohlcv": run.run_date.isoformat(), "institutional_flow": run.run_date.isoformat()},
     )
     session.add(candidate)
@@ -571,6 +817,59 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
     assert cached_institutional["same_day_net_buy"] == pytest.approx(24_680.0)
     assert cached_institutional["foreign_net_shares"] == pytest.approx(24_680.0)
     assert cached_institutional["institutional_flow"]["same_day_net_buy"] == pytest.approx(24_680.0)
+    backfilled_institutional = client.captured_daily_radar_call["cache_rows"][1].institutional  # type: ignore[attr-defined]
+    assert "technical_record_missing" not in {
+        metrics.get("reason")
+        for metrics in backfilled_institutional["universe_track_metrics"].values()
+        if isinstance(metrics, dict)
+    }
+
+
+def test_daily_radar_run_endpoint_adds_local_cache_daily_trigger_tracks_without_extra_fetch(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    daily_radar_db_session.add(
+        StockRawData(
+            symbol="2454.TW",
+            record_date=run_date,
+            technical=_technical_payload("2454.TW", run_date),
+            institutional={},
+            fundamental={"margin": {}},
+            raw_data_is_final=True,
+        )
+    )
+    daily_radar_db_session.commit()
+    fetcher = FakeBatchTechnicalFetcher()
+    provider = FakeUniverseProvider(same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0)], recent=[])
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        technical_fetcher=fetcher,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    captured_rows = client.captured_daily_radar_call["cache_rows"]  # type: ignore[attr-defined]
+    assert [row.symbol for row in captured_rows] == ["2330.TW", "2454.TW"]
+    trigger_payload = captured_rows[1].institutional
+    assert trigger_payload["universe_primary_track"] == "price_volume"
+    assert trigger_payload["institutional_universe_tracks"] == ["price_volume"]
+    assert trigger_payload["flow_state"] == "technical_trigger"
+    assert trigger_payload["universe_track_metrics"]["price_volume"]["matched"] is True
+    assert trigger_payload["universe_track_metrics"]["support_retake"]["matched"] is False
+    assert trigger_payload["scores"]["price_volume"] > 0
 
 
 def test_daily_radar_run_endpoint_returns_409_for_empty_universe_and_does_not_call_service(
@@ -722,7 +1021,34 @@ def test_public_latest_daily_radar_returns_latest_completed_run_without_internal
         created_at=datetime(2026, 6, 2, 9, 0, tzinfo=timezone.utc),
     )
     _persist_daily_radar_candidate(daily_radar_db_session, latest, symbol="2454.TW", score=88)
-    _persist_daily_radar_candidate(daily_radar_db_session, latest, symbol="2317.TW", score=93)
+    _persist_daily_radar_candidate(
+        daily_radar_db_session,
+        latest,
+        symbol="2317.TW",
+        score=93,
+        background_context_labels=[
+            {
+                "context_type": "weekly_major_holders",
+                "label": "大戶持股集中背景",
+                "source": {"domain": "background_context", "provider": "fixture_cache"},
+                "as_of_date": "2026-05-31",
+                "freshness": "fresh",
+                "missing_reason": None,
+                "replay_key": "background_context:2317.TW:weekly_major_holders:2026-05-31",
+                "applicable_consumers": ["daily_radar"],
+            },
+            {
+                "context_type": "full_margin",
+                "label": "完整融資融券背景資料未更新",
+                "source": {"domain": "background_context", "provider": "fixture_cache"},
+                "as_of_date": None,
+                "freshness": "missing",
+                "missing_reason": "context_cache_missing",
+                "replay_key": "background_context:2317.TW:full_margin:missing",
+                "applicable_consumers": ["daily_radar"],
+            },
+        ],
+    )
     _persist_daily_radar_run(
         daily_radar_db_session,
         run_date=date(2026, 6, 3),
@@ -744,6 +1070,14 @@ def test_public_latest_daily_radar_returns_latest_completed_run_without_internal
     assert first["bucket_scores"] == {"institutional_accumulation": 93, "price_volume_strengthening": 83}
     assert first["input_snapshot"]["symbol"] == "2317.TW"
     assert first["data_dates"]["ohlcv"] == "2026-06-02"
+    assert [label["context_type"] for label in first["background_context_labels"]] == [
+        "weekly_major_holders",
+        "full_margin",
+    ]
+    assert first["background_context_labels"][0]["freshness"] == "fresh"
+    assert first["background_context_labels"][1]["freshness"] == "missing"
+    assert first["background_context_labels"][1]["missing_reason"] == "context_cache_missing"
+    assert payload["candidates"][1]["background_context_labels"] == []
 
 
 def test_public_daily_radar_by_date_uses_latest_public_run_and_bucket_limit_filters(
@@ -826,6 +1160,7 @@ def test_public_daily_radar_symbol_history_returns_recent_public_candidates_with
                 "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
             },
             "data_dates": {"ohlcv": "2026-06-02", "institutional_flow": "2026-06-02"},
+            "background_context_labels": [],
         }
     ]
 
