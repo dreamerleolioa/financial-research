@@ -20,11 +20,18 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     ensure_daily_radar_raw_rows,
 )
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
+from ai_stock_sentinel.daily_radar.background_context import (
+    BackgroundChipContextProvider,
+    StubBackgroundChipContextProvider,
+    update_background_chip_context_cache,
+)
 from ai_stock_sentinel.daily_radar.repository import (
+    BACKGROUND_CONTEXT_TYPES,
     get_daily_radar_run_by_date,
     get_final_raw_data_rows_for_date,
     get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
+    get_shared_background_context_trace_by_symbol,
     get_symbol_candidate_history,
 )
 from ai_stock_sentinel.daily_radar.schemas import (
@@ -63,6 +70,23 @@ class DailyRadarRunTriggerResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class DailyRadarChipContextUpdateRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    symbols: list[str] | None = None
+    context_types: list[str] = Field(default_factory=lambda: list(BACKGROUND_CONTEXT_TYPES))
+
+
+class DailyRadarChipContextUpdateResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    run_date: date
+    market: str
+    symbol_count: int
+    context_types: list[str]
+    records_written: int
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
     return TwseRwdInstitutionalUniverseProvider()
 
@@ -73,6 +97,10 @@ def get_daily_radar_technical_fetcher() -> BatchTechnicalFetcher:
 
 def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
     return YFinanceMarketIndexContextProvider()
+
+
+def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
+    return StubBackgroundChipContextProvider()
 
 
 @router.post(
@@ -108,6 +136,11 @@ def run_daily_radar_endpoint(
             )
 
         selected_symbols = [entry.symbol for entry in universe]
+        background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
+            db,
+            symbols=selected_symbols,
+            context_types=BACKGROUND_CONTEXT_TYPES,
+        )
         institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
         failure_stage = "raw_data_backfill"
         cache_rows = ensure_daily_radar_raw_rows(
@@ -133,6 +166,7 @@ def run_daily_radar_endpoint(
             session=db,
             cache_rows=cache_rows,
             market_context=market_context,
+            background_contexts_by_symbol=background_contexts_by_symbol,
             allow_fixture_fallback=False,
         )
         db.commit()
@@ -152,6 +186,38 @@ def run_daily_radar_endpoint(
                 "error_type": exc.__class__.__name__,
             },
         ) from exc
+
+
+@router.post(
+    "/internal/daily-radar/chip-context/update",
+    response_model=DailyRadarChipContextUpdateResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def update_daily_radar_chip_context_endpoint(
+    payload: DailyRadarChipContextUpdateRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
+) -> DailyRadarChipContextUpdateResponse:
+    request = payload or DailyRadarChipContextUpdateRequest()
+    run_date = request.run_date or _backend_today()
+    result = update_background_chip_context_cache(
+        db,
+        run_date=run_date,
+        market=request.market,
+        provider=provider,
+        symbols=request.symbols,
+        context_types=request.context_types,
+    )
+    db.commit()
+    return DailyRadarChipContextUpdateResponse(
+        status=result["status"],
+        run_date=run_date,
+        market=str(result["market"]),
+        symbol_count=int(result["symbol_count"]),
+        context_types=list(result["context_types"]),
+        records_written=int(result["records_written"]),
+        errors=list(result["errors"]),
+    )
 
 
 @router.get("/daily-radar/latest", response_model=DailyRadarRunResponse, response_model_exclude_none=True)

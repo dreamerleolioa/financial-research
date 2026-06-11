@@ -7,10 +7,12 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, StockRawData
+from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
 
 
 PUBLIC_RUN_STATUSES = ("completed", "stale_data")
+BACKGROUND_CONTEXT_TYPES = ("weekly_major_holders", "lending", "full_margin")
+BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR = "daily_radar"
 
 
 def create_daily_radar_run(
@@ -188,6 +190,125 @@ def get_final_raw_data_rows_for_symbols(
     return [rows_by_symbol[symbol] for symbol in ordered_symbols if symbol in rows_by_symbol]
 
 
+def upsert_shared_background_context(
+    session: Session,
+    *,
+    symbol: str,
+    context_type: str,
+    applicable_consumers: Iterable[str],
+    source: Mapping[str, Any],
+    as_of_date: date | None,
+    freshness: str,
+    payload: Mapping[str, Any] | None = None,
+    missing_reason: str | None = None,
+    replay_key: str | None = None,
+) -> SharedBackgroundContext:
+    normalized_symbol = _normalize_symbol(symbol)
+    normalized_context_type = str(context_type).strip()
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    if not normalized_context_type:
+        raise ValueError("context_type is required")
+
+    record = session.execute(
+        select(SharedBackgroundContext).where(
+            SharedBackgroundContext.symbol == normalized_symbol,
+            SharedBackgroundContext.context_type == normalized_context_type,
+        )
+    ).scalar_one_or_none()
+    if record is None:
+        record = SharedBackgroundContext(
+            symbol=normalized_symbol,
+            context_type=normalized_context_type,
+            applicable_consumers=_ordered_unique_strings(applicable_consumers),
+            source=dict(source),
+            as_of_date=as_of_date,
+            freshness=str(freshness),
+            payload=dict(payload or {}),
+            missing_reason=missing_reason,
+            replay_key=replay_key or _background_context_replay_key(
+                normalized_symbol,
+                normalized_context_type,
+                as_of_date=as_of_date,
+                freshness=freshness,
+            ),
+        )
+    else:
+        record.applicable_consumers = _ordered_unique_strings(applicable_consumers)
+        record.source = dict(source)
+        record.as_of_date = as_of_date
+        record.freshness = str(freshness)
+        record.payload = dict(payload or {})
+        record.missing_reason = missing_reason
+        record.replay_key = replay_key or _background_context_replay_key(
+            normalized_symbol,
+            normalized_context_type,
+            as_of_date=as_of_date,
+            freshness=freshness,
+        )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def get_shared_background_context_rows(
+    session: Session,
+    *,
+    symbols: Iterable[str],
+    context_types: Iterable[str] | None = None,
+) -> list[SharedBackgroundContext]:
+    ordered_symbols = _ordered_unique_symbols(symbols)
+    if not ordered_symbols:
+        return []
+    active_context_types = _ordered_unique_strings(context_types or BACKGROUND_CONTEXT_TYPES)
+    if not active_context_types:
+        return []
+    return session.scalars(
+        select(SharedBackgroundContext)
+        .where(
+            SharedBackgroundContext.symbol.in_(ordered_symbols),
+            SharedBackgroundContext.context_type.in_(active_context_types),
+        )
+        .order_by(
+            SharedBackgroundContext.symbol.asc(),
+            SharedBackgroundContext.context_type.asc(),
+        )
+    ).all()
+
+
+def get_shared_background_context_trace_by_symbol(
+    session: Session,
+    *,
+    symbols: Iterable[str],
+    context_types: Iterable[str] | None = None,
+    consumer: str = BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR,
+) -> dict[str, list[dict[str, Any]]]:
+    ordered_symbols = _ordered_unique_symbols(symbols)
+    active_context_types = _ordered_unique_strings(context_types or BACKGROUND_CONTEXT_TYPES)
+    traces = {symbol: [] for symbol in ordered_symbols}
+    rows = get_shared_background_context_rows(
+        session,
+        symbols=ordered_symbols,
+        context_types=active_context_types,
+    )
+    rows_by_key = {(row.symbol, row.context_type): row for row in rows}
+    for symbol in ordered_symbols:
+        for context_type in active_context_types:
+            row = rows_by_key.get((symbol, context_type))
+            if row is None:
+                traces[symbol].append(
+                    _missing_background_context_trace(
+                        symbol,
+                        context_type,
+                        consumer=consumer,
+                        missing_reason="context_cache_missing",
+                    )
+                )
+            else:
+                traces[symbol].append(_background_context_trace(row))
+    return traces
+
+
 def _public_run_query(*, market: str, statuses: tuple[str, ...]):
     return (
         select(DailyRadarRun)
@@ -216,6 +337,47 @@ def _candidate_history_dict(candidate: DailyRadarCandidate, run: DailyRadarRun) 
     }
 
 
+def _background_context_trace(row: SharedBackgroundContext) -> dict[str, Any]:
+    return {
+        "context_type": row.context_type,
+        "source": dict(row.source or {}),
+        "as_of_date": row.as_of_date.isoformat() if row.as_of_date is not None else None,
+        "freshness": row.freshness,
+        "missing_reason": row.missing_reason,
+        "replay_key": row.replay_key,
+        "applicable_consumers": list(row.applicable_consumers or []),
+        "payload": dict(row.payload or {}),
+    }
+
+
+def _missing_background_context_trace(
+    symbol: str,
+    context_type: str,
+    *,
+    consumer: str,
+    missing_reason: str,
+) -> dict[str, Any]:
+    return {
+        "context_type": context_type,
+        "source": {
+            "domain": "background_context",
+            "provider": "shared_background_context_cache",
+            "status": "cache_miss",
+        },
+        "as_of_date": None,
+        "freshness": "missing",
+        "missing_reason": missing_reason,
+        "replay_key": _background_context_replay_key(
+            symbol,
+            context_type,
+            as_of_date=None,
+            freshness="missing",
+        ),
+        "applicable_consumers": [consumer],
+        "payload": {},
+    }
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
@@ -228,11 +390,15 @@ def _trace_version(payload: Any, key: str) -> str | None:
     return None
 
 
+def _normalize_symbol(symbol: str) -> str:
+    return str(symbol).strip()
+
+
 def _ordered_unique_symbols(symbols: Iterable[str]) -> list[str]:
     ordered_symbols: list[str] = []
     seen: set[str] = set()
     for symbol in symbols:
-        normalized = str(symbol).strip()
+        normalized = _normalize_symbol(symbol)
         if not normalized or normalized in seen:
             continue
         ordered_symbols.append(normalized)
@@ -240,18 +406,46 @@ def _ordered_unique_symbols(symbols: Iterable[str]) -> list[str]:
     return ordered_symbols
 
 
+def _ordered_unique_strings(values: Iterable[str]) -> list[str]:
+    ordered_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        ordered_values.append(normalized)
+        seen.add(normalized)
+    return ordered_values
+
+
+def _background_context_replay_key(
+    symbol: str,
+    context_type: str,
+    *,
+    as_of_date: date | None,
+    freshness: str,
+) -> str:
+    date_part = as_of_date.isoformat() if as_of_date is not None else str(freshness or "missing")
+    return f"background_context:{symbol}:{context_type}:{date_part}"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 __all__ = [
+    "BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR",
+    "BACKGROUND_CONTEXT_TYPES",
     "PUBLIC_RUN_STATUSES",
     "create_daily_radar_run",
     "get_daily_radar_run_by_date",
     "get_final_raw_data_rows_for_date",
     "get_final_raw_data_rows_for_symbols",
     "get_latest_daily_radar_run",
+    "get_shared_background_context_rows",
+    "get_shared_background_context_trace_by_symbol",
     "get_symbol_candidate_history",
     "replace_run_candidates",
+    "upsert_shared_background_context",
     "update_daily_radar_run",
 ]

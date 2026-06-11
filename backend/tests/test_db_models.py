@@ -20,6 +20,7 @@ from ai_stock_sentinel.db.models import (
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
+    SharedBackgroundContext,
     StockAnalysisCache,
     StockRawData,
     TradeReview,
@@ -417,3 +418,58 @@ def test_daily_radar_indexes_and_unique_candidate_symbol_per_run() -> None:
     assert ("primary_bucket",) in candidate_index_columns
     assert ("observation_score",) in candidate_index_columns
     assert ("run_id", "symbol") in unique_constraints
+
+
+def test_shared_background_context_model_columns_constraints_and_indexes() -> None:
+    assert SharedBackgroundContext.__tablename__ == "shared_background_contexts"
+
+    cols = {c.name for c in SharedBackgroundContext.__table__.columns}
+    unique_constraints = {
+        constraint.name
+        for constraint in SharedBackgroundContext.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in SharedBackgroundContext.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    index_columns = {
+        index.name: tuple(column.name for column in index.columns)
+        for index in SharedBackgroundContext.__table__.indexes
+    }
+
+    assert {
+        "id", "symbol", "context_type", "applicable_consumers", "source",
+        "as_of_date", "freshness", "payload", "missing_reason", "replay_key",
+        "created_at", "updated_at",
+    } <= cols
+    assert "uq_shared_background_context_symbol_type" in unique_constraints
+    assert "ck_shared_background_context_freshness" in check_constraints
+    assert index_columns["idx_shared_background_context_symbol"] == ("symbol",)
+    assert index_columns["idx_shared_background_context_context_type"] == ("context_type",)
+    assert index_columns["idx_shared_background_context_as_of_date"] == ("as_of_date",)
+    assert index_columns["idx_shared_background_context_freshness"] == ("freshness",)
+
+
+def test_shared_background_context_json_fields_use_jsonb_and_accept_payloads() -> None:
+    context = SharedBackgroundContext(
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture"},
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.61},
+        replay_key="background_context:2330.TW:weekly_major_holders:2026-05-31",
+    )
+
+    assert context.applicable_consumers == ["daily_radar"]
+    assert context.source == {"domain": "background_context", "provider": "fixture"}
+    assert context.payload == {"major_holder_ratio": 0.61}
+
+    json_columns = {
+        SharedBackgroundContext.__table__.c.applicable_consumers,
+        SharedBackgroundContext.__table__.c.source,
+        SharedBackgroundContext.__table__.c.payload,
+    }
+    assert all(isinstance(column.type, JSONB) for column in json_columns)

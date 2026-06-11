@@ -15,8 +15,10 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
+from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
+from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, StockRawData
+from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
 from ai_stock_sentinel.db.session import Base, get_db
 
 
@@ -147,6 +149,55 @@ class RaisingBatchTechnicalFetcher(FakeBatchTechnicalFetcher):
         raise RuntimeError("simulated yfinance outage")
 
 
+class FakeBackgroundChipContextProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def fetch(
+        self,
+        *,
+        symbols: list[str],
+        context_types: list[str],
+        run_date: date,
+        market: str,
+    ) -> list[BackgroundContextPayload]:
+        self.calls.append(
+            {
+                "symbols": list(symbols),
+                "context_types": list(context_types),
+                "run_date": run_date,
+                "market": market,
+            }
+        )
+        return [
+            BackgroundContextPayload(
+                symbol=symbol,
+                context_type=context_type,
+                applicable_consumers=("daily_radar",),
+                source={"domain": "background_context", "provider": "fixture_provider"},
+                as_of_date=run_date,
+                freshness="fresh",
+                payload={"label": f"{context_type}_fixture"},
+                missing_reason=None,
+                replay_key=f"background_context:{symbol}:{context_type}:{run_date.isoformat()}",
+            )
+            for symbol in symbols
+            for context_type in context_types
+        ]
+
+
+class RaisingBackgroundChipContextProvider:
+    def fetch(
+        self,
+        *,
+        symbols: list[str],
+        context_types: list[str],
+        run_date: date,
+        market: str,
+    ) -> list[BackgroundContextPayload]:
+        raise RuntimeError("simulated chip context outage")
+
+
 def _clear_daily_radar_api_overrides() -> None:
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
@@ -155,6 +206,7 @@ def _clear_daily_radar_api_overrides() -> None:
         daily_radar_router.get_daily_radar_universe_provider,
         daily_radar_router.get_daily_radar_technical_fetcher,
         daily_radar_router.get_daily_radar_market_context_provider,
+        daily_radar_router.get_daily_radar_background_chip_context_provider,
     ):
         api.app.dependency_overrides.pop(dependency, None)
 
@@ -334,6 +386,51 @@ def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkey
     }
 
 
+def test_daily_radar_run_endpoint_reads_background_context_cache_without_provider_calls(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    raw_row = _persist_raw_data(daily_radar_db_session, record_date=date(2026, 5, 29))
+    upsert_shared_background_context(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture_cache"},
+        as_of_date=date(2026, 5, 25),
+        freshness="fresh",
+        payload={"top_holders_stable": True},
+        replay_key="background_context:2330.TW:weekly_major_holders:2026-05-25",
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = (
+        lambda: RaisingBackgroundChipContextProvider()
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-05-29", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
+    assert captured["cache_rows"] == [raw_row]
+    contexts = captured["background_contexts_by_symbol"]["2330.TW"]
+    weekly_context = next(context for context in contexts if context["context_type"] == "weekly_major_holders")
+    assert weekly_context["freshness"] == "fresh"
+    assert weekly_context["payload"] == {"top_holders_stable": True}
+    missing_context = next(context for context in contexts if context["context_type"] == "lending")
+    assert missing_context["freshness"] == "missing"
+    assert missing_context["missing_reason"] == "context_cache_missing"
+
+
 def test_daily_radar_run_endpoint_defaults_body_to_backend_today_and_tw(monkeypatch, daily_radar_db_session: Session) -> None:
     _persist_raw_data(daily_radar_db_session, record_date=date(2026, 6, 1))
     client = _api_client(monkeypatch, daily_radar_db_session)
@@ -383,6 +480,96 @@ def test_daily_radar_run_endpoint_rejects_missing_token_on_real_route(monkeypatc
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
+def test_daily_radar_chip_context_update_endpoint_requires_internal_auth(monkeypatch) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+
+    response = TestClient(api.app).post("/internal/daily-radar/chip-context/update")
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_daily_radar_chip_context_update_endpoint_writes_cache_records(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    provider = FakeBackgroundChipContextProvider()
+    monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 2))
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/chip-context/update",
+            json={
+                "run_date": "2026-06-02",
+                "market": "TW",
+                "symbols": ["2330.TW", "2330.TW", "2454.TW"],
+                "context_types": ["weekly_major_holders", "lending"],
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "completed",
+        "run_date": "2026-06-02",
+        "market": "TW",
+        "symbol_count": 2,
+        "context_types": ["weekly_major_holders", "lending"],
+        "records_written": 4,
+        "errors": [],
+    }
+    assert provider.calls == [
+        {
+            "symbols": ["2330.TW", "2454.TW"],
+            "context_types": ["weekly_major_holders", "lending"],
+            "run_date": date(2026, 6, 2),
+            "market": "TW",
+        }
+    ]
+    rows = daily_radar_db_session.query(SharedBackgroundContext).all()
+    assert {(row.symbol, row.context_type, row.freshness) for row in rows} == {
+        ("2330.TW", "weekly_major_holders", "fresh"),
+        ("2330.TW", "lending", "fresh"),
+        ("2454.TW", "weekly_major_holders", "fresh"),
+        ("2454.TW", "lending", "fresh"),
+    }
+
+
+def test_daily_radar_chip_context_update_endpoint_records_provider_failure(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = (
+        lambda: RaisingBackgroundChipContextProvider()
+    )
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/chip-context/update",
+            json={"run_date": "2026-06-02", "symbols": ["2330.TW"]},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["records_written"] == 0
+    assert body["errors"][0]["code"] == "background_context_provider_failed"
+
+
 @pytest.fixture()
 def daily_radar_db_session() -> Session:
     engine = create_engine(
@@ -397,7 +584,12 @@ def daily_radar_db_session() -> Session:
 
     Base.metadata.create_all(
         engine,
-        tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__, StockRawData.__table__],
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            SharedBackgroundContext.__table__,
+            StockRawData.__table__,
+        ],
     )
     with Session(engine) as session:
         yield session

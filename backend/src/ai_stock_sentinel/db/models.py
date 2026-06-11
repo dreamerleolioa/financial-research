@@ -492,3 +492,31 @@ class DailyRadarCandidate(Base):
     created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     run: Mapped["DailyRadarRun"] = relationship(back_populates="candidates")
+
+
+class SharedBackgroundContext(Base):
+    __tablename__ = "shared_background_contexts"
+    __table_args__ = (
+        UniqueConstraint("symbol", "context_type", name="uq_shared_background_context_symbol_type"),
+        CheckConstraint(
+            "freshness IN ('fresh', 'stale', 'missing', 'unknown')",
+            name="ck_shared_background_context_freshness",
+        ),
+        Index("idx_shared_background_context_symbol", "symbol"),
+        Index("idx_shared_background_context_context_type", "context_type"),
+        Index("idx_shared_background_context_as_of_date", "as_of_date"),
+        Index("idx_shared_background_context_freshness", "freshness"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    context_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    applicable_consumers: Mapped[list] = mapped_column(JSONB, nullable=False)
+    source: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    freshness: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    missing_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    replay_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

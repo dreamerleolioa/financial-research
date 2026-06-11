@@ -38,8 +38,10 @@ Use these checks before any live rollout. They verify the implementation shape a
 14. [ ] Confirm yfinance runs one batch download only for selected symbols missing final raw rows.
 15. [ ] Confirm yfinance market index fetch is limited to the configured benchmark for the market (`TAIEX` / `^TWII` for TW; `SPX` / `^GSPC` for US).
 16. [ ] Confirm live `POST /internal/daily-radar/run` disables fixture fallback.
-17. [ ] Confirm current live run limitations are understood: no full live margin fetch yet and no Phase 2 chip context cache yet.
+17. [ ] Confirm current live run limitations are understood: Phase 2A has shared background context cache foundation, but no full live margin provider data and no Phase 2B background labels yet.
 18. [ ] Confirm candidate trace includes market regime, relative strength or missing reason, scoring/rule version, score breakdown, data dates, and replayable evidence.
+19. [ ] Confirm Phase 2A background context route exists: `.github/workflows/daily-radar-chip-context.yml` calls `POST /internal/daily-radar/chip-context/update` with existing backend URL/internal token secrets.
+20. [ ] Confirm Daily Radar main run only reads `shared_background_contexts` cache for selected symbols and does not call weekly major holders, lending, or full margin providers.
 
 ## Local Fixture Run
 
@@ -57,6 +59,7 @@ Run this only in a local backend environment with Daily Radar fixtures and servi
 6. [ ] Verify each candidate includes `primary_bucket`, `secondary_buckets`, `observation_score`, `risk_labels`, `matched_rules`, `score_breakdown`, `explanation`, and `data_dates`.
 7. [ ] Verify each candidate includes market regime, relative strength trace or explicit missing reason, `scoring_version`, `rule_version`, and replayable evidence.
 8. [ ] Run `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` and verify the report is deterministic JSON with explicit skip reasons.
+9. [ ] Run a repository/updater fixture flow for shared background context cache and verify fresh, stale, and missing cache traces can be read back.
 
 ## Local FastAPI Internal Endpoint Check
 
@@ -198,6 +201,7 @@ The MVP is accepted when these checks pass in the relevant environment.
 17. [ ] Copy avoids 交易指令措辭、價格承諾措辭與機率承諾措辭。
 18. [ ] Candidate trace includes market regime, relative strength or missing reason, scoring/rule version, data dates, score breakdown, matched rules, and replayable evidence.
 19. [ ] Calibration report can be rerun from fixtures or persisted snapshots and preserves skip reasons for insufficient data.
+20. [ ] Background chip context cache update can be triggered independently and failure does not block an existing Daily Radar run.
 
 ## Rollout Notes
 
@@ -205,4 +209,4 @@ The MVP is accepted when these checks pass in the relevant environment.
 2. Keep public reads on `GET /daily-radar/latest`, `GET /daily-radar/{run_date}`, and `GET /daily-radar/symbol/{symbol}`.
 3. Keep run-log review focused on data freshness, candidate count health, source gaps, and error patterns.
 4. Treat live frontend checks, Zeabur dispatch, and DB-backed reads as future manual steps once login and DB access are ready.
-5. Treat full margin and Phase 2 chip context gaps as known current live limitations until those phases are added.
+5. Treat full margin provider data and Phase 2B background labels as known current live limitations until those phases are added; Phase 2A only establishes the shared cache foundation and missing/stale trace.

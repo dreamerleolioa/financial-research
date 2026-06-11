@@ -238,6 +238,61 @@ def test_run_daily_radar_persists_relative_strength_version_and_replayable_evide
     assert evidence["applicable_consumers"] == ["daily_radar"]
 
 
+def test_run_daily_radar_attaches_background_context_without_changing_score_or_bucket(db_session: Session) -> None:
+    record = deepcopy(_joined_record("2330.TW"))
+
+    baseline_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+    )
+    background_run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+        background_contexts_by_symbol={
+            "2330.TW": [
+                {
+                    "context_type": "weekly_major_holders",
+                    "source": {"domain": "background_context", "provider": "fixture_cache"},
+                    "as_of_date": "2026-05-24",
+                    "freshness": "stale",
+                    "missing_reason": "source_stale",
+                    "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+                    "applicable_consumers": ["daily_radar"],
+                    "payload": {"major_holder_ratio": 0.58},
+                }
+            ]
+        },
+    )
+    db_session.commit()
+
+    baseline = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == baseline_run.id).one()
+    with_background = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == background_run.id).one()
+
+    assert with_background.observation_score == baseline.observation_score
+    assert with_background.primary_bucket == baseline.primary_bucket
+    assert with_background.secondary_buckets == baseline.secondary_buckets
+    assert with_background.risk_labels == baseline.risk_labels
+    assert with_background.input_snapshot["background_context"] == [
+        {
+            "context_type": "weekly_major_holders",
+            "source": {"domain": "background_context", "provider": "fixture_cache"},
+            "as_of_date": "2026-05-24",
+            "freshness": "stale",
+            "missing_reason": "source_stale",
+            "replay_key": "background_context:2330.TW:weekly_major_holders:2026-05-24",
+            "applicable_consumers": ["daily_radar"],
+            "payload": {"major_holder_ratio": 0.58},
+        }
+    ]
+    assert with_background.data_dates["background_context"] == "2026-05-24"
+
+
 def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_choose_latest(
     db_session: Session,
 ) -> None:
