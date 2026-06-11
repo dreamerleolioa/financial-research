@@ -1321,7 +1321,7 @@ Daily Radar run status：
 }
 ```
 
-Provider failure 以 `status: "failed"` 與 `errors[]` 記錄，response 仍是 200，避免背景更新失敗阻塞 existing daily run。正式 workflow 為 `.github/workflows/daily-radar-chip-context.yml`，使用 `ZEABUR_BACKEND_URL` 與 `DAILY_RADAR_INTERNAL_TOKEN` secrets，不硬編 secret；workflow 會檢查 response JSON 的 `status == "completed"`，若為 failed 或 non-JSON response 會 fail job 以利排程監控。Workflow 以資料頻率拆分 request body：台灣時間週二至週六 07:00 更新 `lending` / `full_margin`，台灣時間週六 07:30 更新週頻 `weekly_major_holders`。
+Provider failure 以 `status: "failed"` 與 `errors[]` 記錄，response 仍是 200，避免背景更新失敗阻塞 existing daily run。正式 workflow 為 `.github/workflows/daily-radar-chip-context.yml`，使用 `ZEABUR_BACKEND_URL` 與 `DAILY_RADAR_INTERNAL_TOKEN` secrets，不硬編 secret；workflow 會檢查 response JSON 的 `status == "completed"`，若為 failed 或 non-JSON response 會 fail job 以利排程監控。Workflow 以資料頻率拆分 request body：台灣時間週二至週六 07:00 更新 `lending` / `full_margin`，台灣時間週日 07:30 更新週頻 `weekly_major_holders`。
 
 > **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。Raw scores 保留於 API 作為內部排序、校準、回測與 traceability；一般使用者介面應優先顯示觀察等級、bucket、風險標籤與命中原因，若顯示 `observation_score` 應標示為內部排序分，不得稱為勝率、推薦分數或保證性結果。
 

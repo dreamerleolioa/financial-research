@@ -808,9 +808,9 @@ def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> 
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in text
     assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in text
     assert "0 23 * * 1-5" in text
-    assert "30 23 * * 5" in text
+    assert "30 23 * * 6" in text
     assert "github.event.schedule == '0 23 * * 1-5'" in text
-    assert "github.event.schedule == '30 23 * * 5'" in text
+    assert "github.event.schedule == '30 23 * * 6'" in text
     assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["lending","full_margin"]}\'' in text
     assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["weekly_major_holders"]}\'' in text
     assert "--data \"${CHIP_CONTEXT_PAYLOAD}\"" in text

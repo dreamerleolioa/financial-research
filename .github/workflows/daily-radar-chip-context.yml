@@ -5,8 +5,8 @@ on:
   schedule:
     # 台灣時間週二至週六 07:00，更新日頻融資融券與借券背景 context
     - cron: "0 23 * * 1-5"
-    # 台灣時間週六 07:30，更新週頻 TDCC 股權分散背景 context
-    - cron: "30 23 * * 5"
+    # 台灣時間週日 07:30，更新週頻 TDCC 股權分散背景 context
+    - cron: "30 23 * * 6"
 
 permissions:
   contents: read
@@ -75,7 +75,7 @@ jobs:
   update-weekly-chip-context:
     name: Update Daily Radar weekly chip context on Zeabur
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 23 * * 5'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 23 * * 6'
 
     steps:
       - name: Trigger weekly chip context update
