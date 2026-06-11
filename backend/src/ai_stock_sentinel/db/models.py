@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric,
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric,
     String, Text, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -51,6 +51,238 @@ class UserPortfolio(Base):
     updated_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+POSITION_EVENT_TYPES = (
+    "initial_entry",
+    "add_entry",
+    "partial_exit",
+    "full_exit",
+    "manual_adjustment",
+)
+
+POSITION_EVENT_SOURCES = (
+    "synthetic_from_portfolio_row",
+    "user_backfilled",
+    "user_recorded_at_event_time",
+    "manual_record_correction",
+    "not_recorded",
+)
+
+POSITION_EVENT_REASON_CATEGORIES = (
+    "technical",
+    "institutional_flow",
+    "fundamental",
+    "news",
+    "risk_control",
+    "plan_execution",
+    "emotional",
+    "record_correction",
+    "not_recorded",
+)
+
+POSITION_EVENT_ENTRY_REASON_CODES = (
+    "breakout_confirmation",
+    "pullback_held_support",
+    "pullback_held_ma20",
+    "institutional_flow_strengthened",
+    "fundamental_thesis_improved",
+    "event_or_news_catalyst",
+    "long_term_accumulation",
+    "value_revaluation",
+    "other",
+    "planned_scale_in",
+    "averaging_down",
+    "chasing_momentum",
+    "manual_record_correction",
+)
+
+POSITION_EVENT_EXIT_REASON_CODES = (
+    "target_reached",
+    "trailing_stop_hit",
+    "support_broken",
+    "ma20_lost",
+    "institutional_flow_weakened",
+    "fundamental_thesis_broken",
+    "news_risk_increased",
+    "risk_reduction",
+    "profit_protection",
+    "planned_scale_out",
+    "stop_loss",
+    "emotional_exit",
+    "manual_record_correction",
+)
+
+POSITION_EVENT_REASON_CODES = tuple(dict.fromkeys(POSITION_EVENT_ENTRY_REASON_CODES + POSITION_EVENT_EXIT_REASON_CODES))
+
+POSITION_EVENT_PLAN_ADHERENCE_VALUES = (
+    "yes",
+    "partial",
+    "no",
+    "not_recorded",
+)
+
+POSITION_EVENT_CONFIDENCE_LEVELS = (
+    "high",
+    "medium",
+    "low",
+    "not_recorded",
+)
+
+POSITION_LIFECYCLE_SETUP_TYPES = (
+    "breakout",
+    "pullback",
+    "mean_reversion",
+    "value_revaluation",
+    "earnings_or_event",
+    "momentum_continuation",
+    "long_term_accumulation",
+    "defensive_rebalance",
+    "other",
+)
+
+POSITION_LIFECYCLE_HOLDING_PERIODS = (
+    "short_term",
+    "swing",
+    "medium_term",
+    "long_term",
+    "not_recorded",
+)
+
+POSITION_LIFECYCLE_DEFAULT_STOP_RULES = (
+    "break_20d_low",
+    "break_ma20",
+    "break_ma60",
+    "cost_minus_pct",
+    "fixed_price",
+    "no_stop_recorded",
+    "not_recorded",
+)
+
+POSITION_LIFECYCLE_ADD_ENTRY_CONDITIONS = (
+    "no_add_entry",
+    "breakout_above_prior_high",
+    "pullback_holds_ma20",
+    "pullback_holds_support",
+    "institutional_flow_continues",
+    "profit_threshold_reached",
+    "data_quality_complete_only",
+    "no_averaging_down",
+    "custom_plan_required",
+    "not_recorded",
+)
+
+
+def _nullable_in_constraint(column: str, values: tuple[str, ...]) -> str:
+    quoted_values = ", ".join(f"'{value}'" for value in values)
+    return f"{column} IS NULL OR {column} IN ({quoted_values})"
+
+
+class PositionEvent(Base):
+    __tablename__ = "position_event"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('initial_entry', 'add_entry', 'partial_exit', 'full_exit', 'manual_adjustment')",
+            name="ck_position_event_event_type",
+        ),
+        CheckConstraint(
+            "source IN ('synthetic_from_portfolio_row', 'user_backfilled', 'user_recorded_at_event_time', 'manual_record_correction', 'not_recorded')",
+            name="ck_position_event_source",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("reason_category", POSITION_EVENT_REASON_CATEGORIES),
+            name="ck_position_event_reason_category",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("reason_code", POSITION_EVENT_REASON_CODES),
+            name="ck_position_event_reason_code",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("plan_adherence", POSITION_EVENT_PLAN_ADHERENCE_VALUES),
+            name="ck_position_event_plan_adherence",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("confidence_level", POSITION_EVENT_CONFIDENCE_LEVELS),
+            name="ck_position_event_confidence_level",
+        ),
+        Index("idx_position_event_user_id", "user_id"),
+        Index("idx_position_event_position_group_id", "position_group_id"),
+        Index("idx_position_event_symbol", "symbol"),
+        Index("idx_position_event_event_date", "event_date"),
+        Index("idx_position_event_user_group_date", "user_id", "position_group_id", "event_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    position_group_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    fees: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0, server_default="0")
+    taxes: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0, server_default="0")
+    source_portfolio_id: Mapped[int | None] = mapped_column(ForeignKey("user_portfolio.id", ondelete="SET NULL"), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason_category: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    plan_adherence: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    confidence_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    data_quality_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class PositionLifecyclePlan(Base):
+    __tablename__ = "position_lifecycle_plan"
+    __table_args__ = (
+        UniqueConstraint("position_group_id", name="uq_position_lifecycle_plan_group"),
+        CheckConstraint(
+            _nullable_in_constraint("setup_type", POSITION_LIFECYCLE_SETUP_TYPES),
+            name="ck_position_lifecycle_plan_setup_type",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("planned_holding_period", POSITION_LIFECYCLE_HOLDING_PERIODS),
+            name="ck_position_lifecycle_plan_holding_period",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("default_stop_rule", POSITION_LIFECYCLE_DEFAULT_STOP_RULES),
+            name="ck_position_lifecycle_plan_default_stop_rule",
+        ),
+        CheckConstraint(
+            _nullable_in_constraint("add_entry_condition", POSITION_LIFECYCLE_ADD_ENTRY_CONDITIONS),
+            name="ck_position_lifecycle_plan_add_entry_condition",
+        ),
+        CheckConstraint(
+            "source IN ('synthetic_from_portfolio_row', 'user_backfilled', 'user_recorded_at_event_time', 'manual_record_correction', 'not_recorded')",
+            name="ck_position_lifecycle_plan_source",
+        ),
+        Index("idx_position_lifecycle_plan_user_id", "user_id"),
+        Index("idx_position_lifecycle_plan_position_group_id", "position_group_id"),
+        Index("idx_position_lifecycle_plan_symbol", "symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    position_group_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_portfolio_id: Mapped[int | None] = mapped_column(ForeignKey("user_portfolio.id", ondelete="SET NULL"), nullable=True)
+    thesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    setup_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    planned_holding_period: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    default_stop_rule: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    add_entry_condition: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    planned_invalidation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planned_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    planned_target_or_scale_out_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planned_risk_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    planned_risk_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    position_sizing_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_after_entry: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
 class TradeReview(Base):
     __tablename__ = "trade_review"
     __table_args__ = (
@@ -63,6 +295,33 @@ class TradeReview(Base):
     position_group_id: Mapped[str] = mapped_column(String(36), nullable=False)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     review_version: Mapped[str] = mapped_column(String(30), nullable=False, default="trade-review-v1")
+    review_result: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class PositionLifecycleReview(Base):
+    __tablename__ = "position_lifecycle_review"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "position_group_id",
+            "review_version",
+            name="uq_position_lifecycle_review_user_group_version",
+        ),
+        Index("idx_position_lifecycle_review_user_id", "user_id"),
+        Index("idx_position_lifecycle_review_position_group_id", "position_group_id"),
+        Index("idx_position_lifecycle_review_symbol", "symbol"),
+        Index("idx_position_lifecycle_review_user_group", "user_id", "position_group_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    position_group_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    review_version: Mapped[str] = mapped_column(String(40), nullable=False, default="position-lifecycle-review-v1")
     review_result: Mapped[dict] = mapped_column(JSONB, nullable=False)
     evidence_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -2,7 +2,31 @@ import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
-import type { ClosedPortfolioItem, PortfolioItem } from "../lib/portfolioTypes";
+import {
+  ADD_ENTRY_CONDITION_VALUES,
+  ADD_ENTRY_REASON_CODE_VALUES,
+  DECISION_CONFIDENCE_LEVEL_VALUES,
+  DEFAULT_STOP_RULE_VALUES,
+  LIFECYCLE_SETUP_TYPE_VALUES,
+  PLAN_ADHERENCE_VALUES,
+  PLANNED_HOLDING_PERIOD_VALUES,
+} from "../lib/portfolioTypes";
+import type {
+  AddEntryCondition,
+  AddEntryReasonCode,
+  BackfillLifecyclePlanRequest,
+  BackfillLifecyclePlanResponse,
+  ClosedPortfolioItem,
+  DecisionConfidenceLevel,
+  DefaultStopRule,
+  LifecyclePlanResponse,
+  LifecycleSetupType,
+  PlanAdherence,
+  PlannedHoldingPeriod,
+  PortfolioDecisionContextStatusMap,
+  PortfolioItem,
+  PositionEvent,
+} from "../lib/portfolioTypes";
 
 interface HistoryEntry {
   record_date: string;
@@ -44,6 +68,411 @@ interface PortfolioPageProps {
 
 function getTodayDateString(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
+  no_add_entry: "不加碼",
+  breakout_above_prior_high: "突破前高後加碼",
+  pullback_holds_ma20: "回測守住月線後加碼",
+  pullback_holds_support: "回測守住支撐後加碼",
+  institutional_flow_continues: "籌碼延續轉強後加碼",
+  profit_threshold_reached: "達到獲利門檻後加碼",
+  data_quality_complete_only: "資料完整才加碼",
+  no_averaging_down: "不攤平加碼",
+  custom_plan_required: "依自訂計畫判斷",
+  not_recorded: "未記錄",
+};
+
+const ADD_ENTRY_REASON_CODE_LABEL: Record<AddEntryReasonCode, string> = {
+  breakout_confirmation: "突破確認",
+  pullback_held_support: "回測守住支撐",
+  pullback_held_ma20: "回測守住月線",
+  institutional_flow_strengthened: "籌碼轉強",
+  fundamental_thesis_improved: "基本面論點改善",
+  event_or_news_catalyst: "事件／消息催化",
+  long_term_accumulation: "長期分批佈局",
+  value_revaluation: "價值重估",
+  other: "其他固定理由",
+  planned_scale_in: "依原計畫分批加碼",
+  averaging_down: "向下攤平",
+  chasing_momentum: "追價動能",
+  not_recorded: "未記錄",
+};
+
+const PLAN_ADHERENCE_LABEL: Record<PlanAdherence, string> = {
+  yes: "符合原始計畫",
+  partial: "部分符合原始計畫",
+  no: "否，記錄為違反原始加碼計畫",
+  not_recorded: "未記錄",
+};
+
+const CONFIDENCE_LEVEL_LABEL: Record<DecisionConfidenceLevel, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+  not_recorded: "未記錄",
+};
+
+const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
+  short_term: "短線（數日內）",
+  swing: "波段（數週）",
+  medium_term: "中期（數月）",
+  long_term: "長期（半年以上）",
+  not_recorded: "未記錄",
+};
+
+const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
+  break_20d_low: "跌破 20 日低點",
+  break_ma20: "跌破 20 日線",
+  break_ma60: "跌破 60 日線",
+  cost_minus_pct: "成本下方固定百分比",
+  fixed_price: "固定價格停損",
+  no_stop_recorded: "未設定停損",
+  not_recorded: "未記錄",
+};
+
+const LIFECYCLE_SETUP_TYPE_LABEL: Record<LifecycleSetupType, string> = {
+  breakout: "突破型",
+  pullback: "回測型",
+  mean_reversion: "均值回歸",
+  value_revaluation: "價值重估",
+  earnings_or_event: "財報／事件驅動",
+  momentum_continuation: "動能延續",
+  long_term_accumulation: "長期分批佈局",
+  defensive_rebalance: "防守再平衡",
+  other: "其他",
+};
+
+const OPERATION_PLAN_STATUS_LABEL = {
+  missing: "缺少 operation plan",
+  present: "原始計畫已記錄",
+  backfilled: "已事後補填",
+} as const;
+
+const OPERATION_PLAN_STATUS_CLASS = {
+  missing: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  present: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  backfilled: "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
+} as const;
+
+const PLANNED_HOLDING_PERIOD_OPTIONS = PLANNED_HOLDING_PERIOD_VALUES.map((value) => ({
+  value,
+  label: PLANNED_HOLDING_PERIOD_LABEL[value],
+}));
+
+const DEFAULT_STOP_RULE_OPTIONS = DEFAULT_STOP_RULE_VALUES.map((value) => ({
+  value,
+  label: DEFAULT_STOP_RULE_LABEL[value],
+}));
+
+const ADD_ENTRY_CONDITION_OPTIONS = ADD_ENTRY_CONDITION_VALUES.map((value) => ({
+  value,
+  label: ADD_ENTRY_CONDITION_LABEL[value],
+}));
+
+const LIFECYCLE_SETUP_TYPE_OPTIONS = LIFECYCLE_SETUP_TYPE_VALUES.map((value) => ({
+  value,
+  label: LIFECYCLE_SETUP_TYPE_LABEL[value],
+}));
+
+interface AddEntryRequest {
+  event_date: string;
+  price: number;
+  quantity: number;
+  fees: number;
+  taxes: number;
+  reason_code: AddEntryReasonCode;
+  plan_adherence: PlanAdherence;
+  confidence_level: DecisionConfidenceLevel;
+  note?: string;
+}
+
+interface AddEntryResponse {
+  portfolio: PortfolioItem;
+  event: PositionEvent;
+}
+
+interface BackfillPlanModalProps {
+  item: PortfolioItem;
+  onClose: () => void;
+  onSaved: (response: BackfillLifecyclePlanResponse) => void;
+}
+
+function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
+  const [thesis, setThesis] = useState("");
+  const [setupType, setSetupType] = useState<LifecycleSetupType | "">("");
+  const [plannedHoldingPeriod, setPlannedHoldingPeriod] = useState<PlannedHoldingPeriod | "">("");
+  const [defaultStopRule, setDefaultStopRule] = useState<DefaultStopRule | "">("");
+  const [addEntryCondition, setAddEntryCondition] = useState<AddEntryCondition | "">("");
+  const [plannedInvalidation, setPlannedInvalidation] = useState("");
+  const [plannedStopPrice, setPlannedStopPrice] = useState("");
+  const [plannedTargetOrScaleOutRule, setPlannedTargetOrScaleOutRule] = useState("");
+  const [plannedRiskAmount, setPlannedRiskAmount] = useState("");
+  const [plannedRiskPct, setPlannedRiskPct] = useState("");
+  const [positionSizingRationale, setPositionSizingRationale] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function parseOptionalNumber(value: string, label: string): number | undefined {
+    const trimmedValue = value.trim();
+    if (!trimmedValue) return undefined;
+    const parsedValue = Number(trimmedValue);
+    if (!Number.isFinite(parsedValue)) throw new Error(`${label} 必須是有效數字。`);
+    return parsedValue;
+  }
+
+  async function handleSave() {
+    setError(null);
+
+    let parsedStopPrice: number | undefined;
+    let parsedRiskAmount: number | undefined;
+    let parsedRiskPct: number | undefined;
+    try {
+      parsedStopPrice = parseOptionalNumber(plannedStopPrice, "計畫停損價");
+      parsedRiskAmount = parseOptionalNumber(plannedRiskAmount, "計畫風險金額");
+      parsedRiskPct = parseOptionalNumber(plannedRiskPct, "計畫風險百分比");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "請確認數字欄位。");
+      return;
+    }
+
+    if (parsedStopPrice != null && parsedStopPrice <= 0) {
+      setError("計畫停損價必須大於 0。");
+      return;
+    }
+    if (parsedRiskAmount != null && parsedRiskAmount < 0) {
+      setError("計畫風險金額不可小於 0。");
+      return;
+    }
+    if (parsedRiskPct != null && parsedRiskPct < 0) {
+      setError("計畫風險百分比不可小於 0。");
+      return;
+    }
+
+    const body: BackfillLifecyclePlanRequest = {};
+    const trimmedThesis = thesis.trim();
+    const trimmedInvalidation = plannedInvalidation.trim();
+    const trimmedTargetRule = plannedTargetOrScaleOutRule.trim();
+    const trimmedSizingRationale = positionSizingRationale.trim();
+
+    if (trimmedThesis) body.thesis = trimmedThesis;
+    if (setupType) body.setup_type = setupType;
+    if (plannedHoldingPeriod) body.planned_holding_period = plannedHoldingPeriod;
+    if (defaultStopRule) body.default_stop_rule = defaultStopRule;
+    if (addEntryCondition) body.add_entry_condition = addEntryCondition;
+    if (trimmedInvalidation) body.planned_invalidation = trimmedInvalidation;
+    if (parsedStopPrice != null) body.planned_stop_price = parsedStopPrice;
+    if (trimmedTargetRule) body.planned_target_or_scale_out_rule = trimmedTargetRule;
+    if (parsedRiskAmount != null) body.planned_risk_amount = parsedRiskAmount;
+    if (parsedRiskPct != null) body.planned_risk_pct = parsedRiskPct;
+    if (trimmedSizingRationale) body.position_sizing_rationale = trimmedSizingRationale;
+
+    if (Object.keys(body).length === 0) {
+      setError("請至少補填一個 plan 欄位。");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/lifecycle-plan/backfill`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: BackfillLifecyclePlanResponse = await res.json();
+      onSaved(data);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "補填 plan 失敗");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      ref={backdropRef}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+    >
+      <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
+          <div>
+            <p className="font-semibold text-text-primary">補填 operation plan · {item.symbol}</p>
+            <p className="mt-1 text-xs text-text-faint">
+              成本 {formatPrice(item.entry_price, item.symbol)} ｜ 進場日 {item.entry_date}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            這是事後補填的 operation plan，只用來改善未來 lifecycle review 的脈絡品質；它不是原始進場當下的 plan，也不會取代既有分析、加碼、出場或結案流程。
+          </div>
+
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">投資假設 / Thesis</span>
+            <textarea
+              value={thesis}
+              onChange={(e) => setThesis(e.target.value)}
+              rows={3}
+              placeholder="補填你當時能確認的操作假設，不要引用後來的價格或損益結果"
+              className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </label>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">Setup type</span>
+              <select
+                value={setupType}
+                onChange={(e) => setSetupType(e.target.value as LifecycleSetupType | "")}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="">未選擇（不送出）</option>
+                {LIFECYCLE_SETUP_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">預計持有期間</span>
+              <select
+                value={plannedHoldingPeriod}
+                onChange={(e) => setPlannedHoldingPeriod(e.target.value as PlannedHoldingPeriod | "")}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="">未選擇（不送出）</option>
+                {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">預設停損規則</span>
+              <select
+                value={defaultStopRule}
+                onChange={(e) => setDefaultStopRule(e.target.value as DefaultStopRule | "")}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="">未選擇（不送出）</option>
+                {DEFAULT_STOP_RULE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">加碼條件</span>
+              <select
+                value={addEntryCondition}
+                onChange={(e) => setAddEntryCondition(e.target.value as AddEntryCondition | "")}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="">未選擇（不送出）</option>
+                {ADD_ENTRY_CONDITION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">失效條件</span>
+            <textarea
+              value={plannedInvalidation}
+              onChange={(e) => setPlannedInvalidation(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </label>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">計畫停損價</span>
+              <input
+                type="number"
+                step="0.01"
+                value={plannedStopPrice}
+                onChange={(e) => setPlannedStopPrice(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">計畫風險金額</span>
+              <input
+                type="number"
+                step="0.01"
+                value={plannedRiskAmount}
+                onChange={(e) => setPlannedRiskAmount(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">計畫風險 %</span>
+              <input
+                type="number"
+                step="0.01"
+                value={plannedRiskPct}
+                onChange={(e) => setPlannedRiskPct(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+          </div>
+
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">停利 / 分批出場規則</span>
+            <textarea
+              value={plannedTargetOrScaleOutRule}
+              onChange={(e) => setPlannedTargetOrScaleOutRule(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </label>
+
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">部位大小理由</span>
+            <textarea
+              value={positionSizingRationale}
+              onChange={(e) => setPositionSizingRationale(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </label>
+
+          {error && (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+          )}
+        </div>
+
+        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border-subtle bg-card px-5 py-4">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
+          >
+            取消
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {saving ? "儲存中…" : "儲存事後補填 plan"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── Edit Modal ───────────────────────────────────────────────
@@ -382,6 +811,302 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
   );
 }
 
+interface AddEntryModalProps {
+  item: PortfolioItem;
+  onClose: () => void;
+  onAdded: (updated: PortfolioItem) => void;
+}
+
+function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnBackdrop = useRef(false);
+  const [eventDate, setEventDate] = useState(getTodayDateString());
+  const [price, setPrice] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [fees, setFees] = useState("0");
+  const [taxes, setTaxes] = useState("0");
+  const [reasonCode, setReasonCode] = useState<AddEntryReasonCode>("planned_scale_in");
+  const [planAdherence, setPlanAdherence] = useState<PlanAdherence>("yes");
+  const [confidenceLevel, setConfidenceLevel] = useState<DecisionConfidenceLevel>("medium");
+  const [note, setNote] = useState("");
+  const [lifecyclePlan, setLifecyclePlan] = useState<LifecyclePlanResponse | null>(null);
+  const [planLoading, setPlanLoading] = useState(true);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLifecyclePlan() {
+      setPlanLoading(true);
+      setPlanError(null);
+      try {
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/lifecycle-plan`, {
+          headers: authHeaders(),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: LifecyclePlanResponse = await res.json();
+        if (!cancelled) setLifecyclePlan(data);
+      } catch (err) {
+        if (!cancelled) setPlanError(err instanceof Error ? err.message : "讀取加碼條件失敗");
+      } finally {
+        if (!cancelled) setPlanLoading(false);
+      }
+    }
+    loadLifecyclePlan();
+    return () => { cancelled = true; };
+  }, [item.id]);
+
+  function parseNumberInput(value: string): number | null {
+    const trimmedValue = value.trim();
+    if (trimmedValue === "") return null;
+    const parsedValue = Number(trimmedValue);
+    return Number.isFinite(parsedValue) ? parsedValue : null;
+  }
+
+  async function handleAddEntry() {
+    setError(null);
+    const parsedPrice = parseNumberInput(price);
+    const parsedQuantity = parseNumberInput(quantity);
+    const parsedFees = parseNumberInput(fees);
+    const parsedTaxes = parseNumberInput(taxes);
+
+    if (!eventDate) {
+      setError("請選擇加碼日期。");
+      return;
+    }
+    if (parsedPrice == null || parsedQuantity == null || parsedFees == null || parsedTaxes == null) {
+      setError("請完整填寫有效的價格、股數、手續費與交易稅。");
+      return;
+    }
+    if (parsedPrice <= 0) {
+      setError("加碼價格必須大於 0。");
+      return;
+    }
+    if (!Number.isInteger(parsedQuantity) || parsedQuantity <= 0) {
+      setError("加碼股數必須是大於 0 的整數。");
+      return;
+    }
+    if (parsedFees < 0 || parsedTaxes < 0) {
+      setError("手續費與交易稅不可小於 0。");
+      return;
+    }
+
+    const trimmedNote = note.trim();
+    const body: AddEntryRequest = {
+      event_date: eventDate,
+      price: parsedPrice,
+      quantity: parsedQuantity,
+      fees: parsedFees,
+      taxes: parsedTaxes,
+      reason_code: reasonCode,
+      plan_adherence: planAdherence,
+      confidence_level: confidenceLevel,
+    };
+    if (trimmedNote) body.note = trimmedNote;
+
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/add-entry`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: AddEntryResponse = await res.json();
+      onAdded(data.portfolio);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加碼紀錄失敗");
+      setSubmitting(false);
+    }
+  }
+
+  const recordedCondition = lifecyclePlan?.add_entry_condition;
+
+  return (
+    <div
+      ref={backdropRef}
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
+      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+    >
+      <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-card shadow-xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
+          <div>
+            <p className="font-semibold text-text-primary">加碼記錄 · {item.symbol}</p>
+            <p className="text-xs text-text-faint">
+              目前 {item.quantity} 股，平均成本 {formatPrice(item.entry_price, item.symbol)}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm dark:border-indigo-900 dark:bg-indigo-950">
+            <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">原始加碼條件</p>
+            {planLoading ? (
+              <p className="mt-1 text-text-muted">讀取原始計畫中…</p>
+            ) : planError ? (
+              <p className="mt-1 text-text-muted">無法讀取原始加碼條件：{planError}</p>
+            ) : recordedCondition && recordedCondition !== "not_recorded" ? (
+              <p className="mt-1 font-medium text-text-primary">{ADD_ENTRY_CONDITION_LABEL[recordedCondition]}</p>
+            ) : (
+              <p className="mt-1 text-text-muted">未記錄原始加碼條件。</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">加碼日期</span>
+              <input
+                type="date"
+                value={eventDate}
+                onChange={(e) => setEventDate(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">加碼價格</span>
+              <input
+                type="number"
+                step="0.01"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">加碼股數</span>
+              <input
+                type="number"
+                step="1"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">手續費</span>
+              <input
+                type="number"
+                step="0.01"
+                value={fees}
+                onChange={(e) => setFees(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">交易稅</span>
+              <input
+                type="number"
+                step="0.01"
+                value={taxes}
+                onChange={(e) => setTaxes(e.target.value)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+            </label>
+          </div>
+
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">加碼理由</span>
+            <select
+              value={reasonCode}
+              onChange={(e) => setReasonCode(e.target.value as AddEntryReasonCode)}
+              className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            >
+              {ADD_ENTRY_REASON_CODE_VALUES.map((value) => (
+                <option key={value} value={value}>{ADD_ENTRY_REASON_CODE_LABEL[value]}</option>
+              ))}
+            </select>
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">是否符合原計畫</span>
+              <select
+                value={planAdherence}
+                onChange={(e) => setPlanAdherence(e.target.value as PlanAdherence)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                {PLAN_ADHERENCE_VALUES.map((value) => (
+                  <option key={value} value={value}>{PLAN_ADHERENCE_LABEL[value]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">決策信心</span>
+              <select
+                value={confidenceLevel}
+                onChange={(e) => setConfidenceLevel(e.target.value as DecisionConfidenceLevel)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                {DECISION_CONFIDENCE_LEVEL_VALUES.map((value) => (
+                  <option key={value} value={value}>{CONFIDENCE_LEVEL_LABEL[value]}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {planAdherence === "no" && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              此加碼會被明確記錄為違反原始加碼計畫，供日後交易檢討使用。
+            </div>
+          )}
+
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">備註（選填）</span>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={3}
+              className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </label>
+
+          {error && (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+          )}
+        </div>
+
+        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border-subtle bg-card px-5 py-4">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
+          >
+            取消
+          </button>
+          <button
+            onClick={handleAddEntry}
+            disabled={submitting}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {submitting ? "記錄中…" : "確認加碼"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Delete Confirm Modal ─────────────────────────────────────
 
 interface DeleteConfirmModalProps {
@@ -668,6 +1393,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [latestMap, setLatestMap] = useState<Record<string, HistoryEntry | null>>({});
+  const [decisionContextStatusMap, setDecisionContextStatusMap] = useState<PortfolioDecisionContextStatusMap>({});
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -680,6 +1406,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   // Edit / Delete modal state
   const [editItem, setEditItem] = useState<PortfolioItem | null>(null);
+  const [backfillItem, setBackfillItem] = useState<PortfolioItem | null>(null);
+  const [addEntryItem, setAddEntryItem] = useState<PortfolioItem | null>(null);
   const [closeItem, setCloseItem] = useState<PortfolioItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<PortfolioItem | null>(null);
 
@@ -688,6 +1416,15 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
+
+  async function loadDecisionContextStatus() {
+    const response = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/decision-context-status`, {
+      headers: authHeaders(),
+    });
+    if (!response.ok) return;
+    const data: PortfolioDecisionContextStatusMap = await response.json();
+    setDecisionContextStatusMap(data);
+  }
 
   useEffect(() => {
     async function load() {
@@ -698,6 +1435,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         if (!res.ok) return;
         const data: PortfolioItem[] = await res.json();
         setItems(data);
+
+        try {
+          await loadDecisionContextStatus();
+        } catch (err) {
+          void err;
+        }
 
         try {
           const r = await fetch(
@@ -865,6 +1608,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       return next;
     });
 
+    setDecisionContextStatusMap((prev) => {
+      const next = { ...prev };
+      delete next[String(sourceId)];
+      return next;
+    });
+
     setAnalysisMap((prev) => {
       const next = { ...prev };
       delete next[sourceId];
@@ -950,6 +1699,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
         {items.map((item) => {
           const latest = latestMap[String(item.id)];
+          const decisionStatus = decisionContextStatusMap[String(item.id)];
           const history = historyMap[item.id];
           const isExpanded = expandedId === item.id;
           const isAnalyzing = analysisLoading[item.id];
@@ -990,6 +1740,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
                     {item.entry_date}
                   </span>
+                  {decisionStatus && (
+                    <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${OPERATION_PLAN_STATUS_CLASS[decisionStatus.operation_plan_status]}`}>
+                      {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
+                    </span>
+                  )}
                 </div>
 
                 {/* Last analysis row */}
@@ -1017,6 +1772,25 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   );
                 })()}
 
+                {decisionStatus?.operation_plan_status === "missing" && (
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="font-semibold">缺少 operation plan，可選擇補填 plan</p>
+                        <p className="mt-1 text-xs leading-relaxed">
+                          這是非必填提示：補填可改善日後 lifecycle review，但不要求也不會阻擋即時分析、加碼、出場或結案。
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setBackfillItem(item)}
+                        className="shrink-0 rounded-lg border border-amber-300 bg-card px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-card-hover dark:border-amber-700 dark:bg-slate-900 dark:text-amber-300"
+                      >
+                        補填 plan
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Action buttons */}
                 <div className="mt-3 flex items-center gap-2">
                   <button
@@ -1031,6 +1805,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                     className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-card-hover"
                   >
                     {isExpanded ? "收起歷史" : "歷史紀錄"}
+                  </button>
+                  <button
+                    onClick={() => setAddEntryItem(item)}
+                    className="rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
+                  >
+                    加碼記錄
                   </button>
                   <div className="ml-auto flex items-center gap-1">
                     <button
@@ -1137,6 +1917,28 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         />
       )}
 
+      {backfillItem && (
+        <BackfillPlanModal
+          item={backfillItem}
+          onClose={() => setBackfillItem(null)}
+          onSaved={() => {
+            loadDecisionContextStatus().catch(() => { });
+            setBackfillItem(null);
+          }}
+        />
+      )}
+
+      {addEntryItem && (
+        <AddEntryModal
+          item={addEntryItem}
+          onClose={() => setAddEntryItem(null)}
+          onAdded={(updated) => {
+            setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+            setAddEntryItem(null);
+          }}
+        />
+      )}
+
       {closeItem && (
         <ClosePositionModal
           item={closeItem}
@@ -1154,6 +1956,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           onClose={() => setDeleteItem(null)}
           onDeleted={(id) => {
             setItems((prev) => prev.filter((i) => i.id !== id));
+            setDecisionContextStatusMap((prev) => {
+              const next = { ...prev };
+              delete next[String(id)];
+              return next;
+            });
             setDeleteItem(null);
           }}
         />

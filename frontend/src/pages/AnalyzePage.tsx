@@ -3,6 +3,17 @@ import { useSearchParams } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
+import {
+  ADD_ENTRY_CONDITION_VALUES,
+  DEFAULT_STOP_RULE_VALUES,
+  ENTRY_RECORD_REASON_VALUES,
+  PLANNED_HOLDING_PERIOD_VALUES,
+  type AddEntryCondition,
+  type DefaultStopRule,
+  type EntryRecordContext,
+  type EntryRecordReason,
+  type PlannedHoldingPeriod,
+} from "../lib/portfolioTypes";
 
 interface ErrorDetail {
   code: string;
@@ -124,7 +135,20 @@ interface AddPortfolioForm {
   entry_price: string;
   quantity: string;
   entry_date: string;
+  entry_reason: EntryRecordReason | "";
+  planned_holding_period: PlannedHoldingPeriod | "";
+  default_stop_rule: DefaultStopRule | "";
+  add_entry_condition: AddEntryCondition | "";
   notes: string;
+}
+
+interface AddPortfolioPayload {
+  symbol: string;
+  entry_price: number;
+  quantity: number;
+  entry_date: string;
+  notes: string | null;
+  entry_record?: EntryRecordContext;
 }
 
 const MAX_PORTFOLIO_COUNT = 8;
@@ -177,6 +201,70 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
   medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
   low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
+
+const ENTRY_RECORD_REASON_LABEL: Record<EntryRecordReason, string> = {
+  breakout_confirmation: "突破確認",
+  pullback_held_support: "回測守住支撐",
+  pullback_held_ma20: "回測守住 20 日線",
+  institutional_flow_strengthened: "法人籌碼轉強",
+  fundamental_thesis_improved: "基本面假設改善",
+  event_or_news_catalyst: "事件／消息催化",
+  long_term_accumulation: "長期分批佈局",
+  value_revaluation: "價值重估",
+  other: "其他固定理由",
+  not_recorded: "未記錄",
+};
+
+const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
+  short_term: "短線（數日內）",
+  swing: "波段（數週）",
+  medium_term: "中期（數月）",
+  long_term: "長期（半年以上）",
+  not_recorded: "未記錄",
+};
+
+const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
+  break_20d_low: "跌破 20 日低點",
+  break_ma20: "跌破 20 日線",
+  break_ma60: "跌破 60 日線",
+  cost_minus_pct: "成本下方固定百分比",
+  fixed_price: "固定價格停損",
+  no_stop_recorded: "未設定停損",
+  not_recorded: "未記錄",
+};
+
+const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
+  no_add_entry: "不加碼",
+  breakout_above_prior_high: "突破前高再加碼",
+  pullback_holds_ma20: "回測守住 20 日線",
+  pullback_holds_support: "回測守住支撐",
+  institutional_flow_continues: "法人籌碼延續",
+  profit_threshold_reached: "達成獲利門檻",
+  data_quality_complete_only: "資料完整才加碼",
+  no_averaging_down: "不攤平",
+  custom_plan_required: "需另訂自訂計畫",
+  not_recorded: "未記錄",
+};
+
+const ENTRY_RECORD_REASON_OPTIONS = ENTRY_RECORD_REASON_VALUES.map((value) => ({
+  value,
+  label: ENTRY_RECORD_REASON_LABEL[value],
+}));
+
+const PLANNED_HOLDING_PERIOD_OPTIONS = PLANNED_HOLDING_PERIOD_VALUES.map((value) => ({
+  value,
+  label: PLANNED_HOLDING_PERIOD_LABEL[value],
+}));
+
+const DEFAULT_STOP_RULE_OPTIONS = DEFAULT_STOP_RULE_VALUES.map((value) => ({
+  value,
+  label: DEFAULT_STOP_RULE_LABEL[value],
+}));
+
+const ADD_ENTRY_CONDITION_OPTIONS = ADD_ENTRY_CONDITION_VALUES.map((value) => ({
+  value,
+  label: ADD_ENTRY_CONDITION_LABEL[value],
+}));
 
 const BOLLINGER_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
   near_upper: { label: "接近上軌", cls: "bg-red-100 text-red-800" },
@@ -314,6 +402,32 @@ function TriggersSection({
   );
 }
 
+function createInitialAddPortfolioForm(): AddPortfolioForm {
+  return {
+    entry_price: "",
+    quantity: "",
+    entry_date: new Date().toISOString().slice(0, 10),
+    entry_reason: "",
+    planned_holding_period: "",
+    default_stop_rule: "",
+    add_entry_condition: "",
+    notes: "",
+  };
+}
+
+function buildEntryRecord(addForm: AddPortfolioForm): EntryRecordContext | undefined {
+  const entryRecord: EntryRecordContext = {};
+  const note = addForm.notes.trim();
+
+  if (addForm.entry_reason) entryRecord.entry_reason = addForm.entry_reason;
+  if (addForm.planned_holding_period) entryRecord.planned_holding_period = addForm.planned_holding_period;
+  if (addForm.default_stop_rule) entryRecord.default_stop_rule = addForm.default_stop_rule;
+  if (addForm.add_entry_condition) entryRecord.add_entry_condition = addForm.add_entry_condition;
+  if (note) entryRecord.note = note;
+
+  return Object.keys(entryRecord).length > 0 ? entryRecord : undefined;
+}
+
 export default function AnalyzePage() {
   const [searchParams] = useSearchParams();
   const querySymbol = searchParams.get("symbol") ?? "2330.TW";
@@ -331,12 +445,7 @@ export default function AnalyzePage() {
   const [portfolioSymbols, setPortfolioSymbols] = useState<Set<string>>(new Set());
   const [portfolioCount, setPortfolioCount] = useState(0);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addForm, setAddForm] = useState<AddPortfolioForm>({
-    entry_price: "",
-    quantity: "",
-    entry_date: new Date().toISOString().slice(0, 10),
-    notes: "",
-  });
+  const [addForm, setAddForm] = useState<AddPortfolioForm>(() => createInitialAddPortfolioForm());
   const [addLoading, setAddLoading] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -355,16 +464,22 @@ export default function AnalyzePage() {
     setAddLoading(true);
     setAddError(null);
     try {
+      const entryRecord = buildEntryRecord(addForm);
+      const notes = addForm.notes.trim();
+      const payload: AddPortfolioPayload = {
+        symbol,
+        entry_price: parseFloat(addForm.entry_price),
+        quantity: addForm.quantity ? parseInt(addForm.quantity) : 0,
+        entry_date: addForm.entry_date,
+        notes: notes || null,
+      };
+
+      if (entryRecord) payload.entry_record = entryRecord;
+
       const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({
-          symbol,
-          entry_price: parseFloat(addForm.entry_price),
-          quantity: addForm.quantity ? parseInt(addForm.quantity) : 0,
-          entry_date: addForm.entry_date,
-          notes: addForm.notes || null,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -372,6 +487,7 @@ export default function AnalyzePage() {
       }
       await fetchPortfolio();
       setShowAddModal(false);
+      setAddForm(createInitialAddPortfolioForm());
     } catch (err) {
       setAddError(err instanceof Error ? err.message : "新增失敗");
     } finally {
@@ -470,7 +586,7 @@ export default function AnalyzePage() {
           </button>
           {result && (
             <button
-              onClick={() => { setAddError(null); setShowAddModal(true); }}
+              onClick={() => { setAddError(null); setAddForm(createInitialAddPortfolioForm()); setShowAddModal(true); }}
               disabled={isTracked || portfolioFull}
               title={isTracked ? "已追蹤" : portfolioFull ? `最多追蹤 ${MAX_PORTFOLIO_COUNT} 筆持股` : "加入我的持股"}
               className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-600 dark:text-indigo-400 dark:hover:bg-indigo-950"
@@ -639,7 +755,7 @@ export default function AnalyzePage() {
 
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-md rounded-xl bg-card p-6 shadow-xl">
+          <div className="max-h-screen w-full max-w-lg overflow-y-auto rounded-xl bg-card p-6 shadow-xl">
             <h3 className="mb-4 text-base font-semibold text-text-primary">加入我的持股</h3>
             <form onSubmit={handleAddPortfolio} className="space-y-4">
               <div>
@@ -658,9 +774,47 @@ export default function AnalyzePage() {
                 <label className="mb-1 block text-xs font-medium text-text-muted">購入日期</label>
                 <input type="date" value={addForm.entry_date} onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-text-muted">備註（選填）</label>
-                <input value={addForm.notes} onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))} placeholder="自訂備註" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
+              <div className="rounded-lg border border-border bg-card-hover/70 p-3">
+                <div className="mb-3">
+                  <p className="text-xs font-semibold text-text-primary">進場紀錄（選填）</p>
+                  <p className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    AI 分析輸出不會自動儲存為你的進場意圖；只有在此表單明確確認的欄位才會寫入進場紀錄。
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">進場理由</span>
+                    <select value={addForm.entry_reason} onChange={(e) => setAddForm((f) => ({ ...f, entry_reason: e.target.value as AddPortfolioForm["entry_reason"] }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500">
+                      <option value="">未選擇（不送出）</option>
+                      {ENTRY_RECORD_REASON_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">預計持有期間</span>
+                    <select value={addForm.planned_holding_period} onChange={(e) => setAddForm((f) => ({ ...f, planned_holding_period: e.target.value as AddPortfolioForm["planned_holding_period"] }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500">
+                      <option value="">未選擇（不送出）</option>
+                      {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">預設停損規則</span>
+                    <select value={addForm.default_stop_rule} onChange={(e) => setAddForm((f) => ({ ...f, default_stop_rule: e.target.value as AddPortfolioForm["default_stop_rule"] }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500">
+                      <option value="">未選擇（不送出）</option>
+                      {DEFAULT_STOP_RULE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">加碼條件</span>
+                    <select value={addForm.add_entry_condition} onChange={(e) => setAddForm((f) => ({ ...f, add_entry_condition: e.target.value as AddPortfolioForm["add_entry_condition"] }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500">
+                      <option value="">未選擇（不送出）</option>
+                      {ADD_ENTRY_CONDITION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-medium text-text-muted">備註（選填，補充脈絡）</label>
+                  <textarea value={addForm.notes} onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))} rows={3} placeholder="僅補充你已確認的進場脈絡，不會自動引用分析結果" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
+                </div>
               </div>
               {addError && <p className="text-sm text-red-600 dark:text-red-400">{addError}</p>}
               <div className="flex justify-end gap-2 pt-2">

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from typing import Any
 from unittest.mock import MagicMock
@@ -860,6 +861,73 @@ def test_upsert_analysis_cache_stores_full_result() -> None:
     params = call_kwargs[0][1]  # second positional arg is the params dict
     assert "full_result" in params
     assert params["full_result"] is not None
+
+
+def _stored_technical_from_fetch_and_store(db: MagicMock) -> dict[str, Any]:
+    params = db.execute.call_args[0][1]
+    return json.loads(params["technical"])
+
+
+def test_fetch_and_store_raw_data_adds_ohlcv_for_snapshot_technical() -> None:
+    db = MagicMock()
+    technical = {
+        "current_price": 104.0,
+        "day_open": 101.0,
+        "recent_closes": [100.0, 102.0, 104.0],
+        "recent_highs": [101.0, 103.0, 105.0],
+        "recent_lows": [99.0, 101.0, 103.0],
+        "recent_volumes": [1000, 1200, 1500],
+    }
+
+    api.fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
+
+    stored = _stored_technical_from_fetch_and_store(db)
+    assert stored["recent_closes"] == technical["recent_closes"]
+    assert stored["ohlcv"] == {
+        "open": 101.0,
+        "high": 105.0,
+        "low": 103.0,
+        "close": 104.0,
+        "volume": 1500.0,
+    }
+    assert "ohlcv" not in technical
+
+
+def test_fetch_and_store_raw_data_preserves_existing_ohlcv() -> None:
+    db = MagicMock()
+    technical = {
+        "current_price": 104.0,
+        "recent_closes": [100.0, 102.0, 104.0],
+        "ohlcv": {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10},
+    }
+
+    api.fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
+
+    stored = _stored_technical_from_fetch_and_store(db)
+    assert stored["ohlcv"] == technical["ohlcv"]
+
+
+def test_fetch_and_store_raw_data_uses_volume_when_recent_volumes_missing() -> None:
+    db = MagicMock()
+    technical = {
+        "current_price": 104.0,
+        "day_open": 101.0,
+        "volume": 9000,
+        "recent_closes": [100.0, 102.0],
+        "recent_highs": [101.0, 103.0],
+        "recent_lows": [99.0, 101.0],
+    }
+
+    api.fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
+
+    stored = _stored_technical_from_fetch_and_store(db)
+    assert stored["ohlcv"] == {
+        "open": 101.0,
+        "high": 103.0,
+        "low": 101.0,
+        "close": 104.0,
+        "volume": 9000.0,
+    }
 
 
 def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:

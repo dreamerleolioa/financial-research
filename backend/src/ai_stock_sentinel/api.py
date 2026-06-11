@@ -1061,6 +1061,7 @@ def fetch_and_store_raw_data(
     使用 ON CONFLICT (symbol, record_date) DO UPDATE，同日只存一筆。
     若籌碼面含 'error' 鍵，仍寫入（保留原始錯誤資訊以供 debug）。
     """
+    normalized_technical = _normalize_raw_technical_for_storage(technical)
     db.execute(
         text("""
             INSERT INTO stock_raw_data (
@@ -1082,13 +1083,59 @@ def fetch_and_store_raw_data(
         """),
         {
             "symbol":             symbol,
-            "technical":          json.dumps(technical or {}),
+            "technical":          json.dumps(normalized_technical),
             "institutional":      json.dumps(institutional or {}),
             "fundamental":        json.dumps(fundamental or {}),
             "raw_data_is_final":  raw_data_is_final,
         }
     )
     db.commit()
+
+
+def _normalize_raw_technical_for_storage(technical: dict | None) -> dict:
+    normalized = dict(technical or {})
+    if not normalized or isinstance(normalized.get("ohlcv"), dict):
+        return normalized
+
+    close = _number_or_none(normalized.get("current_price"))
+    if close is None:
+        close = _latest_number(normalized.get("recent_closes"))
+    if close is None:
+        return normalized
+
+    high = _latest_number(normalized.get("recent_highs"))
+    low = _latest_number(normalized.get("recent_lows"))
+    volume = _latest_number(normalized.get("recent_volumes"))
+    if volume is None:
+        volume = _number_or_none(normalized.get("volume"))
+
+    normalized["ohlcv"] = {
+        "open": _number_or_none(normalized.get("day_open")) or close,
+        "high": high if high is not None else close,
+        "low": low if low is not None else close,
+        "close": close,
+        "volume": volume,
+    }
+    return normalized
+
+
+def _latest_number(values: Any) -> float | None:
+    if not isinstance(values, list):
+        return None
+    for value in reversed(values):
+        number = _number_or_none(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class HistoryEntry(BaseModel):

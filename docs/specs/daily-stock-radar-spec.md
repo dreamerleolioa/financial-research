@@ -177,7 +177,7 @@ Bucket 判定需可重現。同一標的若同時命中多個 bucket，primary b
 | Market context | 大盤站上關鍵均線且波動未擴大時加分 |
 | Freshness | 初次出現或冷卻後再出現時加分 |
 
-分數用途是排序，不是承諾結果。前端顯示名稱使用「觀察分數」，避免「勝率」或「推薦分數」。
+分數用途是內部排序、降級、回測校準與 traceability，不是承諾結果。前端預設應以觀察等級、bucket、風險標籤與命中原因呈現；`observation_score` 可保留在 API 與 advanced trace，但不應作為一般使用者主畫面的 headline，也不得稱為勝率或推薦分數。
 
 ### 7.3 Risk penalties
 
@@ -200,7 +200,7 @@ Bucket 判定需可重現。同一標的若同時命中多個 bucket，primary b
 | 欄位 | 說明 |
 | ---- | ---- |
 | `matched_rules` | 命中的規則代碼與中文說明 |
-| `score_breakdown` | bucket 分、加分、扣分、最後觀察分數 |
+| `score_breakdown` | bucket 分、加分、扣分、最後觀察分數；作為 advanced trace / debug evidence，不是預設主畫面 |
 | `input_snapshot` | OHLCV、法人、融資、技術指標與大盤狀態快照 |
 | `data_dates` | 各資料源最新日期 |
 | `prefilter_reasons` | 通過或排除原因 |
@@ -344,13 +344,13 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 | Header | 最新掃描日期、資料日期、掃描狀態、候選數 |
 | Market context | 大盤狀態、波動與整體風險提示 |
 | Bucket tabs | 四個 setup buckets 與數量 |
-| Candidate list | 股票、bucket、觀察分數、風險標籤、repeat 狀態 |
-| Detail drawer | 分數拆解、命中規則、資料日期、隔日觀察重點 |
+| Candidate list | 股票、bucket、觀察等級或優先順序、風險標籤、repeat 狀態 |
+| Detail drawer | 命中規則、資料日期、隔日觀察重點；分數拆解僅作為 advanced trace |
 | Link out | 連到 `/analyze` 做單股完整分析 |
 
 ### 11.2 互動原則
 
-1. 預設排序使用 `observation_score`，但可按 bucket 篩選。
+1. 預設排序使用內部 `observation_score`，但 UI 預設呈現觀察等級與理由，不以 raw 0-100 分數作為主視覺；可按 bucket 篩選。
 2. 高風險標籤需在列表直接可見，不能只藏在詳情。
 3. `repeat` 標的需顯示連續天數，避免使用者誤以為每日都是新訊號。
 4. 空狀態需說明是「今日沒有通過濾網的高品質 setup」，不是系統失敗。
@@ -392,7 +392,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 | 類型 | 必測內容 |
 | ---- | -------- |
 | Unit tests | 前置濾網、bucket 判定、分數計算、風險扣分、冷卻邏輯 |
-| Snapshot tests | 固定輸入資料產生穩定 candidate 與 score breakdown |
+| Snapshot tests | 固定輸入資料產生穩定 candidate、內部 score breakdown 與 user-facing 觀察等級 |
 | API tests | `/internal/daily-radar/run`、`/daily-radar/latest`、日期查詢、symbol 查詢 |
 | Persistence tests | run 與 candidate 寫入、重跑行為、依日期與 symbol 查詢 |
 | Data freshness tests | stale data、缺法人資料、缺融資資料時的降級行為 |
@@ -408,7 +408,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 ### 13.3 手動驗收
 
 1. 使用固定 fixture 跑出至少四個 bucket 各一筆候選。
-2. 確認前端能查看分數拆解與命中規則。
+2. 確認前端預設以觀察等級、風險標籤與命中規則呈現；分數拆解若存在，只在 advanced trace / detail 中顯示。
 3. 確認重跑同一天不產生重複資料。
 4. 確認缺資料時前端顯示 data gap，而不是高分推薦。
 5. 確認所有文案維持觀察語言。
@@ -446,7 +446,7 @@ MVP 不做以下事項：
 
 1. GitHub Actions 可呼叫 Zeabur 內部端點完成每日 run。
 2. 後端可用 deterministic rule-based pipeline 產出候選清單。
-3. 每筆候選都有 bucket、觀察分數、風險標籤、規則解釋與資料日期。
+3. 每筆候選都有 bucket、觀察等級或內部排序分數、風險標籤、規則解釋與資料日期。
 4. 結果可持久化並依日期、symbol 查詢。
 5. React 前端可呈現最新 Daily Radar、bucket 篩選與細節抽屜。
 6. 所有選股、排名與 bucket 判定不呼叫 LLM。
