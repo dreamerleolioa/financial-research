@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-10
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract。
+> 更新日期：2026-06-11
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract。
 
 ## 1) 目的
 
@@ -1158,14 +1158,15 @@ Daily Radar run status：
 - **Auth**：內部 token 必填，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
 - **環境契約**：後端必須設定 `DAILY_RADAR_INTERNAL_TOKEN`。若後端未設定此 token，回傳 `503 Service Unavailable`。
 - **Auth 錯誤**：request 未帶 token 時回傳 `401 Unauthorized`，並附 Bearer challenge；token 不符時回傳 `403 Forbidden`。
-- **後端 orchestration**：live run 會自行選出 multi-track universe（保留 `same_day_institutional`、`recent_accumulation`，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對 selected symbols 補齊缺少的 OHLCV，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
+- **後端 orchestration**：live run 會自行選出 multi-track universe（保留 `same_day_institutional`、`recent_accumulation`，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對 selected symbols 補齊缺少的 OHLCV，建立固定 market index context，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
 - **Fixture fallback**：live run 關閉 fixture fallback，只使用 live provider 與既有 final `StockRawData`。
 - **409 Conflict**：selected universe 為空，或嘗試 backfill 後 selected symbols 仍沒有 final `StockRawData` rows 時回傳。
 - **公開 schema**：後端資料流改為自包含流程後，public Daily Radar read endpoints 與 candidate response schema 不變。
 - **資料源 request budget**：
-  - FinMind：只使用 all-market `TaiwanStockInstitutionalInvestorsBuySell`。同日法人 leaders 用 `date = run_date`，近期累積 leaders 用 `run_date - 10 calendar days` 到 `run_date` 的 date range，再在記憶體中取最近 5 個市場交易日。不得傳 `stock_id`、`data_id`、`symbol` 等逐檔參數。
-  - yfinance：只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用。
-  - Live limits：目前不抓完整 live margin；market context 僅使用固定大盤指數設定。回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale。
+  - TWSE RWD institutional reports：目前 live provider 讀取 `TWT38U` / `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation tracks。這是 report-level 查詢，不是 selected symbols 的逐檔法人 request。
+  - yfinance selected-symbol OHLCV：只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用。
+  - yfinance market index OHLCV：每次 run 只抓固定 benchmark。TW 使用 `TAIEX` / `^TWII`，US 使用 `SPX` / `^GSPC`，用於 market regime 與 relative strength benchmark。
+  - Live limits：目前不抓完整 live margin。回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale。
 
 - **Request Body**
 
@@ -1243,11 +1244,24 @@ Daily Radar run status：
   | `risk_labels`       | array          | rule-based 風險標籤           |
   | `repeat_status`     | string \| null | 是否連續進入雷達或重新出現    |
   | `explanation`       | string         | 候選原因摘要                  |
+  | `scoring_version`   | string \| null | scoring version trace，舊資料可為 `null` |
+  | `rule_version`      | string \| null | rule version trace，舊資料可為 `null` |
   | `bucket_scores`     | object         | 各 bucket 的 rule-based 內部分數 |
-  | `score_breakdown`   | object         | 分數拆解，用於 advanced trace / debug evidence；前端預設應摘要為等級、理由與風險 |
-  | `input_snapshot`    | object         | 產生候選時使用的輸入快照      |
+  | `score_breakdown`   | object         | 分數拆解，用於 advanced trace / debug evidence；包含 bucket scores、cross confirmation、market context、relative strength、freshness、risk penalties、observation score 與 version trace |
+  | `input_snapshot`    | object         | 產生候選時使用的輸入快照；包含 market context、relative strength、版本資訊與 replayable evidence |
   | `data_dates`        | object         | 各資料來源對應日期            |
   | `matched_rules`     | array          | 命中的 rule ID 或規則名稱     |
+
+- **Trace contract**
+  - `input_snapshot.market_context` 至少可表示固定 benchmark 的 `regime`、`freshness`、`data_date`、均線位置、波動狀態與 risk flags。
+  - `score_breakdown.relative_strength` 表示 benchmark symbol、lookback window、candidate return、benchmark return、relative value、score impact、freshness、data dates、aligned dates 與 missing reason。資料不足時 `relative_value` 為 `null`，不可補 0 假裝中性。
+  - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
+  - Current version trace：`daily-radar-scoring-v2.1c` / `daily-radar-rules-v2.1c`。
+
+- **Calibration workflow**
+  - Daily Radar calibration report 可由 `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` 重跑。
+  - Report 是 deterministic JSON，包含 sample count、bucket distribution、rank cutoff impact、bucket threshold impact、risk/overheat impact、relative strength impact、skip reasons 與 version manifest。
+  - Calibration report 不改 live scoring 行為，不宣稱勝率、價格承諾或交易指令。
 
 > **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。Raw scores 保留於 API 作為內部排序、校準、回測與 traceability；一般使用者介面應優先顯示觀察等級、bucket、風險標籤與命中原因。
 
