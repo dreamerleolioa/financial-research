@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import ssl
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -79,7 +80,7 @@ class TdccWeeklyMajorHoldersProvider:
                 import requests
             except ImportError as exc:
                 raise _TdccDatasetError("missing_dependency", "requests package is not installed") from exc
-            request_get = requests.get
+            request_get = _build_tdcc_request_get(requests)
 
         response = _request_tdcc_csv(request_get)
 
@@ -190,6 +191,22 @@ def _request_tdcc_csv(request_get: Callable[..., Any]) -> Any:
         raise _TdccDatasetError("tdcc_request_error", f"TDCC request failed: {exc}") from exc
 
 
+def _build_tdcc_request_get(requests_module: Any) -> Callable[..., Any]:
+    from requests.adapters import HTTPAdapter
+
+    class _TdccTLSAdapter(HTTPAdapter):
+        def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):  # type: ignore[no-untyped-def]
+            context = ssl.create_default_context()
+            if hasattr(ssl, "VERIFY_X509_STRICT"):
+                context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            pool_kwargs["ssl_context"] = context
+            return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    session = requests_module.Session()
+    session.mount("https://opendata.tdcc.com.tw/", _TdccTLSAdapter())
+    return session.get
+
+
 def _source(*, market: str) -> dict[str, Any]:
     return {
         "domain": "background_context",
@@ -197,6 +214,9 @@ def _source(*, market: str) -> dict[str, Any]:
         "dataset": "tdcc_shareholder_distribution",
         "url": TDCC_WEEKLY_HOLDERS_URL,
         "market": market,
+        "tls_verify": True,
+        "tls_hostname_check": True,
+        "tls_x509_strict": False,
     }
 
 

@@ -683,6 +683,9 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
     assert tsmc.freshness == "fresh"
     assert tsmc.as_of_date == date(2026, 6, 5)
     assert tsmc.applicable_consumers == FINMIND_BACKGROUND_CONTEXT_CONSUMERS
+    assert tsmc.source["tls_verify"] is True
+    assert tsmc.source["tls_hostname_check"] is True
+    assert tsmc.source["tls_x509_strict"] is False
     assert tsmc.payload["major_holder_levels"] == [12, 13, 14, 15]
     assert tsmc.payload["major_holder_ratio"] == pytest.approx(88.12)
     assert tsmc.payload["major_holder_people"] == 2619
