@@ -49,7 +49,11 @@ class FinMindBackgroundChipContextProvider:
         stale_after_days: int = 5,
     ) -> None:
         self._static_token = api_token
-        self._client = client or FinMindClient(api_token=api_token, request_get=request_get)
+        self._client = client or FinMindClient(
+            api_token=api_token,
+            request_get=request_get,
+            token_getter=lambda: self._static_token or get_token_manager().token,
+        )
         self._lookback_trading_days = lookback_trading_days
         self._stale_after_days = stale_after_days
 

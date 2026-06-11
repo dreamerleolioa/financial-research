@@ -113,6 +113,7 @@ class FinMindClient:
         *,
         api_token: str = "",
         request_get: Callable[..., Any] | None = None,
+        token_getter: Callable[[], str] | None = None,
         ledger: FinMindHourlyRequestLedger | None = None,
         cache: FinMindResponseCache | None = None,
         token_request_limit: int | None = None,
@@ -120,8 +121,9 @@ class FinMindClient:
     ) -> None:
         self._static_token = api_token
         self._request_get = request_get
-        self._ledger = ledger or _DEFAULT_LEDGER
-        self._cache = cache or _DEFAULT_CACHE
+        self._token_getter = token_getter
+        self._ledger = ledger or (FinMindHourlyRequestLedger() if request_get is not None else _DEFAULT_LEDGER)
+        self._cache = cache or (FinMindResponseCache() if request_get is not None else _DEFAULT_CACHE)
         self._token_request_limit = token_request_limit or _int_env(
             "FINMIND_REQUESTS_PER_HOUR",
             DEFAULT_TOKEN_REQUESTS_PER_HOUR,
@@ -154,14 +156,14 @@ class FinMindClient:
         if token:
             params["token"] = token
 
-        cache_key = _cache_key(params)
+        identity = _token_identity(token)
+        cache_key = _cache_key(params, identity=identity)
         cached = self._cache.get(cache_key)
         if cached is not None:
             logger.debug("[FinMindClient] cache hit dataset=%s data_id=%s", dataset, data_id)
             return cached
 
         request_get = self._request_get or _default_request_get(dataset)
-        identity = _token_identity(token)
         limit = self._token_request_limit if token else self._anonymous_request_limit
         remaining = self._ledger.reserve(identity=identity, limit=limit)
         if remaining < 0:
@@ -222,6 +224,8 @@ class FinMindClient:
         return rows
 
     def _token(self) -> str:
+        if self._token_getter is not None:
+            return self._token_getter()
         return self._static_token or get_token_manager().token
 
 
@@ -243,8 +247,10 @@ def _default_request_get(dataset: str) -> Callable[..., Any]:
     return requests.get
 
 
-def _cache_key(params: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted((str(key), str(value)) for key, value in params.items() if key != "token"))
+def _cache_key(params: Mapping[str, Any], *, identity: str) -> tuple[tuple[str, str], ...]:
+    pairs = [(str(key), str(value)) for key, value in params.items() if key != "token"]
+    pairs.append(("token_identity", identity))
+    return tuple(sorted(pairs))
 
 
 def _token_identity(token: str) -> str:
