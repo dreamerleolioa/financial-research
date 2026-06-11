@@ -3,22 +3,26 @@ name: Daily Radar Chip Context
 on:
   workflow_dispatch:
   schedule:
-    # 台灣時間週二至週六 07:00，獨立於 Daily Radar 主流程更新背景籌碼 context
+    # 台灣時間週二至週六 07:00，更新日頻融資融券與借券背景 context
     - cron: "0 23 * * 1-5"
+    # 台灣時間週六 07:30，更新週頻 TDCC 股權分散背景 context
+    - cron: "30 23 * * 5"
 
 permissions:
   contents: read
 
 jobs:
-  update-chip-context:
-    name: Update Daily Radar chip context on Zeabur
+  update-daily-chip-context:
+    name: Update Daily Radar daily chip context on Zeabur
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * 1-5'
 
     steps:
-      - name: Trigger chip context update
+      - name: Trigger daily chip context update
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          CHIP_CONTEXT_PAYLOAD: '{"market":"TW","context_types":["lending","full_margin"]}'
         run: |
           set -euo pipefail
 
@@ -29,7 +33,67 @@ jobs:
             -X POST "$endpoint" \
             -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data '{"market":"TW"}')"
+            --data "${CHIP_CONTEXT_PAYLOAD}")"
+
+          echo "HTTP status: ${http_status}"
+
+          if jq -e . "$response_file" >/dev/null 2>&1; then
+            jq -r '
+              "status: \(.status // "n/a")",
+              "run_date: \(.run_date // "n/a")",
+              "market: \(.market // "n/a")",
+              "symbol_count: \(.symbol_count // "n/a")",
+              "context_types: \((.context_types // []) | join(","))",
+              "records_written: \(.records_written // "n/a")",
+              "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+              "first_error_code: \(.errors[0].code // "n/a")",
+              "first_error_type: \(.errors[0].error_type // "n/a")",
+              "first_error_message: \(.errors[0].message // "n/a")"
+            ' "$response_file"
+
+            if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+              echo "Daily Radar chip context update returned non-completed status"
+              exit 1
+            fi
+          else
+            echo "Response summary: non-JSON response"
+            python3 - <<'PY' "$response_file"
+          import sys
+          from pathlib import Path
+
+          body = Path(sys.argv[1]).read_text(errors="replace").replace("\n", " ")
+          print(f"Response preview: {body[:300]}")
+          PY
+            exit 1
+          fi
+
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            echo "Daily Radar chip context update failed with HTTP status ${http_status}"
+            exit 1
+          fi
+
+  update-weekly-chip-context:
+    name: Update Daily Radar weekly chip context on Zeabur
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 23 * * 5'
+
+    steps:
+      - name: Trigger weekly chip context update
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          CHIP_CONTEXT_PAYLOAD: '{"market":"TW","context_types":["weekly_major_holders"]}'
+        run: |
+          set -euo pipefail
+
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/chip-context/update"
+          response_file="$(mktemp)"
+
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${CHIP_CONTEXT_PAYLOAD}")"
 
           echo "HTTP status: ${http_status}"
 

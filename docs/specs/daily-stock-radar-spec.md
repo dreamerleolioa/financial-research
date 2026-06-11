@@ -477,7 +477,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 
 內部端點需使用 internal token 驗證。token 放在 GitHub Actions secrets 與 Zeabur environment variables，不寫入 repo。
 
-Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`，以排程呼叫 `POST /internal/daily-radar/chip-context/update`。這是 weekly major holders、lending 與 full margin context 的正式背景更新路徑；本機 script 只能作為除錯輔助，不是正式更新路徑。
+Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`，以排程呼叫 `POST /internal/daily-radar/chip-context/update`。這是 weekly major holders、lending 與 full margin context 的正式背景更新路徑；本機 script 只能作為除錯輔助，不是正式更新路徑。Workflow 依資料頻率拆分：日頻 `lending` / `full_margin` 在台灣時間週二至週六 07:00 更新，週頻 `weekly_major_holders` 在台灣時間週六 07:30 更新。
 
 ### 12.2 運維要求
 

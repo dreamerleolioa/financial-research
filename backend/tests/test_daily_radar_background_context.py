@@ -660,8 +660,9 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
 20260605,2454  ,17,2000,40000000,100.00
 """
 
-    def fake_get(url: str, *, timeout: int):
+    def fake_get(url: str, *, timeout: int, headers: dict):
         calls.append(url)
+        assert headers["User-Agent"] == "ai-stock-sentinel/1.0"
         return _FakeTextResponse(csv_text)
 
     provider = TdccWeeklyMajorHoldersProvider(request_get=fake_get)
@@ -693,6 +694,43 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
     assert by_symbol["2454.TW"].payload["major_holder_ratio"] == pytest.approx(25.0)
     assert by_symbol["9999.TW"].freshness == "missing"
     assert by_symbol["9999.TW"].missing_reason == "tdcc_symbol_not_found"
+
+
+def test_tdcc_weekly_major_holders_provider_retries_certificate_verify_failure() -> None:
+    requests_seen: list[dict] = []
+    csv_text = """資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%
+20260605,2330  ,12,563,276059662,1.06
+20260605,2330  ,15,1499,22151774520,85.42
+20260605,2330  ,17,2678648,25932524521,100.00
+"""
+
+    def fake_get(url: str, **kwargs):
+        requests_seen.append(dict(kwargs))
+        if kwargs.get("verify") is not False:
+            raise RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Subject Key Identifier")
+        return _FakeTextResponse(csv_text)
+
+    provider = TdccWeeklyMajorHoldersProvider(request_get=fake_get)
+
+    payload = next(
+        iter(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["weekly_major_holders"],
+                run_date=date(2026, 6, 11),
+                market="TW",
+            )
+        )
+    )
+
+    assert requests_seen == [
+        {"timeout": 30, "headers": {"User-Agent": "ai-stock-sentinel/1.0"}},
+        {"timeout": 30, "headers": {"User-Agent": "ai-stock-sentinel/1.0"}, "verify": False},
+    ]
+    assert payload.freshness == "fresh"
+    assert payload.source["tls_verify"] is False
+    assert payload.source["tls_fallback_reason"] == "certificate_verify_failed"
+    assert payload.payload["major_holder_ratio"] == pytest.approx(86.48)
 
 
 def test_default_background_provider_writes_finmind_and_tdcc_contexts(db_session: Session) -> None:
@@ -769,6 +807,13 @@ def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> 
     assert "${{ secrets.ZEABUR_BACKEND_URL }}" in text
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in text
     assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in text
+    assert "0 23 * * 1-5" in text
+    assert "30 23 * * 5" in text
+    assert "github.event.schedule == '0 23 * * 1-5'" in text
+    assert "github.event.schedule == '30 23 * * 5'" in text
+    assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["lending","full_margin"]}\'' in text
+    assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["weekly_major_holders"]}\'' in text
+    assert "--data \"${CHIP_CONTEXT_PAYLOAD}\"" in text
     assert ".status == \"completed\"" in text
     assert "sk-" not in text
     assert "token=" not in text.lower()
