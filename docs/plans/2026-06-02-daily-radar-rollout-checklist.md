@@ -43,6 +43,8 @@ Use these checks before any live rollout. They verify the implementation shape a
 19. [ ] Confirm Phase 2A background context route exists: `.github/workflows/daily-radar-chip-context.yml` calls `POST /internal/daily-radar/chip-context/update` with existing backend URL/internal token secrets.
 20. [ ] Confirm Daily Radar main run only reads `shared_background_contexts` cache for selected symbols and does not call weekly major holders, lending, or full margin providers.
 21. [ ] Confirm background labels are detail/context fields only and do not affect `observation_score`, bucket, risk labels, or ranking.
+22. [ ] Confirm shared background context read paths respect `applicable_consumers`; non-applicable rows return explicit non-blocking caveats.
+23. [ ] Confirm lifecycle review point-in-time shared context can select historical `as_of_date <= event_date` rows instead of only latest cache.
 
 ## Local Fixture Run
 
@@ -62,6 +64,7 @@ Run this only in a local backend environment with Daily Radar fixtures and servi
 8. [ ] Run `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` and verify the report is deterministic JSON with explicit skip reasons.
 9. [ ] Run a repository/updater fixture flow for shared background context cache and verify fresh, stale, and missing cache traces can be read back.
 10. [ ] Verify Daily Radar candidate detail/API response includes `background_context_labels` with context type, freshness, missing reason, source, and replay key.
+11. [ ] Verify chip-context workflow fails the scheduled job when endpoint JSON returns `status: failed`, while existing daily run remains non-blocking.
 
 ## Local FastAPI Internal Endpoint Check
 
@@ -205,6 +208,7 @@ The MVP is accepted when these checks pass in the relevant environment.
 19. [ ] Calibration report can be rerun from fixtures or persisted snapshots and preserves skip reasons for insufficient data.
 20. [ ] Background chip context cache update can be triggered independently and failure does not block an existing Daily Radar run.
 21. [ ] Background context labels are visible in Daily Radar detail/API trace and remain separate from daily trigger signals and scoring.
+22. [ ] Shared context historical rows, consumer scope filtering, and lifecycle point-in-time replay are covered by tests.
 
 ## Rollout Notes
 

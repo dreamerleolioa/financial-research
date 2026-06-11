@@ -497,7 +497,12 @@ class DailyRadarCandidate(Base):
 class SharedBackgroundContext(Base):
     __tablename__ = "shared_background_contexts"
     __table_args__ = (
-        UniqueConstraint("symbol", "context_type", name="uq_shared_background_context_symbol_type"),
+        UniqueConstraint(
+            "symbol",
+            "context_type",
+            "replay_key",
+            name="uq_shared_background_context_symbol_type_replay",
+        ),
         CheckConstraint(
             "freshness IN ('fresh', 'stale', 'missing', 'unknown')",
             name="ck_shared_background_context_freshness",
@@ -506,6 +511,7 @@ class SharedBackgroundContext(Base):
         Index("idx_shared_background_context_context_type", "context_type"),
         Index("idx_shared_background_context_as_of_date", "as_of_date"),
         Index("idx_shared_background_context_freshness", "freshness"),
+        Index("idx_shared_background_context_replay_key", "replay_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

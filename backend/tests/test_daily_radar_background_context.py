@@ -113,12 +113,13 @@ def test_background_context_migration_creates_consumer_neutral_cache_table() -> 
     assert "payload JSONB NOT NULL" in sql
     assert "missing_reason VARCHAR(120)" in sql
     assert "replay_key VARCHAR(240) NOT NULL" in sql
-    assert "CONSTRAINT uq_shared_background_context_symbol_type UNIQUE (symbol, context_type)" in sql
+    assert "CONSTRAINT uq_shared_background_context_symbol_type_replay UNIQUE (symbol, context_type, replay_key)" in sql
     assert "CONSTRAINT ck_shared_background_context_freshness CHECK" in sql
     assert "CREATE INDEX idx_shared_background_context_symbol" in sql
     assert "CREATE INDEX idx_shared_background_context_context_type" in sql
     assert "CREATE INDEX idx_shared_background_context_as_of_date" in sql
     assert "CREATE INDEX idx_shared_background_context_freshness" in sql
+    assert "CREATE INDEX idx_shared_background_context_replay_key" in sql
 
 
 def test_background_context_migration_downgrade_drops_indexes_before_table() -> None:
@@ -129,7 +130,7 @@ def test_background_context_migration_downgrade_drops_indexes_before_table() -> 
     )
 
 
-def test_upsert_shared_background_context_updates_latest_symbol_type_cache(db_session: Session) -> None:
+def test_upsert_shared_background_context_preserves_history_and_updates_same_replay(db_session: Session) -> None:
     first = upsert_shared_background_context(
         db_session,
         symbol="2330.TW",
@@ -152,15 +153,122 @@ def test_upsert_shared_background_context_updates_latest_symbol_type_cache(db_se
         payload={"major_holder_ratio": 0.61},
         missing_reason=None,
     )
+    third = upsert_shared_background_context(
+        db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar", "analyze"],
+        source={"domain": "background_context", "provider": "fixture_v3"},
+        as_of_date=date(2026, 5, 31),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.63},
+        missing_reason=None,
+    )
     db_session.commit()
 
-    assert second.id == first.id
+    assert second.id != first.id
+    assert third.id == second.id
     rows = db_session.query(SharedBackgroundContext).all()
-    assert len(rows) == 1
-    assert rows[0].freshness == "fresh"
-    assert rows[0].payload == {"major_holder_ratio": 0.61}
-    assert rows[0].applicable_consumers == ["daily_radar", "individual_analysis"]
-    assert rows[0].replay_key == "background_context:2330.TW:weekly_major_holders:2026-05-31"
+    assert len(rows) == 2
+    latest_trace = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders"],
+    )["2330.TW"][0]
+    assert latest_trace["payload"] == {"major_holder_ratio": 0.63}
+    assert latest_trace["applicable_consumers"] == ["daily_radar", "analyze"]
+    assert latest_trace["replay_key"] == "background_context:2330.TW:weekly_major_holders:2026-05-31"
+
+
+def test_point_in_time_trace_selects_latest_context_on_or_before_reference_date(db_session: Session) -> None:
+    upsert_shared_background_context(
+        db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 1, 5),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.57},
+    )
+    upsert_shared_background_context(
+        db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 2, 1),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.72},
+    )
+    db_session.commit()
+
+    traces = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders"],
+        consumer="lifecycle_review",
+        reference_date=date(2026, 1, 20),
+        point_in_time=True,
+    )
+
+    assert traces["2330.TW"][0]["as_of_date"] == "2026-01-05"
+    assert traces["2330.TW"][0]["payload"] == {"major_holder_ratio": 0.57}
+
+
+def test_point_in_time_trace_reports_future_context_only_when_no_historical_context_exists(db_session: Session) -> None:
+    upsert_shared_background_context(
+        db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 2, 1),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.72},
+    )
+    db_session.commit()
+
+    traces = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders"],
+        consumer="lifecycle_review",
+        reference_date=date(2026, 1, 20),
+        point_in_time=True,
+    )
+
+    trace = traces["2330.TW"][0]
+    assert trace["freshness"] == "missing"
+    assert trace["missing_reason"] == "future_context_excluded"
+    assert trace["source"]["excluded_as_of_date"] == "2026-02-01"
+
+
+def test_trace_respects_applicable_consumers(db_session: Session) -> None:
+    upsert_shared_background_context(
+        db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 5, 31),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.61},
+    )
+    db_session.commit()
+
+    traces = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders"],
+        consumer="analyze",
+    )
+
+    trace = traces["2330.TW"][0]
+    assert trace["freshness"] == "missing"
+    assert trace["missing_reason"] == "context_not_applicable_to_consumer"
+    assert trace["source"]["status"] == "not_applicable"
+    assert trace["applicable_consumers"] == ["analyze"]
 
 
 def test_read_trace_returns_fresh_stale_and_missing_contexts(db_session: Session) -> None:
@@ -323,5 +431,6 @@ def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> 
     assert "${{ secrets.ZEABUR_BACKEND_URL }}" in text
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in text
     assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in text
+    assert ".status == \"completed\"" in text
     assert "sk-" not in text
     assert "token=" not in text.lower()

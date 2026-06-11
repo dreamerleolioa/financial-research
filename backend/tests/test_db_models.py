@@ -444,12 +444,13 @@ def test_shared_background_context_model_columns_constraints_and_indexes() -> No
         "as_of_date", "freshness", "payload", "missing_reason", "replay_key",
         "created_at", "updated_at",
     } <= cols
-    assert "uq_shared_background_context_symbol_type" in unique_constraints
+    assert "uq_shared_background_context_symbol_type_replay" in unique_constraints
     assert "ck_shared_background_context_freshness" in check_constraints
     assert index_columns["idx_shared_background_context_symbol"] == ("symbol",)
     assert index_columns["idx_shared_background_context_context_type"] == ("context_type",)
     assert index_columns["idx_shared_background_context_as_of_date"] == ("as_of_date",)
     assert index_columns["idx_shared_background_context_freshness"] == ("freshness",)
+    assert index_columns["idx_shared_background_context_replay_key"] == ("replay_key",)
 
 
 def test_shared_background_context_json_fields_use_jsonb_and_accept_payloads() -> None:

@@ -968,7 +968,7 @@ def test_shared_context_read_reports_missing_and_stale_without_blocking(monkeypa
     monkeypatch.setattr(
         shared_context_module,
         "get_shared_background_context_trace_by_symbol",
-        lambda db, *, symbols, consumer: {
+        lambda db, *, symbols, consumer, **_kwargs: {
             symbols[0]: [
                 {
                     "context_type": "weekly_major_holders",

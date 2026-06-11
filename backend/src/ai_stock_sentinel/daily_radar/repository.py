@@ -209,11 +209,18 @@ def upsert_shared_background_context(
         raise ValueError("symbol is required")
     if not normalized_context_type:
         raise ValueError("context_type is required")
+    normalized_replay_key = replay_key or _background_context_replay_key(
+        normalized_symbol,
+        normalized_context_type,
+        as_of_date=as_of_date,
+        freshness=freshness,
+    )
 
     record = session.execute(
         select(SharedBackgroundContext).where(
             SharedBackgroundContext.symbol == normalized_symbol,
             SharedBackgroundContext.context_type == normalized_context_type,
+            SharedBackgroundContext.replay_key == normalized_replay_key,
         )
     ).scalar_one_or_none()
     if record is None:
@@ -226,12 +233,7 @@ def upsert_shared_background_context(
             freshness=str(freshness),
             payload=dict(payload or {}),
             missing_reason=missing_reason,
-            replay_key=replay_key or _background_context_replay_key(
-                normalized_symbol,
-                normalized_context_type,
-                as_of_date=as_of_date,
-                freshness=freshness,
-            ),
+            replay_key=normalized_replay_key,
         )
     else:
         record.applicable_consumers = _ordered_unique_strings(applicable_consumers)
@@ -240,12 +242,7 @@ def upsert_shared_background_context(
         record.freshness = str(freshness)
         record.payload = dict(payload or {})
         record.missing_reason = missing_reason
-        record.replay_key = replay_key or _background_context_replay_key(
-            normalized_symbol,
-            normalized_context_type,
-            as_of_date=as_of_date,
-            freshness=freshness,
-        )
+        record.replay_key = normalized_replay_key
     session.add(record)
     session.flush()
     return record
@@ -256,6 +253,9 @@ def get_shared_background_context_rows(
     *,
     symbols: Iterable[str],
     context_types: Iterable[str] | None = None,
+    consumer: str = BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR,
+    reference_date: date | None = None,
+    point_in_time: bool = False,
 ) -> list[SharedBackgroundContext]:
     ordered_symbols = _ordered_unique_symbols(symbols)
     if not ordered_symbols:
@@ -263,7 +263,7 @@ def get_shared_background_context_rows(
     active_context_types = _ordered_unique_strings(context_types or BACKGROUND_CONTEXT_TYPES)
     if not active_context_types:
         return []
-    return session.scalars(
+    rows = session.scalars(
         select(SharedBackgroundContext)
         .where(
             SharedBackgroundContext.symbol.in_(ordered_symbols),
@@ -274,6 +274,29 @@ def get_shared_background_context_rows(
             SharedBackgroundContext.context_type.asc(),
         )
     ).all()
+    selected: list[SharedBackgroundContext] = []
+    for symbol in ordered_symbols:
+        for context_type in active_context_types:
+            scoped_rows = [
+                row
+                for row in rows
+                if row.symbol == symbol
+                and row.context_type == context_type
+                and _context_applies_to_consumer(row, consumer)
+            ]
+            if not scoped_rows:
+                continue
+            if point_in_time and reference_date is not None:
+                eligible_rows = [
+                    row
+                    for row in scoped_rows
+                    if row.as_of_date is not None and row.as_of_date <= reference_date
+                ]
+                if eligible_rows:
+                    selected.append(max(eligible_rows, key=_point_in_time_sort_key))
+                continue
+            selected.append(max(scoped_rows, key=_latest_context_sort_key))
+    return selected
 
 
 def get_shared_background_context_trace_by_symbol(
@@ -282,6 +305,8 @@ def get_shared_background_context_trace_by_symbol(
     symbols: Iterable[str],
     context_types: Iterable[str] | None = None,
     consumer: str = BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR,
+    reference_date: date | None = None,
+    point_in_time: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     ordered_symbols = _ordered_unique_symbols(symbols)
     active_context_types = _ordered_unique_strings(context_types or BACKGROUND_CONTEXT_TYPES)
@@ -290,18 +315,66 @@ def get_shared_background_context_trace_by_symbol(
         session,
         symbols=ordered_symbols,
         context_types=active_context_types,
+        consumer=consumer,
+        reference_date=reference_date,
+        point_in_time=point_in_time,
     )
+    all_rows = session.scalars(
+        select(SharedBackgroundContext).where(
+            SharedBackgroundContext.symbol.in_(ordered_symbols),
+            SharedBackgroundContext.context_type.in_(active_context_types),
+        )
+    ).all()
     rows_by_key = {(row.symbol, row.context_type): row for row in rows}
     for symbol in ordered_symbols:
         for context_type in active_context_types:
             row = rows_by_key.get((symbol, context_type))
             if row is None:
+                scoped_rows = [
+                    item
+                    for item in all_rows
+                    if item.symbol == symbol
+                    and item.context_type == context_type
+                    and _context_applies_to_consumer(item, consumer)
+                ]
+                any_rows = [
+                    item
+                    for item in all_rows
+                    if item.symbol == symbol
+                    and item.context_type == context_type
+                ]
+                if point_in_time and reference_date is not None and scoped_rows:
+                    future_rows = [
+                        item
+                        for item in scoped_rows
+                        if item.as_of_date is not None and item.as_of_date > reference_date
+                    ]
+                    if future_rows:
+                        traces[symbol].append(
+                            _future_excluded_background_context_trace(
+                                symbol,
+                                context_type,
+                                row=min(future_rows, key=_point_in_time_sort_key),
+                                consumer=consumer,
+                                reference_date=reference_date,
+                            )
+                        )
+                        continue
                 traces[symbol].append(
                     _missing_background_context_trace(
                         symbol,
                         context_type,
                         consumer=consumer,
-                        missing_reason="context_cache_missing",
+                        missing_reason=(
+                            "context_not_applicable_to_consumer"
+                            if any_rows and not scoped_rows
+                            else "context_cache_missing"
+                        ),
+                        source_status=(
+                            "not_applicable"
+                            if any_rows and not scoped_rows
+                            else "cache_miss"
+                        ),
                     )
                 )
             else:
@@ -356,13 +429,14 @@ def _missing_background_context_trace(
     *,
     consumer: str,
     missing_reason: str,
+    source_status: str = "cache_miss",
 ) -> dict[str, Any]:
     return {
         "context_type": context_type,
         "source": {
             "domain": "background_context",
             "provider": "shared_background_context_cache",
-            "status": "cache_miss",
+            "status": source_status,
         },
         "as_of_date": None,
         "freshness": "missing",
@@ -378,6 +452,36 @@ def _missing_background_context_trace(
     }
 
 
+def _future_excluded_background_context_trace(
+    symbol: str,
+    context_type: str,
+    *,
+    row: SharedBackgroundContext,
+    consumer: str,
+    reference_date: date,
+) -> dict[str, Any]:
+    trace = _missing_background_context_trace(
+        symbol,
+        context_type,
+        consumer=consumer,
+        missing_reason="future_context_excluded",
+        source_status="point_in_time_excluded",
+    )
+    trace["source"] = {
+        **trace["source"],
+        "reference_date": reference_date.isoformat(),
+        "excluded_as_of_date": row.as_of_date.isoformat() if row.as_of_date is not None else None,
+        "original_replay_key": row.replay_key,
+    }
+    trace["replay_key"] = _background_context_replay_key(
+        symbol,
+        context_type,
+        as_of_date=reference_date,
+        freshness="future_context_excluded",
+    )
+    return trace
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
@@ -388,6 +492,32 @@ def _trace_version(payload: Any, key: str) -> str | None:
     if isinstance(payload, Mapping) and payload.get(key) is not None:
         return str(payload[key])
     return None
+
+
+def _context_applies_to_consumer(row: SharedBackgroundContext, consumer: str) -> bool:
+    consumers = row.applicable_consumers or []
+    return "*" in consumers or consumer in consumers
+
+
+def _latest_context_sort_key(row: SharedBackgroundContext) -> tuple[Any, ...]:
+    return (
+        _datetime_sort_value(row.updated_at or row.created_at),
+        row.id or 0,
+    )
+
+
+def _point_in_time_sort_key(row: SharedBackgroundContext) -> tuple[Any, ...]:
+    return (
+        row.as_of_date or date.min,
+        _datetime_sort_value(row.updated_at or row.created_at),
+        row.id or 0,
+    )
+
+
+def _datetime_sort_value(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value or "")
 
 
 def _normalize_symbol(symbol: str) -> str:

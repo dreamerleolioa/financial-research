@@ -33,6 +33,8 @@ def read_shared_context_for_symbol(
             db,
             symbols=[symbol],
             consumer=consumer,
+            reference_date=reference_date,
+            point_in_time=point_in_time,
         )
         contexts = traces_by_symbol.get(symbol) or []
     except Exception as exc:

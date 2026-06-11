@@ -39,7 +39,12 @@ def upgrade() -> None:
             name="ck_shared_background_context_freshness",
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("symbol", "context_type", name="uq_shared_background_context_symbol_type"),
+        sa.UniqueConstraint(
+            "symbol",
+            "context_type",
+            "replay_key",
+            name="uq_shared_background_context_symbol_type_replay",
+        ),
     )
     op.create_index(
         "idx_shared_background_context_symbol",
@@ -65,15 +70,22 @@ def upgrade() -> None:
         ["freshness"],
         unique=False,
     )
+    op.create_index(
+        "idx_shared_background_context_replay_key",
+        "shared_background_contexts",
+        ["replay_key"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("idx_shared_background_context_replay_key", table_name="shared_background_contexts")
     op.drop_index("idx_shared_background_context_freshness", table_name="shared_background_contexts")
     op.drop_index("idx_shared_background_context_as_of_date", table_name="shared_background_contexts")
     op.drop_index("idx_shared_background_context_context_type", table_name="shared_background_contexts")
     op.drop_index("idx_shared_background_context_symbol", table_name="shared_background_contexts")
     op.drop_constraint(
-        "uq_shared_background_context_symbol_type",
+        "uq_shared_background_context_symbol_type_replay",
         "shared_background_contexts",
         type_="unique",
     )

@@ -1692,6 +1692,51 @@ def test_position_lifecycle_review_excludes_future_shared_context(
     assert data["review_result"]["lifecycle_review"]["classification"]["primary_label"] != "future_context_excluded"
 
 
+def test_position_lifecycle_review_uses_historical_shared_context_before_future_context(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2025, 12, 31),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.57},
+        missing_reason=None,
+    )
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["lifecycle_review"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 2, 1),
+        freshness="fresh",
+        payload={"major_holder_ratio": 0.72},
+        missing_reason=None,
+    )
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    event_context = data["evidence_payload"]["shared_context"]["events"][0]["shared_context"]
+    weekly_context = next(
+        context
+        for context in event_context["contexts"]
+        if context["context_type"] == "weekly_major_holders"
+    )
+    assert weekly_context["as_of_date"] == "2025-12-31"
+    assert weekly_context["payload"] == {"major_holder_ratio": 0.57}
+    assert weekly_context["missing_reason"] is None
+
+
 def test_position_lifecycle_review_missing_shared_context_is_nonblocking(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
