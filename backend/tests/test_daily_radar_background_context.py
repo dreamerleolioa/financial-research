@@ -660,8 +660,9 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
 20260605,2454  ,17,2000,40000000,100.00
 """
 
-    def fake_get(url: str, *, timeout: int):
+    def fake_get(url: str, *, timeout: int, headers: dict):
         calls.append(url)
+        assert headers["User-Agent"] == "ai-stock-sentinel/1.0"
         return _FakeTextResponse(csv_text)
 
     provider = TdccWeeklyMajorHoldersProvider(request_get=fake_get)
@@ -693,6 +694,34 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
     assert by_symbol["2454.TW"].payload["major_holder_ratio"] == pytest.approx(25.0)
     assert by_symbol["9999.TW"].freshness == "missing"
     assert by_symbol["9999.TW"].missing_reason == "tdcc_symbol_not_found"
+
+
+def test_tdcc_weekly_major_holders_provider_fails_closed_on_certificate_verify_failure(
+    db_session: Session,
+) -> None:
+    requests_seen: list[dict] = []
+
+    def fake_get(url: str, **kwargs):
+        requests_seen.append(dict(kwargs))
+        raise RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Subject Key Identifier")
+
+    provider = TdccWeeklyMajorHoldersProvider(request_get=fake_get)
+
+    result = update_background_chip_context_cache(
+        db_session,
+        run_date=date(2026, 6, 11),
+        market="TW",
+        provider=provider,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders"],
+    )
+
+    assert requests_seen == [{"timeout": 30, "headers": {"User-Agent": "ai-stock-sentinel/1.0"}}]
+    assert result["status"] == "failed"
+    assert result["records_written"] == 0
+    assert result["errors"][0]["code"] == "background_context_provider_failed"
+    assert result["errors"][0]["error_type"] == "_TdccDatasetError"
+    assert "CERTIFICATE_VERIFY_FAILED" in result["errors"][0]["message"]
 
 
 def test_default_background_provider_writes_finmind_and_tdcc_contexts(db_session: Session) -> None:
@@ -769,6 +798,13 @@ def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> 
     assert "${{ secrets.ZEABUR_BACKEND_URL }}" in text
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in text
     assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in text
+    assert "0 23 * * 1-5" in text
+    assert "30 23 * * 6" in text
+    assert "github.event.schedule == '0 23 * * 1-5'" in text
+    assert "github.event.schedule == '30 23 * * 6'" in text
+    assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["lending","full_margin"]}\'' in text
+    assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["weekly_major_holders"]}\'' in text
+    assert "--data \"${CHIP_CONTEXT_PAYLOAD}\"" in text
     assert ".status == \"completed\"" in text
     assert "sk-" not in text
     assert "token=" not in text.lower()

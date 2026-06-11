@@ -11,6 +11,7 @@ from ai_stock_sentinel.daily_radar.background_context import BACKGROUND_CONTEXT_
 
 
 TDCC_WEEKLY_HOLDERS_URL = "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5"
+_TDCC_REQUEST_HEADERS = {"User-Agent": "ai-stock-sentinel/1.0"}
 
 _CONTEXT_TYPE = "weekly_major_holders"
 _MAJOR_HOLDER_LEVELS = frozenset({12, 13, 14, 15})
@@ -24,6 +25,11 @@ class _TdccDatasetError(Exception):
 
     def __str__(self) -> str:
         return self.message
+
+
+@dataclass(frozen=True)
+class _TdccRowsResult:
+    rows_by_symbol: dict[str, list[dict[str, str]]]
 
 
 class TdccWeeklyMajorHoldersProvider:
@@ -51,15 +57,22 @@ class TdccWeeklyMajorHoldersProvider:
         if _CONTEXT_TYPE not in context_types:
             return []
 
-        rows_by_symbol = self._fetch_rows_by_symbol()
+        rows_result = self._fetch_rows_by_symbol()
         payloads: list[BackgroundContextPayload] = []
         for symbol in symbols:
             stock_id = _strip_suffix(symbol)
-            rows = rows_by_symbol.get(stock_id, [])
-            payloads.append(self._payload_for_symbol(symbol=symbol, rows=rows, run_date=run_date, market=market))
+            rows = rows_result.rows_by_symbol.get(stock_id, [])
+            payloads.append(
+                self._payload_for_symbol(
+                    symbol=symbol,
+                    rows=rows,
+                    run_date=run_date,
+                    market=market,
+                )
+            )
         return payloads
 
-    def _fetch_rows_by_symbol(self) -> dict[str, list[dict[str, str]]]:
+    def _fetch_rows_by_symbol(self) -> _TdccRowsResult:
         request_get = self._request_get
         if request_get is None:
             try:
@@ -68,10 +81,7 @@ class TdccWeeklyMajorHoldersProvider:
                 raise _TdccDatasetError("missing_dependency", "requests package is not installed") from exc
             request_get = requests.get
 
-        try:
-            response = request_get(TDCC_WEEKLY_HOLDERS_URL, timeout=30)
-        except Exception as exc:
-            raise _TdccDatasetError("tdcc_request_error", f"TDCC request failed: {exc}") from exc
+        response = _request_tdcc_csv(request_get)
 
         try:
             response.raise_for_status()
@@ -93,7 +103,7 @@ class TdccWeeklyMajorHoldersProvider:
             raise _TdccDatasetError("tdcc_parse_error", f"TDCC CSV could not be parsed: {exc}") from exc
         if not rows_by_symbol:
             raise _TdccDatasetError("tdcc_no_data", "TDCC CSV returned no shareholder distribution rows")
-        return rows_by_symbol
+        return _TdccRowsResult(rows_by_symbol=rows_by_symbol)
 
     def _payload_for_symbol(
         self,
@@ -123,13 +133,7 @@ class TdccWeeklyMajorHoldersProvider:
             symbol=symbol,
             context_type=_CONTEXT_TYPE,
             applicable_consumers=BACKGROUND_CONTEXT_ALL_CONSUMERS,
-            source={
-                "domain": "background_context",
-                "provider": self.provider_name,
-                "dataset": "tdcc_shareholder_distribution",
-                "url": TDCC_WEEKLY_HOLDERS_URL,
-                "market": market,
-            },
+            source=_source(market=market),
             as_of_date=as_of_date,
             freshness=freshness,
             payload={
@@ -170,19 +174,30 @@ class TdccWeeklyMajorHoldersProvider:
             symbol=symbol,
             context_type=_CONTEXT_TYPE,
             applicable_consumers=BACKGROUND_CONTEXT_ALL_CONSUMERS,
-            source={
-                "domain": "background_context",
-                "provider": self.provider_name,
-                "dataset": "tdcc_shareholder_distribution",
-                "url": TDCC_WEEKLY_HOLDERS_URL,
-                "market": market,
-            },
+            source=_source(market=market),
             as_of_date=None,
             freshness="missing",
             payload={},
             missing_reason=missing_reason,
             replay_key=f"background_context:{symbol}:{_CONTEXT_TYPE}:{run_date.isoformat()}:missing:{missing_reason}",
         )
+
+
+def _request_tdcc_csv(request_get: Callable[..., Any]) -> Any:
+    try:
+        return request_get(TDCC_WEEKLY_HOLDERS_URL, timeout=30, headers=_TDCC_REQUEST_HEADERS)
+    except Exception as exc:
+        raise _TdccDatasetError("tdcc_request_error", f"TDCC request failed: {exc}") from exc
+
+
+def _source(*, market: str) -> dict[str, Any]:
+    return {
+        "domain": "background_context",
+        "provider": TdccWeeklyMajorHoldersProvider.provider_name,
+        "dataset": "tdcc_shareholder_distribution",
+        "url": TDCC_WEEKLY_HOLDERS_URL,
+        "market": market,
+    }
 
 
 def _response_text(response: Any) -> str:
