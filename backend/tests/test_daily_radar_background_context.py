@@ -696,41 +696,32 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
     assert by_symbol["9999.TW"].missing_reason == "tdcc_symbol_not_found"
 
 
-def test_tdcc_weekly_major_holders_provider_retries_certificate_verify_failure() -> None:
+def test_tdcc_weekly_major_holders_provider_fails_closed_on_certificate_verify_failure(
+    db_session: Session,
+) -> None:
     requests_seen: list[dict] = []
-    csv_text = """資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%
-20260605,2330  ,12,563,276059662,1.06
-20260605,2330  ,15,1499,22151774520,85.42
-20260605,2330  ,17,2678648,25932524521,100.00
-"""
 
     def fake_get(url: str, **kwargs):
         requests_seen.append(dict(kwargs))
-        if kwargs.get("verify") is not False:
-            raise RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Subject Key Identifier")
-        return _FakeTextResponse(csv_text)
+        raise RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Subject Key Identifier")
 
     provider = TdccWeeklyMajorHoldersProvider(request_get=fake_get)
 
-    payload = next(
-        iter(
-            provider.fetch(
-                symbols=["2330.TW"],
-                context_types=["weekly_major_holders"],
-                run_date=date(2026, 6, 11),
-                market="TW",
-            )
-        )
+    result = update_background_chip_context_cache(
+        db_session,
+        run_date=date(2026, 6, 11),
+        market="TW",
+        provider=provider,
+        symbols=["2330.TW"],
+        context_types=["weekly_major_holders"],
     )
 
-    assert requests_seen == [
-        {"timeout": 30, "headers": {"User-Agent": "ai-stock-sentinel/1.0"}},
-        {"timeout": 30, "headers": {"User-Agent": "ai-stock-sentinel/1.0"}, "verify": False},
-    ]
-    assert payload.freshness == "fresh"
-    assert payload.source["tls_verify"] is False
-    assert payload.source["tls_fallback_reason"] == "certificate_verify_failed"
-    assert payload.payload["major_holder_ratio"] == pytest.approx(86.48)
+    assert requests_seen == [{"timeout": 30, "headers": {"User-Agent": "ai-stock-sentinel/1.0"}}]
+    assert result["status"] == "failed"
+    assert result["records_written"] == 0
+    assert result["errors"][0]["code"] == "background_context_provider_failed"
+    assert result["errors"][0]["error_type"] == "_TdccDatasetError"
+    assert "CERTIFICATE_VERIFY_FAILED" in result["errors"][0]["message"]
 
 
 def test_default_background_provider_writes_finmind_and_tdcc_contexts(db_session: Session) -> None:

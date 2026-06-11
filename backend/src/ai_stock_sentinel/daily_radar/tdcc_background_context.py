@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import warnings
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -31,8 +30,6 @@ class _TdccDatasetError(Exception):
 @dataclass(frozen=True)
 class _TdccRowsResult:
     rows_by_symbol: dict[str, list[dict[str, str]]]
-    tls_verify: bool
-    tls_fallback_reason: str | None = None
 
 
 class TdccWeeklyMajorHoldersProvider:
@@ -71,8 +68,6 @@ class TdccWeeklyMajorHoldersProvider:
                     rows=rows,
                     run_date=run_date,
                     market=market,
-                    tls_verify=rows_result.tls_verify,
-                    tls_fallback_reason=rows_result.tls_fallback_reason,
                 )
             )
         return payloads
@@ -86,7 +81,7 @@ class TdccWeeklyMajorHoldersProvider:
                 raise _TdccDatasetError("missing_dependency", "requests package is not installed") from exc
             request_get = requests.get
 
-        response, tls_verify, tls_fallback_reason = _request_tdcc_csv(request_get)
+        response = _request_tdcc_csv(request_get)
 
         try:
             response.raise_for_status()
@@ -108,11 +103,7 @@ class TdccWeeklyMajorHoldersProvider:
             raise _TdccDatasetError("tdcc_parse_error", f"TDCC CSV could not be parsed: {exc}") from exc
         if not rows_by_symbol:
             raise _TdccDatasetError("tdcc_no_data", "TDCC CSV returned no shareholder distribution rows")
-        return _TdccRowsResult(
-            rows_by_symbol=rows_by_symbol,
-            tls_verify=tls_verify,
-            tls_fallback_reason=tls_fallback_reason,
-        )
+        return _TdccRowsResult(rows_by_symbol=rows_by_symbol)
 
     def _payload_for_symbol(
         self,
@@ -121,8 +112,6 @@ class TdccWeeklyMajorHoldersProvider:
         rows: list[dict[str, str]],
         run_date: date,
         market: str,
-        tls_verify: bool,
-        tls_fallback_reason: str | None,
     ) -> BackgroundContextPayload:
         if not rows:
             return self._missing_payload(
@@ -130,8 +119,6 @@ class TdccWeeklyMajorHoldersProvider:
                 run_date=run_date,
                 market=market,
                 missing_reason="tdcc_symbol_not_found",
-                tls_verify=tls_verify,
-                tls_fallback_reason=tls_fallback_reason,
             )
 
         as_of_date = _tdcc_date(rows[0].get("資料日期"))
@@ -146,11 +133,7 @@ class TdccWeeklyMajorHoldersProvider:
             symbol=symbol,
             context_type=_CONTEXT_TYPE,
             applicable_consumers=BACKGROUND_CONTEXT_ALL_CONSUMERS,
-            source=_source(
-                market=market,
-                tls_verify=tls_verify,
-                tls_fallback_reason=tls_fallback_reason,
-            ),
+            source=_source(market=market),
             as_of_date=as_of_date,
             freshness=freshness,
             payload={
@@ -186,18 +169,12 @@ class TdccWeeklyMajorHoldersProvider:
         run_date: date,
         market: str,
         missing_reason: str,
-        tls_verify: bool = True,
-        tls_fallback_reason: str | None = None,
     ) -> BackgroundContextPayload:
         return BackgroundContextPayload(
             symbol=symbol,
             context_type=_CONTEXT_TYPE,
             applicable_consumers=BACKGROUND_CONTEXT_ALL_CONSUMERS,
-            source=_source(
-                market=market,
-                tls_verify=tls_verify,
-                tls_fallback_reason=tls_fallback_reason,
-            ),
+            source=_source(market=market),
             as_of_date=None,
             freshness="missing",
             payload={},
@@ -206,49 +183,21 @@ class TdccWeeklyMajorHoldersProvider:
         )
 
 
-def _request_tdcc_csv(request_get: Callable[..., Any]) -> tuple[Any, bool, str | None]:
+def _request_tdcc_csv(request_get: Callable[..., Any]) -> Any:
     try:
-        return request_get(TDCC_WEEKLY_HOLDERS_URL, timeout=30, headers=_TDCC_REQUEST_HEADERS), True, None
+        return request_get(TDCC_WEEKLY_HOLDERS_URL, timeout=30, headers=_TDCC_REQUEST_HEADERS)
     except Exception as exc:
-        if not _is_certificate_verify_error(exc):
-            raise _TdccDatasetError("tdcc_request_error", f"TDCC request failed: {exc}") from exc
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                return (
-                    request_get(TDCC_WEEKLY_HOLDERS_URL, timeout=30, headers=_TDCC_REQUEST_HEADERS, verify=False),
-                    False,
-                    "certificate_verify_failed",
-                )
-        except Exception as retry_exc:
-            raise _TdccDatasetError(
-                "tdcc_request_error",
-                f"TDCC request failed after certificate fallback: {retry_exc}",
-            ) from retry_exc
+        raise _TdccDatasetError("tdcc_request_error", f"TDCC request failed: {exc}") from exc
 
 
-def _is_certificate_verify_error(exc: Exception) -> bool:
-    message = str(exc)
-    return "CERTIFICATE_VERIFY_FAILED" in message or "certificate verify failed" in message.lower()
-
-
-def _source(
-    *,
-    market: str,
-    tls_verify: bool,
-    tls_fallback_reason: str | None,
-) -> dict[str, Any]:
-    source: dict[str, Any] = {
+def _source(*, market: str) -> dict[str, Any]:
+    return {
         "domain": "background_context",
         "provider": TdccWeeklyMajorHoldersProvider.provider_name,
         "dataset": "tdcc_shareholder_distribution",
         "url": TDCC_WEEKLY_HOLDERS_URL,
         "market": market,
-        "tls_verify": tls_verify,
     }
-    if tls_fallback_reason is not None:
-        source["tls_fallback_reason"] = tls_fallback_reason
-    return source
 
 
 def _response_text(response: Any) -> str:
