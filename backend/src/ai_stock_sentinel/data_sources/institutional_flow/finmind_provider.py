@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
 from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.data_sources.institutional_flow.interface import (
     InstitutionalFlowData,
@@ -11,9 +12,6 @@ from ai_stock_sentinel.data_sources.institutional_flow.interface import (
 )
 
 logger = logging.getLogger(__name__)
-
-# FinMind API endpoint
-_FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
 # FinMind 欄位對應表
 _INST_COLUMN_MAP = {
@@ -43,19 +41,16 @@ class FinMindProvider:
 
     name = "FinMind"
 
-    def __init__(self, api_token: str = ""):
+    def __init__(self, api_token: str = "", client: FinMindClient | None = None):
         # api_token 僅供測試用靜態覆蓋；正式使用時留空，由 token manager 動態取得
         self._static_token = api_token
-
-    def _get_token(self) -> str:
-        """優先用靜態 token（測試用），否則從 token manager 取得。"""
-        return self._static_token or get_token_manager().token
+        self._client = client or FinMindClient(api_token=api_token)
 
     def fetch_daily_flow(self, symbol: str, days: int = 5) -> InstitutionalFlowData:
         try:
             return self._fetch_daily_flow_inner(symbol=symbol, days=days)
         except InstitutionalFlowError as exc:
-            if exc.code == "FINMIND_TOKEN_EXPIRED" and not self._static_token:
+            if exc.code == "FINMIND_TOKEN_EXPIRED" and not self._static_token and not self._client.uses_static_token:
                 # token 過期：invalidate 後重試一次
                 logger.warning("[FinMindProvider] token 過期（402），嘗試自動刷新後重試")
                 get_token_manager().invalidate()
@@ -63,15 +58,6 @@ class FinMindProvider:
             raise
 
     def _fetch_daily_flow_inner(self, symbol: str, days: int) -> InstitutionalFlowData:
-        try:
-            import requests
-        except ImportError as e:
-            raise InstitutionalFlowError(
-                code="MISSING_DEPENDENCY",
-                message="requests 套件未安裝，請執行 pip install requests",
-                provider=self.name,
-            ) from e
-
         stock_id = _strip_suffix(symbol)
         end_date = date.today()
         start_date = end_date - timedelta(days=days * 2 + 7)  # 多抓幾天避免非交易日缺口
@@ -80,7 +66,6 @@ class FinMindProvider:
 
         # ---- 三大法人 ----
         inst_rows = self._fetch_dataset(
-            requests=requests,
             dataset="TaiwanStockInstitutionalInvestorsBuySell",
             stock_id=stock_id,
             start_date=start_date,
@@ -125,7 +110,6 @@ class FinMindProvider:
         short_balance_delta_pct: float | None = None
 
         margin_rows = self._fetch_dataset(
-            requests=requests,
             dataset="TaiwanStockMarginPurchaseShortSale",
             stock_id=stock_id,
             start_date=start_date,
@@ -145,7 +129,6 @@ class FinMindProvider:
         securities_lending_volume: float | None = None
         try:
             lending_rows = self._fetch_dataset(
-                requests=requests,
                 dataset="TaiwanStockSecuritiesLending",
                 stock_id=stock_id,
                 start_date=start_date,
@@ -161,7 +144,6 @@ class FinMindProvider:
         foreign_holding_ratio_delta_pct: float | None = None
         try:
             shareholding_rows = self._fetch_dataset(
-                requests=requests,
                 dataset="TaiwanStockShareholding",
                 stock_id=stock_id,
                 start_date=start_date,
@@ -178,7 +160,6 @@ class FinMindProvider:
         retail_holder_ratio_delta_pct: float | None = None
         try:
             holder_rows = self._fetch_dataset(
-                requests=requests,
                 dataset="TaiwanStockHoldingSharesPer",
                 stock_id=stock_id,
                 start_date=start_date,
@@ -243,52 +224,16 @@ class FinMindProvider:
             warnings=warnings,
         )
 
-    def _fetch_dataset(self, *, requests, dataset: str, stock_id: str, start_date: date, end_date: date) -> list[dict]:
-        params: dict = {
-            "dataset": dataset,
-            "data_id": stock_id,
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-        }
-        token = self._get_token()
-        if token:
-            params["token"] = token
-
+    def _fetch_dataset(self, *, dataset: str, stock_id: str, start_date: date, end_date: date) -> list[dict]:
         try:
-            resp = requests.get(_FINMIND_API, params=params, timeout=15)
-        except Exception as exc:
-            raise InstitutionalFlowError(
-                code="FINMIND_REQUEST_ERROR",
-                message=f"FinMind API 請求失敗（dataset={dataset}）：{exc}",
-                provider=self.name,
-            ) from exc
-
-        if resp.status_code == 402:
-            raise InstitutionalFlowError(
-                code="FINMIND_TOKEN_EXPIRED",
-                message=f"FinMind token 過期或無效（402），dataset={dataset}",
-                provider=self.name,
+            return self._client.fetch_data(
+                dataset=dataset,
+                data_id=stock_id,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
             )
-
-        try:
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:
-            raise InstitutionalFlowError(
-                code="FINMIND_REQUEST_ERROR",
-                message=f"FinMind API 請求失敗（dataset={dataset}）：{exc}",
-                provider=self.name,
-            ) from exc
-
-        if payload.get("status") != 200:
-            msg = payload.get("msg", "unknown error")
-            raise InstitutionalFlowError(
-                code="FINMIND_API_ERROR",
-                message=f"FinMind API 回傳錯誤（dataset={dataset}）：{msg}",
-                provider=self.name,
-            )
-
-        return payload.get("data", [])
+        except FinMindClientError as exc:
+            raise _institutional_error_from_client_error(exc, provider=self.name) from exc
 
 
 # ---- 工具函式 ----
@@ -296,6 +241,38 @@ class FinMindProvider:
 def _strip_suffix(symbol: str) -> str:
     """'2330.TW' → '2330'"""
     return symbol.split(".")[0]
+
+
+def _institutional_error_from_client_error(exc: FinMindClientError, *, provider: str) -> InstitutionalFlowError:
+    if exc.code == "missing_dependency":
+        return InstitutionalFlowError(
+            code="MISSING_DEPENDENCY",
+            message="requests 套件未安裝，請執行 pip install requests",
+            provider=provider,
+        )
+    if exc.code == "quota_or_token_error":
+        return InstitutionalFlowError(
+            code="FINMIND_TOKEN_EXPIRED",
+            message=f"FinMind token 過期、無效或 quota 已滿（402），dataset={exc.dataset}",
+            provider=provider,
+        )
+    if exc.code == "quota_exceeded":
+        return InstitutionalFlowError(
+            code="FINMIND_QUOTA_EXCEEDED",
+            message=f"FinMind request budget 已滿（dataset={exc.dataset}）",
+            provider=provider,
+        )
+    if exc.code == "api_error":
+        return InstitutionalFlowError(
+            code="FINMIND_API_ERROR",
+            message=f"FinMind API 回傳錯誤（dataset={exc.dataset}）：{exc.message}",
+            provider=provider,
+        )
+    return InstitutionalFlowError(
+        code="FINMIND_REQUEST_ERROR",
+        message=f"FinMind API 請求失敗（dataset={exc.dataset}）：{exc.message}",
+        provider=provider,
+    )
 
 
 def _safe_float(val) -> float | None:

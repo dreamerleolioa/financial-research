@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
 from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.daily_radar.background_context import BACKGROUND_CONTEXT_ALL_CONSUMERS, BackgroundContextPayload
 
 
 FINMIND_BACKGROUND_CONTEXT_CONSUMERS = BACKGROUND_CONTEXT_ALL_CONSUMERS
 
-
-_FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 _FULL_MARGIN_DATASET = "TaiwanStockMarginPurchaseShortSale"
 _LENDING_DATASET = "TaiwanStockSecuritiesLending"
 _SUPPORTED_CONTEXT_TYPES = {"full_margin", "lending"}
@@ -45,11 +44,12 @@ class FinMindBackgroundChipContextProvider:
         *,
         api_token: str = "",
         request_get: Callable[..., Any] | None = None,
+        client: FinMindClient | None = None,
         lookback_trading_days: int = 10,
         stale_after_days: int = 5,
     ) -> None:
         self._static_token = api_token
-        self._request_get = request_get
+        self._client = client or FinMindClient(api_token=api_token, request_get=request_get)
         self._lookback_trading_days = lookback_trading_days
         self._stale_after_days = stale_after_days
 
@@ -198,77 +198,28 @@ class FinMindBackgroundChipContextProvider:
         )
 
     def _fetch_rows(self, *, symbol: str, dataset: str, run_date: date) -> list[dict[str, Any]]:
-        request_get = self._request_get
-        if request_get is None:
-            try:
-                import requests
-            except ImportError as exc:
-                raise _FinMindDatasetError("missing_dependency", "requests package is not installed", dataset) from exc
-            request_get = requests.get
-
         start_date = run_date - timedelta(days=self._lookback_trading_days * 3 + 7)
-        params: dict[str, Any] = {
-            "dataset": dataset,
-            "data_id": _strip_suffix(symbol),
-            "start_date": start_date.isoformat(),
-            "end_date": run_date.isoformat(),
-        }
-        token_manager = None if self._static_token else get_token_manager()
-        token = self._static_token or token_manager.token
-        response = self._request_dataset(request_get=request_get, params=params, token=token, dataset=dataset)
-        if getattr(response, "status_code", None) == 402 and token_manager is not None:
-            token_manager.invalidate()
-            response = self._request_dataset(
-                request_get=request_get,
-                params=params,
-                token=token_manager.token,
+        try:
+            return self._client.fetch_data(
                 dataset=dataset,
+                data_id=_strip_suffix(symbol),
+                start_date=start_date.isoformat(),
+                end_date=run_date.isoformat(),
             )
-
-        if getattr(response, "status_code", None) == 402:
-            raise _FinMindDatasetError(
-                "finmind_quota_or_token_error",
-                f"FinMind returned HTTP 402 for {dataset}",
-                dataset,
-            )
-
-        try:
-            response.raise_for_status()
-            body = response.json()
-        except Exception as exc:
-            raise _FinMindDatasetError(
-                "finmind_response_error",
-                f"FinMind response could not be parsed for {dataset}: {exc}",
-                dataset,
-            ) from exc
-
-        if body.get("status") != 200:
-            message = str(body.get("msg") or "unknown error")
-            code = "finmind_access_required" if "level" in message.lower() else "finmind_api_error"
-            raise _FinMindDatasetError(code, message, dataset)
-
-        data = body.get("data")
-        return list(data) if isinstance(data, list) else []
-
-    def _request_dataset(
-        self,
-        *,
-        request_get: Callable[..., Any],
-        params: Mapping[str, Any],
-        token: str,
-        dataset: str,
-    ) -> Any:
-        request_params = dict(params)
-        if token:
-            request_params["token"] = token
-        try:
-            return request_get(_FINMIND_API, params=request_params, timeout=15)
-        except Exception as exc:
-            raise _FinMindDatasetError(
-                "finmind_request_error",
-                f"FinMind request failed for {dataset}: {exc}",
-                dataset,
-            ) from exc
+        except FinMindClientError as exc:
+            if exc.code != "quota_or_token_error" or self._static_token:
+                raise _dataset_error_from_client_error(exc) from exc
+            token_manager = get_token_manager()
+            token_manager.invalidate()
+            try:
+                return self._client.fetch_data(
+                    dataset=dataset,
+                    data_id=_strip_suffix(symbol),
+                    start_date=start_date.isoformat(),
+                    end_date=run_date.isoformat(),
+                )
+            except FinMindClientError as retry_exc:
+                raise _dataset_error_from_client_error(retry_exc) from retry_exc
 
     def _freshness(self, *, as_of_date: date | None, run_date: date) -> tuple[str, str | None]:
         if as_of_date is None:
@@ -311,6 +262,25 @@ class FinMindBackgroundChipContextProvider:
         if dataset is not None:
             source["dataset"] = dataset
         return source
+
+
+def _dataset_error_from_client_error(exc: FinMindClientError) -> _FinMindDatasetError:
+    if exc.code == "missing_dependency":
+        return _FinMindDatasetError("missing_dependency", exc.message, exc.dataset)
+    if exc.code in {"quota_or_token_error", "quota_exceeded"}:
+        return _FinMindDatasetError(
+            "finmind_quota_or_token_error",
+            f"FinMind quota/token error for {exc.dataset}: {exc.message}",
+            exc.dataset,
+        )
+    if exc.code == "request_error":
+        return _FinMindDatasetError("finmind_request_error", exc.message, exc.dataset)
+    if exc.code == "response_error":
+        return _FinMindDatasetError("finmind_response_error", exc.message, exc.dataset)
+    if exc.code == "api_error":
+        code = "finmind_access_required" if "level" in exc.message.lower() else "finmind_api_error"
+        return _FinMindDatasetError(code, exc.message, exc.dataset)
+    return _FinMindDatasetError("finmind_request_error", exc.message, exc.dataset)
 
 
 def _strip_suffix(symbol: str) -> str:
