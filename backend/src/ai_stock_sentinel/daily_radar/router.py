@@ -140,6 +140,8 @@ def run_daily_radar_endpoint(
             db,
             symbols=selected_symbols,
             context_types=BACKGROUND_CONTEXT_TYPES,
+            reference_date=run_date,
+            point_in_time=True,
         )
         institutional_payloads_by_symbol = _institutional_payloads_by_symbol(universe, run_date=run_date)
         failure_stage = "raw_data_backfill"

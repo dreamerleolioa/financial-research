@@ -402,6 +402,17 @@ def test_daily_radar_run_endpoint_reads_background_context_cache_without_provide
         payload={"top_holders_stable": True},
         replay_key="background_context:2330.TW:weekly_major_holders:2026-05-25",
     )
+    upsert_shared_background_context(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "future_fixture_cache"},
+        as_of_date=date(2026, 6, 2),
+        freshness="fresh",
+        payload={"top_holders_stable": False, "future_only": True},
+        replay_key="background_context:2330.TW:weekly_major_holders:2026-06-02",
+    )
     daily_radar_db_session.commit()
     client = _api_client(monkeypatch, daily_radar_db_session)
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
@@ -426,6 +437,7 @@ def test_daily_radar_run_endpoint_reads_background_context_cache_without_provide
     weekly_context = next(context for context in contexts if context["context_type"] == "weekly_major_holders")
     assert weekly_context["freshness"] == "fresh"
     assert weekly_context["payload"] == {"top_holders_stable": True}
+    assert weekly_context["as_of_date"] == "2026-05-25"
     missing_context = next(context for context in contexts if context["context_type"] == "lending")
     assert missing_context["freshness"] == "missing"
     assert missing_context["missing_reason"] == "context_cache_missing"
