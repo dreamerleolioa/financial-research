@@ -213,18 +213,17 @@ class FinMindBackgroundChipContextProvider:
             "start_date": start_date.isoformat(),
             "end_date": run_date.isoformat(),
         }
-        token = self._static_token or get_token_manager().token
-        if token:
-            params["token"] = token
-
-        try:
-            response = request_get(_FINMIND_API, params=params, timeout=15)
-        except Exception as exc:
-            raise _FinMindDatasetError(
-                "finmind_request_error",
-                f"FinMind request failed for {dataset}: {exc}",
-                dataset,
-            ) from exc
+        token_manager = None if self._static_token else get_token_manager()
+        token = self._static_token or token_manager.token
+        response = self._request_dataset(request_get=request_get, params=params, token=token, dataset=dataset)
+        if getattr(response, "status_code", None) == 402 and token_manager is not None:
+            token_manager.invalidate()
+            response = self._request_dataset(
+                request_get=request_get,
+                params=params,
+                token=token_manager.token,
+                dataset=dataset,
+            )
 
         if getattr(response, "status_code", None) == 402:
             raise _FinMindDatasetError(
@@ -250,6 +249,26 @@ class FinMindBackgroundChipContextProvider:
 
         data = body.get("data")
         return list(data) if isinstance(data, list) else []
+
+    def _request_dataset(
+        self,
+        *,
+        request_get: Callable[..., Any],
+        params: Mapping[str, Any],
+        token: str,
+        dataset: str,
+    ) -> Any:
+        request_params = dict(params)
+        if token:
+            request_params["token"] = token
+        try:
+            return request_get(_FINMIND_API, params=request_params, timeout=15)
+        except Exception as exc:
+            raise _FinMindDatasetError(
+                "finmind_request_error",
+                f"FinMind request failed for {dataset}: {exc}",
+                dataset,
+            ) from exc
 
     def _freshness(self, *, as_of_date: date | None, run_date: date) -> tuple[str, str | None]:
         if as_of_date is None:

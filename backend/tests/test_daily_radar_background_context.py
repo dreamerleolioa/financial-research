@@ -565,6 +565,65 @@ def test_finmind_background_provider_marks_dataset_errors_as_missing() -> None:
     assert payload.source["dataset"] == "TaiwanStockMarginPurchaseShortSale"
 
 
+def test_finmind_background_provider_retries_expired_managed_token(monkeypatch) -> None:
+    class FakeTokenManager:
+        def __init__(self) -> None:
+            self.tokens = ["expired-token", "fresh-token"]
+            self.invalidated = False
+
+        @property
+        def token(self) -> str:
+            return self.tokens[1] if self.invalidated else self.tokens[0]
+
+        def invalidate(self) -> None:
+            self.invalidated = True
+
+    token_manager = FakeTokenManager()
+    requests_seen: list[dict] = []
+
+    def fake_get(url: str, *, params: dict, timeout: int):
+        requests_seen.append(dict(params))
+        if params.get("token") == "expired-token":
+            return _FakeFinMindResponse({"status": 402, "msg": "token expired"}, status_code=402)
+        return _FakeFinMindResponse(
+            {
+                "status": 200,
+                "data": [
+                    {
+                        "date": "2026-06-10",
+                        "stock_id": "2330",
+                        "MarginPurchaseTodayBalance": 1200,
+                        "MarginPurchaseYesterdayBalance": 1100,
+                        "ShortSaleTodayBalance": 80,
+                        "ShortSaleYesterdayBalance": 70,
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(
+        "ai_stock_sentinel.daily_radar.finmind_background_context.get_token_manager",
+        lambda: token_manager,
+    )
+    provider = FinMindBackgroundChipContextProvider(request_get=fake_get)
+
+    payload = next(
+        iter(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["full_margin"],
+                run_date=date(2026, 6, 11),
+                market="TW",
+            )
+        )
+    )
+
+    assert token_manager.invalidated is True
+    assert [request["token"] for request in requests_seen] == ["expired-token", "fresh-token"]
+    assert payload.freshness == "fresh"
+    assert payload.payload["latest_margin_balance"] == 1200.0
+
+
 def test_finmind_background_provider_fatal_request_errors_fail_update(db_session: Session) -> None:
     def fake_get(url: str, *, params: dict, timeout: int):
         raise RuntimeError("network down")
