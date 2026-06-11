@@ -154,7 +154,7 @@ def run_daily_radar_endpoint(
         ) from exc
 
 
-@router.get("/daily-radar/latest", response_model=DailyRadarRunResponse)
+@router.get("/daily-radar/latest", response_model=DailyRadarRunResponse, response_model_exclude_none=True)
 def get_latest_daily_radar_endpoint(
     market: str = Query(default="TW", min_length=1, max_length=20),
     bucket: str | None = Query(default=None, min_length=1, max_length=40),
@@ -187,7 +187,7 @@ def get_daily_radar_symbol_history_endpoint(
     return filtered[:limit]
 
 
-@router.get("/daily-radar/{run_date}", response_model=DailyRadarRunResponse)
+@router.get("/daily-radar/{run_date}", response_model=DailyRadarRunResponse, response_model_exclude_none=True)
 def get_daily_radar_by_date_endpoint(
     run_date: date,
     market: str = Query(default="TW", min_length=1, max_length=20),
@@ -406,6 +406,8 @@ def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRe
         risk_labels=list(candidate.risk_labels or []),
         repeat_status=candidate.repeat_status,
         explanation=candidate.explanation,
+        scoring_version=_trace_version(candidate.score_breakdown, "scoring_version"),
+        rule_version=_trace_version(candidate.score_breakdown, "rule_version"),
         bucket_scores=dict(candidate.bucket_scores or {}),
         score_breakdown=dict(candidate.score_breakdown or {}),
         input_snapshot=dict(candidate.input_snapshot or {}),
@@ -415,7 +417,7 @@ def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRe
 
 
 def _history_response(item: dict[str, Any]) -> dict[str, Any]:
-    return {
+    response = {
         "symbol": item["symbol"],
         "name": item["name"],
         "record_date": item["record_date"],
@@ -430,6 +432,13 @@ def _history_response(item: dict[str, Any]) -> dict[str, Any]:
         "input_snapshot": dict(item.get("input_snapshot") or {}),
         "data_dates": {key: value.isoformat() for key, value in _date_mapping(item.get("data_dates") or {}).items()},
     }
+    scoring_version = item.get("scoring_version") or _trace_version(item.get("score_breakdown"), "scoring_version")
+    rule_version = item.get("rule_version") or _trace_version(item.get("score_breakdown"), "rule_version")
+    if scoring_version is not None:
+        response["scoring_version"] = scoring_version
+    if rule_version is not None:
+        response["rule_version"] = rule_version
+    return response
 
 
 def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:
@@ -446,6 +455,12 @@ def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:
         else:
             rules.append({"rule_id": str(rule), "label": str(rule), "details": {}})
     return rules
+
+
+def _trace_version(payload: Any, key: str) -> str | None:
+    if isinstance(payload, dict) and payload.get(key) is not None:
+        return str(payload[key])
+    return None
 
 
 def _matches_bucket(item: dict[str, Any], bucket: str | None) -> bool:

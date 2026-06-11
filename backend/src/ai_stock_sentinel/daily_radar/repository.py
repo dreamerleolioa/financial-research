@@ -211,6 +211,8 @@ def _candidate_history_dict(candidate: DailyRadarCandidate, run: DailyRadarRun) 
         "score_breakdown": dict(candidate.score_breakdown or {}),
         "input_snapshot": dict(candidate.input_snapshot or {}),
         "data_dates": dict(candidate.data_dates or {}),
+        "scoring_version": _trace_version(candidate.score_breakdown, "scoring_version"),
+        "rule_version": _trace_version(candidate.score_breakdown, "rule_version"),
     }
 
 
@@ -218,6 +220,12 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
     return {}
+
+
+def _trace_version(payload: Any, key: str) -> str | None:
+    if isinstance(payload, Mapping) and payload.get(key) is not None:
+        return str(payload[key])
+    return None
 
 
 def _ordered_unique_symbols(symbols: Iterable[str]) -> list[str]:

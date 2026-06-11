@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import socket
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -187,6 +187,57 @@ def test_run_daily_radar_persists_universe_track_trace_in_candidate_input_snapsh
     }
 
 
+def test_run_daily_radar_persists_relative_strength_version_and_replayable_evidence(db_session: Session) -> None:
+    record = deepcopy(_joined_record("2330.TW"))
+    record["price_history"] = _price_history(date(2026, 5, 9), [100.0 + index for index in range(21)])
+    market_context = {
+        "market": {
+            "index_symbol": "TAIEX",
+            "data_date": "2026-05-29",
+            "regime": "constructive",
+            "freshness": "fresh",
+            "above_ma20": True,
+            "above_ma60": True,
+            "volatility_state": "normal",
+            "market_risk_flags": [],
+        },
+        "benchmark": {
+            "symbol": "TAIEX",
+            "yfinance_symbol": "^TWII",
+            "price_history": _price_history(date(2026, 5, 9), [100.0 + index * 0.25 for index in range(21)]),
+            "data_dates": {"market_index": "2026-05-29"},
+        },
+        "data_dates": {"market_index": "2026-05-29"},
+    }
+
+    run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context=market_context,
+    )
+    db_session.commit()
+
+    assert run.status == "completed"
+    candidate = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == run.id).one()
+    relative_strength = candidate.score_breakdown["relative_strength"]
+    evidence = candidate.input_snapshot["evidence"][0]
+
+    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.1c"
+    assert relative_strength["benchmark_symbol"] == "TAIEX"
+    assert relative_strength["lookback_days"] == 20
+    assert relative_strength["relative_value"] > 0
+    assert relative_strength["score"] == 6
+    assert candidate.data_dates["relative_strength"] == "2026-05-29"
+    assert evidence["evidence_type"] == "relative_strength"
+    assert evidence["as_of_date"] == "2026-05-29"
+    assert evidence["freshness"] == "fresh"
+    assert evidence["replay_key"] == "relative_strength:2330.TW:TAIEX:2026-05-29:L20"
+    assert evidence["applicable_consumers"] == ["daily_radar"]
+
+
 def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_choose_latest(
     db_session: Session,
 ) -> None:
@@ -209,6 +260,13 @@ def test_run_daily_radar_can_create_multiple_same_date_runs_and_public_reads_cho
 
 def _joined_record(symbol: str) -> dict[str, Any]:
     return next(record for record in load_daily_radar_fixture_records(FIXTURE_DIR) if record["symbol"] == symbol)
+
+
+def _price_history(start: date, closes: list[float]) -> list[dict[str, Any]]:
+    return [
+        {"date": (start + timedelta(days=index)).isoformat(), "close": close}
+        for index, close in enumerate(closes)
+    ]
 
 
 def test_run_daily_radar_with_fixture_fallback_disabled_does_not_load_default_fixtures(

@@ -21,6 +21,10 @@ def _payload(
     data_date: str = "2026-06-02",
 ) -> dict[str, Any]:
     return {
+        "price_history": [
+            {"date": "2026-06-01", "close": previous_close},
+            {"date": data_date, "close": close},
+        ],
         "ohlcv": {
             "close": close,
             "previous_close": previous_close,
@@ -46,6 +50,11 @@ def test_market_context_classifies_constructive_regime() -> None:
     )
 
     assert context["data_dates"] == {"market_index": "2026-06-02"}
+    assert context["benchmark"]["symbol"] == "TAIEX"
+    assert context["benchmark"]["price_history"] == [
+        {"date": "2026-06-01", "close": 21800.0},
+        {"date": "2026-06-02", "close": 22000.0},
+    ]
     assert context["market"] | {
         "index_symbol": "TAIEX",
         "regime": "constructive",
@@ -150,6 +159,7 @@ def test_yfinance_market_index_provider_fetches_single_configured_index_without_
     assert context["market"]["index_symbol"] == "TAIEX"
     assert context["market"]["yfinance_symbol"] == "^TWII"
     assert context["data_dates"] == {"market_index": "2026-06-02"}
+    assert len(context["benchmark"]["price_history"]) == 60
 
 
 def test_yfinance_market_index_provider_marks_fetch_failure_as_missing(monkeypatch) -> None:

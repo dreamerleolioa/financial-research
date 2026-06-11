@@ -287,6 +287,8 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
     ]
     assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
     assert payloads["2454.TW"]["indicators"]["missing_trading_days_60"] == 0
+    assert len(payloads["2330.TW"]["price_history"]) == 60
+    assert payloads["2330.TW"]["price_history"][-1] == {"date": "2026-06-02", "close": 159.0}
     assert {"ma5", "ma20", "ma60", "rsi14", "bias20", "volume_ratio"} <= set(
         payloads["2330.TW"]["indicators"]
     )
@@ -318,6 +320,10 @@ def test_yfinance_batch_fetcher_ignores_future_rows_after_run_date(
     assert payloads["2330.TW"]["ohlcv"]["close"] == 202.0
     assert payloads["2330.TW"]["ohlcv"]["previous_close"] == 101.0
     assert payloads["2330.TW"]["data_dates"]["ohlcv"] == "2026-06-02"
+    assert payloads["2330.TW"]["price_history"] == [
+        {"date": "2026-06-01", "close": 101.0},
+        {"date": "2026-06-02", "close": 202.0},
+    ]
 
 
 def test_empty_yfinance_symbol_response_does_not_create_or_finalize_raw_data(

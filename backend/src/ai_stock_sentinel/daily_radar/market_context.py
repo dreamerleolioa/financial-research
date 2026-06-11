@@ -122,6 +122,12 @@ def build_market_context_from_technical_payload(
     return {
         "record_date": run_date.isoformat(),
         "data_dates": {"market_index": data_date.isoformat()},
+        "benchmark": {
+            "symbol": index_symbol,
+            "yfinance_symbol": yfinance_symbol,
+            "price_history": _price_history(payload),
+            "data_dates": {"market_index": data_date.isoformat()},
+        },
         "market": {
             "index_symbol": index_symbol,
             "yfinance_symbol": yfinance_symbol,
@@ -179,6 +185,14 @@ def _market_index_data_date(payload: Mapping[str, Any]) -> date | None:
     return None
 
 
+def _price_history(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"date": str(item.get("date")), "close": item.get("close")}
+        for item in _as_list(payload.get("price_history"))
+        if isinstance(item, Mapping)
+    ]
+
+
 def _volatility_state(close: float | None, atr14: float | None) -> str:
     if close is None or close <= 0 or atr14 is None:
         return "unknown"
@@ -212,6 +226,12 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
     return {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return []
 
 
 def _float(value: Any) -> float | None:

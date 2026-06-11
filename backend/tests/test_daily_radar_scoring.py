@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 from copy import deepcopy
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +130,25 @@ def _weak_market_context() -> dict[str, Any]:
         "above_ma60": False,
         "volatility_state": "elevated",
         "market_risk_flags": ["market_weakness"],
+    }
+    return market_context
+
+
+def _price_history(start: date, closes: list[float]) -> list[dict[str, Any]]:
+    return [
+        {"date": (start + timedelta(days=index)).isoformat(), "close": close}
+        for index, close in enumerate(closes)
+    ]
+
+
+def _market_context_with_benchmark(closes: list[float]) -> dict[str, Any]:
+    market_context = deepcopy(_market_context())
+    market_context["market"]["data_date"] = "2026-05-29"
+    market_context["benchmark"] = {
+        "symbol": "TAIEX",
+        "yfinance_symbol": "^TWII",
+        "price_history": _price_history(date(2026, 5, 9), closes),
+        "data_dates": {"market_index": "2026-05-29"},
     }
     return market_context
 
@@ -321,6 +341,59 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["risk_penalties"] == []
     assert result["data_dates"]["market_index"] == "2026-05-29"
     assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
+    assert result["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert result["rule_version"] == "daily-radar-rules-v2.1c"
+    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert breakdown["rule_version"] == "daily-radar-rules-v2.1c"
+
+
+def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_trace() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2303.TW"])
+    record["price_history"] = _price_history(date(2026, 5, 9), [100.0 + index for index in range(21)])
+
+    result = score_daily_radar_record(
+        record,
+        market_context=_market_context_with_benchmark([100.0 + index * 0.25 for index in range(21)]),
+    )
+
+    relative_strength = result["score_breakdown"]["relative_strength"]
+    evidence = result["input_snapshot"]["evidence"][0]
+
+    assert relative_strength["freshness"] == "fresh"
+    assert relative_strength["benchmark_symbol"] == "TAIEX"
+    assert relative_strength["lookback_days"] == 20
+    assert relative_strength["relative_value"] > 0
+    assert relative_strength["score"] == 6
+    assert result["data_dates"]["relative_strength"] == "2026-05-29"
+    assert result["input_snapshot"]["relative_strength"] == relative_strength
+    assert result["input_snapshot"]["versions"] == {
+        "scoring_version": "daily-radar-scoring-v2.1c",
+        "rule_version": "daily-radar-rules-v2.1c",
+    }
+    assert evidence["evidence_type"] == "relative_strength"
+    assert evidence["source"]["domain"] == "daily_trigger_signal"
+    assert evidence["source"]["provider"] == "deterministic_relative_strength"
+    assert evidence["as_of_date"] == "2026-05-29"
+    assert evidence["freshness"] == "fresh"
+    assert evidence["missing_reason"] is None
+    assert evidence["replay_key"] == "relative_strength:2303.TW:TAIEX:2026-05-29:L20"
+    assert evidence["applicable_consumers"] == ["daily_radar"]
+
+
+def test_daily_radar_scoring_penalizes_relative_underperformance_without_risk_label() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2303.TW"])
+    record["price_history"] = _price_history(date(2026, 5, 9), [100.0 + index * 0.1 for index in range(21)])
+    missing_baseline = score_daily_radar_record(record, market_context=_market_context())
+
+    result = score_daily_radar_record(
+        record,
+        market_context=_market_context_with_benchmark([100.0 + index for index in range(21)]),
+    )
+
+    assert result["score_breakdown"]["relative_strength"]["score"] == -6
+    assert result["score_breakdown"]["relative_strength"]["relative_value"] < 0
+    assert result["observation_score"] < missing_baseline["observation_score"]
+    assert "data_gap" not in result["risk_labels"]
 
 
 @pytest.mark.parametrize(

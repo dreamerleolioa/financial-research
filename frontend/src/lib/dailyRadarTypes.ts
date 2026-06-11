@@ -23,6 +23,34 @@ export type DailyRadarDateMap = Record<string, string>;
 export type DailyRadarTracePayload = Record<string, unknown>;
 export type DailyRadarBucketScores = Partial<Record<DailyRadarBucket, number>>;
 
+export interface DailyRadarSignalEvidence {
+  evidence_type: string;
+  source: DailyRadarTracePayload;
+  as_of_date?: string | null;
+  freshness: string;
+  missing_reason?: string | null;
+  replay_key: string;
+  applicable_consumers: string[];
+  details: DailyRadarTracePayload;
+}
+
+export interface DailyRadarRelativeStrengthTrace {
+  benchmark_symbol: string;
+  lookback_days: number;
+  candidate_return?: number | null;
+  benchmark_return?: number | null;
+  relative_value?: number | null;
+  score: number;
+  weight: number;
+  freshness: string;
+  missing_reason?: string | null;
+  data_dates: DailyRadarDateMap;
+  aligned_dates: string[];
+  window_start?: string;
+  window_end?: string;
+  replay_key?: string;
+}
+
 export interface DailyRadarMatchedRule {
   rule_id: string;
   label: string;
@@ -38,6 +66,8 @@ export interface DailyRadarCandidate {
   risk_labels: DailyRadarRiskLabel[];
   repeat_status: DailyRadarRepeatStatus;
   explanation: string;
+  scoring_version?: string | null;
+  rule_version?: string | null;
   bucket_scores: DailyRadarBucketScores;
   score_breakdown: DailyRadarTracePayload;
   input_snapshot: DailyRadarTracePayload;
@@ -62,6 +92,8 @@ export interface DailyRadarSymbolHistoryItem {
   observation_score: number;
   risk_labels: DailyRadarRiskLabel[];
   repeat_status: DailyRadarRepeatStatus;
+  scoring_version?: string | null;
+  rule_version?: string | null;
   bucket_scores: DailyRadarBucketScores;
   matched_rules: DailyRadarMatchedRule[];
   score_breakdown: DailyRadarTracePayload;

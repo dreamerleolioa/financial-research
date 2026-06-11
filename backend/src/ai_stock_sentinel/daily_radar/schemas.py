@@ -45,7 +45,11 @@ class DailyRadarCandidateResponse(BaseModel):
                 "risk_labels": [DAILY_RADAR_RISK_LABELS[3]],
                 "repeat_status": DAILY_RADAR_REPEAT_STATUSES[0],
                 "explanation": "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。",
+                "scoring_version": "daily-radar-scoring-v2.1c",
+                "rule_version": "daily-radar-rules-v2.1c",
                 "score_breakdown": {
+                    "scoring_version": "daily-radar-scoring-v2.1c",
+                    "rule_version": "daily-radar-rules-v2.1c",
                     "bucket_scores": {
                         DAILY_RADAR_BUCKETS[1]: 82,
                         DAILY_RADAR_BUCKETS[0]: 68,
@@ -87,6 +91,8 @@ class DailyRadarCandidateResponse(BaseModel):
             "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。"
         ],
     )
+    scoring_version: str | None = Field(default=None, examples=["daily-radar-scoring-v2.1c"])
+    rule_version: str | None = Field(default=None, examples=["daily-radar-rules-v2.1c"])
     bucket_scores: dict[str, Any] = Field(default_factory=dict)
     score_breakdown: dict[str, Any] = Field(default_factory=dict)
     input_snapshot: dict[str, Any] = Field(default_factory=dict)

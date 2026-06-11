@@ -324,13 +324,44 @@ def test_repository_replaces_candidates_for_same_run(db_session: Session) -> Non
             "matched_rules": [{"rule_id": "first"}],
             "explanation": "Rule-based observation summary.",
             "repeat_status": "new",
-            "score_breakdown": {"observation_score": 76},
-            "input_snapshot": {"symbol": "2330.TW"},
-            "data_dates": {"ohlcv": "2026-06-02"},
+            "score_breakdown": {
+                "scoring_version": "daily-radar-scoring-v2.1c",
+                "rule_version": "daily-radar-rules-v2.1c",
+                "relative_strength": {
+                    "benchmark_symbol": "TAIEX",
+                    "lookback_days": 20,
+                    "relative_value": 0.031,
+                    "score": 3,
+                    "freshness": "fresh",
+                },
+                "observation_score": 76,
+            },
+            "input_snapshot": {
+                "symbol": "2330.TW",
+                "evidence": [
+                    {
+                        "evidence_type": "relative_strength",
+                        "source": {
+                            "domain": "daily_trigger_signal",
+                            "provider": "deterministic_relative_strength",
+                        },
+                        "as_of_date": "2026-06-02",
+                        "freshness": "fresh",
+                        "missing_reason": None,
+                        "replay_key": "relative_strength:2330.TW:TAIEX:2026-06-02:L20",
+                        "applicable_consumers": ["daily_radar"],
+                    }
+                ],
+            },
+            "data_dates": {"ohlcv": "2026-06-02", "relative_strength": "2026-06-02"},
         }
     ]
     second_payload = [
-        first_payload[0] | {"observation_score": 88, "score_breakdown": {"observation_score": 88}},
+        first_payload[0]
+        | {
+            "observation_score": 88,
+            "score_breakdown": first_payload[0]["score_breakdown"] | {"observation_score": 88},
+        },
         first_payload[0] | {"symbol": "2454.TW", "name": "MediaTek", "observation_score": 82},
     ]
 
@@ -346,6 +377,11 @@ def test_repository_replaces_candidates_for_same_run(db_session: Session) -> Non
         ("2330.TW", 88),
         ("2454.TW", 82),
     ]
+    assert candidates[0].score_breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert candidates[0].score_breakdown["rule_version"] == "daily-radar-rules-v2.1c"
+    assert candidates[0].score_breakdown["relative_strength"]["benchmark_symbol"] == "TAIEX"
+    assert candidates[0].input_snapshot["evidence"][0]["replay_key"] == "relative_strength:2330.TW:TAIEX:2026-06-02:L20"
+    assert candidates[0].data_dates["relative_strength"] == "2026-06-02"
 
 
 def test_repository_returns_only_final_raw_data_rows_for_requested_date_ordered_by_symbol(db_session: Session) -> None:
@@ -430,3 +466,26 @@ def test_repository_symbol_history_returns_recent_candidates_for_cooldown(db_ses
     assert [item["record_date"] for item in history] == ["2026-05-30", "2026-05-28"]
     assert [item["observation_score"] for item in history] == [83, 71]
     assert all(item["symbol"] == "2330.TW" for item in history)
+
+
+def test_repository_symbol_history_returns_version_trace_from_score_breakdown(db_session: Session) -> None:
+    run = _create_run(db_session, run_date=date(2026, 5, 30), status="completed")
+    candidate = _add_candidate(db_session, run, symbol="2330.TW", score=83)
+    candidate.score_breakdown = {
+        "scoring_version": "daily-radar-scoring-v2.1c",
+        "rule_version": "daily-radar-rules-v2.1c",
+        "relative_strength": {"benchmark_symbol": "TAIEX", "score": 3},
+    }
+    db_session.commit()
+
+    history = get_symbol_candidate_history(
+        db_session,
+        symbols=["2330.TW"],
+        before_date=date(2026, 6, 1),
+        lookback_days=5,
+        market="TW",
+    )
+
+    assert history[0]["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert history[0]["rule_version"] == "daily-radar-rules-v2.1c"
+    assert history[0]["score_breakdown"]["relative_strength"]["benchmark_symbol"] == "TAIEX"

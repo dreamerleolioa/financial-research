@@ -179,6 +179,7 @@ def _build_technical_payload(symbol: str, frame: Any, *, run_date: date) -> dict
 
     return {
         "name": symbol,
+        "price_history": _price_history(frame),
         "ohlcv": {
             "open": open_price,
             "high": high,
@@ -278,6 +279,26 @@ def _last_index_date(frame: Any) -> str | None:
     if hasattr(value, "date"):
         return value.date().isoformat()
     return str(value)[:10] or None
+
+
+def _price_history(frame: Any) -> list[dict[str, Any]]:
+    column_name = _matching_column_name(frame, "Close")
+    index = getattr(frame, "index", None)
+    if column_name is None or index is None:
+        return []
+    series = frame[column_name]
+    if hasattr(series, "items"):
+        items = list(series.items())
+    else:
+        items = list(zip(index, list(series)))
+
+    history: list[dict[str, Any]] = []
+    for index_value, close_value in items[-80:]:
+        close = _to_float(close_value)
+        if close is None:
+            continue
+        history.append({"date": _index_value_date(index_value).isoformat(), "close": close})
+    return history
 
 
 def _index_value_date(value: Any) -> date:
