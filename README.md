@@ -1,6 +1,6 @@
 # financial-research
 
-AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
+AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 Python / FastAPI / LangGraph / SQLAlchemy 建立可回放的資料與分析流程，前端以 React / Vite / Tailwind 呈現新倉分析、持股管理、結案復盤與 Daily Radar 盤後觀察清單。
 
 ## 核心分析維度 (Core Analysis Dimensions)
 
@@ -19,18 +19,24 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 
 ## 需求與架構文件
 
-- 技術架構需求文件：`docs/ai-stock-sentinel-architecture-spec.md`
+目前長期系統事實集中在 `docs/specs/`，短期執行計劃不再作為架構事實來源。
+
+- 技術架構需求文件：`docs/specs/ai-stock-sentinel-architecture-spec.md`
 - 後端 API 技術規格：`docs/specs/backend-api-technical-spec.md`
-- 自動化審核規格：`docs/ai-stock-sentinel-automation-review-spec.md`
-- 持股診斷規格：`docs/ai-stock-sentinel-position-diagnosis-spec.md`
-- 執行計劃目錄：`docs/plans/`
+- Daily Radar 規格：`docs/specs/daily-stock-radar-spec.md`
+- 持股診斷規格：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
+- 自動化審核規格：`docs/specs/ai-stock-sentinel-automation-review-spec.md`
+- 階段性 roadmap：`docs/specs/ai-stock-sentinel-execution-roadmap-spec.md`
+- 規格導覽與維護規則：`docs/specs/README.md`
 - 開發執行手冊：`docs/development-execution-playbook.md`
-- 後續優化路線圖：`docs/research/post-new-position-strategy-optimization-roadmap.md`
 
-## 目前進度摘要
+## 目前架構摘要
 
-- 目前以各需求對應的計劃文件與 spec 為準，不再維護集中式 phase 百分比追蹤。
-- 最新工作請直接查看 `docs/plans/` 下對應日期的 implementation plan。
+- `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
+- `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
+- `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。
+- `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
+- `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
 
 ---
 
@@ -39,9 +45,13 @@ AI Stock Sentinel 的基礎研究專案（Python / LangChain / yfinance）。
 ```text
 backend/
 	Makefile
-	requirements.txt
+	pyproject.toml
+	uv.lock
 	scripts/
 		backtest_win_rate.py    # 勝率回測 CLI 腳本
+		daily_radar_forward_validation.py
+		daily_radar_rule_ablation.py
+		daily_radar_calibration.py
 	src/ai_stock_sentinel/
 		analysis/
 			interface.py
@@ -53,6 +63,8 @@ backend/
 			strategy_generator.py
 			position_scorer.py
 			metrics.py
+			position_lifecycle.py
+			trade_review.py
 		auth/
 			dependencies.py
 			google_verifier.py
@@ -74,6 +86,13 @@ backend/
 				finmind_provider.py
 				tools.py
 		daily_radar/
+			background_context.py
+			default_background_context.py
+			finmind_background_context.py
+			tdcc_background_context.py
+			forward_validation.py
+			rule_governance.py
+			repository.py
 			router.py
 			universe.py
 			institutional_universe_provider.py
@@ -90,6 +109,9 @@ backend/
 			nodes.py
 			state.py
 		portfolio/
+			entry_record_contract.py
+			fees.py
+			risk_summary.py
 			router.py
 			history_router.py
 		services/
@@ -128,46 +150,48 @@ frontend/
 			theme.ts
 .github/
 	workflows/
-		deploy.yml              # CI/CD：測試 → GitHub Pages + Render
-		daily-radar.yml        # Daily Radar 內部排程
+		deploy.yml                         # Backend tests + GitHub Pages frontend deploy
+		daily-radar.yml                    # Daily Radar 內部排程
+		daily-radar-chip-context.yml       # Shared background context 更新
+		daily-radar-rule-review.yml        # Monthly rule governance artifact
+		investment-discipline-release-gate.yml
 docs/
-	ai-stock-sentinel-architecture-spec.md
-	specs/backend-api-technical-spec.md
-	ai-stock-sentinel-automation-review-spec.md
-	ai-stock-sentinel-position-diagnosis-spec.md
+	specs/
+		README.md
+		ai-stock-sentinel-architecture-spec.md
+		backend-api-technical-spec.md
+		daily-stock-radar-spec.md
+		ai-stock-sentinel-automation-review-spec.md
+		ai-stock-sentinel-position-diagnosis-spec.md
+		ai-stock-sentinel-execution-roadmap-spec.md
 	development-execution-playbook.md
-	plans/                      # 各功能 implementation plan（依日期命名）
-	research/                   # 研究文件與優化路線圖
 ```
 
 ---
 
 ## 部署
 
-Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages → 觸發 Render 重新部署。
-
-> Render 免費方案閒置 15 分鐘後會 sleep，第一次呼叫需等約 30 秒喚醒。
+Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages。後端正式執行環境由 Zeabur URL 提供給前端與 internal workflows。
 
 Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。後端會自行選出 multi-track universe（保留法人雙軌，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對缺少資料的 selected symbols 做 yfinance OHLCV batch backfill，執行 Stage 1/2 rule-based scoring，並持久化 Daily Radar candidates。
 
 Daily Radar 的 live 資料載入有 request budget：法人 universe 目前使用 TWSE RWD fund reports `TWT38U` / `TWT44U` 的 report-level 查詢，不做逐檔法人 request；yfinance 只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，既有 `StockRawData` 會重用；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Phase 2A 起，weekly major holders、lending 與 full margin context 的正式更新路徑是獨立 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 寫入 shared background context cache；Daily Radar 主流程只讀 cache，不即時逐檔呼叫這些 provider。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action、verdict、classification 或 lifecycle replay。
 
-CI/CD 設定說明：`docs/plans/2026-03-10-cicd-github-pages-render.md`
+CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-architecture-spec.md` 的 workflow 地圖為準。
 
 ---
 
 ## 環境需求
 
-- Python 3.10+
-- 已建立 `backend/venv`
-- Node.js 20+（前端用 pnpm 10）
+- Python 3.11+
+- 後端依賴使用 `uv` 管理
+- Node.js 22+（CI 使用 Node 22；前端用 pnpm 10）
 
 ## 安裝與啟動
 
 ```bash
 cd backend
-source venv/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
 
 或使用 Makefile：
@@ -183,9 +207,12 @@ make install
 
 ```bash
 ANTHROPIC_API_KEY="your_api_key"
-ANTHROPIC_MODEL="claude-sonnet-4-6"
+ANTHROPIC_MODEL="claude-sonnet-4-5"
+FINMIND_USER_ID="your-id"
+FINMIND_PASSWORD="your-password"
 CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 GOOGLE_CLIENT_ID="your_google_client_id"    # Google OAuth 登入用
+GOOGLE_CLIENT_SECRET="your_google_client_secret"
 JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
@@ -202,26 +229,23 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 
 | 類型     | 名稱                         | 用途                                              |
 | -------- | ---------------------------- | ------------------------------------------------- |
-| Secret   | `RENDER_DEPLOY_HOOK_URL`     | 觸發 Render 重新部署                              |
 | Secret   | `ZEABUR_BACKEND_URL`         | Daily Radar workflow 呼叫的 Zeabur 後端 URL       |
+| Secret   | `DAILY_RADAR_API_BASE_URL`   | Monthly rule review workflow 呼叫的後端 URL       |
 | Secret   | `DAILY_RADAR_INTERNAL_TOKEN` | Daily Radar workflow 呼叫內部 API 的 Bearer token |
 | Variable | `VITE_API_URL`               | 前端 build 時注入後端 URL                         |
+| Variable | `VITE_GOOGLE_CLIENT_ID`      | 前端 Google OAuth client ID                       |
 
-### 生產環境（Render Environment Variables）
+### 生產環境（Zeabur Environment Variables）
 
 | 名稱                | 值                                                   |
 | ------------------- | ---------------------------------------------------- |
 | `ANTHROPIC_API_KEY` | Anthropic API key                                    |
-| `ANTHROPIC_MODEL`   | `claude-sonnet-4-6`                                  |
+| `ANTHROPIC_MODEL`   | `claude-sonnet-4-5`                                  |
 | `CORS_ORIGINS`      | `http://localhost:5173,https://<username>.github.io` |
 | `GOOGLE_CLIENT_ID`  | Google OAuth client ID                               |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth code flow client secret              |
 | `JWT_SECRET`        | JWT 簽名密鑰                                         |
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
-
-### Zeabur 後端環境變數（Daily Radar）
-
-| 名稱                         | 值                                    |
-| ---------------------------- | ------------------------------------- |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
 
 ---
@@ -290,6 +314,9 @@ make run-api
 - `POST /analyze/position` — 持股操作建議
 - `POST /internal/fetch-raw-data` — 觸發原始資料預取（內部用）
 - `POST /internal/daily-radar/run`：執行 Daily Radar 自包含內部流程，包含 multi-track universe selection、selected-symbol OHLCV batch backfill、Stage 1/2 scoring 與 candidates persistence，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `POST /internal/daily-radar/chip-context/update`：更新 shared background context cache，背景資料包含 weekly major holders、lending 與 full margin
+- `POST /internal/daily-radar/forward-validation/run`：執行 Daily Radar 成熟候選 forward validation，寫入可回放 validation result
+- `POST /internal/daily-radar/rule-review/monthly`：以 production validation result 產生月度 rule governance 報告
 - `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單
 - `GET /daily-radar/{run_date}`：讀取指定日期 Daily Radar 候選清單
 - `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史
