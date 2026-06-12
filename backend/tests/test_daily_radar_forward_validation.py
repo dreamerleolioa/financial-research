@@ -331,6 +331,134 @@ def test_forward_validation_due_mode_only_writes_matured_windows(monkeypatch) ->
     assert recent_candidate_id not in [row.candidate_id for row in rows]
 
 
+def test_forward_validation_due_mode_uses_price_rows_not_weekdays(monkeypatch) -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+            StockRawData.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session, run_date=date(2026, 6, 1))
+        _add_candidate(session, run, symbol="2330.TW", close=100)
+        # 2026-06-04 is intentionally absent from both series. Weekday count reaches
+        # five by 2026-06-08, but the market-data trading rows only contain four
+        # forward rows, so a 5-day window is not due yet.
+        for row_date, close in [
+            (date(2026, 6, 1), 100),
+            (date(2026, 6, 2), 102),
+            (date(2026, 6, 3), 104),
+            (date(2026, 6, 5), 108),
+            (date(2026, 6, 8), 110),
+        ]:
+            _add_raw(session, "2330.TW", row_date, close)
+        for row_date, close in [
+            (date(2026, 6, 1), 1000),
+            (date(2026, 6, 2), 1004),
+            (date(2026, 6, 3), 1008),
+            (date(2026, 6, 5), 1016),
+            (date(2026, 6, 8), 1020),
+        ]:
+            _add_raw(session, "TAIEX", row_date, close)
+        session.commit()
+
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    try:
+        resp = TestClient(api.app).post(
+            "/internal/daily-radar/forward-validation/run",
+            json={
+                "mode": "due",
+                "market": "TW",
+                "as_of_date": "2026-06-08",
+                "windows": [5],
+                "benchmark_symbol": "TAIEX",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["candidate_count"] == 1
+    assert data["records_written"] == 0
+    assert data["validated_count"] == 0
+    assert data["skipped_count"] == 0
+    assert data["report"]["skip_reasons"] == {}
+
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 0
+
+
+def test_forward_validation_due_mode_keeps_missing_benchmark_skip_reason(monkeypatch) -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+            StockRawData.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session, run_date=date(2026, 6, 1))
+        _add_candidate(session, run, symbol="2330.TW", close=100)
+        for row_date, close in [
+            (date(2026, 6, 1), 100),
+            (date(2026, 6, 2), 102),
+            (date(2026, 6, 3), 104),
+            (date(2026, 6, 4), 106),
+            (date(2026, 6, 5), 108),
+            (date(2026, 6, 8), 110),
+        ]:
+            _add_raw(session, "2330.TW", row_date, close)
+        for row_date, close in [
+            (date(2026, 6, 1), 1000),
+            (date(2026, 6, 2), 1004),
+            (date(2026, 6, 3), 1008),
+            (date(2026, 6, 5), 1016),
+            (date(2026, 6, 8), 1020),
+        ]:
+            _add_raw(session, "TAIEX", row_date, close)
+        session.commit()
+
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    try:
+        resp = TestClient(api.app).post(
+            "/internal/daily-radar/forward-validation/run",
+            json={
+                "mode": "due",
+                "market": "TW",
+                "as_of_date": "2026-06-08",
+                "windows": [5],
+                "benchmark_symbol": "TAIEX",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["records_written"] == 1
+    assert data["validated_count"] == 0
+    assert data["skipped_count"] == 1
+    assert data["report"]["skip_reasons"] == {"missing_benchmark": 1}
+
+    with Session(engine) as session:
+        row = session.execute(select(DailyRadarForwardValidationResult)).scalar_one()
+
+    assert row.status == "skipped"
+    assert row.skip_reason == "missing_benchmark"
+
+
 def test_forward_validation_migration_creates_idempotency_key_and_indexes() -> None:
     upgrade_sql = _render_forward_validation_migration_sql("upgrade")
     downgrade_sql = _render_forward_validation_migration_sql("downgrade")
@@ -375,6 +503,20 @@ def _render_forward_validation_migration_sql(direction: str) -> str:
     finally:
         migration.op = original_op
     return buffer.getvalue()
+
+
+def _forward_validation_sqlite_engine():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    return engine
 
 
 def _candidate_snapshot(*, data_dates: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -337,16 +337,29 @@ def due_windows_by_candidate(
     *,
     as_of_date: date,
     windows: Sequence[int],
+    price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, list[int]]:
     active_windows = _ordered_positive_values(windows)
+    price_series = price_series_by_symbol or {}
+    benchmark_by_date = _price_by_date(benchmark_prices or [])
     due_by_candidate: dict[str, list[int]] = {}
     for candidate in candidates:
         signal_date = _parse_date(candidate.get("record_date"))
         key = _candidate_key(candidate)
-        if signal_date is None or signal_date > as_of_date:
+        if signal_date is None or signal_date > as_of_date or _data_freshness_status(candidate) == "stale":
             due_by_candidate[key] = active_windows
             continue
-        due_windows = [window for window in active_windows if _business_days_after(signal_date, as_of_date) >= window]
+        symbol = str(candidate.get("symbol") or "")
+        candidate_by_date = _price_by_date(price_series.get(symbol, []))
+        available_trading_rows = max(
+            len(_future_rows(candidate_by_date, signal_date, as_of_date)),
+            len(_future_rows(benchmark_by_date, signal_date, as_of_date)),
+        )
+        if available_trading_rows == 0 and (not candidate_by_date or not benchmark_by_date):
+            due_by_candidate[key] = active_windows
+            continue
+        due_windows = [window for window in active_windows if available_trading_rows >= window]
         if due_windows:
             due_by_candidate[key] = due_windows
     return due_by_candidate
@@ -361,18 +374,6 @@ def _candidate_key(candidate: Mapping[str, Any]) -> str:
     if candidate_id is not None:
         return f"id:{candidate_id}"
     return f"{candidate.get('symbol') or ''}:{candidate.get('record_date') or ''}"
-
-
-def _business_days_after(start_date: date, end_date: date) -> int:
-    if end_date <= start_date:
-        return 0
-    count = 0
-    current = start_date + timedelta(days=1)
-    while current <= end_date:
-        if current.weekday() < 5:
-            count += 1
-        current += timedelta(days=1)
-    return count
 
 
 def _sample_summary(

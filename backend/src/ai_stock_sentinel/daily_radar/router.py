@@ -311,6 +311,8 @@ def run_daily_radar_forward_validation_endpoint(
             candidates,
             as_of_date=as_of_date,
             windows=request.windows,
+            price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+            benchmark_prices=price_series.get(request.benchmark_symbol, []),
         )
     evaluation = build_forward_validation_report(
         candidates,
