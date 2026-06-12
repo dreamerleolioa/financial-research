@@ -29,6 +29,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - 階段性 roadmap：`docs/specs/ai-stock-sentinel-execution-roadmap-spec.md`
 - 規格導覽與維護規則：`docs/specs/README.md`
 - 開發執行手冊：`docs/development-execution-playbook.md`
+- 後端自學導覽：`docs/backend-self-study-guide.md`
 
 ## 目前架構摘要
 
@@ -156,6 +157,7 @@ frontend/
 		daily-radar-rule-review.yml        # Monthly rule governance artifact
 		investment-discipline-release-gate.yml
 docs/
+	backend-self-study-guide.md
 	specs/
 		README.md
 		ai-stock-sentinel-architecture-spec.md
