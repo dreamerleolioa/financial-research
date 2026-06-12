@@ -1,9 +1,78 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-05-18
-> 狀態：Draft v2.9
-> 目的：將產品需求大綱轉為可落地的工程實作藍圖
-> 更新摘要：修補邏輯衝突與規格缺口——統一籌碼分數定義（移除舊表分數欄）、修正「利空不跌」調整量為 0、補 derive_technical_score 邊界說明、消除 technical_signal/institutional_flow unknown 定義歧義、修正 Prompt 步驟一角色描述、補 action_plan/holding_period/news_display_items Schema、統一消息面職責說明引用、移除 twstock 遺留項、修正 4.1 節編號錯誤；補 \_price_level_narrative 邊界規範（>= / <= + 2% 緩衝）；新增 DATE_UNKNOWN rule-based -3 懲罰規則；新增 Session 8 分維度拆解分析——`AnalysisDetail` 三維獨立欄位、LLM 分段 Prompt、前端分欄卡片 UI；v2.6 新增第四維度「基本面估值」——維度表補 Fundamental 行、FinMindFundamentalProvider 規格（PE Band / 殖利率 / TTM EPS）、`fetch_fundamental_data` 工具規格、Crawler 輸出 Schema 補 fundamentals 欄位、`estimate_pe_percentile` 改為正式 `fetch_fundamental_data` 工具規格；v2.7 更新前端元件規格——移除分析路徑圖元件、信心指數與快照資訊合併為單一卡片（圓圈左側 + 資訊列表右側）、四維小卡 badge 顏色規格補齊（含基本面 pe_band 色彩對應）、籌碼面 badge 資料來源修正為頂層 `institutional_flow_label`；v2.8 補入技術面分析擴充——技術維度正式納入布林通道與 MACD，`derive_technical_score()` 升級為五因子加權，Prompt / history context / strategy / API 顯性輸出同步更新；v2.9 新增 KD / ADX / OBV 技術指標、消息面多篇聚合與 `sentiment_strength`、籌碼買賣超相對均量敘事。
+> 日期：2026-06-12
+> 狀態：Current v3.0
+> 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
+> 更新摘要：重新閱讀目前 repo 後同步現況。新增 FastAPI / LangGraph / SQLAlchemy / React Vite 架構快照、主要模組邊界、資料表與 workflow 地圖；補入 Daily Radar multi-track universe、shared background context cache、forward validation、monthly rule governance、portfolio entry/lifecycle/review flow；明確 shared context 只作 evidence/caveat/data quality trace，不覆寫 ranking、action、verdict 或 classification；將原本「建議」語氣更新為目前實作事實。
+
+## 0. 目前實作快照（2026-06-12）
+
+本專案目前不是單一股票分析 demo，而是由四個產品表面共用資料層與研究紀律的系統：
+
+| 表面 | 主要入口 | 核心責任 | 長期邊界 |
+| ---- | -------- | -------- | -------- |
+| 新倉分析 | `POST /analyze`, frontend `/analyze` | 對單一股票做四維研究、risk-language setup、資料品質與 action trace | 用於「是否值得觀察與建立新倉研究」，不是持股續抱/出場端點 |
+| 持股診斷 | `POST /analyze/position`, frontend `/portfolio` | 以既有成本、持有天數、技術防守線與風險語言檢查續抱/減碼/出場 | rule-based 欄位由 Python 產生，LLM 不覆寫 exit/action 判定 |
+| 持股紀律與復盤 | `/portfolio/*` | 持股 CRUD、加碼事件、結案、entry record、lifecycle plan、trade review、group lifecycle review | 以 `position_group_id` 串起同一交易生命週期；可回放事件與決策脈絡 |
+| Daily Radar | `/internal/daily-radar/*`, `GET /daily-radar/*`, frontend `/daily-radar` | 收盤後產生隔日觀察清單、保存 deterministic scoring trace、forward validation 與 rule governance | 不是 LLM 選股；`observation_score` 供排序/校準/trace，不是勝率或交易建議 |
+
+### 0.1 Runtime 與框架
+
+| 層級 | 現況 |
+| ---- | ---- |
+| Backend | Python 3.11、FastAPI、LangGraph、LangChain、SQLAlchemy 2、Alembic、uv |
+| Frontend | React 19、React Router 7、Vite 8、TypeScript 5.9、Tailwind CSS 4、pnpm 10 |
+| Data / DB | PostgreSQL production path；tests 可用 SQLite；JSONB 保存可回放 evidence 與 full result |
+| LLM | Anthropic 優先，OpenAI fallback；缺 key 時保持降級輸出，不中斷 deterministic pipeline |
+| CI/CD | GitHub Actions 跑 backend tests、frontend build、GitHub Pages deploy；Daily Radar 與 rule/report workflows 呼叫 Zeabur internal APIs |
+
+### 0.2 後端模組邊界
+
+| 模組 | 責任 |
+| ---- | ---- |
+| `api.py` | FastAPI app、`/analyze`、`/analyze/position`、`/internal/fetch-raw-data`、cache assembly、shared context read attachment |
+| `graph/` | LangGraph state、nodes、builder；負責 crawl、external data fetch、judge、clean、analyze flow |
+| `analysis/` | LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
+| `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental provider |
+| `daily_radar/` | universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、router |
+| `portfolio/` | portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
+| `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
+| `db/models.py` | SQLAlchemy models，包含 portfolio、events、reviews、analysis cache、raw data、Daily Radar、forward validation、shared background context |
+
+### 0.3 主要資料表
+
+| 資料表 | 用途 |
+| ------ | ---- |
+| `user_portfolio` | 目前/已結案持股、成本、數量、出場、已實現損益與 `position_group_id` |
+| `position_event` | 初始進場、加碼、部分出場、全部出場、手動修正等事件 ledger |
+| `position_lifecycle_plan` | 原始 thesis、setup、預期持有期、防守規則、加碼條件與風險計畫 |
+| `trade_review` | 單筆已結案交易 review result、evidence payload 與 LLM summary |
+| `position_lifecycle_review` | group-level lifecycle review，按 `position_group_id` 聚合整個交易生命週期 |
+| `stock_raw_data` | 以日期保存技術、籌碼、基本面 raw payload；Daily Radar 與 analysis 共用 |
+| `stock_analysis_cache` | `/analyze` 與 `/analyze/position` 的 full result cache，透過 `analysis_type` 隔離情境 |
+| `daily_analysis_log` | 每日分析歷史紀錄與 strategy trace |
+| `daily_radar_runs` / `daily_radar_candidates` | Daily Radar run log、候選清單、score breakdown、input snapshot、matched rules |
+| `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
+| `shared_background_contexts` | weekly major holders、lending、full margin 等背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
+
+### 0.4 Workflow 與排程
+
+| Workflow | 責任 |
+| -------- | ---- |
+| `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
+| `daily-radar.yml` | 收盤後呼叫 `/internal/daily-radar/run`，由後端自行完成 universe、selected-symbol OHLCV backfill、Stage 1/2 scoring 與 persistence |
+| `daily-radar-chip-context.yml` | 週二至週六更新 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
+| `daily-radar-rule-review.yml` | 觸發 monthly rule governance report |
+| `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
+
+### 0.5 Shared Context 使用邊界
+
+`shared_background_contexts` 是跨功能背景 evidence cache，不是交易決策覆寫層：
+
+- Daily Radar 主流程只批次讀 cache，背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
+- `/analyze` 與 `/analyze/position` 只把 shared context 附加到 response 作為 evidence/caveat/data quality trace，不放入 LangGraph initial state，也不觸發 weekly major holders、lending、full margin 的即時逐檔查詢。
+- Portfolio diagnosis 與 lifecycle review 以 read/reference 方式使用；lifecycle review 需用事件日期做 point-in-time filter，不能用未來資料改寫過去判斷。
+- missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。
 
 ## 1. 目標與方向
 
@@ -23,20 +92,20 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 | **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、連續買賣超、主導買賣方、融資融券、借券、外資持股、大戶/散戶持股結構，並以買賣超占近期均量比例判斷相對規模                                                  | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback）              |
 | **基本面 (Fundamental)**   | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS）                                                                                                                                     | FinMind `TaiwanStockFinancialStatements` + `TaiwanStockDividend` |
 
-建議以 **LangGraph（LangChain 延伸）** 作為 Agent 協作框架，以支援非線性流程與反饋迴圈。
+目前以 **LangGraph（LangChain 延伸）** 作為 Agent 協作框架，以支援非線性流程、條件分支與補資料回圈。
 
 ---
 
-## 2. 系統架構（建議）
+## 2. 系統架構（目前實作）
 
 ### 2.1 後端分層
 
 - **Orchestration Layer**
   - 技術：LangGraph
-  - 責任：控制 Agent 之間的流程、條件分支、重試與補抓
+  - 責任：控制 Agent 之間的流程、條件分支、重試、補抓與降級輸出
 
 - **Data Acquisition Layer**
-  - 責任：抓取股票基本面、新聞、法人/行情補充資料
+  - 責任：抓取股票基本面、新聞、法人/行情補充資料，並讀取 shared background context cache
   - 產出：標準化原始資料（Raw + Metadata）
 
 - **Data Cleaning & Structuring Layer**
@@ -48,7 +117,11 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
   - 產出：可解釋分析結果（含信心分數與依據）
 
 - **API Layer（Python FastAPI / Node BFF）**
-  - 責任：提供前端查詢、回傳分析過程事件流
+  - 責任：提供前端查詢、內部 workflow 觸發、cache 組裝、portfolio lifecycle 與 Daily Radar 讀寫 API
+
+- **Persistence / Replay Layer**
+  - 技術：SQLAlchemy + Alembic + PostgreSQL JSONB
+  - 責任：保存 raw data、analysis cache、portfolio event ledger、Daily Radar run/candidate、forward validation result 與 shared background context trace
 
 ### 2.2 反饋迴圈（LangGraph）
 
@@ -56,7 +129,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 
 1. 先抓資料 → 2) 分析完整性 → 3) 缺資料則回到爬蟲補抓 → 4) 再分析 → 5) 輸出
 
-建議在 Graph 中加入條件節點：
+Graph 目前以條件狀態控制資料補齊與降級路徑，核心狀態包含：
 
 - `is_data_sufficient`
 - `requires_news_refresh`
@@ -910,18 +983,18 @@ def calculate_action_plan_tag(
 
 ---
 
-## 5. 建議技術棧
+## 5. 主要技術棧
 
-- **Backend**：Python 3.10+, FastAPI, LangChain, LangGraph
+- **Backend**：Python 3.11+, FastAPI, LangChain, LangGraph, SQLAlchemy 2, Alembic, uv
 - **數據處理**：
   - `yfinance`：拉取 OHLCV 歷史行情、即時報價
   - `pandas`：計算技術指標（rolling mean、pct_change、自定義 RSI）
   - `ta` / `pandas-ta`（可選）：封裝常用技術分析計算，避免重複造輪
   - `twstock`（已評估，功能已由 FinMind + TWSE OpenAPI 三軌策略取代，不採用）
-- **Crawler**：Firecrawl / Browserbase（擇一先導入）
-- **Frontend**：React, Tailwind CSS, TypeScript
-- **Storage（可選）**：PostgreSQL / SQLite（MVP 可先檔案化）
-- **Queue（可選）**：Celery / RQ（若後續要批次分析）
+- **外部資料**：RSS、yfinance、FinMind、TWSE RWD / OpenAPI、TPEX、TDCC（週頻背景 context）
+- **Frontend**：React 19, React Router 7, Vite 8, Tailwind CSS 4, TypeScript 5.9
+- **Storage**：PostgreSQL production path；SQLite 用於測試與本機輕量驗證
+- **Automation**：GitHub Actions 觸發 GitHub Pages build、Daily Radar、chip context update、monthly rule review 與 release gate
 
 ### 5.1 Pandas 進階應用規範
 

@@ -1,223 +1,271 @@
 # AI Stock Sentinel 開發執行手冊（Execution Playbook）
 
-> 版本：v2.1
-> 更新日期：2026-05-18（補入技術面分析擴充完成紀錄）
-
-> 註：本文件保留作為開發節奏與 Gate 設計的操作手冊；實際功能進度不再集中維護於單一 tracker，請以 `docs/plans/` 下的 implementation plans 與對應 spec 為準。
-
-## 1) 現況基線
-
-| Phase                     | 完成度         | 說明                                                                   |
-| ------------------------- | -------------- | ---------------------------------------------------------------------- |
-| Phase 1（MVP Backend）    | **100%**       | 技術債清理完成                                                         |
-| Phase 2（LangGraph 回圈） | **100%**       | 骨架 + judge + RSS 抓取 + Graph 接進 API                               |
-| Phase 3（分析能力強化）   | **100%**       | Provider 抽象 + 信心分數 + Skeptic Mode + LLM 串接 + 策略模板          |
-| Phase 4（前端儀表板）     | **100%**       | 分維度小卡 + 基本面估值卡 + 信心指數合併卡                             |
-| Phase 5（基本面估值）     | **100%**       | FinMindFundamentalProvider + PE Band + 殖利率 + fetch_fundamental_node |
-| Phase 6（持股診斷）       | **歷史里程碑** | 本文件狀態已過期，請改看對應 plan / spec                               |
-
-實際進度請直接查看 `docs/plans/` 下對應主題的 implementation plan；Phase 6 規格：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
-
-最近完成里程碑：`docs/plans/2026-05-18-技術面分析優化.md` 已完成，技術面分析正式納入布林通道與 MACD，並同步更新 technical_signal、confidence_score、strategy、API 顯性輸出與前端技術指標卡片。
+> 版本：v3.0
+> 更新日期：2026-06-12
+> 定位：本文件是開發節奏、驗證 Gate、文件同步與 release 檢查的操作手冊。功能與 API 的正式事實不放在本文件，請回寫到 `docs/specs/` 對應規格。
 
 ---
 
-## 2) 開發原則與週節奏
+## 1) Canonical Sources
 
-### 開發原則
+目前長期架構與功能事實集中在 `docs/specs/`。短期討論、agent 對話或臨時計劃不得取代下列文件。
 
-- 每週只追一個主目標，避免同時多線半成品。
-- 每項任務需定義 DoD（可驗收條件）與測試證據。
-- 每項功能完成後，當日補上對應測試（單元或整合）再視為 Done。
-- 每週五必須可 Demo（至少一條可操作流程）。
-- 文件與程式同步更新，不可脫節。
+| 類型 | Canonical 文件 | 更新時機 |
+| ---- | -------------- | -------- |
+| 架構與模組邊界 | `docs/specs/ai-stock-sentinel-architecture-spec.md` | 後端模組、資料流、DB 表、workflow、shared context 邊界改變時 |
+| API contract | `docs/specs/backend-api-technical-spec.md` | request/response schema、endpoint、錯誤碼或 internal API contract 改變時 |
+| Daily Radar | `docs/specs/daily-stock-radar-spec.md` | universe、scoring、request budget、shared context、forward validation、rule governance 改變時 |
+| 持股診斷與 lifecycle | `docs/specs/ai-stock-sentinel-position-diagnosis-spec.md` | `/analyze/position`、portfolio review、lifecycle review 行為改變時 |
+| 自動化 review 與歷史資料 | `docs/specs/ai-stock-sentinel-automation-review-spec.md` | 每日紀錄、cache、history loader、analysis log 行為改變時 |
+| Roadmap / release 決策 | `docs/specs/ai-stock-sentinel-execution-roadmap-spec.md` | 階段性需求、release gate、否決決策改變時 |
+| 專案入口 | `README.md` | 啟動方式、部署、環境變數、主要功能入口改變時 |
+| 後端自學導覽 | `docs/backend-self-study-guide.md` | 後端技術棧、模組讀法、需求實作對照或學習路線改變時 |
 
-### 週節奏（固定）
+維護原則：
 
-- 週一：規劃（目標、風險、依賴、決策）
-- 週二～週四：開發與整合
-- 週五：Checkpoint（Demo + Gate 判定 + 文件更新）
-
----
-
-## 3) Roadmap
-
-### Week 1~6：Phase 1~5（已完成）✅
-
-| Week   | 主目標             | 交付摘要                                                          |
-| ------ | ------------------ | ----------------------------------------------------------------- |
-| Week 1 | API 契約鎖定       | AnalyzeResponse v1、`/health`、`/analyze`、合約測試               |
-| Week 2 | LangGraph 最小回圈 | GraphState、judge 節點、max_retries、loop guard                   |
-| Week 3 | RSS 新聞自動化     | RssNewsClient、metadata 標準化、`clean_node` 整合                 |
-| Week 4 | 分析深化           | Provider 抽象、Skeptic Mode、信心分數、ContextGenerator、策略模板 |
-| Week 5 | 前端真資料串接     | 分維度小卡、Action Plan 燈號、基本面估值卡                        |
-| Week 6 | 穩定化             | 規格缺口補齊（NQ/ND/CS/NM 系列）、302 tests passed                |
-
-### Week 7：Strategy Action Plan 深化（進行中）
-
-- **目標**：深化 `action_plan` 輸出，加入保本點位、分批操作量化文字、If-Then 情境觸發
-- **交付**：
-  - `action` 改為帶部位比例描述（首筆 30% / 首筆 50% / 觀望）
-  - 新增 `breakeven_note` 欄位（mid_term 時輸出保本提醒）
-  - `momentum_expectation` 附帶「若突破/跌破 XXX 則…」條件觸發
-- **Checkpoint**：`generate_action_plan()` 全部新測試通過；`strategy_node` 補傳 `resistance_20d` / `support_20d`；無回歸
-- **計劃文件**：`docs/plans/2026-03-10-strategy-action-plan-deepening.md`
-
-### Week 8：Phase 6 持股診斷
-
-- **目標**：建立 `POST /analyze/position` 獨立流程，提供倉位風險評估與出場建議
-- **交付**：
-  - `PositionScorer`（損益位階 + 移動停利 + `recommended_action`）
-  - 持股診斷版 System Prompt（出場/保本推理強化，禁止加碼建議）
-  - 前端「我的持股」分頁（損益對照卡 + 持股版戰術卡 + 出場警示框）
-- **Checkpoint**：輸入 `symbol` + `entry_price` 可取得 `position_analysis`（含 `recommended_action` / `trailing_stop` / `exit_reason`）；`flow_label = distribution` 且獲利中時 `exit_reason` 非 null
-- **規格文件**：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
+- 不再把 `docs/plans/` 視為長期架構事實來源。
+- API 欄位的唯一正式 contract 是 `backend-api-technical-spec.md`；其他文件描述語意與邊界，避免複製完整 schema 後漂移。
+- Daily Radar 是 deterministic backend workflow，不得在文件中描述成 LLM 選股。
+- `shared_background_contexts` 是 evidence/cache，不是 action、ranking、verdict 或 classification 的覆寫來源。
 
 ---
 
-## 4) Gate 機制（未過不進下一階段）
+## 2) 目前系統基線
 
-| Gate                | 條件                                                                               | 狀態 |
-| ------------------- | ---------------------------------------------------------------------------------- | ---- |
-| G1（契約 Gate）     | API 契約、錯誤碼、schema 定稿                                                      | ✅   |
-| G2（回圈 Gate）     | LangGraph 補抓回圈與重試上限可運行                                                 | ✅   |
-| G3（分析 Gate）     | 事實/情緒分離 + 指標工具 + confidence 可用                                         | ✅   |
-| G4（整合 Gate）     | 前端完成真資料串接且狀態完整                                                       | ✅   |
-| G5（驗收 Gate）     | 測試、文件、風險方案齊備                                                           | ✅   |
-| G6（持股診斷 Gate） | `/analyze/position` 通過 DoD；`PositionScorer` 覆蓋率達標；前端「我的持股」可 Demo | ⏳   |
-
----
-
-## 5) 每週 Checkpoint 模板（可複製）
-
-- 週次 / 日期：
-- 本週目標（1 句）：
-- 已完成（可驗收項）：
-- 未完成與原因：
-- Gate 狀態（G1~G6）：
-- 風險與阻塞（含 owner + ETA）：
-- 測試結果（單元/整合/手測）：
-- 指標快照（成功率/錯誤率/平均耗時）：
-- 下週承諾（Top 3）：
-- 文件同步確認（README / progress / breakdown）：
-- 計劃文件同步確認（本週完成項目是否已回寫 plans；若原無計劃文件，是否已補產）：
+| 表面 | 入口 | 開發時必守邊界 |
+| ---- | ---- | -------------- |
+| 新倉分析 | `/analyze`, frontend `/analyze` | 用於研究 setup 與觀察條件；Python rule-based code 產生技術指標、風險語言與 trace；LLM 不估算數值、不覆寫 deterministic 欄位 |
+| 持股診斷 | `/analyze/position`, frontend `/portfolio` | 用於既有部位風險、續抱、減碼、出場檢查；不得回流成新倉建議 |
+| 持股紀律與復盤 | `/portfolio/*` | 以 `position_group_id` 串起持股、加碼、結案、事件 ledger、entry context、lifecycle plan、review |
+| Daily Radar | `/internal/daily-radar/*`, `GET /daily-radar/*`, frontend `/daily-radar` | 收盤後產生隔日觀察清單；`observation_score` 用於排序、校準與 trace，不是勝率或交易建議 |
+| Shared Context | `shared_background_contexts`, `shared_context.py` | 只作 evidence、caveat、data quality trace；missing/stale/not-applicable 不阻斷主要 workflow |
 
 ---
 
-## 6) 信心分數調權流程
+## 3) 開發原則
 
-當需要校準 `confidence_scorer.py` 的權重時，遵循以下半自動流程：
+- 先確認現有 backend/frontend seam，再補功能；不要重做已存在的 entry context、lifecycle review 或 shared context flow。
+- 每個變更都要定義 DoD、驗證方式與文件落點。
+- 程式、測試、文件同一輪完成；不能只改行為不改 contract。
+- 使用 production-like cloud path 設計正式 Daily Radar validation/report flow；本機 fixture 只作單元測試與快速驗證。
+- 使用中文使用者文案時，不直接暴露 backend English enum；在 frontend display mapping 或 API readable label 層處理。
+- 交通與資料來源安全是 hard boundary；不可用不可驗證 TLS 的資料流通過正式 pipeline。
 
-### 流程步驟
+---
 
-1. **執行回測，取得分桶勝率基線**
+## 4) 任務執行流程
 
+### 4.1 開始前
+
+1. 檢查工作樹狀態，保留使用者既有變更。
    ```bash
-   python scripts/backtest_win_rate.py \
-     --mode new-position \
-     --days 90 \
-     --output-json docs/research/backtest-results/new-position-baseline-$(date +%Y%m%d).json
+   git status --short
    ```
-
-2. **判斷是否需要調權**（根據 `docs/specs/ai-stock-sentinel-execution-roadmap-spec.md` §3.7 診斷矩陣）
-   - 若 signal_confidence 分桶勝率呈單調遞增，且各分桶差距 > 10%：**無需調整**
-   - 若高分桶勝率低於低分桶，或各分桶勝率無差異（< 5%）：**需進行維度分析**
-
-3. **執行維度貢獻分析腳本**（若步驟 2 發現問題）
-
+2. 找 canonical 文件與實作 seam。
    ```bash
-   python scripts/analyze_confidence_breakdown.py \
-     --days 90 \
-     --output-json docs/research/backtest-results/confidence-breakdown-$(date +%Y%m%d).json
+   rg -n "keyword|endpoint|model|context_type" backend frontend docs/specs
    ```
+3. 判斷是否需要同步 API spec、Daily Radar spec、position spec 或 README。
 
-4. **產出調權提案文件**（若維度分析發現問題）
-   - 格式參見 `docs/plans/2026-03-18-p0-confidence-calibration.md` §Task 3
-   - 存入 `docs/research/confidence-calibration-proposals/YYYY-MM-DD.md`
-   - 提案需包含：問題描述、診斷依據（附數據）、具體建議變更（含前後值）、預期效果、風險說明
+### 4.2 實作中
 
-5. **人工審核提案**
-   - 確認診斷邏輯合理
-   - 確認調整不影響持股診斷端的語意（`/analyze/position` 同樣使用 `confidence_scorer.py`）
-   - 審核通過後在提案文件中標注「已審核」
+- 後端優先沿用既有 service/repository/provider/router pattern。
+- 前端優先沿用既有 page、lib、type、formatter 與中文 label mapping。
+- DB schema 變更需同時更新 SQLAlchemy model、Alembic migration、API contract 與測試。
+- Shared context 變更需同時檢查 `applicable_consumers`、freshness、replay key、point-in-time 行為與 caveat。
 
-6. **修改 `confidence_scorer.py` 常數**（審核通過後）
-   - 只修改提案中明確列出的常數
-   - 遵守 NF2：不改變函式簽名或輸出 key 結構
+### 4.3 完成前
 
-7. **更新 `STRATEGY_VERSION`（minor bump）**
-   - 如 `1.0.x` → `1.1.0`
-   - 修改 `config.py` 中的 `STRATEGY_VERSION`
-
-8. **重新執行回測，確認改善**
-
-   ```bash
-   python scripts/backtest_win_rate.py \
-     --mode new-position \
-     --days 90 \
-     --output-json docs/research/backtest-results/new-position-post-calibration-$(date +%Y%m%d).json
-   ```
-
-   - 對比 baseline 與 post-calibration 的分桶勝率
-   - 若高分桶勝率 >= baseline 同分桶勝率：調整成功
-   - 若無改善：回滾並重新分析（`git revert` 對應 commit）
-
-### 重要限制
-
-- **未經人工審核前不得修改 `confidence_scorer.py`**
-- **每次調整需間隔至少一個月的新樣本**，避免 overfitting
-- 各分桶樣本數 < 5 時結論不可靠，< 10 時初步參考，>= 30 時可較有信心
-- 調整幅度應保守，避免單次調整過大
-
-### 相關文件
-
-- 需求規格：`docs/specs/ai-stock-sentinel-execution-roadmap-spec.md` §3.6-3.7
-- 實作計劃：`docs/plans/2026-03-18-p0-confidence-calibration.md`
-- 維度分析腳本：`backend/scripts/analyze_confidence_breakdown.py`
-- 調權提案目錄：`docs/research/confidence-calibration-proposals/`
+1. 跑與變更範圍相符的測試。
+2. 跑文件與格式基本檢查。
+3. 更新 canonical docs。
+4. 在交付摘要列出：改了什麼、驗證了什麼、哪些測試未跑。
 
 ---
 
-## 7) 策略版本遞增 SOP
+## 5) 驗證矩陣
 
-### 觸發條件判斷
+### 5.1 後端
 
-| 變更類型                                                               | 版次  | 範例            |
-| ---------------------------------------------------------------------- | ----- | --------------- |
-| docstring / log / 非邏輯性重構                                         | PATCH | `1.0.0 → 1.0.1` |
-| confidence_scorer.py 常數值、action_plan 文字模板、conviction 降級閾值 | MINOR | `1.0.0 → 1.1.0` |
-| generate_strategy() evidence scoring 核心邏輯、strategy_type 分類規則  | MAJOR | `1.0.0 → 2.0.0` |
+一般後端變更：
 
-LLM prompt 修改不屬於策略版本，以 `PROMPT_HASH` 追蹤。
+```bash
+cd backend
+uv run pytest -q
+```
 
-### 操作步驟
+聚焦測試範例：
 
-1. 確認變更屬於哪個版次（對照上表）
-2. 修改 `backend/src/ai_stock_sentinel/config.py` 的 `STRATEGY_VERSION`
-3. 執行所有後端測試確認通過
-4. 部署後，現有 `StockAnalysisCache` 中的舊版快取自動失效（下次查詢時觸發重分析）
-5. 重新執行回測腳本：
-   ```bash
-   python scripts/backtest_win_rate.py --mode new-position --days 90
-   ```
-6. 比較新舊版本勝率差異（使用 `--strategy-version` 過濾）
+```bash
+cd backend
+uv run pytest -q tests/test_daily_radar_service.py tests/test_daily_radar_api.py
+uv run pytest -q tests/test_portfolio_router.py tests/test_portfolio_history.py
+uv run pytest -q tests/test_position_lifecycle_analysis.py tests/test_trade_review.py
+```
 
-### 注意事項
+### 5.2 前端
 
-- 版本遞增後不需要手動清空快取，失效機制自動處理
-- 若新版本回測結果不如舊版，可回滾 `STRATEGY_VERSION` 並調查原因
-- 每次調整需間隔至少一個月的新樣本，避免 overfitting（信心校準規範）
+```bash
+cd frontend
+pnpm build
+pnpm lint
+```
+
+涉及 UI 行為或 responsive layout 時，還需啟動本機 dev server 並用瀏覽器檢查主要頁面。
+
+```bash
+cd frontend
+pnpm dev
+```
+
+### 5.3 Release Gate
+
+投資紀律、Daily Radar、portfolio lifecycle 或風險語言相關變更，至少跑 release gate 覆蓋面：
+
+```bash
+cd backend
+uv run pytest -q \
+  tests/test_daily_radar_rule_governance.py \
+  tests/test_daily_radar_forward_validation.py \
+  tests/test_risk_language_copy_guard.py \
+  tests/test_portfolio_risk_summary.py \
+  tests/test_portfolio_router.py \
+  tests/test_portfolio_history.py \
+  tests/test_investment_discipline_release_gate.py \
+  tests/test_compatibility_deprecation_audit.py
+```
+
+並跑前端 build：
+
+```bash
+cd frontend
+pnpm build
+```
+
+### 5.4 文件檢查
+
+```bash
+git diff --check -- README.md docs/specs docs/development-execution-playbook.md
+rg -n 'requirements[.]txt|Rende[r]|Python 3[.]10|Node[.]js 20|docs/plans/202[6]|monthly-rule[-]review' README.md docs/specs
+```
+
+`docs/plans/` 字串本身可在 specs 維護規則中出現，但不得再指向已刪除的舊日期 plan 作為正式依據。
 
 ---
 
-## 8) 文件維護規範
+## 6) Gate 機制
 
-- 進行中需求的真相來源：對應的 `docs/plans/*.md`
-- 任務唯一真相來源：`docs/implementation-task-breakdown.md`
-- API 技術契約唯一真相來源：`docs/specs/backend-api-technical-spec.md`（個股分析 + 持股診斷）
-- 持股診斷功能規格唯一真相來源：`docs/specs/ai-stock-sentinel-position-diagnosis-spec.md`
-- 入口與操作唯一真相來源：`README.md`
-- 每週五 Checkpoint 後 24 小時內同步更新對應 plan、README 與必要 spec。
-- Gate 結果變更必須當日更新文件並註明原因。
-- **每次完成「計劃文件中的任務」時，必須於當日更新對應計劃文件（`docs/plans/*.md`）的完成狀態與交付結果。**
-- **若完成的需求原先沒有計劃文件，必須先補產一份計劃文件（至少含目標、範圍、DoD、完成紀錄）再標記任務完成。**
+| Gate | 條件 | 必要證據 |
+| ---- | ---- | -------- |
+| Contract Gate | API 欄位、錯誤碼、DB schema、frontend type 已同步 | backend API tests、frontend type/build、`backend-api-technical-spec.md` |
+| Determinism Gate | Daily Radar ranking、score、bucket、risk label 不由 LLM 覆寫 | scoring/service tests、fixture/replay tests |
+| Shared Context Gate | shared context 只作 evidence/caveat/data quality，不改 action/ranking/verdict/classification | shared context tests、consumer tests、spec 更新 |
+| Portfolio Discipline Gate | entry record、event ledger、lifecycle plan/review 能 point-in-time 回放 | portfolio/lifecycle tests、position spec 更新 |
+| Copy Guard Gate | 使用者文案採研究/風險語言，不用命令式買賣語言 | risk language copy tests、frontend build |
+| Release Gate | backend release gate tests + frontend build 通過 | GitHub Actions 或本機等價命令輸出 |
+
+未過 Gate 不進入部署或 PR merge。
+
+---
+
+## 7) Daily Radar Validation 與 Rule Governance
+
+Daily Radar 的正式驗證與 rule review 必須使用 production DB / cloud internal API path，不以本機 fixture 報告作為正式月報。
+
+### 7.1 Forward Validation
+
+內部 API：
+
+```text
+POST /internal/daily-radar/forward-validation/run
+```
+
+用途：
+
+- 找出 matured candidates。
+- 從 production `stock_raw_data` 讀取候選與 benchmark price series。
+- 寫入 `daily_radar_forward_validation_results`。
+- 產生可回放 report JSON。
+
+本機測試：
+
+```bash
+cd backend
+uv run pytest -q tests/test_daily_radar_forward_validation.py
+```
+
+### 7.2 Monthly Rule Review
+
+內部 API：
+
+```text
+POST /internal/daily-radar/rule-review/monthly
+```
+
+用途：
+
+- 讀取 production validation results。
+- 產生 `report_json` 與 `report_markdown`。
+- 由 `.github/workflows/daily-radar-rule-review.yml` 上傳 artifact。
+
+本機測試：
+
+```bash
+cd backend
+uv run pytest -q tests/test_daily_radar_rule_governance.py
+```
+
+### 7.3 調整規則前的限制
+
+- 樣本數低於 `DEFAULT_MIN_SAMPLE_COUNT` 時，不可自動提出強結論。
+- 調整 scoring/rule 需要保留前後版本、validation evidence 與 monthly review rationale。
+- 調整不得改變 historical replay 的 point-in-time 語意。
+
+---
+
+## 8) 策略版本與快取失效 SOP
+
+### 8.1 觸發條件
+
+| 變更類型 | 版次 | 範例 |
+| -------- | ---- | ---- |
+| docstring、log、非邏輯重構 | PATCH | `1.0.0 -> 1.0.1` |
+| confidence 常數、risk language 模板、copy allowlist、輕量 rule threshold | MINOR | `1.0.0 -> 1.1.0` |
+| scoring 核心邏輯、strategy/risk classification、Daily Radar bucket/ranking 規則 | MAJOR | `1.0.0 -> 2.0.0` |
+
+LLM prompt 修改不屬於 strategy version；需用 prompt hash 或對應 prompt/version trace 追蹤。
+
+### 8.2 操作步驟
+
+1. 判斷版次。
+2. 修改 `backend/src/ai_stock_sentinel/config.py` 的 `STRATEGY_VERSION`。
+3. 跑相關後端測試與 release gate。
+4. 確認 `StockAnalysisCache` 版本失效行為仍正確。
+5. 若影響 Daily Radar，跑 forward validation / rule governance 相關測試。
+6. 更新 `backend-api-technical-spec.md`、`daily-stock-radar-spec.md` 或 roadmap 決策。
+
+---
+
+## 9) Checkpoint 模板
+
+- 日期：
+- 本輪目標：
+- 變更範圍：
+- Canonical docs 更新：
+- 後端驗證：
+- 前端驗證：
+- Release gate / skipped reason：
+- DB / migration 影響：
+- Shared context 影響：
+- 風險與後續：
+
+---
+
+## 10) 文件維護規範
+
+- 完成 API 變更時，同步 `backend-api-technical-spec.md`。
+- 完成 Daily Radar scoring、validation、rule review 或 shared context 變更時，同步 `daily-stock-radar-spec.md`。
+- 完成 portfolio、entry record、position event、trade review 或 lifecycle review 變更時，同步 `ai-stock-sentinel-position-diagnosis-spec.md`。
+- 完成架構邊界、資料流、DB 表、workflow 變更時，同步 `ai-stock-sentinel-architecture-spec.md`。
+- 完成啟動方式、環境變數、部署或主要入口變更時，同步 `README.md`。
+- 文件不能只描述期望狀態；若功能尚未落地，必須標為 future / proposed，並寫清楚不影響目前 production path。

@@ -4,13 +4,15 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-AUDIT_DOC = REPO_ROOT / "docs/plans/2026-06-12-compatibility-deprecation-audit.md"
+BACKEND_API_SPEC = REPO_ROOT / "docs/specs/backend-api-technical-spec.md"
+POSITION_SPEC = REPO_ROOT / "docs/specs/ai-stock-sentinel-position-diagnosis-spec.md"
 
 
 def test_compatibility_deprecation_audit_blocks_removal_until_dependencies_close() -> None:
-    text = AUDIT_DOC.read_text(encoding="utf-8")
+    text = BACKEND_API_SPEC.read_text(encoding="utf-8") + "\n" + POSITION_SPEC.read_text(encoding="utf-8")
 
-    assert "Status: **No-go for removal**" in text
+    assert "legacy/internal compatibility" in text
+    assert "不可刪除" in text
     for field in [
         "recommended_action",
         "trailing_stop",
@@ -25,34 +27,34 @@ def test_compatibility_deprecation_audit_blocks_removal_until_dependencies_close
 
 
 def test_compatibility_deprecation_audit_covers_frontend_reports_clients_and_cache() -> None:
-    text = AUDIT_DOC.read_text(encoding="utf-8")
+    text = BACKEND_API_SPEC.read_text(encoding="utf-8") + "\n" + POSITION_SPEC.read_text(encoding="utf-8")
 
     for dependency in [
-        "Backend API schema",
-        "Position scorer",
-        "LLM analysis context",
-        "Historical cache",
-        "Portfolio history",
-        "Daily analysis log",
-        "Frontend Analyze",
-        "Frontend Portfolio",
-        "Specs / external clients",
-        "Reports",
+        "API consumer",
+        "PositionScorer",
+        "position_context",
+        "stock_analysis_cache",
+        "portfolio history",
+        "daily_analysis_log",
+        "前端",
+        "Portfolio",
+        "對外文件",
+        "API 技術規格",
     ]:
-        assert dependency in text
+        assert dependency.lower() in text.lower()
 
 
 def test_compatibility_deprecation_audit_lists_removal_closure_steps() -> None:
-    text = AUDIT_DOC.read_text(encoding="utf-8")
+    text = BACKEND_API_SPEC.read_text(encoding="utf-8") + "\n" + POSITION_SPEC.read_text(encoding="utf-8")
 
     for closure_step in [
-        "Add replacement risk-language fields to history endpoints",
-        "Backfill or version historical cache rows",
-        "Stop writing new legacy values",
-        "Migrate `LangChainAnalyzer` position context",
-        "Update frontend Portfolio historical display",
-        "Update API specs",
-        "Run a production data audit",
-        "external-client migration guidance",
+        "risk_state",
+        "discipline_triggers",
+        "observation_conditions",
+        "risk_control_reference",
+        "compatibility_source",
+        "legacy_recommended_action",
+        "primary UI",
+        "primary display",
     ]:
         assert closure_step in text

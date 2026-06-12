@@ -4,33 +4,38 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GATE_DOC = REPO_ROOT / "docs/plans/2026-06-12-investment-discipline-release-gate.md"
-COMPATIBILITY_AUDIT_DOC = REPO_ROOT / "docs/plans/2026-06-12-compatibility-deprecation-audit.md"
-COMMAND_DOC = REPO_ROOT / "docs/plans/2026-06-11-investment-discipline-execution-commands.md"
+PLAYBOOK_DOC = REPO_ROOT / "docs/development-execution-playbook.md"
+BACKEND_API_SPEC = REPO_ROOT / "docs/specs/backend-api-technical-spec.md"
+DAILY_RADAR_SPEC = REPO_ROOT / "docs/specs/daily-stock-radar-spec.md"
+POSITION_SPEC = REPO_ROOT / "docs/specs/ai-stock-sentinel-position-diagnosis-spec.md"
 WORKFLOW = REPO_ROOT / ".github/workflows/investment-discipline-release-gate.yml"
 
 
 def test_release_gate_checklist_covers_required_boundaries() -> None:
-    text = GATE_DOC.read_text(encoding="utf-8")
+    text = "\n".join([
+        PLAYBOOK_DOC.read_text(encoding="utf-8"),
+        BACKEND_API_SPEC.read_text(encoding="utf-8"),
+        DAILY_RADAR_SPEC.read_text(encoding="utf-8"),
+    ])
 
     for phrase in [
-        "Scoring signal registry",
-        "Rule tier and scoring impact",
-        "Validation evidence",
-        "Copy guard",
-        "Portfolio risk data gaps",
-        "Cloud reporting boundary",
-        "Validation metrics must not be presented as public win-rate claims",
-        "Portfolio risk diagnostics must not produce portfolio actions",
+        "Determinism Gate",
+        "Shared Context Gate",
+        "Copy Guard Gate",
+        "Release Gate",
+        "portfolio risk data-gap",
+        "production DB / cloud internal API path",
+        "不是勝率或交易建議",
+        "不得轉成 portfolio action",
         "context_only",
         "deprecated",
-        "version bump",
+        "STRATEGY_VERSION",
     ]:
         assert phrase in text
 
 
 def test_release_gate_commands_cover_automated_checks() -> None:
-    text = GATE_DOC.read_text(encoding="utf-8") + "\n" + COMMAND_DOC.read_text(encoding="utf-8")
+    text = PLAYBOOK_DOC.read_text(encoding="utf-8") + "\n" + WORKFLOW.read_text(encoding="utf-8")
 
     for command_or_test in [
         "tests/test_daily_radar_rule_governance.py",
@@ -67,11 +72,15 @@ def test_release_gate_workflow_runs_backend_and_frontend_gates() -> None:
 
 
 def test_release_gate_tracks_compatibility_deprecation_audit() -> None:
-    gate_text = GATE_DOC.read_text(encoding="utf-8")
-    audit_text = COMPATIBILITY_AUDIT_DOC.read_text(encoding="utf-8")
+    gate_text = PLAYBOOK_DOC.read_text(encoding="utf-8")
+    audit_text = "\n".join([
+        BACKEND_API_SPEC.read_text(encoding="utf-8"),
+        POSITION_SPEC.read_text(encoding="utf-8"),
+    ])
 
-    assert "2026-06-12-compatibility-deprecation-audit.md" in gate_text
-    assert "Current removal decision: **no-go**" in gate_text
-    assert "Status: **No-go for removal**" in audit_text
-    assert "historical cache" in audit_text
-    assert "external-client migration guidance" in audit_text
+    assert "tests/test_compatibility_deprecation_audit.py" in gate_text
+    assert "legacy/internal compatibility" in audit_text
+    assert "不可刪除" in audit_text
+    assert "Historical cache" not in gate_text
+    assert "portfolio history" in audit_text.lower()
+    assert "primary UI" in audit_text or "primary display" in audit_text
