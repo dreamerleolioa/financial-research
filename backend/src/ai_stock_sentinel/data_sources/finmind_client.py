@@ -184,6 +184,8 @@ class FinMindClient:
         request_get = self._request_get or _default_request_get(dataset)
         response: Any | None = None
         remaining = 0
+        request_elapsed_seconds = 0.0
+        completed_attempt = 0
         for attempt in range(self._request_retries + 1):
             remaining = self._ledger.reserve(identity=identity, limit=limit)
             if remaining < 0:
@@ -194,22 +196,38 @@ class FinMindClient:
                     status_code=429,
                 )
 
+            attempt_started = time.perf_counter()
             try:
                 response = request_get(FINMIND_DATA_API, params=params, timeout=timeout)
+                request_elapsed_seconds = time.perf_counter() - attempt_started
+                completed_attempt = attempt + 1
                 break
             except Exception as exc:
+                request_elapsed_seconds = time.perf_counter() - attempt_started
                 if attempt >= self._request_retries:
+                    logger.warning(
+                        "[FinMindClient] request failed dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error=%s",
+                        dataset,
+                        data_id,
+                        attempt + 1,
+                        self._request_retries + 1,
+                        request_elapsed_seconds,
+                        timeout,
+                        exc,
+                    )
                     raise FinMindClientError(
                         code="request_error",
                         message=f"FinMind request failed for dataset={dataset}: {exc}",
                         dataset=dataset,
                     ) from exc
                 logger.warning(
-                    "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s error=%s",
+                    "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error=%s",
                     dataset,
                     data_id,
                     attempt + 1,
                     self._request_retries + 1,
+                    request_elapsed_seconds,
+                    timeout,
                     exc,
                 )
                 if self._retry_backoff_seconds > 0:
@@ -254,10 +272,16 @@ class FinMindClient:
         data = body.get("data")
         rows = list(data) if isinstance(data, list) else []
         self._cache.set(cache_key, rows)
-        logger.debug(
-            "[FinMindClient] fetched dataset=%s data_id=%s remaining_hourly_budget=%s",
+        logger.info(
+            "[FinMindClient] fetch completed dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s status_code=%s rows=%s remaining_hourly_budget=%s",
             dataset,
             data_id,
+            completed_attempt,
+            self._request_retries + 1,
+            request_elapsed_seconds,
+            timeout,
+            status_code,
+            len(rows),
             remaining,
         )
         return rows
