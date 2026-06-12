@@ -124,6 +124,91 @@ def test_finmind_client_with_injected_request_get_does_not_share_default_cache()
     assert isolated == [{"value": "isolated"}]
 
 
+def test_finmind_client_retries_transient_request_error_before_success() -> None:
+    calls: list[dict] = []
+
+    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "timeout": timeout})
+        if len(calls) == 1:
+            raise RuntimeError("read timed out")
+        return _FakeFinMindResponse({"status": 200, "data": [{"date": "2026-06-10", "value": 1}]})
+
+    client = FinMindClient(
+        api_token="test-token",
+        request_get=fake_get,
+        ledger=FinMindHourlyRequestLedger(clock=lambda: 1000.0),
+        cache=FinMindResponseCache(clock=lambda: 1000.0),
+        token_request_limit=3,
+        request_retries=2,
+        retry_backoff_seconds=0,
+    )
+
+    result = client.fetch_data(
+        dataset="TaiwanStockSecuritiesLending",
+        data_id="2330",
+        start_date="2026-06-01",
+        end_date="2026-06-10",
+    )
+
+    assert result == [{"date": "2026-06-10", "value": 1}]
+    assert len(calls) == 2
+    assert [call["timeout"] for call in calls] == [30, 30]
+
+
+def test_finmind_client_fetch_data_allows_request_timeout_override() -> None:
+    calls: list[dict] = []
+
+    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "timeout": timeout})
+        return _FakeFinMindResponse({"status": 200, "data": []})
+
+    client = FinMindClient(
+        api_token="test-token",
+        request_get=fake_get,
+        ledger=FinMindHourlyRequestLedger(clock=lambda: 1000.0),
+        cache=FinMindResponseCache(clock=lambda: 1000.0),
+    )
+
+    client.fetch_data(
+        dataset="TaiwanStockSecuritiesLending",
+        data_id="2330",
+        start_date="2026-06-01",
+        end_date="2026-06-10",
+        timeout=45,
+    )
+
+    assert calls[0]["timeout"] == 45
+
+
+def test_finmind_client_raises_request_error_after_retry_budget_is_exhausted() -> None:
+    calls: list[dict] = []
+
+    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append(dict(params))
+        raise RuntimeError("read timed out")
+
+    client = FinMindClient(
+        api_token="test-token",
+        request_get=fake_get,
+        ledger=FinMindHourlyRequestLedger(clock=lambda: 1000.0),
+        cache=FinMindResponseCache(clock=lambda: 1000.0),
+        token_request_limit=3,
+        request_retries=2,
+        retry_backoff_seconds=0,
+    )
+
+    with pytest.raises(FinMindClientError) as exc_info:
+        client.fetch_data(
+            dataset="TaiwanStockSecuritiesLending",
+            data_id="2330",
+            start_date="2026-06-01",
+            end_date="2026-06-10",
+        )
+
+    assert exc_info.value.code == "request_error"
+    assert len(calls) == 3
+
+
 def test_finmind_client_blocks_request_when_hourly_budget_is_exhausted() -> None:
     calls: list[dict] = []
 
