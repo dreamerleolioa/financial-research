@@ -516,6 +516,7 @@ export default function AnalyzePage() {
     abortControllerRef.current = controller;
 
     setLoading(true);
+    setResult(null);
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
         method: "POST",

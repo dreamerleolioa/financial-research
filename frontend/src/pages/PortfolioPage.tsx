@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authHeaders } from "../lib/auth";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
@@ -1624,6 +1624,23 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     setDecisionContextStatusMap(data);
   }
 
+  const refreshRiskSummary = useCallback(async () => {
+    try {
+      const riskRes = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/risk-summary`, {
+        headers: authHeaders(),
+      });
+      if (riskRes.ok) {
+        const riskData: PortfolioRiskSummary = await riskRes.json();
+        setRiskSummary(riskData);
+        setRiskSummaryError(null);
+      } else {
+        setRiskSummaryError("API 回傳非成功狀態");
+      }
+    } catch {
+      setRiskSummaryError("無法讀取風險摘要");
+    }
+  }, []);
+
   useEffect(() => {
     async function load() {
       try {
@@ -1640,20 +1657,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           void err;
         }
 
-        try {
-          const riskRes = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/risk-summary`, {
-            headers: authHeaders(),
-          });
-          if (riskRes.ok) {
-            const riskData: PortfolioRiskSummary = await riskRes.json();
-            setRiskSummary(riskData);
-            setRiskSummaryError(null);
-          } else {
-            setRiskSummaryError("API 回傳非成功狀態");
-          }
-        } catch {
-          setRiskSummaryError("無法讀取風險摘要");
-        }
+        await refreshRiskSummary();
 
         try {
           const r = await fetch(
@@ -1670,7 +1674,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       }
     }
     load();
-  }, []);
+  }, [refreshRiskSummary]);
 
   useEffect(() => {
     return () => {
@@ -2112,6 +2116,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           onClose={() => setEditItem(null)}
           onSaved={(updated) => {
             setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+            void refreshRiskSummary();
           }}
         />
       )}
@@ -2122,6 +2127,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           onClose={() => setBackfillItem(null)}
           onSaved={() => {
             loadDecisionContextStatus().catch(() => { });
+            void refreshRiskSummary();
             setBackfillItem(null);
           }}
         />
@@ -2133,6 +2139,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           onClose={() => setAddEntryItem(null)}
           onAdded={(updated) => {
             setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+            void refreshRiskSummary();
             setAddEntryItem(null);
           }}
         />
@@ -2144,6 +2151,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           onClose={() => setCloseItem(null)}
           onClosed={(sourceItem, closed) => {
             handlePositionClosed(sourceItem, closed);
+            void refreshRiskSummary();
             setCloseItem(null);
           }}
         />
@@ -2160,6 +2168,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
               delete next[String(id)];
               return next;
             });
+            void refreshRiskSummary();
             setDeleteItem(null);
           }}
         />
