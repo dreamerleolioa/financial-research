@@ -109,35 +109,35 @@ const CLASSIFICATION_LABEL: Record<string, string> = {
   neutral_hold: "持有中性",
   weak_hold: "持有偏弱",
   overheld: "持有過久",
-  premature_exit: "出場偏早",
-  good_exit: "出場品質佳",
-  planned_exit: "依計畫出場",
-  profit_taking_exit: "獲利了結出場",
-  profit_protection_exit: "保護獲利出場",
-  stop_loss_exit: "停損出場",
-  late_stop_exit: "偏晚停損出場",
-  early_profit_exit: "偏早獲利出場",
-  technical_break_exit: "技術破位出場",
-  panic_exit: "情緒性出場",
-  weak_exit: "出場偏弱",
+  premature_exit: "風險處理偏早",
+  good_exit: "結案品質佳",
+  planned_exit: "依計畫結案",
+  profit_taking_exit: "獲利保護結案",
+  profit_protection_exit: "獲利保護結案",
+  stop_loss_exit: "風險控制結案",
+  late_stop_exit: "風險控制偏晚",
+  early_profit_exit: "獲利保護偏早",
+  technical_break_exit: "技術破位後結案",
+  panic_exit: "情緒性風險處理",
+  weak_exit: "結案品質偏弱",
   rule_based_trade_review: "規則化檢討",
-  disciplined_operation: "操作紀律佳",
+  disciplined_operation: "執行紀律佳",
   rule_followed: "規則執行到位",
   rule_violation: "規則執行偏離",
-  needs_improvement: "需改善操作",
+  needs_improvement: "需改善執行紀律",
 };
 
 const LIFECYCLE_CLASSIFICATION_LABEL: Record<string, string> = {
   insufficient_data: "決策脈絡不足",
-  averaging_down_into_weakness: "弱勢中攤平加碼",
-  disciplined_scale_out: "分批出場保護獲利",
+  averaging_down_into_weakness: "弱勢中新增批次",
+  disciplined_scale_out: "分批降低曝險保護獲利",
   risk_reduction_exit: "破位後降低風險",
-  premature_scale_out: "可能過早減碼",
-  late_scale_out: "出場偏晚",
+  premature_scale_out: "可能過早降低曝險",
+  late_scale_out: "風險處理偏晚",
   coherent_position_management: "部位管理一致",
-  add_entry_plan_violation: "加碼計畫偏離",
+  add_entry_plan_violation: "新增批次計畫偏離",
   ma20_pullback_supported: "回測 20 日線獲得支持",
-  unacted_stop_rule_break: "停損規則觸發後未行動",
+  unacted_stop_rule_break: "風險控制規則觸發後未行動",
   holding_period_needs_review: "持有期間需檢討",
 };
 
@@ -199,9 +199,9 @@ const DETECTED_EVENT_TYPE_LABEL: Record<string, string> = {
   ma5_reclaim: "站回 5 日均線",
   ma20_reclaim: "站回 20 日均線",
   ma60_reclaim: "站回 60 日均線",
-  stop_loss_hit: "觸及停損",
-  trailing_stop_hit: "觸及移動停利",
-  profit_target_hit: "達到停利目標",
+  stop_loss_hit: "觸及風險控制",
+  trailing_stop_hit: "觸及動態風險控制",
+  profit_target_hit: "達到獲利保護目標",
   profit_giveback: "獲利回吐",
   drawdown_alert: "回撤警示",
   high_volatility: "高波動事件",
@@ -247,9 +247,9 @@ const INSUFFICIENT_DATA_LABEL: Record<string, string> = {
 
 const POSITION_EVENT_TYPE_LABEL: Record<PositionEvent["event_type"], string> = {
   initial_entry: "初始進場",
-  add_entry: "加碼進場",
-  partial_exit: "部分出場",
-  full_exit: "完整出場",
+  add_entry: "新增進場批次",
+  partial_exit: "部分結案",
+  full_exit: "完整結案",
   manual_adjustment: "手動調整",
 };
 
@@ -299,8 +299,8 @@ const TIMELINE_REASON_CODE_LABEL: Record<string, string> = {
   long_term_accumulation: "長期分批佈局",
   value_revaluation: "價值重估",
   other: "其他固定理由",
-  planned_scale_in: "依計畫加碼",
-  averaging_down: "攤平加碼",
+  planned_scale_in: "依計畫新增批次",
+  averaging_down: "攤平新增批次",
   chasing_momentum: "追逐動能",
   target_reached: "達到目標",
   trailing_stop_hit: "觸及移動停利",
@@ -311,9 +311,9 @@ const TIMELINE_REASON_CODE_LABEL: Record<string, string> = {
   news_risk_increased: "消息風險升高",
   risk_reduction: "降低風險",
   profit_protection: "保護獲利",
-  planned_scale_out: "依計畫分批出場",
-  stop_loss: "停損",
-  emotional_exit: "情緒性出場",
+  planned_scale_out: "依計畫分批降低曝險",
+  stop_loss: "風險控制",
+  emotional_exit: "情緒性風險處理",
   manual_record_correction: "手動紀錄修正",
   not_recorded: "未記錄",
 };
@@ -344,19 +344,19 @@ const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
   break_ma20: "跌破 20 日線",
   break_ma60: "跌破 60 日線",
   cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格停損",
-  no_stop_recorded: "未設定停損",
+  fixed_price: "固定價格風險控制",
+  no_stop_recorded: "未設定風險控制",
   not_recorded: "未記錄",
 };
 
 const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
-  no_add_entry: "不加碼",
-  breakout_above_prior_high: "突破前高再加碼",
+  no_add_entry: "不新增批次",
+  breakout_above_prior_high: "突破前高再新增批次",
   pullback_holds_ma20: "回測守住 20 日線",
   pullback_holds_support: "回測守住支撐",
   institutional_flow_continues: "法人籌碼延續",
   profit_threshold_reached: "達成獲利門檻",
-  data_quality_complete_only: "資料完整才加碼",
+  data_quality_complete_only: "資料完整才新增批次",
   no_averaging_down: "不攤平",
   custom_plan_required: "需另訂自訂計畫",
   not_recorded: "未記錄",
@@ -509,12 +509,12 @@ function formatPlannedHoldingPeriod(value: string | null | undefined): string {
 
 function formatDefaultStopRule(value: string | null | undefined): string {
   if (!value) return "未記錄";
-  return (DEFAULT_STOP_RULE_LABEL as Record<string, string>)[value] ?? `其他停損規則（${value}）`;
+  return (DEFAULT_STOP_RULE_LABEL as Record<string, string>)[value] ?? `其他風險控制規則（${value}）`;
 }
 
 function formatAddEntryCondition(value: string | null | undefined): string {
   if (!value) return "未記錄";
-  return (ADD_ENTRY_CONDITION_LABEL as Record<string, string>)[value] ?? `其他加碼條件（${value}）`;
+  return (ADD_ENTRY_CONDITION_LABEL as Record<string, string>)[value] ?? `其他新增批次條件（${value}）`;
 }
 
 function formatLifecycleTierLabel(value: string | null | undefined): string {
@@ -670,13 +670,13 @@ function TradeResultSection({ metrics, symbol }: { metrics: TradeReviewResultMet
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-text-primary">交易結果</h3>
-        <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">單筆出場批次</span>
+        <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">單筆結案批次</span>
       </div>
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <ReviewMetric label="進場日期" value={formatPlainValue(metrics?.entry_date)} />
-        <ReviewMetric label="出場日期" value={formatPlainValue(metrics?.exit_date)} />
+        <ReviewMetric label="結案日期" value={formatPlainValue(metrics?.exit_date)} />
         <ReviewMetric label="進場價格" value={formatPrice(metrics?.entry_price, symbol)} />
-        <ReviewMetric label="出場價格" value={formatPrice(metrics?.exit_price, symbol)} />
+        <ReviewMetric label="結案價格" value={formatPrice(metrics?.exit_price, symbol)} />
         <ReviewMetric label="持有天數" value={metrics?.holding_days == null ? "—" : `${metrics.holding_days} 天`} />
         <ReviewMetric label="已實現損益" value={getSignedPriceText(metrics?.realized_pnl, symbol)} />
         <ReviewMetric label="已實現報酬" value={getSignedPercentText(metrics?.realized_return_pct)} />
@@ -694,7 +694,7 @@ function UserReadableConclusionCard({ conclusion }: { conclusion: TradeReviewUse
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-text-primary">交易檢討結論</h3>
+        <h3 className="text-sm font-semibold text-text-primary">紀律檢討結論</h3>
         {conclusion.overall_verdict && (
           <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
             {conclusion.overall_verdict}
@@ -906,12 +906,12 @@ function LifecyclePlanReviewRelationSection({ review }: { review: PositionLifecy
           sourceRefs={decisionContextSourceRefs.plannedHoldingPeriod}
         />
         <LifecyclePlanFactCard
-          label="預設停損規則"
+          label="預設風險控制規則"
           value={formatDefaultStopRule(decisionContext?.default_stop_rule)}
           sourceRefs={decisionContextSourceRefs.defaultStopRule}
         />
         <LifecyclePlanFactCard
-          label="加碼條件"
+          label="新增批次條件"
           value={formatAddEntryCondition(decisionContext?.add_entry_condition)}
           sourceRefs={decisionContextSourceRefs.addEntryCondition}
         />
@@ -984,7 +984,7 @@ function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewRe
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-text-primary">整體結果</h3>
-          <p className="mt-1 text-xs text-text-muted">這是整個 position group 的多次進出生命週期檢討，不是單筆出場批次檢討。</p>
+          <p className="mt-1 text-xs text-text-muted">這是整個 position group 的多次進出生命週期檢討，不是單筆結案批次檢討。</p>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {tier && <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getLifecycleTierClass(tier)}`}>{formatLifecycleTierLabel(tier)}</span>}
@@ -1036,8 +1036,8 @@ function LifecyclePerspectives({ metrics, entrySequence, exitSequence }: { metri
     <div className="grid gap-3 lg:grid-cols-2">
       <LifecyclePerspectiveCard title="進場視角">
         <ReviewMetric label="進場次數" value={formatPlainValue(entrySequence?.entry_count)} />
-        <ReviewMetric label="加碼次數" value={formatPlainValue(entrySequence?.add_entry_count)} />
-        <ReviewMetric label="攤平加碼" value={formatPlainValue(entrySequence?.average_down_count)} />
+        <ReviewMetric label="新增批次次數" value={formatPlainValue(entrySequence?.add_entry_count)} />
+        <ReviewMetric label="攤平新增批次" value={formatPlainValue(entrySequence?.average_down_count)} />
         <ReviewMetric label="首筆相對 MA20" value={getSignedPercentText(entrySequence?.initial_entry_vs_ma20_pct)} />
       </LifecyclePerspectiveCard>
       <LifecyclePerspectiveCard title="持有視角">
@@ -1052,10 +1052,10 @@ function LifecyclePerspectives({ metrics, entrySequence, exitSequence }: { metri
         <ReviewMetric label="最大投入成本" value={formatPrice(metrics?.max_capital_at_risk)} />
         <ReviewMetric label="總已實現損益" value={getSignedPriceText(metrics?.total_realized_pnl)} />
       </LifecyclePerspectiveCard>
-      <LifecyclePerspectiveCard title="出場視角">
-        <ReviewMetric label="出場次數" value={formatPlainValue(exitSequence?.exit_count)} />
-        <ReviewMetric label="部分出場" value={formatPlainValue(exitSequence?.partial_exit_count)} />
-        <ReviewMetric label="破位後賣出比例" value={getSignedPercentText(exitSequence?.percentage_sold_after_breakdown)} />
+      <LifecyclePerspectiveCard title="結案與風險處理視角">
+        <ReviewMetric label="結案次數" value={formatPlainValue(exitSequence?.exit_count)} />
+        <ReviewMetric label="部分結案" value={formatPlainValue(exitSequence?.partial_exit_count)} />
+        <ReviewMetric label="破位後降低曝險比例" value={getSignedPercentText(exitSequence?.percentage_sold_after_breakdown)} />
         <ReviewMetric label="保護獲利" value={getSignedPriceText(exitSequence?.profit_protected_by_partial_exits)} />
       </LifecyclePerspectiveCard>
     </div>
@@ -1193,7 +1193,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
           <div>
             <p className="font-semibold text-text-primary">{item.symbol} 檢討分析</p>
             <p className="mt-1 text-xs text-text-faint">
-              {item.entry_date} → {item.exit_date} ｜ 出場 {item.exit_quantity} 股 ｜ {getSignedPriceText(item.realized_pnl, item.symbol)}
+              {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜ {getSignedPriceText(item.realized_pnl, item.symbol)}
             </p>
           </div>
           <button
@@ -1213,7 +1213,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
               <p className="text-sm font-medium text-text-primary">載入檢討分析中</p>
-              <p className="text-xs text-text-muted">若尚未產生，會建立這筆出場批次的檢討。</p>
+              <p className="text-xs text-text-muted">若尚未產生，會建立這筆結案批次的檢討。</p>
             </div>
           )}
 
@@ -1243,8 +1243,8 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
               <TradeResultSection metrics={result.trade_result} symbol={item.symbol} />
               <ReviewSectionCard title="進場檢討" section={result.entry_review} />
               <ReviewSectionCard title="持有期間檢討" section={result.holding_review} />
-              <ReviewSectionCard title="出場檢討" section={result.exit_review} />
-              <ReviewSectionCard title="整體操作檢討" section={result.operation_review} />
+              <ReviewSectionCard title="結案與風險處理檢討" section={result.exit_review} />
+              <ReviewSectionCard title="整體執行紀律檢討" section={result.operation_review} />
               {hasDataQualityPrompt(result.data_quality) && result.data_quality && <DataQualitySection dataQuality={result.data_quality} />}
             </>
           )}
@@ -1285,16 +1285,16 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
       <div className="max-h-[85vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{group.symbol} 操作時間線</p>
+            <p className="font-semibold text-text-primary">{group.symbol} 事件時間線</p>
             <p className="mt-1 text-xs text-text-faint">
-              部位事件時間線 ｜ Group {group.position_group_id.slice(0, 8)} ｜ {group.exitBatchCount} 筆出場批次
+              部位事件時間線 ｜ Group {group.position_group_id.slice(0, 8)} ｜ {group.exitBatchCount} 筆結案批次
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
-            aria-label="關閉操作時間線"
+            aria-label="關閉事件時間線"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -1320,7 +1320,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
           {loading && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
-              <p className="text-sm font-medium text-text-primary">載入操作時間線中</p>
+              <p className="text-sm font-medium text-text-primary">載入事件時間線中</p>
               <p className="text-xs text-text-muted">正在讀取這個 position group 的事件紀錄。</p>
             </div>
           )}
@@ -1465,7 +1465,7 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
           <div>
             <p className="font-semibold text-text-primary">{group.symbol} 整體部位檢討</p>
             <p className="mt-1 text-xs text-text-faint">
-              Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜ 多次進場/加碼/分批出場整體檢討
+              Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜ 多次進場/新增批次/分批降低曝險整體檢討
             </p>
           </div>
           <button
@@ -1486,7 +1486,7 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
               <div>
                 <p className="text-xs font-medium text-text-muted">整體部位生命週期檢討</p>
                 <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                  此視窗檢討整個 position group 的進場序列、持有路徑、部位管理與出場序列；每一列出場批次的「檢討分析」仍是 Single Trade Review。
+                  此視窗檢討整個 position group 的進場序列、持有路徑、部位管理與結案序列；每一列結案批次的「檢討分析」仍是 Single Trade Review。
                 </p>
               </div>
               <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}>
@@ -1544,7 +1544,7 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
                 <LifecycleTextItemList label="做得好的地方" items={lifecycleReview?.what_worked} />
                 <LifecycleTextItemList label="需要檢討的地方" items={lifecycleReview?.what_needs_review} />
               </div>
-              <LifecycleTextItemList label="下次操作規則" items={lifecycleReview?.next_operation_rules} />
+              <LifecycleTextItemList label="下次紀律規則" items={lifecycleReview?.next_operation_rules} />
               <LifecycleEventTimeline events={eventFacts} snapshots={snapshots} evidenceItems={lifecycleReview?.event_level_evidence} symbol={review.symbol} />
               <LifecycleDataQualitySection dataQuality={result.data_quality} notes={lifecycleReview?.data_quality_notes} />
               {result.advanced_internal && (
@@ -1676,7 +1676,7 @@ export default function ClosedPortfolioPage() {
       const timeline = await fetchTimeline(group.position_group_id);
       setTimelineMap((prev) => ({ ...prev, [group.position_group_id]: timeline }));
     } catch (err) {
-      setTimelineError((prev) => ({ ...prev, [group.position_group_id]: err instanceof Error ? err.message : "操作時間線載入失敗" }));
+      setTimelineError((prev) => ({ ...prev, [group.position_group_id]: err instanceof Error ? err.message : "事件時間線載入失敗" }));
     } finally {
       setTimelineLoading((prev) => ({ ...prev, [group.position_group_id]: false }));
     }
@@ -1823,8 +1823,8 @@ export default function ClosedPortfolioPage() {
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs text-text-muted">
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">總出場 {group.totalClosedQuantity} 股</span>
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">出場批次 {group.exitBatchCount} 筆</span>
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">總結案 {group.totalClosedQuantity} 股</span>
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">結案批次 {group.exitBatchCount} 筆</span>
                             <span className="rounded-md border border-border-subtle bg-card px-2 py-1 font-mono text-text-faint">
                               Group {group.position_group_id.slice(0, 8)}
                             </span>
@@ -1850,7 +1850,7 @@ export default function ClosedPortfolioPage() {
                               disabled={isTimelineLoading}
                               className="rounded-lg border border-blue-500/40 bg-card px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-300 dark:hover:bg-blue-950"
                             >
-                              {isTimelineLoading ? "載入時間線…" : "操作時間線"}
+                          {isTimelineLoading ? "載入時間線…" : "事件時間線"}
                             </button>
                           </div>
                         </div>
@@ -1868,7 +1868,7 @@ export default function ClosedPortfolioPage() {
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div className="min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <p className="font-semibold text-text-primary">出場批次 #{item.id}</p>
+                                    <p className="font-semibold text-text-primary">結案批次 #{item.id}</p>
                                     <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
                                       {item.entry_date} → {item.exit_date}
                                     </span>
@@ -1878,7 +1878,7 @@ export default function ClosedPortfolioPage() {
                                   </div>
                                   <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs text-text-muted">
                                     <span>{formatPrice(item.entry_price, item.symbol)} → {formatPrice(item.exit_price, item.symbol)}</span>
-                                    <span>出場 {item.exit_quantity} 股</span>
+                                    <span>結案 {item.exit_quantity} 股</span>
                                     <span>費稅 {formatPrice(item.exit_fees + item.exit_taxes, item.symbol)}</span>
                                   </div>
                                 </div>

@@ -473,9 +473,9 @@ def test_lifecycle_review_classifies_phase_d_patterns_and_template_refs():
     assert _all_text_items_have_source_refs(review)
     assert _all_text_items_contain_chinese(review)
     assert "本次生命週期檢討層級為需檢討" in review["overall_conclusion"]["text"]
-    assert any("完整出清前的部分出場" in item["text"] for item in review["what_worked"])
-    assert any("弱勢中加碼" in item["text"] for item in review["what_needs_review"])
-    assert any("減碼或出場觸發條件" in item["text"] for item in review["next_operation_rules"])
+    assert any("完整結案前的部分結案" in item["text"] for item in review["what_worked"])
+    assert any("弱勢中新增批次" in item["text"] for item in review["what_needs_review"])
+    assert any("降低曝險或結案觸發條件" in item["text"] for item in review["next_operation_rules"])
     assert any("資料品質" in item["text"] for item in review["data_quality_notes"])
     assert any("發生 initial_entry" in item["text"] for item in review["event_level_evidence"])
 
@@ -524,7 +524,7 @@ def test_lifecycle_review_phase_e_no_averaging_down_plan_flags_lower_add_below_m
     assert result["decision_context"]["add_entry_condition"] == "no_averaging_down"
     assert review["classification"]["tier"] == "needs_review"
     assert "add_entry_plan_violation" in review["classification"]["labels"]
-    assert any("加碼條件記錄為不攤平" in item["text"] for item in review["classification"]["reasons"])
+    assert any("新增批次條件記錄為不攤平" in item["text"] for item in review["classification"]["reasons"])
     assert any("event_facts.id:2" in item["source_refs"] for item in review["classification"]["reasons"])
     assert _all_text_items_have_source_refs(review)
 
@@ -581,7 +581,7 @@ def test_lifecycle_review_phase_e_break_ma20_stop_rule_without_acted_context_nee
     assert result["decision_context"]["default_stop_rule"] == "break_ma20"
     assert review["classification"]["tier"] == "needs_review"
     assert "unacted_stop_rule_break" in review["classification"]["labels"]
-    assert any("預設停損規則為跌破 MA20" in item["text"] for item in review["what_needs_review"])
+    assert any("預設風險控制規則為跌破 MA20" in item["text"] for item in review["what_needs_review"])
 
 
 def test_lifecycle_review_phase_e_planned_holding_period_needs_review_without_hard_judgment():

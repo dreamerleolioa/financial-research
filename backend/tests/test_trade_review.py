@@ -348,8 +348,8 @@ def test_trade_review_keeps_codes_stable_but_returns_chinese_prose(db_session: S
     assert entry_review["market_regime"] in {"uptrend", "strong_momentum", "range_bound", "high_volatility", "downtrend"}
     assert "進場" in entry_review["summary"]
     assert any("進場" in signal or "行情" in signal for signal in entry_review["supporting_signals"])
-    assert "出場" in exit_review["summary"]
-    assert any("出場" in signal or "持有期間" in signal for signal in exit_review["supporting_signals"])
+    assert "結案" in exit_review["summary"]
+    assert any("結案" in signal or "持有期間" in signal for signal in exit_review["supporting_signals"])
     assert data_quality["status"] in {"ok", "insufficient"}
     assert data_quality == evidence_payload["data_quality"]
 
@@ -405,7 +405,7 @@ def test_exit_review_classifies_profit_protection_after_giveback(db_session: Ses
     assert evidence_payload["detected_events"] == review_result["holding_review"]["detected_events"]
     conclusion = review_result["user_readable_conclusion"]
     assert conclusion["overall_verdict"] == "reasonable"
-    assert conclusion["overall_verdict_label"] == "這次出場合理"
+    assert conclusion["overall_verdict_label"] == "這次結案節奏合理"
     assert any("回吐" in item for item in conclusion["evidence"])
 
 
@@ -431,8 +431,8 @@ def test_user_readable_conclusion_marks_small_profit_above_mas_as_early(db_sessi
     conclusion = review_result["user_readable_conclusion"]
     assert set(conclusion) == {"overall_verdict", "overall_verdict_label", "one_sentence_reason", "evidence", "next_time_rules"}
     assert conclusion["overall_verdict"] == "early"
-    assert conclusion["overall_verdict_label"] == "這次出場偏早"
-    assert "提前小賺離場" in conclusion["one_sentence_reason"]
+    assert conclusion["overall_verdict_label"] == "這次結案節奏偏早"
+    assert "提前小幅獲利結案" in conclusion["one_sentence_reason"]
     assert any("高於 MA20" in item and "高於 MA60" in item for item in conclusion["evidence"])
     assert any("保留核心部位" in rule for rule in conclusion["next_time_rules"])
 
@@ -459,7 +459,7 @@ def test_user_readable_conclusion_marks_late_stop_as_late(db_session: Session):
     conclusion = review_result["user_readable_conclusion"]
     assert review_result["exit_review"]["classification"] == "late_stop_exit"
     assert conclusion["overall_verdict"] == "late"
-    assert conclusion["overall_verdict_label"] == "這次出場偏晚"
+    assert conclusion["overall_verdict_label"] == "這次結案節奏偏晚"
     assert any("最大可承受虧損" in rule for rule in conclusion["next_time_rules"])
 
 

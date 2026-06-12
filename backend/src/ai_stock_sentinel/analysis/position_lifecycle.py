@@ -464,15 +464,15 @@ def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
 def _lifecycle_label_text(label: str) -> str:
     return {
         "insufficient_data": "資料不足",
-        "averaging_down_into_weakness": "弱勢中攤平加碼",
-        "add_entry_plan_violation": "違反加碼計畫",
+        "averaging_down_into_weakness": "弱勢中新增批次",
+        "add_entry_plan_violation": "新增批次計畫偏離",
         "ma20_pullback_supported": "拉回守住 MA20 支撐",
-        "unacted_stop_rule_break": "停損規則未明確執行",
+        "unacted_stop_rule_break": "風險控制規則未明確執行",
         "holding_period_needs_review": "持有週期需檢討",
-        "disciplined_scale_out": "分批出場保護獲利",
+        "disciplined_scale_out": "分批降低曝險保護獲利",
         "risk_reduction_exit": "破位後降低風險",
-        "premature_scale_out": "可能過早減碼",
-        "late_scale_out": "出場偏晚",
+        "premature_scale_out": "可能過早降低曝險",
+        "late_scale_out": "風險處理偏晚",
         "coherent_position_management": "部位管理一致",
     }.get(label, label)
 
@@ -632,7 +632,36 @@ def _holding_period_review(planned_holding_period: Any, total_holding_days: Any)
 
 
 def _text_item(text: str, source_refs: list[str]) -> dict[str, Any]:
-    return {"text": text, "source_refs": _unique_refs(source_refs)}
+    return {"text": _risk_language_text(text), "source_refs": _unique_refs(source_refs)}
+
+
+def _risk_language_text(text: str) -> str:
+    replacements = {
+        "加碼條件": "新增批次條件",
+        "加碼事件": "新增批次事件",
+        "弱勢中加碼": "弱勢中新增批次",
+        "未來加碼前": "未來新增批次前",
+        "若要加碼": "若要新增批次",
+        "加碼": "新增批次",
+        "預設停損規則": "預設風險控制規則",
+        "停損原因": "風險控制原因",
+        "停損": "風險控制",
+        "部分出場": "部分結案",
+        "最終出場": "最終結案",
+        "完整出清": "完整結案",
+        "出場事件": "結案事件",
+        "出場動作": "結案動作",
+        "出場規則": "結案規則",
+        "出場節奏": "結案節奏",
+        "未出場": "未結案",
+        "出場": "結案",
+        "賣在後續高點前": "降低曝險發生在後續高點前",
+        "減碼": "降低曝險",
+    }
+    rewritten = text
+    for source, target in replacements.items():
+        rewritten = rewritten.replace(source, target)
+    return rewritten
 
 
 def _unique_refs(source_refs: list[str]) -> list[str]:

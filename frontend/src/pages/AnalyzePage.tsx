@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { authHeaders } from "../lib/auth";
 import { formatPrice, formatVolume } from "../lib/formatters";
@@ -117,6 +117,15 @@ interface AnalyzeResponse {
     /** 降級觸發條件 — 已接收但暫未渲染，預留未來 UI 擴充 */
     downgrade_triggers?: string[];
   } | null;
+  risk_state?: string | null;
+  risk_state_label?: string | null;
+  discipline_triggers?: string[];
+  observation_conditions?: string[];
+  risk_control_reference?: {
+    reference?: string | null;
+    reference_type?: string | null;
+  } | null;
+  command_language_deprecated?: Record<string, unknown>;
   institutional_flow_label: string | null;
   data_confidence: number | null;
   is_final: boolean;
@@ -230,19 +239,19 @@ const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
   break_ma20: "跌破 20 日線",
   break_ma60: "跌破 60 日線",
   cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格停損",
-  no_stop_recorded: "未設定停損",
+  fixed_price: "固定價格風險控制",
+  no_stop_recorded: "未設定風險控制",
   not_recorded: "未記錄",
 };
 
 const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
-  no_add_entry: "不加碼",
-  breakout_above_prior_high: "突破前高再加碼",
+  no_add_entry: "不新增批次",
+  breakout_above_prior_high: "突破前高再新增批次",
   pullback_holds_ma20: "回測守住 20 日線",
   pullback_holds_support: "回測守住支撐",
   institutional_flow_continues: "法人籌碼延續",
   profit_threshold_reached: "達成獲利門檻",
-  data_quality_complete_only: "資料完整才加碼",
+  data_quality_complete_only: "資料完整才新增批次",
   no_averaging_down: "不攤平",
   custom_plan_required: "需另訂自訂計畫",
   not_recorded: "未記錄",
@@ -529,6 +538,9 @@ export default function AnalyzePage() {
         cleaned_news_quality: null, news_display_items: [], confidence_score: null,
         cross_validation_note: null, strategy_type: null, entry_zone: null,
         stop_loss: null, holding_period: null, action_plan_tag: null, action_plan: null,
+        risk_state: null, risk_state_label: null, discipline_triggers: [],
+        observation_conditions: [], risk_control_reference: null,
+        command_language_deprecated: {},
         institutional_flow_label: null, data_confidence: null,
         is_final: true, intraday_disclaimer: null,
         errors: [{ code: "NETWORK_ERROR", message }],
@@ -543,6 +555,66 @@ export default function AnalyzePage() {
   const confidenceScore = result?.confidence_score ?? null;
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
+  const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
+  const observationConditions: string[] = Array.isArray(result?.observation_conditions)
+    ? result.observation_conditions.filter((item): item is string => typeof item === "string")
+    : [];
+  const disciplineTriggers: string[] = Array.isArray(result?.discipline_triggers)
+    ? result.discipline_triggers.filter((item): item is string => typeof item === "string")
+    : [];
+  const actionPlan = result?.action_plan ?? null;
+  const actionPlanTargetZone: string | null = typeof actionPlan?.target_zone === "string" ? actionPlan.target_zone : null;
+  const actionPlanDefenseLine: string | null = typeof actionPlan?.defense_line === "string" ? actionPlan.defense_line : null;
+  const actionPlanMomentumExpectation: string | null = typeof actionPlan?.momentum_expectation === "string" ? actionPlan.momentum_expectation : null;
+  const actionPlanSuggestedPositionSize: string | null = typeof actionPlan?.suggested_position_size === "string" ? actionPlan.suggested_position_size : null;
+  const actionPlanConvictionLevel = actionPlan?.conviction_level;
+  const actionPlanUpgradeTriggers = Array.isArray(actionPlan?.upgrade_triggers)
+    ? actionPlan.upgrade_triggers.filter((item): item is string => typeof item === "string")
+    : undefined;
+  const actionPlanDowngradeTriggers = Array.isArray(actionPlan?.downgrade_triggers)
+    ? actionPlan.downgrade_triggers.filter((item): item is string => typeof item === "string")
+    : undefined;
+  const riskReference: unknown = result?.risk_control_reference?.reference;
+  const riskControlReferenceText: string | null = typeof riskReference === "string" ? riskReference : actionPlanDefenseLine;
+  const riskReferenceRows: Array<{ label: string; value: string; wide?: boolean; strong?: boolean }> = [];
+  if (actionPlanTargetZone) riskReferenceRows.push({ label: "觀察區間", value: actionPlanTargetZone, strong: true });
+  if (riskControlReferenceText) riskReferenceRows.push({ label: "風險控制參考", value: riskControlReferenceText, strong: true });
+  if (actionPlanMomentumExpectation) riskReferenceRows.push({ label: "動能預期", value: actionPlanMomentumExpectation, wide: true });
+  if (actionPlanSuggestedPositionSize) riskReferenceRows.push({ label: "部位規模參考", value: actionPlanSuggestedPositionSize, wide: true });
+  const riskReferenceContent: ReactNode = riskReferenceRows.map((row) => (
+    <div key={row.label} className={row.wide ? "col-span-2" : undefined}>
+      <p className="text-xs text-text-muted">{String(row.label)}</p>
+      <p className={`text-sm text-text-primary ${row.strong ? "font-medium" : ""}`}>{String(row.value)}</p>
+    </div>
+  ));
+  const observationContent: ReactNode = observationConditions.length > 0 ? (
+    <div>
+      <p className="text-xs font-semibold text-text-muted mb-1.5">觀察條件</p>
+      <ul className="space-y-1">
+        {observationConditions.map((point, i) => (
+          <li key={i} className="flex gap-1.5 text-sm text-text-primary">
+            <span className="text-text-muted shrink-0">·</span>
+            {String(point)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  ) : null;
+  const disciplineContent: ReactNode = disciplineTriggers.length > 0 ? (
+    <div>
+      <p className="text-xs font-semibold text-text-muted mb-1.5">紀律觸發</p>
+      <ul className="space-y-1">
+        {disciplineTriggers.map((cond, i) => (
+          <li key={i} className="flex gap-1.5 text-sm text-text-primary">
+            <span className="text-rose-400 shrink-0">⚠</span>
+            {String(cond)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  ) : null;
+  const legacyActionPlanAction = result?.command_language_deprecated?.action_plan_action;
+  const legacyActionPlanActionText = typeof legacyActionPlanAction === "string" ? legacyActionPlanAction : null;
 
   return (
     <div className="space-y-6">
@@ -603,14 +675,14 @@ export default function AnalyzePage() {
 
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
         <div className="mb-1 flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-text-primary">新倉策略建議</h2>
+          <h2 className="text-sm font-semibold text-text-primary">觀察與風險紀律</h2>
           {result?.action_plan_tag && ACTION_TAG_MAP[result.action_plan_tag] && (
             <span className={`text-sm font-medium ${ACTION_TAG_MAP[result.action_plan_tag].color}`}>
               {ACTION_TAG_MAP[result.action_plan_tag].emoji} {ACTION_TAG_MAP[result.action_plan_tag].label}
             </span>
           )}
         </div>
-        <p className="mb-4 text-xs text-text-muted">用於評估是否觀察、等待與分批建立新倉，不提供持股中的續抱／減碼／出場指令。</p>
+        <p className="mb-4 text-xs text-text-muted">用於評估是否納入觀察、等待條件與紀律觸發，不提供持股中的操作指令。</p>
         {loading ? (
           <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" style={{ animationDuration: "1s" }} />
@@ -622,7 +694,7 @@ export default function AnalyzePage() {
             </p>
           </div>
         ) : result ? (
-          result.action_plan ? (
+          actionPlan ? (
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="space-y-4">
                 <div className="rounded-lg border border-border bg-card-hover/70 p-3">
@@ -630,9 +702,9 @@ export default function AnalyzePage() {
                     <div>
                       <div className="mb-1.5 flex flex-wrap items-center gap-2">
                         <p className="text-xs font-semibold text-text-muted">信心指數</p>
-                        {result.action_plan.conviction_level && CONVICTION_BADGE[result.action_plan.conviction_level] && (
-                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[result.action_plan.conviction_level].cls}`}>
-                            {CONVICTION_BADGE[result.action_plan.conviction_level].label}
+                        {actionPlanConvictionLevel && CONVICTION_BADGE[actionPlanConvictionLevel] && (
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[actionPlanConvictionLevel].cls}`}>
+                            {CONVICTION_BADGE[actionPlanConvictionLevel].label}
                           </span>
                         )}
                         {result.data_confidence != null && result.data_confidence < 60 && (
@@ -659,10 +731,10 @@ export default function AnalyzePage() {
                 </div>
 
                 <div className="space-y-4">
-                  {/* 段落一：建議動作 */}
+                  {/* 段落一：風險狀態 */}
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-medium text-text-primary flex-1">
-                      {result.action_plan.action}
+                      {riskStateLabel}
                     </p>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {!result.is_final && (
@@ -673,70 +745,29 @@ export default function AnalyzePage() {
                     </div>
                   </div>
 
-                  {/* 段落二：主要理由 */}
-                  {result.action_plan.thesis_points && result.action_plan.thesis_points.length > 0 && (
-                    <div>
-                      <p className="text-xs font-semibold text-text-muted mb-1.5">主要理由</p>
-                      <ul className="space-y-1">
-                        {result.action_plan.thesis_points.map((point, i) => (
-                          <li key={i} className="flex gap-1.5 text-sm text-text-primary">
-                            <span className="text-text-muted shrink-0">·</span>
-                            {point}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  {/* 段落二：觀察條件 */}
+                  {observationContent}
 
-                  {/* 段落三：關鍵價位 */}
+                  {/* 段落三：風險控制參考 */}
                   <div className="rounded-lg bg-card-hover p-3 grid grid-cols-2 gap-2">
-                    <p className="text-xs font-semibold text-text-muted col-span-2 mb-0.5">關鍵價位</p>
-                    {result.action_plan.target_zone && (
-                      <div>
-                        <p className="text-xs text-text-muted">進場區間</p>
-                        <p className="text-sm font-medium text-text-primary">{result.action_plan.target_zone}</p>
-                      </div>
-                    )}
-                    {result.action_plan.defense_line && (
-                      <div>
-                        <p className="text-xs text-text-muted">停損位</p>
-                        <p className="text-sm font-medium text-text-primary">{result.action_plan.defense_line}</p>
-                      </div>
-                    )}
-                    {result.action_plan.momentum_expectation && (
-                      <div className="col-span-2">
-                        <p className="text-xs text-text-muted">動能預期</p>
-                        <p className="text-sm text-text-primary">{result.action_plan.momentum_expectation}</p>
-                      </div>
-                    )}
-                    {result.action_plan.suggested_position_size && (
-                      <div className="col-span-2">
-                        <p className="text-xs text-text-muted">建議部位規模</p>
-                        <p className="text-sm text-text-primary">{result.action_plan.suggested_position_size}</p>
-                      </div>
-                    )}
+                    <p className="text-xs font-semibold text-text-muted col-span-2 mb-0.5">參考區間與風險控制</p>
+                    {riskReferenceContent}
                   </div>
 
-                  {/* 段落四：失效條件 */}
-                  {result.action_plan.invalidation_conditions && result.action_plan.invalidation_conditions.length > 0 && (
-                    <div>
-                      <p className="text-xs font-semibold text-text-muted mb-1.5">失效條件</p>
-                      <ul className="space-y-1">
-                        {result.action_plan.invalidation_conditions.map((cond, i) => (
-                          <li key={i} className="flex gap-1.5 text-sm text-text-primary">
-                            <span className="text-rose-400 shrink-0">⚠</span>
-                            {cond}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  {/* 段落四：紀律觸發 */}
+                  {disciplineContent}
 
                   {/* 可收合：條件變化 */}
                   <TriggersSection
-                    upgradeTriggers={result.action_plan.upgrade_triggers}
-                    downgradeTriggers={result.action_plan.downgrade_triggers}
+                    upgradeTriggers={actionPlanUpgradeTriggers}
+                    downgradeTriggers={actionPlanDowngradeTriggers}
                   />
+                  {legacyActionPlanActionText ? (
+                    <details className="text-xs text-text-faint">
+                      <summary className="cursor-pointer">相容欄位（secondary）</summary>
+                      <p className="mt-1">action_plan.action: {legacyActionPlanActionText}</p>
+                    </details>
+                  ) : null}
                 </div>
               </div>
 
@@ -748,7 +779,7 @@ export default function AnalyzePage() {
               )}
             </div>
           ) : (
-            <p className="text-sm text-text-faint">無策略建議。</p>
+            <p className="text-sm text-text-faint">尚無可用觀察條件。</p>
           )
         ) : (
           <p className="text-sm text-text-faint">請先執行分析。</p>
@@ -799,14 +830,14 @@ export default function AnalyzePage() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">預設停損規則</span>
+                    <span className="text-xs font-medium text-text-muted">預設風險控制規則</span>
                     <select value={addForm.default_stop_rule} onChange={(e) => setAddForm((f) => ({ ...f, default_stop_rule: e.target.value as AddPortfolioForm["default_stop_rule"] }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500">
                       <option value="">未選擇（不送出）</option>
                       {DEFAULT_STOP_RULE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">加碼條件</span>
+                    <span className="text-xs font-medium text-text-muted">新增批次條件</span>
                     <select value={addForm.add_entry_condition} onChange={(e) => setAddForm((f) => ({ ...f, add_entry_condition: e.target.value as AddPortfolioForm["add_entry_condition"] }))} className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500">
                       <option value="">未選擇（不送出）</option>
                       {ADD_ENTRY_CONDITION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

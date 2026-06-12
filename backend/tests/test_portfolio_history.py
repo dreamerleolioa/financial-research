@@ -92,6 +92,66 @@ def test_history_returns_records():
     assert len(data["records"]) == 1
 
 
+def test_history_prefers_position_risk_language_snapshot():
+    mock_portfolio = MagicMock()
+    mock_portfolio.user_id = 1
+    mock_portfolio.symbol = "2330.TW"
+
+    mock_record = MagicMock()
+    mock_record.record_date = date(2026, 3, 10)
+    mock_record.signal_confidence = 72.5
+    mock_record.action_tag = "Hold"
+    mock_record.recommended_action = "Exit"
+    mock_record.indicators = {
+        "position_risk_language": {
+            "risk_state": "elevated",
+            "risk_state_label": "風險狀態升高",
+            "discipline_triggers": ["收盤跌破風險控制參考價"],
+            "risk_control_reference": {"reference_price": 900},
+        },
+    }
+    mock_record.final_verdict = "中性"
+    mock_record.prev_action_tag = None
+    mock_record.prev_confidence = None
+
+    client = _make_client(portfolio=mock_portfolio, records=[mock_record], total=1)
+    resp = client.get("/portfolio/1/history")
+
+    assert resp.status_code == 200
+    record = resp.json()["records"][0]
+    assert record["risk_state"] == "elevated"
+    assert record["risk_state_label"] == "風險狀態升高"
+    assert record["discipline_triggers"] == ["收盤跌破風險控制參考價"]
+    assert record["risk_control_reference"] == {"reference_price": 900}
+    assert record["compatibility_source"] == "position_risk_language"
+    assert record["recommended_action"] == "Exit"
+
+
+def test_history_falls_back_to_legacy_action_for_old_rows():
+    mock_portfolio = MagicMock()
+    mock_portfolio.user_id = 1
+    mock_portfolio.symbol = "2330.TW"
+
+    mock_record = MagicMock()
+    mock_record.record_date = date(2026, 3, 10)
+    mock_record.signal_confidence = 72.5
+    mock_record.action_tag = "Exit"
+    mock_record.recommended_action = "Exit"
+    mock_record.indicators = {}
+    mock_record.final_verdict = "已觸發防守條件"
+    mock_record.prev_action_tag = None
+    mock_record.prev_confidence = None
+
+    client = _make_client(portfolio=mock_portfolio, records=[mock_record], total=1)
+    resp = client.get("/portfolio/1/history")
+
+    assert resp.status_code == 200
+    record = resp.json()["records"][0]
+    assert record["risk_state"] == "critical"
+    assert record["risk_state_label"] == "防守條件已觸發"
+    assert record["compatibility_source"] == "legacy_recommended_action"
+
+
 def test_history_returns_records_for_closed_portfolio():
     from datetime import date
     mock_portfolio = MagicMock()
@@ -199,15 +259,22 @@ def _persist_portfolio(
     return portfolio
 
 
-def _persist_log(session: Session, record_date: date, action_tag: str) -> None:
+def _persist_log(
+    session: Session,
+    record_date: date,
+    action_tag: str,
+    *,
+    indicators: dict | None = None,
+    recommended_action: str | None = None,
+) -> None:
     session.add(DailyAnalysisLog(
         user_id=1,
         symbol="2330.TW",
         record_date=record_date,
         signal_confidence=70,
         action_tag=action_tag,
-        recommended_action=action_tag,
-        indicators={},
+        recommended_action=recommended_action if recommended_action is not None else action_tag,
+        indicators=indicators or {},
         final_verdict=action_tag,
     ))
 
@@ -335,3 +402,43 @@ def test_latest_history_returns_post_entry_log_for_reentry(
     data = response.json()
     assert data[str(active.id)]["record_date"] == "2026-03-10"
     assert data[str(active.id)]["action_tag"] == "ActiveWindow"
+
+
+def test_latest_history_returns_risk_language_from_real_mapping_row(
+    portfolio_history_client: TestClient,
+    portfolio_history_db_session: Session,
+):
+    _persist_user(portfolio_history_db_session)
+    active = _persist_portfolio(
+        portfolio_history_db_session,
+        portfolio_id=501,
+        entry_date=date(2026, 3, 1),
+        exit_date=None,
+        is_active=True,
+    )
+    _persist_log(
+        portfolio_history_db_session,
+        date(2026, 3, 10),
+        "Hold",
+        recommended_action="Exit",
+        indicators={
+            "position_risk_language": {
+                "risk_state": "elevated",
+                "risk_state_label": "風險狀態升高",
+                "discipline_triggers": ["收盤跌破風險控制參考價"],
+                "risk_control_reference": {"reference_price": 900},
+            },
+        },
+    )
+    portfolio_history_db_session.commit()
+
+    response = portfolio_history_client.get("/portfolio/latest-history")
+
+    assert response.status_code == 200
+    record = response.json()[str(active.id)]
+    assert record["risk_state"] == "elevated"
+    assert record["risk_state_label"] == "風險狀態升高"
+    assert record["discipline_triggers"] == ["收盤跌破風險控制參考價"]
+    assert record["risk_control_reference"] == {"reference_price": 900}
+    assert record["compatibility_source"] == "position_risk_language"
+    assert record["recommended_action"] == "Exit"

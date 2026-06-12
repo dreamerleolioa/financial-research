@@ -9,6 +9,73 @@ export interface PortfolioItem {
   notes: string | null;
 }
 
+export interface PortfolioRiskCaveat {
+  code: string;
+  message?: string;
+  count?: number;
+}
+
+export interface PortfolioPositionRisk {
+  symbol: string;
+  quantity: number | null;
+  current_price: number | null;
+  entry_price: number | null;
+  market_value: number | null;
+  unrealized_pnl: number | null;
+  defense_reference: {
+    price: number | null;
+    source: string | null;
+  };
+  estimated_risk_amount: number | null;
+  estimated_risk_pct_of_portfolio: number | null;
+  portfolio_weight_pct: number | null;
+  risk_state: "contained" | "watch" | "elevated" | "defense_reference_touched" | "data_incomplete";
+  discipline_triggers: string[];
+  data_quality: {
+    status: "ok" | "caution" | "insufficient";
+    caveats: PortfolioRiskCaveat[];
+  };
+}
+
+export interface PortfolioRiskSummary {
+  version: string;
+  as_of_date: string;
+  portfolio_value: number;
+  total_unrealized_pnl: number;
+  total_at_risk: number;
+  total_at_risk_pct: number | null;
+  position_risks: PortfolioPositionRisk[];
+  concentration: {
+    by_symbol: Array<{
+      type: "symbol";
+      key: string;
+      market_value: number | null;
+      pct_of_portfolio: number | null;
+      status: "ok" | "watch" | "elevated";
+    }>;
+  };
+  shared_exposures: Array<{
+    type: string;
+    key: string;
+    symbols: string[];
+    count: number;
+    market_value: number;
+    pct_of_portfolio: number | null;
+  }>;
+  risk_budget_status: {
+    status: "available" | "watch" | "constrained" | "unknown";
+    total_at_risk_pct: number | null;
+    watch_threshold_pct: number;
+    constrained_threshold_pct: number;
+    notes: string[];
+  };
+  data_quality: {
+    status: "ok" | "caution" | "insufficient";
+    caveats: PortfolioRiskCaveat[];
+    price_stale_after_days: number;
+  };
+}
+
 export interface ClosedPortfolioItem {
   id: number;
   position_group_id: string;

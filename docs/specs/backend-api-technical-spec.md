@@ -2,7 +2,7 @@
 
 > 類型：技術文件（Technical Doc）
 > 更新日期：2026-06-11
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract。
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier。
 
 ## 1) 目的
 
@@ -153,6 +153,30 @@ make run-api
   "stop_loss": "近20日低點 - 3% 或跌破 MA60",
   "holding_period": "1-3 個月",
   "action_plan_tag": "opportunity",
+  "risk_state": "setup_observation",
+  "risk_state_label": "可觀察 setup",
+  "discipline_triggers": [
+    "跌破近 20 日支撐（900.0）",
+    "RSI 快速轉弱且價格失守 MA20（915.0）",
+    "法人由買超轉為持續賣超"
+  ],
+  "observation_conditions": [
+    "法人籌碼偏多（持續吸籌）",
+    "均線維持多頭排列（close > MA5 > MA20）",
+    "新聞情緒偏正向",
+    "突破近 20 日壓力（950.0）且量能同步放大"
+  ],
+  "risk_control_reference": {
+    "reference": "880.5（近20日低點×0.97）或跌破 MA60",
+    "reference_type": "setup_risk_control_reference"
+  },
+  "command_language_deprecated": {
+    "entry_zone": "現價附近分批買進",
+    "stop_loss": "近20日低點 - 3% 或跌破 MA60",
+    "action_plan_action": "分批佈局（首筆 20-30%）",
+    "target_zone": "900.0–915.0（support_20d ~ MA20）",
+    "suggested_position_size": "20-30%"
+  },
   "errors": []
 }
 ```
@@ -177,14 +201,20 @@ make run-api
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位）                                                                                   |
   | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                           |
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
-  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；不表示持股中的出場/減碼指令 |
+  | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；前端主要呈現應改用 risk-language 欄位 |
   | `shared_context`           | object \| null | Phase 2C shared background context read payload；只作 evidence/caveat 與資料完整度 trace，不參與 LLM 數值計算、ranking、bucket、`action_plan` 或 rule-based 欄位覆寫 |
   | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                                                                                                          |
   | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                                                                                                      |
   | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                                                                                                    |
+  | `risk_state`               | string \| null | 研究/紀律語言的 setup 或風險狀態；前端 primary copy 使用                                                                                                                                                                         |
+  | `risk_state_label`         | string \| null | `risk_state` 的可讀標籤                                                                                                                                                                                                           |
+  | `discipline_triggers`      | array          | 紀律觸發條件；前端 primary copy 使用                                                                                                                                                                                             |
+  | `observation_conditions`   | array          | 觀察條件；前端 primary copy 使用                                                                                                                                                                                                 |
+  | `risk_control_reference`   | object \| null | 風險控制參考線或參考條件                                                                                                                                                                                                          |
+  | `command_language_deprecated` | object       | legacy/internal compatibility 欄位集合；不得作為 primary user-facing copy                                                                                                                                                        |
   | `errors`                   | array          | 錯誤碼陣列                                                                                                                                                                                                                                                                                      |
 
-> **策略產生邊界（`POST /analyze`）**：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`、`action_plan`、`action_plan_tag` 皆由後端 Python rule-based 邏輯產出；LLM 可參與分析文字、新聞情緒或綜合敘事生成，但**不得直接輸出最終進場指令**。
+> **策略產生邊界（`POST /analyze`）**：`strategy_type`、`entry_zone`、`stop_loss`、`holding_period`、`action_plan`、`action_plan_tag` 皆由後端 Python rule-based 邏輯產出；LLM 可參與分析文字、新聞情緒或綜合敘事生成，但**不得直接輸出最終進場指令**。Phase 4 後，primary user-facing copy 應使用 `risk_state`、`discipline_triggers`、`observation_conditions` 與 `risk_control_reference`；`entry_zone`、`stop_loss` 與 `action_plan.action` 保留為相容/trace 欄位。
 
 > **Shared context read contract（Phase 2C）**：`shared_context` 由 `shared_background_contexts` cache 以 selected symbol 批次/單檔讀取產生，欄位包含 `version`（目前 `shared-context-read-v1`）、`symbol`、`consumer`、`contexts[]`、`caveats[]` 與 `data_quality`。`contexts[]`/`caveats[]` 使用 consumer-neutral 欄位：`context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers`；read path 會尊重 `applicable_consumers`，若 cache row 不適用目標 consumer，會回傳 non-blocking `context_not_applicable_to_consumer` caveat。資料缺漏或 stale 時以 caveat 呈現且 `data_quality.blocking=false`。此 payload 在 response 組裝階段附加，不進入 LangGraph initial state 或 LLM prompt，不觸發 weekly major holders、lending、full margin 的即時逐檔昂貴查詢。
 
@@ -235,8 +265,8 @@ make run-api
 
 ### `POST /analyze/position`
 
-- **用途**：持股診斷——以使用者購入成本價為錨點，評估當前倉位健康度、動態停利/停損位，以及出場建議（詳見 [持股診斷系統技術規格](./ai-stock-sentinel-position-diagnosis-spec.md)）
-- **產品語義**：此端點是持股中的操作建議唯一真相來源；`recommended_action` / `exit_reason` 才對應續抱 / 減碼 / 出場等當前操作判斷
+- **用途**：持股診斷——以使用者購入成本價為錨點，評估當前倉位健康度、動態風險控制參考、紀律觸發與觀察條件（詳見 [持股診斷系統技術規格](./ai-stock-sentinel-position-diagnosis-spec.md)）
+- **產品語義**：此端點的 primary user-facing 語言為研究/紀律診斷。`risk_state` / `discipline_triggers` / `observation_conditions` / `risk_control_reference` 是前端與 API consumer 的主要呈現欄位；`recommended_action` / `trailing_stop` / `exit_reason` 仍保留為 legacy/internal compatibility 欄位，不可刪除，但不得作為 primary UI copy。
 
 - **Request Body**
 
@@ -278,6 +308,21 @@ make run-api
     "profit_loss_pct": 12.76,
     "position_status": "profitable_safe",
     "position_narrative": "目前獲利已脫離成本區，持股安全緩衝充足。",
+    "risk_state": "stable",
+    "risk_state_label": "風險狀態穩定",
+    "discipline_triggers": ["收盤價需持續對照風險控制參考價 980。"],
+    "observation_conditions": ["目前獲利已脫離成本區，持股安全緩衝充足。", "目前相對成本報酬約 12.76%。"],
+    "risk_control_reference": {
+      "reference_price": 980.0,
+      "reference_type": "dynamic_defense_reference",
+      "reason": "獲利超過 5%，風險控制參考上移至成本價保本"
+    },
+    "command_language_deprecated": {
+      "recommended_action": "Hold",
+      "trailing_stop": 980.0,
+      "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
+      "exit_reason": null
+    },
     "recommended_action": "Hold",
     "trailing_stop": 980.0,
     "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
@@ -330,6 +375,21 @@ make run-api
     "momentum_expectation": "法人持續買超，動能延續"
   },
   "action_plan_tag": "opportunity",
+  "risk_state": "setup_observation",
+  "risk_state_label": "可觀察 setup",
+  "discipline_triggers": [],
+  "observation_conditions": [],
+  "risk_control_reference": {
+    "reference": "980.0（成本保本線）",
+    "reference_type": "setup_risk_control_reference"
+  },
+  "command_language_deprecated": {
+    "entry_zone": null,
+    "stop_loss": null,
+    "action_plan_action": "續抱",
+    "target_zone": null,
+    "suggested_position_size": null
+  },
   "data_sources": ["google-news-rss", "yfinance", "finmind"],
   "errors": []
 }
@@ -345,12 +405,18 @@ make run-api
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度，用於 guardrail、校準與 trace                                                  |
   | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容；不應作為預設前台 headline                                        |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                                          |
-  | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 context + `signal_summary`，強化持股健康度與出場推理）                |
+  | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 context + `signal_summary`，強化持股健康度與風險脈絡解釋）            |
   | `technical_indicators`     | object \| null | 技術指標顯性輸出（與 `/analyze` 相同，包含布林通道、MACD、KD、ADX、OBV，供前端技術指標卡片使用） |
   | `shared_context`           | object \| null | Phase 2C shared background context read payload；只作持股風險 caveat 與資料完整度 trace，不覆寫 `recommended_action`、`trailing_stop` 或 `exit_reason` |
   | `institutional_flow_label` | enum \| null   | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                     |
-  | `action_plan`              | object \| null | 持股版戰術行動（`action` 為 `續抱` / `減碼` / `出場`）                                           |
+  | `action_plan`              | object \| null | legacy/internal 行動欄位，前端主要呈現應改用 risk-language 欄位                                  |
   | `action_plan_tag`          | enum \| null   | `opportunity` / `overheated` / `neutral`                                                         |
+  | `risk_state`               | string \| null | 研究/紀律語言的 setup 或風險狀態；前端 primary copy 使用                                         |
+  | `risk_state_label`         | string \| null | `risk_state` 的可讀標籤                                                                           |
+  | `discipline_triggers`      | array          | 紀律觸發條件；前端 primary copy 使用                                                             |
+  | `observation_conditions`   | array          | 觀察條件；前端 primary copy 使用                                                                 |
+  | `risk_control_reference`   | object \| null | 風險控制參考線或參考條件                                                                          |
+  | `command_language_deprecated` | object       | legacy/internal compatibility 欄位集合；不得作為 primary user-facing copy                        |
   | `data_sources`             | array          | 本次成功取得資料的來源列表                                                                       |
   | `errors`                   | array          | 錯誤碼陣列                                                                                       |
 
@@ -362,16 +428,22 @@ make run-api
   | `profit_loss_pct`               | float          | 當前損益百分比（rule-based Python 計算）                                      |
   | `position_status`               | string         | `profitable_safe` / `at_risk` / `under_water`                                 |
   | `position_narrative`            | string         | 倉位狀態敘事（rule-based，供 LLM 讀取）                                       |
-  | `recommended_action`            | string         | `Hold` / `Trim` / `Exit`（rule-based，LLM 不得覆寫）                          |
-  | `trailing_stop`                 | float          | 動態防守價位（rule-based Python 計算）                                        |
-  | `trailing_stop_reason`          | string         | 停利/停損邏輯說明                                                             |
-  | `exit_reason`                   | string \| null | 出場/減碼理由；無觸發條件時為 `null`                                          |
+  | `risk_state`                    | string         | `stable` / `watch` / `elevated` / `critical`，primary user-facing risk state  |
+  | `risk_state_label`              | string         | 風險狀態可讀標籤                                                              |
+  | `discipline_triggers`           | array          | 紀律觸發條件，primary user-facing copy                                        |
+  | `observation_conditions`        | array          | 觀察條件，primary user-facing copy                                            |
+  | `risk_control_reference`        | object         | 風險控制參考價與原因                                                          |
+  | `command_language_deprecated`   | object         | legacy/internal compatibility 欄位集合                                        |
+  | `recommended_action`            | string         | `Hold` / `Trim` / `Exit`（rule-based，LLM 不得覆寫；secondary compatibility） |
+  | `trailing_stop`                 | float          | 動態防守價位（rule-based Python 計算；secondary compatibility）               |
+  | `trailing_stop_reason`          | string         | 舊停利/停損邏輯說明；primary UI 應改用 `risk_control_reference.reason`         |
+  | `exit_reason`                   | string \| null | 舊出場/減碼理由；primary UI 應改用 `discipline_triggers`                       |
   | `distance_to_trailing_stop_pct` | float \| null  | 現價距離動態防守位百分比；正值代表仍在防守位上方                              |
   | `distance_to_support_pct`       | float \| null  | 現價距離 20 日支撐位百分比；正值代表仍在支撐上方                              |
   | `unrealized_pnl`                | float \| null  | 若 request 有 `quantity`，回傳未實現損益金額；未提供數量時為 `null`           |
   | `holding_days`                  | int \| null    | 若 request 有 `entry_date`，回傳持有天數；未提供或日期格式無法解析時為 `null` |
 
-> **`recommended_action` 判斷規則（rule-based，後端計算）**：
+> **`recommended_action` 相容欄位判斷規則（rule-based，後端計算）**：
 >
 > - `flow_label = distribution` 且 `profit_loss_pct > 0` → `Trim`
 > - `flow_label = distribution` 且 `profit_loss_pct <= 0` → `Exit`
@@ -382,7 +454,7 @@ make run-api
 > - 獲利達 10% 且 `kd_zone = overbought`、`bollinger_position = near_upper`，但 ADX/OBV/MACD 未形成強趨勢續航 → `Trim`
 > - 其他 → `Hold`
 
-> **持股診斷 LLM 邊界**：`/analyze/position` 與 `/analyze` 共用 LangGraph 分析流程與 `signal_summary`；差異是 request 內含 `entry_price` 時，`analyze_node` 會額外建立 `position_context`，讓 LLM 以成本價、損益百分比、動態防守價、距離防守線、距離支撐、未實現損益、持有天數、`recommended_action` 與 `exit_reason` 解釋持股狀態。`recommended_action` / `trailing_stop` / `exit_reason` 仍由 Python rule-based 計算，LLM 不得覆寫。
+> **持股診斷 LLM 邊界**：`/analyze/position` 與 `/analyze` 共用 LangGraph 分析流程與 `signal_summary`；差異是 request 內含 `entry_price` 時，`analyze_node` 會額外建立 `position_context`，讓 LLM 以成本價、損益百分比、動態防守價、距離防守線、距離支撐、未實現損益、持有天數、`recommended_action` 與 `exit_reason` 解釋持股狀態。`recommended_action` / `trailing_stop` / `exit_reason` 仍由 Python rule-based 計算，LLM 不得覆寫；使用者主要呈現必須使用 additive risk-language 欄位。
 
 > **Shared context 邊界（Phase 2C）**：`/analyze/position` 的 `shared_context.consumer = "position_analysis"`。Shared context 只由 shared cache 讀取並附加於 response，作為 weekly major holders、lending、full margin 等背景 caveat 與資料品質說明；它不進入 position scorer，不改 `position_status`、`recommended_action`、`trailing_stop`、`trailing_stop_reason`、`exit_reason` 或任何持股診斷 rule-based 欄位。Missing/stale context 非阻塞，必須以 `freshness` / `missing_reason` / `data_quality` 表示。
 
@@ -542,6 +614,84 @@ make run-api
   - `created_after_entry`：plan 是否在進場後補填；`true` 時不得視為原始進場當下已存在的計畫。
   - `planned_invalidation_present`：目前 plan 是否有 `planned_invalidation` 文字。
   - `shared_context`：Phase 2D portfolio diagnosis shared context reference。只讀 `shared_background_contexts` cache，作為 evidence/caveat 與資料品質說明；不得轉成 portfolio action、加減碼指令或交易建議。Active portfolio 最多 8 筆，因此此 read path 為 bounded cache read，不觸發 weekly major holders、lending、full margin 即時逐檔 provider。
+
+### `GET /portfolio/risk-summary`
+
+- **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
+- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan` 與 `stock_raw_data`；不得建立、修改或刪除持股、交易事件、review 或任何 portfolio state。
+- **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
+- **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
+
+- **Response 200**
+
+```json
+{
+  "version": "portfolio-risk-summary-v1",
+  "as_of_date": "2026-06-12",
+  "portfolio_value": 120000.0,
+  "total_unrealized_pnl": 20000.0,
+  "total_at_risk": 25000.0,
+  "total_at_risk_pct": 20.8333,
+  "position_risks": [
+    {
+      "symbol": "2330.TW",
+      "quantity": 1000.0,
+      "current_price": 120.0,
+      "entry_price": 100.0,
+      "market_value": 120000.0,
+      "unrealized_pnl": 20000.0,
+      "defense_reference": {
+        "price": 95.0,
+        "source": "planned_stop_price"
+      },
+      "estimated_risk_amount": 25000.0,
+      "estimated_risk_pct_of_portfolio": 20.8333,
+      "portfolio_weight_pct": 100.0,
+      "risk_state": "elevated",
+      "discipline_triggers": [
+        "單一部位估計曝險占投資組合 20.83%，高於 5% 檢查線。"
+      ],
+      "data_quality": {
+        "status": "ok",
+        "caveats": []
+      }
+    }
+  ],
+  "concentration": {
+    "by_symbol": [
+      {
+        "type": "symbol",
+        "key": "2330.TW",
+        "market_value": 120000.0,
+        "pct_of_portfolio": 100.0,
+        "status": "elevated"
+      }
+    ]
+  },
+  "shared_exposures": [
+    {
+      "type": "setup_type",
+      "key": "breakout",
+      "symbols": ["2330.TW"],
+      "count": 1,
+      "market_value": 120000.0,
+      "pct_of_portfolio": 100.0
+    }
+  ],
+  "risk_budget_status": {
+    "status": "constrained",
+    "total_at_risk_pct": 20.8333,
+    "watch_threshold_pct": 5.0,
+    "constrained_threshold_pct": 10.0,
+    "notes": []
+  },
+  "data_quality": {
+    "status": "ok",
+    "caveats": [],
+    "price_stale_after_days": 5
+  }
+}
+```
 
 ### `GET /portfolio/{portfolio_id}/lifecycle-plan`
 
@@ -717,11 +867,11 @@ make run-api
   - `exit_date`：出場日期，必填，ISO 8601 日期字串。
   - `exit_price`：出場價格，必填，需大於 0。
   - `exit_quantity`：出場股數，必填，需大於 0，且不可大於目前 active 持有股數。
-  - `fees`：手續費，選填，需大於或等於 0，預設 0。
-  - `taxes`：交易稅，選填，需大於或等於 0，預設 0。
+  - `fees`：手續費，選填，需大於或等於 0；未提供時依 broker fee rule 自動估算，若提供則視為使用者覆寫值。
+  - `taxes`：交易稅，選填，需大於或等於 0；未提供時依 sell transaction tax rule 自動估算，若提供則視為使用者覆寫值。
 
 - **計算邏輯**
-  - 已實現損益採平均成本法計算：`realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`
+  - 已實現損益採平均成本法計算：`realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`，其中 `fees` / `taxes` 使用同一組寫入 closed portfolio row 與 `position_event` 的實際成本值。
   - 已實現報酬率採本次出場股數的成本基準計算：`realized_return_pct = realized_pnl / (entry_price * exit_quantity) * 100`
   - `holding_days = exit_date - entry_date` 的天數
   - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
@@ -735,6 +885,21 @@ make run-api
   - `exit_date` 早於 `entry_date` 時回傳 `422`，訊息為 `出場日期不可早於進場日期`。
 
 - **歷史保留**：此端點不刪除 `daily_analysis_log`，結案後仍可保留歷史診斷。
+
+### `GET /portfolio/latest-history` / `GET /portfolio/{portfolio_id}/history`
+
+- **用途**：讀取 portfolio history 的最新或分頁診斷紀錄。History response 會保留 `recommended_action` 作為 legacy compatibility 欄位，但 primary display 應使用 additive risk-language 欄位。
+- **Additive risk-language 欄位**
+  - `risk_state`：`stable` / `watch` / `elevated` / `critical` / `unknown`。
+  - `risk_state_label`：給前端主要呈現的中文風險狀態。
+  - `discipline_triggers`：紀律觸發條件清單。
+  - `risk_control_reference`：風險控制參考價或參考條件；資料不足時為 `null`。
+  - `compatibility_source`：`position_risk_language` / `legacy_recommended_action` / `insufficient_history_data`，表示該 row 的 risk-language 來源。
+- **來源優先順序**
+  1. `daily_analysis_log.indicators.position_risk_language` 或由 `stock_analysis_cache.full_result.position_analysis` seed 的 snapshot。
+  2. 舊資料的 `recommended_action` fallback mapping。
+  3. 無足夠資料時回傳 `risk_state = unknown`、`risk_state_label = 資料不足`。
+- **相容策略**：`recommended_action` 仍存在於 response，不可作為 primary UI copy；前端歷史視圖必須優先讀 `risk_state_label`。
 
 ### `GET /portfolio/{portfolio_id}/review`
 

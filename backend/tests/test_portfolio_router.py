@@ -796,6 +796,134 @@ def test_decision_context_status_attaches_shared_context_without_portfolio_actio
     assert "action" not in shared_context
 
 
+def test_portfolio_risk_summary_reads_active_user_positions_only(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-risk-owned",
+        symbol="2330.TW",
+        entry_price=100,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(UserPortfolio(
+        id=43,
+        user_id=2,
+        position_group_id="group-risk-other",
+        symbol="2317.TW",
+        entry_price=50,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(UserPortfolio(
+        id=44,
+        user_id=1,
+        position_group_id="group-risk-closed",
+        symbol="2454.TW",
+        entry_price=80,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+        is_active=False,
+        exit_date=date(2026, 6, 10),
+        exit_price=90,
+        exit_quantity=10,
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-risk-owned",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        setup_type="breakout",
+        default_stop_rule="fixed_price",
+        planned_stop_price=95,
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=date.today(),
+        technical={"close_price": 120},
+        raw_data_is_final=True,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2317.TW",
+        record_date=date.today(),
+        technical={"close_price": 60},
+        raw_data_is_final=True,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["portfolio_value"] == 1200
+    assert data["total_unrealized_pnl"] == 200
+    assert data["total_at_risk"] == 250
+    assert [row["symbol"] for row in data["position_risks"]] == ["2330.TW"]
+    assert "recommended_action" not in data
+    assert "portfolio_action" not in data
+    assert portfolio_db_session.query(PositionEvent).count() == 0
+
+
+def test_portfolio_risk_summary_reports_data_gap_caveats(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-no-price",
+        symbol="2330.TW",
+        entry_price=100,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(UserPortfolio(
+        id=43,
+        user_id=1,
+        position_group_id="group-zero-quantity",
+        symbol="2317.TW",
+        entry_price=50,
+        quantity=0,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-no-price",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_stop_price=90,
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2317.TW",
+        record_date=date(2026, 1, 1),
+        technical={"close_price": 60},
+        raw_data_is_final=True,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    caveat_counts = {item["code"]: item["count"] for item in data["data_quality"]["caveats"]}
+    assert caveat_counts["missing_price"] == 1
+    assert caveat_counts["missing_defense_reference"] == 1
+    assert caveat_counts["zero_quantity"] == 1
+    assert caveat_counts["stale_price"] == 1
+    assert data["data_quality"]["status"] == "insufficient"
+    assert data["risk_budget_status"]["notes"] == ["部分部位資料不足，風險預算狀態需搭配 data_quality 解讀。"]
+
+
 def test_decision_context_status_reads_user_backfilled_plan(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -1454,7 +1582,7 @@ def test_add_portfolio_rejects_invalid_entry_record_fixed_option(
     assert portfolio_db_session.execute(select(PositionLifecyclePlan)).scalars().all() == []
 
 
-def test_close_without_manual_tax_keeps_row_compatible_and_calculates_event_tax(
+def test_close_without_manual_costs_calculates_row_event_costs_and_pnl(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
@@ -1478,9 +1606,9 @@ def test_close_without_manual_tax_keeps_row_compatible_and_calculates_event_tax(
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["exit_fees"] == 0.0
-    assert data["exit_taxes"] == 0.0
-    assert data["realized_pnl"] == 5000.0
+    assert data["exit_fees"] == 135.38
+    assert data["exit_taxes"] == 285.0
+    assert data["realized_pnl"] == 4579.62
     event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
     assert event.event_type == "full_exit"
     assert float(event.fees) == 135.38
@@ -2484,3 +2612,46 @@ def test_latest_history_returns_latest_per_portfolio():
     assert data["42"]["action_tag"] == "Trim"
     assert data["42"]["record_date"] == "2026-03-10"
     assert data["42"]["signal_confidence"] == 75.0
+
+
+def test_latest_history_returns_additive_risk_language_fields():
+    """latest-history 應優先回傳 additive risk-language 欄位，legacy action 僅保留相容。"""
+    from datetime import date
+
+    portfolio = MagicMock()
+    portfolio.id = 42
+    portfolio.symbol = "2330.TW"
+    portfolio.entry_date = date(2026, 3, 1)
+    portfolio.exit_date = None
+
+    log_row = {
+        "portfolio_id": 42,
+        "symbol": "2330.TW",
+        "record_date": date(2026, 3, 10),
+        "signal_confidence": 75.0,
+        "action_tag": "Hold",
+        "recommended_action": "Exit",
+        "indicators": {
+            "position_risk_language": {
+                "risk_state": "watch",
+                "risk_state_label": "需要觀察",
+                "discipline_triggers": ["量能失真需等待確認"],
+                "risk_control_reference": {"reference_price": 900},
+            },
+        },
+        "final_verdict": None,
+        "prev_action_tag": "Hold",
+        "prev_confidence": 60.0,
+    }
+
+    client = _make_latest_history_client([portfolio], [log_row])
+    resp = client.get("/portfolio/latest-history")
+
+    assert resp.status_code == 200
+    record = resp.json()["42"]
+    assert record["risk_state"] == "watch"
+    assert record["risk_state_label"] == "需要觀察"
+    assert record["discipline_triggers"] == ["量能失真需等待確認"]
+    assert record["risk_control_reference"] == {"reference_price": 900}
+    assert record["compatibility_source"] == "position_risk_language"
+    assert record["recommended_action"] == "Exit"

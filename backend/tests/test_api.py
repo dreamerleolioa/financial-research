@@ -330,6 +330,13 @@ def test_analyze_response_includes_strategy_fields() -> None:
             "entry_zone": "現價附近分批買進",
             "stop_loss": "近20日低點 - 3% 或跌破 MA60",
             "holding_period": "1-3 個月",
+            "action_plan_tag": "opportunity",
+            "action_plan": {
+                "action": "分批佈局（首筆 20-30%）",
+                "defense_line": "近20日低點 - 3% 或跌破 MA60",
+                "thesis_points": ["法人籌碼偏多"],
+                "invalidation_conditions": ["跌破 MA20"],
+            },
         }
     )
     client = _client_with_graph(graph)
@@ -339,10 +346,19 @@ def test_analyze_response_includes_strategy_fields() -> None:
     assert response.status_code == 200
     body = response.json()
     for field in ["confidence_score", "cross_validation_note", "strategy_type",
-                  "entry_zone", "stop_loss", "holding_period"]:
+                  "entry_zone", "stop_loss", "holding_period",
+                  "risk_state", "risk_state_label", "discipline_triggers",
+                  "observation_conditions", "risk_control_reference",
+                  "command_language_deprecated"]:
         assert field in body, f"Missing field '{field}' in response"
     assert body["confidence_score"] == 65
     assert body["strategy_type"] == "mid_term"
+    assert body["risk_state"] == "setup_observation"
+    assert body["risk_state_label"] == "可觀察 setup"
+    assert body["observation_conditions"] == ["法人籌碼偏多"]
+    assert body["discipline_triggers"] == ["跌破 MA20"]
+    assert body["risk_control_reference"]["reference_type"] == "setup_risk_control_reference"
+    assert body["command_language_deprecated"]["action_plan_action"] == "分批佈局（首筆 20-30%）"
 
 
 def test_analyze_response_includes_extended_technical_indicators() -> None:
@@ -771,6 +787,34 @@ def test_analyze_position_returns_position_analysis_block() -> None:
     assert "trailing_stop" in pa
     assert "recommended_action" in pa
     assert pa["recommended_action"] in ("Hold", "Trim", "Exit")
+    assert pa["risk_state"] == "stable"
+    assert pa["risk_state_label"] == "風險狀態穩定"
+    assert pa["risk_control_reference"]["reference_type"] == "dynamic_defense_reference"
+    assert "recommended_action" in pa["command_language_deprecated"]
+
+
+def test_position_cache_full_result_can_seed_history_risk_language_snapshot() -> None:
+    indicators = api._indicators_with_position_risk_from_full_result(
+        {"close_price": 1100.0},
+        {
+            "position_analysis": {
+                "risk_state": "elevated",
+                "risk_state_label": "風險狀態升高",
+                "discipline_triggers": ["收盤跌破風險控制參考價"],
+                "observation_conditions": ["量價仍需觀察"],
+                "risk_control_reference": {"reference_price": 980.0},
+            },
+        },
+    )
+
+    assert indicators["close_price"] == 1100.0
+    assert indicators["position_risk_language"] == {
+        "risk_state": "elevated",
+        "risk_state_label": "風險狀態升高",
+        "discipline_triggers": ["收盤跌破風險控制參考價"],
+        "observation_conditions": ["量價仍需觀察"],
+        "risk_control_reference": {"reference_price": 980.0},
+    }
 
 
 def test_analyze_position_entry_price_required() -> None:
@@ -808,6 +852,9 @@ def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> Non
     pa = body["position_analysis"]
     if pa["recommended_action"] in ("Trim", "Exit"):
         assert pa["exit_reason"] is not None
+        assert pa["risk_state"] in {"elevated", "critical"}
+        assert pa["discipline_triggers"]
+        assert "exit_reason" in pa["command_language_deprecated"]
 
 
 def test_analyze_position_shared_context_does_not_override_rule_based_fields(monkeypatch) -> None:

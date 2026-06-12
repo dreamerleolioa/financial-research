@@ -149,6 +149,21 @@ LLM 在 `analyze_node` 中必須執行「持股初衷檢視」邏輯：
     "profit_loss_pct": 12.5,
     "position_status": "profitable_safe",
     "position_narrative": "目前獲利已脫離成本區，持股安全緩衝充足。",
+    "risk_state": "stable",
+    "risk_state_label": "風險狀態穩定",
+    "discipline_triggers": ["收盤價需持續對照風險控制參考價 1025。"],
+    "observation_conditions": ["目前獲利已脫離成本區，持股安全緩衝充足。", "目前相對成本報酬約 12.5%。"],
+    "risk_control_reference": {
+      "reference_price": 1025.0,
+      "reference_type": "dynamic_defense_reference",
+      "reason": "獲利超過 5%，風險控制參考上移至成本價保本"
+    },
+    "command_language_deprecated": {
+      "recommended_action": "Hold",
+      "trailing_stop": 1025.0,
+      "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
+      "exit_reason": null
+    },
     "recommended_action": "Hold",
     "trailing_stop": 1025.0,
     "trailing_stop_reason": "獲利超過 5%，停損位上移至成本價保本",
@@ -172,12 +187,20 @@ LLM 在 `analyze_node` 中必須執行「持股初衷檢視」邏輯：
 | `profit_loss_pct`      | float          | 當前損益百分比                          | `12.5`                                        |
 | `position_status`      | string         | 倉位健康度標籤                          | `profitable_safe` / `at_risk` / `under_water` |
 | `position_narrative`   | string         | 倉位狀態敘事（rule-based，供 LLM 讀取） | `"目前獲利已脫離成本區..."`                   |
-| `recommended_action`   | string         | 持股戰術指令                            | `Hold` / `Trim` / `Exit`                      |
-| `trailing_stop`        | float          | 動態調整後的防守價位                    | `1025.0`                                      |
-| `trailing_stop_reason` | string         | 停利/停損邏輯說明                       | `"獲利超過 5%，停損位上移至成本價保本"`       |
-| `exit_reason`          | string \| null | 觸發減碼/出場的核心理由（無則 null）    | `"法人連續大賣且跌破 MA5，建議保護獲利"`      |
+| `risk_state`           | string         | primary user-facing 風險狀態            | `stable` / `watch` / `elevated` / `critical`  |
+| `risk_state_label`     | string         | 風險狀態可讀標籤                        | `"風險狀態穩定"`                              |
+| `discipline_triggers`  | array          | 紀律觸發條件                            | `["收盤價需持續對照風險控制參考價 1025。"]`   |
+| `observation_conditions` | array        | 觀察條件                                | `["目前相對成本報酬約 12.5%。"]`              |
+| `risk_control_reference` | object       | 風險控制參考價與原因                    | `{ "reference_price": 1025.0 }`               |
+| `command_language_deprecated` | object  | legacy/internal compatibility 欄位集合  | `{ "recommended_action": "Hold" }`            |
+| `recommended_action`   | string         | 相容欄位；rule-based，LLM 不得覆寫       | `Hold` / `Trim` / `Exit`                      |
+| `trailing_stop`        | float          | 相容欄位；動態調整後的防守價位          | `1025.0`                                      |
+| `trailing_stop_reason` | string         | 相容欄位；舊停利/停損邏輯說明           | `"獲利超過 5%，停損位上移至成本價保本"`       |
+| `exit_reason`          | string \| null | 相容欄位；舊觸發理由（無則 null）        | `"法人連續大賣且跌破 MA5，建議保護獲利"`      |
 
-**`recommended_action` 判斷規則（rule-based Python）**：
+> Phase 4 risk-language boundary：前端與對外文件的 primary copy 必須使用 `risk_state`、`discipline_triggers`、`observation_conditions` 與 `risk_control_reference`。`recommended_action`、`trailing_stop`、`exit_reason` 不可刪除，但只作 secondary compatibility / internal trace。
+
+**`recommended_action` 相容欄位判斷規則（rule-based Python）**：
 
 | 條件                                                        | 輸出                 |
 | ----------------------------------------------------------- | -------------------- |
@@ -259,10 +282,10 @@ class PositionState(TypedDict, total=False):
 | UI 元件        | 個股分析版                 | 持股診斷版                         |
 | -------------- | -------------------------- | ---------------------------------- |
 | 信心指數卡     | 同                         | 同（不變）                         |
-| 戰術卡操作方向 | 觀望 / 分批佈局 / 持股續抱 | **續抱 / 減碼 / 出場**             |
+| 主要狀態卡     | 觀察狀態與條件             | **風險狀態 / 紀律觸發 / 觀察條件** |
 | 戰術卡入場區間 | `entry_zone`               | ❌ 不顯示                          |
-| 戰術卡防守底線 | `stop_loss`（靜態）        | **`trailing_stop`（動態）**        |
-| 新增元件       | —                          | **損益對照卡**、**出場理由警示框** |
+| 風險控制參考   | `stop_loss`（靜態相容欄位） | **`risk_control_reference`**       |
+| 新增元件       | —                          | **損益對照卡**、**紀律觸發框**     |
 
 ---
 
@@ -270,10 +293,10 @@ class PositionState(TypedDict, total=False):
 
 - 輸入 `symbol` + `entry_price` 可觸發持股診斷流程，與 `/analyze` 完全獨立
 - `profit_loss_pct`、`position_status`、`trailing_stop` 必須由 Python rule-based 計算，不由 LLM 估算
-- `recommended_action` 必須依 4 節規則產出，LLM 不得覆寫
+- `recommended_action` 必須依 4 節規則產出，LLM 不得覆寫，且只作 secondary compatibility
 - 當 `flow_label = distribution` 且獲利中，`exit_reason` 不得為 null
 - 前端損益對照卡正確標註成本價、防守位、支撐壓力位
-- 當 `recommended_action = Exit` 時，前端以紅色警示框顯示 `exit_reason`
+- 前端主要呈現使用 `risk_state`、`discipline_triggers`、`observation_conditions` 與 `risk_control_reference`，不得把 `Hold` / `Trim` / `Exit` 當作 primary copy
 - 所有技術指標數值與籌碼數據沿用現有 `calculate_technical_indicators` 與 `fetch_institutional_flow` 工具；技術面包含 ATR / MFI / Donchian，籌碼面包含連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶持股結構（資料可得時）
 
 ---

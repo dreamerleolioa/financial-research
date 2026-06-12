@@ -1,5 +1,6 @@
 import pytest
 from ai_stock_sentinel.analysis.position_scorer import (
+    build_position_risk_language,
     compute_position_metrics,
     compute_trailing_stop,
     compute_recommended_action,
@@ -284,3 +285,28 @@ class TestComputeRecommendedAction:
         )
         assert reason is not None
         assert len(reason) > 0
+
+
+def test_build_position_risk_language_keeps_legacy_fields_secondary():
+    result = build_position_risk_language(
+        recommended_action="Trim",
+        trailing_stop=980.0,
+        trailing_stop_reason="獲利超過 5%，停損位上移至成本價保本",
+        exit_reason="法人持續出貨，建議逢高分批減碼保護獲利",
+        position_status="profitable_safe",
+        position_narrative="目前獲利已脫離成本區，持股安全緩衝充足。",
+        profit_loss_pct=12.5,
+        distance_to_trailing_stop_pct=7.1,
+        distance_to_support_pct=9.3,
+    )
+
+    assert result["risk_state"] == "elevated"
+    assert result["risk_state_label"] == "風險狀態升高"
+    assert result["risk_control_reference"] == {
+        "reference_price": 980.0,
+        "reference_type": "dynamic_defense_reference",
+        "reason": "獲利超過 5%，風險控制參考上移至成本價保本",
+    }
+    assert any("降低風險" in item for item in result["discipline_triggers"])
+    assert result["command_language_deprecated"]["recommended_action"] == "Trim"
+    assert result["command_language_deprecated"]["exit_reason"] == "法人持續出貨，建議逢高分批減碼保護獲利"

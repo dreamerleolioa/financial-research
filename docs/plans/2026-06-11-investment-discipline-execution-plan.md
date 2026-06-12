@@ -307,6 +307,13 @@ Done when:
 - Release checklist exists.
 - Automated checks cover rule registry, copy guard, validation report determinism, and portfolio risk data gaps.
 
+Implemented Phase 6 artifacts:
+
+- `docs/plans/2026-06-12-investment-discipline-release-gate.md` records the release gate checklist and verifier commands.
+- `.github/workflows/investment-discipline-release-gate.yml` runs the targeted backend release-gate tests and frontend build without calling production internal APIs.
+- `backend/tests/test_investment_discipline_release_gate.py` verifies checklist / command / workflow coverage.
+- `backend/tests/test_risk_language_copy_guard.py` uses an explicit allowlist for command-like terms that are limited to user-recording controls, negative boundary statements, or compatibility docs.
+
 ## 6. Verification Strategy
 
 Use the smallest verification set that proves the changed surface:
