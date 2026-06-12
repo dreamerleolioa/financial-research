@@ -177,7 +177,12 @@ class FinMindClient:
         cache_key = _cache_key(params, identity=identity)
         cached = self._cache.get(cache_key)
         if cached is not None:
-            logger.debug("[FinMindClient] cache hit dataset=%s data_id=%s", dataset, data_id)
+            logger.info(
+                "[FinMindClient] cache hit dataset=%s data_id=%s rows=%s",
+                dataset,
+                data_id,
+                len(cached),
+            )
             return cached
 
         limit = self._token_request_limit if token else self._anonymous_request_limit
