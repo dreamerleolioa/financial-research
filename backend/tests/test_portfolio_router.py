@@ -1,5 +1,5 @@
 # backend/tests/test_portfolio_router.py
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
@@ -869,6 +869,53 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     assert "recommended_action" not in data
     assert "portfolio_action" not in data
     assert portfolio_db_session.query(PositionEvent).count() == 0
+
+
+def test_portfolio_risk_summary_ignores_newer_non_final_raw_data(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-final-price",
+        symbol="2330.TW",
+        entry_price=100,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-final-price",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_stop_price=95,
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=date.today() - timedelta(days=1),
+        technical={"close_price": 120},
+        raw_data_is_final=True,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=date.today(),
+        technical={"close_price": 80},
+        raw_data_is_final=False,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["portfolio_value"] == 1200
+    assert data["position_risks"][0]["current_price"] == 120
+    assert data["position_risks"][0]["market_value"] == 1200
+    assert data["total_unrealized_pnl"] == 200
 
 
 def test_portfolio_risk_summary_reports_data_gap_caveats(

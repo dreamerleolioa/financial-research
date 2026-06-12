@@ -56,6 +56,7 @@ uv run pytest -q \
   tests/test_risk_language_copy_guard.py \
   tests/test_portfolio_risk_summary.py \
   tests/test_portfolio_router.py \
+  tests/test_portfolio_history.py \
   tests/test_investment_discipline_release_gate.py \
   tests/test_compatibility_deprecation_audit.py
 ```

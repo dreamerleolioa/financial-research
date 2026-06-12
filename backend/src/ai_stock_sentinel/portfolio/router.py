@@ -538,7 +538,10 @@ def get_portfolio_risk_summary(
     if symbols:
         raw_rows = db.execute(
             select(StockRawData)
-            .where(StockRawData.symbol.in_(symbols))
+            .where(
+                StockRawData.symbol.in_(symbols),
+                StockRawData.raw_data_is_final.is_(True),
+            )
             .order_by(StockRawData.symbol.asc(), StockRawData.record_date.desc(), StockRawData.id.desc())
         ).scalars().all()
         for raw_row in raw_rows:

@@ -47,6 +47,7 @@ def build_forward_validation_report(
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
     validation_version: str = FORWARD_VALIDATION_VERSION,
     hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
+    windows_by_candidate: Mapping[str, Sequence[int]] | None = None,
 ) -> ForwardValidationEvaluation:
     active_windows = _ordered_positive_values(windows)
     candidate_list = [dict(candidate) for candidate in candidates]
@@ -54,7 +55,10 @@ def build_forward_validation_report(
     skipped: Counter[str] = Counter()
 
     for candidate in candidate_list:
-        for window_days in active_windows:
+        candidate_windows = active_windows
+        if windows_by_candidate is not None:
+            candidate_windows = _ordered_positive_values(windows_by_candidate.get(_candidate_key(candidate), []))
+        for window_days in candidate_windows:
             outcome = evaluate_forward_window(
                 candidate,
                 price_series=price_series_by_symbol.get(str(candidate.get("symbol"))) or [],
@@ -328,8 +332,47 @@ def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWA
     return as_of_date - timedelta(days=max_window * 3)
 
 
+def due_windows_by_candidate(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    as_of_date: date,
+    windows: Sequence[int],
+) -> dict[str, list[int]]:
+    active_windows = _ordered_positive_values(windows)
+    due_by_candidate: dict[str, list[int]] = {}
+    for candidate in candidates:
+        signal_date = _parse_date(candidate.get("record_date"))
+        key = _candidate_key(candidate)
+        if signal_date is None or signal_date > as_of_date:
+            due_by_candidate[key] = active_windows
+            continue
+        due_windows = [window for window in active_windows if _business_days_after(signal_date, as_of_date) >= window]
+        if due_windows:
+            due_by_candidate[key] = due_windows
+    return due_by_candidate
+
+
 def write_report(report: Mapping[str, Any], path: str | Path) -> None:
     Path(path).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _candidate_key(candidate: Mapping[str, Any]) -> str:
+    candidate_id = candidate.get("candidate_id")
+    if candidate_id is not None:
+        return f"id:{candidate_id}"
+    return f"{candidate.get('symbol') or ''}:{candidate.get('record_date') or ''}"
+
+
+def _business_days_after(start_date: date, end_date: date) -> int:
+    if end_date <= start_date:
+        return 0
+    count = 0
+    current = start_date + timedelta(days=1)
+    while current <= end_date:
+        if current.weekday() < 5:
+            count += 1
+        current += timedelta(days=1)
+    return count
 
 
 def _sample_summary(
@@ -717,6 +760,7 @@ __all__ = [
     "ForwardValidationEvaluation",
     "build_forward_validation_report",
     "default_due_start_date",
+    "due_windows_by_candidate",
     "evaluate_forward_window",
     "forward_validation_candidates_from_runs",
     "forward_validation_fixture_inputs",

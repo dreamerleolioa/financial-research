@@ -246,6 +246,91 @@ def test_forward_validation_internal_api_writes_idempotent_results(monkeypatch) 
     assert row.outcome["forward_return_pct"] == 10.0
 
 
+def test_forward_validation_due_mode_only_writes_matured_windows(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+            StockRawData.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        matured_run = _add_run(session, run_date=date(2026, 6, 1))
+        matured_candidate = _add_candidate(session, matured_run, symbol="2330.TW", close=100)
+        recent_run = _add_run(session, run_date=date(2026, 6, 5))
+        recent_candidate = _add_candidate(session, recent_run, symbol="2454.TW", close=200)
+        matured_candidate_id = matured_candidate.id
+        recent_candidate_id = recent_candidate.id
+        for row_date, close in [
+            (date(2026, 6, 1), 100),
+            (date(2026, 6, 2), 102),
+            (date(2026, 6, 3), 104),
+            (date(2026, 6, 4), 106),
+            (date(2026, 6, 5), 108),
+            (date(2026, 6, 8), 110),
+        ]:
+            _add_raw(session, "2330.TW", row_date, close)
+        for row_date, close in [
+            (date(2026, 6, 5), 200),
+            (date(2026, 6, 8), 202),
+        ]:
+            _add_raw(session, "2454.TW", row_date, close)
+        for row_date, close in [
+            (date(2026, 6, 1), 1000),
+            (date(2026, 6, 2), 1004),
+            (date(2026, 6, 3), 1008),
+            (date(2026, 6, 4), 1012),
+            (date(2026, 6, 5), 1016),
+            (date(2026, 6, 8), 1020),
+        ]:
+            _add_raw(session, "TAIEX", row_date, close)
+        session.commit()
+
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    try:
+        client = TestClient(api.app)
+        resp = client.post(
+            "/internal/daily-radar/forward-validation/run",
+            json={
+                "mode": "due",
+                "market": "TW",
+                "as_of_date": "2026-06-08",
+                "windows": [5],
+                "benchmark_symbol": "TAIEX",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["candidate_count"] == 2
+    assert data["records_written"] == 1
+    assert data["validated_count"] == 1
+    assert data["skipped_count"] == 0
+    assert data["report"]["skip_reasons"] == {}
+
+    with Session(engine) as session:
+        rows = session.execute(select(DailyRadarForwardValidationResult)).scalars().all()
+
+    assert [row.candidate_id for row in rows] == [matured_candidate_id]
+    assert recent_candidate_id not in [row.candidate_id for row in rows]
+
+
 def test_forward_validation_migration_creates_idempotency_key_and_indexes() -> None:
     upgrade_sql = _render_forward_validation_migration_sql("upgrade")
     downgrade_sql = _render_forward_validation_migration_sql("downgrade")
@@ -321,28 +406,34 @@ def _price(row_date: str, open_: float, high: float, low: float, close: float) -
     return {"date": row_date, "open": open_, "high": high, "low": low, "close": close}
 
 
-def _add_run(session: Session) -> DailyRadarRun:
+def _add_run(session: Session, *, run_date: date = date(2026, 6, 1)) -> DailyRadarRun:
     run = DailyRadarRun(
-        run_date=date(2026, 6, 1),
+        run_date=run_date,
         market="TW",
         status="completed",
-        started_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        started_at=datetime.combine(run_date, datetime.min.time(), tzinfo=timezone.utc),
+        finished_at=datetime.combine(run_date, datetime.min.time(), tzinfo=timezone.utc),
         universe_count=1,
         prefilter_count=1,
         candidate_count=1,
         errors=[],
-        created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        created_at=datetime.combine(run_date, datetime.min.time(), tzinfo=timezone.utc),
     )
     session.add(run)
     session.flush()
     return run
 
 
-def _add_candidate(session: Session, run: DailyRadarRun) -> DailyRadarCandidate:
+def _add_candidate(
+    session: Session,
+    run: DailyRadarRun,
+    *,
+    symbol: str = "2330.TW",
+    close: float = 100,
+) -> DailyRadarCandidate:
     candidate = DailyRadarCandidate(
         run_id=run.id,
-        symbol="2330.TW",
+        symbol=symbol,
         name="TSMC",
         primary_bucket="institutional_accumulation",
         secondary_buckets=[],
@@ -354,11 +445,11 @@ def _add_candidate(session: Session, run: DailyRadarRun) -> DailyRadarCandidate:
         repeat_status="new",
         score_breakdown={"relative_strength": {"freshness": "fresh", "relative_value": 0.03}},
         input_snapshot={
-            "ohlcv": {"close": 100},
-            "indicators": {"support_level": 96},
+            "ohlcv": {"close": close},
+            "indicators": {"support_level": close * 0.96},
             "market_context": {"regime": "constructive"},
         },
-        data_dates={"ohlcv": "2026-06-01"},
+        data_dates={"ohlcv": run.run_date.isoformat()},
     )
     session.add(candidate)
     session.flush()

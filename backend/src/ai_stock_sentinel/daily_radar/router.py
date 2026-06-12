@@ -30,6 +30,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
     build_forward_validation_report,
     default_due_start_date,
+    due_windows_by_candidate,
     forward_validation_candidates_from_runs,
     load_price_series_from_raw_data,
     upsert_forward_validation_results,
@@ -304,6 +305,13 @@ def run_daily_radar_forward_validation_endpoint(
         start_date=price_start_date,
         end_date=as_of_date,
     )
+    windows_by_candidate = None
+    if request.mode == "due":
+        windows_by_candidate = due_windows_by_candidate(
+            candidates,
+            as_of_date=as_of_date,
+            windows=request.windows,
+        )
     evaluation = build_forward_validation_report(
         candidates,
         price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
@@ -313,6 +321,7 @@ def run_daily_radar_forward_validation_endpoint(
         as_of_date=as_of_date,
         windows=request.windows,
         benchmark_symbol=request.benchmark_symbol,
+        windows_by_candidate=windows_by_candidate,
     )
     write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
     db.commit()

@@ -38,6 +38,7 @@ def test_release_gate_commands_cover_automated_checks() -> None:
         "tests/test_risk_language_copy_guard.py",
         "tests/test_portfolio_risk_summary.py",
         "tests/test_portfolio_router.py",
+        "tests/test_portfolio_history.py",
         "tests/test_investment_discipline_release_gate.py",
         "tests/test_compatibility_deprecation_audit.py",
         "pnpm build",
@@ -58,6 +59,7 @@ def test_release_gate_workflow_runs_backend_and_frontend_gates() -> None:
     assert "tests/test_risk_language_copy_guard.py" in workflow
     assert "tests/test_portfolio_risk_summary.py" in workflow
     assert "tests/test_portfolio_router.py" in workflow
+    assert "tests/test_portfolio_history.py" in workflow
     assert "tests/test_investment_discipline_release_gate.py" in workflow
     assert "tests/test_compatibility_deprecation_audit.py" in workflow
     assert "pnpm build" in workflow

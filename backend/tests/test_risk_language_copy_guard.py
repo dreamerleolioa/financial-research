@@ -29,8 +29,8 @@ COMMAND_LANGUAGE_TERMS = [
 
 ALLOWLISTED_PRIMARY_COPY: dict[str, dict[str, list[str]]] = {
     "frontend/src/pages/DailyRadarPage.tsx": {
-        "勝率": ["排序不代表勝率或交易建議。"],
-        "交易建議": ["排序不代表勝率或交易建議。"],
+        "勝率": ['<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'],
+        "交易建議": ['<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'],
     },
     "frontend/src/pages/PortfolioPage.tsx": {
         "投資建議": ["本診斷結果僅供研究與紀律檢查，不構成投資建議。"],
@@ -39,12 +39,12 @@ ALLOWLISTED_PRIMARY_COPY: dict[str, dict[str, list[str]]] = {
     },
     "frontend/src/pages/ClosedPortfolioPage.tsx": {
         "出場": [
-            "exit_indicators: \"出場技術指標\"",
-            "exit_date: \"出場日期資料\"",
-            "exit_ma20: \"出場 MA20\"",
-            "exit_ma60: \"出場 MA60\"",
-            "exit_rsi14: \"出場 RSI14\"",
-            "exit_volume_ratio: \"出場量比\"",
+            "exit_indicators: \"出場技術指標\",",
+            "exit_date: \"出場日期資料\",",
+            "exit_ma20: \"出場 MA20\",",
+            "exit_ma60: \"出場 MA60\",",
+            "exit_rsi14: \"出場 RSI14\",",
+            "exit_volume_ratio: \"出場量比\",",
         ],
     },
 }
@@ -95,7 +95,17 @@ def test_copy_guard_allowlist_documents_intent() -> None:
     assert "frontend/src/pages/PortfolioPage.tsx" in ALLOWLISTED_PRIMARY_COPY
     assert ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"] == ["加碼"]
     assert ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["出場"] == ["出場"]
-    assert "排序不代表勝率或交易建議。" in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/DailyRadarPage.tsx"]["勝率"]
+    assert (
+        '<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'
+        in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/DailyRadarPage.tsx"]["勝率"]
+    )
+
+
+def test_copy_guard_allowlist_does_not_allow_broad_command_phrases() -> None:
+    assert _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "加碼", "加碼")
+    assert _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "出場", "出場")
+    assert not _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "加碼", "系統建議加碼")
+    assert not _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "出場", "風險升高建議出場")
 
 
 def test_deprecated_compatibility_fields_are_marked_secondary_in_specs() -> None:
@@ -124,4 +134,4 @@ def test_primary_frontend_surfaces_expose_risk_language_copy() -> None:
 
 def _is_allowlisted(relative_path: str, term: str, line: str) -> bool:
     snippets = ALLOWLISTED_PRIMARY_COPY.get(relative_path, {}).get(term, [])
-    return any(snippet in line for snippet in snippets)
+    return line.strip() in snippets
