@@ -310,13 +310,13 @@ def _build_operation_review(
         "classification": "rule_based_trade_review",
         "confidence": confidence,
         "market_regime": market_regime,
-        "supporting_signals": supporting,
-        "conflicting_signals": conflicting,
-        "caveats": caveats,
+        "supporting_signals": [_risk_language_text(item) for item in supporting],
+        "conflicting_signals": [_risk_language_text(item) for item in conflicting],
+        "caveats": [_risk_language_text(item) for item in caveats],
         "reviewed_portfolio_id": portfolio.id,
         "position_group_id": portfolio.position_group_id,
         "scope": "current_closed_row_only",
-        "summary": "本次整體檢討只評估這一筆出場批次，不會合併同一部位群組的其他分批交易。",
+        "summary": _risk_language_text("本次整體檢討只評估這一筆出場批次，不會合併同一部位群組的其他分批交易。"),
     }
 
 
@@ -331,10 +331,10 @@ def _build_user_readable_conclusion(
     verdict = _overall_verdict(data_quality, path_metrics, entry_review, exit_review, exit_indicators, detected_events)
     return {
         "overall_verdict": verdict,
-        "overall_verdict_label": _overall_verdict_label(verdict),
-        "one_sentence_reason": _one_sentence_reason(verdict, path_metrics, exit_review, exit_indicators),
-        "evidence": _user_readable_evidence(verdict, data_quality, path_metrics, exit_review, exit_indicators, detected_events),
-        "next_time_rules": _next_time_rules(verdict),
+        "overall_verdict_label": _risk_language_text(_overall_verdict_label(verdict)),
+        "one_sentence_reason": _risk_language_text(_one_sentence_reason(verdict, path_metrics, exit_review, exit_indicators)),
+        "evidence": [_risk_language_text(item) for item in _user_readable_evidence(verdict, data_quality, path_metrics, exit_review, exit_indicators, detected_events)],
+        "next_time_rules": [_risk_language_text(item) for item in _next_time_rules(verdict)],
     }
 
 
@@ -497,10 +497,10 @@ def _review_section(
         "classification": classification,
         "confidence": confidence,
         "market_regime": market_regime,
-        "supporting_signals": supporting_signals,
-        "conflicting_signals": conflicting_signals,
-        "caveats": caveats,
-        "summary": _summary_for(classification),
+        "supporting_signals": [_risk_language_text(item) for item in supporting_signals],
+        "conflicting_signals": [_risk_language_text(item) for item in conflicting_signals],
+        "caveats": [_risk_language_text(item) for item in caveats],
+        "summary": _risk_language_text(_summary_for(classification)),
     }
 
 
@@ -523,7 +523,7 @@ def _summary_for(classification: str) -> str:
 
 
 def _insufficient_indicator_note(label: str, key: str, count: int) -> str:
-    side = "進場" if label == "entry" else "出場"
+    side = "進場" if label == "entry" else "結案"
     indicator_labels = {
         "ma20": "MA20",
         "ma60": "MA60",
@@ -531,6 +531,32 @@ def _insufficient_indicator_note(label: str, key: str, count: int) -> str:
         "volume_ratio": "量比",
     }
     return f"{side}日前只有 {count} 筆可用資料，無法穩定計算 {indicator_labels.get(key, key)}。"
+
+
+def _risk_language_text(text: str) -> str:
+    replacements = {
+        "這次出場合理": "這次結案節奏合理",
+        "這次出場偏早": "這次結案節奏偏早",
+        "這次出場偏晚": "這次結案節奏偏晚",
+        "小賺出場": "小幅獲利結案",
+        "小賺離場": "小幅獲利結案",
+        "出場日前": "結案日前",
+        "出場前": "結案前",
+        "出場後": "結案後",
+        "出場時": "結案時",
+        "出場價": "結案價",
+        "出場發生": "結案發生",
+        "出場與": "結案與",
+        "出場": "結案",
+        "停損": "風險控制",
+        "停利": "獲利保護",
+        "減碼": "降低曝險",
+        "分批落袋": "分批保護獲利",
+    }
+    rewritten = text
+    for source, target in replacements.items():
+        rewritten = rewritten.replace(source, target)
+    return rewritten
 
 
 def _event_label(event_type: str) -> str:
@@ -586,7 +612,7 @@ def _build_data_quality(portfolio: UserPortfolio, rows: list[StockRawData]) -> d
         insufficient_data.append("holding_path_prices")
     return {
         "status": "insufficient" if insufficient_data else "ok",
-        "notes": notes,
+        "notes": [_risk_language_text(note) for note in notes],
         "insufficient_data": insufficient_data,
     }
 

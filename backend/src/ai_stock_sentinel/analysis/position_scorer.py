@@ -173,3 +173,99 @@ def compute_recommended_action(
         return "Trim", "短線過熱且動能轉弱，建議分批減碼降低回撤風險"
 
     return "Hold", None
+
+
+def build_position_risk_language(
+    *,
+    recommended_action: str | None,
+    trailing_stop: float | None,
+    trailing_stop_reason: str | None,
+    exit_reason: str | None,
+    position_status: str | None,
+    position_narrative: str | None,
+    profit_loss_pct: float | None,
+    distance_to_trailing_stop_pct: float | None = None,
+    distance_to_support_pct: float | None = None,
+) -> dict[str, object]:
+    """Translate legacy action fields into additive risk-language fields."""
+    risk_state_map = {
+        "Hold": ("stable", "風險狀態穩定"),
+        "Trim": ("elevated", "風險狀態升高"),
+        "Exit": ("critical", "防守條件已觸發"),
+    }
+    risk_state, risk_state_label = risk_state_map.get(
+        str(recommended_action or ""),
+        _risk_state_from_position_status(position_status),
+    )
+    discipline_triggers: list[str] = []
+    if exit_reason:
+        discipline_triggers.append(_rewrite_command_language(exit_reason))
+    if trailing_stop is not None:
+        discipline_triggers.append(f"收盤價需持續對照風險控制參考價 {trailing_stop:g}。")
+    if distance_to_trailing_stop_pct is not None:
+        discipline_triggers.append(f"現價距風險控制參考約 {distance_to_trailing_stop_pct:g}%。")
+
+    observation_conditions: list[str] = []
+    if position_narrative:
+        observation_conditions.append(_rewrite_command_language(position_narrative))
+    if profit_loss_pct is not None:
+        observation_conditions.append(f"目前相對成本報酬約 {profit_loss_pct:g}%。")
+    if distance_to_support_pct is not None:
+        observation_conditions.append(f"現價距近期支撐約 {distance_to_support_pct:g}%。")
+
+    risk_control_reference = {
+        "reference_price": trailing_stop,
+        "reference_type": "dynamic_defense_reference",
+        "reason": _rewrite_command_language(trailing_stop_reason) if trailing_stop_reason else None,
+    }
+    return {
+        "risk_state": risk_state,
+        "risk_state_label": risk_state_label,
+        "discipline_triggers": _dedupe(discipline_triggers),
+        "observation_conditions": _dedupe(observation_conditions),
+        "risk_control_reference": risk_control_reference,
+        "command_language_deprecated": {
+            "recommended_action": recommended_action,
+            "trailing_stop": trailing_stop,
+            "trailing_stop_reason": trailing_stop_reason,
+            "exit_reason": exit_reason,
+        },
+    }
+
+
+def _risk_state_from_position_status(position_status: str | None) -> tuple[str, str]:
+    if position_status == "profitable_safe":
+        return "stable", "風險狀態穩定"
+    if position_status == "under_water":
+        return "critical", "防守條件已觸發"
+    return "watch", "需要觀察"
+
+
+def _rewrite_command_language(text: str) -> str:
+    replacements = {
+        "建議逢高分批減碼保護獲利": "觸發分批降低風險的檢查條件",
+        "建議先分批減碼保護獲利": "觸發分批降低風險的檢查條件",
+        "建議分批減碼降低回撤風險": "觸發分批降低風險的檢查條件",
+        "建議部分獲利了結": "觸發獲利保護檢查條件",
+        "建議停損出場": "觸發風險控制檢查條件",
+        "建議出場": "觸發風險控制檢查條件",
+        "停損位": "風險控制參考",
+        "移動停利": "動態風險控制",
+        "出場": "風險處理",
+        "減碼": "降低曝險",
+        "續抱": "維持觀察",
+    }
+    rewritten = text
+    for source, target in replacements.items():
+        rewritten = rewritten.replace(source, target)
+    return rewritten
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result

@@ -1,0 +1,78 @@
+name: Investment Discipline Release Gate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-release-gate:
+    name: Backend release gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run release gate tests
+        run: |
+          uv run pytest -q \
+            tests/test_daily_radar_rule_governance.py \
+            tests/test_daily_radar_forward_validation.py \
+            tests/test_risk_language_copy_guard.py \
+            tests/test_portfolio_risk_summary.py \
+            tests/test_portfolio_router.py \
+            tests/test_portfolio_history.py \
+            tests/test_investment_discipline_release_gate.py \
+            tests/test_compatibility_deprecation_audit.py
+        env:
+          ANTHROPIC_API_KEY: test-key
+          JWT_SECRET: test-secret-for-ci-only
+          DATABASE_URL: sqlite:///./test.db
+          GOOGLE_CLIENT_ID: test-google-client-id
+          GOOGLE_CLIENT_SECRET: test-google-client-secret
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+        env:
+          VITE_API_URL: http://localhost:8000
+          VITE_GOOGLE_CLIENT_ID: test-google-client-id

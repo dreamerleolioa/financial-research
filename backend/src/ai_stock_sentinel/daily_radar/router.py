@@ -25,6 +25,20 @@ from ai_stock_sentinel.daily_radar.background_context import (
     update_background_chip_context_cache,
 )
 from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
+from ai_stock_sentinel.daily_radar.forward_validation import (
+    DEFAULT_BENCHMARK_SYMBOL,
+    DEFAULT_FORWARD_WINDOWS,
+    build_forward_validation_report,
+    default_due_start_date,
+    due_windows_by_candidate,
+    forward_validation_candidates_from_runs,
+    load_price_series_from_raw_data,
+    upsert_forward_validation_results,
+)
+from ai_stock_sentinel.daily_radar.rule_governance import (
+    DEFAULT_MIN_SAMPLE_COUNT,
+    build_monthly_rule_review_report,
+)
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
     get_daily_radar_run_by_date,
@@ -85,6 +99,44 @@ class DailyRadarChipContextUpdateResponse(BaseModel):
     context_types: list[str]
     records_written: int
     errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DailyRadarForwardValidationRunRequest(BaseModel):
+    mode: Literal["due", "range"] = "due"
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    as_of_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    windows: list[int] = Field(default_factory=lambda: list(DEFAULT_FORWARD_WINDOWS))
+    benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
+
+
+class DailyRadarForwardValidationRunResponse(BaseModel):
+    status: Literal["completed"]
+    mode: Literal["due", "range"]
+    market: str
+    as_of_date: date
+    candidate_count: int
+    records_written: int
+    validated_count: int
+    skipped_count: int
+    report: dict[str, Any]
+
+
+class DailyRadarMonthlyRuleReviewRequest(BaseModel):
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    validation_version: str | None = Field(default=None, min_length=1, max_length=80)
+    min_sample_count: int = Field(default=DEFAULT_MIN_SAMPLE_COUNT, ge=1, le=10_000)
+
+
+class DailyRadarMonthlyRuleReviewResponse(BaseModel):
+    status: Literal["completed"]
+    market: str
+    month: str
+    report_json: dict[str, Any]
+    report_markdown: str
 
 
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
@@ -219,6 +271,98 @@ def update_daily_radar_chip_context_endpoint(
         context_types=list(result["context_types"]),
         records_written=int(result["records_written"]),
         errors=list(result["errors"]),
+    )
+
+
+@router.post(
+    "/internal/daily-radar/forward-validation/run",
+    response_model=DailyRadarForwardValidationRunResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def run_daily_radar_forward_validation_endpoint(
+    payload: DailyRadarForwardValidationRunRequest | None = None,
+    db: Session = Depends(get_db),
+) -> DailyRadarForwardValidationRunResponse:
+    request = payload or DailyRadarForwardValidationRunRequest()
+    as_of_date = request.as_of_date or _backend_today()
+    start_date = request.start_date
+    if request.mode == "due" and start_date is None:
+        start_date = default_due_start_date(as_of_date, max(request.windows or list(DEFAULT_FORWARD_WINDOWS)))
+    candidates = forward_validation_candidates_from_runs(
+        db,
+        market=request.market,
+        start_date=start_date,
+        end_date=request.end_date or as_of_date,
+    )
+    symbols = {str(candidate["symbol"]) for candidate in candidates}
+    price_start_date = min(
+        [_parse_date(candidate.get("record_date")) for candidate in candidates if _parse_date(candidate.get("record_date")) is not None],
+        default=start_date or as_of_date,
+    )
+    price_series = load_price_series_from_raw_data(
+        db,
+        symbols=sorted(symbols | {request.benchmark_symbol}),
+        start_date=price_start_date,
+        end_date=as_of_date,
+    )
+    windows_by_candidate = None
+    if request.mode == "due":
+        windows_by_candidate = due_windows_by_candidate(
+            candidates,
+            as_of_date=as_of_date,
+            windows=request.windows,
+            price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+            benchmark_prices=price_series.get(request.benchmark_symbol, []),
+        )
+    evaluation = build_forward_validation_report(
+        candidates,
+        price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+        benchmark_prices=price_series.get(request.benchmark_symbol, []),
+        market=request.market,
+        sample_source="production_db",
+        as_of_date=as_of_date,
+        windows=request.windows,
+        benchmark_symbol=request.benchmark_symbol,
+        windows_by_candidate=windows_by_candidate,
+    )
+    write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
+    db.commit()
+    return DailyRadarForwardValidationRunResponse(
+        status="completed",
+        mode=request.mode,
+        market=request.market,
+        as_of_date=as_of_date,
+        candidate_count=len(candidates),
+        records_written=write_summary["records_written"],
+        validated_count=write_summary["validated_count"],
+        skipped_count=write_summary["skipped_count"],
+        report=evaluation.report,
+    )
+
+
+@router.post(
+    "/internal/daily-radar/rule-review/monthly",
+    response_model=DailyRadarMonthlyRuleReviewResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def run_daily_radar_monthly_rule_review_endpoint(
+    payload: DailyRadarMonthlyRuleReviewRequest,
+    db: Session = Depends(get_db),
+) -> DailyRadarMonthlyRuleReviewResponse:
+    report = build_monthly_rule_review_report(
+        db,
+        market=payload.market,
+        year=payload.year,
+        month=payload.month,
+        validation_version=payload.validation_version,
+        min_sample_count=payload.min_sample_count,
+    )
+    return DailyRadarMonthlyRuleReviewResponse(
+        status="completed",
+        market=payload.market,
+        month=f"{payload.year:04d}-{payload.month:02d}",
+        report_json=report.json_report,
+        report_markdown=report.markdown_report,
     )
 
 

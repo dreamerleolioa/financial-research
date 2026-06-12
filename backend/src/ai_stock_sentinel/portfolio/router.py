@@ -15,10 +15,18 @@ from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecyc
 from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
-from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, PositionLifecycleReview, TradeReview, UserPortfolio
+from ai_stock_sentinel.db.models import (
+    PositionEvent,
+    PositionLifecyclePlan,
+    PositionLifecycleReview,
+    StockRawData,
+    TradeReview,
+    UserPortfolio,
+)
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.portfolio.entry_record_contract import EntryRecordContext
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee, calculate_sell_transaction_tax
+from ai_stock_sentinel.portfolio.risk_summary import build_portfolio_risk_summary
 from ai_stock_sentinel.shared_context import (
     SHARED_CONTEXT_CONSUMER_PORTFOLIO,
     read_shared_context_for_symbol,
@@ -502,6 +510,51 @@ def list_decision_context_status(
     }
 
 
+@router.get("/risk-summary")
+def get_portfolio_risk_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = db.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == current_user.id,
+            UserPortfolio.is_active == True,
+        ).order_by(UserPortfolio.created_at.desc())
+    ).scalars().all()
+
+    group_ids = [row.position_group_id for row in rows]
+    plans = []
+    if group_ids:
+        plans = db.execute(
+            select(PositionLifecyclePlan).where(
+                PositionLifecyclePlan.user_id == current_user.id,
+                PositionLifecyclePlan.position_group_id.in_(group_ids),
+            )
+        ).scalars().all()
+    plans_by_group = {plan.position_group_id: plan for plan in plans}
+
+    symbols = sorted({row.symbol for row in rows})
+    raw_data_by_symbol = {}
+    if symbols:
+        raw_rows = db.execute(
+            select(StockRawData)
+            .where(
+                StockRawData.symbol.in_(symbols),
+                StockRawData.raw_data_is_final.is_(True),
+            )
+            .order_by(StockRawData.symbol.asc(), StockRawData.record_date.desc(), StockRawData.id.desc())
+        ).scalars().all()
+        for raw_row in raw_rows:
+            raw_data_by_symbol.setdefault(raw_row.symbol, raw_row)
+
+    return build_portfolio_risk_summary(
+        rows,
+        plans_by_group=plans_by_group,
+        raw_data_by_symbol=raw_data_by_symbol,
+        as_of_date=date.today(),
+    )
+
+
 @router.get("/groups/{position_group_id}/events")
 def get_position_group_events(
     position_group_id: str,
@@ -906,17 +959,19 @@ def close_portfolio(
     if entry_price <= 0:
         raise HTTPException(status_code=422, detail="成本價必須大於 0")
     exit_quantity = Decimal(payload.exit_quantity)
-    row_fees = Decimal(str(payload.fees)) if payload.fees is not None else Decimal("0")
-    row_taxes = Decimal(str(payload.taxes)) if payload.taxes is not None else Decimal("0")
     gross_exit_amount = exit_price * exit_quantity
-    event_fees = calculate_broker_fee(
+    explicit_fee = Decimal(str(payload.fees)) if payload.fees is not None else None
+    explicit_tax = Decimal(str(payload.taxes)) if payload.taxes is not None else None
+    row_fees = calculate_broker_fee(
         gross_exit_amount,
-        actual_fee=Decimal(str(payload.fees)) if payload.fees is not None else None,
+        actual_fee=explicit_fee,
     )
-    event_taxes = calculate_sell_transaction_tax(
+    row_taxes = calculate_sell_transaction_tax(
         gross_exit_amount,
-        explicit_tax=Decimal(str(payload.taxes)) if payload.taxes is not None else None,
+        explicit_tax=explicit_tax,
     )
+    event_fees = row_fees
+    event_taxes = row_taxes
     realized_pnl = (exit_price - entry_price) * exit_quantity - row_fees - row_taxes
     realized_return_pct = realized_pnl / (entry_price * exit_quantity) * Decimal("100")
     holding_days = (payload.exit_date - item.entry_date).days

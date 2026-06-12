@@ -1,0 +1,82 @@
+name: Daily Radar monthly rule review
+
+on:
+  workflow_dispatch:
+    inputs:
+      market:
+        description: Market code
+        required: true
+        default: TW
+      year:
+        description: Report year
+        required: true
+      month:
+        description: Report month
+        required: true
+      min_sample_count:
+        description: Minimum sample count for automated recommendations
+        required: true
+        default: "20"
+
+jobs:
+  rule-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DAILY_RADAR_API_BASE_URL: ${{ secrets.DAILY_RADAR_API_BASE_URL }}
+      DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+    steps:
+      - name: Validate secrets
+        run: |
+          test -n "${DAILY_RADAR_API_BASE_URL}"
+          test -n "${DAILY_RADAR_INTERNAL_TOKEN}"
+
+      - name: Request cloud monthly rule review
+        run: |
+          mkdir -p reports/daily-radar/monthly
+          python - <<'PY' > /tmp/rule-review-payload.json
+          import json
+          import os
+
+          payload = {
+              "market": "${{ inputs.market }}",
+              "year": int("${{ inputs.year }}"),
+              "month": int("${{ inputs.month }}"),
+              "min_sample_count": int("${{ inputs.min_sample_count }}"),
+          }
+          print(json.dumps(payload, sort_keys=True))
+          PY
+          curl --fail --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data @/tmp/rule-review-payload.json \
+            "${DAILY_RADAR_API_BASE_URL}/internal/daily-radar/rule-review/monthly" \
+            > /tmp/daily-radar-rule-review-response.json
+
+      - name: Write downloadable artifacts
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          response = json.loads(Path("/tmp/daily-radar-rule-review-response.json").read_text())
+          month = response["month"]
+          base = Path("reports/daily-radar/monthly")
+          base.mkdir(parents=True, exist_ok=True)
+          (base / f"{month}-rule-review.json").write_text(
+              json.dumps(response["report_json"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (base / f"{month}-rule-review.md").write_text(
+              response["report_markdown"],
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload rule review artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-radar-rule-review-${{ inputs.year }}-${{ inputs.month }}
+          path: reports/daily-radar/monthly/

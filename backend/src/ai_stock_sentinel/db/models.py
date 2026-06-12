@@ -492,6 +492,40 @@ class DailyRadarCandidate(Base):
     created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     run: Mapped["DailyRadarRun"] = relationship(back_populates="candidates")
+    forward_validation_results: Mapped[list["DailyRadarForwardValidationResult"]] = relationship(
+        back_populates="candidate", cascade="all, delete-orphan"
+    )
+
+
+class DailyRadarForwardValidationResult(Base):
+    __tablename__ = "daily_radar_forward_validation_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "window_days",
+            "validation_version",
+            name="uq_daily_radar_forward_validation_candidate_window_version",
+        ),
+        Index("idx_daily_radar_forward_validation_candidate_id", "candidate_id"),
+        Index("idx_daily_radar_forward_validation_window_days", "window_days"),
+        Index("idx_daily_radar_forward_validation_status", "status"),
+        Index("idx_daily_radar_forward_validation_version", "validation_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("daily_radar_candidates.id"), nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    signal_date: Mapped[date] = mapped_column(Date, nullable=False)
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    outcome: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    skip_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    candidate: Mapped["DailyRadarCandidate"] = relationship(back_populates="forward_validation_results")
 
 
 class SharedBackgroundContext(Base):
