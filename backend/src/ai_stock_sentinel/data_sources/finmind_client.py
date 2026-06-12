@@ -19,6 +19,9 @@ FINMIND_DATA_API = "https://api.finmindtrade.com/api/v4/data"
 DEFAULT_TOKEN_REQUESTS_PER_HOUR = 600
 DEFAULT_ANONYMOUS_REQUESTS_PER_HOUR = 300
 DEFAULT_RESPONSE_CACHE_TTL_SECONDS = 3600
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_REQUEST_RETRIES = 2
+DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS = 0.0
 
 
 @dataclass
@@ -118,6 +121,9 @@ class FinMindClient:
         cache: FinMindResponseCache | None = None,
         token_request_limit: int | None = None,
         anonymous_request_limit: int | None = None,
+        request_retries: int | None = None,
+        retry_backoff_seconds: float | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._static_token = api_token
         self._request_get = request_get
@@ -132,6 +138,17 @@ class FinMindClient:
             "FINMIND_ANONYMOUS_REQUESTS_PER_HOUR",
             DEFAULT_ANONYMOUS_REQUESTS_PER_HOUR,
         )
+        self._request_retries = request_retries if request_retries is not None else _int_env(
+            "FINMIND_REQUEST_RETRIES",
+            DEFAULT_REQUEST_RETRIES,
+            allow_zero=True,
+        )
+        self._retry_backoff_seconds = (
+            retry_backoff_seconds
+            if retry_backoff_seconds is not None
+            else _float_env("FINMIND_REQUEST_RETRY_BACKOFF_SECONDS", DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS)
+        )
+        self._sleep = sleep or time.sleep
 
     @property
     def uses_static_token(self) -> bool:
@@ -144,7 +161,7 @@ class FinMindClient:
         data_id: str,
         start_date: str,
         end_date: str,
-        timeout: int = 15,
+        timeout: int = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> list[dict[str, Any]]:
         token = self._token()
         params: dict[str, Any] = {
@@ -163,25 +180,47 @@ class FinMindClient:
             logger.debug("[FinMindClient] cache hit dataset=%s data_id=%s", dataset, data_id)
             return cached
 
-        request_get = self._request_get or _default_request_get(dataset)
         limit = self._token_request_limit if token else self._anonymous_request_limit
-        remaining = self._ledger.reserve(identity=identity, limit=limit)
-        if remaining < 0:
-            raise FinMindClientError(
-                code="quota_exceeded",
-                message=f"FinMind hourly request budget exhausted before dataset={dataset}",
-                dataset=dataset,
-                status_code=429,
-            )
+        request_get = self._request_get or _default_request_get(dataset)
+        response: Any | None = None
+        remaining = 0
+        for attempt in range(self._request_retries + 1):
+            remaining = self._ledger.reserve(identity=identity, limit=limit)
+            if remaining < 0:
+                raise FinMindClientError(
+                    code="quota_exceeded",
+                    message=f"FinMind hourly request budget exhausted before dataset={dataset}",
+                    dataset=dataset,
+                    status_code=429,
+                )
 
-        try:
-            response = request_get(FINMIND_DATA_API, params=params, timeout=timeout)
-        except Exception as exc:
+            try:
+                response = request_get(FINMIND_DATA_API, params=params, timeout=timeout)
+                break
+            except Exception as exc:
+                if attempt >= self._request_retries:
+                    raise FinMindClientError(
+                        code="request_error",
+                        message=f"FinMind request failed for dataset={dataset}: {exc}",
+                        dataset=dataset,
+                    ) from exc
+                logger.warning(
+                    "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s error=%s",
+                    dataset,
+                    data_id,
+                    attempt + 1,
+                    self._request_retries + 1,
+                    exc,
+                )
+                if self._retry_backoff_seconds > 0:
+                    self._sleep(self._retry_backoff_seconds * (attempt + 1))
+
+        if response is None:
             raise FinMindClientError(
                 code="request_error",
-                message=f"FinMind request failed for dataset={dataset}: {exc}",
+                message=f"FinMind request failed for dataset={dataset}: no response",
                 dataset=dataset,
-            ) from exc
+            )
 
         status_code = getattr(response, "status_code", None)
         if status_code == 402:
@@ -260,7 +299,7 @@ def _token_identity(token: str) -> str:
     return f"token:{digest}"
 
 
-def _int_env(name: str, default: int) -> int:
+def _int_env(name: str, default: int, *, allow_zero: bool = False) -> int:
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -269,11 +308,26 @@ def _int_env(name: str, default: int) -> int:
     except ValueError:
         logger.warning("Invalid %s=%r; using default %s", name, raw, default)
         return default
-    return value if value > 0 else default
+    return value if value > 0 or (allow_zero and value == 0) else default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+    return value if value >= 0 else default
 
 
 __all__ = [
     "DEFAULT_ANONYMOUS_REQUESTS_PER_HOUR",
+    "DEFAULT_REQUEST_RETRIES",
+    "DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS",
+    "DEFAULT_REQUEST_TIMEOUT_SECONDS",
     "DEFAULT_RESPONSE_CACHE_TTL_SECONDS",
     "DEFAULT_TOKEN_REQUESTS_PER_HOUR",
     "FINMIND_DATA_API",
