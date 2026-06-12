@@ -358,3 +358,33 @@ def test_empty_yfinance_symbol_response_does_not_create_or_finalize_raw_data(
     stored_rows = db_session.query(StockRawData).filter(StockRawData.record_date == run_date).all()
     assert [row.symbol for row in rows] == ["2330.TW"]
     assert [(row.symbol, row.raw_data_is_final) for row in stored_rows] == [("2330.TW", True)]
+
+
+def test_yfinance_batch_fetcher_drops_non_finite_price_history_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeYFinance:
+        def download(self, symbols: list[str], **kwargs: Any) -> pd.DataFrame:
+            columns = pd.MultiIndex.from_product([["00882.TW"], ["Open", "High", "Low", "Close", "Volume"]])
+            return pd.DataFrame(
+                [
+                    [10.0, 11.0, 9.0, 10.5, 1_000_000],
+                    [10.5, 11.5, 10.0, float("nan"), 1_100_000],
+                    [11.0, 12.0, 10.5, 11.5, 1_200_000],
+                ],
+                index=pd.to_datetime(["2026-06-10", "2026-06-11", "2026-06-12"]),
+                columns=columns,
+            )
+
+        def Ticker(self, symbol: str) -> object:
+            raise AssertionError(f"per-symbol yfinance Ticker call is forbidden: {symbol}")
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf", FakeYFinance())
+
+    payloads = YFinanceBatchTechnicalFetcher().fetch(["00882.TW"], run_date=date(2026, 6, 12))
+
+    assert payloads["00882.TW"]["ohlcv"]["close"] == 11.5
+    assert payloads["00882.TW"]["price_history"] == [
+        {"date": "2026-06-10", "close": 10.5},
+        {"date": "2026-06-12", "close": 11.5},
+    ]
