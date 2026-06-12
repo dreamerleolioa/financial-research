@@ -254,6 +254,14 @@ def update_daily_radar_chip_context_endpoint(
 ) -> DailyRadarChipContextUpdateResponse:
     request = payload or DailyRadarChipContextUpdateRequest()
     run_date = request.run_date or _backend_today()
+    logger.info(
+        "[DailyRadarChipContext] update started run_date=%s market=%s context_types=%s requested_symbol_count=%s provider=%s",
+        run_date.isoformat(),
+        request.market,
+        list(request.context_types or BACKGROUND_CONTEXT_TYPES),
+        len(request.symbols) if request.symbols is not None else "latest_run",
+        provider.__class__.__name__,
+    )
     result = update_background_chip_context_cache(
         db,
         run_date=run_date,
@@ -263,6 +271,16 @@ def update_daily_radar_chip_context_endpoint(
         context_types=request.context_types,
     )
     db.commit()
+    logger.info(
+        "[DailyRadarChipContext] update completed status=%s run_date=%s market=%s symbol_count=%s context_types=%s records_written=%s errors_count=%s",
+        result["status"],
+        run_date.isoformat(),
+        result["market"],
+        result["symbol_count"],
+        list(result["context_types"]),
+        result["records_written"],
+        len(result["errors"]),
+    )
     return DailyRadarChipContextUpdateResponse(
         status=result["status"],
         run_date=run_date,
