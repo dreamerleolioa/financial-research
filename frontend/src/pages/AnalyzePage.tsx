@@ -162,7 +162,10 @@ interface AddPortfolioPayload {
   entry_record?: EntryRecordContext;
 }
 
+type CopyStatus = "idle" | "success" | "error";
+
 const MAX_PORTFOLIO_COUNT = 8;
+const COPY_STATUS_RESET_MS = 1800;
 
 const SIGNAL_LABEL: Record<string, string> = {
   bullish: "看多",
@@ -359,6 +362,93 @@ function formatIndicatorNumber(value: number | null | undefined, digits = 2): st
   return value.toFixed(digits);
 }
 
+function getTechnicalLabel(labels: Record<string, { label: string }>, value: string | null | undefined, emptyLabel = "—"): string {
+  if (!value) return emptyLabel;
+  return labels[value]?.label ?? value;
+}
+
+function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Record<string, unknown>): string {
+  const indicators = result.technical_indicators;
+  const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
+  const displaySymbol = snapshotSymbol ?? "—";
+  const price = (value: number | null | undefined) => formatPrice(value, snapshotSymbol);
+  const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") => (
+    first != null || second != null ? `${price(first)} / ${price(second)}` : emptyLabel
+  );
+  const indicatorPair = (first: number | null | undefined, firstDigits: number, second: number | null | undefined, secondDigits = firstDigits, suffix = "", emptyLabel = "—") => (
+    first != null || second != null ? `${formatIndicatorNumber(first, firstDigits)} / ${formatIndicatorNumber(second, secondDigits)}${suffix}` : emptyLabel
+  );
+
+  if (!indicators) {
+    return [
+      "技術指標摘要",
+      `股票代碼：${displaySymbol}`,
+      "技術指標：資料不足",
+    ].join("\n");
+  }
+
+  const rows: Array<[string, string]> = [
+    ["股票代碼", displaySymbol],
+    ["現價", price(snapshot.current_price as number | null | undefined)],
+    ["成交量", formatVolume(snapshot.volume)],
+    ["均線 MA5/20/60", indicators.ma5 != null || indicators.ma20 != null || indicators.ma60 != null ? `${price(indicators.ma5)} / ${price(indicators.ma20)} / ${price(indicators.ma60)}` : "—"],
+    ["20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
+    ["60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
+    ["布林通道位階", getTechnicalLabel(BOLLINGER_POSITION_LABEL, indicators.bollinger_position)],
+    ["MACD 方向", getTechnicalLabel(MACD_BIAS_LABEL, indicators.macd_bias)],
+    ["KD 交叉", getTechnicalLabel(KD_SIGNAL_LABEL, indicators.kd_signal)],
+    ["KD 區間", getTechnicalLabel(KD_ZONE_LABEL, indicators.kd_zone)],
+    ["ADX 趨勢強度", getTechnicalLabel(ADX_STRENGTH_LABEL, indicators.adx_trend_strength)],
+    ["ADX 趨勢方向", getTechnicalLabel(ADX_DIRECTION_LABEL, indicators.adx_trend_direction)],
+    ["OBV 訊號", getTechnicalLabel(OBV_SIGNAL_LABEL, indicators.obv_signal)],
+    ["OBV 20 日趨勢", getTechnicalLabel(OBV_TREND_LABEL, indicators.obv_trend_20d)],
+    ["OBV 中長期趨勢", `${getTechnicalLabel(OBV_TREND_LABEL, indicators.obv_trend_mid_long, "資料不足")}${indicators.obv_trend_mid_long_window ? `（${indicators.obv_trend_mid_long_window}）` : ""}`],
+    ["ATR 波動", getTechnicalLabel(VOLATILITY_LEVEL_LABEL, indicators.volatility_level)],
+    ["MFI 資金流量訊號", getTechnicalLabel(MFI_SIGNAL_LABEL, indicators.mfi_signal)],
+    ["唐奇安通道位階", getTechnicalLabel(DONCHIAN_POSITION_LABEL, indicators.donchian_position)],
+    ["布林上軌", formatIndicatorNumber(indicators.bollinger_upper, 2)],
+    ["布林中軌", formatIndicatorNumber(indicators.bollinger_mid, 2)],
+    ["布林下軌", formatIndicatorNumber(indicators.bollinger_lower, 2)],
+    ["MACD 線", formatIndicatorNumber(indicators.macd_line, 3)],
+    ["MACD 訊號線", formatIndicatorNumber(indicators.macd_signal, 3)],
+    ["MACD 動能柱狀體", formatIndicatorNumber(indicators.macd_hist, 3)],
+    ["KD K/D", indicatorPair(indicators.kd_k, 1, indicators.kd_d)],
+    ["ADX", formatIndicatorNumber(indicators.adx, 1)],
+    ["OBV 累積值參考", formatVolume(indicators.obv)],
+    ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
+    ["MFI", formatIndicatorNumber(indicators.mfi, 1)],
+    ["唐奇安通道上/下緣", indicatorPair(indicators.donchian_upper, 2, indicators.donchian_lower)],
+  ];
+
+  return [
+    "技術指標摘要",
+    ...rows.map(([label, value]) => `${label}：${value}`),
+  ].join("\n");
+}
+
+async function writeClipboardText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) throw new Error("Copy command failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function TriggersSection({
   upgradeTriggers,
   downgradeTriggers,
@@ -459,6 +549,31 @@ export default function AnalyzePage() {
   const [addForm, setAddForm] = useState<AddPortfolioForm>(() => createInitialAddPortfolioForm());
   const [addLoading, setAddLoading] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [technicalCopyStatus, setTechnicalCopyStatus] = useState<CopyStatus>("idle");
+  const technicalCopyResetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (technicalCopyResetTimerRef.current != null) {
+        window.clearTimeout(technicalCopyResetTimerRef.current);
+      }
+    };
+  }, []);
+
+  function updateTechnicalCopyStatus(status: CopyStatus) {
+    if (technicalCopyResetTimerRef.current != null) {
+      window.clearTimeout(technicalCopyResetTimerRef.current);
+    }
+
+    setTechnicalCopyStatus(status);
+
+    if (status !== "idle") {
+      technicalCopyResetTimerRef.current = window.setTimeout(() => {
+        setTechnicalCopyStatus("idle");
+        technicalCopyResetTimerRef.current = null;
+      }, COPY_STATUS_RESET_MS);
+    }
+  }
 
   async function fetchPortfolio() {
     try {
@@ -506,9 +621,21 @@ export default function AnalyzePage() {
     }
   }
 
+  async function handleCopyTechnicalIndicators(): Promise<void> {
+    if (!result) return;
+
+    try {
+      await writeClipboardText(buildTechnicalIndicatorsCopyText(result, snapshot));
+      updateTechnicalCopyStatus("success");
+    } catch {
+      updateTechnicalCopyStatus("error");
+    }
+  }
+
   async function handleAnalyze(skipAi: boolean = false) {
     if (!symbol.trim()) return;
     setIsRawOnly(skipAi);
+    updateTechnicalCopyStatus("idle");
 
     // 取消上一個尚未完成的請求
     abortControllerRef.current?.abort();
@@ -862,7 +989,23 @@ export default function AnalyzePage() {
 
       {result?.technical_indicators && (
         <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <h3 className="mb-3 text-xs font-semibold text-text-muted">技術指標摘要</h3>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold text-text-muted">技術指標摘要</h3>
+            <button
+              type="button"
+              onClick={() => void handleCopyTechnicalIndicators()}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                technicalCopyStatus === "success"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  : technicalCopyStatus === "error"
+                    ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
+                    : "border-border bg-card-hover text-text-secondary hover:border-indigo-200 hover:text-indigo-600 dark:hover:border-indigo-700 dark:hover:text-indigo-300"
+              }`}
+              aria-label="複製技術指標摘要"
+            >
+              {technicalCopyStatus === "success" ? "已複製" : technicalCopyStatus === "error" ? "複製失敗" : "複製指標"}
+            </button>
+          </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
             <div>
               <p className="text-xs text-text-muted mb-1">現價</p>
