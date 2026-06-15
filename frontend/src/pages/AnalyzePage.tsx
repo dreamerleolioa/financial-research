@@ -371,6 +371,7 @@ function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Rec
   const indicators = result.technical_indicators;
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
   const displaySymbol = snapshotSymbol ?? "—";
+  const marketSessionLabel = result.is_final === false ? "盤中" : "收盤";
   const price = (value: number | null | undefined) => formatPrice(value, snapshotSymbol);
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") => (
     first != null || second != null ? `${price(first)} / ${price(second)}` : emptyLabel
@@ -383,12 +384,14 @@ function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Rec
     return [
       "技術指標摘要",
       `股票代碼：${displaySymbol}`,
+      `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
     ].join("\n");
   }
 
   const rows: Array<[string, string]> = [
     ["股票代碼", displaySymbol],
+    ["資料狀態", marketSessionLabel],
     ["現價", price(snapshot.current_price as number | null | undefined)],
     ["成交量", formatVolume(snapshot.volume)],
     ["均線 MA5/20/60", indicators.ma5 != null || indicators.ma20 != null || indicators.ma60 != null ? `${price(indicators.ma5)} / ${price(indicators.ma20)} / ${price(indicators.ma60)}` : "—"],
