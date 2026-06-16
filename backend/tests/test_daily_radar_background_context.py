@@ -337,6 +337,90 @@ def test_read_trace_returns_fresh_stale_and_missing_contexts(db_session: Session
     assert {context["freshness"] for context in traces["2454.TW"]} == {"missing"}
 
 
+def test_point_in_time_read_prefers_same_reference_missing_context_over_older_fresh_row(
+    db_session: Session,
+) -> None:
+    upsert_shared_background_context(
+        db_session,
+        symbol="2377.TW",
+        context_type="lending",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture_cache"},
+        as_of_date=date(2026, 6, 10),
+        freshness="fresh",
+        payload={"latest_daily_lending_volume": 125.0},
+        replay_key="background_context:2377.TW:lending:2026-06-10",
+    )
+    upsert_shared_background_context(
+        db_session,
+        symbol="2377.TW",
+        context_type="lending",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture_cache"},
+        as_of_date=None,
+        freshness="missing",
+        payload={},
+        missing_reason="finmind_no_data",
+        replay_key="background_context:2377.TW:lending:2026-06-15:missing:finmind_no_data",
+    )
+    db_session.commit()
+
+    traces = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2377.TW"],
+        context_types=["lending"],
+        reference_date=date(2026, 6, 15),
+        point_in_time=True,
+    )
+
+    trace = traces["2377.TW"][0]
+    assert trace["freshness"] == "missing"
+    assert trace["missing_reason"] == "finmind_no_data"
+    assert trace["replay_key"] == "background_context:2377.TW:lending:2026-06-15:missing:finmind_no_data"
+
+
+def test_point_in_time_read_does_not_let_older_missing_context_hide_newer_fresh_row(
+    db_session: Session,
+) -> None:
+    upsert_shared_background_context(
+        db_session,
+        symbol="2377.TW",
+        context_type="full_margin",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture_cache"},
+        as_of_date=None,
+        freshness="missing",
+        payload={},
+        missing_reason="finmind_access_required",
+        replay_key="background_context:2377.TW:full_margin:2026-06-10:missing:finmind_access_required",
+    )
+    upsert_shared_background_context(
+        db_session,
+        symbol="2377.TW",
+        context_type="full_margin",
+        applicable_consumers=["daily_radar"],
+        source={"domain": "background_context", "provider": "fixture_cache"},
+        as_of_date=date(2026, 6, 12),
+        freshness="fresh",
+        payload={"latest_margin_balance": 18005.0},
+        replay_key="background_context:2377.TW:full_margin:2026-06-12",
+    )
+    db_session.commit()
+
+    traces = get_shared_background_context_trace_by_symbol(
+        db_session,
+        symbols=["2377.TW"],
+        context_types=["full_margin"],
+        reference_date=date(2026, 6, 15),
+        point_in_time=True,
+    )
+
+    trace = traces["2377.TW"][0]
+    assert trace["freshness"] == "fresh"
+    assert trace["payload"] == {"latest_margin_balance": 18005.0}
+    assert trace["replay_key"] == "background_context:2377.TW:full_margin:2026-06-12"
+
+
 def test_shared_background_context_trace_has_no_daily_radar_ui_or_ranking_fields(db_session: Session) -> None:
     upsert_shared_background_context(
         db_session,

@@ -290,7 +290,8 @@ def get_shared_background_context_rows(
                 eligible_rows = [
                     row
                     for row in scoped_rows
-                    if row.as_of_date is not None and row.as_of_date <= reference_date
+                    if (context_date := _context_point_in_time_date(row)) is not None
+                    and context_date <= reference_date
                 ]
                 if eligible_rows:
                     selected.append(max(eligible_rows, key=_point_in_time_sort_key))
@@ -508,10 +509,31 @@ def _latest_context_sort_key(row: SharedBackgroundContext) -> tuple[Any, ...]:
 
 def _point_in_time_sort_key(row: SharedBackgroundContext) -> tuple[Any, ...]:
     return (
-        row.as_of_date or date.min,
+        _context_point_in_time_date(row) or date.min,
         _datetime_sort_value(row.updated_at or row.created_at),
         row.id or 0,
     )
+
+
+def _context_point_in_time_date(row: SharedBackgroundContext) -> date | None:
+    if row.as_of_date is not None:
+        return row.as_of_date
+    if row.freshness == "missing" or row.missing_reason is not None:
+        return _missing_replay_key_date(row.replay_key)
+    return None
+
+
+def _missing_replay_key_date(replay_key: str | None) -> date | None:
+    parts = str(replay_key or "").split(":")
+    if len(parts) < 5 or parts[0] != "background_context":
+        return None
+    try:
+        parsed_date = date.fromisoformat(parts[3])
+    except ValueError:
+        return None
+    if parts[4] != "missing":
+        return None
+    return parsed_date
 
 
 def _datetime_sort_value(value: Any) -> str:
