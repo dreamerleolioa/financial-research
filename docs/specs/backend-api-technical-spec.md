@@ -1366,7 +1366,7 @@ Daily Radar run status：
 - **Auth**：內部 token 必填，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
 - **環境契約**：後端必須設定 `DAILY_RADAR_INTERNAL_TOKEN`。若後端未設定此 token，回傳 `503 Service Unavailable`。
 - **Auth 錯誤**：request 未帶 token 時回傳 `401 Unauthorized`，並附 Bearer challenge；token 不符時回傳 `403 Forbidden`。
-- **後端 orchestration**：live run 會自行選出 multi-track universe（保留 `same_day_institutional`、`recent_accumulation`，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對 selected symbols 補齊缺少的 OHLCV，建立固定 market index context，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
+- **後端 orchestration**：live run 會自行選出 multi-track universe（保留 `same_day_institutional`、`recent_accumulation`，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），針對台股 selected symbols 刷新日頻 `lending` / `full_margin` shared background context cache，對 selected symbols 補齊缺少的 OHLCV，建立固定 market index context，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
 - **Fixture fallback**：live run 關閉 fixture fallback，只使用 live provider 與既有 final `StockRawData`。
 - **409 Conflict**：selected universe 為空，或嘗試 backfill 後 selected symbols 仍沒有 final `StockRawData` rows 時回傳。
 - **公開 schema**：後端資料流改為自包含流程後，public Daily Radar read endpoints 與 candidate response schema 不變。
@@ -1374,8 +1374,8 @@ Daily Radar run status：
   - TWSE RWD institutional reports：目前 live provider 讀取 `TWT38U` / `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation tracks。這是 report-level 查詢，不是 selected symbols 的逐檔法人 request。
   - yfinance selected-symbol OHLCV：只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用。
   - yfinance market index OHLCV：每次 run 只抓固定 benchmark。TW 使用 `TAIEX` / `^TWII`，US 使用 `SPX` / `^GSPC`，用於 market regime 與 relative strength benchmark。
-  - Shared background context：daily run 只批次讀 `shared_background_contexts` 中 selected symbols 的 cache trace；weekly major holders、lending、full margin context 不在 daily run 主流程即時呼叫 provider。
-  - Live limits：目前不抓完整 live margin。回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale。
+  - Shared background context：daily run 先對台股 selected symbols 刷新日頻 `lending` / `full_margin` cache，再批次讀 `shared_background_contexts` 中 selected symbols 的 cache trace；`weekly_major_holders` 仍由週頻背景排程更新，不在 daily run 內強行日更。
+  - Live limits：回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale；完整融資融券與借券內容由 selected-symbol shared context refresh 寫入 cache 後附加為背景 labels。
 
 - **Request Body**
 
@@ -1509,7 +1509,7 @@ Daily Radar run status：
 #### Internal Daily Radar chip context update
 
 - **Endpoint**：`POST /internal/daily-radar/chip-context/update`
-- **用途**：由 GitHub Actions 背景排程觸發，更新 `shared_background_contexts` cache。這是 weekly major holders、lending 與 full margin context 的正式背景更新路徑；daily run 和其他 analysis flows 不即時逐檔呼叫這些 provider。同一 `replay_key` 會 upsert，新的 `replay_key` 會保留為歷史 trace，供 point-in-time consumer 回放。
+- **用途**：更新 `shared_background_contexts` cache。這是週頻 `weekly_major_holders` 的正式背景更新路徑，也可作為 `lending` / `full_margin` 維護或補跑入口；正式 Daily Radar run 會在 selected universe 確定後自行刷新台股 selected symbols 的日頻 `lending` / `full_margin`，再讀 cache 寫入 candidate snapshot。同一 `replay_key` 會 upsert，新的 `replay_key` 會保留為歷史 trace，供 point-in-time consumer 回放。
 - **Auth**：沿用 Daily Radar internal token，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
 - **Request Body**
 
@@ -1538,7 +1538,7 @@ Daily Radar run status：
 }
 ```
 
-Provider failure 以 `status: "failed"` 與 `errors[]` 記錄，response 仍是 200，避免背景更新失敗阻塞 existing daily run。正式 workflow 為 `.github/workflows/daily-radar-chip-context.yml`，使用 `ZEABUR_BACKEND_URL` 與 `DAILY_RADAR_INTERNAL_TOKEN` secrets，不硬編 secret；workflow 會檢查 response JSON 的 `status == "completed"`，若為 failed 或 non-JSON response 會 fail job 以利排程監控。Workflow 以資料頻率拆分 request body：台灣時間週二至週六 07:00 更新 `lending` / `full_margin`，台灣時間週日 07:30 更新週頻 `weekly_major_holders`。
+Provider failure 以 `status: "failed"` 與 `errors[]` 記錄，response 仍是 200。Daily Radar run 內的日頻背景刷新失敗時會降級為 missing/stale cache trace，不阻塞 candidate persistence；獨立 workflow 會檢查 response JSON 的 `status == "completed"`，若為 failed 或 non-JSON response 會 fail job 以利排程監控。正式 workflow 為 `.github/workflows/daily-radar-chip-context.yml`，使用 `ZEABUR_BACKEND_URL` 與 `DAILY_RADAR_INTERNAL_TOKEN` secrets，不硬編 secret；週頻 `weekly_major_holders` 在台灣時間週日 07:30 更新，日頻 `lending` / `full_margin` 可透過同一 endpoint 維護或補跑。
 
 > **Daily Radar 邊界**：Daily Radar 是 deterministic rule-based 觀察清單。它可整理觀察理由與風險標籤，但不產生交易指令，也不讓 LLM 決定候選標的、排序、bucket 或風險。Raw scores 保留於 API 作為內部排序、校準、回測與 traceability；一般使用者介面應優先顯示觀察等級、bucket、風險標籤與命中原因，若顯示 `observation_score` 應標示為內部排序分，不得稱為勝率、推薦分數或保證性結果。
 

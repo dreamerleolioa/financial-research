@@ -801,9 +801,16 @@ def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> 
     assert "${{ secrets.ZEABUR_BACKEND_URL }}" in text
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in text
     assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in text
-    assert "0 23 * * 1-5" in text
+    assert "context_group:" in text
+    assert "default: daily" in text
+    assert "- daily" in text
+    assert "- weekly" in text
+    assert "- all" in text
+    assert "0 23 * * 1-5" not in text
     assert "30 23 * * 6" in text
-    assert "github.event.schedule == '0 23 * * 1-5'" in text
+    assert "inputs.context_group == 'daily'" in text
+    assert "inputs.context_group == 'weekly'" in text
+    assert "inputs.context_group == 'all'" in text
     assert "github.event.schedule == '30 23 * * 6'" in text
     assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["lending","full_margin"]}\'' in text
     assert 'CHIP_CONTEXT_PAYLOAD: \'{"market":"TW","context_types":["weekly_major_holders"]}\'' in text
