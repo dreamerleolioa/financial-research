@@ -26,8 +26,8 @@ export interface CleanedNewsQuality {
 
 export interface NewsDisplayItem {
   title: string;
-  date: string | null;
-  source_url: string | null;
+  date?: string | null;
+  source_url?: string | null;
 }
 
 export interface TechnicalIndicators {

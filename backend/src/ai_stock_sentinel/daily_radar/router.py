@@ -14,6 +14,11 @@ from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
     YFinanceMarketIndexContextProvider,
 )
+from ai_stock_sentinel.daily_radar.name_backfill import (
+    SymbolNameResolver,
+    backfill_daily_radar_symbol_names,
+    get_daily_radar_symbol_name_resolver,
+)
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
@@ -139,6 +144,20 @@ class DailyRadarMonthlyRuleReviewResponse(BaseModel):
     report_markdown: str
 
 
+class DailyRadarNameBackfillRequest(BaseModel):
+    limit: int | None = Field(default=None, ge=1, le=10_000)
+    dry_run: bool = False
+
+
+class DailyRadarNameBackfillResponse(BaseModel):
+    status: Literal["completed"]
+    dry_run: bool
+    scanned: int
+    updated_candidates: int
+    updated_raw_rows: int
+    unresolved_symbols: list[str]
+
+
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
     return TwseRwdInstitutionalUniverseProvider()
 
@@ -153,6 +172,50 @@ def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
 
 def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
     return DefaultBackgroundChipContextProvider()
+
+
+@router.post(
+    "/internal/daily-radar/name-backfill",
+    response_model=DailyRadarNameBackfillResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def backfill_daily_radar_names_endpoint(
+    payload: DailyRadarNameBackfillRequest | None = None,
+    db: Session = Depends(get_db),
+    name_resolver: SymbolNameResolver = Depends(get_daily_radar_symbol_name_resolver),
+) -> DailyRadarNameBackfillResponse:
+    request = payload or DailyRadarNameBackfillRequest()
+    try:
+        result = backfill_daily_radar_symbol_names(
+            db,
+            limit=request.limit,
+            dry_run=request.dry_run,
+            name_resolver=name_resolver,
+        )
+        if request.dry_run:
+            db.rollback()
+        else:
+            db.commit()
+        return DailyRadarNameBackfillResponse(
+            status="completed",
+            dry_run=request.dry_run,
+            scanned=result.scanned,
+            updated_candidates=result.updated_candidates,
+            updated_raw_rows=result.updated_raw_rows,
+            unresolved_symbols=result.unresolved_symbols,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            db.rollback()
+        logger.exception("Daily Radar name backfill failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "daily_radar_name_backfill_failed",
+                "message": "Daily Radar name backfill failed. Check backend logs for the root cause.",
+                "error_type": exc.__class__.__name__,
+            },
+        ) from exc
 
 
 @router.post(
@@ -629,7 +692,7 @@ def _ordered_candidates(candidates: list[DailyRadarCandidate]) -> list[DailyRada
 def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateResponse:
     return DailyRadarCandidateResponse(
         symbol=candidate.symbol,
-        name=candidate.name,
+        name=_stored_display_name(candidate.symbol, candidate.name),
         primary_bucket=candidate.primary_bucket,
         secondary_buckets=list(candidate.secondary_buckets or []),
         observation_score=candidate.observation_score,
@@ -650,7 +713,7 @@ def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRe
 def _history_response(item: dict[str, Any]) -> dict[str, Any]:
     response = {
         "symbol": item["symbol"],
-        "name": item["name"],
+        "name": _stored_display_name(item["symbol"], item["name"]),
         "record_date": item["record_date"],
         "primary_bucket": item["primary_bucket"],
         "secondary_buckets": list(item.get("secondary_buckets") or []),
@@ -671,6 +734,11 @@ def _history_response(item: dict[str, Any]) -> dict[str, Any]:
     if rule_version is not None:
         response["rule_version"] = rule_version
     return response
+
+
+def _stored_display_name(symbol: str, name: str | None) -> str:
+    normalized_name = str(name or "").strip()
+    return normalized_name or symbol
 
 
 def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:

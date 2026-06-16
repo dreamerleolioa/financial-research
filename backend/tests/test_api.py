@@ -1233,6 +1233,36 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     assert body["snapshot"]["name"] == "台積電"
 
 
+def test_cache_hit_replaces_symbol_placeholder_name(monkeypatch) -> None:
+    """Old cache rows may store the symbol itself as the display name."""
+    from unittest.mock import MagicMock
+    import ai_stock_sentinel.api as api_module
+
+    full = {
+        "snapshot": {"symbol": "2330.TW", "name": "2330.TW", "current_price": 1865.0},
+        "symbol_name": "2330.TW",
+        "analysis": "完整分析內容",
+        "news_display_items": [{"title": "新聞標題"}],
+        "is_final": True,
+        "intraday_disclaimer": None,
+        "errors": [],
+    }
+    cache = MagicMock()
+    cache.is_final = True
+    cache.intraday_disclaimer = None
+    cache.strategy_version = "strategy-v1"
+    cache.final_verdict = "完整分析內容"
+    cache.signal_confidence = None
+    cache.action_tag = None
+
+    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: "台積電" if symbol == "2330.TW" else None)
+
+    response = api_module._build_response_from_cache(cache, "2330.TW", full_result=full)
+
+    assert response.symbol_name == "台積電"
+    assert response.snapshot["name"] == "台積電"
+
+
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     """POST /analyze should pass full_result to upsert_analysis_cache."""
     import ai_stock_sentinel.api as api_module

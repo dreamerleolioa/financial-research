@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
+from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
@@ -207,6 +208,7 @@ def _clear_daily_radar_api_overrides() -> None:
         daily_radar_router.get_daily_radar_technical_fetcher,
         daily_radar_router.get_daily_radar_market_context_provider,
         daily_radar_router.get_daily_radar_background_chip_context_provider,
+        get_daily_radar_symbol_name_resolver,
     ):
         api.app.dependency_overrides.pop(dependency, None)
 
@@ -336,11 +338,12 @@ def _persist_raw_data(
     symbol: str = "2330.TW",
     record_date: date = date(2026, 6, 1),
     is_final: bool = True,
+    technical: dict[str, Any] | None = None,
 ) -> StockRawData:
     row = StockRawData(
         symbol=symbol,
         record_date=record_date,
-        technical={"name": symbol, "ohlcv": {}, "indicators": {}},
+        technical=technical or {"name": symbol, "ohlcv": {}, "indicators": {}},
         institutional={"institutional_flow": {}},
         fundamental={"margin": {}},
         raw_data_is_final=is_final,
@@ -652,6 +655,7 @@ def _persist_daily_radar_candidate(
     *,
     symbol: str,
     score: int,
+    name: str | None = None,
     primary_bucket: str = "institutional_accumulation",
     secondary_buckets: list[str] | None = None,
     background_context_labels: list[dict[str, Any]] | None = None,
@@ -666,7 +670,7 @@ def _persist_daily_radar_candidate(
     candidate = DailyRadarCandidate(
         run_id=run.id,
         symbol=symbol,
-        name=f"{symbol} fixture",
+        name=name if name is not None else f"{symbol} fixture",
         primary_bucket=primary_bucket,
         secondary_buckets=secondary_buckets or ["price_volume_strengthening"],
         observation_score=score,
@@ -690,6 +694,96 @@ def _persist_daily_radar_candidate(
     run.candidate_count = len(run.candidates)
     session.flush()
     return candidate
+
+
+def test_internal_daily_radar_name_backfill_endpoint_updates_cloud_database_rows(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    run = _persist_daily_radar_run(daily_radar_db_session, run_date=date(2026, 6, 16))
+    candidate = _persist_daily_radar_candidate(
+        daily_radar_db_session,
+        run,
+        symbol="2330.TW",
+        name="2330.TW",
+        score=88,
+    )
+    raw_row = _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=date(2026, 6, 16),
+        technical={"name": "2330.TW", "ohlcv": {"close": 100.0}, "indicators": {}},
+    )
+    daily_radar_db_session.commit()
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[get_daily_radar_symbol_name_resolver] = lambda: lambda symbol: {
+        "2330.TW": "台積電"
+    }.get(symbol)
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/name-backfill",
+            json={"limit": 100},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "completed",
+        "dry_run": False,
+        "scanned": 1,
+        "updated_candidates": 1,
+        "updated_raw_rows": 1,
+        "unresolved_symbols": [],
+    }
+    daily_radar_db_session.refresh(candidate)
+    daily_radar_db_session.refresh(raw_row)
+    assert candidate.name == "台積電"
+    assert raw_row.technical["name"] == "台積電"
+
+
+def test_internal_daily_radar_name_backfill_endpoint_dry_run_does_not_write(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    run = _persist_daily_radar_run(daily_radar_db_session, run_date=date(2026, 6, 16))
+    candidate = _persist_daily_radar_candidate(
+        daily_radar_db_session,
+        run,
+        symbol="2330.TW",
+        name="2330.TW",
+        score=88,
+    )
+    raw_row = _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=date(2026, 6, 16),
+        technical={"name": "2330.TW", "ohlcv": {"close": 100.0}, "indicators": {}},
+    )
+    daily_radar_db_session.commit()
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[get_daily_radar_symbol_name_resolver] = lambda: lambda _symbol: "台積電"
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/name-backfill",
+            json={"dry_run": True},
+            headers={"X-Internal-Token": "test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["updated_candidates"] == 1
+    assert response.json()["updated_raw_rows"] == 1
+    daily_radar_db_session.refresh(candidate)
+    daily_radar_db_session.refresh(raw_row)
+    assert candidate.name == "2330.TW"
+    assert raw_row.technical["name"] == "2330.TW"
 
 
 def test_daily_radar_run_endpoint_backfills_missing_selected_rows_and_passes_cache_rows(
@@ -1078,6 +1172,38 @@ def test_public_latest_daily_radar_returns_latest_completed_run_without_internal
     assert first["background_context_labels"][1]["freshness"] == "missing"
     assert first["background_context_labels"][1]["missing_reason"] == "context_cache_missing"
     assert payload["candidates"][1]["background_context_labels"] == []
+
+
+def test_public_daily_radar_keeps_cached_symbol_name_offline(
+    public_daily_radar_client: TestClient,
+    daily_radar_db_session: Session,
+    monkeypatch,
+) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    if hasattr(daily_radar_router, "resolve_symbol_name"):
+        monkeypatch.setattr(daily_radar_router, "resolve_symbol_name", lambda _symbol: pytest.fail("public read must stay offline"))
+    run = _persist_daily_radar_run(daily_radar_db_session, run_date=date(2026, 6, 2))
+    _persist_daily_radar_candidate(
+        daily_radar_db_session,
+        run,
+        symbol="2330.TW",
+        name="2330.TW",
+        score=88,
+    )
+    daily_radar_db_session.commit()
+
+    response = public_daily_radar_client.get("/daily-radar/latest")
+
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["symbol"] == "2330.TW"
+    assert response.json()["candidates"][0]["name"] == "2330.TW"
+
+    history_response = public_daily_radar_client.get("/daily-radar/symbol/2330.TW")
+
+    assert history_response.status_code == 200
+    assert history_response.json()[0]["symbol"] == "2330.TW"
+    assert history_response.json()[0]["name"] == "2330.TW"
 
 
 def test_public_daily_radar_by_date_uses_latest_public_run_and_bucket_limit_filters(

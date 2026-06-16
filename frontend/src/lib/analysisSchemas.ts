@@ -26,8 +26,8 @@ const cleanedNewsQualitySchema = z.object({
 
 const newsDisplayItemSchema = z.object({
   title: z.string(),
-  date: nullableString,
-  source_url: nullableString,
+  date: nullableString.optional(),
+  source_url: nullableString.optional(),
 }).passthrough();
 
 const actionPlanSchema = z.object({
