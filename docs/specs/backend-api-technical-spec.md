@@ -1422,6 +1422,35 @@ Daily Radar run status：
   | `started_at`      | string | run 開始時間，ISO 8601                            |
   | `finished_at`     | string | run 結束時間，ISO 8601；執行中可為 `null`         |
 
+#### `POST /internal/daily-radar/name-backfill`
+
+- **用途**：正式機 maintenance endpoint，用於修復既有 Daily Radar rows 中 `name == symbol` 或空字串的顯示名稱。此流程由雲端 backend 使用正式環境的 `DATABASE_URL` 寫入正式 DB；本機 CLI 僅作除錯輔助。
+- **Auth**：內部 token 必填，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
+- **資料修復範圍**：更新 `daily_radar_candidates.name`，並同步修復相同 symbol 的 `stock_raw_data.technical.name`。公開 read endpoints 不做 live metadata resolver。
+- **Request Body**
+
+```json
+{
+  "limit": 1000,
+  "dry_run": true
+}
+```
+
+- `limit`：可省略；限制本次掃描的 candidate rows 數量。
+- `dry_run`：預設 `false`。為 `true` 時只回報預計更新數量，不 commit 寫入。
+- **Response 200**
+
+```json
+{
+  "status": "completed",
+  "dry_run": true,
+  "scanned": 12,
+  "updated_candidates": 10,
+  "updated_raw_rows": 8,
+  "unresolved_symbols": ["9999.TW"]
+}
+```
+
 #### Public Daily Radar reads
 
 公開讀取 API 不需要 `DAILY_RADAR_INTERNAL_TOKEN`。
@@ -1446,7 +1475,7 @@ Daily Radar run status：
   | 欄位                | 類型           | 說明                          |
   | ------------------- | -------------- | ----------------------------- |
   | `symbol`            | string         | 股票代碼                      |
-  | `name`              | string \| null | 股票名稱                      |
+  | `name`              | string \| null | 持久化於 candidate 的顯示名稱；public read 不做 live metadata resolver，若 ingestion/backfill 當下未取得名稱可等於 `symbol` |
   | `primary_bucket`    | string         | 主要觀察分類                  |
   | `secondary_buckets` | array          | 次要觀察分類                  |
   | `observation_score` | number         | rule-based 內部排序分，用於排序、校準與 trace，不是勝率、推薦分數或預設前台 headline |
@@ -1461,6 +1490,8 @@ Daily Radar run status：
   | `data_dates`        | object         | 各資料來源對應日期            |
   | `matched_rules`     | array          | 命中的 rule ID 或規則名稱     |
   | `background_context_labels` | array | Phase 2B shared background context labels，用於 Daily Radar detail surface，不參與分數或排序 |
+
+  `name == symbol` 的既有 Daily Radar 資料需透過 `POST /internal/daily-radar/name-backfill` 主動修復；本機 `backend/scripts/backfill_daily_radar_symbol_names.py` 僅作除錯輔助。修復流程會更新 `daily_radar_candidates.name` 與 `stock_raw_data.technical.name`。公開讀取 API 不得為了補顯示名稱同步呼叫 TWSE/TPEX metadata provider。
 
 - **Trace contract**
   - `input_snapshot.market_context` 至少可表示固定 benchmark 的 `regime`、`freshness`、`data_date`、均線位置、波動狀態與 risk flags。

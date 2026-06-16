@@ -328,6 +328,8 @@ shared_background_contexts
 - created_at / updated_at
 ```
 
+`daily_radar_candidates.name` 是 run 產生或 backfill 當下寫入的顯示名稱。公開讀取端點只回傳已持久化的 `name`，不得在 `/daily-radar/latest`、`/daily-radar/{run_date}` 或 `/daily-radar/symbol/{symbol}` read path 即時呼叫股票 metadata provider；若當時解析失敗，`name` 可保留為 `symbol`，前端以代碼 fallback 顯示。既有資料若已落成 `name == symbol`，正式環境用 `POST /internal/daily-radar/name-backfill` 主動修復，本機 `backend/scripts/backfill_daily_radar_symbol_names.py` 僅作除錯輔助；修復範圍包含 `daily_radar_candidates.name` 與 `stock_raw_data.technical.name`，provider request 只允許發生在 ingestion 或這類 maintenance backfill 階段。
+
 資料庫需支援依日期查詢榜單、依 symbol 回看歷史入選紀錄、依 bucket 查詢當日候選。
 
 ---
@@ -349,6 +351,7 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
 | Method | Path | 用途 |
 | ------ | ---- | ---- |
 | `POST` | `/internal/daily-radar/run` | 由 GitHub Actions 呼叫的內部掃描端點 |
+| `POST` | `/internal/daily-radar/name-backfill` | 由正式 backend 修復既有 Daily Radar 中文名稱，需 internal token |
 | `GET` | `/daily-radar/latest` | 查詢最新雷達清單 |
 | `GET` | `/daily-radar/{run_date}` | 查詢指定日期雷達清單 |
 | `GET` | `/daily-radar/symbol/{symbol}` | 查詢單一股票雷達歷史 |
