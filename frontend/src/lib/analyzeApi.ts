@@ -1,4 +1,5 @@
 import { requestJson } from "./apiClient";
+import { parseAnalyzeResponse } from "./analysisSchemas";
 import type { AnalyzeResponse } from "./analysisTypes";
 
 export interface AnalyzeRequest {
@@ -6,11 +7,11 @@ export interface AnalyzeRequest {
   skip_ai?: boolean;
 }
 
-export function analyzeSymbol(body: AnalyzeRequest, signal?: AbortSignal): Promise<AnalyzeResponse> {
-  return requestJson<AnalyzeResponse>("/analyze", {
+export async function analyzeSymbol(body: AnalyzeRequest, signal?: AbortSignal): Promise<AnalyzeResponse> {
+  const data = await requestJson<unknown>("/analyze", {
     method: "POST",
     body,
     signal,
   });
+  return parseAnalyzeResponse(data);
 }
-

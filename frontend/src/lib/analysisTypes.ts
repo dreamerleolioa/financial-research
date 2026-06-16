@@ -87,15 +87,15 @@ export interface AnalyzeResponse {
   action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
   technical_indicators?: TechnicalIndicators | null;
   action_plan: {
-    action?: string;
-    target_zone?: string;
-    defense_line?: string;
-    breakeven_note?: string;
-    momentum_expectation?: string;
-    conviction_level?: "low" | "medium" | "high";
+    action?: string | null;
+    target_zone?: string | null;
+    defense_line?: string | null;
+    breakeven_note?: string | null;
+    momentum_expectation?: string | null;
+    conviction_level?: "low" | "medium" | "high" | null;
     thesis_points?: string[];
     invalidation_conditions?: string[];
-    suggested_position_size?: string;
+    suggested_position_size?: string | null;
     upgrade_triggers?: string[];
     downgrade_triggers?: string[];
   } | null;
@@ -160,4 +160,3 @@ export interface PositionResult {
     summary: string;
   } | null;
 }
-

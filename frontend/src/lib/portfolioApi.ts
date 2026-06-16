@@ -1,5 +1,6 @@
 import { requestJson } from "./apiClient";
 import type { PositionResult } from "./analysisTypes";
+import { parsePortfolioRiskSummary } from "./portfolioSchemas";
 import type {
   AddEntryReasonCode,
   BackfillLifecyclePlanRequest,
@@ -113,8 +114,9 @@ export function fetchDecisionContextStatus(): Promise<PortfolioDecisionContextSt
   return requestJson<PortfolioDecisionContextStatusMap>("/portfolio/decision-context-status");
 }
 
-export function fetchPortfolioRiskSummary(): Promise<PortfolioRiskSummary> {
-  return requestJson<PortfolioRiskSummary>("/portfolio/risk-summary");
+export async function fetchPortfolioRiskSummary(): Promise<PortfolioRiskSummary> {
+  const data = await requestJson<unknown>("/portfolio/risk-summary");
+  return parsePortfolioRiskSummary(data);
 }
 
 export function fetchLatestPortfolioHistory(): Promise<Record<string, PortfolioHistoryEntry | null>> {
@@ -154,4 +156,3 @@ export function addPortfolioEntry(id: number, body: AddEntryRequest): Promise<Ad
     body,
   });
 }
-

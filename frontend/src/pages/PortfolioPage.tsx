@@ -1,21 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import {
+  useAddPortfolioEntryMutation,
+  useBackfillLifecyclePlanMutation,
+  useClosePortfolioItemMutation,
+  useDeletePortfolioItemMutation,
+  useUpdatePortfolioItemMutation,
+} from "../features/portfolio/mutations";
+import {
+  useDecisionContextStatusQuery,
+  useLatestPortfolioHistoryQuery,
+  useLifecyclePlanQuery,
+  usePortfolioItemsQuery,
+  usePortfolioRiskSummaryQuery,
+} from "../features/portfolio/queries";
+import { portfolioKeys } from "../features/portfolio/queryKeys";
 import { deleteAsyncMapValue, setAsyncMapValue } from "../lib/asyncMap";
 import type { PositionResult } from "../lib/analysisTypes";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
 import {
-  addPortfolioEntry,
-  backfillLifecyclePlan,
-  closePortfolioItem,
-  deletePortfolioItem,
-  fetchDecisionContextStatus,
-  fetchLatestPortfolioHistory,
-  fetchLifecyclePlan,
   fetchPortfolioHistory,
-  fetchPortfolioItems,
-  fetchPortfolioRiskSummary,
   runPortfolioPositionAnalysis,
-  updatePortfolioItem,
   type AddEntryRequest,
   type PortfolioHistoryEntry,
 } from "../lib/portfolioApi";
@@ -32,11 +38,9 @@ import type {
   ClosedPortfolioItem,
   DecisionConfidenceLevel,
   DefaultStopRule,
-  LifecyclePlanResponse,
   LifecycleSetupType,
   PlanAdherence,
   PlannedHoldingPeriod,
-  PortfolioDecisionContextStatusMap,
   PortfolioItem,
   PortfolioRiskSummary,
 } from "../lib/portfolioTypes";
@@ -84,6 +88,7 @@ interface BackfillPlanModalProps {
 }
 
 function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
+  const backfillLifecyclePlanMutation = useBackfillLifecyclePlanMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [thesis, setThesis] = useState("");
@@ -169,7 +174,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
 
     setSaving(true);
     try {
-      const data = await backfillLifecyclePlan(item.id, body);
+      const data = await backfillLifecyclePlanMutation.mutateAsync({ id: item.id, body });
       onSaved(data);
       onClose();
     } catch (err) {
@@ -363,6 +368,7 @@ interface EditPortfolioModalProps {
 }
 
 function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps) {
+  const updatePortfolioItemMutation = useUpdatePortfolioItemMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [entryPrice, setEntryPrice] = useState(String(item.entry_price));
@@ -385,11 +391,14 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
     setError(null);
     setSaving(true);
     try {
-      const updated = await updatePortfolioItem(item.id, {
+      const updated = await updatePortfolioItemMutation.mutateAsync({
+        id: item.id,
+        body: {
         entry_price: parseFloat(entryPrice),
         quantity: parseInt(quantity, 10),
         entry_date: entryDate,
         notes: notes.trim() || null,
+        },
       });
       onSaved(updated);
       setSaved(true);
@@ -503,6 +512,7 @@ interface ClosePositionModalProps {
 }
 
 function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps) {
+  const closePortfolioItemMutation = useClosePortfolioItemMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [exitDate, setExitDate] = useState(getTodayDateString());
@@ -564,7 +574,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
 
     setClosing(true);
     try {
-      const closed = await closePortfolioItem(item.id, body);
+      const closed = await closePortfolioItemMutation.mutateAsync({ id: item.id, body });
       onClosed(item, closed);
       onClose();
     } catch (err) {
@@ -690,6 +700,8 @@ interface AddEntryModalProps {
 }
 
 function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
+  const addPortfolioEntryMutation = useAddPortfolioEntryMutation();
+  const lifecyclePlanQuery = useLifecyclePlanQuery(item.id);
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [eventDate, setEventDate] = useState(getTodayDateString());
@@ -701,9 +713,6 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
   const [planAdherence, setPlanAdherence] = useState<PlanAdherence>("yes");
   const [confidenceLevel, setConfidenceLevel] = useState<DecisionConfidenceLevel>("medium");
   const [note, setNote] = useState("");
-  const [lifecyclePlan, setLifecyclePlan] = useState<LifecyclePlanResponse | null>(null);
-  const [planLoading, setPlanLoading] = useState(true);
-  const [planError, setPlanError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -714,24 +723,6 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadLifecyclePlan() {
-      setPlanLoading(true);
-      setPlanError(null);
-      try {
-        const data = await fetchLifecyclePlan(item.id);
-        if (!cancelled) setLifecyclePlan(data);
-      } catch (err) {
-        if (!cancelled) setPlanError(err instanceof Error ? err.message : "讀取新增批次條件失敗");
-      } finally {
-        if (!cancelled) setPlanLoading(false);
-      }
-    }
-    loadLifecyclePlan();
-    return () => { cancelled = true; };
-  }, [item.id]);
 
   async function handleAddEntry() {
     setError(null);
@@ -776,7 +767,7 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
 
     setSubmitting(true);
     try {
-      const data = await addPortfolioEntry(item.id, body);
+      const data = await addPortfolioEntryMutation.mutateAsync({ id: item.id, body });
       onAdded(data.portfolio);
       onClose();
     } catch (err) {
@@ -785,6 +776,9 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
     }
   }
 
+  const lifecyclePlan = lifecyclePlanQuery.data ?? null;
+  const planLoading = lifecyclePlanQuery.isLoading;
+  const planError = lifecyclePlanQuery.error instanceof Error ? lifecyclePlanQuery.error.message : null;
   const recordedCondition = lifecyclePlan?.add_entry_condition;
 
   return (
@@ -974,6 +968,7 @@ interface DeleteConfirmModalProps {
 }
 
 function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProps) {
+  const deletePortfolioItemMutation = useDeletePortfolioItemMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [deleting, setDeleting] = useState(false);
@@ -991,7 +986,7 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
     setError(null);
     setDeleting(true);
     try {
-      await deletePortfolioItem(item.id);
+      await deletePortfolioItemMutation.mutateAsync(item.id);
       onDeleted(item.id);
       onClose();
     } catch (err) {
@@ -1413,12 +1408,19 @@ function portfolioIdKey(id: PortfolioId): PortfolioIdKey {
 }
 
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
-  const [items, setItems] = useState<PortfolioItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [latestMap, setLatestMap] = useState<Record<PortfolioIdKey, HistoryEntry | null>>({});
-  const [decisionContextStatusMap, setDecisionContextStatusMap] = useState<PortfolioDecisionContextStatusMap>({});
-  const [riskSummary, setRiskSummary] = useState<PortfolioRiskSummary | null>(null);
-  const [riskSummaryError, setRiskSummaryError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const portfolioItemsQuery = usePortfolioItemsQuery();
+  const portfolioRiskSummaryQuery = usePortfolioRiskSummaryQuery();
+  const latestPortfolioHistoryQuery = useLatestPortfolioHistoryQuery();
+  const decisionContextStatusQuery = useDecisionContextStatusQuery();
+  const items = portfolioItemsQuery.data ?? [];
+  const loading = portfolioItemsQuery.isLoading;
+  const latestMap = (latestPortfolioHistoryQuery.data ?? {}) as Record<PortfolioIdKey, HistoryEntry | null>;
+  const decisionContextStatusMap = decisionContextStatusQuery.data ?? {};
+  const riskSummary = portfolioRiskSummaryQuery.data ?? null;
+  const riskSummaryError = portfolioRiskSummaryQuery.error instanceof Error
+    ? portfolioRiskSummaryQuery.error.message
+    : null;
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -1441,46 +1443,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
-
-  async function loadDecisionContextStatus() {
-    const data = await fetchDecisionContextStatus();
-    setDecisionContextStatusMap(data);
-  }
-
-  const refreshRiskSummary = useCallback(async () => {
-    try {
-      const riskData = await fetchPortfolioRiskSummary();
-      setRiskSummary(riskData);
-      setRiskSummaryError(null);
-    } catch {
-      setRiskSummaryError("無法讀取風險摘要");
-    }
-  }, []);
-
-  useEffect(() => {
-    async function load() {
-      try {
-        const data = await fetchPortfolioItems();
-        setItems(data);
-
-        try {
-          await loadDecisionContextStatus();
-        } catch (err) {
-          void err;
-        }
-
-        await refreshRiskSummary();
-
-        try {
-          const latestData = await fetchLatestPortfolioHistory();
-          setLatestMap(latestData);
-        } catch { /* ignore */ }
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [refreshRiskSummary]);
 
   useEffect(() => {
     return () => {
@@ -1521,7 +1483,13 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       deleteAsyncMapValue(setHistoryMap, item.id);
       try {
         const hBody = await fetchPortfolioHistory(item.id, 20);
-        setAsyncMapValue(setLatestMap, portfolioIdKey(item.id), hBody.records[0] ?? null);
+        queryClient.setQueryData<Record<PortfolioIdKey, HistoryEntry | null>>(
+          portfolioKeys.latestHistory(),
+          (current) => ({
+            ...current,
+            [portfolioIdKey(item.id)]: hBody.records[0] ?? null,
+          }),
+        );
         setAsyncMapValue(setHistoryMap, item.id, hBody.records);
       } catch { /* ignore */ }
     } catch (err) {
@@ -1587,27 +1555,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }, 3000);
   }
 
-  function handlePositionClosed(sourceItem: PortfolioItem, closed: ClosedPortfolioItem) {
-    const sourceId = sourceItem.id;
-
-    setItems((prev) => {
-      const currentItem = prev.find((item) => item.id === sourceId) ?? sourceItem;
-      const remainingQuantity = currentItem.quantity - closed.exit_quantity;
-      return remainingQuantity <= 0
-        ? prev.filter((item) => item.id !== sourceId)
-        : prev.map((item) => (item.id === sourceId ? { ...item, quantity: remainingQuantity } : item));
-    });
-
+  function clearLocalPositionState(sourceId: number) {
     setExpandedId((prev) => (prev === sourceId ? null : prev));
     deleteAsyncMapValue(setHistoryMap, sourceId);
-    deleteAsyncMapValue(setLatestMap, portfolioIdKey(sourceId));
-
-    setDecisionContextStatusMap((prev) => {
-      const next = { ...prev };
-      delete next[portfolioIdKey(sourceId)];
-      return next;
-    });
-
     deleteAsyncMapValue(setAnalysisMap, sourceId);
     deleteAsyncMapValue(setAnalysisLoading, sourceId);
     deleteAsyncMapValue(setAnalysisError, sourceId);
@@ -1880,9 +1830,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <EditPortfolioModal
           item={editItem}
           onClose={() => setEditItem(null)}
-          onSaved={(updated) => {
-            setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-            void refreshRiskSummary();
+          onSaved={() => {
+            setEditItem(null);
           }}
         />
       )}
@@ -1892,8 +1841,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           item={backfillItem}
           onClose={() => setBackfillItem(null)}
           onSaved={() => {
-            loadDecisionContextStatus().catch(() => { });
-            void refreshRiskSummary();
             setBackfillItem(null);
           }}
         />
@@ -1903,9 +1850,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <AddEntryModal
           item={addEntryItem}
           onClose={() => setAddEntryItem(null)}
-          onAdded={(updated) => {
-            setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-            void refreshRiskSummary();
+          onAdded={() => {
+            clearLocalPositionState(addEntryItem.id);
             setAddEntryItem(null);
           }}
         />
@@ -1915,9 +1861,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <ClosePositionModal
           item={closeItem}
           onClose={() => setCloseItem(null)}
-          onClosed={(sourceItem, closed) => {
-            handlePositionClosed(sourceItem, closed);
-            void refreshRiskSummary();
+          onClosed={(sourceItem) => {
+            clearLocalPositionState(sourceItem.id);
             setCloseItem(null);
           }}
         />
@@ -1928,18 +1873,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           item={deleteItem}
           onClose={() => setDeleteItem(null)}
           onDeleted={(id) => {
-            setItems((prev) => prev.filter((i) => i.id !== id));
-            deleteAsyncMapValue(setLatestMap, portfolioIdKey(id));
-            deleteAsyncMapValue(setHistoryMap, id);
-            deleteAsyncMapValue(setAnalysisMap, id);
-            deleteAsyncMapValue(setAnalysisLoading, id);
-            deleteAsyncMapValue(setAnalysisError, id);
-            setDecisionContextStatusMap((prev) => {
-              const next = { ...prev };
-              delete next[portfolioIdKey(id)];
-              return next;
-            });
-            void refreshRiskSummary();
+            clearLocalPositionState(id);
             setDeleteItem(null);
           }}
         />
