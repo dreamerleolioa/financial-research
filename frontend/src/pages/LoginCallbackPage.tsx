@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../stores/auth";
+import { appPath } from "../lib/config";
 
 export default function LoginCallbackPage() {
   const { loginWithGoogleCode } = useAuth();
@@ -20,7 +21,7 @@ export default function LoginCallbackPage() {
       return;
     }
 
-    loginWithGoogleCode(code, `${window.location.origin}${import.meta.env.BASE_URL}login/callback`)
+    loginWithGoogleCode(code, `${window.location.origin}${appPath("login/callback")}`)
       .then(() => navigate("/", { replace: true }))
       .catch(() => setError("登入失敗，請稍後再試。"));
   }, [loginWithGoogleCode, navigate]);

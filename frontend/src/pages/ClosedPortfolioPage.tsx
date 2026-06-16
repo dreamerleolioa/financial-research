@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
-import { authHeaders } from "../lib/auth";
+import { setAsyncMapValue } from "../lib/asyncMap";
+import {
+  createPositionLifecycleReview,
+  fetchClosedPortfolioItems,
+  fetchOrCreateTradeReview,
+  fetchPositionGroupEvents,
+} from "../lib/closedPortfolioApi";
 import { formatPrice } from "../lib/formatters";
 import type {
-  AddEntryCondition,
   ClosedPortfolioItem,
-  DefaultStopRule,
-  EntryRecordReason,
   LifecycleTextItem,
   PositionEvent,
   PositionGroupEventsResponse,
@@ -17,7 +20,6 @@ import type {
   PositionLifecycleExitSequence,
   PositionLifecycleMetrics,
   PositionLifecycleReviewResponse,
-  PlannedHoldingPeriod,
   TradeReviewDataQuality,
   TradeReviewHoldingSection,
   TradeReviewResponse,
@@ -25,6 +27,12 @@ import type {
   TradeReviewSection,
   TradeReviewUserReadableConclusion,
 } from "../lib/portfolioTypes";
+import {
+  ADD_ENTRY_CONDITION_LABEL,
+  DEFAULT_STOP_RULE_LABEL,
+  ENTRY_RECORD_REASON_LABEL,
+  PLANNED_HOLDING_PERIOD_LABEL,
+} from "../lib/portfolioLabels";
 
 type PeriodKey = "1d" | "1w" | "1m" | "1q" | "1y";
 type CopyStatus = "idle" | "success" | "error";
@@ -315,50 +323,6 @@ const TIMELINE_REASON_CODE_LABEL: Record<string, string> = {
   stop_loss: "風險控制",
   emotional_exit: "情緒性風險處理",
   manual_record_correction: "手動紀錄修正",
-  not_recorded: "未記錄",
-};
-
-const ENTRY_RECORD_REASON_LABEL: Record<EntryRecordReason, string> = {
-  breakout_confirmation: "突破確認",
-  pullback_held_support: "回測守住支撐",
-  pullback_held_ma20: "回測守住 20 日線",
-  institutional_flow_strengthened: "法人籌碼轉強",
-  fundamental_thesis_improved: "基本面假設改善",
-  event_or_news_catalyst: "事件／消息催化",
-  long_term_accumulation: "長期分批佈局",
-  value_revaluation: "價值重估",
-  other: "其他固定理由",
-  not_recorded: "未記錄",
-};
-
-const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
-  short_term: "短線（數日內）",
-  swing: "波段（數週）",
-  medium_term: "中期（數月）",
-  long_term: "長期（半年以上）",
-  not_recorded: "未記錄",
-};
-
-const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
-  break_20d_low: "跌破 20 日低點",
-  break_ma20: "跌破 20 日線",
-  break_ma60: "跌破 60 日線",
-  cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格風險控制",
-  no_stop_recorded: "未設定風險控制",
-  not_recorded: "未記錄",
-};
-
-const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
-  no_add_entry: "不新增批次",
-  breakout_above_prior_high: "突破前高再新增批次",
-  pullback_holds_ma20: "回測守住 20 日線",
-  pullback_holds_support: "回測守住支撐",
-  institutional_flow_continues: "法人籌碼延續",
-  profit_threshold_reached: "達成獲利門檻",
-  data_quality_complete_only: "資料完整才新增批次",
-  no_averaging_down: "不攤平",
-  custom_plan_required: "需另訂自訂計畫",
   not_recorded: "未記錄",
 };
 
@@ -1594,11 +1558,7 @@ export default function ClosedPortfolioPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/closed`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: ClosedPortfolioItem[] = await res.json();
+        const data = await fetchClosedPortfolioItems();
         if (!cancelled) setItems(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "已結案持股載入失敗");
@@ -1628,17 +1588,7 @@ export default function ClosedPortfolioPage() {
   const totalClass = totalRealizedPnl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
 
   async function fetchReview(item: ClosedPortfolioItem): Promise<TradeReviewResponse> {
-    const reviewUrl = `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/review`;
-    const getResponse = await fetch(reviewUrl, { headers: authHeaders() });
-    if (getResponse.ok) return await getResponse.json() as TradeReviewResponse;
-    if (getResponse.status !== 404) throw new Error(`HTTP ${getResponse.status}`);
-
-    const postResponse = await fetch(reviewUrl, {
-      method: "POST",
-      headers: authHeaders(),
-    });
-    if (!postResponse.ok) throw new Error(`HTTP ${postResponse.status}`);
-    return await postResponse.json() as TradeReviewResponse;
+    return fetchOrCreateTradeReview(item.id);
   }
 
   async function openReview(item: ClosedPortfolioItem): Promise<void> {
@@ -1646,65 +1596,55 @@ export default function ClosedPortfolioPage() {
     setCopyStatus((prev) => ({ ...prev, [item.id]: "idle" }));
     if (reviewMap[item.id]) return;
 
-    setReviewLoading((prev) => ({ ...prev, [item.id]: true }));
-    setReviewError((prev) => ({ ...prev, [item.id]: null }));
+    setAsyncMapValue(setReviewLoading, item.id, true);
+    setAsyncMapValue(setReviewError, item.id, null);
     try {
       const review = await fetchReview(item);
-      setReviewMap((prev) => ({ ...prev, [item.id]: review }));
+      setAsyncMapValue(setReviewMap, item.id, review);
     } catch (err) {
-      setReviewError((prev) => ({ ...prev, [item.id]: err instanceof Error ? err.message : "檢討分析載入失敗" }));
+      setAsyncMapValue(setReviewError, item.id, err instanceof Error ? err.message : "檢討分析載入失敗");
     } finally {
-      setReviewLoading((prev) => ({ ...prev, [item.id]: false }));
+      setAsyncMapValue(setReviewLoading, item.id, false);
     }
   }
 
   async function fetchTimeline(positionGroupId: string): Promise<PositionGroupEventsResponse> {
-    const response = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/groups/${positionGroupId}/events`, {
-      headers: authHeaders(),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json() as PositionGroupEventsResponse;
+    return fetchPositionGroupEvents(positionGroupId);
   }
 
   async function openTimeline(group: ClosedPortfolioGroup): Promise<void> {
     setSelectedTimelineGroup(group);
     if (timelineMap[group.position_group_id]) return;
 
-    setTimelineLoading((prev) => ({ ...prev, [group.position_group_id]: true }));
-    setTimelineError((prev) => ({ ...prev, [group.position_group_id]: null }));
+    setAsyncMapValue(setTimelineLoading, group.position_group_id, true);
+    setAsyncMapValue(setTimelineError, group.position_group_id, null);
     try {
       const timeline = await fetchTimeline(group.position_group_id);
-      setTimelineMap((prev) => ({ ...prev, [group.position_group_id]: timeline }));
+      setAsyncMapValue(setTimelineMap, group.position_group_id, timeline);
     } catch (err) {
-      setTimelineError((prev) => ({ ...prev, [group.position_group_id]: err instanceof Error ? err.message : "事件時間線載入失敗" }));
+      setAsyncMapValue(setTimelineError, group.position_group_id, err instanceof Error ? err.message : "事件時間線載入失敗");
     } finally {
-      setTimelineLoading((prev) => ({ ...prev, [group.position_group_id]: false }));
+      setAsyncMapValue(setTimelineLoading, group.position_group_id, false);
     }
   }
 
   async function fetchLifecycleReview(positionGroupId: string): Promise<PositionLifecycleReviewResponse> {
-    const reviewUrl = `${import.meta.env.VITE_API_URL}/portfolio/groups/${positionGroupId}/lifecycle-review`;
-    const postResponse = await fetch(reviewUrl, {
-      method: "POST",
-      headers: authHeaders(),
-    });
-    if (!postResponse.ok) throw new Error(`HTTP ${postResponse.status}`);
-    return await postResponse.json() as PositionLifecycleReviewResponse;
+    return createPositionLifecycleReview(positionGroupId);
   }
 
   async function openLifecycleReview(group: ClosedPortfolioGroup): Promise<void> {
     setSelectedLifecycleGroup(group);
     setLifecycleCopyStatus((prev) => ({ ...prev, [group.position_group_id]: "idle" }));
 
-    setLifecycleReviewLoading((prev) => ({ ...prev, [group.position_group_id]: true }));
-    setLifecycleReviewError((prev) => ({ ...prev, [group.position_group_id]: null }));
+    setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, true);
+    setAsyncMapValue(setLifecycleReviewError, group.position_group_id, null);
     try {
       const review = await fetchLifecycleReview(group.position_group_id);
-      setLifecycleReviewMap((prev) => ({ ...prev, [group.position_group_id]: review }));
+      setAsyncMapValue(setLifecycleReviewMap, group.position_group_id, review);
     } catch (err) {
-      setLifecycleReviewError((prev) => ({ ...prev, [group.position_group_id]: err instanceof Error ? err.message : "整體部位檢討載入失敗" }));
+      setAsyncMapValue(setLifecycleReviewError, group.position_group_id, err instanceof Error ? err.message : "整體部位檢討載入失敗");
     } finally {
-      setLifecycleReviewLoading((prev) => ({ ...prev, [group.position_group_id]: false }));
+      setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, false);
     }
   }
 

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { requestJson } from "../lib/apiClient";
 import { clearToken, getToken, setToken } from "../lib/auth";
 
 interface User {
@@ -29,8 +30,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isLoading: true,
   });
 
-  const apiUrl = import.meta.env.VITE_API_URL as string;
-
   // On mount, verify existing token
   useEffect(() => {
     const token = getToken();
@@ -38,49 +37,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setState({ user: null, token: null, isLoading: false });
       return;
     }
-    fetch(`${apiUrl}/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Unauthorized");
-        return res.json() as Promise<User>;
-      })
+    requestJson<User>("/auth/me")
       .then((user) => setState({ user, token, isLoading: false }))
       .catch(() => {
         clearToken();
         setState({ user: null, token: null, isLoading: false });
       });
-  }, [apiUrl]);
+  }, []);
 
-  const loginWithGoogleToken = useCallback(
-    async (idToken: string) => {
-      const res = await fetch(`${apiUrl}/auth/google`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id_token: idToken }),
-      });
-      if (!res.ok) throw new Error("Google login failed");
-      const data = await res.json() as { access_token: string; user: User };
-      setToken(data.access_token);
-      setState({ user: data.user, token: data.access_token, isLoading: false });
-    },
-    [apiUrl],
-  );
+  const loginWithGoogleToken = useCallback(async (idToken: string) => {
+    const data = await requestJson<{ access_token: string; user: User }>("/auth/google", {
+      method: "POST",
+      auth: false,
+      body: { id_token: idToken },
+    });
+    setToken(data.access_token);
+    setState({ user: data.user, token: data.access_token, isLoading: false });
+  }, []);
 
-  const loginWithGoogleCode = useCallback(
-    async (code: string, redirectUri: string) => {
-      const res = await fetch(`${apiUrl}/auth/google/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, redirect_uri: redirectUri }),
-      });
-      if (!res.ok) throw new Error("Google login failed");
-      const data = await res.json() as { access_token: string; user: User };
-      setToken(data.access_token);
-      setState({ user: data.user, token: data.access_token, isLoading: false });
-    },
-    [apiUrl],
-  );
+  const loginWithGoogleCode = useCallback(async (code: string, redirectUri: string) => {
+    const data = await requestJson<{ access_token: string; user: User }>("/auth/google/code", {
+      method: "POST",
+      auth: false,
+      body: { code, redirect_uri: redirectUri },
+    });
+    setToken(data.access_token);
+    setState({ user: data.user, token: data.access_token, isLoading: false });
+  }, []);
 
   const logout = useCallback(() => {
     clearToken();

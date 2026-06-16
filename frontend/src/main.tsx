@@ -11,6 +11,7 @@ import ClosedPortfolioPage from "./pages/ClosedPortfolioPage.tsx";
 import PortfolioPage from "./pages/PortfolioPage.tsx";
 import DailyRadarPage from "./pages/DailyRadarPage.tsx";
 import { AuthProvider, useAuth } from "./stores/auth.tsx";
+import { APP_BASE_URL, GOOGLE_CLIENT_ID } from "./lib/config.ts";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
@@ -19,12 +20,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string;
-
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <GoogleOAuthProvider clientId={googleClientId}>
-      <BrowserRouter basename={import.meta.env.BASE_URL}>
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+      <BrowserRouter basename={APP_BASE_URL}>
         <AuthProvider>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
