@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
@@ -629,7 +630,7 @@ def _ordered_candidates(candidates: list[DailyRadarCandidate]) -> list[DailyRada
 def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateResponse:
     return DailyRadarCandidateResponse(
         symbol=candidate.symbol,
-        name=candidate.name,
+        name=_display_name(candidate.symbol, candidate.name),
         primary_bucket=candidate.primary_bucket,
         secondary_buckets=list(candidate.secondary_buckets or []),
         observation_score=candidate.observation_score,
@@ -650,7 +651,7 @@ def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRe
 def _history_response(item: dict[str, Any]) -> dict[str, Any]:
     response = {
         "symbol": item["symbol"],
-        "name": item["name"],
+        "name": _display_name(item["symbol"], item["name"]),
         "record_date": item["record_date"],
         "primary_bucket": item["primary_bucket"],
         "secondary_buckets": list(item.get("secondary_buckets") or []),
@@ -671,6 +672,13 @@ def _history_response(item: dict[str, Any]) -> dict[str, Any]:
     if rule_version is not None:
         response["rule_version"] = rule_version
     return response
+
+
+def _display_name(symbol: str, name: str | None) -> str:
+    normalized_name = str(name or "").strip()
+    if normalized_name and normalized_name != symbol:
+        return normalized_name
+    return resolve_symbol_name(symbol) or normalized_name or symbol
 
 
 def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:

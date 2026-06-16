@@ -678,15 +678,18 @@ def _build_response_from_cache(
             resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
             resp.intraday_disclaimer = hit.intraday_disclaimer
             resp.strategy_version = hit.strategy_version  # 快取命中時回傳快取的版本（可能為 NULL）
-            if not resp.symbol_name:
-                resp.symbol_name = resolve_symbol_name(symbol)
+            snapshot = dict(resp.snapshot or {})
+            resp.symbol_name = _display_symbol_name(
+                symbol,
+                resp.symbol_name or snapshot.get("name"),
+            )
             if resp.symbol_name:
-                resp.snapshot = {**dict(resp.snapshot or {}), "name": resp.symbol_name}
+                resp.snapshot = {**snapshot, "name": resp.symbol_name}
             return resp
         except Exception:
             # Schema drift — fallback to sparse fields from cache metadata
             pass
-    symbol_name = resolve_symbol_name(symbol)
+    symbol_name = _display_symbol_name(symbol)
     return AnalyzeResponse(
         snapshot={"symbol": symbol, "name": symbol_name} if symbol_name else {"symbol": symbol},
         symbol_name=symbol_name,
@@ -697,6 +700,14 @@ def _build_response_from_cache(
         intraday_disclaimer=hit.intraday_disclaimer,
         strategy_version=hit.strategy_version,
     )
+
+
+def _display_symbol_name(symbol: str, name: Any | None = None) -> str | None:
+    normalized_symbol = str(symbol or "").strip()
+    normalized_name = str(name or "").strip()
+    if normalized_name and normalized_name.upper() != normalized_symbol.upper():
+        return normalized_name
+    return resolve_symbol_name(normalized_symbol) or normalized_name or None
 
 
 def _build_analyze_risk_language(result: dict[str, Any]) -> dict[str, Any]:
@@ -907,7 +918,8 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
             )
         )
         snapshot = {}
-    symbol_name = str(snapshot.get("name") or "").strip() or None
+    snapshot_symbol = str(snapshot.get("symbol") or "").strip()
+    symbol_name = _display_symbol_name(snapshot_symbol, snapshot.get("name")) if snapshot_symbol else str(snapshot.get("name") or "").strip() or None
     if symbol_name:
         snapshot = {**snapshot, "name": symbol_name}
 

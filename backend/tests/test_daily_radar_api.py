@@ -652,6 +652,7 @@ def _persist_daily_radar_candidate(
     *,
     symbol: str,
     score: int,
+    name: str | None = None,
     primary_bucket: str = "institutional_accumulation",
     secondary_buckets: list[str] | None = None,
     background_context_labels: list[dict[str, Any]] | None = None,
@@ -666,7 +667,7 @@ def _persist_daily_radar_candidate(
     candidate = DailyRadarCandidate(
         run_id=run.id,
         symbol=symbol,
-        name=f"{symbol} fixture",
+        name=name if name is not None else f"{symbol} fixture",
         primary_bucket=primary_bucket,
         secondary_buckets=secondary_buckets or ["price_volume_strengthening"],
         observation_score=score,
@@ -1078,6 +1079,37 @@ def test_public_latest_daily_radar_returns_latest_completed_run_without_internal
     assert first["background_context_labels"][1]["freshness"] == "missing"
     assert first["background_context_labels"][1]["missing_reason"] == "context_cache_missing"
     assert payload["candidates"][1]["background_context_labels"] == []
+
+
+def test_public_daily_radar_backfills_symbol_name_when_cached_name_is_symbol(
+    public_daily_radar_client: TestClient,
+    daily_radar_db_session: Session,
+    monkeypatch,
+) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    monkeypatch.setattr(daily_radar_router, "resolve_symbol_name", lambda symbol: "台積電" if symbol == "2330.TW" else None)
+    run = _persist_daily_radar_run(daily_radar_db_session, run_date=date(2026, 6, 2))
+    _persist_daily_radar_candidate(
+        daily_radar_db_session,
+        run,
+        symbol="2330.TW",
+        name="2330.TW",
+        score=88,
+    )
+    daily_radar_db_session.commit()
+
+    response = public_daily_radar_client.get("/daily-radar/latest")
+
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["symbol"] == "2330.TW"
+    assert response.json()["candidates"][0]["name"] == "台積電"
+
+    history_response = public_daily_radar_client.get("/daily-radar/symbol/2330.TW")
+
+    assert history_response.status_code == 200
+    assert history_response.json()[0]["symbol"] == "2330.TW"
+    assert history_response.json()[0]["name"] == "台積電"
 
 
 def test_public_daily_radar_by_date_uses_latest_public_run_and_bucket_limit_filters(
