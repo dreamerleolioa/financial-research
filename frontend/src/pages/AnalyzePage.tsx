@@ -557,13 +557,6 @@ export default function AnalyzePage() {
         </div>
       )}
 
-      {result && (
-        <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-          <p className="text-xs font-medium text-text-muted">目前標的</p>
-          <p className="mt-1 text-lg font-semibold text-text-primary">{analyzedDisplayName}</p>
-        </div>
-      )}
-
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
         <label htmlFor="symbol" className="mb-2 block text-sm font-medium text-text-secondary">
           股票代碼
@@ -631,6 +624,11 @@ export default function AnalyzePage() {
           actionPlan ? (
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="space-y-4">
+                <div>
+                  <p className="text-xs font-medium text-text-muted">目前標的</p>
+                  <p className="mt-1 text-lg font-semibold text-text-primary">{analyzedDisplayName}</p>
+                </div>
+
                 <div className="rounded-lg border border-border bg-card-hover/70 p-3">
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px] md:items-center">
                     <div>

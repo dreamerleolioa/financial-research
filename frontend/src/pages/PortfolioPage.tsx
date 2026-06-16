@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useAddPortfolioEntryMutation,
   useBackfillLifecyclePlanMutation,
@@ -1411,6 +1411,13 @@ function portfolioDisplayName(item: { symbol: string; name?: string | null }): s
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
+function portfolioCardDisplayName(item: PortfolioItem, namesBySymbol: Map<string, string>): { primary: string; secondary: string | null } {
+  const name = item.name?.trim() || namesBySymbol.get(item.symbol) || null;
+  return name
+    ? { primary: name, secondary: item.symbol }
+    : { primary: item.symbol, secondary: null };
+}
+
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
   const queryClient = useQueryClient();
   const portfolioItemsQuery = usePortfolioItemsQuery();
@@ -1425,6 +1432,13 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const riskSummaryError = portfolioRiskSummaryQuery.error instanceof Error
     ? portfolioRiskSummaryQuery.error.message
     : null;
+  const riskSummaryNamesBySymbol = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const risk of riskSummary?.position_risks ?? []) {
+      if (risk.name?.trim()) names.set(risk.symbol, risk.name.trim());
+    }
+    return names;
+  }, [riskSummary]);
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -1642,6 +1656,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           const history = historyMap[item.id];
           const isExpanded = expandedId === item.id;
           const isAnalyzing = analysisLoading[item.id];
+          const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
 
           return (
             <article key={item.id} className="rounded-xl border border-border bg-card shadow-sm">
@@ -1649,8 +1664,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 {/* Info row */}
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p className="font-semibold text-text-primary">{item.name ?? item.symbol}</p>
-                    {item.name && <p className="text-xs font-mono text-text-faint">{item.symbol}</p>}
+                    <p className="font-semibold text-text-primary">{displayName.primary}</p>
+                    {displayName.secondary && <p className="text-xs font-mono text-text-faint">{displayName.secondary}</p>}
                   </div>
                   {/* P/L badge — top-right, only when available */}
                   {(() => {

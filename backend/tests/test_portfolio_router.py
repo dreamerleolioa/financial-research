@@ -631,6 +631,29 @@ def portfolio_db_client(portfolio_db_session: Session, monkeypatch: pytest.Monke
         api.app.dependency_overrides.pop(get_db, None)
 
 
+def test_list_portfolio_includes_display_name(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        notes="核心持股",
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio")
+
+    assert resp.status_code == 200
+    assert resp.json()[0]["symbol"] == "2330.TW"
+    assert resp.json()[0]["name"] == "台積電"
+
+
 def test_close_portfolio_partial_close_persists_active_and_closed_rows(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -740,7 +763,7 @@ def test_decision_context_status_reports_missing_plan_without_changing_portfolio
     status_resp = portfolio_db_client.get("/portfolio/decision-context-status")
 
     assert portfolio_resp.status_code == 200
-    assert set(portfolio_resp.json()[0]) == {"id", "symbol", "entry_price", "quantity", "entry_date", "notes"}
+    assert set(portfolio_resp.json()[0]) == {"id", "symbol", "name", "entry_price", "quantity", "entry_date", "notes"}
     assert status_resp.status_code == 200
     data = status_resp.json()["42"]
     assert data["portfolio_id"] == 42
@@ -1220,7 +1243,7 @@ def test_lifecycle_plan_endpoint_exposes_original_add_entry_condition_without_ch
     plan_resp = portfolio_db_client.get("/portfolio/42/lifecycle-plan")
 
     assert list_resp.status_code == 200
-    assert set(list_resp.json()[0]) == {"id", "symbol", "entry_price", "quantity", "entry_date", "notes"}
+    assert set(list_resp.json()[0]) == {"id", "symbol", "name", "entry_price", "quantity", "entry_date", "notes"}
     assert plan_resp.status_code == 200
     assert plan_resp.json() == {
         "portfolio_id": 42,

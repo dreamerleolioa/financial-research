@@ -442,6 +442,7 @@ def list_portfolio(
         {
             "id":          r.id,
             "symbol":      r.symbol,
+            "name":        resolve_symbol_name(r.symbol),
             "entry_price": float(r.entry_price),
             "quantity":    r.quantity,
             "entry_date":  r.entry_date.isoformat(),
