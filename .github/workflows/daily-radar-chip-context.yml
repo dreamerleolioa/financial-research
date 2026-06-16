@@ -2,9 +2,17 @@ name: Daily Radar Chip Context
 
 on:
   workflow_dispatch:
+    inputs:
+      context_group:
+        description: "Choose which background context group to update."
+        required: true
+        default: daily
+        type: choice
+        options:
+          - daily
+          - weekly
+          - all
   schedule:
-    # 台灣時間週二至週六 07:00，更新日頻融資融券與借券背景 context
-    - cron: "0 23 * * 1-5"
     # 台灣時間週日 07:30，更新週頻 TDCC 股權分散背景 context
     - cron: "30 23 * * 6"
 
@@ -13,9 +21,9 @@ permissions:
 
 jobs:
   update-daily-chip-context:
-    name: Update Daily Radar daily chip context on Zeabur
+    name: Manually update Daily Radar daily chip context on Zeabur
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * 1-5'
+    if: github.event_name == 'workflow_dispatch' && (inputs.context_group == 'daily' || inputs.context_group == 'all')
 
     steps:
       - name: Trigger daily chip context update
@@ -75,7 +83,7 @@ jobs:
   update-weekly-chip-context:
     name: Update Daily Radar weekly chip context on Zeabur
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 23 * * 6'
+    if: github.event.schedule == '30 23 * * 6' || (github.event_name == 'workflow_dispatch' && (inputs.context_group == 'weekly' || inputs.context_group == 'all'))
 
     steps:
       - name: Trigger weekly chip context update

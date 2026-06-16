@@ -70,6 +70,8 @@ from ai_stock_sentinel.db.session import get_db
 router = APIRouter(tags=["daily-radar"])
 logger = logging.getLogger(__name__)
 
+DAILY_RUN_REFRESH_CONTEXT_TYPES = ("lending", "full_margin")
+
 
 class DailyRadarRunRequest(BaseModel):
     run_date: date | None = None
@@ -229,6 +231,7 @@ def run_daily_radar_endpoint(
     universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
     market_context_provider: MarketIndexContextProvider = Depends(get_daily_radar_market_context_provider),
+    background_context_provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
 ) -> DailyRadarRunTriggerResponse:
     failure_stage = "request_initialization"
     try:
@@ -251,6 +254,26 @@ def run_daily_radar_endpoint(
             )
 
         selected_symbols = [entry.symbol for entry in universe]
+        if _should_refresh_daily_run_chip_context(market):
+            failure_stage = "daily_chip_context_update"
+            chip_context_result = update_background_chip_context_cache(
+                db,
+                run_date=run_date,
+                market=market,
+                provider=background_context_provider,
+                symbols=selected_symbols,
+                context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+            )
+            if chip_context_result["status"] != "completed":
+                logger.warning(
+                    "[DailyRadar] daily chip context refresh degraded status=%s run_date=%s market=%s symbol_count=%s context_types=%s errors=%s",
+                    chip_context_result["status"],
+                    run_date.isoformat(),
+                    market,
+                    chip_context_result["symbol_count"],
+                    list(chip_context_result["context_types"]),
+                    chip_context_result["errors"],
+                )
         background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
             db,
             symbols=selected_symbols,
@@ -499,6 +522,10 @@ def get_daily_radar_by_date_endpoint(
 
 def _backend_today() -> date:
     return date.today()
+
+
+def _should_refresh_daily_run_chip_context(market: str) -> bool:
+    return market.upper() == "TW"
 
 
 def _institutional_payloads_by_symbol(

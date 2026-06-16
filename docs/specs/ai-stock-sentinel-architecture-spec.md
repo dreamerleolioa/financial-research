@@ -60,8 +60,8 @@
 | Workflow | 責任 |
 | -------- | ---- |
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
-| `daily-radar.yml` | 收盤後呼叫 `/internal/daily-radar/run`，由後端自行完成 universe、selected-symbol OHLCV backfill、Stage 1/2 scoring 與 persistence |
-| `daily-radar-chip-context.yml` | 週二至週六更新 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
+| `daily-radar.yml` | 收盤後呼叫 `/internal/daily-radar/run`，由後端自行完成 universe、selected-symbol 日頻 lending/full margin refresh、selected-symbol OHLCV backfill、Stage 1/2 scoring 與 persistence |
+| `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `daily-radar-rule-review.yml` | 觸發 monthly rule governance report |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
 
@@ -69,7 +69,7 @@
 
 `shared_background_contexts` 是跨功能背景 evidence cache，不是交易決策覆寫層：
 
-- Daily Radar 主流程只批次讀 cache，背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
+- Daily Radar 主流程會先針對台股 selected symbols 刷新日頻 lending/full margin cache，再批次讀 cache；背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
 - `/analyze` 與 `/analyze/position` 只把 shared context 附加到 response 作為 evidence/caveat/data quality trace，不放入 LangGraph initial state，也不觸發 weekly major holders、lending、full margin 的即時逐檔查詢。
 - Portfolio diagnosis 與 lifecycle review 以 read/reference 方式使用；lifecycle review 需用事件日期做 point-in-time filter，不能用未來資料改寫過去判斷。
 - missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。
