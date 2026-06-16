@@ -28,6 +28,7 @@ from ai_stock_sentinel.graph.builder import build_graph
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.main import build_graph_deps
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
 from ai_stock_sentinel.analysis.metrics import (
@@ -134,6 +135,7 @@ class TechnicalIndicators(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     snapshot: dict[str, Any] = Field(default_factory=dict)
+    symbol_name: str | None = None
     analysis: str = ""
     analysis_detail: dict[str, Any] | None = None
     cleaned_news: dict[str, Any] | None = None
@@ -676,12 +678,18 @@ def _build_response_from_cache(
             resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
             resp.intraday_disclaimer = hit.intraday_disclaimer
             resp.strategy_version = hit.strategy_version  # 快取命中時回傳快取的版本（可能為 NULL）
+            if not resp.symbol_name:
+                resp.symbol_name = resolve_symbol_name(symbol)
+            if resp.symbol_name:
+                resp.snapshot = {**dict(resp.snapshot or {}), "name": resp.symbol_name}
             return resp
         except Exception:
             # Schema drift — fallback to sparse fields from cache metadata
             pass
+    symbol_name = resolve_symbol_name(symbol)
     return AnalyzeResponse(
-        snapshot={},
+        snapshot={"symbol": symbol, "name": symbol_name} if symbol_name else {"symbol": symbol},
+        symbol_name=symbol_name,
         analysis=hit.final_verdict or "",
         signal_confidence=int(hit.signal_confidence) if hit.signal_confidence is not None else None,
         action_plan_tag=hit.action_tag,
@@ -899,6 +907,9 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
             )
         )
         snapshot = {}
+    symbol_name = str(snapshot.get("name") or "").strip() or None
+    if symbol_name:
+        snapshot = {**snapshot, "name": symbol_name}
 
     if not isinstance(analysis, str):
         response_errors.append(
@@ -972,6 +983,7 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
 
     return AnalyzeResponse(
         snapshot=snapshot,
+        symbol_name=symbol_name,
         analysis=analysis,
         analysis_detail=analysis_detail,
         cleaned_news=result.get("cleaned_news"),

@@ -65,6 +65,7 @@ const riskControlReferenceSchema = z.object({
 
 export const analyzeResponseSchema = z.object({
   snapshot: recordSchema,
+  symbol_name: nullableString.optional(),
   analysis: z.string(),
   analysis_detail: analysisDetailSchema.nullable(),
   cleaned_news: recordSchema.nullable(),

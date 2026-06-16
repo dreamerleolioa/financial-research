@@ -1212,6 +1212,7 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol, analysis_type="general": cache)
     monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: "台積電" if symbol == "2330.TW" else None)
 
     fake_db = MagicMock()
     api.app.dependency_overrides[get_db] = lambda: fake_db
@@ -1228,6 +1229,8 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     assert body["fundamental_data"] == {"pe_ratio": 28.1}
     assert body["news_display_items"] == [{"title": "新聞標題"}]
     assert body["snapshot"]["symbol"] == "2330.TW"
+    assert body["symbol_name"] == "台積電"
+    assert body["snapshot"]["name"] == "台積電"
 
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:

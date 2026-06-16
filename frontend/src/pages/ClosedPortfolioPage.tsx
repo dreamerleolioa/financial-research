@@ -46,6 +46,7 @@ interface PeriodOption {
 interface ClosedPortfolioGroup {
   position_group_id: string;
   symbol: string;
+  name?: string | null;
   entry_date: string;
   entry_price: number;
   totalClosedQuantity: number;
@@ -394,6 +395,7 @@ function groupClosedItems(items: ClosedPortfolioItem[]): ClosedPortfolioGroup[] 
       group = {
         position_group_id: item.position_group_id,
         symbol: item.symbol,
+        name: item.name,
         entry_date: item.entry_date,
         entry_price: item.entry_price,
         totalClosedQuantity: 0,
@@ -412,6 +414,10 @@ function groupClosedItems(items: ClosedPortfolioItem[]): ClosedPortfolioGroup[] 
   }
 
   return groups;
+}
+
+function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
+  return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
 function getSignedPriceText(value: number | null | undefined, symbol?: string): string {
@@ -1155,7 +1161,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
       <div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{item.symbol} 檢討分析</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 檢討分析</p>
             <p className="mt-1 text-xs text-text-faint">
               {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜ {getSignedPriceText(item.realized_pnl, item.symbol)}
             </p>
@@ -1249,7 +1255,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
       <div className="max-h-[85vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{group.symbol} 事件時間線</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件時間線</p>
             <p className="mt-1 text-xs text-text-faint">
               部位事件時間線 ｜ Group {group.position_group_id.slice(0, 8)} ｜ {group.exitBatchCount} 筆結案批次
             </p>
@@ -1427,7 +1433,7 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
       <div className="max-h-[85vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{group.symbol} 整體部位檢討</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 整體部位檢討</p>
             <p className="mt-1 text-xs text-text-faint">
               Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜ 多次進場/新增批次/分批降低曝險整體檢討
             </p>
@@ -1754,7 +1760,8 @@ export default function ClosedPortfolioPage() {
                       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                         <div className="border-l-4 border-l-indigo-500 pl-3 dark:border-l-indigo-400">
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-mono text-lg font-semibold text-text-primary">{group.symbol}</p>
+                            <p className="text-lg font-semibold text-text-primary">{group.name ?? group.symbol}</p>
+                            {group.name && <p className="font-mono text-xs text-text-faint">{group.symbol}</p>}
                             <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
                               進場 {group.entry_date}
                             </span>

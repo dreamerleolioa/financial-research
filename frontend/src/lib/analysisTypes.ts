@@ -73,6 +73,7 @@ export interface TechnicalIndicators {
 
 export interface AnalyzeResponse {
   snapshot: Record<string, unknown>;
+  symbol_name?: string | null;
   analysis: string;
   analysis_detail: AnalysisDetail | null;
   cleaned_news: Record<string, unknown> | null;

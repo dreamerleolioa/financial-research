@@ -193,7 +193,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
       <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">補填 operation plan · {item.symbol}</p>
+            <p className="font-semibold text-text-primary">補填 operation plan · {portfolioDisplayName(item)}</p>
             <p className="mt-1 text-xs text-text-faint">
               成本 {formatPrice(item.entry_price, item.symbol)} ｜ 進場日 {item.entry_date}
             </p>
@@ -418,7 +418,7 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
     >
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
-          <p className="font-semibold text-text-primary">編輯持股 · {item.symbol}</p>
+          <p className="font-semibold text-text-primary">編輯持股 · {portfolioDisplayName(item)}</p>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
@@ -593,7 +593,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">結案批次記錄 · {item.symbol}</p>
+            <p className="font-semibold text-text-primary">結案批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
               持有 {item.quantity} 股，成本 {formatPrice(item.entry_price, item.symbol)}
             </p>
@@ -791,7 +791,7 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
       <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">新增批次記錄 · {item.symbol}</p>
+            <p className="font-semibold text-text-primary">新增批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
               目前 {item.quantity} 股，平均成本 {formatPrice(item.entry_price, item.symbol)}
             </p>
@@ -1009,7 +1009,7 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
               <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
             </svg>
           </div>
-          <p className="font-semibold text-text-primary">刪除 {item.symbol} 持股？</p>
+          <p className="font-semibold text-text-primary">刪除 {portfolioDisplayName(item)} 持股？</p>
           <p className="mt-1.5 text-sm text-text-muted">
             此操作將同時移除所有歷史診斷紀錄，且<span className="font-medium text-red-600 dark:text-red-400">無法復原</span>。
           </p>
@@ -1185,7 +1185,7 @@ function PortfolioRiskSummaryPanel({
           {topRisks.map((risk) => (
             <div key={risk.symbol} className="rounded-lg border border-border-subtle bg-background px-3 py-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-text-primary">{risk.symbol}</span>
+                <span className="text-sm font-semibold text-text-primary">{portfolioDisplayName(risk)}</span>
                 <span className="text-xs text-text-faint">{PORTFOLIO_RISK_STATE_LABEL[risk.risk_state]}</span>
               </div>
               <div className="mt-2 flex items-end justify-between gap-2">
@@ -1248,7 +1248,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
         {/* Header */}
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{item.symbol} 持股診斷</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 持股診斷</p>
             <p className="text-xs text-text-faint">
               成本 {formatPrice(item.entry_price, item.symbol)}
               {item.quantity > 0 && ` ｜ ${item.quantity} 股`}
@@ -1405,6 +1405,10 @@ type PortfolioIdKey = `${PortfolioId}`;
 
 function portfolioIdKey(id: PortfolioId): PortfolioIdKey {
   return String(id) as PortfolioIdKey;
+}
+
+function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
+  return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
@@ -1644,7 +1648,10 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
               <div className="p-4">
                 {/* Info row */}
                 <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold text-text-primary">{item.symbol}</p>
+                  <div>
+                    <p className="font-semibold text-text-primary">{item.name ?? item.symbol}</p>
+                    {item.name && <p className="text-xs font-mono text-text-faint">{item.symbol}</p>}
+                  </div>
                   {/* P/L badge — top-right, only when available */}
                   {(() => {
                     const closePrice = latest?.indicators?.close_price;

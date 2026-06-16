@@ -227,14 +227,13 @@ def test_add_entry_endpoint_creates_add_entry_event_and_updates_active_row(
     assert resp.status_code == 201
     data = resp.json()
     assert set(data) == {"portfolio", "event"}
-    assert data["portfolio"] == {
-        "id": 42,
-        "symbol": "2330.TW",
-        "entry_price": 933.33,
-        "quantity": 150,
-        "entry_date": "2026-01-01",
-        "notes": None,
-    }
+    assert data["portfolio"]["id"] == 42
+    assert data["portfolio"]["symbol"] == "2330.TW"
+    assert data["portfolio"]["name"] == "台積電"
+    assert data["portfolio"]["entry_price"] == 933.33
+    assert data["portfolio"]["quantity"] == 150
+    assert data["portfolio"]["entry_date"] == "2026-01-01"
+    assert data["portfolio"]["notes"] is None
     event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
     assert event.event_type == "add_entry"
     assert event.source == "user_recorded_at_event_time"
@@ -622,6 +621,7 @@ def portfolio_db_session() -> Session:
 @pytest.fixture()
 def portfolio_db_client(portfolio_db_session: Session, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(portfolio_router_module, "resolve_symbol_name", lambda symbol: "台積電" if symbol == "2330.TW" else None)
     api.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     api.app.dependency_overrides[get_db] = lambda: portfolio_db_session
     try:
@@ -866,6 +866,7 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     assert data["total_unrealized_pnl"] == 200
     assert data["total_at_risk"] == 250
     assert [row["symbol"] for row in data["position_risks"]] == ["2330.TW"]
+    assert [row["name"] for row in data["position_risks"]] == ["台積電"]
     assert "recommended_action" not in data
     assert "portfolio_action" not in data
     assert portfolio_db_session.query(PositionEvent).count() == 0
@@ -1472,8 +1473,9 @@ def test_add_portfolio_persists_initial_entry_event_and_response_shape(
     })
 
     assert resp.status_code == 201
-    assert set(resp.json()) == {"id", "symbol"}
     assert resp.json()["symbol"] == "2330.TW"
+    assert resp.json()["name"] == "台積電"
+    assert resp.json()["entry_price"] == 900.0
     event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
     assert event.event_type == "initial_entry"
     assert event.source == "user_recorded_at_event_time"
@@ -1509,7 +1511,8 @@ def test_add_portfolio_with_entry_record_persists_event_time_context(
     })
 
     assert resp.status_code == 201
-    assert set(resp.json()) == {"id", "symbol"}
+    assert resp.json()["symbol"] == "2330.TW"
+    assert resp.json()["name"] == "台積電"
     event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
     assert event.event_type == "initial_entry"
     assert event.reason_code == "breakout_confirmation"

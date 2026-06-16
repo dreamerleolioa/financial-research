@@ -114,6 +114,15 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 
+## Display Metadata
+
+股票名稱屬於 display metadata，不在前端自行查資料源。後端會在 Analyze、Portfolio、Daily Radar response 中提供 `symbol_name` 或 `name`；前端顯示時採用「名稱優先、代碼保留」：
+
+- 有名稱：顯示 `台積電 2330.TW` 或主行 `台積電`、次行 `2330.TW`。
+- 無名稱：fallback 為原本的 `2330.TW`。
+
+這個欄位不得參與策略、排序、風險計算或 cache key 判斷。
+
 ## API Client Layer
 
 `frontend/src/lib/apiClient.ts` 是唯一應該直接組 HTTP request 的位置。Domain API client 應透過 `requestJson`：

@@ -14,6 +14,7 @@ const dataQualitySchema = z.object({
 
 const portfolioPositionRiskSchema = z.object({
   symbol: z.string(),
+  name: z.string().nullable().optional(),
   quantity: z.number().nullable(),
   current_price: z.number().nullable(),
   entry_price: z.number().nullable(),

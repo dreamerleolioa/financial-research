@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import yfinance as yf
 
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.models import StockSnapshot
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class YFinanceCrawler:
 
         snapshot = StockSnapshot(
             symbol=symbol,
+            name=resolve_symbol_name(symbol),
             currency=str(getattr(info, "currency", "TWD") or "TWD"),
             current_price=float(getattr(info, "last_price", 0.0) or 0.0),
             previous_close=float(getattr(info, "previous_close", 0.0) or 0.0),

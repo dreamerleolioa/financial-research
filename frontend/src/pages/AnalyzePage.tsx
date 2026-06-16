@@ -171,10 +171,17 @@ function getTechnicalLabel(labels: Record<string, { label: string }>, value: str
   return labels[value]?.label ?? value;
 }
 
+function getAnalyzeSymbolName(result: AnalyzeResponse | null, snapshot: Record<string, unknown>): string | null {
+  if (typeof result?.symbol_name === "string" && result.symbol_name.trim()) return result.symbol_name.trim();
+  if (typeof snapshot.name === "string" && snapshot.name.trim()) return snapshot.name.trim();
+  return null;
+}
+
 function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Record<string, unknown>): string {
   const indicators = result.technical_indicators;
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
   const displaySymbol = snapshotSymbol ?? "—";
+  const symbolName = getAnalyzeSymbolName(result, snapshot);
   const marketSessionLabel = result.is_final === false ? "盤中" : "收盤";
   const price = (value: number | null | undefined) => formatPrice(value, snapshotSymbol);
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") => (
@@ -187,6 +194,7 @@ function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Rec
   if (!indicators) {
     return [
       "技術指標摘要",
+      `股票名稱：${symbolName ?? "—"}`,
       `股票代碼：${displaySymbol}`,
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
@@ -194,6 +202,7 @@ function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Rec
   }
 
   const rows: Array<[string, string]> = [
+    ["股票名稱", symbolName ?? "—"],
     ["股票代碼", displaySymbol],
     ["資料狀態", marketSessionLabel],
     ["現價", price(snapshot.current_price as number | null | undefined)],
@@ -449,7 +458,7 @@ export default function AnalyzePage() {
       if (err instanceof Error && err.name === "AbortError") return; // 使用者已送出新請求，忽略
       const message = err instanceof Error ? err.message : "無法連線後端，請確認伺服器已啟動。";
       setResult({
-        snapshot: {}, analysis: "", analysis_detail: null, cleaned_news: null,
+        snapshot: {}, symbol_name: null, analysis: "", analysis_detail: null, cleaned_news: null,
         cleaned_news_quality: null, news_display_items: [], confidence_score: null,
         cross_validation_note: null, strategy_type: null, entry_zone: null,
         stop_loss: null, holding_period: null, action_plan_tag: null, action_plan: null,
@@ -470,6 +479,9 @@ export default function AnalyzePage() {
   const confidenceScore = result?.confidence_score ?? null;
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
+  const analyzedSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : symbol;
+  const analyzedSymbolName = getAnalyzeSymbolName(result, snapshot);
+  const analyzedDisplayName = analyzedSymbolName ? `${analyzedSymbolName} ${analyzedSymbol}` : analyzedSymbol;
   const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
   const observationConditions: string[] = Array.isArray(result?.observation_conditions)
     ? result.observation_conditions.filter((item): item is string => typeof item === "string")
@@ -542,6 +554,13 @@ export default function AnalyzePage() {
       {result?.is_final === false && result.intraday_disclaimer && (
         <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
           {result.intraday_disclaimer}
+        </div>
+      )}
+
+      {result && (
+        <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+          <p className="text-xs font-medium text-text-muted">目前標的</p>
+          <p className="mt-1 text-lg font-semibold text-text-primary">{analyzedDisplayName}</p>
         </div>
       )}
 
@@ -710,6 +729,12 @@ export default function AnalyzePage() {
                 <label className="mb-1 block text-xs font-medium text-text-muted">股票代碼</label>
                 <input value={symbol} readOnly className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted" />
               </div>
+              {analyzedSymbolName && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-text-muted">股票名稱</label>
+                  <input value={analyzedSymbolName} readOnly className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted" />
+                </div>
+              )}
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-muted">成本價 *</label>
                 <input type="number" value={addForm.entry_price} onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))} required min="0.01" step="0.01" placeholder="980" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />
