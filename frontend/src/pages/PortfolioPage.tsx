@@ -1,16 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { authHeaders } from "../lib/auth";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useAddPortfolioEntryMutation,
+  useBackfillLifecyclePlanMutation,
+  useClosePortfolioItemMutation,
+  useDeletePortfolioItemMutation,
+  useUpdatePortfolioItemMutation,
+} from "../features/portfolio/mutations";
+import {
+  useDecisionContextStatusQuery,
+  useLatestPortfolioHistoryQuery,
+  useLifecyclePlanQuery,
+  usePortfolioItemsQuery,
+  usePortfolioRiskSummaryQuery,
+} from "../features/portfolio/queries";
+import { portfolioKeys } from "../features/portfolio/queryKeys";
+import { deleteAsyncMapValue, setAsyncMapValue } from "../lib/asyncMap";
+import type { PositionResult } from "../lib/analysisTypes";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
-import type { SharedContextReadPayload } from "../lib/sharedContextTypes";
 import {
-  ADD_ENTRY_CONDITION_VALUES,
+  fetchPortfolioHistory,
+  runPortfolioPositionAnalysis,
+  type AddEntryRequest,
+  type PortfolioHistoryEntry,
+} from "../lib/portfolioApi";
+import {
   ADD_ENTRY_REASON_CODE_VALUES,
   DECISION_CONFIDENCE_LEVEL_VALUES,
-  DEFAULT_STOP_RULE_VALUES,
-  LIFECYCLE_SETUP_TYPE_VALUES,
   PLAN_ADHERENCE_VALUES,
-  PLANNED_HOLDING_PERIOD_VALUES,
 } from "../lib/portfolioTypes";
 import type {
   AddEntryCondition,
@@ -20,65 +38,26 @@ import type {
   ClosedPortfolioItem,
   DecisionConfidenceLevel,
   DefaultStopRule,
-  LifecyclePlanResponse,
   LifecycleSetupType,
   PlanAdherence,
   PlannedHoldingPeriod,
-  PortfolioDecisionContextStatusMap,
   PortfolioItem,
   PortfolioRiskSummary,
-  PositionEvent,
 } from "../lib/portfolioTypes";
+import {
+  ADD_ENTRY_CONDITION_LABEL,
+  ADD_ENTRY_CONDITION_OPTIONS,
+  ADD_ENTRY_REASON_CODE_LABEL,
+  CONFIDENCE_LEVEL_LABEL,
+  DEFAULT_STOP_RULE_OPTIONS,
+  LIFECYCLE_SETUP_TYPE_OPTIONS,
+  OPERATION_PLAN_STATUS_CLASS,
+  OPERATION_PLAN_STATUS_LABEL,
+  PLAN_ADHERENCE_LABEL,
+  PLANNED_HOLDING_PERIOD_OPTIONS,
+} from "../lib/portfolioLabels";
 
-interface HistoryEntry {
-  record_date: string;
-  action_tag: string | null;
-  signal_confidence: number | null;
-  recommended_action: string | null;
-  indicators: { close_price?: number | null } | null;
-  risk_state?: string | null;
-  risk_state_label?: string | null;
-  discipline_triggers?: string[];
-  risk_control_reference?: Record<string, unknown> | null;
-  compatibility_source?: string | null;
-}
-
-interface PositionAnalysis {
-  entry_price: number;
-  profit_loss_pct: number | null;
-  position_status: "profitable_safe" | "at_risk" | "under_water" | null;
-  position_narrative: string | null;
-  risk_state?: "stable" | "watch" | "elevated" | "critical" | null;
-  risk_state_label?: string | null;
-  discipline_triggers?: string[];
-  observation_conditions?: string[];
-  risk_control_reference?: {
-    reference_price?: number | null;
-    reference_type?: string | null;
-    reason?: string | null;
-  } | null;
-  command_language_deprecated?: Record<string, unknown>;
-  recommended_action: "Hold" | "Trim" | "Exit" | null;
-  trailing_stop: number | null;
-  trailing_stop_reason: string | null;
-  exit_reason: string | null;
-}
-
-interface PositionResult {
-  snapshot: { current_price?: number;[key: string]: unknown };
-  position_analysis: PositionAnalysis | null;
-  confidence_score: number | null;
-  shared_context?: SharedContextReadPayload | null;
-  analysis_detail: {
-    technical_signal: string;
-    institutional_flow: string | null;
-    tech_insight: string | null;
-    inst_insight: string | null;
-    news_insight: string | null;
-    final_verdict: string | null;
-    summary: string;
-  } | null;
-}
+type HistoryEntry = PortfolioHistoryEntry;
 
 interface PortfolioPageProps {
   onNavigateAnalyze: (symbol: string) => void;
@@ -102,128 +81,6 @@ function parseOptionalNumberInput(value: string): number | null | undefined {
   return Number.isFinite(parsedValue) ? parsedValue : null;
 }
 
-const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
-  no_add_entry: "不新增批次",
-  breakout_above_prior_high: "突破前高後新增批次",
-  pullback_holds_ma20: "回測守住月線後新增批次",
-  pullback_holds_support: "回測守住支撐後新增批次",
-  institutional_flow_continues: "籌碼延續轉強後新增批次",
-  profit_threshold_reached: "達到獲利門檻後新增批次",
-  data_quality_complete_only: "資料完整才新增批次",
-  no_averaging_down: "不攤平新增批次",
-  custom_plan_required: "依自訂計畫判斷",
-  not_recorded: "未記錄",
-};
-
-const ADD_ENTRY_REASON_CODE_LABEL: Record<AddEntryReasonCode, string> = {
-  breakout_confirmation: "突破確認",
-  pullback_held_support: "回測守住支撐",
-  pullback_held_ma20: "回測守住月線",
-  institutional_flow_strengthened: "籌碼轉強",
-  fundamental_thesis_improved: "基本面論點改善",
-  event_or_news_catalyst: "事件／消息催化",
-  long_term_accumulation: "長期分批佈局",
-  value_revaluation: "價值重估",
-  other: "其他固定理由",
-  planned_scale_in: "依原計畫新增批次",
-  averaging_down: "向下攤平新增批次",
-  chasing_momentum: "追價動能",
-  not_recorded: "未記錄",
-};
-
-const PLAN_ADHERENCE_LABEL: Record<PlanAdherence, string> = {
-  yes: "符合原始計畫",
-  partial: "部分符合原始計畫",
-  no: "否，記錄為違反原始新增批次計畫",
-  not_recorded: "未記錄",
-};
-
-const CONFIDENCE_LEVEL_LABEL: Record<DecisionConfidenceLevel, string> = {
-  high: "高",
-  medium: "中",
-  low: "低",
-  not_recorded: "未記錄",
-};
-
-const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
-  short_term: "短線（數日內）",
-  swing: "波段（數週）",
-  medium_term: "中期（數月）",
-  long_term: "長期（半年以上）",
-  not_recorded: "未記錄",
-};
-
-const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
-  break_20d_low: "跌破 20 日低點",
-  break_ma20: "跌破 20 日線",
-  break_ma60: "跌破 60 日線",
-  cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格風險控制",
-  no_stop_recorded: "未設定風險控制",
-  not_recorded: "未記錄",
-};
-
-const LIFECYCLE_SETUP_TYPE_LABEL: Record<LifecycleSetupType, string> = {
-  breakout: "突破型",
-  pullback: "回測型",
-  mean_reversion: "均值回歸",
-  value_revaluation: "價值重估",
-  earnings_or_event: "財報／事件驅動",
-  momentum_continuation: "動能延續",
-  long_term_accumulation: "長期分批佈局",
-  defensive_rebalance: "防守再平衡",
-  other: "其他",
-};
-
-const OPERATION_PLAN_STATUS_LABEL = {
-  missing: "缺少 operation plan",
-  present: "原始計畫已記錄",
-  backfilled: "已事後補填",
-} as const;
-
-const OPERATION_PLAN_STATUS_CLASS = {
-  missing: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  present: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-  backfilled: "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
-} as const;
-
-const PLANNED_HOLDING_PERIOD_OPTIONS = PLANNED_HOLDING_PERIOD_VALUES.map((value) => ({
-  value,
-  label: PLANNED_HOLDING_PERIOD_LABEL[value],
-}));
-
-const DEFAULT_STOP_RULE_OPTIONS = DEFAULT_STOP_RULE_VALUES.map((value) => ({
-  value,
-  label: DEFAULT_STOP_RULE_LABEL[value],
-}));
-
-const ADD_ENTRY_CONDITION_OPTIONS = ADD_ENTRY_CONDITION_VALUES.map((value) => ({
-  value,
-  label: ADD_ENTRY_CONDITION_LABEL[value],
-}));
-
-const LIFECYCLE_SETUP_TYPE_OPTIONS = LIFECYCLE_SETUP_TYPE_VALUES.map((value) => ({
-  value,
-  label: LIFECYCLE_SETUP_TYPE_LABEL[value],
-}));
-
-interface AddEntryRequest {
-  event_date: string;
-  price: number;
-  quantity: number;
-  fees?: number;
-  taxes?: number;
-  reason_code: AddEntryReasonCode;
-  plan_adherence: PlanAdherence;
-  confidence_level: DecisionConfidenceLevel;
-  note?: string;
-}
-
-interface AddEntryResponse {
-  portfolio: PortfolioItem;
-  event: PositionEvent;
-}
-
 interface BackfillPlanModalProps {
   item: PortfolioItem;
   onClose: () => void;
@@ -231,6 +88,7 @@ interface BackfillPlanModalProps {
 }
 
 function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
+  const backfillLifecyclePlanMutation = useBackfillLifecyclePlanMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [thesis, setThesis] = useState("");
@@ -316,13 +174,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
 
     setSaving(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/lifecycle-plan/backfill`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: BackfillLifecyclePlanResponse = await res.json();
+      const data = await backfillLifecyclePlanMutation.mutateAsync({ id: item.id, body });
       onSaved(data);
       onClose();
     } catch (err) {
@@ -341,7 +193,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
       <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">補填 operation plan · {item.symbol}</p>
+            <p className="font-semibold text-text-primary">補填 operation plan · {portfolioDisplayName(item)}</p>
             <p className="mt-1 text-xs text-text-faint">
               成本 {formatPrice(item.entry_price, item.symbol)} ｜ 進場日 {item.entry_date}
             </p>
@@ -516,6 +368,7 @@ interface EditPortfolioModalProps {
 }
 
 function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps) {
+  const updatePortfolioItemMutation = useUpdatePortfolioItemMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [entryPrice, setEntryPrice] = useState(String(item.entry_price));
@@ -538,18 +391,15 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
     setError(null);
     setSaving(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          entry_price: parseFloat(entryPrice),
-          quantity: parseInt(quantity, 10),
-          entry_date: entryDate,
-          notes: notes.trim() || null,
-        }),
+      const updated = await updatePortfolioItemMutation.mutateAsync({
+        id: item.id,
+        body: {
+        entry_price: parseFloat(entryPrice),
+        quantity: parseInt(quantity, 10),
+        entry_date: entryDate,
+        notes: notes.trim() || null,
+        },
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const updated: PortfolioItem = await res.json();
       onSaved(updated);
       setSaved(true);
     } catch (err) {
@@ -568,7 +418,7 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
     >
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
-          <p className="font-semibold text-text-primary">編輯持股 · {item.symbol}</p>
+          <p className="font-semibold text-text-primary">編輯持股 · {portfolioDisplayName(item)}</p>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
@@ -662,6 +512,7 @@ interface ClosePositionModalProps {
 }
 
 function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps) {
+  const closePortfolioItemMutation = useClosePortfolioItemMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [exitDate, setExitDate] = useState(getTodayDateString());
@@ -723,13 +574,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
 
     setClosing(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/close`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const closed: ClosedPortfolioItem = await res.json();
+      const closed = await closePortfolioItemMutation.mutateAsync({ id: item.id, body });
       onClosed(item, closed);
       onClose();
     } catch (err) {
@@ -748,7 +593,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">結案批次記錄 · {item.symbol}</p>
+            <p className="font-semibold text-text-primary">結案批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
               持有 {item.quantity} 股，成本 {formatPrice(item.entry_price, item.symbol)}
             </p>
@@ -855,6 +700,8 @@ interface AddEntryModalProps {
 }
 
 function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
+  const addPortfolioEntryMutation = useAddPortfolioEntryMutation();
+  const lifecyclePlanQuery = useLifecyclePlanQuery(item.id);
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [eventDate, setEventDate] = useState(getTodayDateString());
@@ -866,9 +713,6 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
   const [planAdherence, setPlanAdherence] = useState<PlanAdherence>("yes");
   const [confidenceLevel, setConfidenceLevel] = useState<DecisionConfidenceLevel>("medium");
   const [note, setNote] = useState("");
-  const [lifecyclePlan, setLifecyclePlan] = useState<LifecyclePlanResponse | null>(null);
-  const [planLoading, setPlanLoading] = useState(true);
-  const [planError, setPlanError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -879,28 +723,6 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadLifecyclePlan() {
-      setPlanLoading(true);
-      setPlanError(null);
-      try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/lifecycle-plan`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: LifecyclePlanResponse = await res.json();
-        if (!cancelled) setLifecyclePlan(data);
-      } catch (err) {
-        if (!cancelled) setPlanError(err instanceof Error ? err.message : "讀取新增批次條件失敗");
-      } finally {
-        if (!cancelled) setPlanLoading(false);
-      }
-    }
-    loadLifecyclePlan();
-    return () => { cancelled = true; };
-  }, [item.id]);
 
   async function handleAddEntry() {
     setError(null);
@@ -945,13 +767,7 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
 
     setSubmitting(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}/add-entry`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: AddEntryResponse = await res.json();
+      const data = await addPortfolioEntryMutation.mutateAsync({ id: item.id, body });
       onAdded(data.portfolio);
       onClose();
     } catch (err) {
@@ -960,6 +776,9 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
     }
   }
 
+  const lifecyclePlan = lifecyclePlanQuery.data ?? null;
+  const planLoading = lifecyclePlanQuery.isLoading;
+  const planError = lifecyclePlanQuery.error instanceof Error ? lifecyclePlanQuery.error.message : null;
   const recordedCondition = lifecyclePlan?.add_entry_condition;
 
   return (
@@ -972,7 +791,7 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
       <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">新增批次記錄 · {item.symbol}</p>
+            <p className="font-semibold text-text-primary">新增批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
               目前 {item.quantity} 股，平均成本 {formatPrice(item.entry_price, item.symbol)}
             </p>
@@ -1149,6 +968,7 @@ interface DeleteConfirmModalProps {
 }
 
 function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProps) {
+  const deletePortfolioItemMutation = useDeletePortfolioItemMutation();
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [deleting, setDeleting] = useState(false);
@@ -1166,11 +986,7 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
     setError(null);
     setDeleting(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/${item.id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await deletePortfolioItemMutation.mutateAsync(item.id);
       onDeleted(item.id);
       onClose();
     } catch (err) {
@@ -1193,7 +1009,7 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
               <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
             </svg>
           </div>
-          <p className="font-semibold text-text-primary">刪除 {item.symbol} 持股？</p>
+          <p className="font-semibold text-text-primary">刪除 {portfolioDisplayName(item)} 持股？</p>
           <p className="mt-1.5 text-sm text-text-muted">
             此操作將同時移除所有歷史診斷紀錄，且<span className="font-medium text-red-600 dark:text-red-400">無法復原</span>。
           </p>
@@ -1369,7 +1185,7 @@ function PortfolioRiskSummaryPanel({
           {topRisks.map((risk) => (
             <div key={risk.symbol} className="rounded-lg border border-border-subtle bg-background px-3 py-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-text-primary">{risk.symbol}</span>
+                <span className="text-sm font-semibold text-text-primary">{portfolioDisplayName(risk)}</span>
                 <span className="text-xs text-text-faint">{PORTFOLIO_RISK_STATE_LABEL[risk.risk_state]}</span>
               </div>
               <div className="mt-2 flex items-end justify-between gap-2">
@@ -1432,7 +1248,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
         {/* Header */}
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{item.symbol} 持股診斷</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 持股診斷</p>
             <p className="text-xs text-text-faint">
               成本 {formatPrice(item.entry_price, item.symbol)}
               {item.quantity > 0 && ` ｜ ${item.quantity} 股`}
@@ -1584,14 +1400,45 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
 }
 
 type BatchStatus = "idle" | "running" | "done" | "partialError";
+type PortfolioId = PortfolioItem["id"];
+type PortfolioIdKey = `${PortfolioId}`;
+
+function portfolioIdKey(id: PortfolioId): PortfolioIdKey {
+  return String(id) as PortfolioIdKey;
+}
+
+function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
+  return item.name ? `${item.name} ${item.symbol}` : item.symbol;
+}
+
+function portfolioCardDisplayName(item: PortfolioItem, namesBySymbol: Map<string, string>): { primary: string; secondary: string | null } {
+  const name = item.name?.trim() || namesBySymbol.get(item.symbol) || null;
+  return name
+    ? { primary: name, secondary: item.symbol }
+    : { primary: item.symbol, secondary: null };
+}
 
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
-  const [items, setItems] = useState<PortfolioItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [latestMap, setLatestMap] = useState<Record<string, HistoryEntry | null>>({});
-  const [decisionContextStatusMap, setDecisionContextStatusMap] = useState<PortfolioDecisionContextStatusMap>({});
-  const [riskSummary, setRiskSummary] = useState<PortfolioRiskSummary | null>(null);
-  const [riskSummaryError, setRiskSummaryError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const portfolioItemsQuery = usePortfolioItemsQuery();
+  const portfolioRiskSummaryQuery = usePortfolioRiskSummaryQuery();
+  const latestPortfolioHistoryQuery = useLatestPortfolioHistoryQuery();
+  const decisionContextStatusQuery = useDecisionContextStatusQuery();
+  const items = portfolioItemsQuery.data ?? [];
+  const loading = portfolioItemsQuery.isLoading;
+  const latestMap = (latestPortfolioHistoryQuery.data ?? {}) as Record<PortfolioIdKey, HistoryEntry | null>;
+  const decisionContextStatusMap = decisionContextStatusQuery.data ?? {};
+  const riskSummary = portfolioRiskSummaryQuery.data ?? null;
+  const riskSummaryError = portfolioRiskSummaryQuery.error instanceof Error
+    ? portfolioRiskSummaryQuery.error.message
+    : null;
+  const riskSummaryNamesBySymbol = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const risk of riskSummary?.position_risks ?? []) {
+      if (risk.name?.trim()) names.set(risk.symbol, risk.name.trim());
+    }
+    return names;
+  }, [riskSummary]);
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -1615,67 +1462,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
 
-  async function loadDecisionContextStatus() {
-    const response = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/decision-context-status`, {
-      headers: authHeaders(),
-    });
-    if (!response.ok) return;
-    const data: PortfolioDecisionContextStatusMap = await response.json();
-    setDecisionContextStatusMap(data);
-  }
-
-  const refreshRiskSummary = useCallback(async () => {
-    try {
-      const riskRes = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/risk-summary`, {
-        headers: authHeaders(),
-      });
-      if (riskRes.ok) {
-        const riskData: PortfolioRiskSummary = await riskRes.json();
-        setRiskSummary(riskData);
-        setRiskSummaryError(null);
-      } else {
-        setRiskSummaryError("API 回傳非成功狀態");
-      }
-    } catch {
-      setRiskSummaryError("無法讀取風險摘要");
-    }
-  }, []);
-
-  useEffect(() => {
-    async function load() {
-      try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) return;
-        const data: PortfolioItem[] = await res.json();
-        setItems(data);
-
-        try {
-          await loadDecisionContextStatus();
-        } catch (err) {
-          void err;
-        }
-
-        await refreshRiskSummary();
-
-        try {
-          const r = await fetch(
-            `${import.meta.env.VITE_API_URL}/portfolio/latest-history`,
-            { headers: authHeaders() },
-          );
-          if (r.ok) {
-            const latestData: Record<string, HistoryEntry | null> = await r.json();
-            setLatestMap(latestData);
-          }
-        } catch { /* ignore */ }
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [refreshRiskSummary]);
-
   useEffect(() => {
     return () => {
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
@@ -1689,23 +1475,18 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }
     setExpandedId(id);
     if (historyMap[id]) return;
-    setHistoryLoading((prev) => ({ ...prev, [id]: true }));
+    setAsyncMapValue(setHistoryLoading, id, true);
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/portfolio/${id}/history?limit=20`,
-        { headers: authHeaders() },
-      );
-      if (!res.ok) return;
-      const body: { records: HistoryEntry[] } = await res.json();
-      setHistoryMap((prev) => ({ ...prev, [id]: body.records }));
+      const body = await fetchPortfolioHistory(id, 20);
+      setAsyncMapValue(setHistoryMap, id, body.records);
     } finally {
-      setHistoryLoading((prev) => ({ ...prev, [id]: false }));
+      setAsyncMapValue(setHistoryLoading, id, false);
     }
   }
 
   async function runPositionAnalysis(item: PortfolioItem): Promise<void> {
-    setAnalysisLoading((prev) => ({ ...prev, [item.id]: true }));
-    setAnalysisError((prev) => ({ ...prev, [item.id]: null }));
+    setAsyncMapValue(setAnalysisLoading, item.id, true);
+    setAsyncMapValue(setAnalysisError, item.id, null);
     try {
       const body: Record<string, unknown> = {
         symbol: item.symbol,
@@ -1714,37 +1495,27 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       if (item.entry_date) body.entry_date = item.entry_date;
       if (item.quantity > 0) body.quantity = item.quantity;
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze/position`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: PositionResult = await res.json();
-      setAnalysisMap((prev) => ({ ...prev, [item.id]: data }));
+      const data = await runPortfolioPositionAnalysis(body);
+      setAsyncMapValue(setAnalysisMap, item.id, data);
 
-      setHistoryMap((prev) => {
-        const next = { ...prev };
-        delete next[item.id];
-        return next;
-      });
+      deleteAsyncMapValue(setHistoryMap, item.id);
       try {
-        const r = await fetch(
-          `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/history?limit=20`,
-          { headers: authHeaders() },
+        const hBody = await fetchPortfolioHistory(item.id, 20);
+        queryClient.setQueryData<Record<PortfolioIdKey, HistoryEntry | null>>(
+          portfolioKeys.latestHistory(),
+          (current) => ({
+            ...current,
+            [portfolioIdKey(item.id)]: hBody.records[0] ?? null,
+          }),
         );
-        if (r.ok) {
-          const hBody: { records: HistoryEntry[] } = await r.json();
-          setLatestMap((prev) => ({ ...prev, [item.id]: hBody.records[0] ?? null }));
-          setHistoryMap((prev) => ({ ...prev, [item.id]: hBody.records }));
-        }
+        setAsyncMapValue(setHistoryMap, item.id, hBody.records);
       } catch { /* ignore */ }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "請求失敗";
-      setAnalysisError((prev) => ({ ...prev, [item.id]: msg }));
+      setAsyncMapValue(setAnalysisError, item.id, msg);
       throw err; // re-throw so batch runner knows it failed
     } finally {
-      setAnalysisLoading((prev) => ({ ...prev, [item.id]: false }));
+      setAsyncMapValue(setAnalysisLoading, item.id, false);
     }
   }
 
@@ -1802,50 +1573,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }, 3000);
   }
 
-  function handlePositionClosed(sourceItem: PortfolioItem, closed: ClosedPortfolioItem) {
-    const sourceId = sourceItem.id;
-
-    setItems((prev) => {
-      const currentItem = prev.find((item) => item.id === sourceId) ?? sourceItem;
-      const remainingQuantity = currentItem.quantity - closed.exit_quantity;
-      return remainingQuantity <= 0
-        ? prev.filter((item) => item.id !== sourceId)
-        : prev.map((item) => (item.id === sourceId ? { ...item, quantity: remainingQuantity } : item));
-    });
-
+  function clearLocalPositionState(sourceId: number) {
     setExpandedId((prev) => (prev === sourceId ? null : prev));
-    setHistoryMap((prev) => {
-      const next = { ...prev };
-      delete next[sourceId];
-      return next;
-    });
-    setLatestMap((prev) => {
-      const next = { ...prev };
-      delete next[String(sourceId)];
-      return next;
-    });
-
-    setDecisionContextStatusMap((prev) => {
-      const next = { ...prev };
-      delete next[String(sourceId)];
-      return next;
-    });
-
-    setAnalysisMap((prev) => {
-      const next = { ...prev };
-      delete next[sourceId];
-      return next;
-    });
-    setAnalysisLoading((prev) => {
-      const next = { ...prev };
-      delete next[sourceId];
-      return next;
-    });
-    setAnalysisError((prev) => {
-      const next = { ...prev };
-      delete next[sourceId];
-      return next;
-    });
+    deleteAsyncMapValue(setHistoryMap, sourceId);
+    deleteAsyncMapValue(setAnalysisMap, sourceId);
+    deleteAsyncMapValue(setAnalysisLoading, sourceId);
+    deleteAsyncMapValue(setAnalysisError, sourceId);
   }
 
   if (loading) {
@@ -1917,18 +1650,23 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <PortfolioRiskSummaryPanel summary={riskSummary} error={riskSummaryError} />
 
         {items.map((item) => {
-          const latest = latestMap[String(item.id)];
-          const decisionStatus = decisionContextStatusMap[String(item.id)];
+          const itemKey = portfolioIdKey(item.id);
+          const latest = latestMap[itemKey];
+          const decisionStatus = decisionContextStatusMap[itemKey];
           const history = historyMap[item.id];
           const isExpanded = expandedId === item.id;
           const isAnalyzing = analysisLoading[item.id];
+          const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
 
           return (
             <article key={item.id} className="rounded-xl border border-border bg-card shadow-sm">
               <div className="p-4">
                 {/* Info row */}
                 <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold text-text-primary">{item.symbol}</p>
+                  <div>
+                    <p className="font-semibold text-text-primary">{displayName.primary}</p>
+                    {displayName.secondary && <p className="text-xs font-mono text-text-faint">{displayName.secondary}</p>}
+                  </div>
                   {/* P/L badge — top-right, only when available */}
                   {(() => {
                     const closePrice = latest?.indicators?.close_price;
@@ -2114,9 +1852,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <EditPortfolioModal
           item={editItem}
           onClose={() => setEditItem(null)}
-          onSaved={(updated) => {
-            setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-            void refreshRiskSummary();
+          onSaved={() => {
+            setEditItem(null);
           }}
         />
       )}
@@ -2126,8 +1863,6 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           item={backfillItem}
           onClose={() => setBackfillItem(null)}
           onSaved={() => {
-            loadDecisionContextStatus().catch(() => { });
-            void refreshRiskSummary();
             setBackfillItem(null);
           }}
         />
@@ -2137,9 +1872,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <AddEntryModal
           item={addEntryItem}
           onClose={() => setAddEntryItem(null)}
-          onAdded={(updated) => {
-            setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-            void refreshRiskSummary();
+          onAdded={() => {
+            clearLocalPositionState(addEntryItem.id);
             setAddEntryItem(null);
           }}
         />
@@ -2149,9 +1883,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         <ClosePositionModal
           item={closeItem}
           onClose={() => setCloseItem(null)}
-          onClosed={(sourceItem, closed) => {
-            handlePositionClosed(sourceItem, closed);
-            void refreshRiskSummary();
+          onClosed={(sourceItem) => {
+            clearLocalPositionState(sourceItem.id);
             setCloseItem(null);
           }}
         />
@@ -2162,13 +1895,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           item={deleteItem}
           onClose={() => setDeleteItem(null)}
           onDeleted={(id) => {
-            setItems((prev) => prev.filter((i) => i.id !== id));
-            setDecisionContextStatusMap((prev) => {
-              const next = { ...prev };
-              delete next[String(id)];
-              return next;
-            });
-            void refreshRiskSummary();
+            clearLocalPositionState(id);
             setDeleteItem(null);
           }}
         />

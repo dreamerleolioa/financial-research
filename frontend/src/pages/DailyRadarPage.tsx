@@ -573,8 +573,8 @@ function DailyRadarCandidateList({
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-mono text-base font-semibold text-text-primary">{candidate.symbol}</p>
-                      {displayName && <p className="text-sm font-medium text-text-secondary">{displayName}</p>}
+                      <p className="text-base font-semibold text-text-primary">{displayName ?? candidate.symbol}</p>
+                      {displayName && <p className="font-mono text-sm font-medium text-text-secondary">{candidate.symbol}</p>}
                       <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
                         {REPEAT_STATUS_LABEL[candidate.repeat_status]}
                       </span>

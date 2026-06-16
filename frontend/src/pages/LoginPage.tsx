@@ -1,6 +1,7 @@
 import { useGoogleLogin } from "@react-oauth/google";
 import { useAuth } from "../stores/auth";
 import { Navigate } from "react-router-dom";
+import { appPath } from "../lib/config";
 
 export default function LoginPage() {
   const { user, isLoading } = useAuth();
@@ -8,7 +9,7 @@ export default function LoginPage() {
   const login = useGoogleLogin({
     flow: "auth-code",
     ux_mode: "redirect",
-    redirect_uri: `${window.location.origin}${import.meta.env.BASE_URL}login/callback`,
+    redirect_uri: `${window.location.origin}${appPath("login/callback")}`,
   });
 
   if (isLoading) {

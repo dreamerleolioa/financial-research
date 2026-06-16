@@ -3,6 +3,7 @@ import type { SharedContextReadPayload } from "./sharedContextTypes";
 export interface PortfolioItem {
   id: number;
   symbol: string;
+  name?: string | null;
   entry_price: number;
   quantity: number;
   entry_date: string;
@@ -17,6 +18,7 @@ export interface PortfolioRiskCaveat {
 
 export interface PortfolioPositionRisk {
   symbol: string;
+  name?: string | null;
   quantity: number | null;
   current_price: number | null;
   entry_price: number | null;
@@ -80,6 +82,7 @@ export interface ClosedPortfolioItem {
   id: number;
   position_group_id: string;
   symbol: string;
+  name?: string | null;
   entry_price: number;
   quantity: number;
   entry_date: string;

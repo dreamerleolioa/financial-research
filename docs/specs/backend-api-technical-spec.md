@@ -188,6 +188,7 @@ make run-api
   | `snapshot`                 | object         | yfinance 即時快照                                                                                                                                                                                                                                                                               |
   | `analysis`                 | string         | LLM Skeptic Mode 四步驟完整分析文字                                                                                                                                                                                                                                                             |
   | `cleaned_news`             | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null                                                                                                                                                                                                     |
+  | `symbol_name`              | string \| null | 股票名稱，僅供前端顯示；新鮮分析由 `snapshot.name` 浮出，舊快取可由 symbol metadata resolver 補齊，查不到時為 `null`                                                                                                                                                                                |
   | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                                                                                                      |
   | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
   | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）；前端預設應轉成資料品質提示                                                                                                                                                                                                                   |
@@ -476,6 +477,7 @@ make run-api
   {
     "id": 42,
     "symbol": "2330.TW",
+    "name": "台積電",
     "entry_price": 900.0,
     "quantity": 1000,
     "entry_date": "2026-01-15",
@@ -496,6 +498,7 @@ make run-api
     "id": 42,
     "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
+    "name": "台積電",
     "entry_price": 900.0,
     "quantity": 1000,
     "entry_date": "2026-01-15",
@@ -513,7 +516,7 @@ make run-api
 ]
 ```
 
-- **Response 欄位**：`id`、`position_group_id`、`symbol`、`entry_price`、`quantity`、`entry_date`、`is_active`、`exit_date`、`exit_price`、`exit_quantity`、`exit_fees`、`exit_taxes`、`realized_pnl`、`realized_return_pct`、`holding_days`、`notes`。
+- **Response 欄位**：`id`、`position_group_id`、`symbol`、`name`、`entry_price`、`quantity`、`entry_date`、`is_active`、`exit_date`、`exit_price`、`exit_quantity`、`exit_fees`、`exit_taxes`、`realized_pnl`、`realized_return_pct`、`holding_days`、`notes`。
 
 ### `POST /portfolio`
 
@@ -544,12 +547,28 @@ make run-api
 ```json
 {
   "id": 42,
-  "symbol": "2330.TW"
+  "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
+  "symbol": "2330.TW",
+  "name": "台積電",
+  "entry_price": 900.0,
+  "quantity": 1000,
+  "entry_date": "2026-01-15",
+  "is_active": true,
+  "exit_date": null,
+  "exit_price": null,
+  "exit_quantity": null,
+  "exit_fees": null,
+  "exit_taxes": null,
+  "realized_pnl": null,
+  "realized_return_pct": null,
+  "holding_days": null,
+  "notes": "長期核心持股"
 }
 ```
 
 - **欄位說明**
   - `symbol`：股票代碼，必填；新增前會以 yfinance 輕量驗證代號是否存在
+  - `name`：股票名稱，僅供顯示；由 symbol metadata resolver 補齊，查不到時可為 `null`
   - `entry_price`：購入成本價，必填
   - `entry_date`：購入日期，必填，ISO 8601 日期字串
   - `quantity`：持有數量，選填，未提供時預設 0
@@ -635,6 +654,7 @@ make run-api
   "position_risks": [
     {
       "symbol": "2330.TW",
+      "name": "台積電",
       "quantity": 1000.0,
       "current_price": 120.0,
       "entry_price": 100.0,
@@ -817,6 +837,7 @@ make run-api
   "portfolio": {
     "id": 42,
     "symbol": "2330.TW",
+    "name": "台積電",
     "entry_price": 906.6667,
     "quantity": 1500,
     "entry_date": "2026-01-15",

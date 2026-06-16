@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
-import { authHeaders } from "../lib/auth";
+import { setAsyncMapValue } from "../lib/asyncMap";
+import {
+  createPositionLifecycleReview,
+  fetchClosedPortfolioItems,
+  fetchOrCreateTradeReview,
+  fetchPositionGroupEvents,
+} from "../lib/closedPortfolioApi";
 import { formatPrice } from "../lib/formatters";
 import type {
-  AddEntryCondition,
   ClosedPortfolioItem,
-  DefaultStopRule,
-  EntryRecordReason,
   LifecycleTextItem,
   PositionEvent,
   PositionGroupEventsResponse,
@@ -17,7 +20,6 @@ import type {
   PositionLifecycleExitSequence,
   PositionLifecycleMetrics,
   PositionLifecycleReviewResponse,
-  PlannedHoldingPeriod,
   TradeReviewDataQuality,
   TradeReviewHoldingSection,
   TradeReviewResponse,
@@ -25,6 +27,12 @@ import type {
   TradeReviewSection,
   TradeReviewUserReadableConclusion,
 } from "../lib/portfolioTypes";
+import {
+  ADD_ENTRY_CONDITION_LABEL,
+  DEFAULT_STOP_RULE_LABEL,
+  ENTRY_RECORD_REASON_LABEL,
+  PLANNED_HOLDING_PERIOD_LABEL,
+} from "../lib/portfolioLabels";
 
 type PeriodKey = "1d" | "1w" | "1m" | "1q" | "1y";
 type CopyStatus = "idle" | "success" | "error";
@@ -38,6 +46,7 @@ interface PeriodOption {
 interface ClosedPortfolioGroup {
   position_group_id: string;
   symbol: string;
+  name?: string | null;
   entry_date: string;
   entry_price: number;
   totalClosedQuantity: number;
@@ -318,50 +327,6 @@ const TIMELINE_REASON_CODE_LABEL: Record<string, string> = {
   not_recorded: "未記錄",
 };
 
-const ENTRY_RECORD_REASON_LABEL: Record<EntryRecordReason, string> = {
-  breakout_confirmation: "突破確認",
-  pullback_held_support: "回測守住支撐",
-  pullback_held_ma20: "回測守住 20 日線",
-  institutional_flow_strengthened: "法人籌碼轉強",
-  fundamental_thesis_improved: "基本面假設改善",
-  event_or_news_catalyst: "事件／消息催化",
-  long_term_accumulation: "長期分批佈局",
-  value_revaluation: "價值重估",
-  other: "其他固定理由",
-  not_recorded: "未記錄",
-};
-
-const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
-  short_term: "短線（數日內）",
-  swing: "波段（數週）",
-  medium_term: "中期（數月）",
-  long_term: "長期（半年以上）",
-  not_recorded: "未記錄",
-};
-
-const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
-  break_20d_low: "跌破 20 日低點",
-  break_ma20: "跌破 20 日線",
-  break_ma60: "跌破 60 日線",
-  cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格風險控制",
-  no_stop_recorded: "未設定風險控制",
-  not_recorded: "未記錄",
-};
-
-const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
-  no_add_entry: "不新增批次",
-  breakout_above_prior_high: "突破前高再新增批次",
-  pullback_holds_ma20: "回測守住 20 日線",
-  pullback_holds_support: "回測守住支撐",
-  institutional_flow_continues: "法人籌碼延續",
-  profit_threshold_reached: "達成獲利門檻",
-  data_quality_complete_only: "資料完整才新增批次",
-  no_averaging_down: "不攤平",
-  custom_plan_required: "需另訂自訂計畫",
-  not_recorded: "未記錄",
-};
-
 const TIMELINE_PLAN_ADHERENCE_LABEL: Record<string, string> = {
   yes: "符合計畫",
   partial: "部分符合計畫",
@@ -430,6 +395,7 @@ function groupClosedItems(items: ClosedPortfolioItem[]): ClosedPortfolioGroup[] 
       group = {
         position_group_id: item.position_group_id,
         symbol: item.symbol,
+        name: item.name,
         entry_date: item.entry_date,
         entry_price: item.entry_price,
         totalClosedQuantity: 0,
@@ -448,6 +414,10 @@ function groupClosedItems(items: ClosedPortfolioItem[]): ClosedPortfolioGroup[] 
   }
 
   return groups;
+}
+
+function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
+  return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
 function getSignedPriceText(value: number | null | undefined, symbol?: string): string {
@@ -1191,7 +1161,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
       <div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{item.symbol} 檢討分析</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 檢討分析</p>
             <p className="mt-1 text-xs text-text-faint">
               {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜ {getSignedPriceText(item.realized_pnl, item.symbol)}
             </p>
@@ -1285,7 +1255,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
       <div className="max-h-[85vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{group.symbol} 事件時間線</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件時間線</p>
             <p className="mt-1 text-xs text-text-faint">
               部位事件時間線 ｜ Group {group.position_group_id.slice(0, 8)} ｜ {group.exitBatchCount} 筆結案批次
             </p>
@@ -1463,7 +1433,7 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
       <div className="max-h-[85vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">{group.symbol} 整體部位檢討</p>
+            <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 整體部位檢討</p>
             <p className="mt-1 text-xs text-text-faint">
               Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜ 多次進場/新增批次/分批降低曝險整體檢討
             </p>
@@ -1594,11 +1564,7 @@ export default function ClosedPortfolioPage() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/closed`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: ClosedPortfolioItem[] = await res.json();
+        const data = await fetchClosedPortfolioItems();
         if (!cancelled) setItems(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "已結案持股載入失敗");
@@ -1628,17 +1594,7 @@ export default function ClosedPortfolioPage() {
   const totalClass = totalRealizedPnl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
 
   async function fetchReview(item: ClosedPortfolioItem): Promise<TradeReviewResponse> {
-    const reviewUrl = `${import.meta.env.VITE_API_URL}/portfolio/${item.id}/review`;
-    const getResponse = await fetch(reviewUrl, { headers: authHeaders() });
-    if (getResponse.ok) return await getResponse.json() as TradeReviewResponse;
-    if (getResponse.status !== 404) throw new Error(`HTTP ${getResponse.status}`);
-
-    const postResponse = await fetch(reviewUrl, {
-      method: "POST",
-      headers: authHeaders(),
-    });
-    if (!postResponse.ok) throw new Error(`HTTP ${postResponse.status}`);
-    return await postResponse.json() as TradeReviewResponse;
+    return fetchOrCreateTradeReview(item.id);
   }
 
   async function openReview(item: ClosedPortfolioItem): Promise<void> {
@@ -1646,65 +1602,55 @@ export default function ClosedPortfolioPage() {
     setCopyStatus((prev) => ({ ...prev, [item.id]: "idle" }));
     if (reviewMap[item.id]) return;
 
-    setReviewLoading((prev) => ({ ...prev, [item.id]: true }));
-    setReviewError((prev) => ({ ...prev, [item.id]: null }));
+    setAsyncMapValue(setReviewLoading, item.id, true);
+    setAsyncMapValue(setReviewError, item.id, null);
     try {
       const review = await fetchReview(item);
-      setReviewMap((prev) => ({ ...prev, [item.id]: review }));
+      setAsyncMapValue(setReviewMap, item.id, review);
     } catch (err) {
-      setReviewError((prev) => ({ ...prev, [item.id]: err instanceof Error ? err.message : "檢討分析載入失敗" }));
+      setAsyncMapValue(setReviewError, item.id, err instanceof Error ? err.message : "檢討分析載入失敗");
     } finally {
-      setReviewLoading((prev) => ({ ...prev, [item.id]: false }));
+      setAsyncMapValue(setReviewLoading, item.id, false);
     }
   }
 
   async function fetchTimeline(positionGroupId: string): Promise<PositionGroupEventsResponse> {
-    const response = await fetch(`${import.meta.env.VITE_API_URL}/portfolio/groups/${positionGroupId}/events`, {
-      headers: authHeaders(),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json() as PositionGroupEventsResponse;
+    return fetchPositionGroupEvents(positionGroupId);
   }
 
   async function openTimeline(group: ClosedPortfolioGroup): Promise<void> {
     setSelectedTimelineGroup(group);
     if (timelineMap[group.position_group_id]) return;
 
-    setTimelineLoading((prev) => ({ ...prev, [group.position_group_id]: true }));
-    setTimelineError((prev) => ({ ...prev, [group.position_group_id]: null }));
+    setAsyncMapValue(setTimelineLoading, group.position_group_id, true);
+    setAsyncMapValue(setTimelineError, group.position_group_id, null);
     try {
       const timeline = await fetchTimeline(group.position_group_id);
-      setTimelineMap((prev) => ({ ...prev, [group.position_group_id]: timeline }));
+      setAsyncMapValue(setTimelineMap, group.position_group_id, timeline);
     } catch (err) {
-      setTimelineError((prev) => ({ ...prev, [group.position_group_id]: err instanceof Error ? err.message : "事件時間線載入失敗" }));
+      setAsyncMapValue(setTimelineError, group.position_group_id, err instanceof Error ? err.message : "事件時間線載入失敗");
     } finally {
-      setTimelineLoading((prev) => ({ ...prev, [group.position_group_id]: false }));
+      setAsyncMapValue(setTimelineLoading, group.position_group_id, false);
     }
   }
 
   async function fetchLifecycleReview(positionGroupId: string): Promise<PositionLifecycleReviewResponse> {
-    const reviewUrl = `${import.meta.env.VITE_API_URL}/portfolio/groups/${positionGroupId}/lifecycle-review`;
-    const postResponse = await fetch(reviewUrl, {
-      method: "POST",
-      headers: authHeaders(),
-    });
-    if (!postResponse.ok) throw new Error(`HTTP ${postResponse.status}`);
-    return await postResponse.json() as PositionLifecycleReviewResponse;
+    return createPositionLifecycleReview(positionGroupId);
   }
 
   async function openLifecycleReview(group: ClosedPortfolioGroup): Promise<void> {
     setSelectedLifecycleGroup(group);
     setLifecycleCopyStatus((prev) => ({ ...prev, [group.position_group_id]: "idle" }));
 
-    setLifecycleReviewLoading((prev) => ({ ...prev, [group.position_group_id]: true }));
-    setLifecycleReviewError((prev) => ({ ...prev, [group.position_group_id]: null }));
+    setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, true);
+    setAsyncMapValue(setLifecycleReviewError, group.position_group_id, null);
     try {
       const review = await fetchLifecycleReview(group.position_group_id);
-      setLifecycleReviewMap((prev) => ({ ...prev, [group.position_group_id]: review }));
+      setAsyncMapValue(setLifecycleReviewMap, group.position_group_id, review);
     } catch (err) {
-      setLifecycleReviewError((prev) => ({ ...prev, [group.position_group_id]: err instanceof Error ? err.message : "整體部位檢討載入失敗" }));
+      setAsyncMapValue(setLifecycleReviewError, group.position_group_id, err instanceof Error ? err.message : "整體部位檢討載入失敗");
     } finally {
-      setLifecycleReviewLoading((prev) => ({ ...prev, [group.position_group_id]: false }));
+      setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, false);
     }
   }
 
@@ -1814,7 +1760,8 @@ export default function ClosedPortfolioPage() {
                       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                         <div className="border-l-4 border-l-indigo-500 pl-3 dark:border-l-indigo-400">
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-mono text-lg font-semibold text-text-primary">{group.symbol}</p>
+                            <p className="text-lg font-semibold text-text-primary">{group.name ?? group.symbol}</p>
+                            {group.name && <p className="font-mono text-xs text-text-faint">{group.symbol}</p>}
                             <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
                               進場 {group.entry_date}
                             </span>

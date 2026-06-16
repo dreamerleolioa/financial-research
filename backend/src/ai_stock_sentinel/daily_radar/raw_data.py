@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, timedelta
 import math
 from typing import Any, Protocol
@@ -9,6 +9,7 @@ import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.db.models import StockRawData
 
@@ -19,6 +20,9 @@ class BatchTechnicalFetcher(Protocol):
 
 
 class YFinanceBatchTechnicalFetcher:
+    def __init__(self, *, name_resolver: Callable[[str], str | None] = resolve_symbol_name) -> None:
+        self._name_resolver = name_resolver
+
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
         if not ordered_symbols:
@@ -38,10 +42,21 @@ class YFinanceBatchTechnicalFetcher:
         payloads: dict[str, Mapping[str, Any]] = {}
         for symbol in ordered_symbols:
             frame = _frame_on_or_before_run_date(_symbol_frame(history, symbol), run_date=run_date)
-            payload = _build_technical_payload(symbol, frame, run_date=run_date)
+            payload = _build_technical_payload(
+                symbol,
+                frame,
+                run_date=run_date,
+                name=self._safe_resolve_name(symbol),
+            )
             if payload is not None:
                 payloads[symbol] = payload
         return payloads
+
+    def _safe_resolve_name(self, symbol: str) -> str | None:
+        try:
+            return self._name_resolver(symbol)
+        except Exception:
+            return None
 
 
 def ensure_daily_radar_raw_rows(
@@ -152,7 +167,7 @@ def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any], *, run
     return technical
 
 
-def _build_technical_payload(symbol: str, frame: Any, *, run_date: date) -> dict[str, Any] | None:
+def _build_technical_payload(symbol: str, frame: Any, *, run_date: date, name: str | None = None) -> dict[str, Any] | None:
     if not _has_required_ohlcv_data(frame):
         return None
 
@@ -179,7 +194,7 @@ def _build_technical_payload(symbol: str, frame: Any, *, run_date: date) -> dict
     data_date = _last_index_date(frame) or run_date.isoformat()
 
     return {
-        "name": symbol,
+        "name": name or symbol,
         "price_history": _price_history(frame),
         "ohlcv": {
             "open": open_price,

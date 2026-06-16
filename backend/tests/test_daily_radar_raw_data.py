@@ -270,7 +270,9 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
 
     monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf", FakeYFinance())
 
-    payloads = YFinanceBatchTechnicalFetcher().fetch(["2330.TW", "2454.TW"], run_date=date(2026, 6, 2))
+    payloads = YFinanceBatchTechnicalFetcher(
+        name_resolver=lambda symbol: {"2330.TW": "台積電", "2454.TW": "聯發科"}.get(symbol),
+    ).fetch(["2330.TW", "2454.TW"], run_date=date(2026, 6, 2))
 
     assert calls == [
         {
@@ -286,6 +288,7 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
         }
     ]
     assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
+    assert payloads["2330.TW"]["name"] == "台積電"
     assert payloads["2454.TW"]["indicators"]["missing_trading_days_60"] == 0
     assert len(payloads["2330.TW"]["price_history"]) == 60
     assert payloads["2330.TW"]["price_history"][-1] == {"date": "2026-06-02", "close": 159.0}
@@ -315,7 +318,7 @@ def test_yfinance_batch_fetcher_ignores_future_rows_after_run_date(
 
     monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf", FakeYFinance())
 
-    payloads = YFinanceBatchTechnicalFetcher().fetch(["2330.TW"], run_date=date(2026, 6, 2))
+    payloads = YFinanceBatchTechnicalFetcher(name_resolver=lambda _symbol: "台積電").fetch(["2330.TW"], run_date=date(2026, 6, 2))
 
     assert payloads["2330.TW"]["ohlcv"]["close"] == 202.0
     assert payloads["2330.TW"]["ohlcv"]["previous_close"] == 101.0
@@ -352,7 +355,7 @@ def test_empty_yfinance_symbol_response_does_not_create_or_finalize_raw_data(
         db_session,
         run_date,
         ["2330.TW", "2454.TW"],
-        technical_fetcher=YFinanceBatchTechnicalFetcher(),
+        technical_fetcher=YFinanceBatchTechnicalFetcher(name_resolver=lambda symbol: "台積電" if symbol == "2330.TW" else None),
     )
 
     stored_rows = db_session.query(StockRawData).filter(StockRawData.record_date == run_date).all()
@@ -381,9 +384,10 @@ def test_yfinance_batch_fetcher_drops_non_finite_price_history_values(
 
     monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf", FakeYFinance())
 
-    payloads = YFinanceBatchTechnicalFetcher().fetch(["00882.TW"], run_date=date(2026, 6, 12))
+    payloads = YFinanceBatchTechnicalFetcher(name_resolver=lambda _symbol: "中信中國高股息").fetch(["00882.TW"], run_date=date(2026, 6, 12))
 
     assert payloads["00882.TW"]["ohlcv"]["close"] == 11.5
+    assert payloads["00882.TW"]["name"] == "中信中國高股息"
     assert payloads["00882.TW"]["price_history"] == [
         {"date": "2026-06-10", "close": 10.5},
         {"date": "2026-06-12", "close": 11.5},

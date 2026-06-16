@@ -21,11 +21,13 @@ def build_portfolio_risk_summary(
     *,
     plans_by_group: dict[str, Any] | None = None,
     raw_data_by_symbol: dict[str, Any] | None = None,
+    symbol_names_by_symbol: dict[str, str | None] | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
     as_of = as_of_date or date.today()
     plans = plans_by_group or {}
     raw_rows = raw_data_by_symbol or {}
+    symbol_names = symbol_names_by_symbol or {}
 
     position_drafts: list[dict[str, Any]] = []
     portfolio_value = Decimal("0")
@@ -70,6 +72,7 @@ def build_portfolio_risk_summary(
 
         position_drafts.append({
             "symbol": symbol,
+            "name": symbol_names.get(symbol),
             "quantity": _float_or_none(quantity),
             "current_price": _float_or_none(current_price),
             "entry_price": _float_or_none(entry_price),

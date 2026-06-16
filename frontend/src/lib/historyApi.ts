@@ -1,6 +1,4 @@
-// frontend/src/lib/historyApi.ts
-
-import { authHeaders } from "./auth";
+import { requestJson } from "./apiClient";
 
 export interface HistoryEntry {
   record_date: string;
@@ -13,15 +11,11 @@ export interface HistoryEntry {
   final_verdict: string | null;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
-
 export async function fetchSymbolHistory(
   symbol: string,
   days: number = 30,
 ): Promise<HistoryEntry[]> {
-  const resp = await fetch(`${API_BASE}/history/${encodeURIComponent(symbol)}?days=${days}`, {
-    headers: authHeaders(),
+  return requestJson<HistoryEntry[]>(`/history/${encodeURIComponent(symbol)}`, {
+    query: { days },
   });
-  if (!resp.ok) throw new Error(`History fetch failed: ${resp.status}`);
-  return resp.json();
 }

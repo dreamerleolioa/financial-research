@@ -3,8 +3,8 @@ import type {
   DailyRadarRunResponse,
   DailyRadarSymbolHistoryItem,
 } from "./dailyRadarTypes";
+import { apiUrl } from "./apiClient";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const NO_PUBLIC_DAILY_RADAR_RUN_DETAIL = "No public Daily Radar run is available.";
 
 export interface DailyRadarRunQuery {
@@ -80,19 +80,7 @@ export async function fetchDailyRadarSymbolHistory(
 }
 
 function buildDailyRadarUrl(pathname: string, query: DailyRadarQuery): string {
-  const normalizedBase = API_BASE.replace(/\/$/, "");
-  const search = serializeDailyRadarQuery(query);
-  return `${normalizedBase}${pathname}${search}`;
-}
-
-function serializeDailyRadarQuery(query: DailyRadarQuery): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (value == null) continue;
-    params.set(key, String(value));
-  }
-  const serialized = params.toString();
-  return serialized ? `?${serialized}` : "";
+  return apiUrl(pathname, query as Record<string, string | number | boolean | null | undefined>);
 }
 
 async function requestDailyRadar<T>(url: string): Promise<T> {

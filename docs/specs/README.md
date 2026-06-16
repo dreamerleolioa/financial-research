@@ -8,6 +8,7 @@
 | 文件                                           | 內容                                                | 何時更新                           |
 | ---------------------------------------------- | --------------------------------------------------- | ---------------------------------- |
 | `ai-stock-sentinel-architecture-spec.md`       | 目前系統架構、模組邊界、四維資料流、Daily Radar / shared context / portfolio lifecycle 的長期事實 | 分析架構、資料流、模組責任或跨功能邊界改變時 |
+| `frontend-architecture-spec.md`                | 前端技術棧、provider/route 邊界、server state policy、Portfolio Query/Mutation 架構、Zod API boundary validation | 前端技術棧、資料流、state ownership、query key 或 API boundary validation 改變時 |
 | `backend-api-technical-spec.md`                | 後端 API contract、request/response schema、內部 API 與錯誤碼 | API 欄位、路由、錯誤碼或 internal workflow contract 改變時 |
 | `daily-stock-radar-spec.md`                    | Daily Radar product/API/data-flow spec、universe、scoring、request budget、背景 context 與 validation/governance | Daily Radar universe、scoring、data-flow、schedule、shared context 或 public read behavior 改變時 |
 | `ai-stock-sentinel-position-diagnosis-spec.md` | 持股診斷專屬語意、出場/減碼流程、結案復盤與 lifecycle review 邊界 | `/analyze/position`、portfolio review 或 lifecycle review 行為改變時 |

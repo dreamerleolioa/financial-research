@@ -34,9 +34,13 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
     mock_ticker.fast_info = mock_info
     mock_ticker.history.return_value = _make_history([95.0, 98.0, 100.0], [111, 222, 333])
 
-    with patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker):
+    with (
+        patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker),
+        patch("ai_stock_sentinel.data_sources.yfinance_client.resolve_symbol_name", return_value="台積電"),
+    ):
         snapshot = crawler.fetch_basic_snapshot("2330.TW")
 
+    assert snapshot.name == "台積電"
     assert snapshot.volume == 123456
     assert snapshot.volume_source == "realtime"
     mock_ticker.history.assert_called_once_with(period="1y", interval="1d")
@@ -58,7 +62,10 @@ def test_fetch_basic_snapshot_falls_back_to_history_volume_when_last_volume_miss
     mock_ticker.fast_info = mock_info
     mock_ticker.history.return_value = _make_history([95.0, 98.0, 100.0], [111, 222, 333])
 
-    with patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker):
+    with (
+        patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker),
+        patch("ai_stock_sentinel.data_sources.yfinance_client.resolve_symbol_name", return_value="台積電"),
+    ):
         snapshot = crawler.fetch_basic_snapshot("2330.TW")
 
     assert snapshot.volume == 333
@@ -81,7 +88,10 @@ def test_fetch_basic_snapshot_includes_recent_high_low_volume_series() -> None:
     mock_ticker.fast_info = mock_info
     mock_ticker.history.return_value = _make_history([95.0, 98.0, 100.0], [111, 222, 333])
 
-    with patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker):
+    with (
+        patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker),
+        patch("ai_stock_sentinel.data_sources.yfinance_client.resolve_symbol_name", return_value="台積電"),
+    ):
         snapshot = crawler.fetch_basic_snapshot("2330.TW")
 
     assert snapshot.recent_highs == [96.0, 99.0, 101.0]

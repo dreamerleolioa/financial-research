@@ -1,146 +1,23 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { authHeaders } from "../lib/auth";
+import { analyzeSymbol } from "../lib/analyzeApi";
+import type { AnalyzeResponse } from "../lib/analysisTypes";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
-import type { SharedContextReadPayload } from "../lib/sharedContextTypes";
+import { createPortfolioItem, fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
 import {
-  ADD_ENTRY_CONDITION_VALUES,
-  DEFAULT_STOP_RULE_VALUES,
-  ENTRY_RECORD_REASON_VALUES,
-  PLANNED_HOLDING_PERIOD_VALUES,
   type AddEntryCondition,
   type DefaultStopRule,
   type EntryRecordContext,
   type EntryRecordReason,
   type PlannedHoldingPeriod,
 } from "../lib/portfolioTypes";
-
-interface ErrorDetail {
-  code: string;
-  message: string;
-}
-
-interface AnalysisDetail {
-  summary: string;
-  risks: string[];
-  technical_signal: "bullish" | "bearish" | "sideways";
-  institutional_flow: string | null;
-  sentiment_label: string | null;
-  tech_insight: string | null;
-  inst_insight: string | null;
-  news_insight: string | null;
-  final_verdict: string | null;
-  fundamental_insight?: string | null;
-  thought_process?: string | null;
-}
-
-interface CleanedNewsQuality {
-  quality_score: number;
-  quality_flags: string[];
-}
-
-interface NewsDisplayItem {
-  title: string;
-  date: string | null;
-  source_url: string | null;
-}
-
-interface TechnicalIndicators {
-  ma5: number | null;
-  ma20: number | null;
-  ma60: number | null;
-  high_20d: number | null;
-  low_20d: number | null;
-  high_60d: number | null;
-  low_60d: number | null;
-  bollinger_upper: number | null;
-  bollinger_mid: number | null;
-  bollinger_lower: number | null;
-  bollinger_bandwidth: number | null;
-  bollinger_position: string | null;
-  macd_line: number | null;
-  macd_signal: number | null;
-  macd_hist: number | null;
-  macd_bias: string | null;
-  kd_k: number | null;
-  kd_d: number | null;
-  kd_signal: string | null;
-  kd_zone: string | null;
-  adx: number | null;
-  adx_trend_strength: string | null;
-  adx_trend_direction: string | null;
-  obv: number | null;
-  obv_signal: string | null;
-  obv_trend_20d: string | null;
-  obv_trend_mid_long: string | null;
-  obv_trend_mid_long_window: string | null;
-  atr: number | null;
-  atr_pct: number | null;
-  volatility_level: string | null;
-  mfi: number | null;
-  mfi_signal: string | null;
-  donchian_upper: number | null;
-  donchian_lower: number | null;
-  donchian_mid: number | null;
-  donchian_width_pct: number | null;
-  donchian_position: string | null;
-}
-
-interface AnalyzeResponse {
-  snapshot: Record<string, unknown>;
-  analysis: string;
-  analysis_detail: AnalysisDetail | null;
-  cleaned_news: Record<string, unknown> | null;
-  cleaned_news_quality: CleanedNewsQuality | null;
-  news_display_items: NewsDisplayItem[];
-  confidence_score: number | null;
-  cross_validation_note: string | null;
-  strategy_type: "short_term" | "mid_term" | "defensive_wait" | null;
-  entry_zone: string | null;
-  stop_loss: string | null;
-  holding_period: string | null;
-  action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
-  technical_indicators?: TechnicalIndicators | null;
-  action_plan: {
-    action?: string;
-    target_zone?: string;
-    defense_line?: string;
-    breakeven_note?: string;
-    momentum_expectation?: string;
-    conviction_level?: "low" | "medium" | "high";
-    thesis_points?: string[];
-    invalidation_conditions?: string[];
-    suggested_position_size?: string;
-    /** 升級觸發條件 — 已接收但暫未渲染，預留未來 UI 擴充 */
-    upgrade_triggers?: string[];
-    /** 降級觸發條件 — 已接收但暫未渲染，預留未來 UI 擴充 */
-    downgrade_triggers?: string[];
-  } | null;
-  risk_state?: string | null;
-  risk_state_label?: string | null;
-  discipline_triggers?: string[];
-  observation_conditions?: string[];
-  risk_control_reference?: {
-    reference?: string | null;
-    reference_type?: string | null;
-  } | null;
-  command_language_deprecated?: Record<string, unknown>;
-  institutional_flow_label: string | null;
-  data_confidence: number | null;
-  is_final: boolean;
-  intraday_disclaimer: string | null;
-  errors: ErrorDetail[];
-  fundamental_data?: {
-    ttm_eps?: number | null;
-    pe_current?: number | null;
-    pe_band?: string | null;
-    pe_percentile?: number | null;
-    dividend_yield?: number | null;
-    yield_signal?: string | null;
-  } | null;
-  shared_context?: SharedContextReadPayload | null;
-}
+import {
+  ADD_ENTRY_CONDITION_OPTIONS,
+  DEFAULT_STOP_RULE_OPTIONS,
+  ENTRY_RECORD_REASON_OPTIONS,
+  PLANNED_HOLDING_PERIOD_OPTIONS,
+} from "../lib/portfolioLabels";
 
 interface AddPortfolioForm {
   entry_price: string;
@@ -151,15 +28,6 @@ interface AddPortfolioForm {
   default_stop_rule: DefaultStopRule | "";
   add_entry_condition: AddEntryCondition | "";
   notes: string;
-}
-
-interface AddPortfolioPayload {
-  symbol: string;
-  entry_price: number;
-  quantity: number;
-  entry_date: string;
-  notes: string | null;
-  entry_record?: EntryRecordContext;
 }
 
 type CopyStatus = "idle" | "success" | "error";
@@ -215,70 +83,6 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
   medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
   low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
-
-const ENTRY_RECORD_REASON_LABEL: Record<EntryRecordReason, string> = {
-  breakout_confirmation: "突破確認",
-  pullback_held_support: "回測守住支撐",
-  pullback_held_ma20: "回測守住 20 日線",
-  institutional_flow_strengthened: "法人籌碼轉強",
-  fundamental_thesis_improved: "基本面假設改善",
-  event_or_news_catalyst: "事件／消息催化",
-  long_term_accumulation: "長期分批佈局",
-  value_revaluation: "價值重估",
-  other: "其他固定理由",
-  not_recorded: "未記錄",
-};
-
-const PLANNED_HOLDING_PERIOD_LABEL: Record<PlannedHoldingPeriod, string> = {
-  short_term: "短線（數日內）",
-  swing: "波段（數週）",
-  medium_term: "中期（數月）",
-  long_term: "長期（半年以上）",
-  not_recorded: "未記錄",
-};
-
-const DEFAULT_STOP_RULE_LABEL: Record<DefaultStopRule, string> = {
-  break_20d_low: "跌破 20 日低點",
-  break_ma20: "跌破 20 日線",
-  break_ma60: "跌破 60 日線",
-  cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格風險控制",
-  no_stop_recorded: "未設定風險控制",
-  not_recorded: "未記錄",
-};
-
-const ADD_ENTRY_CONDITION_LABEL: Record<AddEntryCondition, string> = {
-  no_add_entry: "不新增批次",
-  breakout_above_prior_high: "突破前高再新增批次",
-  pullback_holds_ma20: "回測守住 20 日線",
-  pullback_holds_support: "回測守住支撐",
-  institutional_flow_continues: "法人籌碼延續",
-  profit_threshold_reached: "達成獲利門檻",
-  data_quality_complete_only: "資料完整才新增批次",
-  no_averaging_down: "不攤平",
-  custom_plan_required: "需另訂自訂計畫",
-  not_recorded: "未記錄",
-};
-
-const ENTRY_RECORD_REASON_OPTIONS = ENTRY_RECORD_REASON_VALUES.map((value) => ({
-  value,
-  label: ENTRY_RECORD_REASON_LABEL[value],
-}));
-
-const PLANNED_HOLDING_PERIOD_OPTIONS = PLANNED_HOLDING_PERIOD_VALUES.map((value) => ({
-  value,
-  label: PLANNED_HOLDING_PERIOD_LABEL[value],
-}));
-
-const DEFAULT_STOP_RULE_OPTIONS = DEFAULT_STOP_RULE_VALUES.map((value) => ({
-  value,
-  label: DEFAULT_STOP_RULE_LABEL[value],
-}));
-
-const ADD_ENTRY_CONDITION_OPTIONS = ADD_ENTRY_CONDITION_VALUES.map((value) => ({
-  value,
-  label: ADD_ENTRY_CONDITION_LABEL[value],
-}));
 
 const BOLLINGER_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
   near_upper: { label: "接近上軌", cls: "bg-red-100 text-red-800" },
@@ -367,10 +171,17 @@ function getTechnicalLabel(labels: Record<string, { label: string }>, value: str
   return labels[value]?.label ?? value;
 }
 
+function getAnalyzeSymbolName(result: AnalyzeResponse | null, snapshot: Record<string, unknown>): string | null {
+  if (typeof result?.symbol_name === "string" && result.symbol_name.trim()) return result.symbol_name.trim();
+  if (typeof snapshot.name === "string" && snapshot.name.trim()) return snapshot.name.trim();
+  return null;
+}
+
 function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Record<string, unknown>): string {
   const indicators = result.technical_indicators;
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
   const displaySymbol = snapshotSymbol ?? "—";
+  const symbolName = getAnalyzeSymbolName(result, snapshot);
   const marketSessionLabel = result.is_final === false ? "盤中" : "收盤";
   const price = (value: number | null | undefined) => formatPrice(value, snapshotSymbol);
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") => (
@@ -383,6 +194,7 @@ function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Rec
   if (!indicators) {
     return [
       "技術指標摘要",
+      `股票名稱：${symbolName ?? "—"}`,
       `股票代碼：${displaySymbol}`,
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
@@ -390,6 +202,7 @@ function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Rec
   }
 
   const rows: Array<[string, string]> = [
+    ["股票名稱", symbolName ?? "—"],
     ["股票代碼", displaySymbol],
     ["資料狀態", marketSessionLabel],
     ["現價", price(snapshot.current_price as number | null | undefined)],
@@ -580,9 +393,7 @@ export default function AnalyzePage() {
 
   async function fetchPortfolio() {
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, { headers: authHeaders() });
-      if (!res.ok) return;
-      const data: { id: number; symbol: string }[] = await res.json();
+      const data = await fetchPortfolioItems();
       setPortfolioSymbols(new Set(data.map((r) => r.symbol)));
       setPortfolioCount(data.length);
     } catch { /* ignore */ }
@@ -595,7 +406,7 @@ export default function AnalyzePage() {
     try {
       const entryRecord = buildEntryRecord(addForm);
       const notes = addForm.notes.trim();
-      const payload: AddPortfolioPayload = {
+      const payload: CreatePortfolioRequest = {
         symbol,
         entry_price: parseFloat(addForm.entry_price),
         quantity: addForm.quantity ? parseInt(addForm.quantity) : 0,
@@ -605,15 +416,7 @@ export default function AnalyzePage() {
 
       if (entryRecord) payload.entry_record = entryRecord;
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/portfolio`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail ?? `HTTP ${res.status}`);
-      }
+      await createPortfolioItem(payload);
       await fetchPortfolio();
       setShowAddModal(false);
       setAddForm(createInitialAddPortfolioForm());
@@ -648,24 +451,14 @@ export default function AnalyzePage() {
     setLoading(true);
     setResult(null);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/analyze`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ symbol: symbol.trim(), skip_ai: skipAi }),
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail ?? `HTTP ${res.status}`);
-      }
-      const data: AnalyzeResponse = await res.json();
+      const data = await analyzeSymbol({ symbol: symbol.trim(), skip_ai: skipAi }, controller.signal);
       setResult(data);
       await fetchPortfolio();
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return; // 使用者已送出新請求，忽略
       const message = err instanceof Error ? err.message : "無法連線後端，請確認伺服器已啟動。";
       setResult({
-        snapshot: {}, analysis: "", analysis_detail: null, cleaned_news: null,
+        snapshot: {}, symbol_name: null, analysis: "", analysis_detail: null, cleaned_news: null,
         cleaned_news_quality: null, news_display_items: [], confidence_score: null,
         cross_validation_note: null, strategy_type: null, entry_zone: null,
         stop_loss: null, holding_period: null, action_plan_tag: null, action_plan: null,
@@ -686,6 +479,9 @@ export default function AnalyzePage() {
   const confidenceScore = result?.confidence_score ?? null;
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
+  const analyzedSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : symbol;
+  const analyzedSymbolName = getAnalyzeSymbolName(result, snapshot);
+  const analyzedDisplayName = analyzedSymbolName ? `${analyzedSymbolName} ${analyzedSymbol}` : analyzedSymbol;
   const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
   const observationConditions: string[] = Array.isArray(result?.observation_conditions)
     ? result.observation_conditions.filter((item): item is string => typeof item === "string")
@@ -828,6 +624,11 @@ export default function AnalyzePage() {
           actionPlan ? (
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="space-y-4">
+                <div>
+                  <p className="text-xs font-medium text-text-muted">目前標的</p>
+                  <p className="mt-1 text-lg font-semibold text-text-primary">{analyzedDisplayName}</p>
+                </div>
+
                 <div className="rounded-lg border border-border bg-card-hover/70 p-3">
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px] md:items-center">
                     <div>
@@ -926,6 +727,12 @@ export default function AnalyzePage() {
                 <label className="mb-1 block text-xs font-medium text-text-muted">股票代碼</label>
                 <input value={symbol} readOnly className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted" />
               </div>
+              {analyzedSymbolName && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-text-muted">股票名稱</label>
+                  <input value={analyzedSymbolName} readOnly className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted" />
+                </div>
+              )}
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-muted">成本價 *</label>
                 <input type="number" value={addForm.entry_price} onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))} required min="0.01" step="0.01" placeholder="980" className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500" />

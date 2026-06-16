@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecycle_analysis
 from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
 from ai_stock_sentinel.db.models import (
     PositionEvent,
@@ -152,6 +153,7 @@ def _serialize_portfolio(item: UserPortfolio) -> dict:
         "id": item.id,
         "position_group_id": item.position_group_id,
         "symbol": item.symbol,
+        "name": resolve_symbol_name(item.symbol),
         "entry_price": float(item.entry_price),
         "quantity": item.quantity,
         "entry_date": item.entry_date.isoformat() if hasattr(item.entry_date, "isoformat") else item.entry_date,
@@ -440,6 +442,7 @@ def list_portfolio(
         {
             "id":          r.id,
             "symbol":      r.symbol,
+            "name":        resolve_symbol_name(r.symbol),
             "entry_price": float(r.entry_price),
             "quantity":    r.quantity,
             "entry_date":  r.entry_date.isoformat(),
@@ -551,6 +554,7 @@ def get_portfolio_risk_summary(
         rows,
         plans_by_group=plans_by_group,
         raw_data_by_symbol=raw_data_by_symbol,
+        symbol_names_by_symbol={symbol: resolve_symbol_name(symbol) for symbol in symbols},
         as_of_date=date.today(),
     )
 
@@ -832,7 +836,7 @@ def add_portfolio(
         ))
     db.commit()
     db.refresh(entry)
-    return {"id": entry.id, "symbol": entry.symbol}
+    return _serialize_portfolio(entry)
 
 
 class UpdatePortfolioRequest(BaseModel):
@@ -859,14 +863,7 @@ def update_portfolio(
     item.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(item)
-    return {
-        "id":          item.id,
-        "symbol":      item.symbol,
-        "entry_price": float(item.entry_price),
-        "quantity":    item.quantity,
-        "entry_date":  item.entry_date.isoformat() if hasattr(item.entry_date, "isoformat") else item.entry_date,
-        "notes":       item.notes,
-    }
+    return _serialize_portfolio(item)
 
 
 @router.post("/{portfolio_id}/add-entry", status_code=status.HTTP_201_CREATED)
@@ -915,14 +912,7 @@ def add_entry_to_portfolio(
     db.refresh(item)
     db.refresh(event)
     return {
-        "portfolio": {
-            "id": item.id,
-            "symbol": item.symbol,
-            "entry_price": float(item.entry_price),
-            "quantity": item.quantity,
-            "entry_date": item.entry_date.isoformat() if hasattr(item.entry_date, "isoformat") else item.entry_date,
-            "notes": item.notes,
-        },
+        "portfolio": _serialize_portfolio(item),
         "event": _serialize_position_event(event),
     }
 
