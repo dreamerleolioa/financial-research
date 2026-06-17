@@ -35,7 +35,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 
 - `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
-- `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入並快速帶回個股分析；它不代表進場、部位或交易紀錄。
+- `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入，並在列表內快速查看技術指標與複製摘要；它不代表進場、部位或交易紀錄。
 - `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。
 - `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
