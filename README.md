@@ -286,7 +286,6 @@ pnpm dev
 - 支援新增 / 移除股票、編輯單筆觀察備註，以及拖拉調整列表順序
 - 支援在列表內展開 raw 技術指標快查，透過 `POST /analyze` 搭配 `skip_ai: true` 取得 deterministic 指標，不執行完整 LLM 分析
 - 技術快查面板可複製完整指標摘要，方便帶到其他 AI agent 做深度分析
-- 可從關注列表快速帶入 `/analyze?symbol=...` 進行個股查詢
 - Analyze 結果與 Daily Radar 候選標的都可加入關注列表
 - 與 `/portfolio` 分離，不代表進場、部位、加碼或交易紀錄
 

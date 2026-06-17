@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { Link } from "react-router-dom";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse } from "../lib/analysisTypes";
 import { formatPrice, formatVolume } from "../lib/formatters";
@@ -177,7 +176,7 @@ function WatchlistTechnicalPanel({
 
       {quickResult && !quickIndicators && !technicalState.error && (
         <div className="rounded-md border border-border bg-card px-3 py-2 text-sm text-text-muted">
-          技術指標資料不足，請稍後更新或改用完整分析確認。
+          技術指標資料不足，請稍後更新。
         </div>
       )}
 
@@ -620,12 +619,6 @@ export default function WatchlistPage() {
                           ? "收合指標"
                           : "技術快查"}
                     </button>
-                    <Link
-                      to={`/analyze?symbol=${encodeURIComponent(item.symbol)}`}
-                      className="rounded-lg border border-border px-3 py-2 text-center text-sm font-medium text-text-secondary transition hover:bg-card-hover"
-                    >
-                      完整分析
-                    </Link>
                     <button
                       type="button"
                       onClick={() => void handleSaveNotes(item)}
