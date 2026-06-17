@@ -283,7 +283,7 @@ pnpm dev
 **關注列表（`/watchlist`）**
 
 - 保存目前登入使用者有興趣但尚未進入持股的股票
-- 支援新增 / 移除股票，以及編輯單筆觀察備註
+- 支援新增 / 移除股票、編輯單筆觀察備註，以及拖拉調整列表順序
 - 可從關注列表快速帶入 `/analyze?symbol=...` 進行個股查詢
 - Analyze 結果與 Daily Radar 候選標的都可加入關注列表
 - 與 `/portfolio` 分離，不代表進場、部位、加碼或交易紀錄
@@ -338,6 +338,7 @@ make run-api
 - `GET /watchlist` — 列出目前登入使用者的關注股票清單
 - `POST /watchlist` — 新增關注股票；同一使用者同一 symbol 具冪等語義，已存在時回傳既有項目
 - `PUT /watchlist/{item_id}` — 更新關注項目的觀察備註
+- `PUT /watchlist/reorder` — 以完整 item id 清單調整目前登入使用者的關注列表順序
 - `DELETE /watchlist/{item_id}` — 移除關注項目
 - `GET/POST /portfolio/*` — 持股管理、持股診斷歷史、出場結案與已結案紀錄
 

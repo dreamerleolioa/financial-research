@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link } from "react-router-dom";
 import {
   createWatchlistItem,
   deleteWatchlistItem,
   fetchWatchlistItems,
+  reorderWatchlistItems,
   updateWatchlistItem,
   type WatchlistItem,
 } from "../lib/watchlistApi";
@@ -23,6 +24,17 @@ function getDisplayName(item: WatchlistItem): string {
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
+function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
+  const nextItems = [...items];
+  const [movedItem] = nextItems.splice(fromIndex, 1);
+  nextItems.splice(toIndex, 0, movedItem);
+  return nextItems;
+}
+
+function haveSameOrder(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
 export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [symbol, setSymbol] = useState("");
@@ -31,13 +43,24 @@ export default function WatchlistPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busyItemId, setBusyItemId] = useState<number | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const [draggedItemId, setDraggedItemId] = useState<number | null>(null);
+  const [dragOverItemId, setDragOverItemId] = useState<number | null>(null);
+  const [dragPreviewIds, setDragPreviewIds] = useState<number[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const itemCount = items.length;
   const sortedItems = useMemo(
-    () => [...items].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id),
+    () => [...items].sort((a, b) => a.sort_order - b.sort_order || b.created_at.localeCompare(a.created_at) || b.id - a.id),
     [items],
   );
+  const visibleItems = useMemo(() => {
+    if (!dragPreviewIds) return sortedItems;
+
+    const itemById = new Map(sortedItems.map((item) => [item.id, item]));
+    const previewItems = dragPreviewIds.map((id) => itemById.get(id)).filter((item): item is WatchlistItem => Boolean(item));
+    return previewItems.length === sortedItems.length ? previewItems : sortedItems;
+  }, [dragPreviewIds, sortedItems]);
 
   async function refreshWatchlist() {
     setLoading(true);
@@ -93,6 +116,112 @@ export default function WatchlistPage() {
     } finally {
       setBusyItemId(null);
     }
+  }
+
+  async function persistWatchlistOrder(itemIds: number[]) {
+    const previousItems = items;
+
+    setReordering(true);
+    setError(null);
+    setItems((currentItems) => {
+      const itemById = new Map(currentItems.map((item) => [item.id, item]));
+      const orderedItems = itemIds.map((id, index) => {
+        const item = itemById.get(id);
+        return item ? { ...item, sort_order: index } : null;
+      });
+      return orderedItems.every(Boolean) ? (orderedItems as WatchlistItem[]) : currentItems;
+    });
+
+    try {
+      const updatedItems = await reorderWatchlistItems({
+        item_ids: itemIds,
+      });
+      setItems(updatedItems);
+    } catch (err) {
+      setItems(previousItems);
+      setError(err instanceof Error ? err.message : "調整排序失敗");
+    } finally {
+      setReordering(false);
+    }
+  }
+
+  function previewMoveToItem(targetItemId: number, activeDraggedItemId: number, currentOrder: number[]): number[] {
+    if (activeDraggedItemId === targetItemId || reordering || busyItemId !== null) return currentOrder;
+
+    const fromIndex = currentOrder.indexOf(activeDraggedItemId);
+    const toIndex = currentOrder.indexOf(targetItemId);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return currentOrder;
+
+    const nextOrder = moveItem(currentOrder, fromIndex, toIndex);
+    setDragPreviewIds(nextOrder);
+    setDragOverItemId(targetItemId);
+    return nextOrder;
+  }
+
+  function getItemIdAtPoint(clientX: number, clientY: number): number | null {
+    const element = document.elementFromPoint(clientX, clientY);
+    const itemElement = element?.closest("[data-watchlist-item-id]");
+    if (!(itemElement instanceof HTMLElement)) return null;
+
+    const itemId = Number(itemElement.dataset.watchlistItemId);
+    return Number.isFinite(itemId) ? itemId : null;
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>, item: WatchlistItem) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (reordering || busyItemId !== null) {
+      event.preventDefault();
+      return;
+    }
+
+    event.preventDefault();
+    const startOrder = sortedItems.map((row) => row.id);
+    let previewOrder = startOrder;
+
+    function cleanupListeners() {
+      window.removeEventListener("pointermove", handleGlobalPointerMove);
+      window.removeEventListener("pointerup", handleGlobalPointerEnd);
+      window.removeEventListener("pointercancel", handleGlobalPointerCancel);
+    }
+
+    function handleGlobalPointerMove(globalEvent: globalThis.PointerEvent) {
+      if (globalEvent.pointerId !== event.pointerId) return;
+      globalEvent.preventDefault();
+
+      const targetItemId = getItemIdAtPoint(globalEvent.clientX, globalEvent.clientY);
+      if (targetItemId == null) return;
+      previewOrder = previewMoveToItem(targetItemId, item.id, previewOrder);
+    }
+
+    function handleGlobalPointerEnd(globalEvent: globalThis.PointerEvent) {
+      if (globalEvent.pointerId !== event.pointerId) return;
+      globalEvent.preventDefault();
+      cleanupListeners();
+      resetDragState();
+
+      if (haveSameOrder(previewOrder, startOrder)) return;
+      void persistWatchlistOrder(previewOrder);
+    }
+
+    function handleGlobalPointerCancel(globalEvent: globalThis.PointerEvent) {
+      if (globalEvent.pointerId !== event.pointerId) return;
+      globalEvent.preventDefault();
+      cleanupListeners();
+      resetDragState();
+    }
+
+    window.addEventListener("pointermove", handleGlobalPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleGlobalPointerEnd, { passive: false });
+    window.addEventListener("pointercancel", handleGlobalPointerCancel, { passive: false });
+    setDraggedItemId(item.id);
+    setDragOverItemId(item.id);
+    setDragPreviewIds(startOrder);
+  }
+
+  function resetDragState() {
+    setDraggedItemId(null);
+    setDragOverItemId(null);
+    setDragPreviewIds(null);
   }
 
   async function handleDeleteItem(item: WatchlistItem) {
@@ -167,20 +296,42 @@ export default function WatchlistPage() {
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
             讀取關注列表中
           </div>
-        ) : sortedItems.length === 0 ? (
+        ) : visibleItems.length === 0 ? (
           <div className="px-4 py-12 text-center">
             <p className="text-sm font-medium text-text-primary">尚未加入關注股票</p>
             <p className="mt-1 text-xs text-text-muted">從上方輸入股票代碼，或在個股分析結果中直接加入關注。</p>
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {sortedItems.map((item) => {
+            {visibleItems.map((item) => {
               const noteDraft = noteDrafts[item.id] ?? "";
               const noteChanged = noteDraft !== (item.notes ?? "");
               const itemBusy = busyItemId === item.id;
+              const listBusy = reordering || busyItemId !== null;
+              const isDragging = draggedItemId === item.id;
+              const isDropTarget = dragOverItemId === item.id && draggedItemId !== item.id;
 
               return (
-                <article key={item.id} className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(160px,220px)_minmax(0,1fr)_auto] md:items-start md:px-6">
+                <article
+                  key={item.id}
+                  data-watchlist-item-id={item.id}
+                  className={`grid gap-4 px-4 py-4 transition md:grid-cols-[auto_minmax(160px,220px)_minmax(0,1fr)_auto] md:items-start md:px-6 ${
+                    isDragging ? "bg-indigo-50/70 opacity-70 ring-2 ring-inset ring-indigo-300 dark:bg-indigo-950/30 dark:ring-indigo-700" : ""
+                  } ${isDropTarget ? "bg-card-hover" : ""}`}
+                >
+                  <div className="flex gap-1 md:flex-col" aria-label={`${getDisplayName(item)} 排序控制`}>
+                    <button
+                      type="button"
+                      onPointerDown={(event) => handlePointerDown(event, item)}
+                      disabled={listBusy}
+                      title="拖拉排序"
+                      aria-label={`拖拉排序 ${getDisplayName(item)}`}
+                      className="grid h-8 w-8 touch-none cursor-grab place-items-center rounded-lg border border-border text-sm font-semibold text-text-secondary transition hover:bg-card-hover active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      ⋮⋮
+                    </button>
+                  </div>
+
                   <div>
                     <p className="text-sm font-semibold text-text-primary">{getDisplayName(item)}</p>
                     <p className="mt-1 text-xs text-text-faint">加入於 {formatDateTime(item.created_at)}</p>
@@ -205,7 +356,7 @@ export default function WatchlistPage() {
                     <button
                       type="button"
                       onClick={() => void handleSaveNotes(item)}
-                      disabled={itemBusy || !noteChanged}
+                      disabled={listBusy || !noteChanged}
                       className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-text-secondary transition hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       儲存備註
@@ -213,7 +364,7 @@ export default function WatchlistPage() {
                     <button
                       type="button"
                       onClick={() => void handleDeleteItem(item)}
-                      disabled={itemBusy}
+                      disabled={listBusy}
                       className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
                     >
                       移除

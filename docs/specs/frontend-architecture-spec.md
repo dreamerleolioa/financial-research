@@ -108,8 +108,8 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 前端 watchlist public surface：
 
 - route：`frontend/src/main.tsx` 以 `ProtectedRoute` 保護 `/watchlist`。
-- page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯與快速帶入 `/analyze?symbol=...`。
-- API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints。
+- page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽與快速帶入 `/analyze?symbol=...`。
+- API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
 股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。
