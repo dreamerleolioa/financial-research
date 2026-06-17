@@ -64,9 +64,10 @@ export default function WatchlistPage() {
     setSaving(true);
     setError(null);
     try {
+      const trimmedNotes = notes.trim();
       await createWatchlistItem({
         symbol: symbol.trim(),
-        notes: notes.trim() || null,
+        ...(trimmedNotes ? { notes: trimmedNotes } : {}),
       });
       setSymbol("");
       setNotes("");
