@@ -20,7 +20,7 @@
 2. `QueryClientProvider`：提供 TanStack Query cache、request state 與 invalidation 能力。
 3. `BrowserRouter`：以 `APP_BASE_URL` 作為 basename。
 4. `AuthProvider`：管理登入狀態與 token。
-5. `ProtectedRoute`：保護 `/analyze`、`/portfolio`、`/portfolio/closed`、`/daily-radar`。
+5. `ProtectedRoute`：保護 `/analyze`、`/watchlist`、`/portfolio`、`/portfolio/closed`、`/daily-radar`。
 
 這個順序的重點是：API page 和 feature hooks 都能讀到 auth context 與 query client，route 保護邏輯仍集中在入口，不分散到各 page。
 
@@ -100,6 +100,19 @@ Mutation 成功後統一 invalidation：
 - item-specific lifecycle plan
 
 Delete mutation 會移除 item-specific query cache，再 invalidation aggregate read data。Page callback 只清理局部 UI state，不再手動 patch server state。
+
+## Watchlist Surface
+
+`/watchlist` 是目前登入使用者的個人關注列表，產品語義是「有興趣但尚未進入持股的觀察標的」。它與 `/portfolio` 的 active/closed position lifecycle 分離，不代表進場、部位、加碼或交易紀錄。
+
+前端 watchlist public surface：
+
+- route：`frontend/src/main.tsx` 以 `ProtectedRoute` 保護 `/watchlist`。
+- page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯與快速帶入 `/analyze?symbol=...`。
+- API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints。
+- Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
+
+股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。
 
 ## API Boundary Validation
 

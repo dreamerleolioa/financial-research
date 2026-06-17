@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-11
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier。
+> 更新日期：2026-06-17
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股上限調整為 8 筆；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；新增 authenticated `/watchlist` read/write API contract，定義關注列表為尚未進入持股的觀察標的，不代表進場或交易紀錄；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier。
 
 ## 1) 目的
 
@@ -464,6 +464,81 @@ make run-api
 > - `/analyze` 使用 `analysis_type="general"`，`/analyze/position` 使用 `analysis_type="position"`。
 > - 快取鍵值包含 `symbol`、`record_date` 與 `analysis_type`，確保不同分析類型互不覆寫。
 > - **持股診斷快取邊界**：`/analyze/position` 的 L1 full_result 快取命中必須比對 `entry_price` / `entry_date` / `quantity`。同一檔股票若成本價、日期或數量不同，會強制重跑持股診斷，避免回傳其他成本基準的 `position_analysis`。
+
+---
+
+### `GET /watchlist`
+
+- **用途**：列出目前登入使用者的關注股票清單。關注列表保存「有興趣但尚未進入持股」的觀察標的，不代表進場、持股、加碼或交易紀錄。
+- **Auth/Ownership**：需要登入，只回傳 `current_user.id` 的資料。
+- **排序**：`created_at DESC`、`id DESC`。
+- **Response 200**
+
+```json
+[
+  {
+    "id": 1,
+    "symbol": "2330.TW",
+    "name": "台積電",
+    "notes": "等待拉回 MA20",
+    "created_at": "2026-06-17T03:00:00+00:00",
+    "updated_at": "2026-06-17T03:00:00+00:00"
+  }
+]
+```
+
+### `POST /watchlist`
+
+- **用途**：新增關注股票，供 `/watchlist`、Analyze 結果與 Daily Radar 候選清單使用。
+- **Auth/Ownership**：需要登入，新項目會寫入 `current_user.id`。
+- **Request Body**
+
+```json
+{
+  "symbol": "2330.TW",
+  "notes": "等待拉回 MA20"
+}
+```
+
+- **欄位說明**
+  - `symbol`：股票代碼，必填，長度 1-20；後端會 `trim()` 並轉大寫，例如 `2330.tw` 會保存為 `2330.TW`。
+  - `notes`：觀察備註，選填，最多 500 字；空白字串會正規化為 `null`。
+- **唯一性 / 冪等語義**：同一使用者同一 `symbol` 只有一筆。新建成功回傳 `201`；若已存在，回傳既有項目並把 status code 設為 `200`。若 request 明確帶 `notes` 且內容不同，會更新既有項目的備註與 `updated_at`。
+- **驗證**：後端會檢查股票代碼是否存在；不存在時回傳 `404`。
+- **Response 201 / 200**
+
+```json
+{
+  "id": 1,
+  "symbol": "2330.TW",
+  "name": "台積電",
+  "notes": "等待拉回 MA20",
+  "created_at": "2026-06-17T03:00:00+00:00",
+  "updated_at": "2026-06-17T03:00:00+00:00"
+}
+```
+
+### `PUT /watchlist/{item_id}`
+
+- **用途**：更新目前登入使用者某筆關注項目的觀察備註。
+- **Auth/Ownership**：需要登入，且只能更新 `current_user.id` 的項目；找不到或非本人項目回傳 `404`。
+- **Request Body**
+
+```json
+{
+  "notes": "等量縮回測 MA20"
+}
+```
+
+- **欄位說明**
+  - `notes`：觀察備註，選填，最多 500 字；空白字串會正規化為 `null`。
+- **Response 200**：欄位同 `POST /watchlist` 單筆物件。
+
+### `DELETE /watchlist/{item_id}`
+
+- **用途**：移除目前登入使用者某筆關注項目。
+- **Auth/Ownership**：需要登入，且只能刪除 `current_user.id` 的項目；找不到或非本人項目回傳 `404`。
+- **Response 204**：無 body。
 
 ---
 

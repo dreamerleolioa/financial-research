@@ -35,6 +35,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 
 - `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
+- `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入並快速帶回個股分析；它不代表進場、部位或交易紀錄。
 - `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。
 - `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
@@ -275,8 +276,17 @@ pnpm dev
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
 - 新聞卡片（RSS 標題、日期、原文連結；多筆列表來自 `news_display_items`，最多 5 筆）
 - 新聞摘要品質提示（`quality_score < 60` 時顯示警告）
+- 分析結果可加入關注列表，作為後續觀察標的，不寫入持股紀錄
 - 錯誤 banner + loading 狀態
 - 底層保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart.tsx`，供後續嵌入個股歷史分析趨勢
+
+**關注列表（`/watchlist`）**
+
+- 保存目前登入使用者有興趣但尚未進入持股的股票
+- 支援新增 / 移除股票，以及編輯單筆觀察備註
+- 可從關注列表快速帶入 `/analyze?symbol=...` 進行個股查詢
+- Analyze 結果與 Daily Radar 候選標的都可加入關注列表
+- 與 `/portfolio` 分離，不代表進場、部位、加碼或交易紀錄
 
 **持股管理頁（`/portfolio`）**
 
@@ -297,6 +307,7 @@ pnpm dev
 - 每日觀察候選清單
 - bucket、觀察等級、風險標籤與規則命中原因；`observation_score` 只作內部排序、校準與 advanced trace，不代表勝率或交易建議
 - candidate trace 包含 market regime、relative strength 或缺資料原因、scoring/rule version、score breakdown、data dates、replayable evidence、shared background context cache trace 與 background context labels
+- 候選標的可加入關注列表；此動作只保存觀察標的，不影響 Daily Radar scoring、ranking 或 forward validation
 
 **登入（`/login`）**
 
@@ -324,6 +335,10 @@ make run-api
 - `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史
 - `GET /history/{symbol}` — 查詢歷史分析記錄
 - `GET/POST /auth/*` — Google OAuth 登入流程
+- `GET /watchlist` — 列出目前登入使用者的關注股票清單
+- `POST /watchlist` — 新增關注股票；同一使用者同一 symbol 具冪等語義，已存在時回傳既有項目
+- `PUT /watchlist/{item_id}` — 更新關注項目的觀察備註
+- `DELETE /watchlist/{item_id}` — 移除關注項目
 - `GET/POST /portfolio/*` — 持股管理、持股診斷歷史、出場結案與已結案紀錄
 
 範例：
