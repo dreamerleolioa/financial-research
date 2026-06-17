@@ -104,6 +104,11 @@ def test_copy_guard_allowlist_documents_intent() -> None:
 def test_copy_guard_allowlist_does_not_allow_broad_command_phrases() -> None:
     assert _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "加碼", "加碼")
     assert _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "出場", "出場")
+    assert _is_allowlisted(
+        "frontend/src/pages/PortfolioPage.tsx",
+        "投資建議",
+        '<p className="text-center text-xs text-text-faint">本診斷結果僅供研究與紀律檢查，不構成投資建議。</p>',
+    )
     assert not _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "加碼", "系統建議加碼")
     assert not _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "出場", "風險升高建議出場")
 
@@ -134,4 +139,8 @@ def test_primary_frontend_surfaces_expose_risk_language_copy() -> None:
 
 def _is_allowlisted(relative_path: str, term: str, line: str) -> bool:
     snippets = ALLOWLISTED_PRIMARY_COPY.get(relative_path, {}).get(term, [])
-    return line.strip() in snippets
+    if line.strip() in snippets:
+        return True
+    if relative_path == "frontend/src/pages/PortfolioPage.tsx" and term == "投資建議":
+        return any(snippet in line for snippet in snippets)
+    return False

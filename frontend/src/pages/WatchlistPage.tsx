@@ -507,7 +507,9 @@ export default function WatchlistPage() {
         <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-base font-semibold text-text-primary">關注列表</h2>
-            <p className="mt-1 text-xs text-text-muted">儲存還沒進入持股的觀察標的，可在列表內快速查看技術指標並複製摘要。</p>
+            <p className="mt-1 text-xs text-text-muted">
+              儲存還沒進入持股的觀察標的，可在列表內快速查看技術指標並複製摘要。
+            </p>
           </div>
           <span className="text-xs text-text-faint">{itemCount} 檔關注中</span>
         </div>
