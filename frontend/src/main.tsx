@@ -26,7 +26,12 @@ const queryClient = new QueryClient({
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
-  if (isLoading) return <div className="flex min-h-screen items-center justify-center"><div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" /></div>;
+  if (isLoading)
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+      </div>
+    );
   if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -50,7 +55,7 @@ createRoot(document.getElementById("root")!).render(
                 <Route index element={<Navigate to="/analyze" replace />} />
                 <Route path="/analyze" element={<AnalyzePage />} />
                 <Route path="/watchlist" element={<WatchlistPage />} />
-                <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => { }} />} />
+                <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => {}} />} />
                 <Route path="/portfolio/closed" element={<ClosedPortfolioPage />} />
                 <Route path="/daily-radar" element={<DailyRadarPage />} />
                 <Route path="*" element={<Navigate to="/analyze" replace />} />

@@ -88,4 +88,3 @@ function extractErrorMessage(detail: unknown): string | null {
   }
   return null;
 }
-

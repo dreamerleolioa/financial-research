@@ -184,53 +184,53 @@ export interface TradeReviewResponse {
 }
 
 export const ENTRY_RECORD_REASON_VALUES = [
-  'breakout_confirmation',
-  'pullback_held_support',
-  'pullback_held_ma20',
-  'institutional_flow_strengthened',
-  'fundamental_thesis_improved',
-  'event_or_news_catalyst',
-  'long_term_accumulation',
-  'value_revaluation',
-  'other',
-  'not_recorded',
+  "breakout_confirmation",
+  "pullback_held_support",
+  "pullback_held_ma20",
+  "institutional_flow_strengthened",
+  "fundamental_thesis_improved",
+  "event_or_news_catalyst",
+  "long_term_accumulation",
+  "value_revaluation",
+  "other",
+  "not_recorded",
 ] as const;
 
 export type EntryRecordReason = (typeof ENTRY_RECORD_REASON_VALUES)[number];
 
 export const PLANNED_HOLDING_PERIOD_VALUES = [
-  'short_term',
-  'swing',
-  'medium_term',
-  'long_term',
-  'not_recorded',
+  "short_term",
+  "swing",
+  "medium_term",
+  "long_term",
+  "not_recorded",
 ] as const;
 
 export type PlannedHoldingPeriod = (typeof PLANNED_HOLDING_PERIOD_VALUES)[number];
 
 export const DEFAULT_STOP_RULE_VALUES = [
-  'break_20d_low',
-  'break_ma20',
-  'break_ma60',
-  'cost_minus_pct',
-  'fixed_price',
-  'no_stop_recorded',
-  'not_recorded',
+  "break_20d_low",
+  "break_ma20",
+  "break_ma60",
+  "cost_minus_pct",
+  "fixed_price",
+  "no_stop_recorded",
+  "not_recorded",
 ] as const;
 
 export type DefaultStopRule = (typeof DEFAULT_STOP_RULE_VALUES)[number];
 
 export const ADD_ENTRY_CONDITION_VALUES = [
-  'no_add_entry',
-  'breakout_above_prior_high',
-  'pullback_holds_ma20',
-  'pullback_holds_support',
-  'institutional_flow_continues',
-  'profit_threshold_reached',
-  'data_quality_complete_only',
-  'no_averaging_down',
-  'custom_plan_required',
-  'not_recorded',
+  "no_add_entry",
+  "breakout_above_prior_high",
+  "pullback_holds_ma20",
+  "pullback_holds_support",
+  "institutional_flow_continues",
+  "profit_threshold_reached",
+  "data_quality_complete_only",
+  "no_averaging_down",
+  "custom_plan_required",
+  "not_recorded",
 ] as const;
 
 export type AddEntryCondition = (typeof ADD_ENTRY_CONDITION_VALUES)[number];
@@ -244,90 +244,85 @@ export interface EntryRecordContext {
 }
 
 export type ReasonCategory =
-  | 'technical'
-  | 'institutional_flow'
-  | 'fundamental'
-  | 'news'
-  | 'risk_control'
-  | 'plan_execution'
-  | 'emotional'
-  | 'record_correction'
-  | 'not_recorded';
+  | "technical"
+  | "institutional_flow"
+  | "fundamental"
+  | "news"
+  | "risk_control"
+  | "plan_execution"
+  | "emotional"
+  | "record_correction"
+  | "not_recorded";
 
 export const ENTRY_REASON_CODE_VALUES = [
-  'breakout_confirmation',
-  'pullback_held_support',
-  'pullback_held_ma20',
-  'institutional_flow_strengthened',
-  'fundamental_thesis_improved',
-  'event_or_news_catalyst',
-  'long_term_accumulation',
-  'value_revaluation',
-  'other',
-  'planned_scale_in',
-  'averaging_down',
-  'chasing_momentum',
-  'manual_record_correction',
+  "breakout_confirmation",
+  "pullback_held_support",
+  "pullback_held_ma20",
+  "institutional_flow_strengthened",
+  "fundamental_thesis_improved",
+  "event_or_news_catalyst",
+  "long_term_accumulation",
+  "value_revaluation",
+  "other",
+  "planned_scale_in",
+  "averaging_down",
+  "chasing_momentum",
+  "manual_record_correction",
 ] as const;
 
 export type EntryReasonCode = (typeof ENTRY_REASON_CODE_VALUES)[number];
 
 export const ADD_ENTRY_REASON_CODE_VALUES = [
-  'breakout_confirmation',
-  'pullback_held_support',
-  'pullback_held_ma20',
-  'institutional_flow_strengthened',
-  'fundamental_thesis_improved',
-  'event_or_news_catalyst',
-  'long_term_accumulation',
-  'value_revaluation',
-  'other',
-  'planned_scale_in',
-  'averaging_down',
-  'chasing_momentum',
-  'not_recorded',
+  "breakout_confirmation",
+  "pullback_held_support",
+  "pullback_held_ma20",
+  "institutional_flow_strengthened",
+  "fundamental_thesis_improved",
+  "event_or_news_catalyst",
+  "long_term_accumulation",
+  "value_revaluation",
+  "other",
+  "planned_scale_in",
+  "averaging_down",
+  "chasing_momentum",
+  "not_recorded",
 ] as const;
 
 export type AddEntryReasonCode = (typeof ADD_ENTRY_REASON_CODE_VALUES)[number];
 
 export type ExitReasonCode =
-  | 'target_reached'
-  | 'trailing_stop_hit'
-  | 'support_broken'
-  | 'ma20_lost'
-  | 'institutional_flow_weakened'
-  | 'fundamental_thesis_broken'
-  | 'news_risk_increased'
-  | 'risk_reduction'
-  | 'profit_protection'
-  | 'planned_scale_out'
-  | 'stop_loss'
-  | 'emotional_exit'
-  | 'manual_record_correction';
+  | "target_reached"
+  | "trailing_stop_hit"
+  | "support_broken"
+  | "ma20_lost"
+  | "institutional_flow_weakened"
+  | "fundamental_thesis_broken"
+  | "news_risk_increased"
+  | "risk_reduction"
+  | "profit_protection"
+  | "planned_scale_out"
+  | "stop_loss"
+  | "emotional_exit"
+  | "manual_record_correction";
 
-export const PLAN_ADHERENCE_VALUES = ['yes', 'partial', 'no', 'not_recorded'] as const;
+export const PLAN_ADHERENCE_VALUES = ["yes", "partial", "no", "not_recorded"] as const;
 
 export type PlanAdherence = (typeof PLAN_ADHERENCE_VALUES)[number];
 
-export const DECISION_CONFIDENCE_LEVEL_VALUES = ['high', 'medium', 'low', 'not_recorded'] as const;
+export const DECISION_CONFIDENCE_LEVEL_VALUES = ["high", "medium", "low", "not_recorded"] as const;
 
 export type DecisionConfidenceLevel = (typeof DECISION_CONFIDENCE_LEVEL_VALUES)[number];
 
-export type PositionEventType =
-  | 'initial_entry'
-  | 'add_entry'
-  | 'partial_exit'
-  | 'full_exit'
-  | 'manual_adjustment';
+export type PositionEventType = "initial_entry" | "add_entry" | "partial_exit" | "full_exit" | "manual_adjustment";
 
 export type PositionEventSource =
-  | 'synthetic_from_portfolio_row'
-  | 'user_backfilled'
-  | 'user_recorded_at_event_time'
-  | 'manual_record_correction'
-  | 'not_recorded';
+  | "synthetic_from_portfolio_row"
+  | "user_backfilled"
+  | "user_recorded_at_event_time"
+  | "manual_record_correction"
+  | "not_recorded";
 
-export type PositionEventReasonCode = EntryReasonCode | ExitReasonCode | 'not_recorded';
+export type PositionEventReasonCode = EntryReasonCode | ExitReasonCode | "not_recorded";
 
 export interface PositionEvent {
   id: number;
@@ -577,22 +572,22 @@ export interface PositionLifecycleReviewResponse {
 }
 
 export const LIFECYCLE_SETUP_TYPE_VALUES = [
-  'breakout',
-  'pullback',
-  'mean_reversion',
-  'value_revaluation',
-  'earnings_or_event',
-  'momentum_continuation',
-  'long_term_accumulation',
-  'defensive_rebalance',
-  'other',
+  "breakout",
+  "pullback",
+  "mean_reversion",
+  "value_revaluation",
+  "earnings_or_event",
+  "momentum_continuation",
+  "long_term_accumulation",
+  "defensive_rebalance",
+  "other",
 ] as const;
 
 export type LifecycleSetupType = (typeof LIFECYCLE_SETUP_TYPE_VALUES)[number];
 
-export type OperationPlanStatus = 'missing' | 'present' | 'backfilled';
+export type OperationPlanStatus = "missing" | "present" | "backfilled";
 
-export type DecisionContextStatus = 'insufficient' | 'present';
+export type DecisionContextStatus = "insufficient" | "present";
 
 export interface PortfolioDecisionContextStatus {
   portfolio_id: number;

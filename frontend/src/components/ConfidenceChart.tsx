@@ -8,10 +8,10 @@ interface DataPoint {
 }
 
 const ACTION_COLOR: Record<string, string> = {
-  Hold: "#22c55e",    // green-500
-  Trim: "#eab308",    // yellow-500
-  Exit: "#ef4444",    // red-500
-  Add: "#3b82f6",     // blue-500
+  Hold: "#22c55e", // green-500
+  Trim: "#eab308", // yellow-500
+  Exit: "#ef4444", // red-500
+  Add: "#3b82f6", // blue-500
   neutral: "#94a3b8", // slate-400
 };
 
@@ -31,11 +31,7 @@ interface Props {
 export function ConfidenceChart({ data, height = 200 }: Props) {
   const validPoints = data.filter((d) => d.confidence !== null);
   if (validPoints.length === 0) {
-    return (
-      <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">
-        無歷史數據
-      </div>
-    );
+    return <div className="flex h-[200px] items-center justify-center text-sm text-slate-400">無歷史數據</div>;
   }
 
   const W = 600;
@@ -52,9 +48,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
   const toY = (v: number) => PAD.top + innerH - ((v - minY) / (maxY - minY)) * innerH;
 
   // 折線 path
-  const linePath = validPoints
-    .map((d, i) => `${i === 0 ? "M" : "L"} ${toX(i)} ${toY(d.confidence!)}`)
-    .join(" ");
+  const linePath = validPoints.map((d, i) => `${i === 0 ? "M" : "L"} ${toX(i)} ${toY(d.confidence!)}`).join(" ");
 
   // Y 軸格線
   const gridLines = [25, 50, 75, 100];
@@ -106,24 +100,9 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
                 />
               )}
               {/* 資料點圓圈 */}
-              <circle
-                cx={x}
-                cy={y}
-                r={isSignalChange ? 6 : 4}
-                fill={color}
-                stroke="white"
-                strokeWidth={1.5}
-              />
+              <circle cx={x} cy={y} r={isSignalChange ? 6 : 4} fill={color} stroke="white" strokeWidth={1.5} />
               {isIntraday && (
-                <circle
-                  cx={x}
-                  cy={y}
-                  r={8}
-                  fill="none"
-                  stroke="#f59e0b"
-                  strokeWidth={1.5}
-                  strokeDasharray="3 2"
-                />
+                <circle cx={x} cy={y} r={8} fill="none" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 2" />
               )}
               {/* 日期標籤（每隔 5 點顯示一個） */}
               {i % 5 === 0 && (
@@ -140,10 +119,7 @@ export function ConfidenceChart({ data, height = 200 }: Props) {
       <div className="mt-2 flex flex-wrap gap-3 text-xs text-text-secondary">
         {Object.entries(ACTION_LABEL).map(([tag, label]) => (
           <span key={tag} className="flex items-center gap-1">
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: ACTION_COLOR[tag] }}
-            />
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ACTION_COLOR[tag] }} />
             {label}
           </span>
         ))}

@@ -8,4 +8,3 @@ export function appPath(pathname: string): string {
   const normalizedBase = APP_BASE_URL.endsWith("/") ? APP_BASE_URL : `${APP_BASE_URL}/`;
   return `${normalizedBase}${pathname.replace(/^\//, "")}`;
 }
-
