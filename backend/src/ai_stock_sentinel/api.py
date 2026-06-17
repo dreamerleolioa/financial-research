@@ -879,6 +879,9 @@ app.include_router(history_router)
 
 app.include_router(daily_radar_router)
 
+from ai_stock_sentinel.watchlist.router import router as watchlist_router
+app.include_router(watchlist_router)
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
