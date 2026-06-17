@@ -602,10 +602,10 @@ export default function WatchlistPage() {
                   <textarea
                     value={noteDraft}
                     onChange={(event) => setNoteDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
-                    rows={2}
+                    rows={4}
                     placeholder="補充觀察條件"
                     disabled={itemBusy}
-                    className="min-h-16 w-full resize-y rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 disabled:opacity-60 dark:ring-indigo-500"
+                    className="min-h-32 w-full resize-y rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 disabled:opacity-60 dark:ring-indigo-500"
                   />
 
                   <div className="flex flex-wrap justify-end gap-2 md:flex-col md:items-stretch">
