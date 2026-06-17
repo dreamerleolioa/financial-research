@@ -5,6 +5,7 @@ from dataclasses import asdict
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai_stock_sentinel import api
@@ -60,6 +61,11 @@ def _fake_db():
     db.execute.return_value.scalar_one_or_none.return_value = None
     db.execute.return_value.scalar.return_value = 0
     return db
+
+
+@pytest.fixture(autouse=True)
+def _disable_external_symbol_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api, "_check_symbol_exists", lambda symbol: None)
 
 
 def _client_with_graph(graph) -> TestClient:

@@ -12,6 +12,7 @@ import {
   type DailyRadarCandidate,
   type DailyRadarBackgroundContextLabel,
   type DailyRadarDateMap,
+  type DailyRadarMatchedRule,
   type DailyRadarRepeatStatus,
   type DailyRadarRiskLabel,
   type DailyRadarRunResponse,
@@ -298,6 +299,160 @@ function backgroundLabelClass(label: DailyRadarBackgroundContextLabel): string {
   return "border-border-subtle bg-surface text-text-secondary";
 }
 
+function getBucketResearchThesis(bucket: DailyRadarBucket): string {
+  switch (bucket) {
+    case "institutional_accumulation":
+      return "法人籌碼延續候選，重點是確認買盤是否延續，且價格沒有過熱或籌碼分歧。";
+    case "price_volume_strengthening":
+      return "量價結構轉強候選，重點是確認突破或轉強後，成交量與收盤位置能否維持。";
+    case "bottoming_reversal":
+      return "低位修復候選，重點是確認低點不再破壞，技術與籌碼是否同步改善。";
+    case "support_retest":
+      return "支撐回測候選，重點是確認回測後支撐是否繼續有效。";
+  }
+}
+
+function getBucketInvalidationHint(bucket: DailyRadarBucket): string {
+  switch (bucket) {
+    case "institutional_accumulation":
+      return "若法人買盤中斷、收盤轉弱或融資同步升溫，這個觀察理由會減弱。";
+    case "price_volume_strengthening":
+      return "若轉強後跌回整理區、放量收弱或動能過熱，這個觀察理由會減弱。";
+    case "bottoming_reversal":
+      return "若再破近期低點、均線繼續下彎或量能無法配合，這個觀察理由會減弱。";
+    case "support_retest":
+      return "若跌破支撐、跌離 MA20/MA60，或回測後量能與 OBV 轉弱，這個觀察理由會減弱。";
+  }
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatMetric(value: unknown, digits = 2): string | null {
+  const numberValue = toFiniteNumber(value);
+  if (numberValue === null) return null;
+  return numberValue.toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: Number.isInteger(numberValue) ? 0 : Math.min(2, digits),
+  });
+}
+
+function getRuleNumber(rule: DailyRadarMatchedRule, key: string): string | null {
+  return formatMetric(rule.details[key]);
+}
+
+function getMatchedRuleSummary(rule: DailyRadarMatchedRule): string {
+  switch (rule.rule_id) {
+    case "support_retest_reclaimed_area": {
+      const close = getRuleNumber(rule, "close");
+      const support = getRuleNumber(rule, "support_level");
+      const previousClose = getRuleNumber(rule, "previous_close");
+      if (close && support && previousClose) return `收盤 ${close} 收復支撐 ${support}，前收 ${previousClose}。`;
+      return "收盤重新站回支撐區。";
+    }
+    case "support_retest_ma20_area": {
+      const close = getRuleNumber(rule, "close");
+      const ma20 = getRuleNumber(rule, "ma20");
+      if (close && ma20) return `收盤 ${close} 接近 MA20 ${ma20}。`;
+      return "收盤貼近 MA20。";
+    }
+    case "support_retest_ma60_area": {
+      const close = getRuleNumber(rule, "close");
+      const ma60 = getRuleNumber(rule, "ma60");
+      if (close && ma60) return `收盤 ${close} 接近 MA60 ${ma60}。`;
+      return "收盤貼近 MA60。";
+    }
+    case "support_retest_atr_contained": {
+      const atr14 = getRuleNumber(rule, "atr14");
+      if (atr14) return `ATR ${atr14}，回測波動仍在可控範圍。`;
+      return "ATR 顯示回測波動仍可控。";
+    }
+    case "support_retest_participation_stable":
+      return `OBV ${formatMatchedRuleValue(String(rule.details.obv_trend ?? "")) || "未再轉弱"}，量能參與未明顯惡化。`;
+    case "support_retest_margin_not_expanding": {
+      const marginDelta = getRuleNumber(rule, "margin_delta_pct");
+      if (marginDelta) return `融資變化率 ${marginDelta}，沒有同步擴張。`;
+      return "融資沒有同步擴張。";
+    }
+    case "support_retest_macd_stable":
+      return "MACD 柱狀體沒有明顯轉弱。";
+    default:
+      return rule.label;
+  }
+}
+
+function getCandidateReasonHighlights(candidate: DailyRadarCandidate): string[] {
+  const summaries = candidate.matched_rules.map(getMatchedRuleSummary);
+  return Array.from(new Set(summaries)).slice(0, 3);
+}
+
+function findRule(candidate: DailyRadarCandidate, ruleId: string): DailyRadarMatchedRule | undefined {
+  return candidate.matched_rules.find((rule) => rule.rule_id === ruleId);
+}
+
+function getCandidateWatchItems(candidate: DailyRadarCandidate): string[] {
+  if (candidate.primary_bucket === "support_retest") {
+    const reclaimedRule = findRule(candidate, "support_retest_reclaimed_area");
+    const ma20Rule = findRule(candidate, "support_retest_ma20_area");
+    const ma60Rule = findRule(candidate, "support_retest_ma60_area");
+    const support = reclaimedRule ? getRuleNumber(reclaimedRule, "support_level") : null;
+    const ma20 = ma20Rule ? getRuleNumber(ma20Rule, "ma20") : null;
+    const ma60 = ma60Rule ? getRuleNumber(ma60Rule, "ma60") : null;
+
+    return [
+      support ? `支撐 ${support} 是否守住。` : "回測支撐區是否守住。",
+      ma20 || ma60 ? `收盤是否維持在 ${[ma20 ? `MA20 ${ma20}` : null, ma60 ? `MA60 ${ma60}` : null].filter(Boolean).join("、")} 附近。` : "收盤是否維持在關鍵均線附近。",
+      "量能、OBV 與融資是否維持穩定，不要同步轉弱或升溫。",
+    ];
+  }
+
+  if (candidate.primary_bucket === "institutional_accumulation") {
+    return [
+      "法人買盤是否延續，尤其是主要買方是否連續承接。",
+      "價格是否維持在關鍵均線附近，不要出現買超但收弱。",
+      "融資是否避免同步快速擴張。",
+    ];
+  }
+
+  if (candidate.primary_bucket === "price_volume_strengthening") {
+    return [
+      "轉強後是否能守住突破區或整理區上緣。",
+      "成交量是否維持健康放大，不要爆量收弱。",
+      "短線過熱風險是否受控。",
+    ];
+  }
+
+  return [
+    "近期低點是否不再被跌破。",
+    "MACD、KD 或量能是否繼續改善。",
+    "反彈是否有法人或量價結構配合。",
+  ];
+}
+
+function getBackgroundContextUse(label: DailyRadarBackgroundContextLabel): string {
+  if (label.freshness === "missing") {
+    return "這次沒有可用資料，只保留資料缺口，不影響排序。";
+  }
+  if (label.freshness === "stale") {
+    return "可作為背景參考，但日期偏舊，不能當成最新訊號。";
+  }
+
+  switch (label.context_type) {
+    case "weekly_major_holders":
+      return "用來判斷持股集中度是否支撐籌碼穩定，屬於週頻背景。";
+    case "lending":
+      return "用來確認借券空方壓力是否擴大或降溫。";
+    case "full_margin":
+      return "用來確認融資是否同步擴張、券資是否出現擁擠。";
+    default:
+      return "用來補充背景脈絡與資料品質，不參與每日排序。";
+  }
+}
+
 function getCandidateDisplayName(candidate: DailyRadarCandidate): string | null {
   const name = candidate.name.trim();
   return name && name !== candidate.symbol ? name : null;
@@ -493,33 +648,26 @@ function BackgroundContextLabels({ labels }: { labels: DailyRadarBackgroundConte
     <section className="rounded-xl border border-border bg-card p-4">
       <h3 className="text-sm font-semibold text-text-primary">背景脈絡</h3>
       <p className="mt-1 text-xs leading-relaxed text-text-muted">
-        這些項目來自 shared background context cache，用於補充背景資料，不參與每日排序。
+        這些資料只用來補充研究背景與資料品質，不改變分類、分數或排序。
       </p>
       <div className="mt-3 grid gap-2">
         {labels.length > 0 ? (
           labels.map((label) => (
             <article key={`${label.context_type}:${label.replay_key}`} className={`rounded-lg border px-3 py-3 ${backgroundLabelClass(label)}`}>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-current">{formatBackgroundContextType(label.context_type)}</p>
+                  <p className="mt-1 text-xs opacity-75">{label.label}</p>
+                </div>
                 <span className="rounded-md bg-white/60 px-2 py-0.5 text-xs font-medium text-current dark:bg-white/10">
-                  {formatBackgroundContextType(label.context_type)}
+                  {formatBackgroundFreshness(label.freshness)}
                 </span>
-                <span className="text-xs font-medium text-current">{formatBackgroundFreshness(label.freshness)}</span>
               </div>
-              <p className="mt-2 text-sm font-semibold text-current">{label.label}</p>
-              <dl className="mt-2 grid gap-2 text-xs md:grid-cols-2">
-                <div>
-                  <dt className="font-medium opacity-70">資料日期</dt>
-                  <dd className="mt-0.5">{formatDate(label.as_of_date)}</dd>
-                </div>
-                <div>
-                  <dt className="font-medium opacity-70">缺資料原因</dt>
-                  <dd className="mt-0.5">{label.missing_reason || "—"}</dd>
-                </div>
-                <div className="md:col-span-2">
-                  <dt className="font-medium opacity-70">回放鍵</dt>
-                  <dd className="mt-0.5 break-all font-mono">{label.replay_key || "—"}</dd>
-                </div>
-              </dl>
+              <p className="mt-3 text-sm leading-relaxed text-current">{getBackgroundContextUse(label)}</p>
+              <p className="mt-2 text-xs opacity-70">
+                資料日期：{formatDate(label.as_of_date)}
+                {label.missing_reason ? `，缺資料原因：${label.missing_reason}` : ""}
+              </p>
             </article>
           ))
         ) : (
@@ -529,6 +677,140 @@ function BackgroundContextLabels({ labels }: { labels: DailyRadarBackgroundConte
         )}
       </div>
     </section>
+  );
+}
+
+function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }) {
+  const reasons = getCandidateReasonHighlights(candidate);
+  const watchItems = getCandidateWatchItems(candidate);
+
+  return (
+    <section className="rounded-xl border border-indigo-500/30 bg-indigo-50/60 p-4 shadow-sm dark:border-indigo-400/20 dark:bg-indigo-950/20">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
+          {REPEAT_STATUS_LABEL[candidate.repeat_status]}
+        </span>
+        <span className="rounded-md bg-white/70 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-white/10 dark:text-indigo-200">
+          {BUCKET_LABEL[candidate.primary_bucket]}候選
+        </span>
+      </div>
+      <h3 className="mt-3 text-base font-semibold text-text-primary">
+        {BUCKET_LABEL[candidate.primary_bucket]}候選，僅供觀察追蹤
+      </h3>
+      <p className="mt-2 text-sm leading-relaxed text-text-secondary">{getBucketResearchThesis(candidate.primary_bucket)}</p>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="rounded-lg border border-border-subtle bg-card/80 px-3 py-3">
+          <p className="text-xs font-semibold text-text-muted">本次入選原因</p>
+          {reasons.length > 0 ? (
+            <ul className="mt-2 space-y-2 text-sm leading-relaxed text-text-primary">
+              {reasons.map((reason) => (
+                <li key={reason} className="flex gap-2">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" aria-hidden="true" />
+                  <span>{reason}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-sm text-text-faint">尚未回傳可讀的入選原因。</p>
+          )}
+        </div>
+        <div className="rounded-lg border border-border-subtle bg-card/80 px-3 py-3">
+          <p className="text-xs font-semibold text-text-muted">隔日觀察點</p>
+          <ul className="mt-2 space-y-2 text-sm leading-relaxed text-text-primary">
+            {watchItems.map((item) => (
+              <li key={item} className="flex gap-2">
+                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-border-subtle bg-card/80 px-3 py-3">
+        <p className="text-xs font-semibold text-text-muted">失效條件</p>
+        <p className="mt-2 text-sm leading-relaxed text-text-secondary">{getBucketInvalidationHint(candidate.primary_bucket)}</p>
+      </div>
+    </section>
+  );
+}
+
+function TechnicalTraceDetails({ candidate, dataDateEntries }: { candidate: DailyRadarCandidate; dataDateEntries: [string, string][] }) {
+  return (
+    <details className="rounded-xl border border-border bg-card p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        技術細節 / Debug trace
+      </summary>
+      <div className="mt-4 space-y-5">
+        {candidate.explanation && (
+          <section>
+            <h4 className="text-sm font-semibold text-text-primary">原始後端說明</h4>
+            <p className="mt-2 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm leading-relaxed text-text-secondary">
+              {candidate.explanation}
+            </p>
+          </section>
+        )}
+
+        <section>
+          <h4 className="text-sm font-semibold text-text-primary">分類分數</h4>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {DAILY_RADAR_BUCKETS.map((bucket) => (
+              <div key={bucket} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+                <p className="text-xs font-medium text-text-muted">{BUCKET_LABEL[bucket]}</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-text-primary">
+                  {candidate.bucket_scores[bucket] === undefined ? "—" : candidate.bucket_scores[bucket]?.toFixed(0)}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <h4 className="text-sm font-semibold text-text-primary">命中的觀察規則</h4>
+          <div className="mt-3 space-y-3">
+            {candidate.matched_rules.length > 0 ? (
+              candidate.matched_rules.map((rule) => (
+                <article key={rule.rule_id} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-text-primary">{rule.label}</p>
+                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">規則代碼：{rule.rule_id}</span>
+                  </div>
+                  <div className="mt-3">
+                    <TraceValueList payload={rule.details} emptyText="此規則未附加細節。" formatKey={formatMatchedRuleDetailKey} formatValue={formatMatchedRuleValue} />
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">尚未回傳命中的觀察規則。</p>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <h4 className="text-sm font-semibold text-text-primary">資料日期</h4>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {dataDateEntries.length > 0 ? (
+              dataDateEntries.map(([source, date]) => (
+                <div key={source} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+                  <p className="text-xs font-medium text-text-muted">{formatDataSourceLabel(source)}</p>
+                  <p className="mt-1 text-sm font-semibold text-text-primary">{formatDate(date)}</p>
+                </div>
+              ))
+            ) : (
+              <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint md:col-span-2">尚未回傳候選資料日期。</p>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <h4 className="text-sm font-semibold text-text-primary">輸入快照摘要</h4>
+          <div className="mt-3">
+            <TraceValueList payload={candidate.input_snapshot} emptyText="尚未回傳輸入快照。" />
+          </div>
+        </section>
+      </div>
+    </details>
   );
 }
 
@@ -595,6 +877,9 @@ function DailyRadarCandidateList({
                         </span>
                       )}
                     </div>
+                    <p className="mt-2 max-w-2xl text-sm leading-relaxed text-text-muted">
+                      {getBucketResearchThesis(candidate.primary_bucket)}
+                    </p>
                   </div>
                 </div>
               </button>
@@ -704,29 +989,20 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
         </div>
 
         <div className="space-y-5 px-5 py-5">
-          <section className="grid gap-3">
-            <div className="rounded-xl border border-border bg-surface p-4">
-              <p className="text-xs font-medium text-text-muted">主要分類</p>
-              <p className="mt-2 text-sm font-semibold text-text-primary">{BUCKET_LABEL[candidate.primary_bucket]}</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {candidate.secondary_buckets.length > 0 ? (
-                  candidate.secondary_buckets.map((bucket) => (
-                    <span key={bucket} className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text">
-                      {BUCKET_LABEL[bucket]}
-                    </span>
-                  ))
-                ) : (
-                  <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">無次要分類</span>
-                )}
-              </div>
-            </div>
-          </section>
+          <CandidateResearchCard candidate={candidate} />
 
           <section className="rounded-xl border border-border bg-card p-4">
-            <div className="flex flex-wrap gap-2">
-              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
-                {REPEAT_STATUS_LABEL[candidate.repeat_status]}
-              </span>
+            <h3 className="text-sm font-semibold text-text-primary">觀察狀態</h3>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {candidate.secondary_buckets.length > 0 ? (
+                candidate.secondary_buckets.map((bucket) => (
+                  <span key={bucket} className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text">
+                    次要分類：{BUCKET_LABEL[bucket]}
+                  </span>
+                ))
+              ) : (
+                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">無次要分類</span>
+              )}
               {candidate.risk_labels.length > 0 ? (
                 candidate.risk_labels.map((risk) => (
                   <span key={risk} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
@@ -734,74 +1010,14 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
                   </span>
                 ))
               ) : (
-                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">風險標籤待觀察</span>
+                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">未觸發明確風險標籤</span>
               )}
-            </div>
-            <div className="mt-4 rounded-lg border border-border-subtle bg-surface px-3 py-3">
-              <p className="text-xs font-medium text-text-muted">隔日觀察重點</p>
-              <p className="mt-2 text-sm leading-relaxed text-text-secondary">{candidate.explanation || "尚未回傳觀察說明。"}</p>
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">分類分數</h3>
-            <div className="mt-3 grid gap-2 md:grid-cols-2">
-              {DAILY_RADAR_BUCKETS.map((bucket) => (
-                <div key={bucket} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
-                  <p className="text-xs font-medium text-text-muted">{BUCKET_LABEL[bucket]}</p>
-                  <p className="mt-1 font-mono text-lg font-semibold text-text-primary">
-                    {candidate.bucket_scores[bucket] === undefined ? "—" : candidate.bucket_scores[bucket]?.toFixed(0)}
-                  </p>
-                </div>
-              ))}
             </div>
           </section>
 
           <BackgroundContextLabels labels={candidate.background_context_labels} />
 
-          <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">命中的觀察規則</h3>
-            <div className="mt-3 space-y-3">
-              {candidate.matched_rules.length > 0 ? (
-                candidate.matched_rules.map((rule) => (
-                  <article key={rule.rule_id} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-semibold text-text-primary">{rule.label}</p>
-                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">規則代碼：{rule.rule_id}</span>
-                    </div>
-                    <div className="mt-3">
-                      <TraceValueList payload={rule.details} emptyText="此規則未附加細節。" formatKey={formatMatchedRuleDetailKey} formatValue={formatMatchedRuleValue} />
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">尚未回傳命中的觀察規則。</p>
-              )}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">資料日期</h3>
-            <div className="mt-3 grid gap-2 md:grid-cols-2">
-              {dataDateEntries.length > 0 ? (
-                dataDateEntries.map(([source, date]) => (
-                  <div key={source} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
-                    <p className="text-xs font-medium text-text-muted">{formatDataSourceLabel(source)}</p>
-                    <p className="mt-1 text-sm font-semibold text-text-primary">{formatDate(date)}</p>
-                  </div>
-                ))
-              ) : (
-                <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint md:col-span-2">尚未回傳候選資料日期。</p>
-              )}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">輸入快照摘要</h3>
-            <div className="mt-3">
-              <TraceValueList payload={candidate.input_snapshot} emptyText="尚未回傳輸入快照。" />
-            </div>
-          </section>
+          <TechnicalTraceDetails candidate={candidate} dataDateEntries={dataDateEntries} />
 
         </div>
       </aside>
