@@ -11,6 +11,7 @@ import AnalyzePage from "./pages/AnalyzePage.tsx";
 import ClosedPortfolioPage from "./pages/ClosedPortfolioPage.tsx";
 import PortfolioPage from "./pages/PortfolioPage.tsx";
 import DailyRadarPage from "./pages/DailyRadarPage.tsx";
+import WatchlistPage from "./pages/WatchlistPage.tsx";
 import { AuthProvider, useAuth } from "./stores/auth.tsx";
 import { APP_BASE_URL, GOOGLE_CLIENT_ID } from "./lib/config.ts";
 
@@ -48,6 +49,7 @@ createRoot(document.getElementById("root")!).render(
               >
                 <Route index element={<Navigate to="/analyze" replace />} />
                 <Route path="/analyze" element={<AnalyzePage />} />
+                <Route path="/watchlist" element={<WatchlistPage />} />
                 <Route path="/portfolio" element={<PortfolioPage onNavigateAnalyze={() => { }} />} />
                 <Route path="/portfolio/closed" element={<ClosedPortfolioPage />} />
                 <Route path="/daily-radar" element={<DailyRadarPage />} />
