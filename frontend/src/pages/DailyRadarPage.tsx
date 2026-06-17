@@ -695,7 +695,7 @@ function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }
         </span>
       </div>
       <h3 className="mt-3 text-base font-semibold text-text-primary">
-        {BUCKET_LABEL[candidate.primary_bucket]}候選，不是買進訊號
+        {BUCKET_LABEL[candidate.primary_bucket]}候選，僅供觀察追蹤
       </h3>
       <p className="mt-2 text-sm leading-relaxed text-text-secondary">{getBucketResearchThesis(candidate.primary_bucket)}</p>
 
