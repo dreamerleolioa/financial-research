@@ -60,6 +60,7 @@ def test_create_and_list_watchlist_item(
     assert created.status_code == 201
     assert created.json()["symbol"] == "2330.TW"
     assert created.json()["name"] == "台積電"
+    assert created.json()["sort_order"] == 0
 
     listed = watchlist_client.get("/watchlist")
     assert listed.status_code == 200
@@ -90,14 +91,76 @@ def test_create_watchlist_item_is_idempotent_and_updates_notes(
     assert len(rows) == 1
 
 
+def test_new_watchlist_items_append_and_can_be_reordered(
+    watchlist_client: TestClient,
+    watchlist_db_session: Session,
+):
+    watchlist_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    watchlist_db_session.commit()
+
+    first = watchlist_client.post("/watchlist", json={"symbol": "2330.TW"})
+    second = watchlist_client.post("/watchlist", json={"symbol": "2454.TW"})
+    third = watchlist_client.post("/watchlist", json={"symbol": "2317.TW"})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert third.status_code == 201
+    assert [row["symbol"] for row in watchlist_client.get("/watchlist").json()] == [
+        "2330.TW",
+        "2454.TW",
+        "2317.TW",
+    ]
+
+    reordered = watchlist_client.put(
+        "/watchlist/reorder",
+        json={
+            "item_ids": [
+                third.json()["id"],
+                first.json()["id"],
+                second.json()["id"],
+            ],
+        },
+    )
+
+    assert reordered.status_code == 200
+    assert [row["symbol"] for row in reordered.json()] == ["2317.TW", "2330.TW", "2454.TW"]
+    assert [row["sort_order"] for row in reordered.json()] == [0, 1, 2]
+    assert [row["symbol"] for row in watchlist_client.get("/watchlist").json()] == [
+        "2317.TW",
+        "2330.TW",
+        "2454.TW",
+    ]
+
+
+def test_reorder_watchlist_requires_exact_current_user_items(
+    watchlist_client: TestClient,
+    watchlist_db_session: Session,
+):
+    watchlist_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    watchlist_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
+    watchlist_db_session.add(UserWatchlist(id=1, user_id=1, symbol="2330.TW", notes=None, sort_order=0))
+    watchlist_db_session.add(UserWatchlist(id=2, user_id=1, symbol="2317.TW", notes=None, sort_order=1))
+    watchlist_db_session.add(UserWatchlist(id=3, user_id=2, symbol="2454.TW", notes=None, sort_order=0))
+    watchlist_db_session.commit()
+
+    missing_item = watchlist_client.put("/watchlist/reorder", json={"item_ids": [1]})
+    duplicate_item = watchlist_client.put("/watchlist/reorder", json={"item_ids": [1, 1]})
+    foreign_item = watchlist_client.put("/watchlist/reorder", json={"item_ids": [1, 3]})
+
+    assert missing_item.status_code == 400
+    assert duplicate_item.status_code == 400
+    assert foreign_item.status_code == 400
+    assert [row["symbol"] for row in watchlist_client.get("/watchlist").json()] == ["2330.TW", "2317.TW"]
+
+
 def test_watchlist_items_are_user_scoped(
     watchlist_client: TestClient,
     watchlist_db_session: Session,
 ):
     watchlist_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     watchlist_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
-    watchlist_db_session.add(UserWatchlist(id=1, user_id=1, symbol="2330.TW", notes=None))
-    watchlist_db_session.add(UserWatchlist(id=2, user_id=2, symbol="2454.TW", notes=None))
+    watchlist_db_session.add(UserWatchlist(id=1, user_id=1, symbol="2330.TW", notes=None, sort_order=0))
+    watchlist_db_session.add(UserWatchlist(id=2, user_id=2, symbol="2454.TW", notes=None, sort_order=0))
     watchlist_db_session.commit()
 
     listed = watchlist_client.get("/watchlist")

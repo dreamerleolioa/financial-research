@@ -158,16 +158,22 @@ const LIFECYCLE_TIER_LABEL: Record<string, string> = {
 };
 
 const LIFECYCLE_TIER_CLASS: Record<string, string> = {
-  needs_review: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  insufficient_context: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  constructive: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  needs_review:
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  insufficient_context:
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  constructive:
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
   mixed: "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
 };
 
 const LIFECYCLE_PROVENANCE_CLASS: Record<string, string> = {
-  "real events": "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
-  "synthetic events": "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
-  "mixed provenance": "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  "real events":
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  "synthetic events":
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
+  "mixed provenance":
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
 };
 
 const CONFIDENCE_LABEL: Record<string, string> = {
@@ -263,11 +269,14 @@ const POSITION_EVENT_TYPE_LABEL: Record<PositionEvent["event_type"], string> = {
 };
 
 const POSITION_EVENT_TYPE_CLASS: Record<PositionEvent["event_type"], string> = {
-  initial_entry: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  initial_entry:
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
   add_entry: "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
-  partial_exit: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300",
+  partial_exit:
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300",
   full_exit: "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300",
-  manual_adjustment: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
+  manual_adjustment:
+    "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
 };
 
 const POSITION_EVENT_SOURCE_LABEL: Record<PositionEvent["source"], string> = {
@@ -432,7 +441,8 @@ function getSignedPercentText(value: number | null | undefined): string {
 
 function formatPlainValue(value: unknown): string {
   if (value == null) return "—";
-  if (typeof value === "number") return Number.isFinite(value) ? new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 4 }).format(value) : "—";
+  if (typeof value === "number")
+    return Number.isFinite(value) ? new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 4 }).format(value) : "—";
   if (typeof value === "string") return value;
   if (typeof value === "boolean") return value ? "是" : "否";
   return JSON.stringify(value, null, 2);
@@ -508,19 +518,27 @@ function formatPositionEventSourceHelper(value: string | null | undefined): stri
 }
 
 function getPositionEventTypeClass(value: string | null | undefined): string {
-  return value ? (POSITION_EVENT_TYPE_CLASS as Record<string, string>)[value] ?? POSITION_EVENT_TYPE_CLASS.manual_adjustment : POSITION_EVENT_TYPE_CLASS.manual_adjustment;
+  return value
+    ? ((POSITION_EVENT_TYPE_CLASS as Record<string, string>)[value] ?? POSITION_EVENT_TYPE_CLASS.manual_adjustment)
+    : POSITION_EVENT_TYPE_CLASS.manual_adjustment;
 }
 
 function getLifecycleTierClass(value: string | null | undefined): string {
-  return value ? LIFECYCLE_TIER_CLASS[value] ?? "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text" : "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text";
+  return value
+    ? (LIFECYCLE_TIER_CLASS[value] ?? "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text")
+    : "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text";
 }
 
-function getLifecycleProvenance(events: PositionLifecycleEventFact[]): "real events" | "synthetic events" | "mixed provenance" {
+function getLifecycleProvenance(
+  events: PositionLifecycleEventFact[],
+): "real events" | "synthetic events" | "mixed provenance" {
   if (events.length === 0) return "mixed provenance";
   const sources = events.map((event) => event.source);
   const hasSynthetic = sources.some((source) => source === "synthetic_from_portfolio_row");
   const hasUncertain = sources.some((source) => !source || source === "not_recorded");
-  const hasReal = sources.some((source) => source && source !== "synthetic_from_portfolio_row" && source !== "not_recorded");
+  const hasReal = sources.some(
+    (source) => source && source !== "synthetic_from_portfolio_row" && source !== "not_recorded",
+  );
   if (hasSynthetic && !hasReal && !hasUncertain) return "synthetic events";
   if (hasReal && !hasSynthetic && !hasUncertain) return "real events";
   return "mixed provenance";
@@ -537,7 +555,10 @@ function hasBackfilledLifecyclePlanCaveat(review: PositionLifecycleReviewRespons
   return decisionContext?.source === "user_backfilled" || decisionContext?.created_after_entry === true;
 }
 
-function getLifecycleEvidenceForEvent(items: LifecycleTextItem[] | undefined, event: PositionLifecycleEventFact): LifecycleTextItem[] {
+function getLifecycleEvidenceForEvent(
+  items: LifecycleTextItem[] | undefined,
+  event: PositionLifecycleEventFact,
+): LifecycleTextItem[] {
   if (!items || !event.event_key) return [];
   const factRef = `event_facts.${event.event_key}`;
   const snapshotRef = `event_indicator_snapshots.${event.event_key}`;
@@ -550,9 +571,10 @@ function getInitialEntryEventFact(events: PositionLifecycleEventFact[]): Positio
 
 function hasLifecyclePlanRelationSourceRefs(item: LifecycleTextItem): boolean {
   return item.source_refs.some(
-    (sourceRef) => sourceRef.startsWith("event_facts.")
-      || sourceRef.startsWith("event_indicator_snapshots.")
-      || sourceRef.startsWith("decision_context"),
+    (sourceRef) =>
+      sourceRef.startsWith("event_facts.") ||
+      sourceRef.startsWith("event_indicator_snapshots.") ||
+      sourceRef.startsWith("decision_context"),
   );
 }
 
@@ -614,7 +636,9 @@ function isNotRecorded(value: string | null): boolean {
 }
 
 function hasInsufficientDecisionContext(event: PositionEvent): boolean {
-  return isNotRecorded(event.plan_adherence) || isNotRecorded(event.reason_code) || isNotRecorded(event.confidence_level);
+  return (
+    isNotRecorded(event.plan_adherence) || isNotRecorded(event.reason_code) || isNotRecorded(event.confidence_level)
+  );
 }
 
 function TimelineMetric({ label, value }: { label: string; value: string }) {
@@ -701,7 +725,10 @@ function ReviewSignalList({ label, values }: { label: string; values: string[] |
       <p className="text-xs font-medium text-text-muted">{label}</p>
       <ul className="mt-1 space-y-1">
         {values.map((value, index) => (
-          <li key={`${label}-${index}`} className="rounded-md bg-badge-neutral-bg px-2 py-1 text-xs leading-relaxed text-badge-neutral-text">
+          <li
+            key={`${label}-${index}`}
+            className="rounded-md bg-badge-neutral-bg px-2 py-1 text-xs leading-relaxed text-badge-neutral-text"
+          >
             {value}
           </li>
         ))}
@@ -719,11 +746,17 @@ function DetectedEventsList({ events }: { events: Record<string, unknown>[] | un
         {events.map((event, index) => {
           const date = typeof event.date === "string" ? event.date : null;
           const type = typeof event.type === "string" ? event.type : "event";
-          const description = typeof event.summary === "string"
-            ? event.summary
-            : typeof event.description === "string" ? event.description : null;
+          const description =
+            typeof event.summary === "string"
+              ? event.summary
+              : typeof event.description === "string"
+                ? event.description
+                : null;
           return (
-            <div key={`${type}-${date ?? index}`} className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-text-secondary">
+            <div
+              key={`${type}-${date ?? index}`}
+              className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-text-secondary"
+            >
               <div className="flex flex-wrap items-center gap-2">
                 {date && <span className="font-mono text-text-faint">{date}</span>}
                 <span className="font-medium text-text-primary">{formatDetectedEventTypeLabel(type)}</span>
@@ -737,7 +770,13 @@ function DetectedEventsList({ events }: { events: Record<string, unknown>[] | un
   );
 }
 
-function ReviewSectionCard({ title, section }: { title: string; section: TradeReviewSection | TradeReviewHoldingSection | undefined }) {
+function ReviewSectionCard({
+  title,
+  section,
+}: {
+  title: string;
+  section: TradeReviewSection | TradeReviewHoldingSection | undefined;
+}) {
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -782,7 +821,11 @@ function DataQualitySection({ dataQuality }: { dataQuality: TradeReviewDataQuali
     <article className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm dark:border-amber-800 dark:bg-amber-950">
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">資料品質提示</h3>
-        {dataQuality.status && <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">{formatDataQualityStatusLabel(dataQuality.status)}</span>}
+        {dataQuality.status && (
+          <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+            {formatDataQualityStatusLabel(dataQuality.status)}
+          </span>
+        )}
       </div>
       {notes.length > 0 && <ReviewSignalList label="提示" values={notes} />}
       {insufficientData.length > 0 && <ReviewSignalList label="資料不足欄位" values={insufficientData} />}
@@ -791,11 +834,7 @@ function DataQualitySection({ dataQuality }: { dataQuality: TradeReviewDataQuali
 }
 
 function LifecycleSourceRefs({ sourceRefs }: { sourceRefs: string[] | undefined }) {
-  return (
-    <p className="mt-1 text-xs text-text-faint">
-      來源：{formatSourceRefs(sourceRefs)}
-    </p>
-  );
+  return <p className="mt-1 text-xs text-text-faint">來源：{formatSourceRefs(sourceRefs)}</p>;
 }
 
 function LifecycleTextItemBlock({ item }: { item: LifecycleTextItem }) {
@@ -807,14 +846,24 @@ function LifecycleTextItemBlock({ item }: { item: LifecycleTextItem }) {
   );
 }
 
-function LifecycleTextItemList({ label, items, emptyText }: { label: string; items: LifecycleTextItem[] | undefined; emptyText?: string }) {
+function LifecycleTextItemList({
+  label,
+  items,
+  emptyText,
+}: {
+  label: string;
+  items: LifecycleTextItem[] | undefined;
+  emptyText?: string;
+}) {
   const values = items ?? [];
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <h3 className="text-sm font-semibold text-text-primary">{label}</h3>
       {values.length > 0 ? (
         <div className="mt-3 space-y-2">
-          {values.map((item, index) => <LifecycleTextItemBlock key={`${label}-${index}`} item={item} />)}
+          {values.map((item, index) => (
+            <LifecycleTextItemBlock key={`${label}-${index}`} item={item} />
+          ))}
         </div>
       ) : (
         <p className="mt-2 text-sm text-text-faint">{emptyText ?? "尚無資料。"}</p>
@@ -823,7 +872,15 @@ function LifecycleTextItemList({ label, items, emptyText }: { label: string; ite
   );
 }
 
-function LifecyclePlanFactCard({ label, value, sourceRefs }: { label: string; value: string; sourceRefs: string[] | undefined }) {
+function LifecyclePlanFactCard({
+  label,
+  value,
+  sourceRefs,
+}: {
+  label: string;
+  value: string;
+  sourceRefs: string[] | undefined;
+}) {
   return (
     <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
       <p className="text-xs text-text-faint">{label}</p>
@@ -858,10 +915,13 @@ function LifecyclePlanReviewRelationSection({ review }: { review: PositionLifecy
         <div>
           <h3 className="text-sm font-semibold text-text-primary">原始計畫與檢討關聯</h3>
           <p className="mt-1 text-xs leading-relaxed text-text-muted">
-            只呈現已保存的初始進場事件與 decision_context 固定欄位，並列出引用事件、指標快照或 plan 欄位的 lifecycle 結論片段。
+            只呈現已保存的初始進場事件與 decision_context 固定欄位，並列出引用事件、指標快照或 plan 欄位的 lifecycle
+            結論片段。
           </p>
         </div>
-        <span className="w-fit rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">lifecycle-only</span>
+        <span className="w-fit rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+          lifecycle-only
+        </span>
       </div>
 
       <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
@@ -905,7 +965,9 @@ function LifecyclePlanReviewRelationSection({ review }: { review: PositionLifecy
           {relationGroups.map((group) => (
             <div key={group.label} className="space-y-2">
               <p className="text-xs font-medium text-text-muted">{group.label}</p>
-              {group.items.map((item, index) => <LifecycleTextItemBlock key={`${group.label}-${index}`} item={item} />)}
+              {group.items.map((item, index) => (
+                <LifecycleTextItemBlock key={`${group.label}-${index}`} item={item} />
+              ))}
             </div>
           ))}
         </div>
@@ -918,7 +980,13 @@ function LifecyclePlanReviewRelationSection({ review }: { review: PositionLifecy
   );
 }
 
-function LifecycleDataQualitySection({ dataQuality, notes }: { dataQuality: PositionLifecycleDataQuality | undefined; notes: LifecycleTextItem[] | undefined }) {
+function LifecycleDataQualitySection({
+  dataQuality,
+  notes,
+}: {
+  dataQuality: PositionLifecycleDataQuality | undefined;
+  notes: LifecycleTextItem[] | undefined;
+}) {
   const noteTexts = getStringArray(dataQuality?.notes);
   const insufficientData = getStringArray(dataQuality?.insufficient_data).map(formatInsufficientDataLabel);
   const lifecycleNotes = notes ?? [];
@@ -935,7 +1003,9 @@ function LifecycleDataQualitySection({ dataQuality, notes }: { dataQuality: Posi
         )}
       </div>
       <div className="space-y-3">
-        {lifecycleNotes.map((item, index) => <LifecycleTextItemBlock key={`data-quality-${index}`} item={item} />)}
+        {lifecycleNotes.map((item, index) => (
+          <LifecycleTextItemBlock key={`data-quality-${index}`} item={item} />
+        ))}
         {noteTexts.length > 0 && <ReviewSignalList label="資料品質提示" values={noteTexts} />}
         {insufficientData.length > 0 && <ReviewSignalList label="資料不足欄位" values={insufficientData} />}
       </div>
@@ -954,10 +1024,16 @@ function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewRe
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-text-primary">整體結果</h3>
-          <p className="mt-1 text-xs text-text-muted">這是整個 position group 的多次進出生命週期檢討，不是單筆結案批次檢討。</p>
+          <p className="mt-1 text-xs text-text-muted">
+            這是整個 position group 的多次進出生命週期檢討，不是單筆結案批次檢討。
+          </p>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {tier && <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getLifecycleTierClass(tier)}`}>{formatLifecycleTierLabel(tier)}</span>}
+          {tier && (
+            <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getLifecycleTierClass(tier)}`}>
+              {formatLifecycleTierLabel(tier)}
+            </span>
+          )}
           {classification?.primary_label && (
             <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
               {formatLifecycleClassificationLabel(classification.primary_label)}
@@ -1001,7 +1077,15 @@ function LifecyclePerspectiveCard({ title, children }: { title: string; children
   );
 }
 
-function LifecyclePerspectives({ metrics, entrySequence, exitSequence }: { metrics: PositionLifecycleMetrics | undefined; entrySequence: PositionLifecycleEntrySequence | undefined; exitSequence: PositionLifecycleExitSequence | undefined }) {
+function LifecyclePerspectives({
+  metrics,
+  entrySequence,
+  exitSequence,
+}: {
+  metrics: PositionLifecycleMetrics | undefined;
+  entrySequence: PositionLifecycleEntrySequence | undefined;
+  exitSequence: PositionLifecycleExitSequence | undefined;
+}) {
   return (
     <div className="grid gap-3 lg:grid-cols-2">
       <LifecyclePerspectiveCard title="進場視角">
@@ -1011,8 +1095,18 @@ function LifecyclePerspectives({ metrics, entrySequence, exitSequence }: { metri
         <ReviewMetric label="首筆相對 MA20" value={getSignedPercentText(entrySequence?.initial_entry_vs_ma20_pct)} />
       </LifecyclePerspectiveCard>
       <LifecyclePerspectiveCard title="持有視角">
-        <ReviewMetric label="持有天數" value={metrics?.total_holding_days_from_first_entry == null ? "—" : `${metrics.total_holding_days_from_first_entry} 天`} />
-        <ReviewMetric label="曝險天數" value={metrics?.active_exposure_days == null ? "—" : `${metrics.active_exposure_days} 天`} />
+        <ReviewMetric
+          label="持有天數"
+          value={
+            metrics?.total_holding_days_from_first_entry == null
+              ? "—"
+              : `${metrics.total_holding_days_from_first_entry} 天`
+          }
+        />
+        <ReviewMetric
+          label="曝險天數"
+          value={metrics?.active_exposure_days == null ? "—" : `${metrics.active_exposure_days} 天`}
+        />
         <ReviewMetric label="最高浮盈" value={getSignedPercentText(metrics?.max_unrealized_profit_pct)} />
         <ReviewMetric label="最大回撤" value={getSignedPercentText(metrics?.max_unrealized_drawdown_pct)} />
       </LifecyclePerspectiveCard>
@@ -1025,41 +1119,72 @@ function LifecyclePerspectives({ metrics, entrySequence, exitSequence }: { metri
       <LifecyclePerspectiveCard title="結案與風險處理視角">
         <ReviewMetric label="結案次數" value={formatPlainValue(exitSequence?.exit_count)} />
         <ReviewMetric label="部分結案" value={formatPlainValue(exitSequence?.partial_exit_count)} />
-        <ReviewMetric label="破位後降低曝險比例" value={getSignedPercentText(exitSequence?.percentage_sold_after_breakdown)} />
+        <ReviewMetric
+          label="破位後降低曝險比例"
+          value={getSignedPercentText(exitSequence?.percentage_sold_after_breakdown)}
+        />
         <ReviewMetric label="保護獲利" value={getSignedPriceText(exitSequence?.profit_protected_by_partial_exits)} />
       </LifecyclePerspectiveCard>
     </div>
   );
 }
 
-function LifecycleEventTimeline({ events, snapshots, evidenceItems, symbol }: { events: PositionLifecycleEventFact[]; snapshots: PositionLifecycleEventIndicatorSnapshot[]; evidenceItems: LifecycleTextItem[] | undefined; symbol: string }) {
+function LifecycleEventTimeline({
+  events,
+  snapshots,
+  evidenceItems,
+  symbol,
+}: {
+  events: PositionLifecycleEventFact[];
+  snapshots: PositionLifecycleEventIndicatorSnapshot[];
+  evidenceItems: LifecycleTextItem[] | undefined;
+  symbol: string;
+}) {
   const snapshotByKey = new Map(snapshots.map((snapshot) => [snapshot.event_key, snapshot]));
   if (events.length === 0) {
-    return <div className="rounded-xl border border-border bg-surface px-4 py-8 text-center text-sm text-text-faint">此部位尚無生命週期事件事實。</div>;
+    return (
+      <div className="rounded-xl border border-border bg-surface px-4 py-8 text-center text-sm text-text-faint">
+        此部位尚無生命週期事件事實。
+      </div>
+    );
   }
 
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <h3 className="text-sm font-semibold text-text-primary">時間線與事件證據</h3>
-      <p className="mt-1 text-xs text-text-muted">事件以 ledger 事實呈現，費用與交易稅只作為已保存事實，不要求手動補稅。</p>
+      <p className="mt-1 text-xs text-text-muted">
+        事件以 ledger 事實呈現，費用與交易稅只作為已保存事實，不要求手動補稅。
+      </p>
       <div className="mt-3 space-y-3 border-l border-border-subtle pl-3 sm:pl-4">
         {events.map((event, index) => {
           const snapshot = snapshotByKey.get(event.event_key);
           const provenance = getLifecycleProvenance([event]);
           const eventEvidence = getLifecycleEvidenceForEvent(evidenceItems, event);
           return (
-            <section key={event.event_key ?? `${event.event_date}-${index}`} className="rounded-xl border border-border bg-surface p-4 shadow-sm">
+            <section
+              key={event.event_key ?? `${event.event_date}-${index}`}
+              className="rounded-xl border border-border bg-surface p-4 shadow-sm"
+            >
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getPositionEventTypeClass(event.event_type)}`}>
+                    <span
+                      className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getPositionEventTypeClass(event.event_type)}`}
+                    >
                       {formatPositionEventTypeLabel(event.event_type)}
                     </span>
-                    <span className="font-mono text-sm font-semibold text-text-primary">{event.event_date ?? "日期未記錄"}</span>
-                    <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}>{provenance}</span>
+                    <span className="font-mono text-sm font-semibold text-text-primary">
+                      {event.event_date ?? "日期未記錄"}
+                    </span>
+                    <span
+                      className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}
+                    >
+                      {provenance}
+                    </span>
                   </div>
                   <p className="mt-2 text-xs leading-relaxed text-text-muted">
-                    來源：{formatPositionEventSourceLabel(event.source)}。{formatPositionEventSourceHelper(event.source)}
+                    來源：{formatPositionEventSourceLabel(event.source)}。
+                    {formatPositionEventSourceHelper(event.source)}
                   </p>
                 </div>
                 <div className="rounded-lg border border-border-subtle bg-card px-3 py-2 text-left md:text-right">
@@ -1078,15 +1203,21 @@ function LifecycleEventTimeline({ events, snapshots, evidenceItems, symbol }: { 
               <div className="mt-3 grid gap-2 md:grid-cols-3">
                 <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                   <p className="text-xs text-text-faint">原因代碼</p>
-                  <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelineReasonCode(event.reason_code ?? null)}</p>
+                  <p className="mt-1 text-sm font-medium text-text-primary">
+                    {formatTimelineReasonCode(event.reason_code ?? null)}
+                  </p>
                 </div>
                 <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                   <p className="text-xs text-text-faint">計畫遵循</p>
-                  <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelinePlanAdherence(event.plan_adherence ?? null)}</p>
+                  <p className="mt-1 text-sm font-medium text-text-primary">
+                    {formatTimelinePlanAdherence(event.plan_adherence ?? null)}
+                  </p>
                 </div>
                 <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                   <p className="text-xs text-text-faint">信心水準</p>
-                  <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelineConfidence(event.confidence_level ?? null)}</p>
+                  <p className="mt-1 text-sm font-medium text-text-primary">
+                    {formatTimelineConfidence(event.confidence_level ?? null)}
+                  </p>
                 </div>
               </div>
 
@@ -1117,7 +1248,9 @@ function LifecycleEventTimeline({ events, snapshots, evidenceItems, symbol }: { 
               {eventEvidence.length > 0 && (
                 <div className="mt-3 space-y-2">
                   <p className="text-xs font-medium text-text-muted">事件層級證據片段</p>
-                  {eventEvidence.map((item, evidenceIndex) => <LifecycleTextItemBlock key={`${event.event_key}-evidence-${evidenceIndex}`} item={item} />)}
+                  {eventEvidence.map((item, evidenceIndex) => (
+                    <LifecycleTextItemBlock key={`${event.event_key}-evidence-${evidenceIndex}`} item={item} />
+                  ))}
                 </div>
               )}
             </section>
@@ -1163,7 +1296,8 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 檢討分析</p>
             <p className="mt-1 text-xs text-text-faint">
-              {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜ {getSignedPriceText(item.realized_pnl, item.symbol)}
+              {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜{" "}
+              {getSignedPriceText(item.realized_pnl, item.symbol)}
             </p>
           </div>
           <button
@@ -1172,8 +1306,18 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
             aria-label="關閉檢討分析"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -1215,7 +1359,9 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
               <ReviewSectionCard title="持有期間檢討" section={result.holding_review} />
               <ReviewSectionCard title="結案與風險處理檢討" section={result.exit_review} />
               <ReviewSectionCard title="整體執行紀律檢討" section={result.operation_review} />
-              {hasDataQualityPrompt(result.data_quality) && result.data_quality && <DataQualitySection dataQuality={result.data_quality} />}
+              {hasDataQualityPrompt(result.data_quality) && result.data_quality && (
+                <DataQualitySection dataQuality={result.data_quality} />
+              )}
             </>
           )}
         </div>
@@ -1266,8 +1412,18 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
             aria-label="關閉事件時間線"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -1316,49 +1472,70 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${POSITION_EVENT_TYPE_CLASS[timelineEvent.event_type]}`}>
+                          <span
+                            className={`rounded-md border px-2 py-0.5 text-xs font-medium ${POSITION_EVENT_TYPE_CLASS[timelineEvent.event_type]}`}
+                          >
                             {POSITION_EVENT_TYPE_LABEL[timelineEvent.event_type]}
                           </span>
-                          <span className="font-mono text-sm font-semibold text-text-primary">{timelineEvent.event_date}</span>
+                          <span className="font-mono text-sm font-semibold text-text-primary">
+                            {timelineEvent.event_date}
+                          </span>
                           <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
                             Event #{timelineEvent.id}
                           </span>
                         </div>
                         <p className="mt-2 text-xs leading-relaxed text-text-muted">
-                          來源：{POSITION_EVENT_SOURCE_LABEL[timelineEvent.source]}。{POSITION_EVENT_SOURCE_HELPER[timelineEvent.source]}
+                          來源：{POSITION_EVENT_SOURCE_LABEL[timelineEvent.source]}。
+                          {POSITION_EVENT_SOURCE_HELPER[timelineEvent.source]}
                         </p>
                       </div>
                       <div className="rounded-lg border border-border-subtle bg-card px-3 py-2 text-left md:text-right">
                         <p className="text-xs text-text-faint">來源 Portfolio ID</p>
-                        <p className="mt-1 font-mono text-sm font-medium text-text-primary">{formatPlainValue(timelineEvent.source_portfolio_id)}</p>
+                        <p className="mt-1 font-mono text-sm font-medium text-text-primary">
+                          {formatPlainValue(timelineEvent.source_portfolio_id)}
+                        </p>
                       </div>
                     </div>
 
                     <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
                       <TimelineMetric label="價格" value={formatPrice(timelineEvent.price, timelineEvent.symbol)} />
                       <TimelineMetric label="數量" value={`${timelineEvent.quantity} 股`} />
-                      <TimelineMetric label="手續費（系統計算/已保存）" value={formatPrice(timelineEvent.fees, timelineEvent.symbol)} />
-                      <TimelineMetric label="交易稅（系統計算/已保存）" value={formatPrice(timelineEvent.taxes, timelineEvent.symbol)} />
+                      <TimelineMetric
+                        label="手續費（系統計算/已保存）"
+                        value={formatPrice(timelineEvent.fees, timelineEvent.symbol)}
+                      />
+                      <TimelineMetric
+                        label="交易稅（系統計算/已保存）"
+                        value={formatPrice(timelineEvent.taxes, timelineEvent.symbol)}
+                      />
                     </div>
 
                     <div className="mt-3 grid gap-2 md:grid-cols-3">
                       <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                         <p className="text-xs text-text-faint">原因分類</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelineReasonCategory(timelineEvent.reason_category)}</p>
+                        <p className="mt-1 text-sm font-medium text-text-primary">
+                          {formatTimelineReasonCategory(timelineEvent.reason_category)}
+                        </p>
                       </div>
                       <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                         <p className="text-xs text-text-faint">原因代碼</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelineReasonCode(timelineEvent.reason_code)}</p>
+                        <p className="mt-1 text-sm font-medium text-text-primary">
+                          {formatTimelineReasonCode(timelineEvent.reason_code)}
+                        </p>
                       </div>
                       <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                         <p className="text-xs text-text-faint">信心水準</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelineConfidence(timelineEvent.confidence_level)}</p>
+                        <p className="mt-1 text-sm font-medium text-text-primary">
+                          {formatTimelineConfidence(timelineEvent.confidence_level)}
+                        </p>
                       </div>
                     </div>
 
                     <div className="mt-3 rounded-lg border border-border-subtle bg-card px-3 py-2">
                       <p className="text-xs text-text-faint">計畫遵循</p>
-                      <p className="mt-1 text-sm font-medium text-text-primary">{formatTimelinePlanAdherence(timelineEvent.plan_adherence)}</p>
+                      <p className="mt-1 text-sm font-medium text-text-primary">
+                        {formatTimelinePlanAdherence(timelineEvent.plan_adherence)}
+                      </p>
                     </div>
 
                     {decisionContextInsufficient && (
@@ -1378,7 +1555,9 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
                         {timelineEvent.data_quality_note && (
                           <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
                             <p className="text-xs text-text-faint">資料品質備註</p>
-                            <p className="mt-1 text-sm leading-relaxed text-text-secondary">{timelineEvent.data_quality_note}</p>
+                            <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                              {timelineEvent.data_quality_note}
+                            </p>
                           </div>
                         )}
                       </div>
@@ -1394,7 +1573,15 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
   );
 }
 
-function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCopyEvidence, onClose }: LifecycleReviewModalProps) {
+function LifecycleReviewModal({
+  group,
+  review,
+  loading,
+  error,
+  copyStatus,
+  onCopyEvidence,
+  onClose,
+}: LifecycleReviewModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
 
@@ -1435,7 +1622,8 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 整體部位檢討</p>
             <p className="mt-1 text-xs text-text-faint">
-              Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜ 多次進場/新增批次/分批降低曝險整體檢討
+              Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜
+              多次進場/新增批次/分批降低曝險整體檢討
             </p>
           </div>
           <button
@@ -1444,8 +1632,18 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
             aria-label="關閉整體部位檢討"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -1456,10 +1654,13 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
               <div>
                 <p className="text-xs font-medium text-text-muted">整體部位生命週期檢討</p>
                 <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                  此視窗檢討整個 position group 的進場序列、持有路徑、部位管理與結案序列；每一列結案批次的「檢討分析」仍是 Single Trade Review。
+                  此視窗檢討整個 position group
+                  的進場序列、持有路徑、部位管理與結案序列；每一列結案批次的「檢討分析」仍是 Single Trade Review。
                 </p>
               </div>
-              <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}>
+              <span
+                className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}
+              >
                 {provenance}
               </span>
             </div>
@@ -1491,35 +1692,55 @@ function LifecycleReviewModal({ group, review, loading, error, copyStatus, onCop
                   onClick={onCopyEvidence}
                   className="rounded-lg border border-indigo-500/40 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:text-indigo-300 dark:hover:bg-indigo-950"
                 >
-                  {copyStatus === "success" ? "已複製生命週期證據" : copyStatus === "error" ? "複製失敗" : "複製生命週期證據"}
+                  {copyStatus === "success"
+                    ? "已複製生命週期證據"
+                    : copyStatus === "error"
+                      ? "複製失敗"
+                      : "複製生命週期證據"}
                 </button>
               </div>
 
               {hasDecisionWarning && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  決策脈絡不足：decision_context 未完整存在，或分類包含資料不足。此檢討只使用已保存事件、ledger 費稅與 point-in-time 指標，不推論未記錄意圖。
+                  決策脈絡不足：decision_context 未完整存在，或分類包含資料不足。此檢討只使用已保存事件、ledger 費稅與
+                  point-in-time 指標，不推論未記錄意圖。
                 </div>
               )}
 
               {hasBackfilledCaveat && (
                 <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 shadow-sm dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300">
-                  事後補填 plan caveat：此 lifecycle review 使用了使用者事後補填的 operation plan。它可改善檢討脈絡，但不代表原始進場當下已存在同一份計畫。
+                  事後補填 plan caveat：此 lifecycle review 使用了使用者事後補填的 operation
+                  plan。它可改善檢討脈絡，但不代表原始進場當下已存在同一份計畫。
                 </div>
               )}
 
               <LifecyclePlanReviewRelationSection review={review} />
               <LifecycleOverallSection review={review} />
-              <LifecyclePerspectives metrics={result.lifecycle_metrics} entrySequence={result.entry_sequence} exitSequence={result.exit_sequence} />
+              <LifecyclePerspectives
+                metrics={result.lifecycle_metrics}
+                entrySequence={result.entry_sequence}
+                exitSequence={result.exit_sequence}
+              />
               <div className="grid gap-3 md:grid-cols-2">
                 <LifecycleTextItemList label="做得好的地方" items={lifecycleReview?.what_worked} />
                 <LifecycleTextItemList label="需要檢討的地方" items={lifecycleReview?.what_needs_review} />
               </div>
               <LifecycleTextItemList label="下次紀律規則" items={lifecycleReview?.next_operation_rules} />
-              <LifecycleEventTimeline events={eventFacts} snapshots={snapshots} evidenceItems={lifecycleReview?.event_level_evidence} symbol={review.symbol} />
-              <LifecycleDataQualitySection dataQuality={result.data_quality} notes={lifecycleReview?.data_quality_notes} />
+              <LifecycleEventTimeline
+                events={eventFacts}
+                snapshots={snapshots}
+                evidenceItems={lifecycleReview?.event_level_evidence}
+                symbol={review.symbol}
+              />
+              <LifecycleDataQualitySection
+                dataQuality={result.data_quality}
+                notes={lifecycleReview?.data_quality_notes}
+              />
               {result.advanced_internal && (
                 <details className="rounded-xl border border-border bg-card p-4 shadow-sm">
-                  <summary className="cursor-pointer text-sm font-semibold text-text-primary">進階 trace（內部指標與分數）</summary>
+                  <summary className="cursor-pointer text-sm font-semibold text-text-primary">
+                    進階 trace（內部指標與分數）
+                  </summary>
                   <pre className="mt-3 max-h-80 overflow-auto rounded-lg border border-border-subtle bg-surface p-3 text-xs leading-relaxed text-text-secondary">
                     {JSON.stringify(result.advanced_internal, null, 2)}
                   </pre>
@@ -1628,7 +1849,11 @@ export default function ClosedPortfolioPage() {
       const timeline = await fetchTimeline(group.position_group_id);
       setAsyncMapValue(setTimelineMap, group.position_group_id, timeline);
     } catch (err) {
-      setAsyncMapValue(setTimelineError, group.position_group_id, err instanceof Error ? err.message : "事件時間線載入失敗");
+      setAsyncMapValue(
+        setTimelineError,
+        group.position_group_id,
+        err instanceof Error ? err.message : "事件時間線載入失敗",
+      );
     } finally {
       setAsyncMapValue(setTimelineLoading, group.position_group_id, false);
     }
@@ -1648,7 +1873,11 @@ export default function ClosedPortfolioPage() {
       const review = await fetchLifecycleReview(group.position_group_id);
       setAsyncMapValue(setLifecycleReviewMap, group.position_group_id, review);
     } catch (err) {
-      setAsyncMapValue(setLifecycleReviewError, group.position_group_id, err instanceof Error ? err.message : "整體部位檢討載入失敗");
+      setAsyncMapValue(
+        setLifecycleReviewError,
+        group.position_group_id,
+        err instanceof Error ? err.message : "整體部位檢討載入失敗",
+      );
     } finally {
       setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, false);
     }
@@ -1705,7 +1934,8 @@ export default function ClosedPortfolioPage() {
             <div>
               <p className="text-xs font-medium text-text-faint">{activePeriod.label} 已實現損益</p>
               <p className={`mt-1 font-mono text-3xl font-semibold ${totalClass}`}>
-                {totalRealizedPnl >= 0 ? "+" : ""}{formatPrice(totalRealizedPnl)}
+                {totalRealizedPnl >= 0 ? "+" : ""}
+                {formatPrice(totalRealizedPnl)}
               </p>
               <p className="mt-1 text-xs text-text-muted">篩選 {filteredItems.length} 筆已結案紀錄</p>
             </div>
@@ -1718,9 +1948,10 @@ export default function ClosedPortfolioPage() {
                     type="button"
                     aria-pressed={isActive}
                     onClick={() => setSelectedPeriod(option.key)}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${isActive
-                      ? "bg-indigo-600 text-white"
-                      : "border border-border bg-card text-text-muted hover:bg-card-hover"
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      isActive
+                        ? "bg-indigo-600 text-white"
+                        : "border border-border bg-card text-text-muted hover:bg-card-hover"
                     }`}
                   >
                     {option.label}
@@ -1744,18 +1975,21 @@ export default function ClosedPortfolioPage() {
           </div>
 
           {filteredItems.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-text-faint">
-              此期間尚無已結案持股。
-            </div>
+            <div className="px-4 py-8 text-center text-sm text-text-faint">此期間尚無已結案持股。</div>
           ) : (
             <div className="space-y-4 p-4">
               {groupedItems.map((group) => {
                 const groupIsProfit = group.totalRealizedPnl >= 0;
-                const groupResultClass = groupIsProfit ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                const groupResultClass = groupIsProfit
+                  ? "text-green-600 dark:text-green-400"
+                  : "text-red-600 dark:text-red-400";
                 const isTimelineLoading = timelineLoading[group.position_group_id] ?? false;
                 const isLifecycleReviewLoading = lifecycleReviewLoading[group.position_group_id] ?? false;
                 return (
-                  <article key={group.position_group_id} className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                  <article
+                    key={group.position_group_id}
+                    className="overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+                  >
                     <div className="border-b border-border bg-surface px-4 py-4 sm:px-5">
                       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                         <div className="border-l-4 border-l-indigo-500 pl-3 dark:border-l-indigo-400">
@@ -1770,8 +2004,12 @@ export default function ClosedPortfolioPage() {
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs text-text-muted">
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">總結案 {group.totalClosedQuantity} 股</span>
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">結案批次 {group.exitBatchCount} 筆</span>
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">
+                              總結案 {group.totalClosedQuantity} 股
+                            </span>
+                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">
+                              結案批次 {group.exitBatchCount} 筆
+                            </span>
                             <span className="rounded-md border border-border-subtle bg-card px-2 py-1 font-mono text-text-faint">
                               Group {group.position_group_id.slice(0, 8)}
                             </span>
@@ -1780,7 +2018,9 @@ export default function ClosedPortfolioPage() {
                         <div className="flex flex-col gap-2 md:items-end">
                           <div className="rounded-xl border border-border bg-card px-4 py-3 text-left shadow-sm md:text-right">
                             <p className="text-xs font-medium text-text-muted">股票總已實現損益</p>
-                            <p className={`mt-1 font-mono text-lg font-semibold ${groupResultClass}`}>{getSignedPriceText(group.totalRealizedPnl, group.symbol)}</p>
+                            <p className={`mt-1 font-mono text-lg font-semibold ${groupResultClass}`}>
+                              {getSignedPriceText(group.totalRealizedPnl, group.symbol)}
+                            </p>
                           </div>
                           <div className="flex flex-wrap gap-2 md:justify-end">
                             <button
@@ -1797,7 +2037,7 @@ export default function ClosedPortfolioPage() {
                               disabled={isTimelineLoading}
                               className="rounded-lg border border-blue-500/40 bg-card px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-300 dark:hover:bg-blue-950"
                             >
-                          {isTimelineLoading ? "載入時間線…" : "事件時間線"}
+                              {isTimelineLoading ? "載入時間線…" : "事件時間線"}
                             </button>
                           </div>
                         </div>
@@ -1808,10 +2048,15 @@ export default function ClosedPortfolioPage() {
                       <div className="space-y-2 border-l border-border-subtle pl-3 sm:pl-4">
                         {group.items.map((item) => {
                           const isProfit = item.realized_pnl >= 0;
-                          const resultClass = isProfit ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+                          const resultClass = isProfit
+                            ? "text-green-600 dark:text-green-400"
+                            : "text-red-600 dark:text-red-400";
                           const isReviewLoading = reviewLoading[item.id] ?? false;
                           return (
-                            <div key={item.id} className="rounded-lg border border-border-subtle bg-surface px-3 py-3 shadow-sm sm:px-4">
+                            <div
+                              key={item.id}
+                              className="rounded-lg border border-border-subtle bg-surface px-3 py-3 shadow-sm sm:px-4"
+                            >
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div className="min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
@@ -1824,15 +2069,22 @@ export default function ClosedPortfolioPage() {
                                     </span>
                                   </div>
                                   <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs text-text-muted">
-                                    <span>{formatPrice(item.entry_price, item.symbol)} → {formatPrice(item.exit_price, item.symbol)}</span>
+                                    <span>
+                                      {formatPrice(item.entry_price, item.symbol)} →{" "}
+                                      {formatPrice(item.exit_price, item.symbol)}
+                                    </span>
                                     <span>結案 {item.exit_quantity} 股</span>
                                     <span>費稅 {formatPrice(item.exit_fees + item.exit_taxes, item.symbol)}</span>
                                   </div>
                                 </div>
                                 <div className="flex items-center justify-between gap-3 sm:justify-end">
                                   <div className="text-left sm:text-right">
-                                    <p className={`font-mono text-sm font-semibold ${resultClass}`}>{getSignedPriceText(item.realized_pnl, item.symbol)}</p>
-                                    <p className={`font-mono text-xs ${resultClass}`}>{getSignedPercentText(item.realized_return_pct)}</p>
+                                    <p className={`font-mono text-sm font-semibold ${resultClass}`}>
+                                      {getSignedPriceText(item.realized_pnl, item.symbol)}
+                                    </p>
+                                    <p className={`font-mono text-xs ${resultClass}`}>
+                                      {getSignedPercentText(item.realized_return_pct)}
+                                    </p>
                                   </div>
                                   <button
                                     type="button"

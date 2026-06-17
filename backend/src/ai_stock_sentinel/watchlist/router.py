@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,10 @@ class WatchlistUpdateRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
 
 
+class WatchlistReorderRequest(BaseModel):
+    item_ids: list[int] = Field(min_length=0)
+
+
 def _normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
 
@@ -44,9 +48,18 @@ def _serialize_watchlist_item(item: UserWatchlist) -> dict:
         "symbol": item.symbol,
         "name": resolve_symbol_name(item.symbol),
         "notes": item.notes,
+        "sort_order": item.sort_order,
         "created_at": item.created_at.isoformat() if item.created_at and hasattr(item.created_at, "isoformat") else item.created_at,
         "updated_at": item.updated_at.isoformat() if item.updated_at and hasattr(item.updated_at, "isoformat") else item.updated_at,
     }
+
+
+def _select_user_watchlist_items(db: Session, user_id: int) -> list[UserWatchlist]:
+    return db.execute(
+        select(UserWatchlist)
+        .where(UserWatchlist.user_id == user_id)
+        .order_by(UserWatchlist.sort_order.asc(), UserWatchlist.created_at.desc(), UserWatchlist.id.desc())
+    ).scalars().all()
 
 
 @router.get("")
@@ -54,11 +67,7 @@ def list_watchlist(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    rows = db.execute(
-        select(UserWatchlist)
-        .where(UserWatchlist.user_id == current_user.id)
-        .order_by(UserWatchlist.created_at.desc(), UserWatchlist.id.desc())
-    ).scalars().all()
+    rows = _select_user_watchlist_items(db, current_user.id)
     return [_serialize_watchlist_item(row) for row in rows]
 
 
@@ -92,10 +101,15 @@ def create_watchlist_item(
         response.status_code = status.HTTP_200_OK
         return _serialize_watchlist_item(existing)
 
+    max_sort_order = db.execute(
+        select(func.max(UserWatchlist.sort_order)).where(UserWatchlist.user_id == current_user.id)
+    ).scalar_one()
+
     item = UserWatchlist(
         user_id=current_user.id,
         symbol=symbol,
         notes=notes,
+        sort_order=(max_sort_order if max_sort_order is not None else -1) + 1,
     )
     db.add(item)
     try:
@@ -113,6 +127,37 @@ def create_watchlist_item(
 
     db.refresh(item)
     return _serialize_watchlist_item(item)
+
+
+@router.put("/reorder")
+def reorder_watchlist_items(
+    payload: WatchlistReorderRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = _select_user_watchlist_items(db, current_user.id)
+    requested_ids = payload.item_ids
+    requested_id_set = set(requested_ids)
+    existing_id_set = {row.id for row in rows}
+
+    if len(requested_ids) != len(requested_id_set):
+        raise HTTPException(status_code=400, detail="排序清單不可包含重複項目")
+    if requested_id_set != existing_id_set:
+        raise HTTPException(status_code=400, detail="排序清單必須包含所有關注項目")
+
+    now = datetime.now(timezone.utc)
+    rows_by_id = {row.id: row for row in rows}
+    ordered_rows: list[UserWatchlist] = []
+    for sort_order, item_id in enumerate(requested_ids):
+        row = rows_by_id[item_id]
+        row.sort_order = sort_order
+        row.updated_at = now
+        ordered_rows.append(row)
+
+    db.commit()
+    for row in ordered_rows:
+        db.refresh(row)
+    return [_serialize_watchlist_item(row) for row in ordered_rows]
 
 
 @router.put("/{item_id}")

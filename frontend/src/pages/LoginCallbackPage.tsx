@@ -30,7 +30,9 @@ export default function LoginCallbackPage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
         <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950 dark:text-red-400">{error}</p>
+          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950 dark:text-red-400">
+            {error}
+          </p>
           <a href="/login" className="text-sm text-indigo-600 hover:underline dark:text-indigo-400">
             返回登入頁
           </a>

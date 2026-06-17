@@ -56,6 +56,7 @@ class UserWatchlist(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", name="uq_user_watchlist_user_symbol"),
         Index("idx_user_watchlist_user_id", "user_id"),
+        Index("idx_user_watchlist_user_sort_order", "user_id", "sort_order"),
         Index("idx_user_watchlist_symbol", "symbol"),
     )
 
@@ -63,6 +64,7 @@ class UserWatchlist(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 

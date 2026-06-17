@@ -471,7 +471,7 @@ make run-api
 
 - **用途**：列出目前登入使用者的關注股票清單。關注列表保存「有興趣但尚未進入持股」的觀察標的，不代表進場、持股、加碼或交易紀錄。
 - **Auth/Ownership**：需要登入，只回傳 `current_user.id` 的資料。
-- **排序**：`created_at DESC`、`id DESC`。
+- **排序**：`sort_order ASC`，同序時以 `created_at DESC`、`id DESC` 作 deterministic fallback。
 - **Response 200**
 
 ```json
@@ -481,6 +481,7 @@ make run-api
     "symbol": "2330.TW",
     "name": "台積電",
     "notes": "等待拉回 MA20",
+    "sort_order": 0,
     "created_at": "2026-06-17T03:00:00+00:00",
     "updated_at": "2026-06-17T03:00:00+00:00"
   }
@@ -491,6 +492,7 @@ make run-api
 
 - **用途**：新增關注股票，供 `/watchlist`、Analyze 結果與 Daily Radar 候選清單使用。
 - **Auth/Ownership**：需要登入，新項目會寫入 `current_user.id`。
+- **排序語義**：新項目會排在目前登入使用者關注列表最後。
 - **Request Body**
 
 ```json
@@ -513,6 +515,7 @@ make run-api
   "symbol": "2330.TW",
   "name": "台積電",
   "notes": "等待拉回 MA20",
+  "sort_order": 0,
   "created_at": "2026-06-17T03:00:00+00:00",
   "updated_at": "2026-06-17T03:00:00+00:00"
 }
@@ -533,6 +536,23 @@ make run-api
 - **欄位說明**
   - `notes`：觀察備註，選填，最多 500 字；空白字串會正規化為 `null`。
 - **Response 200**：欄位同 `POST /watchlist` 單筆物件。
+
+### `PUT /watchlist/reorder`
+
+- **用途**：調整目前登入使用者的關注列表順序。
+- **Auth/Ownership**：需要登入；排序清單只能包含 `current_user.id` 的關注項目。
+- **Request Body**
+
+```json
+{
+  "item_ids": [3, 1, 2]
+}
+```
+
+- **欄位說明**
+  - `item_ids`：調整後的完整 item id 清單。必須剛好包含目前登入使用者的所有 watchlist item id，不可遺漏、不可重複、不可包含其他使用者的項目。
+- **Response 200**：回傳調整後順序的 watchlist item array，欄位同 `GET /watchlist`。
+- **Error 400**：`item_ids` 有重複、遺漏目前使用者項目，或包含非本人項目。
 
 ### `DELETE /watchlist/{item_id}`
 

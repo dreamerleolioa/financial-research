@@ -1,8 +1,4 @@
-import type {
-  DailyRadarBucket,
-  DailyRadarRunResponse,
-  DailyRadarSymbolHistoryItem,
-} from "./dailyRadarTypes";
+import type { DailyRadarBucket, DailyRadarRunResponse, DailyRadarSymbolHistoryItem } from "./dailyRadarTypes";
 import { apiUrl } from "./apiClient";
 
 const NO_PUBLIC_DAILY_RADAR_RUN_DETAIL = "No public Daily Radar run is available.";
@@ -49,15 +45,11 @@ export function toDailyRadarDisplayError(error: unknown): DailyRadarDisplayError
 
 export function isNoPublicDailyRadarRunUnavailableError(error: unknown): boolean {
   return (
-    error instanceof DailyRadarApiError &&
-    error.status === 404 &&
-    error.detail === NO_PUBLIC_DAILY_RADAR_RUN_DETAIL
+    error instanceof DailyRadarApiError && error.status === 404 && error.detail === NO_PUBLIC_DAILY_RADAR_RUN_DETAIL
   );
 }
 
-export async function fetchLatestDailyRadarRun(
-  query: DailyRadarRunQuery = {},
-): Promise<DailyRadarRunResponse> {
+export async function fetchLatestDailyRadarRun(query: DailyRadarRunQuery = {}): Promise<DailyRadarRunResponse> {
   return requestDailyRadar<DailyRadarRunResponse>(buildDailyRadarUrl("/daily-radar/latest", query));
 }
 

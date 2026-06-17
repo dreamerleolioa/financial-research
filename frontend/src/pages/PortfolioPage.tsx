@@ -186,8 +186,13 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
   return (
     <div
       ref={backdropRef}
-      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
-      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === backdropRef.current;
+      }}
+      onClick={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+        mouseDownOnBackdrop.current = false;
+      }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
@@ -203,14 +208,19 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
 
         <div className="space-y-4 p-5">
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            這是事後補填的 operation plan，只用來改善未來 lifecycle review 的脈絡品質；它不是原始進場當下的 plan，也不會取代既有分析、新增批次、結案批次或結案流程。
+            這是事後補填的 operation plan，只用來改善未來 lifecycle review 的脈絡品質；它不是原始進場當下的
+            plan，也不會取代既有分析、新增批次、結案批次或結案流程。
           </div>
 
           <label className="block space-y-1">
@@ -233,7 +243,11 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
                 className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 <option value="">未選擇（不送出）</option>
-                {LIFECYCLE_SETUP_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {LIFECYCLE_SETUP_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="space-y-1">
@@ -244,7 +258,11 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
                 className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 <option value="">未選擇（不送出）</option>
-                {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="space-y-1">
@@ -255,7 +273,11 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
                 className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 <option value="">未選擇（不送出）</option>
-                {DEFAULT_STOP_RULE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {DEFAULT_STOP_RULE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="space-y-1">
@@ -266,7 +288,11 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
                 className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 <option value="">未選擇（不送出）</option>
-                {ADD_ENTRY_CONDITION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {ADD_ENTRY_CONDITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -335,7 +361,9 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
           </label>
 
           {error && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+              {error}
+            </p>
           )}
         </div>
 
@@ -394,10 +422,10 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
       const updated = await updatePortfolioItemMutation.mutateAsync({
         id: item.id,
         body: {
-        entry_price: parseFloat(entryPrice),
-        quantity: parseInt(quantity, 10),
-        entry_date: entryDate,
-        notes: notes.trim() || null,
+          entry_price: parseFloat(entryPrice),
+          quantity: parseInt(quantity, 10),
+          entry_date: entryDate,
+          notes: notes.trim() || null,
         },
       });
       onSaved(updated);
@@ -412,8 +440,13 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
   return (
     <div
       ref={backdropRef}
-      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
-      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === backdropRef.current;
+      }}
+      onClick={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+        mouseDownOnBackdrop.current = false;
+      }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
@@ -424,7 +457,11 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -477,7 +514,9 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
                 />
               </label>
               {error && (
-                <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+                <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+                  {error}
+                </p>
               )}
             </>
           )}
@@ -553,7 +592,12 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
       setError("結案股數不可超過目前持有股數。");
       return;
     }
-    if (parsedFees === null || parsedTaxes === null || (parsedFees !== undefined && parsedFees < 0) || (parsedTaxes !== undefined && parsedTaxes < 0)) {
+    if (
+      parsedFees === null ||
+      parsedTaxes === null ||
+      (parsedFees !== undefined && parsedFees < 0) ||
+      (parsedTaxes !== undefined && parsedTaxes < 0)
+    ) {
       setError("手續費與交易稅需為非負數；留空則自動估算。");
       return;
     }
@@ -586,8 +630,13 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
   return (
     <div
       ref={backdropRef}
-      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
-      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === backdropRef.current;
+      }}
+      onClick={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+        mouseDownOnBackdrop.current = false;
+      }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
@@ -603,7 +652,11 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -669,7 +722,9 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
             留空時使用後端台股預設費率估算；實際券商折扣或特殊稅率可手動覆寫。
           </p>
           {error && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+              {error}
+            </p>
           )}
         </div>
 
@@ -747,7 +802,12 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
       setError("新增批次股數必須是大於 0 的整數。");
       return;
     }
-    if (parsedFees === null || parsedTaxes === null || (parsedFees !== undefined && parsedFees < 0) || (parsedTaxes !== undefined && parsedTaxes < 0)) {
+    if (
+      parsedFees === null ||
+      parsedTaxes === null ||
+      (parsedFees !== undefined && parsedFees < 0) ||
+      (parsedTaxes !== undefined && parsedTaxes < 0)
+    ) {
       setError("手續費與交易稅需為非負數；留空則使用預設值。");
       return;
     }
@@ -784,8 +844,13 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
   return (
     <div
       ref={backdropRef}
-      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
-      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === backdropRef.current;
+      }}
+      onClick={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+        mouseDownOnBackdrop.current = false;
+      }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-card shadow-xl">
@@ -801,7 +866,11 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -886,7 +955,9 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
               className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
             >
               {ADD_ENTRY_REASON_CODE_VALUES.map((value) => (
-                <option key={value} value={value}>{ADD_ENTRY_REASON_CODE_LABEL[value]}</option>
+                <option key={value} value={value}>
+                  {ADD_ENTRY_REASON_CODE_LABEL[value]}
+                </option>
               ))}
             </select>
           </label>
@@ -900,7 +971,9 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
                 className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 {PLAN_ADHERENCE_VALUES.map((value) => (
-                  <option key={value} value={value}>{PLAN_ADHERENCE_LABEL[value]}</option>
+                  <option key={value} value={value}>
+                    {PLAN_ADHERENCE_LABEL[value]}
+                  </option>
                 ))}
               </select>
             </label>
@@ -912,7 +985,9 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
                 className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 {DECISION_CONFIDENCE_LEVEL_VALUES.map((value) => (
-                  <option key={value} value={value}>{CONFIDENCE_LEVEL_LABEL[value]}</option>
+                  <option key={value} value={value}>
+                    {CONFIDENCE_LEVEL_LABEL[value]}
+                  </option>
                 ))}
               </select>
             </label>
@@ -935,7 +1010,9 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
           </label>
 
           {error && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+              {error}
+            </p>
           )}
         </div>
 
@@ -998,23 +1075,40 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
   return (
     <div
       ref={backdropRef}
-      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === backdropRef.current; }}
-      onClick={(e) => { if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose(); mouseDownOnBackdrop.current = false; }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === backdropRef.current;
+      }}
+      onClick={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
+        mouseDownOnBackdrop.current = false;
+      }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
       <div className="w-full max-w-sm rounded-2xl bg-card shadow-xl">
         <div className="p-5">
           <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-950">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-red-600 dark:text-red-400" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5 text-red-600 dark:text-red-400"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fillRule="evenodd"
+                d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+                clipRule="evenodd"
+              />
             </svg>
           </div>
           <p className="font-semibold text-text-primary">刪除 {portfolioDisplayName(item)} 持股？</p>
           <p className="mt-1.5 text-sm text-text-muted">
-            此操作將同時移除所有歷史診斷紀錄，且<span className="font-medium text-red-600 dark:text-red-400">無法復原</span>。
+            此操作將同時移除所有歷史診斷紀錄，且
+            <span className="font-medium text-red-600 dark:text-red-400">無法復原</span>。
           </p>
           {error && (
-            <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">{error}</p>
+            <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+              {error}
+            </p>
           )}
         </div>
         <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
@@ -1038,16 +1132,47 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
 }
 
 const STATUS_CONFIG = {
-  profitable_safe: { label: "獲利安全區", color: "text-green-700 dark:text-green-400", bg: "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800", dot: "🟢" },
-  at_risk: { label: "成本邊緣", color: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800", dot: "🟡" },
-  under_water: { label: "套牢防守", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800", dot: "🔴" },
+  profitable_safe: {
+    label: "獲利安全區",
+    color: "text-green-700 dark:text-green-400",
+    bg: "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800",
+    dot: "🟢",
+  },
+  at_risk: {
+    label: "成本邊緣",
+    color: "text-yellow-700 dark:text-yellow-400",
+    bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800",
+    dot: "🟡",
+  },
+  under_water: {
+    label: "套牢防守",
+    color: "text-red-700 dark:text-red-400",
+    bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800",
+    dot: "🔴",
+  },
 } as const;
 
 const RISK_STATE_CONFIG = {
-  stable: { label: "風險穩定", color: "text-green-700 dark:text-green-400", bg: "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800" },
-  watch: { label: "需要觀察", color: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800" },
-  elevated: { label: "風險升高", color: "text-yellow-700 dark:text-yellow-400", bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800" },
-  critical: { label: "防守條件觸發", color: "text-red-700 dark:text-red-400", bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800" },
+  stable: {
+    label: "風險穩定",
+    color: "text-green-700 dark:text-green-400",
+    bg: "bg-green-50 border-green-200 dark:bg-green-950 dark:border-green-800",
+  },
+  watch: {
+    label: "需要觀察",
+    color: "text-yellow-700 dark:text-yellow-400",
+    bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800",
+  },
+  elevated: {
+    label: "風險升高",
+    color: "text-yellow-700 dark:text-yellow-400",
+    bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800",
+  },
+  critical: {
+    label: "防守條件觸發",
+    color: "text-red-700 dark:text-red-400",
+    bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800",
+  },
 } as const;
 
 function legacyActionRiskLabel(action: string | null | undefined): string | null {
@@ -1123,13 +1248,7 @@ function formatPortfolioPct(value: number | null | undefined): string {
   return `${value.toFixed(2)}%`;
 }
 
-function PortfolioRiskSummaryPanel({
-  summary,
-  error,
-}: {
-  summary: PortfolioRiskSummary | null;
-  error: string | null;
-}) {
+function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskSummary | null; error: string | null }) {
   if (error) {
     return (
       <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
@@ -1159,19 +1278,26 @@ function PortfolioRiskSummaryPanel({
       <div className="mt-4 grid gap-2 sm:grid-cols-4">
         <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
           <p className="text-xs text-text-faint">總市值</p>
-          <p className="mt-1 text-sm font-semibold text-text-primary">{formatPortfolioMoney(summary.portfolio_value)}</p>
+          <p className="mt-1 text-sm font-semibold text-text-primary">
+            {formatPortfolioMoney(summary.portfolio_value)}
+          </p>
         </div>
         <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
           <p className="text-xs text-text-faint">未實現損益</p>
-          <p className={`mt-1 text-sm font-semibold ${summary.total_unrealized_pnl >= 0 ? "text-green-600" : "text-red-600"}`}>
-            {summary.total_unrealized_pnl > 0 ? "+" : ""}{formatPortfolioMoney(summary.total_unrealized_pnl)}
+          <p
+            className={`mt-1 text-sm font-semibold ${summary.total_unrealized_pnl >= 0 ? "text-green-600" : "text-red-600"}`}
+          >
+            {summary.total_unrealized_pnl > 0 ? "+" : ""}
+            {formatPortfolioMoney(summary.total_unrealized_pnl)}
           </p>
         </div>
         <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
           <p className="text-xs text-text-faint">估計總曝險</p>
           <p className="mt-1 text-sm font-semibold text-text-primary">
             {formatPortfolioMoney(summary.total_at_risk)}
-            <span className="ml-1 text-xs font-normal text-text-faint">{formatPortfolioPct(summary.total_at_risk_pct)}</span>
+            <span className="ml-1 text-xs font-normal text-text-faint">
+              {formatPortfolioPct(summary.total_at_risk_pct)}
+            </span>
           </p>
         </div>
         <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
@@ -1190,7 +1316,9 @@ function PortfolioRiskSummaryPanel({
               </div>
               <div className="mt-2 flex items-end justify-between gap-2">
                 <span className="text-xs text-text-faint">估計曝險</span>
-                <span className="text-sm font-semibold text-text-primary">{formatPortfolioPct(risk.estimated_risk_pct_of_portfolio)}</span>
+                <span className="text-sm font-semibold text-text-primary">
+                  {formatPortfolioPct(risk.estimated_risk_pct_of_portfolio)}
+                </span>
               </div>
               {risk.data_quality.caveats.length > 0 && (
                 <p className="mt-2 line-clamp-2 text-xs text-amber-600 dark:text-amber-300">
@@ -1259,7 +1387,11 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              <path
+                fillRule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         </div>
@@ -1268,7 +1400,10 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
         <div className="space-y-4 p-5">
           {loading && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" style={{ animationDuration: "1s" }} />
+              <div
+                className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400"
+                style={{ animationDuration: "1s" }}
+              />
               <p className="text-sm font-medium text-text-primary">AI 持倉診斷中</p>
               <p className="text-xs text-text-muted">通常需要 15–30 秒</p>
             </div>
@@ -1302,13 +1437,13 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                         {STATUS_CONFIG[pa.position_status].dot} {STATUS_CONFIG[pa.position_status].label}
                       </span>
                     </div>
-                    {pa.position_narrative && (
-                      <p className="text-sm text-text-secondary">{pa.position_narrative}</p>
-                    )}
+                    {pa.position_narrative && <p className="text-sm text-text-secondary">{pa.position_narrative}</p>}
                     <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                       <div className="text-center">
                         <div className="text-text-faint">成本</div>
-                        <div className="font-mono font-medium text-text-secondary">{formatPrice(pa.entry_price, item.symbol)}</div>
+                        <div className="font-mono font-medium text-text-secondary">
+                          {formatPrice(pa.entry_price, item.symbol)}
+                        </div>
                       </div>
                       <div className="text-center">
                         <div className="text-text-faint">現價</div>
@@ -1319,10 +1454,9 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                       <div className="text-center">
                         <div className="text-text-faint">損益</div>
                         <div
-                          className={`font-mono font-medium ${pa.profit_loss_pct != null && pa.profit_loss_pct >= 0
-                            ? "text-green-600"
-                            : "text-red-600"
-                            }`}
+                          className={`font-mono font-medium ${
+                            pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
+                          }`}
                         >
                           {pa.profit_loss_pct != null
                             ? `${pa.profit_loss_pct > 0 ? "+" : ""}${pa.profit_loss_pct.toFixed(2)}%`
@@ -1348,7 +1482,9 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                       </span>
                     </div>
                     {pa.risk_control_reference?.reason && (
-                      <p className="mt-2 text-xs leading-relaxed text-text-secondary">{pa.risk_control_reference.reason}</p>
+                      <p className="mt-2 text-xs leading-relaxed text-text-secondary">
+                        {pa.risk_control_reference.reason}
+                      </p>
                     )}
                     {observationConditions.length > 0 && (
                       <ul className="mt-3 space-y-1 text-xs leading-relaxed text-text-secondary">
@@ -1381,16 +1517,16 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                 { label: "技術面防守", content: result.analysis_detail?.tech_insight },
                 { label: "主力動向", content: result.analysis_detail?.inst_insight },
                 { label: "消息面風險", content: result.analysis_detail?.news_insight },
-              ].filter(({ content }) => content).map(({ label, content }) => (
-                <article key={label} className="rounded-xl border border-border bg-card p-4 shadow-sm">
-                  <div className="mb-2 text-xs font-semibold text-text-muted">{label}</div>
-                  <InsightText text={content} emptyText="—" />
-                </article>
-              ))}
+              ]
+                .filter(({ content }) => content)
+                .map(({ label, content }) => (
+                  <article key={label} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                    <div className="mb-2 text-xs font-semibold text-text-muted">{label}</div>
+                    <InsightText text={content} emptyText="—" />
+                  </article>
+                ))}
 
-              <p className="text-center text-xs text-text-faint">
-                本診斷結果僅供研究與紀律檢查，不構成投資建議。
-              </p>
+              <p className="text-center text-xs text-text-faint">本診斷結果僅供研究與紀律檢查，不構成投資建議。</p>
             </>
           )}
         </div>
@@ -1411,11 +1547,12 @@ function portfolioDisplayName(item: { symbol: string; name?: string | null }): s
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
-function portfolioCardDisplayName(item: PortfolioItem, namesBySymbol: Map<string, string>): { primary: string; secondary: string | null } {
+function portfolioCardDisplayName(
+  item: PortfolioItem,
+  namesBySymbol: Map<string, string>,
+): { primary: string; secondary: string | null } {
   const name = item.name?.trim() || namesBySymbol.get(item.symbol) || null;
-  return name
-    ? { primary: name, secondary: item.symbol }
-    : { primary: item.symbol, secondary: null };
+  return name ? { primary: name, secondary: item.symbol } : { primary: item.symbol, secondary: null };
 }
 
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
@@ -1429,9 +1566,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const latestMap = (latestPortfolioHistoryQuery.data ?? {}) as Record<PortfolioIdKey, HistoryEntry | null>;
   const decisionContextStatusMap = decisionContextStatusQuery.data ?? {};
   const riskSummary = portfolioRiskSummaryQuery.data ?? null;
-  const riskSummaryError = portfolioRiskSummaryQuery.error instanceof Error
-    ? portfolioRiskSummaryQuery.error.message
-    : null;
+  const riskSummaryError =
+    portfolioRiskSummaryQuery.error instanceof Error ? portfolioRiskSummaryQuery.error.message : null;
   const riskSummaryNamesBySymbol = useMemo(() => {
     const names = new Map<string, string>();
     for (const risk of riskSummary?.position_risks ?? []) {
@@ -1509,7 +1645,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           }),
         );
         setAsyncMapValue(setHistoryMap, item.id, hBody.records);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "請求失敗";
       setAsyncMapValue(setAnalysisError, item.id, msg);
@@ -1521,7 +1659,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function openAnalysis(item: PortfolioItem): Promise<void> {
     setModalItem(item);
-    await runPositionAnalysis(item).catch(() => { });
+    await runPositionAnalysis(item).catch(() => {});
   }
 
   async function runBatchAnalysis(): Promise<void> {
@@ -1614,226 +1752,256 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           </div>
         ) : (
           <>
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-text-primary">我的持股</h2>
-          <span className="text-xs text-text-faint">共 {items.length} 筆</span>
-        </div>
-
-        <button
-          onClick={runBatchAnalysis}
-          disabled={batchStatus !== "idle"}
-          className="rounded-lg bg-indigo-500 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {batchStatus === "running" ? "分析中…" : "一鍵全部分析"}
-        </button>
-
-        {batchStatus !== "idle" && (
-          <div className={`rounded-xl border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
-            <div className="flex items-center justify-between gap-3">
-              <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
-                {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
-                {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆分析結果`}
-                {batchStatus === "partialError" && `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
-              </span>
-              {batchStatus === "running" && (
-                <div className="h-1.5 w-32 overflow-hidden rounded-full bg-indigo-100 dark:bg-indigo-900">
-                  <div
-                    className="h-full rounded-full bg-indigo-500 transition-all duration-300"
-                    style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }}
-                  />
-                </div>
-              )}
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-text-primary">我的持股</h2>
+              <span className="text-xs text-text-faint">共 {items.length} 筆</span>
             </div>
-          </div>
-        )}
 
-        <PortfolioRiskSummaryPanel summary={riskSummary} error={riskSummaryError} />
+            <button
+              onClick={runBatchAnalysis}
+              disabled={batchStatus !== "idle"}
+              className="rounded-lg bg-indigo-500 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {batchStatus === "running" ? "分析中…" : "一鍵全部分析"}
+            </button>
 
-        {items.map((item) => {
-          const itemKey = portfolioIdKey(item.id);
-          const latest = latestMap[itemKey];
-          const decisionStatus = decisionContextStatusMap[itemKey];
-          const history = historyMap[item.id];
-          const isExpanded = expandedId === item.id;
-          const isAnalyzing = analysisLoading[item.id];
-          const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
+            {batchStatus !== "idle" && (
+              <div className={`rounded-xl border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
+                    {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
+                    {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆分析結果`}
+                    {batchStatus === "partialError" &&
+                      `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
+                  </span>
+                  {batchStatus === "running" && (
+                    <div className="h-1.5 w-32 overflow-hidden rounded-full bg-indigo-100 dark:bg-indigo-900">
+                      <div
+                        className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+                        style={{
+                          width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
-          return (
-            <article key={item.id} className="rounded-xl border border-border bg-card shadow-sm">
-              <div className="p-4">
-                {/* Info row */}
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="font-semibold text-text-primary">{displayName.primary}</p>
-                    {displayName.secondary && <p className="text-xs font-mono text-text-faint">{displayName.secondary}</p>}
-                  </div>
-                  {/* P/L badge — top-right, only when available */}
-                  {(() => {
-                    const closePrice = latest?.indicators?.close_price;
-                    const plPct = closePrice != null
-                      ? ((closePrice - item.entry_price) / item.entry_price) * 100
-                      : null;
-                    return plPct != null ? (
-                      <span className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${plPct >= 0
-                        ? "bg-green-50 text-green-600 border border-green-200"
-                        : "bg-red-50 text-red-600 border border-red-200"
-                        }`}>
-                        {plPct > 0 ? "+" : ""}{plPct.toFixed(2)}%
+            <PortfolioRiskSummaryPanel summary={riskSummary} error={riskSummaryError} />
+
+            {items.map((item) => {
+              const itemKey = portfolioIdKey(item.id);
+              const latest = latestMap[itemKey];
+              const decisionStatus = decisionContextStatusMap[itemKey];
+              const history = historyMap[item.id];
+              const isExpanded = expandedId === item.id;
+              const isAnalyzing = analysisLoading[item.id];
+              const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
+
+              return (
+                <article key={item.id} className="rounded-xl border border-border bg-card shadow-sm">
+                  <div className="p-4">
+                    {/* Info row */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-text-primary">{displayName.primary}</p>
+                        {displayName.secondary && (
+                          <p className="text-xs font-mono text-text-faint">{displayName.secondary}</p>
+                        )}
+                      </div>
+                      {/* P/L badge — top-right, only when available */}
+                      {(() => {
+                        const closePrice = latest?.indicators?.close_price;
+                        const plPct =
+                          closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
+                        return plPct != null ? (
+                          <span
+                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${
+                              plPct >= 0
+                                ? "bg-green-50 text-green-600 border border-green-200"
+                                : "bg-red-50 text-red-600 border border-red-200"
+                            }`}
+                          >
+                            {plPct > 0 ? "+" : ""}
+                            {plPct.toFixed(2)}%
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
+
+                    {/* Meta badges */}
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                        成本{" "}
+                        <span className="font-medium text-text-primary">
+                          {formatPrice(item.entry_price, item.symbol)}
+                        </span>
                       </span>
-                    ) : null;
-                  })()}
-                </div>
-
-                {/* Meta badges */}
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                    成本 <span className="font-medium text-text-primary">{formatPrice(item.entry_price, item.symbol)}</span>
-                  </span>
-                  {item.quantity > 0 && (
-                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                      <span className="font-medium text-text-primary">{item.quantity}</span> 股
-                    </span>
-                  )}
-                  <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                    {item.entry_date}
-                  </span>
-                  {decisionStatus && (
-                    <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${OPERATION_PLAN_STATUS_CLASS[decisionStatus.operation_plan_status]}`}>
-                      {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
-                    </span>
-                  )}
-                </div>
-
-                {/* Last analysis row */}
-                {latest && (() => {
-                  const action = latest.recommended_action;
-                  const actionLabel = latest.risk_state_label ?? legacyActionRiskLabel(action);
-                  const actionBadge = historyRiskClass(latest.risk_state, action);
-                  return (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      <span className="text-xs text-text-faint">上次分析：{latest.record_date}</span>
-                      {actionLabel && (
-                        <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${actionBadge}`}>
-                          {actionLabel}
+                      {item.quantity > 0 && (
+                        <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                          <span className="font-medium text-text-primary">{item.quantity}</span> 股
+                        </span>
+                      )}
+                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                        {item.entry_date}
+                      </span>
+                      {decisionStatus && (
+                        <span
+                          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${OPERATION_PLAN_STATUS_CLASS[decisionStatus.operation_plan_status]}`}
+                        >
+                          {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
                         </span>
                       )}
                     </div>
-                  );
-                })()}
 
-                {decisionStatus?.operation_plan_status === "missing" && (
-                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="font-semibold">缺少 operation plan，可選擇補填 plan</p>
-                        <p className="mt-1 text-xs leading-relaxed">
-                          這是非必填提示：補填可改善日後 lifecycle review，但不要求也不會阻擋即時分析、新增批次、結案批次或結案。
-                        </p>
+                    {/* Last analysis row */}
+                    {latest &&
+                      (() => {
+                        const action = latest.recommended_action;
+                        const actionLabel = latest.risk_state_label ?? legacyActionRiskLabel(action);
+                        const actionBadge = historyRiskClass(latest.risk_state, action);
+                        return (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs text-text-faint">上次分析：{latest.record_date}</span>
+                            {actionLabel && (
+                              <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${actionBadge}`}>
+                                {actionLabel}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                    {decisionStatus?.operation_plan_status === "missing" && (
+                      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="font-semibold">缺少 operation plan，可選擇補填 plan</p>
+                            <p className="mt-1 text-xs leading-relaxed">
+                              這是非必填提示：補填可改善日後 lifecycle
+                              review，但不要求也不會阻擋即時分析、新增批次、結案批次或結案。
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => setBackfillItem(item)}
+                            className="shrink-0 rounded-lg border border-amber-300 bg-card px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-card-hover dark:border-amber-700 dark:bg-slate-900 dark:text-amber-300"
+                          >
+                            補填 plan
+                          </button>
+                        </div>
                       </div>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="mt-3 flex items-center gap-2">
                       <button
-                        onClick={() => setBackfillItem(item)}
-                        className="shrink-0 rounded-lg border border-amber-300 bg-card px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-card-hover dark:border-amber-700 dark:bg-slate-900 dark:text-amber-300"
+                        onClick={() => openAnalysis(item)}
+                        disabled={isAnalyzing}
+                        className="rounded-lg bg-indigo-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        補填 plan
+                        {isAnalyzing ? "分析中…" : "即時分析"}
                       </button>
+                      <button
+                        onClick={() => toggleHistory(item.id)}
+                        className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-card-hover"
+                      >
+                        {isExpanded ? "收起歷史" : "歷史紀錄"}
+                      </button>
+                      <button
+                        onClick={() => setAddEntryItem(item)}
+                        className="rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
+                      >
+                        加碼
+                      </button>
+                      <div className="ml-auto flex items-center gap-1">
+                        <button
+                          onClick={() => setCloseItem(item)}
+                          className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:bg-indigo-900"
+                        >
+                          出場
+                        </button>
+                        <button
+                          onClick={() => setEditItem(item)}
+                          title="編輯持股"
+                          className="rounded-lg p-2 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="h-4 w-4"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                          >
+                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => setDeleteItem(item)}
+                          title="刪除持股"
+                          className="rounded-lg p-2 text-text-faint hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950 dark:hover:text-red-400"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="h-4 w-4"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
-                )}
 
-                {/* Action buttons */}
-                <div className="mt-3 flex items-center gap-2">
-                  <button
-                    onClick={() => openAnalysis(item)}
-                    disabled={isAnalyzing}
-                    className="rounded-lg bg-indigo-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isAnalyzing ? "分析中…" : "即時分析"}
-                  </button>
-                  <button
-                    onClick={() => toggleHistory(item.id)}
-                    className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-card-hover"
-                  >
-                    {isExpanded ? "收起歷史" : "歷史紀錄"}
-                  </button>
-                  <button
-                    onClick={() => setAddEntryItem(item)}
-                    className="rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
-                  >
-                    加碼
-                  </button>
-                  <div className="ml-auto flex items-center gap-1">
-                    <button
-                      onClick={() => setCloseItem(item)}
-                      className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:bg-indigo-900"
-                    >
-                      出場
-                    </button>
-                    <button
-                      onClick={() => setEditItem(item)}
-                      title="編輯持股"
-                      className="rounded-lg p-2 text-text-faint hover:bg-card-hover hover:text-text-secondary"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={() => setDeleteItem(item)}
-                      title="刪除持股"
-                      className="rounded-lg p-2 text-text-faint hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950 dark:hover:text-red-400"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {isExpanded && (
-                <div className="border-t border-border-subtle px-4 pb-4 pt-3">
-                  {historyLoading[item.id] ? (
-                    <p className="text-xs text-text-faint">載入中…</p>
-                  ) : history && history.length > 0 ? (
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="text-left text-text-faint">
-                          <th className="pb-1 font-medium">日期</th>
-                          <th className="pb-1 font-medium">風險狀態</th>
-                          <th className="pb-1 font-medium text-right">當時損益</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border-subtle">
-                        {history.map((row) => {
-                          const action = row.recommended_action;
-                          const actionColor = historyRiskTextClass(row.risk_state, action);
-                          const actionLabel = row.risk_state_label ?? legacyActionRiskLabel(action) ?? "—";
-                          const closePrice = row.indicators?.close_price;
-                          const plPct = closePrice != null
-                            ? ((closePrice - item.entry_price) / item.entry_price) * 100
-                            : null;
-                          return (
-                            <tr key={row.record_date} className="text-text-secondary">
-                              <td className="py-1">{row.record_date}</td>
-                              <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
-                              <td className={`py-1 text-right font-mono text-xs ${plPct == null ? "text-text-faint" :
-                                plPct >= 0 ? "text-green-600" : "text-red-600"
-                                }`}>
-                                {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
-                              </td>
+                  {isExpanded && (
+                    <div className="border-t border-border-subtle px-4 pb-4 pt-3">
+                      {historyLoading[item.id] ? (
+                        <p className="text-xs text-text-faint">載入中…</p>
+                      ) : history && history.length > 0 ? (
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-text-faint">
+                              <th className="pb-1 font-medium">日期</th>
+                              <th className="pb-1 font-medium">風險狀態</th>
+                              <th className="pb-1 font-medium text-right">當時損益</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <p className="text-xs text-text-faint">尚無診斷紀錄。</p>
+                          </thead>
+                          <tbody className="divide-y divide-border-subtle">
+                            {history.map((row) => {
+                              const action = row.recommended_action;
+                              const actionColor = historyRiskTextClass(row.risk_state, action);
+                              const actionLabel = row.risk_state_label ?? legacyActionRiskLabel(action) ?? "—";
+                              const closePrice = row.indicators?.close_price;
+                              const plPct =
+                                closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
+                              return (
+                                <tr key={row.record_date} className="text-text-secondary">
+                                  <td className="py-1">{row.record_date}</td>
+                                  <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
+                                  <td
+                                    className={`py-1 text-right font-mono text-xs ${
+                                      plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
+                                    }`}
+                                  >
+                                    {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <p className="text-xs text-text-faint">尚無診斷紀錄。</p>
+                      )}
+                    </div>
                   )}
-                </div>
-              )}
-            </article>
-          );
-        })}
+                </article>
+              );
+            })}
           </>
         )}
       </div>

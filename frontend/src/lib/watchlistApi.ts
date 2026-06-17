@@ -5,6 +5,7 @@ export interface WatchlistItem {
   symbol: string;
   name: string | null;
   notes: string | null;
+  sort_order: number;
   created_at: string;
   updated_at: string;
 }
@@ -16,6 +17,10 @@ export interface CreateWatchlistRequest {
 
 export interface UpdateWatchlistRequest {
   notes?: string | null;
+}
+
+export interface ReorderWatchlistRequest {
+  item_ids: number[];
 }
 
 export function fetchWatchlistItems(): Promise<WatchlistItem[]> {
@@ -31,6 +36,13 @@ export function createWatchlistItem(body: CreateWatchlistRequest): Promise<Watch
 
 export function updateWatchlistItem(id: number, body: UpdateWatchlistRequest): Promise<WatchlistItem> {
   return requestJson<WatchlistItem>(`/watchlist/${id}`, {
+    method: "PUT",
+    body,
+  });
+}
+
+export function reorderWatchlistItems(body: ReorderWatchlistRequest): Promise<WatchlistItem[]> {
+  return requestJson<WatchlistItem[]>("/watchlist/reorder", {
     method: "PUT",
     body,
   });

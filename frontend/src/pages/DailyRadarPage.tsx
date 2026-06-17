@@ -297,8 +297,10 @@ function formatBackgroundFreshness(value: string): string {
 }
 
 function backgroundLabelClass(label: DailyRadarBackgroundContextLabel): string {
-  if (label.freshness === "fresh") return "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200";
-  if (label.freshness === "stale") return "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
+  if (label.freshness === "fresh")
+    return "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200";
+  if (label.freshness === "stale")
+    return "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200";
   return "border-border-subtle bg-surface text-text-secondary";
 }
 
@@ -408,7 +410,9 @@ function getCandidateWatchItems(candidate: DailyRadarCandidate): string[] {
 
     return [
       support ? `支撐 ${support} 是否守住。` : "回測支撐區是否守住。",
-      ma20 || ma60 ? `收盤是否維持在 ${[ma20 ? `MA20 ${ma20}` : null, ma60 ? `MA60 ${ma60}` : null].filter(Boolean).join("、")} 附近。` : "收盤是否維持在關鍵均線附近。",
+      ma20 || ma60
+        ? `收盤是否維持在 ${[ma20 ? `MA20 ${ma20}` : null, ma60 ? `MA60 ${ma60}` : null].filter(Boolean).join("、")} 附近。`
+        : "收盤是否維持在關鍵均線附近。",
       "量能、OBV 與融資是否維持穩定，不要同步轉弱或升溫。",
     ];
   }
@@ -422,18 +426,10 @@ function getCandidateWatchItems(candidate: DailyRadarCandidate): string[] {
   }
 
   if (candidate.primary_bucket === "price_volume_strengthening") {
-    return [
-      "轉強後是否能守住突破區或整理區上緣。",
-      "成交量是否維持健康放大，不要爆量收弱。",
-      "短線過熱風險是否受控。",
-    ];
+    return ["轉強後是否能守住突破區或整理區上緣。", "成交量是否維持健康放大，不要爆量收弱。", "短線過熱風險是否受控。"];
   }
 
-  return [
-    "近期低點是否不再被跌破。",
-    "MACD、KD 或量能是否繼續改善。",
-    "反彈是否有法人或量價結構配合。",
-  ];
+  return ["近期低點是否不再被跌破。", "MACD、KD 或量能是否繼續改善。", "反彈是否有法人或量價結構配合。"];
 }
 
 function getBackgroundContextUse(label: DailyRadarBackgroundContextLabel): string {
@@ -471,14 +467,21 @@ function normalizeSymbol(symbol: string): string {
 }
 
 function formatMatchedRuleDetailKey(value: string): string {
-  return MATCHED_RULE_DETAIL_LABEL[value] ?? BUCKET_LABEL[value as DailyRadarBucket] ?? RISK_LABEL[value as DailyRadarRiskLabel] ?? formatTraceKey(value);
+  return (
+    MATCHED_RULE_DETAIL_LABEL[value] ??
+    BUCKET_LABEL[value as DailyRadarBucket] ??
+    RISK_LABEL[value as DailyRadarRiskLabel] ??
+    formatTraceKey(value)
+  );
 }
 
 function formatMatchedRuleValue(value: string): string {
-  return MATCHED_RULE_VALUE_LABEL[value]
-    ?? BUCKET_LABEL[value as DailyRadarBucket]
-    ?? RISK_LABEL[value as DailyRadarRiskLabel]
-    ?? value;
+  return (
+    MATCHED_RULE_VALUE_LABEL[value] ??
+    BUCKET_LABEL[value as DailyRadarBucket] ??
+    RISK_LABEL[value as DailyRadarRiskLabel] ??
+    value
+  );
 }
 
 function formatTraceValue(
@@ -495,7 +498,10 @@ function formatTraceValue(
   }
   if (Array.isArray(value)) {
     if (value.length === 0) return "—";
-    const preview = value.slice(0, 4).map((item) => formatTraceValue(item, formatKey, formatStringValue)).join("、");
+    const preview = value
+      .slice(0, 4)
+      .map((item) => formatTraceValue(item, formatKey, formatStringValue))
+      .join("、");
     return value.length > 4 ? `${preview}，另 ${value.length - 4} 項` : preview;
   }
   if (isTraceRecord(value)) {
@@ -587,10 +593,11 @@ function DailyRadarBucketTabs({
           role="tab"
           aria-selected={selectedBucket === null}
           onClick={() => onSelectBucket(null)}
-          className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${selectedBucket === null
-            ? "bg-indigo-600 text-white shadow-sm"
-            : "border border-border bg-card text-text-muted hover:bg-card-hover hover:text-text-secondary"
-            }`}
+          className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
+            selectedBucket === null
+              ? "bg-indigo-600 text-white shadow-sm"
+              : "border border-border bg-card text-text-muted hover:bg-card-hover hover:text-text-secondary"
+          }`}
         >
           <span>全部候選</span>
           <span className="ml-2 rounded-full bg-white/20 px-2 py-0.5 text-xs">{totalCount}</span>
@@ -604,13 +611,16 @@ function DailyRadarBucketTabs({
               role="tab"
               aria-selected={active}
               onClick={() => onSelectBucket(bucket)}
-              className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${active
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "border border-border bg-card text-text-muted hover:bg-card-hover hover:text-text-secondary"
-                }`}
+              className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
+                active
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "border border-border bg-card text-text-muted hover:bg-card-hover hover:text-text-secondary"
+              }`}
             >
               <span>{BUCKET_LABEL[bucket]}</span>
-              <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${active ? "bg-white/20" : "bg-badge-neutral-bg text-badge-neutral-text"}`}>
+              <span
+                className={`ml-2 rounded-full px-2 py-0.5 text-xs ${active ? "bg-white/20" : "bg-badge-neutral-bg text-badge-neutral-text"}`}
+              >
                 {counts[bucket]}
               </span>
             </button>
@@ -635,7 +645,9 @@ function TraceValueList({
   const entries = Object.entries(payload).filter(([key]) => key !== "observation_score");
 
   if (entries.length === 0) {
-    return <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">{emptyText}</p>;
+    return (
+      <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">{emptyText}</p>
+    );
   }
 
   return (
@@ -643,7 +655,9 @@ function TraceValueList({
       {entries.map(([key, value]) => (
         <div key={key} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
           <dt className="text-xs font-medium text-text-muted">{formatKey(key)}</dt>
-          <dd className="mt-1 break-words text-sm text-text-primary">{formatTraceValue(value, formatKey, formatValue)}</dd>
+          <dd className="mt-1 break-words text-sm text-text-primary">
+            {formatTraceValue(value, formatKey, formatValue)}
+          </dd>
         </div>
       ))}
     </dl>
@@ -660,10 +674,15 @@ function BackgroundContextLabels({ labels }: { labels: DailyRadarBackgroundConte
       <div className="mt-3 grid gap-2">
         {labels.length > 0 ? (
           labels.map((label) => (
-            <article key={`${label.context_type}:${label.replay_key}`} className={`rounded-lg border px-3 py-3 ${backgroundLabelClass(label)}`}>
+            <article
+              key={`${label.context_type}:${label.replay_key}`}
+              className={`rounded-lg border px-3 py-3 ${backgroundLabelClass(label)}`}
+            >
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <p className="text-sm font-semibold text-current">{formatBackgroundContextType(label.context_type)}</p>
+                  <p className="text-sm font-semibold text-current">
+                    {formatBackgroundContextType(label.context_type)}
+                  </p>
                   <p className="mt-1 text-xs opacity-75">{label.label}</p>
                 </div>
                 <span className="rounded-md bg-white/60 px-2 py-0.5 text-xs font-medium text-current dark:bg-white/10">
@@ -694,7 +713,9 @@ function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }
   return (
     <section className="rounded-xl border border-indigo-500/30 bg-indigo-50/60 p-4 shadow-sm dark:border-indigo-400/20 dark:bg-indigo-950/20">
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
+        <span
+          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}
+        >
           {REPEAT_STATUS_LABEL[candidate.repeat_status]}
         </span>
         <span className="rounded-md bg-white/70 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-white/10 dark:text-indigo-200">
@@ -704,7 +725,9 @@ function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }
       <h3 className="mt-3 text-base font-semibold text-text-primary">
         {BUCKET_LABEL[candidate.primary_bucket]}候選，僅供觀察追蹤
       </h3>
-      <p className="mt-2 text-sm leading-relaxed text-text-secondary">{getBucketResearchThesis(candidate.primary_bucket)}</p>
+      <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+        {getBucketResearchThesis(candidate.primary_bucket)}
+      </p>
 
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         <div className="rounded-lg border border-border-subtle bg-card/80 px-3 py-3">
@@ -737,13 +760,21 @@ function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }
 
       <div className="mt-3 rounded-lg border border-border-subtle bg-card/80 px-3 py-3">
         <p className="text-xs font-semibold text-text-muted">失效條件</p>
-        <p className="mt-2 text-sm leading-relaxed text-text-secondary">{getBucketInvalidationHint(candidate.primary_bucket)}</p>
+        <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+          {getBucketInvalidationHint(candidate.primary_bucket)}
+        </p>
       </div>
     </section>
   );
 }
 
-function TechnicalTraceDetails({ candidate, dataDateEntries }: { candidate: DailyRadarCandidate; dataDateEntries: [string, string][] }) {
+function TechnicalTraceDetails({
+  candidate,
+  dataDateEntries,
+}: {
+  candidate: DailyRadarCandidate;
+  dataDateEntries: [string, string][];
+}) {
   return (
     <details className="rounded-xl border border-border bg-card p-4">
       <summary className="cursor-pointer text-sm font-semibold text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400">
@@ -781,15 +812,24 @@ function TechnicalTraceDetails({ candidate, dataDateEntries }: { candidate: Dail
                 <article key={rule.rule_id} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-text-primary">{rule.label}</p>
-                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">規則代碼：{rule.rule_id}</span>
+                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 font-mono text-xs text-badge-neutral-text">
+                      規則代碼：{rule.rule_id}
+                    </span>
                   </div>
                   <div className="mt-3">
-                    <TraceValueList payload={rule.details} emptyText="此規則未附加細節。" formatKey={formatMatchedRuleDetailKey} formatValue={formatMatchedRuleValue} />
+                    <TraceValueList
+                      payload={rule.details}
+                      emptyText="此規則未附加細節。"
+                      formatKey={formatMatchedRuleDetailKey}
+                      formatValue={formatMatchedRuleValue}
+                    />
                   </div>
                 </article>
               ))
             ) : (
-              <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">尚未回傳命中的觀察規則。</p>
+              <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">
+                尚未回傳命中的觀察規則。
+              </p>
             )}
           </div>
         </section>
@@ -805,7 +845,9 @@ function TechnicalTraceDetails({ candidate, dataDateEntries }: { candidate: Dail
                 </div>
               ))
             ) : (
-              <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint md:col-span-2">尚未回傳候選資料日期。</p>
+              <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint md:col-span-2">
+                尚未回傳候選資料日期。
+              </p>
             )}
           </div>
         </section>
@@ -859,16 +901,20 @@ function DailyRadarCandidateList({
           const normalizedSymbol = normalizeSymbol(candidate.symbol);
           const watchlistStatus = watchlistStatusBySymbol[normalizedSymbol] ?? "idle";
           const isWatchlisted = watchlistSymbols.has(normalizedSymbol);
-          const watchlistButtonLabel = watchlistStatus === "saving"
-            ? "儲存中..."
-            : isWatchlisted || watchlistStatus === "success"
-              ? "已關注"
-              : watchlistStatus === "error"
-                ? "重試加入"
-                : "加入關注";
+          const watchlistButtonLabel =
+            watchlistStatus === "saving"
+              ? "儲存中..."
+              : isWatchlisted || watchlistStatus === "success"
+                ? "已關注"
+                : watchlistStatus === "error"
+                  ? "重試加入"
+                  : "加入關注";
 
           return (
-            <article key={candidate.symbol} className="flex flex-col gap-3 px-4 py-4 transition hover:bg-card-hover focus-within:bg-card-hover md:flex-row md:items-stretch md:justify-between">
+            <article
+              key={candidate.symbol}
+              className="flex flex-col gap-3 px-4 py-4 transition hover:bg-card-hover focus-within:bg-card-hover md:flex-row md:items-stretch md:justify-between"
+            >
               <button
                 type="button"
                 aria-haspopup="dialog"
@@ -879,8 +925,12 @@ function DailyRadarCandidateList({
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="text-base font-semibold text-text-primary">{displayName ?? candidate.symbol}</p>
-                      {displayName && <p className="font-mono text-sm font-medium text-text-secondary">{candidate.symbol}</p>}
-                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}>
+                      {displayName && (
+                        <p className="font-mono text-sm font-medium text-text-secondary">{candidate.symbol}</p>
+                      )}
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}
+                      >
                         {REPEAT_STATUS_LABEL[candidate.repeat_status]}
                       </span>
                     </div>
@@ -890,7 +940,10 @@ function DailyRadarCandidateList({
                       </span>
                       {candidate.risk_labels.length > 0 ? (
                         candidate.risk_labels.map((risk) => (
-                          <span key={risk} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                          <span
+                            key={risk}
+                            className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                          >
                             {RISK_LABEL[risk]}
                           </span>
                         ))
@@ -1019,8 +1072,18 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
               className="rounded-lg p-2 text-text-faint transition hover:bg-card-hover hover:text-text-secondary focus:outline-none focus:ring-2 focus:ring-indigo-400"
               aria-label="關閉候選追蹤細節"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                  clipRule="evenodd"
+                />
               </svg>
             </button>
           </div>
@@ -1034,21 +1097,31 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
             <div className="mt-3 flex flex-wrap gap-2">
               {candidate.secondary_buckets.length > 0 ? (
                 candidate.secondary_buckets.map((bucket) => (
-                  <span key={bucket} className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text">
+                  <span
+                    key={bucket}
+                    className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text"
+                  >
                     次要分類：{BUCKET_LABEL[bucket]}
                   </span>
                 ))
               ) : (
-                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">無次要分類</span>
+                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                  無次要分類
+                </span>
               )}
               {candidate.risk_labels.length > 0 ? (
                 candidate.risk_labels.map((risk) => (
-                  <span key={risk} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  <span
+                    key={risk}
+                    className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                  >
                     {RISK_LABEL[risk]}
                   </span>
                 ))
               ) : (
-                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">未觸發明確風險標籤</span>
+                <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                  未觸發明確風險標籤
+                </span>
               )}
             </div>
           </section>
@@ -1056,7 +1129,6 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
           <BackgroundContextLabels labels={candidate.background_context_labels} />
 
           <TechnicalTraceDetails candidate={candidate} dataDateEntries={dataDateEntries} />
-
         </div>
       </aside>
     </div>
@@ -1078,9 +1150,7 @@ function ErrorState({ error, onRetry }: { error: DailyRadarDisplayError; onRetry
     <section className="rounded-xl border border-red-200 bg-red-50 p-6 shadow-sm dark:border-red-900 dark:bg-red-950">
       <p className="text-sm font-semibold text-red-700 dark:text-red-300">每日觀察雷達暫時無法載入</p>
       <p className="mt-2 text-sm text-red-700 dark:text-red-300">{error.message}</p>
-      {error.status && (
-        <p className="mt-1 text-xs text-red-600 dark:text-red-400">狀態碼：{error.status}</p>
-      )}
+      {error.status && <p className="mt-1 text-xs text-red-600 dark:text-red-400">狀態碼：{error.status}</p>}
       <button
         onClick={onRetry}
         className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700"
@@ -1169,7 +1239,11 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
         <StatCard label="最新掃描日" value={formatDate(run.run_date)} helper="盤後觀察批次" />
         <StatCard label="掃描狀態" value={RUN_STATUS_LABEL[run.status]} helper={RUN_STATUS_HELPER[run.status]} />
         <StatCard label="觀察候選數" value={String(run.candidates.length)} helper="符合規則的追蹤名單" />
-        <StatCard label="資料新鮮度" value={dataDateEntries.length > 0 ? "已回傳" : "待確認"} helper={freshnessSummary} />
+        <StatCard
+          label="資料新鮮度"
+          value={dataDateEntries.length > 0 ? "已回傳" : "待確認"}
+          helper={freshnessSummary}
+        />
       </section>
 
       {shouldShowStaleNotice && <StaleRunDataNotice runDate={run.run_date} freshnessSummary={freshnessSummary} />}

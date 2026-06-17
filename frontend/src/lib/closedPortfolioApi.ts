@@ -29,4 +29,3 @@ export function createPositionLifecycleReview(positionGroupId: string): Promise<
     method: "POST",
   });
 }
-

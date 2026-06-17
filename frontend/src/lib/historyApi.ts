@@ -11,10 +11,7 @@ export interface HistoryEntry {
   final_verdict: string | null;
 }
 
-export async function fetchSymbolHistory(
-  symbol: string,
-  days: number = 30,
-): Promise<HistoryEntry[]> {
+export async function fetchSymbolHistory(symbol: string, days: number = 30): Promise<HistoryEntry[]> {
   return requestJson<HistoryEntry[]>(`/history/${encodeURIComponent(symbol)}`, {
     query: { days },
   });

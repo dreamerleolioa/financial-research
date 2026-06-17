@@ -35,7 +35,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 
 - `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
-- `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入並快速帶回個股分析；它不代表進場、部位或交易紀錄。
+- `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入，並在列表內快速查看技術指標與複製摘要；它不代表進場、部位或交易紀錄。
 - `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。
 - `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
@@ -283,8 +283,9 @@ pnpm dev
 **關注列表（`/watchlist`）**
 
 - 保存目前登入使用者有興趣但尚未進入持股的股票
-- 支援新增 / 移除股票，以及編輯單筆觀察備註
-- 可從關注列表快速帶入 `/analyze?symbol=...` 進行個股查詢
+- 支援新增 / 移除股票、編輯單筆觀察備註，以及拖拉調整列表順序
+- 支援在列表內展開 raw 技術指標快查，透過 `POST /analyze` 搭配 `skip_ai: true` 取得 deterministic 指標，不執行完整 LLM 分析
+- 技術快查面板可複製完整指標摘要，方便帶到其他 AI agent 做深度分析
 - Analyze 結果與 Daily Radar 候選標的都可加入關注列表
 - 與 `/portfolio` 分離，不代表進場、部位、加碼或交易紀錄
 
@@ -338,6 +339,7 @@ make run-api
 - `GET /watchlist` — 列出目前登入使用者的關注股票清單
 - `POST /watchlist` — 新增關注股票；同一使用者同一 symbol 具冪等語義，已存在時回傳既有項目
 - `PUT /watchlist/{item_id}` — 更新關注項目的觀察備註
+- `PUT /watchlist/reorder` — 以完整 item id 清單調整目前登入使用者的關注列表順序
 - `DELETE /watchlist/{item_id}` — 移除關注項目
 - `GET/POST /portfolio/*` — 持股管理、持股診斷歷史、出場結案與已結案紀錄
 
