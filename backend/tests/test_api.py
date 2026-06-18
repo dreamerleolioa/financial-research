@@ -1306,6 +1306,83 @@ def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     assert full.get("snapshot", {}).get("symbol") == "2330.TW"
 
 
+def test_analyze_general_endpoint_reads_only_general_cache(monkeypatch) -> None:
+    """POST /analyze must not accidentally read the position-analysis cache."""
+    import ai_stock_sentinel.api as api_module
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_get_analysis_cache(db: object, symbol: str, analysis_type: str = "general") -> None:
+        calls.append((symbol, analysis_type))
+        return None
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", fake_get_analysis_cache)
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "一般分析結果",
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert calls == [("2330.TW", "general")]
+
+
+def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(monkeypatch) -> None:
+    """skip_ai quick lookup should reuse recent raw data and avoid external validation/fetch writes."""
+    import ai_stock_sentinel.api as api_module
+
+    cached_snapshot = asdict(_SNAPSHOT) | {"name": "台積電"}
+    cached_institutional = {"flow_state": "foreign_buying"}
+    cached_fundamental = {"pe_ratio": 28.1}
+    raw_cache = MagicMock()
+    raw_cache.technical = cached_snapshot
+    raw_cache.institutional = cached_institutional
+    raw_cache.fundamental = cached_fundamental
+    raw_cache.fetched_at = "2026-06-18T09:01:00+08:00"
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: pytest.fail("skip_ai must bypass L1 analysis cache"))
+    monkeypatch.setattr(api_module, "get_recent_raw_data", lambda db, symbol, max_age_seconds=600: raw_cache)
+    monkeypatch.setattr(api_module, "_check_symbol_exists", lambda symbol: pytest.fail("raw cache hit must not validate symbol externally"))
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: pytest.fail("raw cache hit must not rewrite raw data"))
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: pytest.fail("skip_ai must not write analysis cache"))
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+
+    graph = _make_graph(
+        {
+            "snapshot": cached_snapshot,
+            "institutional_flow": cached_institutional,
+            "fundamental_data": cached_fundamental,
+            "analysis": "快查結果",
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+    response = client.post("/analyze", json={"symbol": "2330.TW", "skip_ai": True})
+
+    assert response.status_code == 200
+    graph_input = graph.invoke.call_args.args[0]
+    assert graph_input["skip_ai"] is True
+    assert graph_input["snapshot"] == cached_snapshot
+    assert graph_input["institutional_flow"] == cached_institutional
+    assert graph_input["fundamental_data"] == cached_fundamental
+    assert response.json()["snapshot"]["name"] == "台積電"
+    assert response.json()["fundamental_data"] == cached_fundamental
+
+
 # ---------------------------------------------------------------------------
 # Backfill yesterday indicators
 # ---------------------------------------------------------------------------

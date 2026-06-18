@@ -1,7 +1,7 @@
 # Backend Refactor Architecture Plan
 
 > Date: 2026-06-18
-> Status: Accepted for staged execution
+> Status: Phase 2 completed
 > Scope: Backend architecture refactor plan for the existing FastAPI monolith.
 > Runtime constraint: keep one FastAPI app, one SQLAlchemy/PostgreSQL database, one CI path, and the current Python 3.11 + uv stack.
 > Relationship: this document is a temporary refactor decision and execution plan. It is not part of the canonical specs index. After the refactor is complete, delete this plan and update current system facts in `ai-stock-sentinel-architecture-spec.md`; API contracts remain in `backend-api-technical-spec.md`.
@@ -326,6 +326,8 @@ Rollback:
 
 ### Phase 2: Add characterization tests
 
+Status: Completed on 2026-06-18.
+
 Primary files:
 
 - `backend/tests/test_portfolio_router.py`
@@ -340,6 +342,8 @@ Actions:
 - Add tests for behavior that must not change during refactor.
 - Prefer offline tests with dependency injection and fixtures.
 - Cover happy paths, validation errors, stale/missing data, cache isolation, and shared-context boundaries.
+- Added explicit `/analyze` characterization coverage for general-cache lookup and `skip_ai` recent raw-cache reuse.
+- Confirmed existing Portfolio and Daily Radar tests already cover partial/full close events, risk-summary final raw-row selection, public Daily Radar reads, and shared-context evidence boundaries.
 
 Required behavior coverage:
 
@@ -358,6 +362,7 @@ cd backend
 uv run pytest tests/test_portfolio_router.py tests/test_portfolio_risk_summary.py
 uv run pytest tests/test_api.py tests/test_analysis_cache.py
 uv run pytest tests/test_daily_radar_service.py tests/test_daily_radar_api_contract.py
+uv run pytest tests/test_portfolio_history.py tests/test_daily_radar_api.py tests/test_graph_builder.py tests/test_graph_nodes.py
 ```
 
 Rollback:
