@@ -1,7 +1,7 @@
 # Backend Refactor Architecture Plan
 
 > Date: 2026-06-18
-> Status: Phase 5 completed
+> Status: Phase 6 completed
 > Scope: Backend architecture refactor plan for the existing FastAPI monolith.
 > Runtime constraint: keep one FastAPI app, one SQLAlchemy/PostgreSQL database, one CI path, and the current Python 3.11 + uv stack.
 > Relationship: this document is a temporary refactor decision and execution plan. It is not part of the canonical specs index. After the refactor is complete, delete this plan and update current system facts in `ai-stock-sentinel-architecture-spec.md`; API contracts remain in `backend-api-technical-spec.md`.
@@ -483,6 +483,8 @@ Rollback:
 
 ### Phase 6: Add import boundary guard
 
+Status: Completed on 2026-06-18.
+
 Primary files:
 
 - `backend/tests/test_backend_architecture_boundaries.py`
@@ -493,6 +495,10 @@ Actions:
 - Check that domain modules do not import `fastapi`.
 - Check that domain calculation modules do not import SQLAlchemy sessions or external providers.
 - Check that routers do not become the only home for new deterministic business rules where an application/domain module exists.
+- Added a low-noise AST-based boundary test for pure calculation modules in Analysis, Daily Radar, and Portfolio.
+- Guarded refactored HTTP boundaries (`api.py`, Daily Radar router, Portfolio routers) from reintroducing Pydantic schema classes.
+- Guarded Daily Radar router from reabsorbing public response presenter helpers that now live in `daily_radar/presenter.py`.
+- Intentionally did not include Auth and Watchlist routers yet because those areas have not gone through this refactor.
 
 Verification:
 
