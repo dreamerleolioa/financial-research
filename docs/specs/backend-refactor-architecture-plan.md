@@ -1,7 +1,7 @@
 # Backend Refactor Architecture Plan
 
 > Date: 2026-06-18
-> Status: Phase 4 completed
+> Status: Phase 5 completed
 > Scope: Backend architecture refactor plan for the existing FastAPI monolith.
 > Runtime constraint: keep one FastAPI app, one SQLAlchemy/PostgreSQL database, one CI path, and the current Python 3.11 + uv stack.
 > Relationship: this document is a temporary refactor decision and execution plan. It is not part of the canonical specs index. After the refactor is complete, delete this plan and update current system facts in `ai-stock-sentinel-architecture-spec.md`; API contracts remain in `backend-api-technical-spec.md`.
@@ -447,10 +447,14 @@ Rollback:
 
 ### Phase 5: Slim Daily Radar router
 
+Status: Completed on 2026-06-18.
+
 Primary files:
 
 - `backend/src/ai_stock_sentinel/daily_radar/router.py`
 - `backend/src/ai_stock_sentinel/daily_radar/schemas.py`
+- `backend/src/ai_stock_sentinel/daily_radar/presenter.py`
+- `backend/src/ai_stock_sentinel/daily_radar/constants.py`
 - `backend/src/ai_stock_sentinel/daily_radar/service.py`
 - `backend/src/ai_stock_sentinel/daily_radar/repository.py`
 
@@ -460,6 +464,10 @@ Actions:
 - Move public response serialization helpers out of the router only where it reduces router coupling.
 - Keep scoring, prefilter, background context, provider routing, and repository semantics unchanged unless tests force a small correction.
 - Do not change provider ownership or shared-context ranking boundaries in this phase.
+- Moved internal Daily Radar request/response models from `router.py` to `schemas.py`.
+- Added `presenter.py` for public run, candidate, symbol-history, and internal run-trigger response serialization.
+- Moved the background-context type tuple to `constants.py`; `repository.py` keeps the existing `BACKGROUND_CONTEXT_TYPES` alias for compatibility.
+- Kept Daily Radar run orchestration and institutional universe payload shaping in `router.py` for this phase.
 
 Verification:
 

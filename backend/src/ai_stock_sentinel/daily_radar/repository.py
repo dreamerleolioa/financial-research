@@ -7,11 +7,12 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
+from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
 
 
 PUBLIC_RUN_STATUSES = ("completed", "stale_data")
-BACKGROUND_CONTEXT_TYPES = ("weekly_major_holders", "lending", "full_margin")
+BACKGROUND_CONTEXT_TYPES = DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
 BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR = "daily_radar"
 
 
