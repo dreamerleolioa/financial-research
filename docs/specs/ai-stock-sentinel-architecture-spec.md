@@ -1,11 +1,11 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-06-12
-> 狀態：Current v3.0
+> 日期：2026-06-18
+> 狀態：Current v3.1
 > 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
-> 更新摘要：重新閱讀目前 repo 後同步現況。新增 FastAPI / LangGraph / SQLAlchemy / React Vite 架構快照、主要模組邊界、資料表與 workflow 地圖；補入 Daily Radar multi-track universe、shared background context cache、forward validation、monthly rule governance、portfolio entry/lifecycle/review flow；明確 shared context 只作 evidence/caveat/data quality trace，不覆寫 ranking、action、verdict 或 classification；將原本「建議」語氣更新為目前實作事實。
+> 更新摘要：同步後端架構重構後的目前事實。後端仍維持單一 FastAPI monolith、同一個 SQLAlchemy/PostgreSQL DB、同一套 uv/pytest/CI；已採用務實的 Clean Architecture / Hexagonal Architecture + DDD-lite + TDD guardrails。Analysis、Portfolio、Daily Radar 已拆出 schemas、application services、repository/presenter/adapter 等邊界；新增 AST-based architecture boundary tests 防止已整理出的純計算與 HTTP boundary 回退。
 
-## 0. 目前實作快照（2026-06-12）
+## 0. 目前實作快照（2026-06-18）
 
 本專案目前不是單一股票分析 demo，而是由四個產品表面共用資料層與研究紀律的系統：
 
@@ -30,14 +30,34 @@
 
 | 模組 | 責任 |
 | ---- | ---- |
-| `api.py` | FastAPI app、`/analyze`、`/analyze/position`、`/internal/fetch-raw-data`、cache assembly、shared context read attachment |
+| `api.py` | FastAPI app setup、middleware、router include、health check、`/internal/fetch-raw-data` |
 | `graph/` | LangGraph state、nodes、builder；負責 crawl、external data fetch、judge、clean、analyze flow |
-| `analysis/` | LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
+| `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
 | `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental provider |
-| `daily_radar/` | universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、router |
-| `portfolio/` | portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
+| `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
+| `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
+| `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
 | `db/models.py` | SQLAlchemy models，包含 portfolio、events、reviews、analysis cache、raw data、Daily Radar、forward validation、shared background context |
+
+### 0.2.1 後端架構邊界（2026-06-18）
+
+目前後端採用 **modular FastAPI monolith**，不是 microservices。架構方向是務實的 Clean Architecture / Hexagonal Architecture + DDD-lite：
+
+- **Clean Architecture**：HTTP/router、application use case、domain calculation、repository/adapter 的責任逐步分離；依賴方向以「router/app orchestration 依賴內層規則」為主。
+- **Hexagonal Architecture**：只有在邊界能降低測試成本或外部系統耦合時才引入 adapter/port，例如 LangGraph runner、provider clients、raw data/background context providers；不為簡單 DB transaction 強行包抽象。
+- **DDD-lite**：使用專案語言命名 use case 和 deterministic rules，例如 `add_position`、`close_position`、`get_risk_summary`、`position_lifecycle`、`daily_radar`、`shared_context`；不引入 heavy aggregate/event-sourcing/CQRS ceremony。
+- **TDD guardrails**：行為移動前後以 characterization/contract/router tests 保護 API shape、cache isolation、Daily Radar scoring/shared-context semantics、Portfolio event ledger 與 deterministic financial math。
+
+目前已落地的後端重構邊界：
+
+| 區域 | 目前邊界 |
+| ---- | -------- |
+| Analysis | `analysis/router.py` 承接 `/analyze`、`/analyze/position`、`/history/{symbol}` HTTP boundary 與 shared context attachment；`analysis/schemas.py` 保存 request/response models；`analysis/application/analyze_stock.py` 與 `analyze_position.py` 建立 Graph initial state；`analysis/application/analysis_cache.py` 管理 analysis/raw-data cache helper；`analysis/application/response_builder.py` 負責 response assembly 與 technical indicator extraction；`analysis/adapters/graph_runner.py` 包裝 Graph construction/invocation。`api.py` 只 include router 並保留 internal raw-data maintenance endpoint。 |
+| Portfolio | `portfolio/schemas.py` 保存 request/response models；`portfolio/repository.py` 收斂共享 ownership/query helper；`portfolio/application/*` 承接 create/update/add-entry/close/risk-summary use cases；`fees.py` 與 `risk_summary.py` 保持純 deterministic calculation。Router 仍保留 HTTP dependency、response serialization、lifecycle/review endpoints 與部分 transaction orchestration。 |
+| Daily Radar | `daily_radar/schemas.py` 保存 internal/public request/response models；`daily_radar/presenter.py` 負責 public run/candidate/history 與 run-trigger response serialization；`daily_radar/constants.py` 保存共享常數；`daily_radar/service.py` 是 Daily Radar run application service；`daily_radar/repository.py` 管理 persistence queries；`daily_radar/router.py` 保留 internal workflow trigger、dependency wiring 與 institutional universe payload shaping。 |
+| Watchlist | `watchlist/schemas.py` 保存 request models；`watchlist/repository.py` 收斂 query helper；`watchlist/application/items.py` 承接 normalize、idempotent create、reorder completeness、update/delete ownership rules；`watchlist/router.py` 保留 FastAPI dependency、HTTP error mapping 與 response serialization。 |
+| Architecture guard | `backend/tests/test_backend_architecture_boundaries.py` 以 AST 檢查純計算 modules 不引入 FastAPI/SQLAlchemy/external provider/DB；已重構 HTTP boundaries 不重新定義 Pydantic schema；Daily Radar router 不重新吸收 public response presenter helpers。Auth router 尚未納入此 guard，因為它尚未經過同一輪重構。 |
 
 ### 0.3 主要資料表
 

@@ -22,9 +22,11 @@ PURE_DOMAIN_MODULES = (
 
 REFACTORED_HTTP_BOUNDARIES = (
     SRC_ROOT / "api.py",
+    SRC_ROOT / "analysis" / "router.py",
     SRC_ROOT / "daily_radar" / "router.py",
     SRC_ROOT / "portfolio" / "history_router.py",
     SRC_ROOT / "portfolio" / "router.py",
+    SRC_ROOT / "watchlist" / "router.py",
 )
 
 PURE_DOMAIN_BANNED_IMPORTS = (
