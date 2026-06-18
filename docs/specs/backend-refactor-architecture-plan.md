@@ -1,7 +1,7 @@
 # Backend Refactor Architecture Plan
 
 > Date: 2026-06-18
-> Status: Phase 2 completed
+> Status: Phase 3 completed
 > Scope: Backend architecture refactor plan for the existing FastAPI monolith.
 > Runtime constraint: keep one FastAPI app, one SQLAlchemy/PostgreSQL database, one CI path, and the current Python 3.11 + uv stack.
 > Relationship: this document is a temporary refactor decision and execution plan. It is not part of the canonical specs index. After the refactor is complete, delete this plan and update current system facts in `ai-stock-sentinel-architecture-spec.md`; API contracts remain in `backend-api-technical-spec.md`.
@@ -371,6 +371,8 @@ Rollback:
 
 ### Phase 3: Extract Portfolio application services
 
+Status: Completed on 2026-06-18.
+
 Primary files:
 
 - `backend/src/ai_stock_sentinel/portfolio/router.py`
@@ -389,6 +391,8 @@ Actions:
 - Move add/update/add-entry/close orchestration into application services.
 - Keep deterministic calculations in existing focused modules such as `fees.py` and `risk_summary.py`.
 - Keep endpoint paths and response bodies unchanged.
+- Added `portfolio/application/*` use cases for create, update, add-entry, close, and risk summary.
+- Kept router-level response serialization and lifecycle/review endpoints in place for this phase.
 
 Verification:
 

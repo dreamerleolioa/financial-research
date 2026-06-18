@@ -1,13 +1,10 @@
 # backend/src/ai_stock_sentinel/portfolio/router.py
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -20,14 +17,23 @@ from ai_stock_sentinel.db.models import (
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
-    StockRawData,
     TradeReview,
     UserPortfolio,
 )
 from ai_stock_sentinel.db.session import get_db
-from ai_stock_sentinel.portfolio.entry_record_contract import EntryRecordContext
-from ai_stock_sentinel.portfolio.fees import calculate_broker_fee, calculate_sell_transaction_tax
-from ai_stock_sentinel.portfolio.risk_summary import build_portfolio_risk_summary
+from ai_stock_sentinel.portfolio.application.add_entry import add_entry_to_position
+from ai_stock_sentinel.portfolio.application.add_position import create_portfolio
+from ai_stock_sentinel.portfolio.application.close_position import close_position as close_position_use_case
+from ai_stock_sentinel.portfolio.application.get_risk_summary import build_user_portfolio_risk_summary
+from ai_stock_sentinel.portfolio.application.update_position import update_portfolio_record
+from ai_stock_sentinel.portfolio.repository import list_active_portfolios, list_closed_portfolios
+from ai_stock_sentinel.portfolio.schemas import (
+    AddEntryRequest,
+    BackfillLifecyclePlanRequest,
+    ClosePortfolioRequest,
+    PortfolioCreateRequest,
+    UpdatePortfolioRequest,
+)
 from ai_stock_sentinel.shared_context import (
     SHARED_CONTEXT_CONSUMER_PORTFOLIO,
     read_shared_context_for_symbol,
@@ -36,116 +42,8 @@ from ai_stock_sentinel.user_models.user import User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
-PORTFOLIO_LIMIT = 8
 TRADE_REVIEW_VERSION = "trade-review-v1"
 POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v1"
-
-ENTRY_REASON_CATEGORIES = {
-    "breakout_confirmation": "technical",
-    "pullback_held_support": "technical",
-    "pullback_held_ma20": "technical",
-    "institutional_flow_strengthened": "institutional_flow",
-    "fundamental_thesis_improved": "fundamental",
-    "event_or_news_catalyst": "news",
-    "long_term_accumulation": "plan_execution",
-    "value_revaluation": "fundamental",
-    "other": "plan_execution",
-}
-
-
-class PortfolioCreateRequest(BaseModel):
-    symbol: str
-    entry_price: float = Field(gt=0)
-    entry_date: date
-    quantity: int = 0
-    notes: str | None = None
-    entry_record: EntryRecordContext | None = None
-
-
-class ClosePortfolioRequest(BaseModel):
-    exit_date: date
-    exit_price: float = Field(gt=0, allow_inf_nan=False)
-    exit_quantity: int = Field(gt=0)
-    fees: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    taxes: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-
-
-AddEntryReasonCode = Literal[
-    "breakout_confirmation",
-    "pullback_held_support",
-    "pullback_held_ma20",
-    "institutional_flow_strengthened",
-    "fundamental_thesis_improved",
-    "event_or_news_catalyst",
-    "long_term_accumulation",
-    "value_revaluation",
-    "other",
-    "planned_scale_in",
-    "averaging_down",
-    "chasing_momentum",
-    "not_recorded",
-]
-
-LifecycleSetupType = Literal[
-    "breakout",
-    "pullback",
-    "mean_reversion",
-    "value_revaluation",
-    "earnings_or_event",
-    "momentum_continuation",
-    "long_term_accumulation",
-    "defensive_rebalance",
-    "other",
-]
-
-PlannedHoldingPeriod = Literal["short_term", "swing", "medium_term", "long_term", "not_recorded"]
-DefaultStopRule = Literal[
-    "break_20d_low",
-    "break_ma20",
-    "break_ma60",
-    "cost_minus_pct",
-    "fixed_price",
-    "no_stop_recorded",
-    "not_recorded",
-]
-AddEntryCondition = Literal[
-    "no_add_entry",
-    "breakout_above_prior_high",
-    "pullback_holds_ma20",
-    "pullback_holds_support",
-    "institutional_flow_continues",
-    "profit_threshold_reached",
-    "data_quality_complete_only",
-    "no_averaging_down",
-    "custom_plan_required",
-    "not_recorded",
-]
-
-
-class AddEntryRequest(BaseModel):
-    event_date: date
-    price: float = Field(gt=0, allow_inf_nan=False)
-    quantity: int = Field(gt=0)
-    fees: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    taxes: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    reason_code: AddEntryReasonCode
-    plan_adherence: Literal["yes", "partial", "no", "not_recorded"]
-    confidence_level: Literal["high", "medium", "low", "not_recorded"]
-    note: str | None = None
-
-
-class BackfillLifecyclePlanRequest(BaseModel):
-    thesis: str | None = None
-    setup_type: LifecycleSetupType | None = None
-    planned_holding_period: PlannedHoldingPeriod | None = None
-    default_stop_rule: DefaultStopRule | None = None
-    add_entry_condition: AddEntryCondition | None = None
-    planned_invalidation: str | None = None
-    planned_stop_price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    planned_target_or_scale_out_rule: str | None = None
-    planned_risk_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    planned_risk_pct: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    position_sizing_rationale: str | None = None
 
 
 def _serialize_portfolio(item: UserPortfolio) -> dict:
@@ -270,77 +168,6 @@ def _serialize_decision_context_status(
     }
 
 
-def _add_position_event(
-    db: Session,
-    *,
-    item: UserPortfolio,
-    event_type: str,
-    event_date: date,
-    price: Decimal,
-    quantity: int,
-    fees: Decimal = Decimal("0"),
-    taxes: Decimal = Decimal("0"),
-    source_portfolio_id: int | None = None,
-    note: str | None = None,
-    reason_category: str | None = None,
-    reason_code: str | None = None,
-    source: str = "user_recorded_at_event_time",
-    data_quality_note: str | None = None,
-) -> PositionEvent:
-    event = PositionEvent(
-        user_id=item.user_id,
-        position_group_id=item.position_group_id,
-        symbol=item.symbol,
-        event_type=event_type,
-        event_date=event_date,
-        price=price,
-        quantity=quantity,
-        fees=fees,
-        taxes=taxes,
-        source_portfolio_id=source_portfolio_id if source_portfolio_id is not None else item.id,
-        note=item.notes if note is None else note,
-        reason_category=reason_category,
-        reason_code=reason_code,
-        source=source,
-        data_quality_note=data_quality_note,
-    )
-    db.add(event)
-    return event
-
-
-def _entry_reason_category(entry_reason: str | None) -> str | None:
-    if entry_reason is None:
-        return None
-    if entry_reason == "not_recorded":
-        return "not_recorded"
-    return ENTRY_REASON_CATEGORIES[entry_reason]
-
-
-def _entry_reason_code(entry_reason: str | None) -> str | None:
-    if entry_reason in (None, "not_recorded"):
-        return None
-    return entry_reason
-
-
-def _add_entry_reason_category(reason_code: str) -> str:
-    if reason_code == "not_recorded":
-        return "not_recorded"
-    if reason_code in {"planned_scale_in", "averaging_down", "chasing_momentum"}:
-        return "plan_execution"
-    return ENTRY_REASON_CATEGORIES[reason_code]
-
-
-def _add_entry_reason_code(reason_code: str) -> str | None:
-    return None if reason_code == "not_recorded" else reason_code
-
-
-def _entry_record_has_lifecycle_plan(entry_record: EntryRecordContext) -> bool:
-    return any(
-        field in entry_record.model_fields_set
-        for field in ("planned_holding_period", "default_stop_rule", "add_entry_condition")
-    )
-
-
 def _get_reviewable_portfolio(db: Session, portfolio_id: int, user_id: int) -> UserPortfolio:
     item = db.execute(
         select(UserPortfolio).where(
@@ -431,12 +258,7 @@ def list_portfolio(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    rows = db.execute(
-        select(UserPortfolio).where(
-            UserPortfolio.user_id == current_user.id,
-            UserPortfolio.is_active == True,
-        ).order_by(UserPortfolio.created_at.desc())
-    ).scalars().all()
+    rows = list_active_portfolios(db, user_id=current_user.id)
 
     return [
         {
@@ -457,14 +279,7 @@ def list_closed_portfolio(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    rows = db.execute(
-        select(UserPortfolio).where(
-            UserPortfolio.user_id == current_user.id,
-            UserPortfolio.is_active == False,
-            UserPortfolio.exit_date.is_not(None),
-        ).order_by(UserPortfolio.exit_date.desc(), UserPortfolio.updated_at.desc())
-    ).scalars().all()
-
+    rows = list_closed_portfolios(db, user_id=current_user.id)
     return [_serialize_portfolio(row) for row in rows]
 
 
@@ -518,44 +333,10 @@ def get_portfolio_risk_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    rows = db.execute(
-        select(UserPortfolio).where(
-            UserPortfolio.user_id == current_user.id,
-            UserPortfolio.is_active == True,
-        ).order_by(UserPortfolio.created_at.desc())
-    ).scalars().all()
-
-    group_ids = [row.position_group_id for row in rows]
-    plans = []
-    if group_ids:
-        plans = db.execute(
-            select(PositionLifecyclePlan).where(
-                PositionLifecyclePlan.user_id == current_user.id,
-                PositionLifecyclePlan.position_group_id.in_(group_ids),
-            )
-        ).scalars().all()
-    plans_by_group = {plan.position_group_id: plan for plan in plans}
-
-    symbols = sorted({row.symbol for row in rows})
-    raw_data_by_symbol = {}
-    if symbols:
-        raw_rows = db.execute(
-            select(StockRawData)
-            .where(
-                StockRawData.symbol.in_(symbols),
-                StockRawData.raw_data_is_final.is_(True),
-            )
-            .order_by(StockRawData.symbol.asc(), StockRawData.record_date.desc(), StockRawData.id.desc())
-        ).scalars().all()
-        for raw_row in raw_rows:
-            raw_data_by_symbol.setdefault(raw_row.symbol, raw_row)
-
-    return build_portfolio_risk_summary(
-        rows,
-        plans_by_group=plans_by_group,
-        raw_data_by_symbol=raw_data_by_symbol,
-        symbol_names_by_symbol={symbol: resolve_symbol_name(symbol) for symbol in symbols},
-        as_of_date=date.today(),
+    return build_user_portfolio_risk_summary(
+        db,
+        user_id=current_user.id,
+        symbol_name_resolver=resolve_symbol_name,
     )
 
 
@@ -780,70 +561,13 @@ def add_portfolio(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    active_count = db.execute(
-        select(func.count()).select_from(UserPortfolio).where(
-            UserPortfolio.user_id == current_user.id,
-            UserPortfolio.is_active == True,
-        )
-    ).scalar()
-
-    if active_count >= PORTFOLIO_LIMIT:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"最多只能追蹤 {PORTFOLIO_LIMIT} 筆持股",
-        )
-
-    if not check_symbol_exists(payload.symbol):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"查詢目標不存在：{payload.symbol}",
-        )
-
-    entry = UserPortfolio(
-        user_id=current_user.id,
-        position_group_id=str(uuid.uuid4()),
-        symbol=payload.symbol,
-        entry_price=payload.entry_price,
-        entry_date=payload.entry_date,
-        quantity=payload.quantity,
-        notes=payload.notes,
-    )
-    db.add(entry)
-    db.flush()
-    _add_position_event(
+    entry = create_portfolio(
         db,
-        item=entry,
-        event_type="initial_entry",
-        event_date=entry.entry_date,
-        price=Decimal(str(entry.entry_price)),
-        quantity=entry.quantity,
-        source_portfolio_id=entry.id,
-        note=payload.entry_record.note if payload.entry_record and payload.entry_record.note is not None else None,
-        reason_category=_entry_reason_category(payload.entry_record.entry_reason) if payload.entry_record else None,
-        reason_code=_entry_reason_code(payload.entry_record.entry_reason) if payload.entry_record else None,
+        user_id=current_user.id,
+        payload=payload,
+        symbol_exists_checker=check_symbol_exists,
     )
-    if payload.entry_record and _entry_record_has_lifecycle_plan(payload.entry_record):
-        db.add(PositionLifecyclePlan(
-            user_id=entry.user_id,
-            position_group_id=entry.position_group_id,
-            symbol=entry.symbol,
-            source_portfolio_id=entry.id,
-            planned_holding_period=payload.entry_record.planned_holding_period,
-            default_stop_rule=payload.entry_record.default_stop_rule,
-            add_entry_condition=payload.entry_record.add_entry_condition,
-            source="user_recorded_at_event_time",
-            created_after_entry=False,
-        ))
-    db.commit()
-    db.refresh(entry)
     return _serialize_portfolio(entry)
-
-
-class UpdatePortfolioRequest(BaseModel):
-    entry_price: float = Field(gt=0)
-    quantity: int
-    entry_date: date
-    notes: str | None = None
 
 
 @router.put("/{portfolio_id}")
@@ -853,16 +577,12 @@ def update_portfolio(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    item = db.get(UserPortfolio, portfolio_id)
-    if not item or item.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="無權限")
-    item.entry_price = payload.entry_price
-    item.quantity = payload.quantity
-    item.entry_date = payload.entry_date
-    item.notes = payload.notes
-    item.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(item)
+    item = update_portfolio_record(
+        db,
+        portfolio_id=portfolio_id,
+        user_id=current_user.id,
+        payload=payload,
+    )
     return _serialize_portfolio(item)
 
 
@@ -873,44 +593,12 @@ def add_entry_to_portfolio(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    item = _get_owned_active_portfolio_for_update(db, portfolio_id, current_user.id)
-    if payload.event_date < item.entry_date:
-        raise HTTPException(status_code=422, detail="加碼日期不可早於初始進場日期")
-
-    add_price = Decimal(str(payload.price))
-    add_quantity = Decimal(payload.quantity)
-    existing_quantity = Decimal(item.quantity)
-    new_quantity = existing_quantity + add_quantity
-    gross_amount = add_price * add_quantity
-    event_fees = calculate_broker_fee(
-        gross_amount,
-        actual_fee=Decimal(str(payload.fees)) if payload.fees is not None else None,
-    )
-    event_taxes = Decimal(str(payload.taxes)) if payload.taxes is not None else Decimal("0")
-    item.entry_price = ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity
-    item.quantity = int(new_quantity)
-    item.updated_at = datetime.now(timezone.utc)
-
-    event = _add_position_event(
+    item, event = add_entry_to_position(
         db,
-        item=item,
-        event_type="add_entry",
-        event_date=payload.event_date,
-        price=add_price,
-        quantity=payload.quantity,
-        fees=event_fees,
-        taxes=event_taxes,
-        source_portfolio_id=item.id,
-        note=payload.note,
-        reason_category=_add_entry_reason_category(payload.reason_code),
-        reason_code=_add_entry_reason_code(payload.reason_code),
-        source="user_recorded_at_event_time",
+        portfolio_id=portfolio_id,
+        user_id=current_user.id,
+        payload=payload,
     )
-    event.plan_adherence = payload.plan_adherence
-    event.confidence_level = payload.confidence_level
-    db.commit()
-    db.refresh(item)
-    db.refresh(event)
     return {
         "portfolio": _serialize_portfolio(item),
         "event": _serialize_position_event(event),
@@ -924,111 +612,13 @@ def close_portfolio(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    item = db.execute(
-        select(UserPortfolio)
-        .where(
-            UserPortfolio.id == portfolio_id,
-            UserPortfolio.user_id == current_user.id,
-        )
-        .with_for_update()
-    ).scalar_one_or_none()
-    if not item:
-        raise HTTPException(status_code=403, detail="無權限")
-
-    if not item.is_active:
-        raise HTTPException(status_code=409, detail="持倉已關閉")
-
-    if payload.exit_quantity > item.quantity:
-        raise HTTPException(status_code=422, detail="出場股數不可大於持有股數")
-
-    if payload.exit_date < item.entry_date:
-        raise HTTPException(status_code=422, detail="出場日期不可早於進場日期")
-
-    exit_price = Decimal(str(payload.exit_price))
-    entry_price = Decimal(str(item.entry_price))
-    if entry_price <= 0:
-        raise HTTPException(status_code=422, detail="成本價必須大於 0")
-    exit_quantity = Decimal(payload.exit_quantity)
-    gross_exit_amount = exit_price * exit_quantity
-    explicit_fee = Decimal(str(payload.fees)) if payload.fees is not None else None
-    explicit_tax = Decimal(str(payload.taxes)) if payload.taxes is not None else None
-    row_fees = calculate_broker_fee(
-        gross_exit_amount,
-        actual_fee=explicit_fee,
-    )
-    row_taxes = calculate_sell_transaction_tax(
-        gross_exit_amount,
-        explicit_tax=explicit_tax,
-    )
-    event_fees = row_fees
-    event_taxes = row_taxes
-    realized_pnl = (exit_price - entry_price) * exit_quantity - row_fees - row_taxes
-    realized_return_pct = realized_pnl / (entry_price * exit_quantity) * Decimal("100")
-    holding_days = (payload.exit_date - item.entry_date).days
-    updated_at = datetime.now(timezone.utc)
-
-    if payload.exit_quantity == item.quantity:
-        item.is_active = False
-        item.exit_date = payload.exit_date
-        item.exit_price = exit_price
-        item.exit_quantity = payload.exit_quantity
-        item.exit_fees = row_fees
-        item.exit_taxes = row_taxes
-        item.realized_pnl = realized_pnl
-        item.realized_return_pct = realized_return_pct
-        item.holding_days = holding_days
-        item.updated_at = updated_at
-        _add_position_event(
-            db,
-            item=item,
-            event_type="full_exit",
-            event_date=payload.exit_date,
-            price=exit_price,
-            quantity=payload.exit_quantity,
-            fees=event_fees,
-            taxes=event_taxes,
-            source_portfolio_id=item.id,
-        )
-        db.commit()
-        db.refresh(item)
-        return _serialize_portfolio(item)
-
-    item.quantity -= payload.exit_quantity
-    item.updated_at = updated_at
-    closed_item = UserPortfolio(
-        user_id=item.user_id,
-        position_group_id=item.position_group_id,
-        symbol=item.symbol,
-        entry_price=item.entry_price,
-        quantity=payload.exit_quantity,
-        entry_date=item.entry_date,
-        is_active=False,
-        exit_date=payload.exit_date,
-        exit_price=exit_price,
-        exit_quantity=payload.exit_quantity,
-        exit_fees=row_fees,
-        exit_taxes=row_taxes,
-        realized_pnl=realized_pnl,
-        realized_return_pct=realized_return_pct,
-        holding_days=holding_days,
-        notes=item.notes,
-    )
-    db.add(closed_item)
-    db.flush()
-    _add_position_event(
+    item = close_position_use_case(
         db,
-        item=closed_item,
-        event_type="partial_exit",
-        event_date=payload.exit_date,
-        price=exit_price,
-        quantity=payload.exit_quantity,
-        fees=event_fees,
-        taxes=event_taxes,
-        source_portfolio_id=closed_item.id,
+        portfolio_id=portfolio_id,
+        user_id=current_user.id,
+        payload=payload,
     )
-    db.commit()
-    db.refresh(closed_item)
-    return _serialize_portfolio(closed_item)
+    return _serialize_portfolio(item)
 
 
 @router.delete("/{portfolio_id}", status_code=204)
