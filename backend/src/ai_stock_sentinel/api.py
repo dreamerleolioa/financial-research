@@ -6,43 +6,66 @@ import math
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
-from datetime import date as _date, datetime, time as _time, timezone as _timezone
+from datetime import datetime, time as _time
 from zoneinfo import ZoneInfo
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.analysis.adapters.graph_runner import build_graph_singleton, invoke_graph
+from ai_stock_sentinel.analysis.application.analysis_cache import (
+    INTRADAY_DISCLAIMER,
+    MARKET_CLOSE,
+    build_analysis_response as _cache_build_analysis_response,
+    fetch_and_store_raw_data as _fetch_and_store_raw_data,
+    get_analysis_cache as _get_analysis_cache,
+    get_raw_data as _get_raw_data,
+    get_recent_raw_data as _get_recent_raw_data,
+    handle_cache_hit as _analysis_handle_cache_hit,
+    latest_number as _analysis_latest_number,
+    normalize_raw_technical_for_storage as _analysis_normalize_raw_technical_for_storage,
+    number_or_none as _analysis_number_or_none,
+    upsert_analysis_cache as _upsert_analysis_cache,
+)
+from ai_stock_sentinel.analysis.application.analyze_position import build_position_analyze_initial_state
+from ai_stock_sentinel.analysis.application.analyze_stock import build_analyze_initial_state, raw_cache_inputs
+from ai_stock_sentinel.analysis.application.response_builder import (
+    build_analyze_risk_language as _response_build_analyze_risk_language,
+    build_response as _response_build_response,
+    build_response_from_cache as _response_build_response_from_cache,
+    compute_bollinger_position as _response_compute_bollinger_position,
+    compute_technical_indicators as _response_compute_technical_indicators,
+    display_symbol_name as _response_display_symbol_name,
+    extract_indicators as _response_extract_indicators,
+    indicators_with_position_risk_from_full_result as _response_indicators_with_position_risk_from_full_result,
+    position_cache_matches as _response_position_cache_matches,
+    position_risk_language_snapshot as _response_position_risk_language_snapshot,
+    position_risk_language_snapshot_from_result as _response_position_risk_language_snapshot_from_result,
+)
+from ai_stock_sentinel.analysis.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    CachedAnalyzeResponse,
+    FetchRawDataRequest,
+    HistoryEntry,
+    PositionAnalyzeRequest,
+    TechnicalIndicators,
+)
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.auth.router import router as auth_router
 from ai_stock_sentinel.config import configure_logging, STRATEGY_VERSION
 from ai_stock_sentinel.daily_radar.router import router as daily_radar_router
 from ai_stock_sentinel.db.models import StockAnalysisCache, StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import get_db
-from ai_stock_sentinel.graph.builder import build_graph
-from ai_stock_sentinel.graph.state import GraphState
-from ai_stock_sentinel.main import build_graph_deps
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
-from ai_stock_sentinel.analysis.metrics import (
-    adx as _adx,
-    atr as _atr,
-    bollinger_bands as _bollinger_bands,
-    donchian_channel as _donchian_channel,
-    ma as _ma,
-    macd as _macd,
-    mfi as _mfi,
-    obv as _obv,
-    stochastic_kd as _stochastic_kd,
-)
-from ai_stock_sentinel.analysis.position_scorer import build_position_risk_language
 from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
@@ -58,224 +81,27 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
-class AnalyzeRequest(BaseModel):
-    symbol: str = Field(default="2330.TW", min_length=1)
-    news_text: str | None = None
-    skip_ai: bool = False
-
-
-class PositionAnalyzeRequest(BaseModel):
-    symbol: str = Field(min_length=1, max_length=20)
-    entry_price: float = Field(gt=0)
-    entry_date: str | None = None
-    quantity: int | None = None
-
-
-class PositionAnalysis(BaseModel):
-    entry_price: float
-    profit_loss_pct: float | None = None
-    position_status: str | None = None
-    position_narrative: str | None = None
-    risk_state: str | None = None
-    risk_state_label: str | None = None
-    discipline_triggers: list[str] = Field(default_factory=list)
-    observation_conditions: list[str] = Field(default_factory=list)
-    risk_control_reference: dict[str, Any] | None = None
-    command_language_deprecated: dict[str, Any] = Field(default_factory=dict)
-    recommended_action: str | None = None
-    trailing_stop: float | None = None
-    trailing_stop_reason: str | None = None
-    exit_reason: str | None = None
-    distance_to_trailing_stop_pct: float | None = None
-    distance_to_support_pct: float | None = None
-    unrealized_pnl: float | None = None
-    holding_days: int | None = None
-
-
-class TechnicalIndicators(BaseModel):
-    ma5: float | None = None
-    ma20: float | None = None
-    ma60: float | None = None
-    high_20d: float | None = None
-    low_20d: float | None = None
-    high_60d: float | None = None
-    low_60d: float | None = None
-    bollinger_upper: float | None = None
-    bollinger_mid: float | None = None
-    bollinger_lower: float | None = None
-    bollinger_bandwidth: float | None = None
-    bollinger_position: str | None = None
-    macd_line: float | None = None
-    macd_signal: float | None = None
-    macd_hist: float | None = None
-    macd_bias: str | None = None
-    kd_k: float | None = None
-    kd_d: float | None = None
-    kd_signal: str | None = None
-    kd_zone: str | None = None
-    adx: float | None = None
-    adx_trend_strength: str | None = None
-    adx_trend_direction: str | None = None
-    obv: float | None = None
-    obv_signal: str | None = None
-    obv_trend_20d: str | None = None
-    obv_trend_mid_long: str | None = None
-    obv_trend_mid_long_window: str | None = None
-    atr: float | None = None
-    atr_pct: float | None = None
-    volatility_level: str | None = None
-    mfi: float | None = None
-    mfi_signal: str | None = None
-    donchian_upper: float | None = None
-    donchian_lower: float | None = None
-    donchian_mid: float | None = None
-    donchian_width_pct: float | None = None
-    donchian_position: str | None = None
-
-
-class AnalyzeResponse(BaseModel):
-    snapshot: dict[str, Any] = Field(default_factory=dict)
-    symbol_name: str | None = None
-    analysis: str = ""
-    analysis_detail: dict[str, Any] | None = None
-    cleaned_news: dict[str, Any] | None = None
-    confidence_score: int | None = None
-    cross_validation_note: str | None = None
-    strategy_type: str | None = None
-    entry_zone: str | None = None
-    stop_loss: str | None = None
-    holding_period: str | None = None
-    cleaned_news_quality: dict[str, Any] | None = None
-    news_display: dict[str, Any] | None = None
-    news_display_items: list[dict[str, Any]] = Field(default_factory=list)
-    data_confidence: int | None = None
-    signal_confidence: int | None = None
-    action_plan_tag: str | None = None
-    institutional_flow_label: str | None = None
-    sentiment_label: str | None = None
-    action_plan: dict[str, Any] | None = None
-    risk_state: str | None = None
-    risk_state_label: str | None = None
-    discipline_triggers: list[str] = Field(default_factory=list)
-    observation_conditions: list[str] = Field(default_factory=list)
-    risk_control_reference: dict[str, Any] | None = None
-    command_language_deprecated: dict[str, Any] = Field(default_factory=dict)
-    data_sources: list[str] = Field(default_factory=list)
-    fundamental_data: dict[str, Any] | None = None
-    position_analysis: PositionAnalysis | None = None
-    shared_context: dict[str, Any] | None = None
-    technical_indicators: TechnicalIndicators | None = None
-    is_final: bool = True
-    intraday_disclaimer: str | None = None
-    strategy_version: str | None = None
-
-    class ErrorDetail(BaseModel):
-        code: str
-        message: str
-
-    errors: list[ErrorDetail] = Field(default_factory=list)
-
-
-# ─── 快取常數 ───────────────────────────────────────────────
 _TZ_TAIPEI = ZoneInfo("Asia/Taipei")
-MARKET_CLOSE = _time(13, 30)
-INTRADAY_DISCLAIMER = (
-    "⚠️ 注意：目前為盤中階段（指標未收定），"
-    "以下分析僅供即時參考，不代表當日收盤定論。"
-)
-
 INTERNAL_API_KEY: str = os.environ.get("INTERNAL_API_KEY", "")
 
 
-# ─── 快取 Response Schema ────────────────────────────────────
-class CachedAnalyzeResponse(BaseModel):
-    symbol: str
-    signal_confidence: float | None
-    action_tag: str | None
-    recommended_action: str | None
-    final_verdict: str | None
-    is_final: bool
-    intraday_disclaimer: Optional[str] = None
-    strategy_version: str | None = None
-
-
-# ─── 快取輔助函式 ─────────────────────────────────────────────
-
 def get_analysis_cache(db: Session, symbol: str, analysis_type: str = "general") -> StockAnalysisCache | None:
-    """查詢今日的分析結果快取（L1）。"""
-    return db.execute(
-        select(StockAnalysisCache).where(
-            StockAnalysisCache.symbol == symbol,
-            StockAnalysisCache.record_date == _date.today(),
-            StockAnalysisCache.analysis_type == analysis_type,
-        )
-    ).scalar_one_or_none()
+    return _get_analysis_cache(db, symbol, analysis_type=analysis_type)
 
 
 def get_raw_data(db: Session, symbol: str) -> StockRawData | None:
-    """查詢今日的原始數據快取（L2）。"""
-    return db.execute(
-        select(StockRawData).where(
-            StockRawData.symbol == symbol,
-            StockRawData.record_date == _date.today(),
-        )
-    ).scalar_one_or_none()
+    return _get_raw_data(db, symbol)
 
 
 def get_recent_raw_data(db: Session, symbol: str, max_age_seconds: int = 600) -> StockRawData | None:
-    """查詢今日且在 N 秒內的原始數據。"""
-    raw_data = get_raw_data(db, symbol)
-    if raw_data:
-        from datetime import datetime, timezone
-        if isinstance(raw_data.fetched_at, datetime):
-            now = datetime.now(raw_data.fetched_at.tzinfo or timezone.utc)
-            age = now - raw_data.fetched_at
-            if age.total_seconds() < max_age_seconds:
-                return raw_data
-    return None
+    return _get_recent_raw_data(db, symbol, max_age_seconds=max_age_seconds)
 
 
 def _handle_cache_hit(
     cache: StockAnalysisCache,
     now_time: _time,
 ) -> CachedAnalyzeResponse | None:
-    """處理 L1 快取命中邏輯。
-
-    - analysis_is_final=TRUE：直接回傳
-    - analysis_is_final=FALSE + 盤中：回傳含免責聲明
-    - analysis_is_final=FALSE + 收盤後：回傳 None（強制重新分析）
-    """
-    # 版本一致性檢查：快取版本與當前版本不一致時，視為失效
-    if cache.strategy_version != STRATEGY_VERSION:
-        logger.info(json.dumps({
-            "event": "cache_version_mismatch",
-            "symbol": cache.symbol,
-            "cache_version": cache.strategy_version,
-            "current_version": STRATEGY_VERSION,
-        }))
-        return None  # 觸發重新分析
-
-    if cache.analysis_is_final:
-        return _build_analysis_response(
-            symbol=cache.symbol,
-            action_tag=cache.action_tag,
-            signal_confidence=float(cache.signal_confidence) if cache.signal_confidence else None,
-            recommended_action=cache.recommended_action,
-            final_verdict=cache.final_verdict,
-            is_final=True,
-            strategy_version=cache.strategy_version,
-        )
-    if now_time < MARKET_CLOSE:
-        return _build_analysis_response(
-            symbol=cache.symbol,
-            action_tag=cache.action_tag,
-            signal_confidence=float(cache.signal_confidence) if cache.signal_confidence else None,
-            recommended_action=cache.recommended_action,
-            final_verdict=cache.final_verdict,
-            is_final=False,
-            strategy_version=cache.strategy_version,
-        )
-    return None  # 收盤後非定稿快取 → 強制重新分析
+    return _analysis_handle_cache_hit(cache, now_time)
 
 
 def _build_analysis_response(
@@ -288,281 +114,46 @@ def _build_analysis_response(
     is_final: bool,
     strategy_version: str | None = None,
 ) -> CachedAnalyzeResponse:
-    return CachedAnalyzeResponse(
+    return _cache_build_analysis_response(
         symbol=symbol,
-        signal_confidence=signal_confidence,
         action_tag=action_tag,
+        signal_confidence=signal_confidence,
         recommended_action=recommended_action,
         final_verdict=final_verdict,
         is_final=is_final,
-        intraday_disclaimer=INTRADAY_DISCLAIMER if not is_final else None,
         strategy_version=strategy_version,
     )
 
 
 def upsert_analysis_cache(db: Session, data: dict) -> None:
-    """UPSERT 分析結果至 stock_analysis_cache（跨使用者共用）。"""
-    db.execute(
-        text("""
-            INSERT INTO stock_analysis_cache (
-                symbol, record_date, analysis_type, signal_confidence, strategy_version, action_tag,
-                recommended_action, indicators, final_verdict,
-                prev_action_tag, prev_confidence, analysis_is_final, full_result, updated_at
-            ) VALUES (
-                :symbol, CURRENT_DATE, :analysis_type, :signal_confidence, :strategy_version, :action_tag,
-                :recommended_action, CAST(:indicators AS jsonb), :final_verdict,
-                (SELECT action_tag FROM stock_analysis_cache
-                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1 AND analysis_type = :analysis_type),
-                (SELECT signal_confidence FROM stock_analysis_cache
-                 WHERE symbol = :symbol AND record_date = CURRENT_DATE - 1 AND analysis_type = :analysis_type),
-                :analysis_is_final, CAST(:full_result AS jsonb), NOW()
-            )
-            ON CONFLICT (symbol, record_date, analysis_type) DO UPDATE SET
-                signal_confidence  = EXCLUDED.signal_confidence,
-                strategy_version   = EXCLUDED.strategy_version,
-                action_tag         = EXCLUDED.action_tag,
-                recommended_action = EXCLUDED.recommended_action,
-                indicators         = EXCLUDED.indicators,
-                final_verdict      = EXCLUDED.final_verdict,
-                analysis_is_final  = EXCLUDED.analysis_is_final,
-                full_result        = EXCLUDED.full_result,
-                updated_at         = NOW()
-        """),
-        {
-            "symbol":             data.get("symbol"),
-            "analysis_type":      data.get("analysis_type", "general"),
-            "signal_confidence":  data.get("signal_confidence"),
-            "strategy_version":   STRATEGY_VERSION,
-            "action_tag":         data.get("action_tag"),
-            "recommended_action": data.get("recommended_action"),
-            "indicators":         json.dumps(data.get("indicators") or {}),
-            "final_verdict":      data.get("final_verdict"),
-            "analysis_is_final":  data.get("is_final", False),
-            "full_result":        json.dumps(data.get("full_result") or {}),
-        }
-    )
-    db.commit()
+    _upsert_analysis_cache(db, data)
 
 
 def _compute_bollinger_position(bb: dict, close_price: float | None) -> str | None:
-    upper = bb["bollinger_upper"]
-    lower = bb["bollinger_lower"]
-    if not (upper and lower and close_price):
-        return None
-    band_range = upper - lower
-    if band_range <= 0:
-        return "flat"
-    if close_price >= upper * 0.99:
-        return "near_upper"
-    if close_price <= lower * 1.01:
-        return "near_lower"
-    if close_price >= (lower + band_range * 0.5):
-        return "above_mid"
-    return "below_mid"
+    return _response_compute_bollinger_position(bb, close_price)
 
 
 def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
-    """從 snapshot 計算技術指標，回傳 TechnicalIndicators 或 None。"""
-    recent_closes = snapshot.get("recent_closes") or []
-    closes = [float(v) for v in recent_closes if v is not None]
-    if not closes:
-        return None
-    highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
-    lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
-    volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
-    bb = _bollinger_bands(closes)
-    macd_data = _macd(closes)
-    kd_data = _stochastic_kd(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    adx_data = _adx(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    aligned_volume = len(volumes) == len(closes)
-    atr_data = _atr(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    mfi_data = _mfi(closes, highs, lows, volumes) if len(highs) == len(closes) and len(lows) == len(closes) and aligned_volume else None
-    donchian_data = _donchian_channel(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    obv_data = _obv(closes, volumes) if aligned_volume else None
-    if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None and atr_data is None and mfi_data is None and donchian_data is None:
-        return None
-    bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
-    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
-    high_source = highs if aligned_hilo else closes
-    low_source = lows if aligned_hilo else closes
-    return TechnicalIndicators(
-        ma5=_ma(closes, 5),
-        ma20=_ma(closes, 20),
-        ma60=_ma(closes, 60),
-        high_20d=max(high_source[-20:]) if len(high_source) >= 20 else None,
-        low_20d=min(low_source[-20:]) if len(low_source) >= 20 else None,
-        high_60d=max(high_source[-60:]) if len(high_source) >= 60 else None,
-        low_60d=min(low_source[-60:]) if len(low_source) >= 60 else None,
-        bollinger_upper=bb["bollinger_upper"] if bb else None,
-        bollinger_mid=bb["bollinger_mid"] if bb else None,
-        bollinger_lower=bb["bollinger_lower"] if bb else None,
-        bollinger_bandwidth=bb.get("bollinger_bandwidth") if bb else None,
-        bollinger_position=bollinger_position,
-        macd_line=macd_data["macd_line"] if macd_data else None,
-        macd_signal=macd_data["macd_signal"] if macd_data else None,
-        macd_hist=macd_data["macd_hist"] if macd_data else None,
-        macd_bias=macd_data["macd_bias"] if macd_data else None,
-        kd_k=kd_data["k"] if kd_data else None,
-        kd_d=kd_data["d"] if kd_data else None,
-        kd_signal=kd_data["kd_signal"] if kd_data else None,
-        kd_zone=kd_data["kd_zone"] if kd_data else None,
-        adx=adx_data["adx"] if adx_data else None,
-        adx_trend_strength=adx_data["trend_strength"] if adx_data else None,
-        adx_trend_direction=adx_data["trend_direction"] if adx_data else None,
-        obv=obv_data["obv"] if obv_data else None,
-        obv_signal=obv_data["obv_signal"] if obv_data else None,
-        obv_trend_20d=obv_data["obv_trend_20d"] if obv_data else None,
-        obv_trend_mid_long=obv_data["obv_trend_mid_long"] if obv_data else None,
-        obv_trend_mid_long_window=obv_data["obv_trend_mid_long_window"] if obv_data else None,
-        atr=atr_data["atr"] if atr_data else None,
-        atr_pct=atr_data["atr_pct"] if atr_data else None,
-        volatility_level=atr_data["volatility_level"] if atr_data else None,
-        mfi=mfi_data["mfi"] if mfi_data else None,
-        mfi_signal=mfi_data["mfi_signal"] if mfi_data else None,
-        donchian_upper=donchian_data["donchian_upper"] if donchian_data else None,
-        donchian_lower=donchian_data["donchian_lower"] if donchian_data else None,
-        donchian_mid=donchian_data["donchian_mid"] if donchian_data else None,
-        donchian_width_pct=donchian_data["donchian_width_pct"] if donchian_data else None,
-        donchian_position=donchian_data["donchian_position"] if donchian_data else None,
-    )
+    return _response_compute_technical_indicators(snapshot)
 
 
 def _extract_indicators(result: dict) -> dict:
-    """從 graph result 提取 indicators JSONB 快照。"""
-    snapshot = result.get("snapshot") or {}
-    inst = result.get("institutional_flow") or {}
-    action_plan = result.get("action_plan") or {}
-    cleaned_news = result.get("cleaned_news") or {}
-
-    recent_closes = snapshot.get("recent_closes") or []
-    closes = [float(v) for v in recent_closes if v is not None]
-    highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
-    lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
-    volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
-    bb = _bollinger_bands(closes) if closes else None
-    macd_data = _macd(closes) if closes else None
-    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
-    aligned_volume = len(volumes) == len(closes)
-    kd_data = _stochastic_kd(closes, highs, lows) if aligned_hilo else None
-    adx_data = _adx(closes, highs, lows) if aligned_hilo else None
-    atr_data = _atr(closes, highs, lows) if aligned_hilo else None
-    mfi_data = _mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
-    donchian_data = _donchian_channel(closes, highs, lows) if aligned_hilo else None
-    obv_data = _obv(closes, volumes) if aligned_volume else None
-    bollinger_position = _compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
-    high_source = highs if aligned_hilo else closes
-    low_source = lows if aligned_hilo else closes
-
-    indicators = {
-        "ma5":                _ma(closes, 5),
-        "ma20":               _ma(closes, 20),
-        "ma60":               _ma(closes, 60),
-        "high_20d":           max(high_source[-20:]) if len(high_source) >= 20 else None,
-        "low_20d":            min(low_source[-20:]) if len(low_source) >= 20 else None,
-        "high_60d":           max(high_source[-60:]) if len(high_source) >= 60 else None,
-        "low_60d":            min(low_source[-60:]) if len(low_source) >= 60 else None,
-        "rsi_14":             result.get("rsi14"),
-        "close_price":        snapshot.get("current_price"),
-        "volume_ratio":       snapshot.get("volume_ratio"),
-        "strategy_type":      result.get("strategy_type"),
-        "conviction_level":   action_plan.get("conviction_level"),
-        "sentiment_label":    cleaned_news.get("sentiment_label"),
-        "flow_label":         inst.get("flow_label") if not inst.get("error") else None,
-        "technical_signal":   result.get("technical_signal"),
-        "bollinger_mid":      bb["bollinger_mid"] if bb else None,
-        "bollinger_upper":    bb["bollinger_upper"] if bb else None,
-        "bollinger_lower":    bb["bollinger_lower"] if bb else None,
-        "bollinger_position": bollinger_position,
-        "macd_line":          macd_data["macd_line"] if macd_data else None,
-        "macd_signal":        macd_data["macd_signal"] if macd_data else None,
-        "macd_hist":          macd_data["macd_hist"] if macd_data else None,
-        "macd_bias":          macd_data["macd_bias"] if macd_data else None,
-        "kd_k":               kd_data["k"] if kd_data else None,
-        "kd_d":               kd_data["d"] if kd_data else None,
-        "kd_signal":          kd_data["kd_signal"] if kd_data else None,
-        "kd_zone":            kd_data["kd_zone"] if kd_data else None,
-        "adx":                adx_data["adx"] if adx_data else None,
-        "adx_trend_strength": adx_data["trend_strength"] if adx_data else None,
-        "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
-        "obv":                obv_data["obv"] if obv_data else None,
-        "obv_signal":         obv_data["obv_signal"] if obv_data else None,
-        "obv_trend_20d":      obv_data["obv_trend_20d"] if obv_data else None,
-        "obv_trend_mid_long": obv_data["obv_trend_mid_long"] if obv_data else None,
-        "obv_trend_mid_long_window": obv_data["obv_trend_mid_long_window"] if obv_data else None,
-        "atr":                atr_data["atr"] if atr_data else None,
-        "atr_pct":            atr_data["atr_pct"] if atr_data else None,
-        "volatility_level":   atr_data["volatility_level"] if atr_data else None,
-        "mfi":                mfi_data["mfi"] if mfi_data else None,
-        "mfi_signal":         mfi_data["mfi_signal"] if mfi_data else None,
-        "donchian_upper":     donchian_data["donchian_upper"] if donchian_data else None,
-        "donchian_lower":     donchian_data["donchian_lower"] if donchian_data else None,
-        "donchian_mid":       donchian_data["donchian_mid"] if donchian_data else None,
-        "donchian_width_pct": donchian_data["donchian_width_pct"] if donchian_data else None,
-        "donchian_position":  donchian_data["donchian_position"] if donchian_data else None,
-        "institutional": {
-            "foreign_net": inst.get("foreign_net"),
-            "trust_net":   inst.get("trust_net"),
-            "dealer_net":  inst.get("dealer_net"),
-            "three_party_net": inst.get("three_party_net"),
-            "consecutive_buy_days": inst.get("consecutive_buy_days"),
-            "consecutive_sell_days": inst.get("consecutive_sell_days"),
-            "dominant_buyer": inst.get("dominant_buyer"),
-            "dominant_seller": inst.get("dominant_seller"),
-            "flow_strength": inst.get("flow_strength"),
-            "margin_delta": inst.get("margin_delta"),
-            "margin_balance_delta_pct": inst.get("margin_balance_delta_pct"),
-            "short_delta": inst.get("short_delta"),
-            "short_balance_delta_pct": inst.get("short_balance_delta_pct"),
-            "securities_lending_delta": inst.get("securities_lending_delta"),
-            "securities_lending_volume": inst.get("securities_lending_volume"),
-            "foreign_holding_ratio": inst.get("foreign_holding_ratio"),
-            "foreign_holding_ratio_delta_pct": inst.get("foreign_holding_ratio_delta_pct"),
-            "major_holder_ratio": inst.get("major_holder_ratio"),
-            "major_holder_ratio_delta_pct": inst.get("major_holder_ratio_delta_pct"),
-            "retail_holder_ratio_delta_pct": inst.get("retail_holder_ratio_delta_pct"),
-        } if not inst.get("error") else None,
-    }
-    if result.get("entry_price") is not None:
-        indicators["position_risk_language"] = _position_risk_language_snapshot_from_result(result)
-    return indicators
+    return _response_extract_indicators(result)
 
 
 def _position_risk_language_snapshot_from_result(result: dict[str, Any]) -> dict[str, Any]:
-    risk_language = build_position_risk_language(
-        recommended_action=result.get("recommended_action"),
-        trailing_stop=result.get("trailing_stop"),
-        trailing_stop_reason=result.get("trailing_stop_reason"),
-        exit_reason=result.get("exit_reason"),
-        position_status=result.get("position_status"),
-        position_narrative=result.get("position_narrative"),
-        profit_loss_pct=result.get("profit_loss_pct"),
-        distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
-        distance_to_support_pct=result.get("distance_to_support_pct"),
-    )
-    return _position_risk_language_snapshot(risk_language)
+    return _response_position_risk_language_snapshot_from_result(result)
 
 
 def _position_risk_language_snapshot(position_analysis: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "risk_state": position_analysis.get("risk_state"),
-        "risk_state_label": position_analysis.get("risk_state_label"),
-        "discipline_triggers": list(position_analysis.get("discipline_triggers") or []),
-        "observation_conditions": list(position_analysis.get("observation_conditions") or []),
-        "risk_control_reference": position_analysis.get("risk_control_reference"),
-    }
+    return _response_position_risk_language_snapshot(position_analysis)
 
 
 def _indicators_with_position_risk_from_full_result(
     indicators: dict[str, Any] | None,
     full_result: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    next_indicators = dict(indicators or {})
-    if next_indicators.get("position_risk_language"):
-        return next_indicators
-    position_analysis = (full_result or {}).get("position_analysis")
-    if isinstance(position_analysis, dict):
-        next_indicators["position_risk_language"] = _position_risk_language_snapshot(position_analysis)
-    return next_indicators
+    return _response_indicators_with_position_risk_from_full_result(indicators, full_result)
 
 
 def has_active_portfolio(user_id: int, symbol: str, db: Session) -> bool:
@@ -662,131 +253,6 @@ def _maybe_upsert_log_from_result(
     })
 
 
-def _build_response_from_cache(
-    hit: CachedAnalyzeResponse,
-    symbol: str,
-    full_result: dict | None = None,
-) -> AnalyzeResponse:
-    """把快取命中的結果轉成 AnalyzeResponse。
-
-    若 full_result 存在，直接用它還原完整欄位；
-    否則 fallback 到精簡欄位（舊資料相容）。
-    """
-    if full_result:
-        try:
-            resp = AnalyzeResponse.model_validate(full_result)
-            resp.is_final = hit.is_final  # CachedAnalyzeResponse.is_final → AnalyzeResponse.is_final (API 對外欄位)
-            resp.intraday_disclaimer = hit.intraday_disclaimer
-            resp.strategy_version = hit.strategy_version  # 快取命中時回傳快取的版本（可能為 NULL）
-            snapshot = dict(resp.snapshot or {})
-            resp.symbol_name = _display_symbol_name(
-                symbol,
-                resp.symbol_name or snapshot.get("name"),
-            )
-            if resp.symbol_name:
-                resp.snapshot = {**snapshot, "name": resp.symbol_name}
-            return resp
-        except Exception:
-            # Schema drift — fallback to sparse fields from cache metadata
-            pass
-    symbol_name = _display_symbol_name(symbol)
-    return AnalyzeResponse(
-        snapshot={"symbol": symbol, "name": symbol_name} if symbol_name else {"symbol": symbol},
-        symbol_name=symbol_name,
-        analysis=hit.final_verdict or "",
-        signal_confidence=int(hit.signal_confidence) if hit.signal_confidence is not None else None,
-        action_plan_tag=hit.action_tag,
-        is_final=hit.is_final,
-        intraday_disclaimer=hit.intraday_disclaimer,
-        strategy_version=hit.strategy_version,
-    )
-
-
-def _display_symbol_name(symbol: str, name: Any | None = None) -> str | None:
-    normalized_symbol = str(symbol or "").strip()
-    normalized_name = str(name or "").strip()
-    if normalized_name and normalized_name.upper() != normalized_symbol.upper():
-        return normalized_name
-    return resolve_symbol_name(normalized_symbol) or normalized_name or None
-
-
-def _build_analyze_risk_language(result: dict[str, Any]) -> dict[str, Any]:
-    action_plan = result.get("action_plan") if isinstance(result.get("action_plan"), dict) else {}
-    action_plan_tag = str(result.get("action_plan_tag") or "")
-    risk_state_map = {
-        "opportunity": ("setup_observation", "可觀察 setup"),
-        "overheated": ("risk_elevated", "追蹤風險升高"),
-        "neutral": ("neutral", "等待條件明確"),
-    }
-    risk_state, risk_state_label = risk_state_map.get(action_plan_tag, ("unknown", "狀態未明"))
-    observation_conditions = _as_string_list(action_plan.get("thesis_points"))
-    observation_conditions.extend(_as_string_list(action_plan.get("upgrade_triggers")))
-    discipline_triggers = _as_string_list(action_plan.get("invalidation_conditions"))
-    discipline_triggers.extend(_as_string_list(action_plan.get("downgrade_triggers")))
-    risk_control_reference = None
-    if action_plan.get("defense_line") or result.get("stop_loss"):
-        risk_control_reference = {
-            "reference": action_plan.get("defense_line") or result.get("stop_loss"),
-            "reference_type": "setup_risk_control_reference",
-        }
-    return {
-        "risk_state": risk_state,
-        "risk_state_label": risk_state_label,
-        "observation_conditions": _dedupe_strings(observation_conditions),
-        "discipline_triggers": _dedupe_strings(discipline_triggers),
-        "risk_control_reference": risk_control_reference,
-        "command_language_deprecated": {
-            "entry_zone": result.get("entry_zone"),
-            "stop_loss": result.get("stop_loss"),
-            "action_plan_action": action_plan.get("action"),
-            "target_zone": action_plan.get("target_zone"),
-            "suggested_position_size": action_plan.get("suggested_position_size"),
-        },
-    }
-
-
-def _as_string_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value if item]
-    return []
-
-
-def _dedupe_strings(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            deduped.append(item)
-    return deduped
-
-
-def _position_cache_matches(full_result: dict[str, Any], payload: PositionAnalyzeRequest) -> bool:
-    """Return True only when a cached position result matches the requested cost basis."""
-    def _same_price(value: Any) -> bool:
-        try:
-            return abs(float(value) - float(payload.entry_price)) < 0.0001
-        except (TypeError, ValueError):
-            return False
-
-    position_analysis = full_result.get("position_analysis")
-    if not isinstance(position_analysis, dict):
-        return False
-
-    cached_request = full_result.get("_position_request")
-    if isinstance(cached_request, dict):
-        return (
-            _same_price(cached_request.get("entry_price"))
-            and cached_request.get("entry_date") == payload.entry_date
-            and cached_request.get("quantity") == payload.quantity
-        )
-
-    if payload.entry_date is not None or payload.quantity is not None:
-        return False
-
-    return _same_price(position_analysis.get("entry_price"))
-
-
 def _with_shared_context(
     response: AnalyzeResponse,
     db: Session,
@@ -809,15 +275,8 @@ def verify_internal_api_key(x_internal_api_key: str = Header(default=None)):
         raise HTTPException(status_code=401, detail="Invalid internal API key")
 
 
-class FetchRawDataRequest(BaseModel):
-    symbol: str
-    date: str = "today"
-
-
-# ─── Graph Singleton ─────────────────────────────────────────
 def _build_graph_singleton():
-    crawler, analyzer, rss_client, news_cleaner = build_graph_deps()
-    return build_graph(crawler=crawler, analyzer=analyzer, rss_client=rss_client, news_cleaner=news_cleaner)
+    return build_graph_singleton()
 
 _graph = _build_graph_singleton()
 
@@ -894,142 +353,33 @@ def _check_symbol_exists(symbol: str) -> None:
         raise HTTPException(status_code=404, detail=f"查詢目標不存在：{symbol}")
 
 
+def _build_response_from_cache(
+    hit: CachedAnalyzeResponse,
+    symbol: str,
+    full_result: dict | None = None,
+) -> AnalyzeResponse:
+    return _response_build_response_from_cache(
+        hit,
+        symbol,
+        full_result=full_result,
+        symbol_name_resolver=resolve_symbol_name,
+    )
+
+
+def _display_symbol_name(symbol: str, name: Any | None = None) -> str | None:
+    return _response_display_symbol_name(symbol, name, symbol_name_resolver=resolve_symbol_name)
+
+
+def _build_analyze_risk_language(result: dict[str, Any]) -> dict[str, Any]:
+    return _response_build_analyze_risk_language(result)
+
+
+def _position_cache_matches(full_result: dict[str, Any], payload: PositionAnalyzeRequest) -> bool:
+    return _response_position_cache_matches(full_result, payload)
+
+
 def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
-    """Shared serialization logic for both /analyze and /analyze/position."""
-    snapshot = result.get("snapshot")
-    analysis = result.get("analysis")
-    raw_detail = result.get("analysis_detail")
-    analysis_detail: dict[str, Any] | None = None
-    if raw_detail is not None:
-        if is_dataclass(raw_detail) and not isinstance(raw_detail, type):
-            analysis_detail = _asdict(raw_detail)
-        elif isinstance(raw_detail, dict):
-            analysis_detail = raw_detail
-    if analysis_detail is not None:
-        from ai_stock_sentinel.analysis.langchain_analyzer import PROMPT_HASH
-        analysis_detail = {**analysis_detail, "prompt_hash": PROMPT_HASH}
-    response_errors: list[AnalyzeResponse.ErrorDetail] = [
-        AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
-        for e in result.get("errors", [])
-    ]
-
-    if not isinstance(snapshot, dict):
-        response_errors.append(
-            AnalyzeResponse.ErrorDetail(
-                code="MISSING_SNAPSHOT",
-                message="Graph result missing valid snapshot payload.",
-            )
-        )
-        snapshot = {}
-    snapshot_symbol = str(snapshot.get("symbol") or "").strip()
-    symbol_name = _display_symbol_name(snapshot_symbol, snapshot.get("name")) if snapshot_symbol else str(snapshot.get("name") or "").strip() or None
-    if symbol_name:
-        snapshot = {**snapshot, "name": symbol_name}
-
-    if not isinstance(analysis, str):
-        response_errors.append(
-            AnalyzeResponse.ErrorDetail(
-                code="MISSING_ANALYSIS",
-                message="Graph result missing valid analysis payload.",
-            )
-        )
-        analysis = ""
-
-    inst_flow = result.get("institutional_flow")
-    institutional_flow_label: str | None = None
-    if inst_flow and not inst_flow.get("error"):
-        institutional_flow_label = inst_flow.get("flow_label")
-
-    sentiment_label: str | None = (
-        result.get("cleaned_news", {}).get("sentiment_label")
-        if result.get("cleaned_news") else None
-    )
-
-    action_plan: dict[str, Any] | None = result.get("action_plan")
-
-    _sources: list[str] = []
-    if result.get("raw_news_items"):
-        _sources.append("google-news-rss")
-    if result.get("snapshot"):
-        _sources.append("yfinance")
-    _inst = result.get("institutional_flow")
-    if _inst and not _inst.get("error"):
-        _sources.append(_inst.get("provider", "institutional-api"))
-    _fund = result.get("fundamental_data")
-    if _fund and not _fund.get("error"):
-        _sources.append("finmind-fundamental")
-
-    position_analysis: PositionAnalysis | None = None
-    if result.get("entry_price") is not None:
-        position_risk_language = build_position_risk_language(
-            recommended_action=result.get("recommended_action"),
-            trailing_stop=result.get("trailing_stop"),
-            trailing_stop_reason=result.get("trailing_stop_reason"),
-            exit_reason=result.get("exit_reason"),
-            position_status=result.get("position_status"),
-            position_narrative=result.get("position_narrative"),
-            profit_loss_pct=result.get("profit_loss_pct"),
-            distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
-            distance_to_support_pct=result.get("distance_to_support_pct"),
-        )
-        position_analysis = PositionAnalysis(
-            entry_price=result["entry_price"],
-            profit_loss_pct=result.get("profit_loss_pct"),
-            position_status=result.get("position_status"),
-            position_narrative=result.get("position_narrative"),
-            risk_state=position_risk_language["risk_state"],
-            risk_state_label=position_risk_language["risk_state_label"],
-            discipline_triggers=position_risk_language["discipline_triggers"],
-            observation_conditions=position_risk_language["observation_conditions"],
-            risk_control_reference=position_risk_language["risk_control_reference"],
-            command_language_deprecated=position_risk_language["command_language_deprecated"],
-            recommended_action=result.get("recommended_action"),
-            trailing_stop=result.get("trailing_stop"),
-            trailing_stop_reason=result.get("trailing_stop_reason"),
-            exit_reason=result.get("exit_reason"),
-            distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
-            distance_to_support_pct=result.get("distance_to_support_pct"),
-            unrealized_pnl=result.get("unrealized_pnl"),
-            holding_days=result.get("holding_days"),
-        )
-
-    technical_indicators = _compute_technical_indicators(snapshot if isinstance(snapshot, dict) else {})
-    analyze_risk_language = _build_analyze_risk_language(result)
-
-    return AnalyzeResponse(
-        snapshot=snapshot,
-        symbol_name=symbol_name,
-        analysis=analysis,
-        analysis_detail=analysis_detail,
-        cleaned_news=result.get("cleaned_news"),
-        cleaned_news_quality=result.get("cleaned_news_quality"),
-        news_display=result.get("news_display"),
-        news_display_items=result.get("news_display_items") or [],
-        confidence_score=result.get("confidence_score"),
-        cross_validation_note=result.get("cross_validation_note"),
-        strategy_type=result.get("strategy_type"),
-        entry_zone=result.get("entry_zone"),
-        stop_loss=result.get("stop_loss"),
-        holding_period=result.get("holding_period"),
-        data_confidence=result.get("data_confidence"),
-        signal_confidence=result.get("signal_confidence"),
-        action_plan_tag=result.get("action_plan_tag"),
-        institutional_flow_label=institutional_flow_label,
-        sentiment_label=sentiment_label,
-        action_plan=action_plan,
-        risk_state=analyze_risk_language["risk_state"],
-        risk_state_label=analyze_risk_language["risk_state_label"],
-        discipline_triggers=analyze_risk_language["discipline_triggers"],
-        observation_conditions=analyze_risk_language["observation_conditions"],
-        risk_control_reference=analyze_risk_language["risk_control_reference"],
-        command_language_deprecated=analyze_risk_language["command_language_deprecated"],
-        data_sources=_sources,
-        fundamental_data=result.get("fundamental_data"),
-        position_analysis=position_analysis,
-        technical_indicators=technical_indicators,
-        errors=response_errors,
-        strategy_version=STRATEGY_VERSION,
-    )
+    return _response_build_response(result, symbol_name_resolver=resolve_symbol_name)
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -1070,64 +420,26 @@ def analyze(
             "symbol": payload.symbol,
             "fetched_at": str(raw_cache.fetched_at),
         }))
-        cached_snapshot = raw_cache.technical
-        cached_institutional = raw_cache.institutional
-        cached_fundamental = raw_cache.fundamental
-        if cached_fundamental:
-            from ai_stock_sentinel.analysis.context_generator import generate_fundamental_context
-            try:
-                cached_fundamental_context = generate_fundamental_context(cached_fundamental)
-            except Exception:
-                pass
+        cached_snapshot, cached_institutional, cached_fundamental, cached_fundamental_context = raw_cache_inputs(raw_cache)
     else:
         _check_symbol_exists(payload.symbol)
 
     backfill_yesterday_indicators(db, payload.symbol)
     prev_context = load_yesterday_context(payload.symbol, db)
 
-    initial_state: GraphState = {
-        "symbol": payload.symbol,
-        "news_content": payload.news_text,
-        "snapshot": cached_snapshot,
-        "analysis": None,
-        "analysis_detail": None,
-        "cleaned_news": None,
-        "raw_news_items": None,
-        "data_sufficient": False,
-        "retry_count": 0,
-        "errors": [],
-        "requires_news_refresh": False,
-        "requires_fundamental_update": False,
-        "technical_context": None,
-        "institutional_context": None,
-        "institutional_flow": cached_institutional,
-        "strategy_type": None,
-        "entry_zone": None,
-        "stop_loss": None,
-        "holding_period": None,
-        "confidence_score": None,
-        "cross_validation_note": None,
-        "cleaned_news_quality": None,
-        "news_display": None,
-        "news_display_items": [],
-        "data_confidence": None,
-        "signal_confidence": None,
-        "high_20d": None,
-        "low_20d": None,
-        "support_20d": None,
-        "resistance_20d": None,
-        "rsi14": None,
-        "action_plan_tag": None,
-        "action_plan": None,
-        "fundamental_data": cached_fundamental,
-        "fundamental_context": cached_fundamental_context,
-        "prev_context": prev_context,
-        "is_final": now_time >= MARKET_CLOSE,
-        "skip_ai": payload.skip_ai,
-    }
+    initial_state = build_analyze_initial_state(
+        payload,
+        now_time=now_time,
+        market_close=MARKET_CLOSE,
+        prev_context=prev_context,
+        cached_snapshot=cached_snapshot,
+        cached_institutional=cached_institutional,
+        cached_fundamental=cached_fundamental,
+        cached_fundamental_context=cached_fundamental_context,
+    )
 
     try:
-        result: dict[str, Any] = graph.invoke(initial_state)
+        result: dict[str, Any] = invoke_graph(graph, initial_state)
     except Exception as exc:
         return AnalyzeResponse(
             errors=[
@@ -1239,101 +551,26 @@ def fetch_and_store_raw_data(
     fundamental: dict | None,
     raw_data_is_final: bool = False,
 ) -> None:
-    """將 graph result 的原始資料 UPSERT 至 stock_raw_data（今日）。
-
-    - technical      ← graph result["snapshot"]
-    - institutional  ← graph result["institutional_flow"]
-    - fundamental    ← graph result["fundamental_data"]
-
-    使用 ON CONFLICT (symbol, record_date) DO UPDATE，同日只存一筆。
-    若籌碼面含 'error' 鍵，仍寫入（保留原始錯誤資訊以供 debug）。
-    """
-    normalized_technical = _normalize_raw_technical_for_storage(technical)
-    db.execute(
-        text("""
-            INSERT INTO stock_raw_data (
-                symbol, record_date, technical, institutional, fundamental, raw_data_is_final, fetched_at
-            ) VALUES (
-                :symbol, CURRENT_DATE,
-                CAST(:technical AS jsonb),
-                CAST(:institutional AS jsonb),
-                CAST(:fundamental AS jsonb),
-                :raw_data_is_final,
-                NOW()
-            )
-            ON CONFLICT (symbol, record_date) DO UPDATE SET
-                technical         = EXCLUDED.technical,
-                institutional     = EXCLUDED.institutional,
-                fundamental       = EXCLUDED.fundamental,
-                raw_data_is_final = EXCLUDED.raw_data_is_final,
-                fetched_at        = NOW()
-        """),
-        {
-            "symbol":             symbol,
-            "technical":          json.dumps(normalized_technical),
-            "institutional":      json.dumps(institutional or {}),
-            "fundamental":        json.dumps(fundamental or {}),
-            "raw_data_is_final":  raw_data_is_final,
-        }
+    _fetch_and_store_raw_data(
+        db,
+        symbol,
+        technical=technical,
+        institutional=institutional,
+        fundamental=fundamental,
+        raw_data_is_final=raw_data_is_final,
     )
-    db.commit()
 
 
 def _normalize_raw_technical_for_storage(technical: dict | None) -> dict:
-    normalized = dict(technical or {})
-    if not normalized or isinstance(normalized.get("ohlcv"), dict):
-        return normalized
-
-    close = _number_or_none(normalized.get("current_price"))
-    if close is None:
-        close = _latest_number(normalized.get("recent_closes"))
-    if close is None:
-        return normalized
-
-    high = _latest_number(normalized.get("recent_highs"))
-    low = _latest_number(normalized.get("recent_lows"))
-    volume = _latest_number(normalized.get("recent_volumes"))
-    if volume is None:
-        volume = _number_or_none(normalized.get("volume"))
-
-    normalized["ohlcv"] = {
-        "open": _number_or_none(normalized.get("day_open")) or close,
-        "high": high if high is not None else close,
-        "low": low if low is not None else close,
-        "close": close,
-        "volume": volume,
-    }
-    return normalized
+    return _analysis_normalize_raw_technical_for_storage(technical)
 
 
 def _latest_number(values: Any) -> float | None:
-    if not isinstance(values, list):
-        return None
-    for value in reversed(values):
-        number = _number_or_none(value)
-        if number is not None:
-            return number
-    return None
+    return _analysis_latest_number(values)
 
 
 def _number_or_none(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-class HistoryEntry(BaseModel):
-    record_date:       str
-    signal_confidence: float | None
-    action_tag:        str | None
-    prev_action_tag:   str | None
-    prev_confidence:   float | None
-    analysis_is_final: bool
-    indicators:        dict[str, Any] | None
-    final_verdict:     str | None
+    return _analysis_number_or_none(value)
 
 
 def fetch_symbol_history(db: Session, symbol: str, days: int = 30):
@@ -1401,63 +638,15 @@ def analyze_position(
     backfill_yesterday_indicators(db, payload.symbol)
     prev_context = load_yesterday_context(payload.symbol, db)
 
-    initial_state: GraphState = {
-        "symbol": payload.symbol,
-        "entry_price": payload.entry_price,
-        "entry_date": payload.entry_date,
-        "quantity": payload.quantity,
-        "news_content": "",
-        "snapshot": None,
-        "analysis": None,
-        "analysis_detail": None,
-        "cleaned_news": None,
-        "raw_news_items": None,
-        "data_sufficient": False,
-        "retry_count": 0,
-        "errors": [],
-        "requires_news_refresh": False,
-        "requires_fundamental_update": False,
-        "technical_context": None,
-        "institutional_context": None,
-        "institutional_flow": None,
-        "strategy_type": None,
-        "entry_zone": None,
-        "stop_loss": None,
-        "holding_period": None,
-        "confidence_score": None,
-        "cross_validation_note": None,
-        "cleaned_news_quality": None,
-        "news_display": None,
-        "news_display_items": [],
-        "data_confidence": None,
-        "signal_confidence": None,
-        "high_20d": None,
-        "low_20d": None,
-        "support_20d": None,
-        "resistance_20d": None,
-        "rsi14": None,
-        "action_plan_tag": None,
-        "action_plan": None,
-        "fundamental_data": None,
-        "fundamental_context": None,
-        "profit_loss_pct": None,
-        "cost_buffer_to_support": None,
-        "position_status": None,
-        "position_narrative": None,
-        "trailing_stop": None,
-        "trailing_stop_reason": None,
-        "recommended_action": None,
-        "exit_reason": None,
-        "distance_to_trailing_stop_pct": None,
-        "distance_to_support_pct": None,
-        "unrealized_pnl": None,
-        "holding_days": None,
-        "prev_context": prev_context,
-        "is_final": now_time >= MARKET_CLOSE,
-    }
+    initial_state = build_position_analyze_initial_state(
+        payload,
+        now_time=now_time,
+        market_close=MARKET_CLOSE,
+        prev_context=prev_context,
+    )
 
     try:
-        result: dict[str, Any] = graph.invoke(initial_state)
+        result: dict[str, Any] = invoke_graph(graph, initial_state)
     except Exception as exc:
         return AnalyzeResponse(
             errors=[

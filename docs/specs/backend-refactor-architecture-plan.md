@@ -1,7 +1,7 @@
 # Backend Refactor Architecture Plan
 
 > Date: 2026-06-18
-> Status: Phase 3 completed
+> Status: Phase 4 completed
 > Scope: Backend architecture refactor plan for the existing FastAPI monolith.
 > Runtime constraint: keep one FastAPI app, one SQLAlchemy/PostgreSQL database, one CI path, and the current Python 3.11 + uv stack.
 > Relationship: this document is a temporary refactor decision and execution plan. It is not part of the canonical specs index. After the refactor is complete, delete this plan and update current system facts in `ai-stock-sentinel-architecture-spec.md`; API contracts remain in `backend-api-technical-spec.md`.
@@ -407,6 +407,8 @@ Rollback:
 
 ### Phase 4: Extract Analysis use cases
 
+Status: Completed on 2026-06-18.
+
 Primary files:
 
 - `backend/src/ai_stock_sentinel/api.py`
@@ -425,6 +427,12 @@ Actions:
 - Wrap LangGraph invocation behind a small graph runner adapter.
 - Keep `graph/` topology and node behavior unchanged.
 - Keep `/analyze`, `/analyze/position`, `/internal/fetch-raw-data`, and `/history/{symbol}` contracts unchanged.
+- Added `analysis/schemas.py` for analysis request/response models.
+- Added `analysis/application/analysis_cache.py` for analysis cache and raw-data cache helpers.
+- Added `analysis/application/response_builder.py` for response assembly and indicator extraction.
+- Added `analysis/application/analyze_stock.py` and `analysis/application/analyze_position.py` for Graph initial-state builders.
+- Added `analysis/adapters/graph_runner.py` for graph singleton construction and invocation.
+- Kept `api.py` compatibility wrapper names that existing tests monkeypatch directly.
 
 Verification:
 
