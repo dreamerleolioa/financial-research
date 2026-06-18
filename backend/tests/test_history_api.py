@@ -39,7 +39,7 @@ def test_history_returns_list():
         _make_mock_log("2026-03-04", "Trim", 74.0),
     ]
 
-    with patch("ai_stock_sentinel.api.fetch_symbol_history", return_value=mock_logs):
+    with patch("ai_stock_sentinel.analysis.router.fetch_symbol_history", return_value=mock_logs):
         client = _make_client()
         resp = client.get("/history/2330.TW?days=30")
         assert resp.status_code == 200
@@ -52,7 +52,7 @@ def test_history_returns_list():
 
 def test_history_defaults_to_30_days():
     """未指定 days 參數時預設查詢 30 天。"""
-    with patch("ai_stock_sentinel.api.fetch_symbol_history", return_value=[]) as mock_fetch:
+    with patch("ai_stock_sentinel.analysis.router.fetch_symbol_history", return_value=[]) as mock_fetch:
         client = _make_client()
         resp = client.get("/history/2330.TW")
         assert resp.status_code == 200

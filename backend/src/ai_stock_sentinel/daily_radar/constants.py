@@ -27,8 +27,14 @@ DAILY_RADAR_REPEAT_STATUSES: Final[tuple[DailyRadarRepeatStatus, ...]] = (
     "upgraded",
     "cooled_down",
 )
+DAILY_RADAR_BACKGROUND_CONTEXT_TYPES: Final[tuple[str, ...]] = (
+    "weekly_major_holders",
+    "lending",
+    "full_margin",
+)
 
 __all__ = [
+    "DAILY_RADAR_BACKGROUND_CONTEXT_TYPES",
     "DAILY_RADAR_BUCKETS",
     "DAILY_RADAR_RISK_LABELS",
     "DAILY_RADAR_REPEAT_STATUSES",

@@ -1,20 +1,113 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai_stock_sentinel.daily_radar.constants import (
+    DAILY_RADAR_BACKGROUND_CONTEXT_TYPES,
     DAILY_RADAR_BUCKETS,
     DAILY_RADAR_REPEAT_STATUSES,
     DAILY_RADAR_RISK_LABELS,
 )
+from ai_stock_sentinel.daily_radar.forward_validation import (
+    DEFAULT_BENCHMARK_SYMBOL,
+    DEFAULT_FORWARD_WINDOWS,
+)
+from ai_stock_sentinel.daily_radar.rule_governance import DEFAULT_MIN_SAMPLE_COUNT
 from ai_stock_sentinel.daily_radar.types import (
     DailyRadarBucket,
     DailyRadarRepeatStatus,
     DailyRadarRiskLabel,
 )
+
+
+class DailyRadarRunRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+
+
+class DailyRadarRunTriggerResponse(BaseModel):
+    run_id: int
+    run_date: date
+    market: str
+    status: Literal["completed", "running", "failed", "stale_data"]
+    universe_count: int
+    prefilter_count: int
+    candidate_count: int
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    started_at: datetime
+    finished_at: datetime | None = None
+
+
+class DailyRadarChipContextUpdateRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    symbols: list[str] | None = None
+    context_types: list[str] = Field(default_factory=lambda: list(DAILY_RADAR_BACKGROUND_CONTEXT_TYPES))
+
+
+class DailyRadarChipContextUpdateResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    run_date: date
+    market: str
+    symbol_count: int
+    context_types: list[str]
+    records_written: int
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DailyRadarForwardValidationRunRequest(BaseModel):
+    mode: Literal["due", "range"] = "due"
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    as_of_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    windows: list[int] = Field(default_factory=lambda: list(DEFAULT_FORWARD_WINDOWS))
+    benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
+
+
+class DailyRadarForwardValidationRunResponse(BaseModel):
+    status: Literal["completed"]
+    mode: Literal["due", "range"]
+    market: str
+    as_of_date: date
+    candidate_count: int
+    records_written: int
+    validated_count: int
+    skipped_count: int
+    report: dict[str, Any]
+
+
+class DailyRadarMonthlyRuleReviewRequest(BaseModel):
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    validation_version: str | None = Field(default=None, min_length=1, max_length=80)
+    min_sample_count: int = Field(default=DEFAULT_MIN_SAMPLE_COUNT, ge=1, le=10_000)
+
+
+class DailyRadarMonthlyRuleReviewResponse(BaseModel):
+    status: Literal["completed"]
+    market: str
+    month: str
+    report_json: dict[str, Any]
+    report_markdown: str
+
+
+class DailyRadarNameBackfillRequest(BaseModel):
+    limit: int | None = Field(default=None, ge=1, le=10_000)
+    dry_run: bool = False
+
+
+class DailyRadarNameBackfillResponse(BaseModel):
+    status: Literal["completed"]
+    dry_run: bool
+    scanned: int
+    updated_candidates: int
+    updated_raw_rows: int
+    unresolved_symbols: list[str]
 
 
 class DailyRadarMatchedRule(BaseModel):
@@ -156,7 +249,17 @@ class DailyRadarRunResponse(BaseModel):
 
 
 __all__ = [
+    "DailyRadarChipContextUpdateRequest",
+    "DailyRadarChipContextUpdateResponse",
     "DailyRadarCandidateResponse",
+    "DailyRadarForwardValidationRunRequest",
+    "DailyRadarForwardValidationRunResponse",
     "DailyRadarMatchedRule",
+    "DailyRadarMonthlyRuleReviewRequest",
+    "DailyRadarMonthlyRuleReviewResponse",
+    "DailyRadarNameBackfillRequest",
+    "DailyRadarNameBackfillResponse",
+    "DailyRadarRunRequest",
     "DailyRadarRunResponse",
+    "DailyRadarRunTriggerResponse",
 ]

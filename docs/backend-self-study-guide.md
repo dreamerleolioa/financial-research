@@ -29,7 +29,7 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 
 | 類別 | 技術 | 在本專案的角色 |
 | ---- | ---- | -------------- |
-| Web API | FastAPI | 對外與 internal endpoint，集中在 `api.py`、`portfolio/router.py`、`daily_radar/router.py` |
+| Web API | FastAPI | 對外與 internal endpoint，集中在 `api.py` app setup 與各 feature router |
 | Orchestration | LangGraph | `/analyze` 與 `/analyze/position` 的多節點流程與 retry loop |
 | LLM | LangChain + Anthropic / OpenAI fallback | `LangChainStockAnalyzer` 生成結構化分析與文字敘事 |
 | DB ORM | SQLAlchemy 2 | models、query、transaction、repository |
@@ -53,14 +53,15 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 
 | 路徑 | 責任 |
 | ---- | ---- |
-| `api.py` | FastAPI app、`/analyze`、`/analyze/position`、raw data endpoint、cache、response assembly |
+| `api.py` | FastAPI app setup、middleware、router include、health check、internal raw data endpoint |
 | `main.py` | 建立 crawler、analyzer、RSS client、news cleaner，供 CLI 與 API dependency 使用 |
 | `config.py` | logging、settings、`STRATEGY_VERSION` |
 | `graph/` | LangGraph state machine、節點、GraphState |
-| `analysis/` | LLM analyzer、news cleaner、quality gate、confidence scorer、technical metrics、strategy generator、position scorer、trade/lifecycle review |
+| `analysis/` | `/analyze` router、schemas、application use cases、cache/response assembly、LLM analyzer、news cleaner、quality gate、confidence scorer、technical metrics、strategy generator、position scorer、trade/lifecycle review |
 | `data_sources/` | yfinance、RSS、FinMind、institutional flow provider、fundamental provider |
 | `daily_radar/` | universe、raw data backfill、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance |
 | `portfolio/` | portfolio CRUD、entry record contract、fees、risk summary、history router |
+| `watchlist/` | watchlist schemas、repository、application use cases、CRUD/reorder router |
 | `shared_context.py` | 讀取 shared background context 並轉成 evidence/caveat/data quality payload |
 | `db/models.py` | 所有主要 DB table 的 SQLAlchemy model |
 
@@ -70,7 +71,7 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 
 ### 4.1 API 層流程
 
-入口：`backend/src/ai_stock_sentinel/api.py`
+入口：`backend/src/ai_stock_sentinel/analysis/router.py`
 
 核心流程：
 
@@ -135,7 +136,7 @@ LLM 不負責：
 
 ## 5. `/analyze/position` 是怎麼不同的
 
-入口同樣在 `api.py`，但 `analysis_type="position"`，request 會帶：
+入口同樣在 `analysis/router.py`，但 `analysis_type="position"`，request 會帶：
 
 - `symbol`
 - `entry_price`
@@ -348,9 +349,9 @@ uv run pytest -q
 
 | 新需求 | 先看 | 常改檔案 | 必同步文件 |
 | ------ | ---- | -------- | ---------- |
-| 新增 `/analyze` response 欄位 | `api.py`, `graph/nodes.py` | `AnalyzeResponse`, `_build_response`, tests | `backend-api-technical-spec.md` |
+| 新增 `/analyze` response 欄位 | `analysis/router.py`, `analysis/application/response_builder.py`, `graph/nodes.py` | `AnalyzeResponse`, `_build_response`, tests | `backend-api-technical-spec.md` |
 | 改技術指標 | `analysis/metrics.py`, `graph/nodes.py` | metrics、signal summary、tests | architecture spec、backend API spec |
-| 改持股診斷語意 | `analysis/position_scorer.py`, `api.py` | risk language、position response、tests | position diagnosis spec |
+| 改持股診斷語意 | `analysis/position_scorer.py`, `analysis/router.py` | risk language、position response、tests | position diagnosis spec |
 | 新增 portfolio lifecycle 欄位 | `portfolio/router.py`, `db/models.py` | model、migration、serializer、tests | position diagnosis spec、backend API spec |
 | 改 Daily Radar ranking | `daily_radar/scoring.py` | scoring、prefilter、fixtures/tests | daily-stock-radar spec、roadmap/release decision |
 | 新增背景 context | `daily_radar/background_context.py`, `shared_context.py` | provider、repository、labels、tests | daily-stock-radar spec、architecture spec |
@@ -367,7 +368,7 @@ uv run pytest -q
 2. 本文件第 4 節 `/analyze`
 3. 本文件第 7 節 Daily Radar
 4. 本文件第 8 節 Shared Background Context
-5. `backend/src/ai_stock_sentinel/api.py` 的 `/analyze` 與 `/analyze/position`
+5. `backend/src/ai_stock_sentinel/analysis/router.py` 的 `/analyze` 與 `/analyze/position`
 
 如果要能改功能：
 

@@ -9,6 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.analysis import router as analysis_router
+from ai_stock_sentinel.analysis.application.analysis_cache import (
+    fetch_and_store_raw_data,
+    upsert_analysis_cache,
+)
+from ai_stock_sentinel.analysis.application.response_builder import indicators_with_position_risk_from_full_result
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.models import StockSnapshot
@@ -65,11 +71,11 @@ def _fake_db():
 
 @pytest.fixture(autouse=True)
 def _disable_external_symbol_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(api, "_check_symbol_exists", lambda symbol: None)
+    monkeypatch.setattr(analysis_router, "_check_symbol_exists", lambda symbol: None)
 
 
 def _client_with_graph(graph) -> TestClient:
-    api.app.dependency_overrides[api.get_graph] = lambda: graph
+    api.app.dependency_overrides[analysis_router.get_graph] = lambda: graph
     api.app.dependency_overrides[get_current_user] = _fake_user
     api.app.dependency_overrides[get_db] = _fake_db
     return TestClient(api.app)
@@ -259,7 +265,7 @@ def test_analyze_response_includes_analysis_detail() -> None:
 
 def test_analyze_response_includes_shared_context_without_passing_it_to_graph(monkeypatch) -> None:
     """Shared context is response evidence only, not graph/LLM input."""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
 
     monkeypatch.setattr(
         api_module,
@@ -800,7 +806,7 @@ def test_analyze_position_returns_position_analysis_block() -> None:
 
 
 def test_position_cache_full_result_can_seed_history_risk_language_snapshot() -> None:
-    indicators = api._indicators_with_position_risk_from_full_result(
+    indicators = indicators_with_position_risk_from_full_result(
         {"close_price": 1100.0},
         {
             "position_analysis": {
@@ -865,7 +871,7 @@ def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> Non
 
 def test_analyze_position_shared_context_does_not_override_rule_based_fields(monkeypatch) -> None:
     """Shared context can surface caveats but must not change deterministic position fields."""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
 
     monkeypatch.setattr(
         api_module,
@@ -929,7 +935,7 @@ def test_analyze_position_shared_context_does_not_override_rule_based_fields(mon
 
 def test_analyze_position_cache_hit_requires_same_entry_price(monkeypatch) -> None:
     """Position cache must not reuse a previous result with a different cost basis."""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
     from ai_stock_sentinel.config import STRATEGY_VERSION
 
     cache = MagicMock()
@@ -970,7 +976,7 @@ def test_analyze_position_cache_hit_requires_same_entry_price(monkeypatch) -> No
 
 def test_analyze_position_cache_hit_reuses_same_position_request(monkeypatch) -> None:
     """A position cache hit is valid only when entry price/date/quantity match."""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
     from ai_stock_sentinel.config import STRATEGY_VERSION
 
     full_result = {
@@ -1093,7 +1099,6 @@ def test_shared_context_read_failure_returns_nonblocking_caveat(monkeypatch) -> 
 def test_upsert_analysis_cache_stores_full_result() -> None:
     """upsert_analysis_cache should persist full_result when provided."""
     from unittest.mock import MagicMock
-    from ai_stock_sentinel.api import upsert_analysis_cache
 
     db = MagicMock()
     data = {
@@ -1132,7 +1137,7 @@ def test_fetch_and_store_raw_data_adds_ohlcv_for_snapshot_technical() -> None:
         "recent_volumes": [1000, 1200, 1500],
     }
 
-    api.fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
+    fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
 
     stored = _stored_technical_from_fetch_and_store(db)
     assert stored["recent_closes"] == technical["recent_closes"]
@@ -1154,7 +1159,7 @@ def test_fetch_and_store_raw_data_preserves_existing_ohlcv() -> None:
         "ohlcv": {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10},
     }
 
-    api.fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
+    fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
 
     stored = _stored_technical_from_fetch_and_store(db)
     assert stored["ohlcv"] == technical["ohlcv"]
@@ -1171,7 +1176,7 @@ def test_fetch_and_store_raw_data_uses_volume_when_recent_volumes_missing() -> N
         "recent_lows": [99.0, 101.0],
     }
 
-    api.fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
+    fetch_and_store_raw_data(db, "2330.TW", technical=technical, institutional={}, fundamental={})
 
     stored = _stored_technical_from_fetch_and_store(db)
     assert stored["ohlcv"] == {
@@ -1186,7 +1191,7 @@ def test_fetch_and_store_raw_data_uses_volume_when_recent_volumes_missing() -> N
 def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     """When cache has full_result, /analyze should return all fields."""
     from unittest.mock import MagicMock
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
     from ai_stock_sentinel.db.session import get_db
 
     full = {
@@ -1242,7 +1247,7 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
 def test_cache_hit_replaces_symbol_placeholder_name(monkeypatch) -> None:
     """Old cache rows may store the symbol itself as the display name."""
     from unittest.mock import MagicMock
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
 
     full = {
         "snapshot": {"symbol": "2330.TW", "name": "2330.TW", "current_price": 1865.0},
@@ -1271,7 +1276,7 @@ def test_cache_hit_replaces_symbol_placeholder_name(monkeypatch) -> None:
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     """POST /analyze should pass full_result to upsert_analysis_cache."""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
     from ai_stock_sentinel.db.session import get_db
 
     graph = _make_graph(
@@ -1306,13 +1311,90 @@ def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     assert full.get("snapshot", {}).get("symbol") == "2330.TW"
 
 
+def test_analyze_general_endpoint_reads_only_general_cache(monkeypatch) -> None:
+    """POST /analyze must not accidentally read the position-analysis cache."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_get_analysis_cache(db: object, symbol: str, analysis_type: str = "general") -> None:
+        calls.append((symbol, analysis_type))
+        return None
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", fake_get_analysis_cache)
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+    monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "一般分析結果",
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert calls == [("2330.TW", "general")]
+
+
+def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(monkeypatch) -> None:
+    """skip_ai quick lookup should reuse recent raw data and avoid external validation/fetch writes."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    cached_snapshot = asdict(_SNAPSHOT) | {"name": "台積電"}
+    cached_institutional = {"flow_state": "foreign_buying"}
+    cached_fundamental = {"pe_ratio": 28.1}
+    raw_cache = MagicMock()
+    raw_cache.technical = cached_snapshot
+    raw_cache.institutional = cached_institutional
+    raw_cache.fundamental = cached_fundamental
+    raw_cache.fetched_at = "2026-06-18T09:01:00+08:00"
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: pytest.fail("skip_ai must bypass L1 analysis cache"))
+    monkeypatch.setattr(api_module, "get_recent_raw_data", lambda db, symbol, max_age_seconds=600: raw_cache)
+    monkeypatch.setattr(api_module, "_check_symbol_exists", lambda symbol: pytest.fail("raw cache hit must not validate symbol externally"))
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: pytest.fail("raw cache hit must not rewrite raw data"))
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: pytest.fail("skip_ai must not write analysis cache"))
+    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+
+    graph = _make_graph(
+        {
+            "snapshot": cached_snapshot,
+            "institutional_flow": cached_institutional,
+            "fundamental_data": cached_fundamental,
+            "analysis": "快查結果",
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+    response = client.post("/analyze", json={"symbol": "2330.TW", "skip_ai": True})
+
+    assert response.status_code == 200
+    graph_input = graph.invoke.call_args.args[0]
+    assert graph_input["skip_ai"] is True
+    assert graph_input["snapshot"] == cached_snapshot
+    assert graph_input["institutional_flow"] == cached_institutional
+    assert graph_input["fundamental_data"] == cached_fundamental
+    assert response.json()["snapshot"]["name"] == "台積電"
+    assert response.json()["fundamental_data"] == cached_fundamental
+
+
 # ---------------------------------------------------------------------------
 # Backfill yesterday indicators
 # ---------------------------------------------------------------------------
 
 def test_analyze_calls_backfill_yesterday_indicators(monkeypatch) -> None:
     """POST /analyze 應在 graph.invoke 之前呼叫 backfill_yesterday_indicators。"""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
     from dataclasses import asdict
 
     called = {}
@@ -1339,7 +1421,7 @@ def test_analyze_calls_backfill_yesterday_indicators(monkeypatch) -> None:
 
 def test_analyze_injects_prev_context(monkeypatch) -> None:
     """POST /analyze 應在 graph.invoke 前讀取昨日上下文並注入 prev_context。"""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
     from dataclasses import asdict
 
     prev_ctx = {
@@ -1381,7 +1463,7 @@ def test_analyze_injects_prev_context(monkeypatch) -> None:
 
 def test_analyze_position_injects_prev_context(monkeypatch) -> None:
     """POST /analyze/position 應在 graph.invoke 前讀取昨日上下文並注入 prev_context。"""
-    import ai_stock_sentinel.api as api_module
+    import ai_stock_sentinel.analysis.router as api_module
 
     prev_ctx = {
         "prev_action_tag": "Hold",

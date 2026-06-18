@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
-from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from datetime import date, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
@@ -31,7 +30,6 @@ from ai_stock_sentinel.daily_radar.background_context import (
 )
 from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
 from ai_stock_sentinel.daily_radar.forward_validation import (
-    DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
     build_forward_validation_report,
     default_due_start_date,
@@ -41,7 +39,6 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     upsert_forward_validation_results,
 )
 from ai_stock_sentinel.daily_radar.rule_governance import (
-    DEFAULT_MIN_SAMPLE_COUNT,
     build_monthly_rule_review_report,
 )
 from ai_stock_sentinel.daily_radar.repository import (
@@ -53,9 +50,25 @@ from ai_stock_sentinel.daily_radar.repository import (
     get_shared_background_context_trace_by_symbol,
     get_symbol_candidate_history,
 )
+from ai_stock_sentinel.daily_radar.presenter import (
+    history_response,
+    matches_bucket,
+    parse_date,
+    public_run_response,
+    run_trigger_response,
+)
 from ai_stock_sentinel.daily_radar.schemas import (
-    DailyRadarCandidateResponse,
+    DailyRadarChipContextUpdateRequest,
+    DailyRadarChipContextUpdateResponse,
+    DailyRadarForwardValidationRunRequest,
+    DailyRadarForwardValidationRunResponse,
+    DailyRadarMonthlyRuleReviewRequest,
+    DailyRadarMonthlyRuleReviewResponse,
+    DailyRadarNameBackfillRequest,
+    DailyRadarNameBackfillResponse,
+    DailyRadarRunRequest,
     DailyRadarRunResponse,
+    DailyRadarRunTriggerResponse,
 )
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.universe import (
@@ -63,7 +76,6 @@ from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseProvider,
     select_daily_radar_universe,
 )
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.db.session import get_db
 
 
@@ -71,93 +83,6 @@ router = APIRouter(tags=["daily-radar"])
 logger = logging.getLogger(__name__)
 
 DAILY_RUN_REFRESH_CONTEXT_TYPES = ("lending", "full_margin")
-
-
-class DailyRadarRunRequest(BaseModel):
-    run_date: date | None = None
-    market: str = Field(default="TW", min_length=1, max_length=20)
-
-
-class DailyRadarRunTriggerResponse(BaseModel):
-    run_id: int
-    run_date: date
-    market: str
-    status: Literal["completed", "running", "failed", "stale_data"]
-    universe_count: int
-    prefilter_count: int
-    candidate_count: int
-    errors: list[dict[str, Any]] = Field(default_factory=list)
-    started_at: datetime
-    finished_at: datetime | None = None
-
-
-class DailyRadarChipContextUpdateRequest(BaseModel):
-    run_date: date | None = None
-    market: str = Field(default="TW", min_length=1, max_length=20)
-    symbols: list[str] | None = None
-    context_types: list[str] = Field(default_factory=lambda: list(BACKGROUND_CONTEXT_TYPES))
-
-
-class DailyRadarChipContextUpdateResponse(BaseModel):
-    status: Literal["completed", "failed"]
-    run_date: date
-    market: str
-    symbol_count: int
-    context_types: list[str]
-    records_written: int
-    errors: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class DailyRadarForwardValidationRunRequest(BaseModel):
-    mode: Literal["due", "range"] = "due"
-    market: str = Field(default="TW", min_length=1, max_length=20)
-    as_of_date: date | None = None
-    start_date: date | None = None
-    end_date: date | None = None
-    windows: list[int] = Field(default_factory=lambda: list(DEFAULT_FORWARD_WINDOWS))
-    benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
-
-
-class DailyRadarForwardValidationRunResponse(BaseModel):
-    status: Literal["completed"]
-    mode: Literal["due", "range"]
-    market: str
-    as_of_date: date
-    candidate_count: int
-    records_written: int
-    validated_count: int
-    skipped_count: int
-    report: dict[str, Any]
-
-
-class DailyRadarMonthlyRuleReviewRequest(BaseModel):
-    market: str = Field(default="TW", min_length=1, max_length=20)
-    year: int = Field(ge=2000, le=2100)
-    month: int = Field(ge=1, le=12)
-    validation_version: str | None = Field(default=None, min_length=1, max_length=80)
-    min_sample_count: int = Field(default=DEFAULT_MIN_SAMPLE_COUNT, ge=1, le=10_000)
-
-
-class DailyRadarMonthlyRuleReviewResponse(BaseModel):
-    status: Literal["completed"]
-    market: str
-    month: str
-    report_json: dict[str, Any]
-    report_markdown: str
-
-
-class DailyRadarNameBackfillRequest(BaseModel):
-    limit: int | None = Field(default=None, ge=1, le=10_000)
-    dry_run: bool = False
-
-
-class DailyRadarNameBackfillResponse(BaseModel):
-    status: Literal["completed"]
-    dry_run: bool
-    scanned: int
-    updated_candidates: int
-    updated_raw_rows: int
-    unresolved_symbols: list[str]
 
 
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
@@ -310,7 +235,7 @@ def run_daily_radar_endpoint(
             allow_fixture_fallback=False,
         )
         db.commit()
-        return _run_response(run)
+        return run_trigger_response(run)
     except HTTPException:
         raise
     except Exception as exc:
@@ -399,8 +324,13 @@ def run_daily_radar_forward_validation_endpoint(
         end_date=request.end_date or as_of_date,
     )
     symbols = {str(candidate["symbol"]) for candidate in candidates}
+    candidate_record_dates = [
+        parsed_date
+        for candidate in candidates
+        if (parsed_date := parse_date(candidate.get("record_date"))) is not None
+    ]
     price_start_date = min(
-        [_parse_date(candidate.get("record_date")) for candidate in candidates if _parse_date(candidate.get("record_date")) is not None],
+        candidate_record_dates,
         default=start_date or as_of_date,
     )
     price_series = load_price_series_from_raw_data(
@@ -480,7 +410,7 @@ def get_latest_daily_radar_endpoint(
     run = get_latest_daily_radar_run(db, market=market)
     if run is None:
         raise HTTPException(status_code=404, detail="No public Daily Radar run is available.")
-    return _public_run_response(run, bucket=bucket, limit=limit)
+    return public_run_response(run, bucket=bucket, limit=limit)
 
 
 @router.get("/daily-radar/symbol/{symbol}", response_model=list[dict[str, Any]])
@@ -499,7 +429,7 @@ def get_daily_radar_symbol_history_endpoint(
         lookback_days=lookback_days,
         market=market,
     )
-    filtered = [_history_response(item) for item in history if _matches_bucket(item, bucket)]
+    filtered = [history_response(item) for item in history if matches_bucket(item, bucket)]
     return filtered[:limit]
 
 
@@ -517,7 +447,7 @@ def get_daily_radar_by_date_endpoint(
             status_code=404,
             detail=f"No public Daily Radar run is available for {run_date.isoformat()}.",
         )
-    return _public_run_response(run, bucket=bucket, limit=limit)
+    return public_run_response(run, bucket=bucket, limit=limit)
 
 
 def _backend_today() -> date:
@@ -673,173 +603,6 @@ def _float_metric(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _run_response(run: DailyRadarRun) -> DailyRadarRunTriggerResponse:
-    return DailyRadarRunTriggerResponse(
-        run_id=run.id,
-        run_date=run.run_date,
-        market=run.market,
-        status=run.status,
-        universe_count=run.universe_count,
-        prefilter_count=run.prefilter_count,
-        candidate_count=run.candidate_count,
-        errors=list(run.errors or []),
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-    )
-
-
-def _public_run_response(
-    run: DailyRadarRun,
-    *,
-    bucket: str | None,
-    limit: int,
-) -> DailyRadarRunResponse:
-    candidates = [_candidate_response(candidate) for candidate in _ordered_candidates(run.candidates)]
-    if bucket is not None:
-        candidates = [candidate for candidate in candidates if _matches_bucket(candidate.model_dump(), bucket)]
-    candidates = candidates[:limit]
-    return DailyRadarRunResponse(
-        run_date=run.run_date,
-        status=run.status,
-        data_dates=_run_data_dates(candidates),
-        market_context=_run_market_context(candidates),
-        candidates=candidates,
-    )
-
-
-def _ordered_candidates(candidates: list[DailyRadarCandidate]) -> list[DailyRadarCandidate]:
-    return sorted(
-        candidates,
-        key=lambda candidate: (-candidate.observation_score, candidate.symbol),
-    )
-
-
-def _candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateResponse:
-    return DailyRadarCandidateResponse(
-        symbol=candidate.symbol,
-        name=_stored_display_name(candidate.symbol, candidate.name),
-        primary_bucket=candidate.primary_bucket,
-        secondary_buckets=list(candidate.secondary_buckets or []),
-        observation_score=candidate.observation_score,
-        risk_labels=list(candidate.risk_labels or []),
-        repeat_status=candidate.repeat_status,
-        explanation=candidate.explanation,
-        scoring_version=_trace_version(candidate.score_breakdown, "scoring_version"),
-        rule_version=_trace_version(candidate.score_breakdown, "rule_version"),
-        bucket_scores=dict(candidate.bucket_scores or {}),
-        score_breakdown=dict(candidate.score_breakdown or {}),
-        input_snapshot=dict(candidate.input_snapshot or {}),
-        data_dates=_date_mapping(candidate.data_dates or {}),
-        matched_rules=_matched_rules(candidate.matched_rules or []),
-        background_context_labels=_background_context_labels(candidate.input_snapshot),
-    )
-
-
-def _history_response(item: dict[str, Any]) -> dict[str, Any]:
-    response = {
-        "symbol": item["symbol"],
-        "name": _stored_display_name(item["symbol"], item["name"]),
-        "record_date": item["record_date"],
-        "primary_bucket": item["primary_bucket"],
-        "secondary_buckets": list(item.get("secondary_buckets") or []),
-        "observation_score": item["observation_score"],
-        "risk_labels": list(item.get("risk_labels") or []),
-        "repeat_status": item["repeat_status"],
-        "bucket_scores": dict(item.get("bucket_scores") or {}),
-        "matched_rules": _matched_rules(item.get("matched_rules") or []),
-        "score_breakdown": dict(item.get("score_breakdown") or {}),
-        "input_snapshot": dict(item.get("input_snapshot") or {}),
-        "data_dates": {key: value.isoformat() for key, value in _date_mapping(item.get("data_dates") or {}).items()},
-        "background_context_labels": _background_context_labels(item.get("input_snapshot")),
-    }
-    scoring_version = item.get("scoring_version") or _trace_version(item.get("score_breakdown"), "scoring_version")
-    rule_version = item.get("rule_version") or _trace_version(item.get("score_breakdown"), "rule_version")
-    if scoring_version is not None:
-        response["scoring_version"] = scoring_version
-    if rule_version is not None:
-        response["rule_version"] = rule_version
-    return response
-
-
-def _stored_display_name(symbol: str, name: str | None) -> str:
-    normalized_name = str(name or "").strip()
-    return normalized_name or symbol
-
-
-def _matched_rules(raw_rules: list[Any]) -> list[dict[str, Any]]:
-    rules: list[dict[str, Any]] = []
-    for rule in raw_rules:
-        if isinstance(rule, dict):
-            rules.append(
-                {
-                    "rule_id": str(rule.get("rule_id", "unknown_rule")),
-                    "label": str(rule.get("label", rule.get("rule_id", "unknown_rule"))),
-                    "details": dict(rule.get("details") or {}),
-                }
-            )
-        else:
-            rules.append({"rule_id": str(rule), "label": str(rule), "details": {}})
-    return rules
-
-
-def _background_context_labels(input_snapshot: Any) -> list[dict[str, Any]]:
-    if not isinstance(input_snapshot, dict):
-        return []
-    labels = input_snapshot.get("background_context_labels")
-    if not isinstance(labels, list):
-        return []
-    return [dict(label) for label in labels if isinstance(label, dict)]
-
-
-def _trace_version(payload: Any, key: str) -> str | None:
-    if isinstance(payload, dict) and payload.get(key) is not None:
-        return str(payload[key])
-    return None
-
-
-def _matches_bucket(item: dict[str, Any], bucket: str | None) -> bool:
-    if bucket is None:
-        return True
-    return item.get("primary_bucket") == bucket or bucket in set(item.get("secondary_buckets") or [])
-
-
-def _run_data_dates(candidates: list[DailyRadarCandidateResponse]) -> dict[str, date]:
-    data_dates: dict[str, date] = {}
-    for candidate in candidates:
-        for key, value in candidate.data_dates.items():
-            if key not in data_dates or value > data_dates[key]:
-                data_dates[key] = value
-    return data_dates
-
-
-def _run_market_context(candidates: list[DailyRadarCandidateResponse]) -> dict[str, Any]:
-    for candidate in candidates:
-        market_context = candidate.input_snapshot.get("market_context")
-        if isinstance(market_context, dict) and market_context:
-            return dict(market_context)
-    return {}
-
-
-def _date_mapping(raw_dates: dict[str, Any]) -> dict[str, date]:
-    data_dates: dict[str, date] = {}
-    for key, value in raw_dates.items():
-        parsed = _parse_date(value)
-        if parsed is not None:
-            data_dates[str(key)] = parsed
-    return data_dates
-
-
-def _parse_date(value: Any) -> date | None:
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value)
-        except ValueError:
-            return None
-    return None
 
 
 __all__ = ["router"]
