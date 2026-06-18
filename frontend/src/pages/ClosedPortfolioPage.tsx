@@ -429,9 +429,32 @@ function portfolioDisplayName(item: { symbol: string; name?: string | null }): s
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
-function getSignedPriceText(value: number | null | undefined, symbol?: string): string {
+const roundedMoneyFormatter = new Intl.NumberFormat("zh-TW", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+
+function roundedMoneyValue(value: number): number {
+  const rounded = value < 0 ? -Math.round(Math.abs(value)) : Math.round(value);
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function roundedMoneyClass(value: number): string {
+  const rounded = roundedMoneyValue(value);
+  if (rounded > 0) return "text-green-600 dark:text-green-400";
+  if (rounded < 0) return "text-red-600 dark:text-red-400";
+  return "text-text-primary";
+}
+
+function formatRoundedMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
-  return `${value >= 0 ? "+" : ""}${formatPrice(value, symbol)}`;
+  return roundedMoneyFormatter.format(roundedMoneyValue(value));
+}
+
+function getSignedRoundedMoneyText(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  const rounded = roundedMoneyValue(value);
+  return `${rounded > 0 ? "+" : ""}${roundedMoneyFormatter.format(rounded)}`;
 }
 
 function getSignedPercentText(value: number | null | undefined): string {
@@ -672,7 +695,7 @@ function TradeResultSection({ metrics, symbol }: { metrics: TradeReviewResultMet
         <ReviewMetric label="進場價格" value={formatPrice(metrics?.entry_price, symbol)} />
         <ReviewMetric label="結案價格" value={formatPrice(metrics?.exit_price, symbol)} />
         <ReviewMetric label="持有天數" value={metrics?.holding_days == null ? "—" : `${metrics.holding_days} 天`} />
-        <ReviewMetric label="已實現損益" value={getSignedPriceText(metrics?.realized_pnl, symbol)} />
+        <ReviewMetric label="已實現損益" value={getSignedRoundedMoneyText(metrics?.realized_pnl)} />
         <ReviewMetric label="已實現報酬" value={getSignedPercentText(metrics?.realized_return_pct)} />
         <ReviewMetric label="最高浮盈" value={getSignedPercentText(metrics?.max_profit_pct)} />
         <ReviewMetric label="最大回撤" value={getSignedPercentText(metrics?.max_drawdown_pct)} />
@@ -1113,8 +1136,8 @@ function LifecyclePerspectives({
       <LifecyclePerspectiveCard title="部位管理視角">
         <ReviewMetric label="加權成本" value={formatPrice(metrics?.weighted_average_entry_price)} />
         <ReviewMetric label="最大部位" value={formatPlainValue(metrics?.max_position_size)} />
-        <ReviewMetric label="最大投入成本" value={formatPrice(metrics?.max_capital_at_risk)} />
-        <ReviewMetric label="總已實現損益" value={getSignedPriceText(metrics?.total_realized_pnl)} />
+        <ReviewMetric label="最大投入成本" value={formatRoundedMoney(metrics?.max_capital_at_risk)} />
+        <ReviewMetric label="總已實現損益" value={getSignedRoundedMoneyText(metrics?.total_realized_pnl)} />
       </LifecyclePerspectiveCard>
       <LifecyclePerspectiveCard title="結案與風險處理視角">
         <ReviewMetric label="結案次數" value={formatPlainValue(exitSequence?.exit_count)} />
@@ -1123,7 +1146,7 @@ function LifecyclePerspectives({
           label="破位後降低曝險比例"
           value={getSignedPercentText(exitSequence?.percentage_sold_after_breakdown)}
         />
-        <ReviewMetric label="保護獲利" value={getSignedPriceText(exitSequence?.profit_protected_by_partial_exits)} />
+        <ReviewMetric label="保護獲利" value={getSignedRoundedMoneyText(exitSequence?.profit_protected_by_partial_exits)} />
       </LifecyclePerspectiveCard>
     </div>
   );
@@ -1196,8 +1219,8 @@ function LifecycleEventTimeline({
               <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
                 <TimelineMetric label="價格" value={formatPrice(event.price, symbol)} />
                 <TimelineMetric label="數量" value={event.quantity == null ? "—" : `${event.quantity} 股`} />
-                <TimelineMetric label="手續費（ledger）" value={formatPrice(event.fees, symbol)} />
-                <TimelineMetric label="交易稅（ledger）" value={formatPrice(event.taxes, symbol)} />
+                <TimelineMetric label="手續費（ledger）" value={formatRoundedMoney(event.fees)} />
+                <TimelineMetric label="交易稅（ledger）" value={formatRoundedMoney(event.taxes)} />
               </div>
 
               <div className="mt-3 grid gap-2 md:grid-cols-3">
@@ -1297,7 +1320,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
             <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 檢討分析</p>
             <p className="mt-1 text-xs text-text-faint">
               {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜{" "}
-              {getSignedPriceText(item.realized_pnl, item.symbol)}
+              {getSignedRoundedMoneyText(item.realized_pnl)}
             </p>
           </div>
           <button
@@ -1502,11 +1525,11 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
                       <TimelineMetric label="數量" value={`${timelineEvent.quantity} 股`} />
                       <TimelineMetric
                         label="手續費（系統計算/已保存）"
-                        value={formatPrice(timelineEvent.fees, timelineEvent.symbol)}
+                        value={formatRoundedMoney(timelineEvent.fees)}
                       />
                       <TimelineMetric
                         label="交易稅（系統計算/已保存）"
-                        value={formatPrice(timelineEvent.taxes, timelineEvent.symbol)}
+                        value={formatRoundedMoney(timelineEvent.taxes)}
                       />
                     </div>
 
@@ -1812,7 +1835,7 @@ export default function ClosedPortfolioPage() {
     () => filteredItems.reduce((total, item) => total + item.realized_pnl, 0),
     [filteredItems],
   );
-  const totalClass = totalRealizedPnl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const totalClass = roundedMoneyClass(totalRealizedPnl);
 
   async function fetchReview(item: ClosedPortfolioItem): Promise<TradeReviewResponse> {
     return fetchOrCreateTradeReview(item.id);
@@ -1934,8 +1957,7 @@ export default function ClosedPortfolioPage() {
             <div>
               <p className="text-xs font-medium text-text-faint">{activePeriod.label} 已實現損益</p>
               <p className={`mt-1 font-mono text-3xl font-semibold ${totalClass}`}>
-                {totalRealizedPnl >= 0 ? "+" : ""}
-                {formatPrice(totalRealizedPnl)}
+                {getSignedRoundedMoneyText(totalRealizedPnl)}
               </p>
               <p className="mt-1 text-xs text-text-muted">篩選 {filteredItems.length} 筆已結案紀錄</p>
             </div>
@@ -1979,10 +2001,7 @@ export default function ClosedPortfolioPage() {
           ) : (
             <div className="space-y-4 p-4">
               {groupedItems.map((group) => {
-                const groupIsProfit = group.totalRealizedPnl >= 0;
-                const groupResultClass = groupIsProfit
-                  ? "text-green-600 dark:text-green-400"
-                  : "text-red-600 dark:text-red-400";
+                const groupResultClass = roundedMoneyClass(group.totalRealizedPnl);
                 const isTimelineLoading = timelineLoading[group.position_group_id] ?? false;
                 const isLifecycleReviewLoading = lifecycleReviewLoading[group.position_group_id] ?? false;
                 return (
@@ -2019,7 +2038,7 @@ export default function ClosedPortfolioPage() {
                           <div className="rounded-xl border border-border bg-card px-4 py-3 text-left shadow-sm md:text-right">
                             <p className="text-xs font-medium text-text-muted">股票總已實現損益</p>
                             <p className={`mt-1 font-mono text-lg font-semibold ${groupResultClass}`}>
-                              {getSignedPriceText(group.totalRealizedPnl, group.symbol)}
+                              {getSignedRoundedMoneyText(group.totalRealizedPnl)}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2 md:justify-end">
@@ -2047,10 +2066,7 @@ export default function ClosedPortfolioPage() {
                     <div className="bg-card p-3 sm:p-4">
                       <div className="space-y-2 border-l border-border-subtle pl-3 sm:pl-4">
                         {group.items.map((item) => {
-                          const isProfit = item.realized_pnl >= 0;
-                          const resultClass = isProfit
-                            ? "text-green-600 dark:text-green-400"
-                            : "text-red-600 dark:text-red-400";
+                          const resultClass = roundedMoneyClass(item.realized_pnl);
                           const isReviewLoading = reviewLoading[item.id] ?? false;
                           return (
                             <div
@@ -2074,13 +2090,13 @@ export default function ClosedPortfolioPage() {
                                       {formatPrice(item.exit_price, item.symbol)}
                                     </span>
                                     <span>結案 {item.exit_quantity} 股</span>
-                                    <span>費稅 {formatPrice(item.exit_fees + item.exit_taxes, item.symbol)}</span>
+                                    <span>費稅 {formatRoundedMoney(item.exit_fees + item.exit_taxes)}</span>
                                   </div>
                                 </div>
                                 <div className="flex items-center justify-between gap-3 sm:justify-end">
                                   <div className="text-left sm:text-right">
                                     <p className={`font-mono text-sm font-semibold ${resultClass}`}>
-                                      {getSignedPriceText(item.realized_pnl, item.symbol)}
+                                      {getSignedRoundedMoneyText(item.realized_pnl)}
                                     </p>
                                     <p className={`font-mono text-xs ${resultClass}`}>
                                       {getSignedPercentText(item.realized_return_pct)}
