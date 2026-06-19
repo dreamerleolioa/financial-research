@@ -35,6 +35,7 @@
 | `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
 | `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental provider |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
+| `phase1_avwap/` | Phase 1 Daily AVWAP backend foundation：managed-universe resolver、FinMind `TaiwanStockPrice` daily row normalization、deterministic daily AVWAP calculation、snapshot repository/service |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
 | `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
@@ -56,6 +57,7 @@
 | Analysis | `analysis/router.py` 承接 `/analyze`、`/analyze/position`、`/history/{symbol}` HTTP boundary 與 shared context attachment；`analysis/schemas.py` 保存 request/response models；`analysis/application/analyze_stock.py` 與 `analyze_position.py` 建立 Graph initial state；`analysis/application/analysis_cache.py` 管理 analysis/raw-data cache helper；`analysis/application/response_builder.py` 負責 response assembly 與 technical indicator extraction；`analysis/adapters/graph_runner.py` 包裝 Graph construction/invocation。`api.py` 只 include router 並保留 internal raw-data maintenance endpoint。 |
 | Portfolio | `portfolio/schemas.py` 保存 request/response models；`portfolio/repository.py` 收斂共享 ownership/query helper；`portfolio/application/*` 承接 create/update/add-entry/close/risk-summary use cases；`fees.py` 與 `risk_summary.py` 保持純 deterministic calculation。Router 仍保留 HTTP dependency、response serialization、lifecycle/review endpoints 與部分 transaction orchestration。 |
 | Daily Radar | `daily_radar/schemas.py` 保存 internal/public request/response models；`daily_radar/presenter.py` 負責 public run/candidate/history 與 run-trigger response serialization；`daily_radar/constants.py` 保存共享常數；`daily_radar/service.py` 是 Daily Radar run application service；`daily_radar/repository.py` 管理 persistence queries；`daily_radar/router.py` 保留 internal workflow trigger、dependency wiring 與 institutional universe payload shaping。 |
+| Phase 1 AVWAP | `phase1_avwap/universe.py` 從 active holdings、watchlist 與 latest Daily Radar candidates 合併 managed universe；`provider.py` 只用 FinMind `TaiwanStockPrice` single-symbol data_id 並維持 `adjustment_mode=unadjusted`；`calculator.py` 以日頻 `Trading_money / Trading_Volume` deterministic 計算 AVWAP anchors；`service.py` 先 reuse fresh `phase1_avwap_snapshots`，缺漏時才逐檔 fetch。 |
 | Watchlist | `watchlist/schemas.py` 保存 request models；`watchlist/repository.py` 收斂 query helper；`watchlist/application/items.py` 承接 normalize、idempotent create、reorder completeness、update/delete ownership rules；`watchlist/router.py` 保留 FastAPI dependency、HTTP error mapping 與 response serialization。 |
 | Architecture guard | `backend/tests/test_backend_architecture_boundaries.py` 以 AST 檢查純計算 modules 不引入 FastAPI/SQLAlchemy/external provider/DB；已重構 HTTP boundaries 不重新定義 Pydantic schema；Daily Radar router 不重新吸收 public response presenter helpers。Auth router 尚未納入此 guard，因為它尚未經過同一輪重構。 |
 
@@ -74,6 +76,7 @@
 | `daily_radar_runs` / `daily_radar_candidates` | Daily Radar run log、候選清單、score breakdown、input snapshot、matched rules |
 | `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
 | `shared_background_contexts` | weekly major holders、lending、full margin 等背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
+| `phase1_avwap_snapshots` | Phase 1 日頻 AVWAP snapshot cache；以 `symbol` / `data_date` / `dataset` / `adjustment_mode` upsert，保存 anchors、data quality、missing reason 與 FinMind source trace |
 
 ### 0.4 Workflow 與排程
 

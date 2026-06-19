@@ -20,6 +20,7 @@ from ai_stock_sentinel.db.models import (
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
+    Phase1AvwapSnapshot,
     SharedBackgroundContext,
     StockAnalysisCache,
     StockRawData,
@@ -333,6 +334,38 @@ def test_stock_analysis_cache_model_columns():
 def test_stock_analysis_cache_has_full_result_column() -> None:
     from ai_stock_sentinel.db.models import StockAnalysisCache
     assert hasattr(StockAnalysisCache, "full_result")
+
+
+def test_phase1_avwap_snapshot_model_columns_constraints_and_indexes() -> None:
+    assert Phase1AvwapSnapshot.__tablename__ == "phase1_avwap_snapshots"
+
+    cols = {c.name for c in Phase1AvwapSnapshot.__table__.columns}
+    unique_constraints = {
+        constraint.name
+        for constraint in Phase1AvwapSnapshot.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Phase1AvwapSnapshot.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    index_columns = {
+        index.name: tuple(column.name for column in index.columns)
+        for index in Phase1AvwapSnapshot.__table__.indexes
+    }
+
+    assert {
+        "id", "symbol", "data_date", "dataset", "adjustment_mode",
+        "source_provider", "source_granularity", "is_final", "freshness",
+        "missing_reason", "payload", "created_at", "updated_at",
+    } <= cols
+    assert "uq_phase1_avwap_symbol_date_dataset_mode" in unique_constraints
+    assert "ck_phase1_avwap_snapshot_freshness" in check_constraints
+    assert index_columns["idx_phase1_avwap_snapshots_symbol"] == ("symbol",)
+    assert index_columns["idx_phase1_avwap_snapshots_data_date"] == ("data_date",)
+    assert index_columns["idx_phase1_avwap_snapshots_freshness"] == ("freshness",)
+    assert isinstance(Phase1AvwapSnapshot.__table__.c.payload.type, JSONB)
 
 
 def test_daily_radar_run_table_name_and_columns() -> None:

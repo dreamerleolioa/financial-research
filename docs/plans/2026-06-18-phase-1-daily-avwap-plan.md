@@ -513,6 +513,17 @@ Build the backend-only foundation:
 
 This phase can ship without UI changes. It proves data availability, quota behavior, and deterministic calculations.
 
+Implementation status as of 2026-06-19:
+
+- Completed backend-only foundation in `phase1_avwap/`.
+- Added managed-universe resolver for active holdings, watchlist symbols, and latest Daily Radar candidates.
+- Added FinMind `TaiwanStockPrice` daily row normalization with `adjustment_mode = "unadjusted"`.
+- Added deterministic daily AVWAP snapshot calculation for swing-low, 20-day breakout, high-volume, and holding-entry anchors.
+- Added `phase1_avwap_snapshots` persistence keyed by `symbol`, `data_date`, `dataset`, and `adjustment_mode`.
+- Existing fresh snapshots are reused before single-symbol FinMind fetches; provider/row gaps persist as `freshness = "missing"` with `missing_reason`.
+- A snapshot is only `fresh` when the latest FinMind row matches requested `data_date`; if FinMind only returns an older trading day, the row is persisted as missing with `daily_price_row_missing_for_data_date`.
+- No public API or UI response projection was added in this phase; that remains Phase 1B.
+
 ### Phase 1B: Existing Response Projections
 
 Expose the Phase 1 snapshot through existing responses only:
