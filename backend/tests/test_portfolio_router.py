@@ -91,6 +91,21 @@ def test_add_portfolio_allows_more_than_eight_active_holdings(monkeypatch: pytes
     mock_db.execute.assert_not_called()
 
 
+def test_add_portfolio_rejects_invalid_symbol(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: False)
+    client = _make_client()
+
+    resp = client.post("/portfolio", json={
+        "symbol": "9999.TW",
+        "entry_price": 800.0,
+        "entry_date": "2026-01-01",
+        "quantity": 50,
+    })
+
+    assert resp.status_code == 404
+    assert "查詢目標不存在" in resp.json()["detail"]
+
+
 @pytest.mark.parametrize("entry_price", [0, -1])
 def test_add_portfolio_rejects_non_positive_entry_price(entry_price):
     client = _make_client()

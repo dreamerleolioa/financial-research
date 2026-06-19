@@ -186,7 +186,7 @@ CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-
 
 ## 環境需求
 
-- Python 3.11+
+- Python 3.14
 - 後端依賴使用 `uv` 管理
 - Node.js 22+（CI 使用 Node 22；前端用 pnpm 10）
 

@@ -20,7 +20,7 @@
 
 | 層級 | 現況 |
 | ---- | ---- |
-| Backend | Python 3.11、FastAPI、LangGraph、LangChain、SQLAlchemy 2、Alembic、uv |
+| Backend | Python 3.14、FastAPI、LangGraph、LangChain、SQLAlchemy 2、Alembic、uv |
 | Frontend | React 19、React Router 7、Vite 8、TypeScript 5.9、Tailwind CSS 4、pnpm 10 |
 | Data / DB | PostgreSQL production path；tests 可用 SQLite；JSONB 保存可回放 evidence 與 full result |
 | LLM | Anthropic 優先，OpenAI fallback；缺 key 時保持降級輸出，不中斷 deterministic pipeline |
@@ -1005,7 +1005,7 @@ def calculate_action_plan_tag(
 
 ## 5. 主要技術棧
 
-- **Backend**：Python 3.11+, FastAPI, LangChain, LangGraph, SQLAlchemy 2, Alembic, uv
+- **Backend**：Python 3.14, FastAPI, LangChain, LangGraph, SQLAlchemy 2, Alembic, uv
 - **數據處理**：
   - `yfinance`：拉取 OHLCV 歷史行情、即時報價
   - `pandas`：計算技術指標（rolling mean、pct_change、自定義 RSI）

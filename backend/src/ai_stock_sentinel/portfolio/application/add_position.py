@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Callable
 from decimal import Decimal
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import PositionLifecyclePlan, UserPortfolio
