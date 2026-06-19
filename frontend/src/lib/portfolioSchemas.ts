@@ -76,6 +76,42 @@ const portfolioPositionRiskSchema = z
   })
   .passthrough();
 
+const phase1ObservationItemSchema = z
+  .object({
+    symbol: z.string(),
+    name: z.string().nullable().optional(),
+    label: z.enum(["加碼", "建倉", "續抱", "停損警戒", "資料不足"]).nullable().optional(),
+    position_state: z.string().optional(),
+    close: z.number().nullable().optional(),
+    holding_avg_cost: z.number().nullable().optional(),
+    display_anchor: phase1PositionStateSchema.shape.display_anchor.optional(),
+    matched_rules: z.array(z.string()),
+    current_day_observation: z.string(),
+    data_quality: z.record(z.string(), z.unknown()),
+  })
+  .passthrough();
+
+const phase1CurrentDayListKeySchema = z.enum([
+  "pullback_observation_candidates",
+  "breakout_confirmation_candidates",
+  "holding_management_candidates",
+  "holding_risk_alerts",
+  "overheated_do_not_chase_candidates",
+]);
+
+const phase1CurrentDayListsSchema = z
+  .object({
+    version: z.string(),
+    implemented_lists: z.array(phase1CurrentDayListKeySchema),
+    pending_lists: z.array(phase1CurrentDayListKeySchema),
+    pullback_observation_candidates: z.array(phase1ObservationItemSchema),
+    breakout_confirmation_candidates: z.array(phase1ObservationItemSchema),
+    holding_management_candidates: z.array(phase1ObservationItemSchema),
+    holding_risk_alerts: z.array(phase1ObservationItemSchema),
+    overheated_do_not_chase_candidates: z.array(phase1ObservationItemSchema),
+  })
+  .passthrough();
+
 export const portfolioRiskSummarySchema = z
   .object({
     version: z.string(),
@@ -85,6 +121,7 @@ export const portfolioRiskSummarySchema = z
     total_at_risk: z.number(),
     total_at_risk_pct: z.number().nullable(),
     position_risks: z.array(portfolioPositionRiskSchema),
+    phase1_current_day_lists: phase1CurrentDayListsSchema.optional(),
     concentration: z
       .object({
         by_symbol: z.array(

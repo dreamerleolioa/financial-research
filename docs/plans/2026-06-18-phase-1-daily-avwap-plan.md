@@ -559,6 +559,13 @@ Add the user-facing classification layer:
 
 The first UI pass can prioritize holdings and watchlist before Daily Radar detail polish. Holding risk states should remain higher priority than opportunity states.
 
+Implementation status as of 2026-06-19:
+
+- Completed the first backend-only Phase 1C slice under `PortfolioRiskSummary.phase1_current_day_lists`.
+- The first slice exposes the five-list response contract and currently populates holding management candidates plus holding risk alerts from existing `position_risks[].phase1_position_state`.
+- `phase1_current_day_lists.implemented_lists` and `phase1_current_day_lists.pending_lists` identify which list arrays are currently computed; pullback observation, breakout confirmation, and overheated do-not-chase lists are pending until the non-held watchlist / Daily Radar classification rules are implemented.
+- No UI rendering was added in this slice.
+
 ## Phase 1 Success Criteria
 
 - A managed-universe symbol can return daily AVWAP from swing low, breakout, and high volume anchors.

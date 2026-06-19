@@ -7,6 +7,21 @@ from typing import Any
 
 
 PORTFOLIO_RISK_SUMMARY_VERSION = "portfolio-risk-summary-v1"
+PHASE1_CURRENT_DAY_LISTS_VERSION = "phase1-current-day-lists-v1"
+PHASE1_CURRENT_DAY_LIST_KEYS = (
+    "pullback_observation_candidates",
+    "breakout_confirmation_candidates",
+    "holding_management_candidates",
+    "holding_risk_alerts",
+    "overheated_do_not_chase_candidates",
+)
+PHASE1_CURRENT_DAY_IMPLEMENTED_LISTS = (
+    "holding_management_candidates",
+    "holding_risk_alerts",
+)
+PHASE1_CURRENT_DAY_PENDING_LISTS = tuple(
+    key for key in PHASE1_CURRENT_DAY_LIST_KEYS if key not in PHASE1_CURRENT_DAY_IMPLEMENTED_LISTS
+)
 STALE_PRICE_MAX_AGE_DAYS = 5
 POSITION_RISK_WATCH_PCT = 2.0
 POSITION_RISK_ELEVATED_PCT = 5.0
@@ -119,6 +134,7 @@ def build_portfolio_risk_summary(
 
     concentration = _build_symbol_concentration(position_drafts, portfolio_value)
     shared_exposures = _build_shared_exposures(position_drafts, positions, plans, portfolio_value)
+    phase1_current_day_lists = _build_phase1_current_day_lists(position_drafts)
     total_risk_pct = _pct(total_at_risk, portfolio_value)
 
     return {
@@ -129,6 +145,7 @@ def build_portfolio_risk_summary(
         "total_at_risk": _round_money(total_at_risk),
         "total_at_risk_pct": total_risk_pct,
         "position_risks": position_drafts,
+        "phase1_current_day_lists": phase1_current_day_lists,
         "concentration": concentration,
         "shared_exposures": shared_exposures,
         "risk_budget_status": _risk_budget_status(total_risk_pct, aggregate_caveat_counts),
@@ -323,6 +340,68 @@ def _build_shared_exposures(
         exposures.append(bucket)
     exposures.sort(key=lambda row: (row["pct_of_portfolio"] is not None, row["pct_of_portfolio"] or 0, row["type"], row["key"]), reverse=True)
     return exposures
+
+
+def _build_phase1_current_day_lists(position_risks: list[dict[str, Any]]) -> dict[str, Any]:
+    lists = {key: [] for key in PHASE1_CURRENT_DAY_LIST_KEYS}
+    for risk in position_risks:
+        state = risk.get("phase1_position_state")
+        if not isinstance(state, dict):
+            continue
+        position_state = str(state.get("state") or "")
+        if position_state in {"hold", "add_watch", "profit_take_watch"}:
+            lists["holding_management_candidates"].append(_phase1_holding_observation_item(risk, state))
+        elif position_state in {"warning", "exit_risk"}:
+            lists["holding_risk_alerts"].append(_phase1_holding_observation_item(risk, state))
+    for key in ("holding_risk_alerts", "holding_management_candidates"):
+        lists[key].sort(key=_phase1_observation_sort_key)
+    return {
+        "version": PHASE1_CURRENT_DAY_LISTS_VERSION,
+        "implemented_lists": list(PHASE1_CURRENT_DAY_IMPLEMENTED_LISTS),
+        "pending_lists": list(PHASE1_CURRENT_DAY_PENDING_LISTS),
+        **lists,
+    }
+
+
+def _phase1_holding_observation_item(risk: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    position_state = str(state.get("state") or "data_unavailable")
+    display_anchor = state.get("display_anchor") if isinstance(state.get("display_anchor"), dict) else None
+    return {
+        "symbol": risk["symbol"],
+        "name": risk.get("name"),
+        "label": state.get("label"),
+        "position_state": position_state,
+        "close": risk.get("current_price"),
+        "holding_avg_cost": risk.get("entry_price"),
+        "display_anchor": display_anchor,
+        "matched_rules": list(state.get("matched_rules") or []),
+        "current_day_observation": _phase1_current_day_observation_text(position_state, display_anchor),
+        "data_quality": dict(state.get("data_quality") or {}),
+    }
+
+
+def _phase1_current_day_observation_text(position_state: str, display_anchor: dict[str, Any] | None) -> str:
+    anchor_type = str(display_anchor.get("type")) if display_anchor else "phase1_anchor"
+    if position_state == "add_watch":
+        return f"觀察回測 {anchor_type} 後是否維持支撐。"
+    if position_state == "profit_take_watch":
+        return "結構偏熱，觀察是否等待均線或 AVWAP 支撐重新整理。"
+    if position_state == "warning":
+        return f"觀察是否重新站回 {anchor_type}，避免結構轉弱擴大。"
+    if position_state == "exit_risk":
+        return f"已跌破 {anchor_type} 觀察線，優先檢查風險控制條件。"
+    return f"觀察 {anchor_type} 是否維持支撐，結構仍偏健康。"
+
+
+def _phase1_observation_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    priority = {
+        "exit_risk": 0,
+        "warning": 1,
+        "profit_take_watch": 2,
+        "add_watch": 3,
+        "hold": 4,
+    }
+    return priority.get(str(item.get("position_state") or ""), 99), str(item.get("symbol") or "")
 
 
 def _risk_budget_status(total_risk_pct: float | None, caveat_counts: dict[str, int]) -> dict[str, Any]:

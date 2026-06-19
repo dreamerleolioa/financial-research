@@ -745,9 +745,10 @@ make run-api
 ### `GET /portfolio/risk-summary`
 
 - **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
-- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan` 與 `stock_raw_data`；不得建立、修改或刪除持股、交易事件、review 或任何 portfolio state。
+- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data` 與 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review 或任何 portfolio state。Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 FinMind backfill 或 snapshot refresh。
 - **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
+- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。第一個 Phase 1C slice 只計算 `holding_management_candidates` 與 `holding_risk_alerts`；未實作清單必須列在 `pending_lists`，不得只用空陣列表示已完成分類。
 
 - **Response 200**
 
@@ -779,12 +780,77 @@ make run-api
       "discipline_triggers": [
         "單一部位估計曝險占投資組合 20.83%，高於 5% 檢查線。"
       ],
+      "phase1_position_state": {
+        "symbol": "2330.TW",
+        "data_date": "2026-06-12",
+        "dataset": "TaiwanStockPrice",
+        "adjustment_mode": "unadjusted",
+        "state": "hold",
+        "label": "續抱",
+        "freshness": "fresh",
+        "missing_reason": null,
+        "display_anchor": {
+          "type": "entry",
+          "anchor_date": "2026-01-15",
+          "anchor_reason": "holding_entry_date",
+          "avwap": 112.5,
+          "distance_to_avwap_pct": 6.6667,
+          "source_granularity": "daily",
+          "estimated": false
+        },
+        "matched_rules": ["phase1_display_anchor_supported"],
+        "source": {
+          "provider": "finmind",
+          "dataset": "TaiwanStockPrice",
+          "adjustment_mode": "unadjusted"
+        },
+        "source_granularity": "daily",
+        "data_quality": {
+          "estimated": false,
+          "source_granularity": "daily",
+          "rows_used": 80,
+          "missing_reason": null,
+          "blocking": false
+        }
+      },
       "data_quality": {
         "status": "ok",
         "caveats": []
       }
     }
   ],
+  "phase1_current_day_lists": {
+    "version": "phase1-current-day-lists-v1",
+    "implemented_lists": ["holding_management_candidates", "holding_risk_alerts"],
+    "pending_lists": [
+      "pullback_observation_candidates",
+      "breakout_confirmation_candidates",
+      "overheated_do_not_chase_candidates"
+    ],
+    "pullback_observation_candidates": [],
+    "breakout_confirmation_candidates": [],
+    "holding_management_candidates": [
+      {
+        "symbol": "2330.TW",
+        "name": "台積電",
+        "label": "續抱",
+        "position_state": "hold",
+        "close": 120.0,
+        "holding_avg_cost": 100.0,
+        "display_anchor": {
+          "type": "entry",
+          "distance_to_avwap_pct": 6.6667
+        },
+        "matched_rules": ["phase1_display_anchor_supported"],
+        "current_day_observation": "觀察 entry 是否維持支撐，結構仍偏健康。",
+        "data_quality": {
+          "blocking": false
+        }
+      }
+    ],
+    "holding_risk_alerts": [],
+    "overheated_do_not_chase_candidates": []
+  },
   "concentration": {
     "by_symbol": [
       {

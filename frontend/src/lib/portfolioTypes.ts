@@ -75,6 +75,37 @@ export interface PortfolioPositionRisk {
   };
 }
 
+export interface PortfolioPhase1ObservationItem {
+  symbol: string;
+  name?: string | null;
+  label?: "加碼" | "建倉" | "續抱" | "停損警戒" | "資料不足" | null;
+  position_state?: "hold" | "add_watch" | "profit_take_watch" | "warning" | "exit_risk" | "data_unavailable" | string;
+  close?: number | null;
+  holding_avg_cost?: number | null;
+  display_anchor?: PortfolioPhase1PositionState["display_anchor"];
+  matched_rules: string[];
+  current_day_observation: string;
+  data_quality: Record<string, unknown>;
+}
+
+export type PortfolioPhase1CurrentDayListKey =
+  | "pullback_observation_candidates"
+  | "breakout_confirmation_candidates"
+  | "holding_management_candidates"
+  | "holding_risk_alerts"
+  | "overheated_do_not_chase_candidates";
+
+export interface PortfolioPhase1CurrentDayLists {
+  version: string;
+  implemented_lists: PortfolioPhase1CurrentDayListKey[];
+  pending_lists: PortfolioPhase1CurrentDayListKey[];
+  pullback_observation_candidates: PortfolioPhase1ObservationItem[];
+  breakout_confirmation_candidates: PortfolioPhase1ObservationItem[];
+  holding_management_candidates: PortfolioPhase1ObservationItem[];
+  holding_risk_alerts: PortfolioPhase1ObservationItem[];
+  overheated_do_not_chase_candidates: PortfolioPhase1ObservationItem[];
+}
+
 export interface PortfolioRiskSummary {
   version: string;
   as_of_date: string;
@@ -83,6 +114,7 @@ export interface PortfolioRiskSummary {
   total_at_risk: number;
   total_at_risk_pct: number | null;
   position_risks: PortfolioPositionRisk[];
+  phase1_current_day_lists?: PortfolioPhase1CurrentDayLists;
   concentration: {
     by_symbol: Array<{
       type: "symbol";

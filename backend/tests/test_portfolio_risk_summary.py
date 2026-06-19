@@ -78,6 +78,57 @@ def test_portfolio_risk_summary_calculates_position_risk_and_totals():
     assert first["defense_reference"] == {"price": 95.0, "source": "planned_stop_price"}
 
 
+def test_portfolio_risk_summary_builds_phase1_current_day_holding_lists():
+    summary = build_portfolio_risk_summary(
+        [
+            _position(symbol="2330.TW", group="g1", entry_price="100", quantity=10),
+            _position(symbol="2317.TW", group="g2", entry_price="50", quantity=20),
+        ],
+        plans_by_group={
+            "g1": _plan(group="g1", stop="95"),
+            "g2": _plan(group="g2", stop="45"),
+        },
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 120),
+            "2317.TW": _raw("2317.TW", 44),
+        },
+        phase1_position_states_by_symbol={
+            "2330.TW": {
+                "state": "hold",
+                "label": "續抱",
+                "display_anchor": {"type": "entry", "distance_to_avwap_pct": 4.0},
+                "matched_rules": ["phase1_display_anchor_supported"],
+                "data_quality": {"blocking": False},
+            },
+            "2317.TW": {
+                "state": "exit_risk",
+                "label": "停損警戒",
+                "display_anchor": {"type": "breakout_20d", "distance_to_avwap_pct": -3.0},
+                "matched_rules": ["phase1_display_anchor_lost_by_2pct"],
+                "data_quality": {"blocking": False},
+            },
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    lists = summary["phase1_current_day_lists"]
+    assert lists["version"] == "phase1-current-day-lists-v1"
+    assert lists["implemented_lists"] == ["holding_management_candidates", "holding_risk_alerts"]
+    assert lists["pending_lists"] == [
+        "pullback_observation_candidates",
+        "breakout_confirmation_candidates",
+        "overheated_do_not_chase_candidates",
+    ]
+    assert lists["pullback_observation_candidates"] == []
+    assert lists["breakout_confirmation_candidates"] == []
+    assert lists["overheated_do_not_chase_candidates"] == []
+    assert [item["symbol"] for item in lists["holding_risk_alerts"]] == ["2317.TW"]
+    assert lists["holding_risk_alerts"][0]["position_state"] == "exit_risk"
+    assert lists["holding_risk_alerts"][0]["current_day_observation"] == "已跌破 breakout_20d 觀察線，優先檢查風險控制條件。"
+    assert [item["symbol"] for item in lists["holding_management_candidates"]] == ["2330.TW"]
+    assert lists["holding_management_candidates"][0]["current_day_observation"] == "觀察 entry 是否維持支撐，結構仍偏健康。"
+
+
 def test_portfolio_risk_summary_reports_symbol_concentration_and_shared_exposures():
     summary = build_portfolio_risk_summary(
         [
