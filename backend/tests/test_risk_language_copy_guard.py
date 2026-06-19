@@ -37,6 +37,7 @@ ALLOWLISTED_PRIMARY_COPY: dict[str, dict[str, list[str]]] = {
         "加碼": [
             "加碼",
             '加碼: "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300",',
+            'add_watch: "加碼觀察",',
             'description: "追蹤續抱、加碼觀察或獲利保護狀態。",',
         ],
         "出場": ["出場"],
@@ -102,6 +103,7 @@ def test_copy_guard_allowlist_documents_intent() -> None:
         'description: "追蹤續抱、加碼觀察或獲利保護狀態。",'
         in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
     )
+    assert 'add_watch: "加碼觀察",' in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
     assert ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["出場"] == ["出場"]
     assert (
         '<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'

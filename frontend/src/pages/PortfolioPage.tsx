@@ -1264,6 +1264,28 @@ const PHASE1_HOLDING_LIST_CONFIG: Array<{
   },
 ];
 
+const PHASE1_NON_HOLDING_LIST_CONFIG: Array<{
+  key: PortfolioPhase1CurrentDayListKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "breakout_confirmation_candidates",
+    title: "突破確認觀察",
+    description: "追蹤站穩突破錨點的非持股標的。",
+  },
+  {
+    key: "pullback_observation_candidates",
+    title: "回測支撐觀察",
+    description: "追蹤接近 AVWAP 支撐的非持股標的。",
+  },
+  {
+    key: "overheated_do_not_chase_candidates",
+    title: "過熱不追高",
+    description: "距離 AVWAP 偏遠，先等待結構整理。",
+  },
+];
+
 function formatPortfolioMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("zh-TW", {
@@ -1280,9 +1302,13 @@ function formatPhase1AnchorType(type: string | null | undefined): string {
   if (!type) return "觀察錨點";
   const labels: Record<string, string> = {
     breakout: "突破錨點",
+    breakout_20d: "20 日突破錨點",
+    entry: "進場錨點",
     entry_date: "進場錨點",
     high_volume: "大量錨點",
+    high_volume_60d: "60 日大量錨點",
     swing_low: "波段低點錨點",
+    swing_low_60d: "60 日低點錨點",
   };
   return labels[type] ?? type;
 }
@@ -1292,23 +1318,56 @@ function formatPhase1Distance(value: number | null | undefined): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-function phase1LabelClass(label: PortfolioPhase1ObservationItem["label"]): string {
-  return label ? PHASE1_LABEL_STYLE[label] : PHASE1_LABEL_STYLE["資料不足"];
-}
-
 function phase1ObservationDisplayName(item: PortfolioPhase1ObservationItem): string {
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
 }
 
-function hasPhase1HoldingLists(summary: PortfolioRiskSummary): boolean {
-  const lists = summary.phase1_current_day_lists;
-  if (!lists) return false;
-  return PHASE1_HOLDING_LIST_CONFIG.some((config) => lists.implemented_lists.includes(config.key));
+function formatPhase1ObservationState(state: string | undefined): string {
+  const labels: Record<string, string> = {
+    add_watch: "加碼觀察",
+    data_unavailable: "資料不足",
+    exit_risk: "停損警戒",
+    hold: "續抱",
+    overheated: "過熱",
+    profit_take_watch: "獲利保護",
+    pullback_watch: "回測觀察",
+    range_watch: "區間觀察",
+    strong_breakout: "突破觀察",
+    warning: "警戒",
+  };
+  return state ? labels[state] ?? state : "觀察";
 }
 
-function PortfolioPhase1ObservationCard({ item }: { item: PortfolioPhase1ObservationItem }) {
+function phase1BadgeText(item: PortfolioPhase1ObservationItem): string {
+  return item.label ?? formatPhase1ObservationState(item.position_state);
+}
+
+function phase1BadgeClass(item: PortfolioPhase1ObservationItem): string {
+  if (item.label) return PHASE1_LABEL_STYLE[item.label];
+  if (item.position_state === "overheated") {
+    return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300";
+  }
+  return PHASE1_LABEL_STYLE["資料不足"];
+}
+
+function hasPhase1CurrentDayLists(summary: PortfolioRiskSummary): boolean {
+  const lists = summary.phase1_current_day_lists;
+  if (!lists) return false;
+  return [...PHASE1_HOLDING_LIST_CONFIG, ...PHASE1_NON_HOLDING_LIST_CONFIG].some((config) =>
+    lists.implemented_lists.includes(config.key),
+  );
+}
+
+function PortfolioPhase1ObservationCard({
+  item,
+  mode = "holding",
+}: {
+  item: PortfolioPhase1ObservationItem;
+  mode?: "holding" | "non_holding";
+}) {
   const anchor = item.display_anchor;
   const estimated = item.data_quality.estimated === true || anchor?.estimated === true;
+  const isHolding = mode === "holding";
 
   return (
     <article className="rounded-lg border border-border-subtle bg-background px-3 py-3">
@@ -1317,8 +1376,8 @@ function PortfolioPhase1ObservationCard({ item }: { item: PortfolioPhase1Observa
           <p className="text-sm font-semibold text-text-primary">{phase1ObservationDisplayName(item)}</p>
           {anchor?.anchor_date && <p className="mt-0.5 text-xs text-text-faint">{anchor.anchor_date}</p>}
         </div>
-        <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${phase1LabelClass(item.label)}`}>
-          {item.label ?? "資料不足"}
+        <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${phase1BadgeClass(item)}`}>
+          {phase1BadgeText(item)}
         </span>
       </div>
 
@@ -1330,10 +1389,14 @@ function PortfolioPhase1ObservationCard({ item }: { item: PortfolioPhase1Observa
           <p className="mt-0.5 font-mono font-medium text-text-primary">{formatPrice(item.close, item.symbol)}</p>
         </div>
         <div>
-          <p className="text-text-faint">成本</p>
-          <p className="mt-0.5 font-mono font-medium text-text-primary">
-            {formatPrice(item.holding_avg_cost, item.symbol)}
-          </p>
+          <p className="text-text-faint">{isHolding ? "成本" : "狀態"}</p>
+          {isHolding ? (
+            <p className="mt-0.5 font-mono font-medium text-text-primary">
+              {formatPrice(item.holding_avg_cost, item.symbol)}
+            </p>
+          ) : (
+            <p className="mt-0.5 font-medium text-text-primary">{formatPhase1ObservationState(item.position_state)}</p>
+          )}
         </div>
         <div>
           <p className="text-text-faint">{formatPhase1AnchorType(anchor?.type)}</p>
@@ -1360,22 +1423,30 @@ function PortfolioPhase1ObservationCard({ item }: { item: PortfolioPhase1Observa
 
 function PortfolioPhase1CurrentDayPanel({ summary }: { summary: PortfolioRiskSummary }) {
   const lists = summary.phase1_current_day_lists;
-  if (!lists || !hasPhase1HoldingLists(summary)) return null;
+  if (!lists || !hasPhase1CurrentDayLists(summary)) return null;
 
-  const visibleGroups = PHASE1_HOLDING_LIST_CONFIG.filter((config) => lists.implemented_lists.includes(config.key)).map(
+  const holdingGroups = PHASE1_HOLDING_LIST_CONFIG.filter((config) => lists.implemented_lists.includes(config.key)).map(
     (config) => ({
       ...config,
       items: lists[config.key],
     }),
   );
-  const totalVisibleItems = visibleGroups.reduce((total, group) => total + group.items.length, 0);
+  const nonHoldingGroups = PHASE1_NON_HOLDING_LIST_CONFIG.filter((config) =>
+    lists.implemented_lists.includes(config.key),
+  ).map((config) => ({
+    ...config,
+    items: lists[config.key],
+  }));
+  const totalHoldingItems = holdingGroups.reduce((total, group) => total + group.items.length, 0);
+  const totalNonHoldingItems = nonHoldingGroups.reduce((total, group) => total + group.items.length, 0);
+  const totalVisibleItems = totalHoldingItems + totalNonHoldingItems;
 
   return (
     <div className="mt-4 border-t border-border-subtle pt-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h4 className="text-sm font-semibold text-text-primary">Phase 1 今日持股觀察</h4>
-          <p className="mt-1 text-xs text-text-faint">依 AVWAP 錨點與持股成本整理，只讀觀察清單。</p>
+          <h4 className="text-sm font-semibold text-text-primary">試驗版今日觀察清單</h4>
+          <p className="mt-1 text-xs text-text-faint">依 AVWAP 錨點整理持股與非持股觀察，只讀不產生交易指令。</p>
         </div>
         <span className="rounded-md border border-border-subtle bg-card-hover px-2 py-1 text-xs text-text-muted">
           {totalVisibleItems} 筆
@@ -1384,34 +1455,80 @@ function PortfolioPhase1CurrentDayPanel({ summary }: { summary: PortfolioRiskSum
 
       {totalVisibleItems === 0 ? (
         <p className="mt-3 rounded-lg border border-border-subtle bg-background px-3 py-2 text-xs text-text-muted">
-          目前沒有持股進入管理觀察或風險警戒清單。
+          目前沒有標的進入試驗版今日觀察清單。
         </p>
       ) : (
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {visibleGroups.map((group) => (
-            <div key={group.key}>
-              <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="mt-4 space-y-5">
+          {holdingGroups.length > 0 && (
+            <Phase1ObservationGroupGrid
+              groups={holdingGroups}
+              itemMode="holding"
+              emptyText="目前沒有符合條件的持股。"
+            />
+          )}
+
+          {nonHoldingGroups.length > 0 && (
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <p className="text-xs font-semibold text-text-primary">{group.title}</p>
-                  <p className="mt-0.5 text-xs text-text-faint">{group.description}</p>
+                  <p className="text-xs font-semibold text-text-primary">非持股觀察清單</p>
+                  <p className="mt-0.5 text-xs text-text-faint">
+                    來自關注清單與 Daily Radar 候選，只做觀察分組，不寫入持股。
+                  </p>
                 </div>
-                <span className="text-xs text-text-faint">{group.items.length}</span>
+                <span className="text-xs text-text-faint">{totalNonHoldingItems}</span>
               </div>
-              {group.items.length > 0 ? (
-                <div className="space-y-2">
-                  {group.items.map((item) => (
-                    <PortfolioPhase1ObservationCard key={`${group.key}-${item.symbol}`} item={item} />
-                  ))}
-                </div>
-              ) : (
-                <p className="rounded-lg border border-border-subtle bg-background px-3 py-2 text-xs text-text-muted">
-                  目前沒有符合條件的持股。
-                </p>
-              )}
+              <Phase1ObservationGroupGrid
+                groups={nonHoldingGroups}
+                itemMode="non_holding"
+                emptyText="目前沒有符合條件的非持股標的。"
+              />
             </div>
-          ))}
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function Phase1ObservationGroupGrid({
+  groups,
+  itemMode,
+  emptyText,
+}: {
+  groups: Array<{
+    key: PortfolioPhase1CurrentDayListKey;
+    title: string;
+    description: string;
+    items: PortfolioPhase1ObservationItem[];
+  }>;
+  itemMode: "holding" | "non_holding";
+  emptyText: string;
+}) {
+  return (
+    <div className="grid gap-3 lg:grid-cols-2">
+      {groups.map((group) => (
+        <div key={group.key}>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold text-text-primary">{group.title}</p>
+              <p className="mt-0.5 text-xs text-text-faint">{group.description}</p>
+            </div>
+            <span className="text-xs text-text-faint">{group.items.length}</span>
+          </div>
+          {group.items.length > 0 ? (
+            <div className="space-y-2">
+              {group.items.map((item) => (
+                <PortfolioPhase1ObservationCard key={`${group.key}-${item.symbol}`} item={item} mode={itemMode} />
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg border border-border-subtle bg-background px-3 py-2 text-xs text-text-muted">
+              {emptyText}
+            </p>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

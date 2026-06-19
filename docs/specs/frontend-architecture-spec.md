@@ -69,12 +69,15 @@ TanStack Query 管理 server state：
 - `useDecisionContextStatusQuery()` -> `GET /portfolio/decision-context-status`
 - `useLifecyclePlanQuery(id)` -> `GET /portfolio/{id}/lifecycle-plan`
 
-`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C backend 已可在 `phase1_current_day_lists` 產生五個 list；目前 Portfolio UI 仍只渲染 holding lists：
+`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C `phase1_current_day_lists` 在 Portfolio UI 分成兩個區塊顯示：
 
 - `holding_management_candidates`
 - `holding_risk_alerts`
+- `breakout_confirmation_candidates`
+- `pullback_observation_candidates`
+- `overheated_do_not_chase_candidates`
 
-`pullback_observation_candidates`、`breakout_confirmation_candidates`、`overheated_do_not_chase_candidates` 已可由 backend 回傳，但此階段前端尚未顯示；後續 UI slice 應新增獨立非持股觀察區，不得混入持股管理清單，也不得把空陣列文案寫成交易建議或推薦結論。
+Holding lists 顯示在 `試驗版今日觀察清單` 的持股區塊內，非持股 lists 顯示在獨立 `非持股觀察清單` 區塊。非持股清單只讀 watchlist / Daily Radar managed-universe projection，不得混入持股管理清單，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。
 
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
