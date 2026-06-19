@@ -5,12 +5,14 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.portfolio.repository import (
     latest_final_raw_data_by_symbol,
     list_active_portfolios,
     list_lifecycle_plans_for_groups,
 )
 from ai_stock_sentinel.portfolio.risk_summary import build_portfolio_risk_summary
+from ai_stock_sentinel.phase1_avwap.projection import read_phase1_position_states_for_portfolio
 
 
 def build_user_portfolio_risk_summary(
@@ -27,11 +29,18 @@ def build_user_portfolio_risk_summary(
 
     symbols = sorted({row.symbol for row in rows})
     raw_data_by_symbol = latest_final_raw_data_by_symbol(db, symbols=symbols)
+    summary_date = as_of_date or today_taipei()
+    phase1_position_states_by_symbol = read_phase1_position_states_for_portfolio(
+        db,
+        symbols=symbols,
+        data_date=summary_date,
+    )
 
     return build_portfolio_risk_summary(
         rows,
         plans_by_group=plans_by_group,
         raw_data_by_symbol=raw_data_by_symbol,
         symbol_names_by_symbol={symbol: symbol_name_resolver(symbol) for symbol in symbols},
-        as_of_date=as_of_date or date.today(),
+        phase1_position_states_by_symbol=phase1_position_states_by_symbol,
+        as_of_date=summary_date,
     )

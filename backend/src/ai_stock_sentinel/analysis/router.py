@@ -4,7 +4,6 @@ import json
 import logging
 from datetime import date, datetime, time as _time
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, text
@@ -49,6 +48,7 @@ from ai_stock_sentinel.analysis.schemas import (
     TechnicalIndicators,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.clock import TAIPEI_TZ, today_taipei
 from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["analysis"])
 
-_TZ_TAIPEI = ZoneInfo("Asia/Taipei")
+_TZ_TAIPEI = TAIPEI_TZ
 
 
 def get_analysis_cache(db: Session, symbol: str, analysis_type: str = "general") -> StockAnalysisCache | None:
@@ -360,7 +360,7 @@ def _with_analyze_response_contexts(
 
 
 def _today_taipei() -> date:
-    return datetime.now(_TZ_TAIPEI).date()
+    return today_taipei()
 
 
 def _build_graph_singleton():

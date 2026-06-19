@@ -540,7 +540,10 @@ Implementation status as of 2026-06-19:
 - Completed `AnalyzeResponse.phase1_observation` projection.
 - The Analyze projection reads `phase1_avwap_snapshots` only; it does not call FinMind, refresh snapshots, or expand the managed universe.
 - Out-of-universe symbols return `missing_reason = "not_in_phase1_universe"`; managed-universe symbols without a same-day snapshot return `missing_reason = "phase1_snapshot_missing"`.
-- `PortfolioRiskSummary.position_risks[].phase1_position_state` and `DailyRadarCandidate.input_snapshot.phase1_avwap_context` remain pending for the next Phase 1B slice.
+- Completed `PortfolioRiskSummary.position_risks[].phase1_position_state` projection.
+- The portfolio projection reads `phase1_avwap_snapshots` only; it does not call FinMind or refresh snapshots from the risk-summary read path.
+- Portfolio holding state currently prefers the `entry` anchor, then `breakout_20d`, then `swing_low_60d`; missing snapshots, missing anchors, or read failures return a non-blocking `資料不足` state with explicit `missing_reason`.
+- `DailyRadarCandidate.input_snapshot.phase1_avwap_context` remains pending for the next Phase 1B slice.
 
 ### Phase 1C: Current-Day Observation Lists and UI
 

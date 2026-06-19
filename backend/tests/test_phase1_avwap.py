@@ -25,7 +25,10 @@ from ai_stock_sentinel.db.models import (
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar, build_phase1_avwap_payload
 from ai_stock_sentinel.phase1_avwap.provider import normalize_finmind_daily_price_rows
-from ai_stock_sentinel.phase1_avwap.projection import read_phase1_observation_for_analyze
+from ai_stock_sentinel.phase1_avwap.projection import (
+    read_phase1_observation_for_analyze,
+    read_phase1_position_states_for_portfolio,
+)
 from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
 from ai_stock_sentinel.phase1_avwap.service import refresh_phase1_avwap_snapshots
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_managed_universe
@@ -289,6 +292,117 @@ def test_read_phase1_observation_for_analyze_reports_read_failure_as_nonblocking
     assert observation["freshness"] == "missing"
     assert observation["missing_reason"] == "phase1_snapshot_read_failed"
     assert observation["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_position_states_for_portfolio_projects_snapshot_state(
+    db_session: Session,
+) -> None:
+    data_date = date(2026, 6, 5)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=data_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": data_date.isoformat(),
+            "anchors": {
+                "entry": {
+                    "available": True,
+                    "anchor_date": "2026-01-15",
+                    "anchor_reason": "holding_entry_date",
+                    "avwap": 900.0,
+                    "distance_to_avwap_pct": 3.5,
+                    "source_granularity": "daily",
+                    "estimated": False,
+                },
+                "breakout_20d": {
+                    "available": True,
+                    "anchor_date": "2026-06-05",
+                    "anchor_reason": "breakout_20d_high",
+                    "avwap": 910.0,
+                    "distance_to_avwap_pct": 2.4,
+                },
+            },
+            "data_quality": {"estimated": False, "rows_used": 80},
+        },
+        freshness="fresh",
+    )
+
+    states = read_phase1_position_states_for_portfolio(
+        db_session,
+        symbols=["2330.TW"],
+        data_date=data_date,
+    )
+
+    state = states["2330.TW"]
+    assert state["state"] == "hold"
+    assert state["label"] == "續抱"
+    assert state["display_anchor"]["type"] == "entry"
+    assert state["display_anchor"]["distance_to_avwap_pct"] == 3.5
+    assert state["matched_rules"] == ["phase1_display_anchor_supported"]
+    assert state["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_position_states_for_portfolio_reports_missing_distance_reason(
+    db_session: Session,
+) -> None:
+    data_date = date(2026, 6, 5)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=data_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": data_date.isoformat(),
+            "anchors": {
+                "entry": {
+                    "available": True,
+                    "anchor_date": "2026-01-15",
+                    "anchor_reason": "holding_entry_date",
+                    "avwap": 900.0,
+                    "source_granularity": "daily",
+                    "estimated": False,
+                },
+            },
+            "data_quality": {"estimated": False, "rows_used": 80},
+        },
+        freshness="fresh",
+    )
+
+    states = read_phase1_position_states_for_portfolio(
+        db_session,
+        symbols=["2330.TW"],
+        data_date=data_date,
+    )
+
+    state = states["2330.TW"]
+    assert state["state"] == "data_unavailable"
+    assert state["missing_reason"] == "phase1_distance_to_avwap_missing"
+    assert state["data_quality"]["missing_reason"] == "phase1_distance_to_avwap_missing"
+    assert state["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_position_states_for_portfolio_reports_read_failure_as_nonblocking(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ai_stock_sentinel.phase1_avwap.projection as projection_module
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(projection_module, "get_phase1_avwap_snapshots", _raise)
+
+    states = projection_module.read_phase1_position_states_for_portfolio(
+        db_session,
+        symbols=["2330.TW"],
+        data_date=date(2026, 6, 5),
+    )
+
+    state = states["2330.TW"]
+    assert state["state"] == "data_unavailable"
+    assert state["missing_reason"] == "phase1_snapshot_read_failed"
+    assert state["data_quality"]["blocking"] is False
 
 
 def test_phase1_avwap_migration_creates_snapshot_table_constraints_and_indexes() -> None:

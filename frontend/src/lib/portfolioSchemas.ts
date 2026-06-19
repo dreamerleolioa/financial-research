@@ -16,6 +16,41 @@ const dataQualitySchema = z
   })
   .passthrough();
 
+const phase1PositionStateSchema = z
+  .object({
+    symbol: z.string(),
+    data_date: z.string(),
+    dataset: z.string(),
+    adjustment_mode: z.string(),
+    state: z.enum(["hold", "add_watch", "profit_take_watch", "warning", "exit_risk", "data_unavailable"]),
+    label: z.enum(["加碼", "建倉", "續抱", "停損警戒", "資料不足"]),
+    freshness: z.string(),
+    missing_reason: z.string().nullable(),
+    display_anchor: z
+      .object({
+        type: z.string(),
+        anchor_date: z.string().nullable().optional(),
+        anchor_reason: z.string().nullable().optional(),
+        avwap: z.number().nullable().optional(),
+        distance_to_avwap_pct: z.number().nullable().optional(),
+        source_granularity: z.string().optional(),
+        estimated: z.boolean().optional(),
+      })
+      .passthrough()
+      .nullable(),
+    matched_rules: z.array(z.string()),
+    source: z
+      .object({
+        provider: z.string(),
+        dataset: z.string(),
+        adjustment_mode: z.string(),
+      })
+      .passthrough(),
+    source_granularity: z.string(),
+    data_quality: z.record(z.string(), z.unknown()),
+  })
+  .passthrough();
+
 const portfolioPositionRiskSchema = z
   .object({
     symbol: z.string(),
@@ -36,6 +71,7 @@ const portfolioPositionRiskSchema = z
     portfolio_weight_pct: z.number().nullable(),
     risk_state: z.enum(["contained", "watch", "elevated", "defense_reference_touched", "data_incomplete"]),
     discipline_triggers: z.array(z.string()),
+    phase1_position_state: phase1PositionStateSchema.nullable().optional(),
     data_quality: dataQualitySchema,
   })
   .passthrough();

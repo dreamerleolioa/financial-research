@@ -18,6 +18,7 @@ from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.db.models import (
+    Phase1AvwapSnapshot,
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
@@ -624,6 +625,7 @@ def portfolio_db_session() -> Session:
             PositionEvent.__table__,
             PositionLifecyclePlan.__table__,
             PositionLifecycleReview.__table__,
+            Phase1AvwapSnapshot.__table__,
             TradeReview.__table__,
             StockRawData.__table__,
             SharedBackgroundContext.__table__,
@@ -888,6 +890,32 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
         technical={"close_price": 120},
         raw_data_is_final=True,
     ))
+    portfolio_db_session.add(Phase1AvwapSnapshot(
+        symbol="2330.TW",
+        data_date=date.today(),
+        dataset="TaiwanStockPrice",
+        adjustment_mode="unadjusted",
+        source_provider="finmind",
+        source_granularity="daily",
+        is_final=True,
+        freshness="fresh",
+        missing_reason=None,
+        payload={
+            "symbol": "2330.TW",
+            "anchors": {
+                "entry": {
+                    "available": True,
+                    "anchor_date": "2026-06-01",
+                    "anchor_reason": "holding_entry_date",
+                    "avwap": 115,
+                    "distance_to_avwap_pct": 4.3478,
+                    "source_granularity": "daily",
+                    "estimated": False,
+                }
+            },
+            "data_quality": {"estimated": False, "rows_used": 12},
+        },
+    ))
     portfolio_db_session.add(StockRawData(
         symbol="2317.TW",
         record_date=date.today(),
@@ -905,6 +933,11 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     assert data["total_at_risk"] == 250
     assert [row["symbol"] for row in data["position_risks"]] == ["2330.TW"]
     assert [row["name"] for row in data["position_risks"]] == ["台積電"]
+    phase1_state = data["position_risks"][0]["phase1_position_state"]
+    assert phase1_state["state"] == "hold"
+    assert phase1_state["label"] == "續抱"
+    assert phase1_state["display_anchor"]["type"] == "entry"
+    assert phase1_state["data_quality"]["blocking"] is False
     assert "recommended_action" not in data
     assert "portfolio_action" not in data
     assert portfolio_db_session.query(PositionEvent).count() == 0

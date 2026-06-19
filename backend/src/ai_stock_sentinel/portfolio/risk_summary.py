@@ -22,12 +22,14 @@ def build_portfolio_risk_summary(
     plans_by_group: dict[str, Any] | None = None,
     raw_data_by_symbol: dict[str, Any] | None = None,
     symbol_names_by_symbol: dict[str, str | None] | None = None,
+    phase1_position_states_by_symbol: dict[str, dict[str, Any]] | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
     as_of = as_of_date or date.today()
     plans = plans_by_group or {}
     raw_rows = raw_data_by_symbol or {}
     symbol_names = symbol_names_by_symbol or {}
+    phase1_states = phase1_position_states_by_symbol
 
     position_drafts: list[dict[str, Any]] = []
     portfolio_value = Decimal("0")
@@ -70,7 +72,7 @@ def build_portfolio_risk_summary(
         for caveat in caveats:
             aggregate_caveat_counts[caveat["code"]] += 1
 
-        position_drafts.append({
+        position_draft = {
             "symbol": symbol,
             "name": symbol_names.get(symbol),
             "quantity": _float_or_none(quantity),
@@ -99,7 +101,10 @@ def build_portfolio_risk_summary(
                 ),
                 "has_stale_caveat": any(caveat["code"] == "stale_price" for caveat in caveats),
             },
-        })
+        }
+        if phase1_states is not None:
+            position_draft["phase1_position_state"] = phase1_states.get(symbol) or phase1_states.get(symbol.upper())
+        position_drafts.append(position_draft)
 
     for draft in position_drafts:
         raw = draft.pop("_raw")
