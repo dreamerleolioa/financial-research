@@ -12,7 +12,10 @@ from ai_stock_sentinel.portfolio.repository import (
     list_lifecycle_plans_for_groups,
 )
 from ai_stock_sentinel.portfolio.risk_summary import build_portfolio_risk_summary
-from ai_stock_sentinel.phase1_avwap.projection import read_phase1_position_states_for_portfolio
+from ai_stock_sentinel.phase1_avwap.projection import (
+    read_phase1_current_day_observations_for_managed_universe,
+    read_phase1_position_states_for_portfolio,
+)
 
 
 def build_user_portfolio_risk_summary(
@@ -35,6 +38,11 @@ def build_user_portfolio_risk_summary(
         symbols=symbols,
         data_date=summary_date,
     )
+    phase1_current_day_observations_by_symbol = read_phase1_current_day_observations_for_managed_universe(
+        db,
+        user_id=user_id,
+        data_date=summary_date,
+    )
 
     return build_portfolio_risk_summary(
         rows,
@@ -42,5 +50,6 @@ def build_user_portfolio_risk_summary(
         raw_data_by_symbol=raw_data_by_symbol,
         symbol_names_by_symbol={symbol: symbol_name_resolver(symbol) for symbol in symbols},
         phase1_position_states_by_symbol=phase1_position_states_by_symbol,
+        phase1_current_day_observations_by_symbol=phase1_current_day_observations_by_symbol,
         as_of_date=summary_date,
     )

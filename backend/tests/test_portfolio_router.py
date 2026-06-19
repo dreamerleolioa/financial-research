@@ -18,6 +18,8 @@ from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.db.models import (
+    DailyRadarCandidate,
+    DailyRadarRun,
     Phase1AvwapSnapshot,
     PositionEvent,
     PositionLifecyclePlan,
@@ -26,6 +28,7 @@ from ai_stock_sentinel.db.models import (
     StockRawData,
     TradeReview,
     UserPortfolio,
+    UserWatchlist,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.user_models.user import User
@@ -622,6 +625,9 @@ def portfolio_db_session() -> Session:
         tables=[
             User.__table__,
             UserPortfolio.__table__,
+            UserWatchlist.__table__,
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
             PositionEvent.__table__,
             PositionLifecyclePlan.__table__,
             PositionLifecycleReview.__table__,

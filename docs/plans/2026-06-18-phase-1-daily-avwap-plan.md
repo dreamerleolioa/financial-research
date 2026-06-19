@@ -568,6 +568,10 @@ Implementation status as of 2026-06-19:
 - The UI intentionally does not render pullback observation, breakout confirmation, or overheated do-not-chase lists until those non-held watchlist / Daily Radar classification rules are implemented.
 - Completed the Watchlist quick-lookup UI slice: `POST /analyze` response parsing now validates `phase1_observation`, and `WatchlistPage` displays Phase 1 AVWAP anchors / missing snapshot status inside the existing technical quick lookup panel.
 - Watchlist Phase 1 display remains a read-only trace surface. It does not create a separate watchlist indicator endpoint, does not expand the managed universe, and does not change Daily Radar scoring or portfolio state.
+- Completed the Daily Radar detail UI slice: `DailyRadarPage` now renders `candidate.input_snapshot.phase1_avwap_context` in the detail drawer as a read-only AVWAP trace.
+- Daily Radar Phase 1 display does not change candidate ranking, bucket, score, matched rules, risk labels, or `data_dates`; missing snapshots remain a non-blocking trace state.
+- Completed the backend-only non-held current-day list slice: `PortfolioRiskSummary.phase1_current_day_lists` now classifies non-held managed-universe symbols from existing Phase 1 snapshots into pullback observation, breakout confirmation, and overheated do-not-chase lists.
+- The non-held list projection reads watchlist / latest Daily Radar managed symbols from cache only; it does not trigger FinMind backfill, does not expand the managed universe, and does not change Daily Radar ranking or scoring. Portfolio UI still renders only the holding lists until the next UI slice.
 
 ## Phase 1 Success Criteria
 

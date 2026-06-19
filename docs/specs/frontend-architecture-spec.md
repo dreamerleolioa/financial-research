@@ -69,12 +69,12 @@ TanStack Query 管理 server state：
 - `useDecisionContextStatusQuery()` -> `GET /portfolio/decision-context-status`
 - `useLifecyclePlanQuery(id)` -> `GET /portfolio/{id}/lifecycle-plan`
 
-`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C current-day holding observation UI 只渲染 `phase1_current_day_lists.implemented_lists` 目前包含的 holding lists：
+`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C backend 已可在 `phase1_current_day_lists` 產生五個 list；目前 Portfolio UI 仍只渲染 holding lists：
 
 - `holding_management_candidates`
 - `holding_risk_alerts`
 
-`pullback_observation_candidates`、`breakout_confirmation_candidates`、`overheated_do_not_chase_candidates` 仍屬 `pending_lists` 時，前端不得用空陣列暗示已完成分類，也不得在 UI 顯示為「沒有候選」。
+`pullback_observation_candidates`、`breakout_confirmation_candidates`、`overheated_do_not_chase_candidates` 已可由 backend 回傳，但此階段前端尚未顯示；後續 UI slice 應新增獨立非持股觀察區，不得混入持股管理清單，也不得把空陣列文案寫成交易建議或推薦結論。
 
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
@@ -122,6 +122,14 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
 股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。
+
+## Daily Radar Surface
+
+`DailyRadarPage` 是每日觀察清單，不是交易指令頁。列表使用後端已排序的 candidates；前端不得因 Phase 1 AVWAP trace 重新排序、重新分類或調整風險標籤。
+
+- Candidate list：顯示 symbol/name、bucket、repeat status、風險標籤、加入關注與單股分析 link。
+- Detail drawer：顯示觀察理由、背景脈絡、Phase 1 `input_snapshot.phase1_avwap_context`、技術 trace 與資料日期。
+- Phase 1 AVWAP trace：只在 detail drawer 顯示 anchors、距離、資料日期、dataset、adjustment mode 與 missing snapshot 狀態；不得寫入 watchlist/portfolio，也不得改 Daily Radar scoring/ranking/bucket/matched rules。
 
 ## API Boundary Validation
 

@@ -14,6 +14,7 @@ import {
   type DailyRadarBackgroundContextLabel,
   type DailyRadarDateMap,
   type DailyRadarMatchedRule,
+  type DailyRadarPhase1AvwapContext,
   type DailyRadarRepeatStatus,
   type DailyRadarRiskLabel,
   type DailyRadarRunResponse,
@@ -60,6 +61,20 @@ const BACKGROUND_CONTEXT_FRESHNESS_LABEL: Record<string, string> = {
   stale: "資料偏舊",
   missing: "資料缺口",
   unknown: "狀態未明",
+};
+
+const PHASE1_AVWAP_ANCHOR_ORDER = ["swing_low_60d", "breakout_20d", "high_volume_60d", "entry"] as const;
+
+const PHASE1_AVWAP_ANCHOR_LABEL: Record<string, string> = {
+  swing_low_60d: "60 日波段低點",
+  breakout_20d: "20 日突破",
+  high_volume_60d: "60 日大量",
+  entry: "持股進場日",
+};
+
+const PHASE1_AVWAP_MISSING_REASON_LABEL: Record<string, string> = {
+  phase1_snapshot_missing: "尚無 Phase 1 快照",
+  phase1_snapshot_read_failed: "Phase 1 快照讀取失敗",
 };
 
 const RUN_STATUS_LABEL: Record<DailyRadarRunStatus, string> = {
@@ -115,6 +130,10 @@ function formatDataSourceLabel(source: string): string {
 
 function isTraceRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDailyRadarPhase1AvwapContext(value: unknown): value is DailyRadarPhase1AvwapContext {
+  return isTraceRecord(value) && isTraceRecord(value.anchors);
 }
 
 const TRACE_KEY_LABEL: Record<string, string> = {
@@ -296,6 +315,15 @@ function formatBackgroundFreshness(value: string): string {
   return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? formatMatchedRuleValue(value);
 }
 
+function formatPhase1AvwapFreshness(value: string): string {
+  return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? formatMatchedRuleValue(value);
+}
+
+function formatPhase1AvwapMissingReason(reason: string | null | undefined): string {
+  if (!reason) return "資料不足";
+  return PHASE1_AVWAP_MISSING_REASON_LABEL[reason] ?? reason;
+}
+
 function backgroundLabelClass(label: DailyRadarBackgroundContextLabel): string {
   if (label.freshness === "fresh")
     return "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200";
@@ -344,6 +372,16 @@ function formatMetric(value: unknown, digits = 2): string | null {
     maximumFractionDigits: digits,
     minimumFractionDigits: Number.isInteger(numberValue) ? 0 : Math.min(2, digits),
   });
+}
+
+function formatSignedPct(value: unknown, digits = 2): string {
+  const numberValue = toFiniteNumber(value);
+  if (numberValue === null) return "—";
+  const formatted = numberValue.toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: Number.isInteger(numberValue) ? 0 : Math.min(2, digits),
+  });
+  return `${numberValue > 0 ? "+" : ""}${formatted}%`;
 }
 
 function getRuleNumber(rule: DailyRadarMatchedRule, key: string): string | null {
@@ -702,6 +740,126 @@ function BackgroundContextLabels({ labels }: { labels: DailyRadarBackgroundConte
           </p>
         )}
       </div>
+    </section>
+  );
+}
+
+function getPhase1AvwapContext(candidate: DailyRadarCandidate): DailyRadarPhase1AvwapContext | null {
+  const context = candidate.input_snapshot.phase1_avwap_context;
+  return isDailyRadarPhase1AvwapContext(context) ? context : null;
+}
+
+function getPhase1AvwapDisplayAnchors(context: DailyRadarPhase1AvwapContext): Array<{
+  key: string;
+  label: string;
+  avwap?: number | null;
+  distance?: number | null;
+  anchorDate?: string | null;
+  estimated?: boolean;
+}> {
+  const entries = Object.entries(context.anchors ?? {}).filter(([, anchor]) => anchor.available !== false);
+  const priority: Map<string, number> = new Map(PHASE1_AVWAP_ANCHOR_ORDER.map((key, index) => [key, index]));
+
+  return entries
+    .sort(([left], [right]) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99) || left.localeCompare(right))
+    .slice(0, 4)
+    .map(([key, anchor]) => ({
+      key,
+      label: PHASE1_AVWAP_ANCHOR_LABEL[key] ?? formatTraceKey(key),
+      avwap: anchor.avwap,
+      distance: anchor.distance_to_avwap_pct,
+      anchorDate: anchor.anchor_date,
+      estimated: anchor.estimated,
+    }));
+}
+
+function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate }) {
+  const context = getPhase1AvwapContext(candidate);
+  const anchors = context ? getPhase1AvwapDisplayAnchors(context) : [];
+  const isMissing = !context || context.freshness === "missing" || Boolean(context.missing_reason);
+
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-text-primary">Phase 1 AVWAP 脈絡</h3>
+          <p className="mt-1 text-xs leading-relaxed text-text-muted">
+            只作為 detail trace 與資料品質參考，不改變 Daily Radar 排序、分類、分數或風險標籤。
+          </p>
+        </div>
+        <span
+          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${
+            isMissing
+              ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+              : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+          }`}
+        >
+          {context ? formatPhase1AvwapFreshness(context.freshness) : "尚未回傳"}
+        </span>
+      </div>
+
+      {context ? (
+        <div className="mt-4 space-y-3">
+          <div className="grid gap-2 md:grid-cols-3">
+            <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+              <p className="text-xs font-medium text-text-muted">資料日期</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">{formatDate(context.data_date)}</p>
+            </div>
+            <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+              <p className="text-xs font-medium text-text-muted">資料集</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">{context.dataset}</p>
+            </div>
+            <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+              <p className="text-xs font-medium text-text-muted">調整模式</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">{context.adjustment_mode}</p>
+            </div>
+          </div>
+
+          {anchors.length > 0 ? (
+            <div className="grid gap-2 md:grid-cols-2">
+              {anchors.map((anchor) => (
+                <article key={anchor.key} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-semibold text-text-muted">{anchor.label}</p>
+                      {anchor.anchorDate && <p className="mt-1 text-xs text-text-faint">{anchor.anchorDate}</p>}
+                    </div>
+                    {anchor.estimated && (
+                      <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        日資料估算
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-end gap-3">
+                    <p className="font-mono text-lg font-semibold text-text-primary">
+                      {formatMetric(anchor.avwap) ?? "—"}
+                    </p>
+                    <p
+                      className={`font-mono text-sm font-semibold ${
+                        anchor.distance == null
+                          ? "text-text-faint"
+                          : anchor.distance >= 0
+                            ? "text-emerald-600 dark:text-emerald-300"
+                            : "text-red-600 dark:text-red-300"
+                      }`}
+                    >
+                      {formatSignedPct(anchor.distance)}
+                    </p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-muted">
+              {formatPhase1AvwapMissingReason(context.missing_reason)}
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="mt-3 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">
+          這筆候選尚未包含 Phase 1 AVWAP trace。
+        </p>
+      )}
     </section>
   );
 }
@@ -1127,6 +1285,8 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
           </section>
 
           <BackgroundContextLabels labels={candidate.background_context_labels} />
+
+          <Phase1AvwapContextPanel candidate={candidate} />
 
           <TechnicalTraceDetails candidate={candidate} dataDateEntries={dataDateEntries} />
         </div>

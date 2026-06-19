@@ -27,6 +27,7 @@ from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar, build_phase
 from ai_stock_sentinel.phase1_avwap.provider import normalize_finmind_daily_price_rows
 from ai_stock_sentinel.phase1_avwap.projection import (
     read_phase1_avwap_contexts_for_daily_radar,
+    read_phase1_current_day_observations_for_managed_universe,
     read_phase1_observation_for_analyze,
     read_phase1_position_states_for_portfolio,
 )
@@ -406,6 +407,75 @@ def test_read_phase1_position_states_for_portfolio_reports_read_failure_as_nonbl
     assert state["data_quality"]["blocking"] is False
 
 
+def test_read_phase1_current_day_observations_classifies_non_holding_managed_symbols(
+    db_session: Session,
+) -> None:
+    _seed_user_universe(db_session)
+    data_date = date(2026, 6, 5)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=data_date,
+        payload=_phase1_snapshot_payload(symbol="2330.TW", close=930, swing_distance=4, breakout_distance=2),
+        freshness="fresh",
+    )
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2454.TW",
+        data_date=data_date,
+        payload=_phase1_snapshot_payload(symbol="2454.TW", close=100, swing_distance=3, breakout_distance=8),
+        freshness="fresh",
+    )
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2317.TW",
+        data_date=data_date,
+        payload=_phase1_snapshot_payload(symbol="2317.TW", close=100, swing_distance=7, breakout_distance=2),
+        freshness="fresh",
+    )
+
+    observations = read_phase1_current_day_observations_for_managed_universe(
+        db_session,
+        user_id=1,
+        data_date=data_date,
+    )
+
+    assert sorted(observations) == ["2317.TW", "2454.TW"]
+    assert observations["2454.TW"]["state"] == "pullback_watch"
+    assert observations["2454.TW"]["label"] == "建倉"
+    assert observations["2454.TW"]["display_anchor"]["type"] == "swing_low_60d"
+    assert observations["2317.TW"]["state"] == "strong_breakout"
+    assert observations["2317.TW"]["matched_rules"] == ["phase1_breakout_anchor_supported_within_5pct"]
+    assert observations["2317.TW"]["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_current_day_observations_reports_read_failure_as_nonblocking(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ai_stock_sentinel.phase1_avwap.projection as projection_module
+
+    _seed_user_universe(db_session)
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(projection_module, "get_phase1_avwap_snapshots", _raise)
+
+    observations = projection_module.read_phase1_current_day_observations_for_managed_universe(
+        db_session,
+        user_id=1,
+        data_date=date(2026, 6, 5),
+    )
+
+    assert sorted(observations) == ["2317.TW", "2454.TW"]
+    watchlist_observation = observations["2454.TW"]
+    assert watchlist_observation["freshness"] == "missing"
+    assert watchlist_observation["missing_reason"] == "phase1_snapshot_read_failed"
+    assert watchlist_observation["matched_rules"] == ["phase1_current_day_observation_unavailable"]
+    assert watchlist_observation["data_quality"]["blocking"] is False
+
+
 def test_read_phase1_avwap_contexts_for_daily_radar_reports_read_failure_as_nonblocking(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -510,6 +580,43 @@ def _bars(end_date: date) -> list[DailyPriceBar]:
 
 def _bars_until(end_date: date) -> list[DailyPriceBar]:
     return [bar for bar in _bars(date(2026, 6, 5)) if bar.trade_date <= end_date]
+
+
+def _phase1_snapshot_payload(
+    *,
+    symbol: str,
+    close: float,
+    swing_distance: float,
+    breakout_distance: float,
+) -> dict:
+    return {
+        "symbol": symbol,
+        "data_date": "2026-06-05",
+        "dataset": "TaiwanStockPrice",
+        "adjustment_mode": "unadjusted",
+        "ohlcv": {"close": close},
+        "anchors": {
+            "swing_low_60d": {
+                "available": True,
+                "anchor_date": "2026-06-01",
+                "anchor_reason": "swing_low_60d",
+                "avwap": 90,
+                "distance_to_avwap_pct": swing_distance,
+                "source_granularity": "daily",
+                "estimated": False,
+            },
+            "breakout_20d": {
+                "available": True,
+                "anchor_date": "2026-06-05",
+                "anchor_reason": "breakout_20d_high",
+                "avwap": 98,
+                "distance_to_avwap_pct": breakout_distance,
+                "source_granularity": "daily",
+                "estimated": False,
+            },
+        },
+        "data_quality": {"estimated": False, "rows_used": 60},
+    }
 
 
 def _load_phase1_avwap_migration() -> ModuleType:

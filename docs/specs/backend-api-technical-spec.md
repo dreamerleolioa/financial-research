@@ -745,10 +745,10 @@ make run-api
 ### `GET /portfolio/risk-summary`
 
 - **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
-- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data` 與 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review 或任何 portfolio state。Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 FinMind backfill 或 snapshot refresh。
+- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data`、`user_watchlist`、latest Daily Radar run/candidates 與 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 FinMind backfill 或 snapshot refresh。
 - **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
-- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。第一個 Phase 1C slice 只計算 `holding_management_candidates` 與 `holding_risk_alerts`；未實作清單必須列在 `pending_lists`，不得只用空陣列表示已完成分類。
+- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。Backend 會由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`，並由非持股 managed universe（watchlist 與 latest Daily Radar candidates）既有 snapshot 產生 `pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates`。此 projection 只讀 cache，不觸發 FinMind backfill，不改 Daily Radar ranking/scoring。
 
 - **Response 200**
 
@@ -821,13 +821,33 @@ make run-api
   ],
   "phase1_current_day_lists": {
     "version": "phase1-current-day-lists-v1",
-    "implemented_lists": ["holding_management_candidates", "holding_risk_alerts"],
-    "pending_lists": [
+    "implemented_lists": [
       "pullback_observation_candidates",
       "breakout_confirmation_candidates",
+      "holding_management_candidates",
+      "holding_risk_alerts",
       "overheated_do_not_chase_candidates"
     ],
-    "pullback_observation_candidates": [],
+    "pending_lists": [],
+    "pullback_observation_candidates": [
+      {
+        "symbol": "2454.TW",
+        "name": null,
+        "label": "建倉",
+        "position_state": "pullback_watch",
+        "close": 100.0,
+        "holding_avg_cost": null,
+        "display_anchor": {
+          "type": "swing_low_60d",
+          "distance_to_avwap_pct": 3.0
+        },
+        "matched_rules": ["phase1_swing_low_anchor_supported_within_5pct"],
+        "current_day_observation": "觀察回測 swing_low_60d 是否維持支撐。",
+        "data_quality": {
+          "blocking": false
+        }
+      }
+    ],
     "breakout_confirmation_candidates": [],
     "holding_management_candidates": [
       {
