@@ -8,6 +8,7 @@ PRIMARY_SURFACE_FILES = [
     ROOT / "frontend/src/pages/DailyRadarPage.tsx",
     ROOT / "frontend/src/pages/AnalyzePage.tsx",
     ROOT / "frontend/src/pages/PortfolioPage.tsx",
+    ROOT / "frontend/src/pages/WatchlistPage.tsx",
     ROOT / "frontend/src/pages/ClosedPortfolioPage.tsx",
 ]
 

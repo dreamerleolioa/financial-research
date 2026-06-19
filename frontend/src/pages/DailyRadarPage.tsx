@@ -73,8 +73,8 @@ const PHASE1_AVWAP_ANCHOR_LABEL: Record<string, string> = {
 };
 
 const PHASE1_AVWAP_MISSING_REASON_LABEL: Record<string, string> = {
-  phase1_snapshot_missing: "尚無 Phase 1 快照",
-  phase1_snapshot_read_failed: "Phase 1 快照讀取失敗",
+  phase1_snapshot_missing: "尚無試驗版快照",
+  phase1_snapshot_read_failed: "試驗版快照讀取失敗",
 };
 
 const RUN_STATUS_LABEL: Record<DailyRadarRunStatus, string> = {
@@ -782,9 +782,9 @@ function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate
     <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-text-primary">Phase 1 AVWAP 脈絡</h3>
+          <h3 className="text-sm font-semibold text-text-primary">試驗版 AVWAP 脈絡</h3>
           <p className="mt-1 text-xs leading-relaxed text-text-muted">
-            只作為 detail trace 與資料品質參考，不改變 Daily Radar 排序、分類、分數或風險標籤。
+            只作為明細脈絡與資料品質參考，不改變 Daily Radar 排序、分類、分數或風險標籤。
           </p>
         </div>
         <span
@@ -857,7 +857,7 @@ function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate
         </div>
       ) : (
         <p className="mt-3 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-faint">
-          這筆候選尚未包含 Phase 1 AVWAP trace。
+          這筆候選尚未包含試驗版 AVWAP 脈絡。
         </p>
       )}
     </section>

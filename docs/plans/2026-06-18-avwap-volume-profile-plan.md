@@ -35,7 +35,9 @@ The missing input for a reliable daily AVWAP is daily traded amount / turnover v
 
 ## Phase 1: Daily AVWAP
 
-Detailed Phase 1 planning now lives in `docs/plans/2026-06-18-phase-1-daily-avwap-plan.md`.
+Phase 1 Daily AVWAP is implemented. Durable backend/API/frontend facts now live in the canonical specs:
+`docs/specs/backend-api-technical-spec.md`, `docs/specs/ai-stock-sentinel-architecture-spec.md`,
+`docs/specs/daily-stock-radar-spec.md`, and `docs/specs/frontend-architecture-spec.md`.
 
 Phase 1 should be independently mergeable and useful even if Phase 2 and Phase 3 never ship. It should use FinMind single-symbol daily `Trading_money` and `Trading_Volume` to compute daily AVWAP from deterministic anchors, then generate five current-day observation lists from the prior close:
 
@@ -132,13 +134,13 @@ Provide swing support/resistance context through volume concentration zones. The
 
 ## Recommended Execution Order
 
-1. Implement the standalone Phase 1 plan in `docs/plans/2026-06-18-phase-1-daily-avwap-plan.md`.
+1. Phase 1 Daily AVWAP: completed.
 2. Revisit 5-minute provider choice before Phase 2.
 3. Revisit Volume Profile only after 5-minute data quality is proven.
 
 ## Phase 1 Success Criteria
 
-See `docs/plans/2026-06-18-phase-1-daily-avwap-plan.md` for the detailed Phase 1 success criteria. At the total-roadmap level, Phase 1 is successful when it removes the outdated 8-position active portfolio cap, ships daily AVWAP fields, and provides the five deterministic current-day observation lists for the managed universe through existing response contracts without requiring a new public endpoint, arbitrary Analyze-symbol FinMind backfill, intraday data, whole-market FinMind pulls, or Daily Radar scoring changes.
+At the total-roadmap level, Phase 1 is complete: the outdated 8-position active portfolio cap is removed, daily AVWAP fields are available through managed-universe snapshots, and the five deterministic current-day observation lists are exposed through existing response contracts without requiring a new public endpoint, arbitrary Analyze-symbol FinMind backfill, intraday data, whole-market FinMind pulls, or Daily Radar scoring changes.
 
 ## Documentation Sync Checklist After Implementation
 
@@ -153,10 +155,13 @@ When this plan is implemented, delete this file and move durable facts into cano
 | `README.md` | Any user-visible capability, endpoint summary, or operational setup change. |
 | `docs/backend-self-study-guide.md` | Any backend learning path, maintenance flow, or troubleshooting path change. |
 
+## Resolved Phase 1 Decisions
+
+1. Phase 1 uses FinMind `TaiwanStockPrice` with `adjustment_mode = "unadjusted"` as the free-tier-compatible default; adjusted mode is deferred until the account tier supports it.
+2. Phase 1 exposes swing-low and high-volume anchors on 60 trading days, plus breakout on 20 trading days.
+3. Daily Radar only displays trial AVWAP context in the detail drawer; it does not affect ranking, bucket, score, matched rules, or risk labels.
+4. Portfolio UI displays all five current-day lists, with holding risk/management separated from non-held watchlist / Daily Radar observation lists.
+
 ## Open Discussion Points
 
-1. Should Phase 1 default to `TaiwanStockPriceAdj`, or should it use unadjusted `TaiwanStockPrice` for shorter windows and keep adjusted data as an explicit mode?
-2. Should `swing_low` default to 60 trading days, or should the UI expose 20-day and 60-day variants?
-3. Should `breakout` prioritize 20-day or 60-day highs for the primary displayed AVWAP?
-4. Should Daily Radar only display AVWAP trace in detail, or should a later version add a small scoring component after validation?
-5. Which provider should be trusted for 5-minute amount and volume before Phase 2 begins?
+1. Which provider should be trusted for 5-minute amount and volume before Phase 2 begins?

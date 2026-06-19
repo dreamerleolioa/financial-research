@@ -48,8 +48,9 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 2. 再讀 LangGraph：`graph/builder.py`、`graph/nodes.py`、`graph/state.py`
 3. 再讀資料來源：`data_sources/`
 4. 再讀 Daily Radar：`daily_radar/router.py`、`daily_radar/service.py`、`daily_radar/scoring.py`
-5. 再讀 Portfolio lifecycle：`portfolio/router.py`、`analysis/position_lifecycle.py`、`analysis/trade_review.py`
-6. 最後讀 DB model：`db/models.py`
+5. 再讀 Phase 1 AVWAP：`phase1_avwap/service.py`、`phase1_avwap/projection.py`、`phase1_avwap/calculator.py`
+6. 再讀 Portfolio lifecycle：`portfolio/router.py`、`analysis/position_lifecycle.py`、`analysis/trade_review.py`
+7. 最後讀 DB model：`db/models.py`
 
 | 路徑 | 責任 |
 | ---- | ---- |
@@ -60,6 +61,7 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 | `analysis/` | `/analyze` router、schemas、application use cases、cache/response assembly、LLM analyzer、news cleaner、quality gate、confidence scorer、technical metrics、strategy generator、position scorer、trade/lifecycle review |
 | `data_sources/` | yfinance、RSS、FinMind、institutional flow provider、fundamental provider |
 | `daily_radar/` | universe、raw data backfill、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance |
+| `phase1_avwap/` | managed-universe resolver、FinMind `TaiwanStockPrice` daily provider、日頻 AVWAP calculation、snapshot repository/service、Analyze/Portfolio/Daily Radar read-only projections |
 | `portfolio/` | portfolio CRUD、entry record contract、fees、risk summary、history router |
 | `watchlist/` | watchlist schemas、repository、application use cases、CRUD/reorder router |
 | `shared_context.py` | 讀取 shared background context 並轉成 evidence/caveat/data quality payload |

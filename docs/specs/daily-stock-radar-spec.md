@@ -205,13 +205,13 @@ Bucket 判定需可重現。同一標的若同時命中多個 bucket，primary b
 | ---- | ---- |
 | `matched_rules` | 命中的規則代碼與中文說明 |
 | `score_breakdown` | bucket 分、cross confirmation、market context、relative strength、freshness、risk penalties、內部排序分、`scoring_version` 與 `rule_version`；作為 advanced trace / debug evidence，不是預設主畫面 |
-| `input_snapshot` | OHLCV、法人、融資、技術指標、大盤狀態、relative strength trace、版本資訊、Phase 1 `phase1_avwap_context` 與 replayable evidence |
+| `input_snapshot` | OHLCV、法人、融資、技術指標、大盤狀態、relative strength trace、版本資訊、Phase 1 `phase1_avwap_context`（前端顯示為試驗版 AVWAP 脈絡）與 replayable evidence |
 | `data_dates` | 各資料源最新日期 |
 | `prefilter_reasons` | 通過或排除原因 |
 
 已落地的 replayable evidence 使用 consumer-neutral shape，至少包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `applicable_consumers`。Phase 1 先接 Daily Radar；Phase 2C/2D 已讓其他 consumers 以 read/reference 方式引用，不得覆寫 deterministic action、score、verdict、classification 或 lifecycle replay。
 
-Phase 1 Daily AVWAP context 可存於 `input_snapshot.phase1_avwap_context`，只作候選 detail trace 與資料品質輔助。它包含 AVWAP anchors、`freshness`、`missing_reason`、`source`、`data_quality` 與 `applicable_consumers`；missing/read failure 需保留 non-blocking missing state。此 context 不改 Daily Radar ranking、bucket、risk labels、matched rules、`observation_score` 或 `data_dates`。
+Phase 1 Daily AVWAP context 可存於 `input_snapshot.phase1_avwap_context`，前端以「試驗版 AVWAP 脈絡」呈現，只作候選 detail trace 與資料品質輔助。它包含 AVWAP anchors、`freshness`、`missing_reason`、`source`、`data_quality` 與 `applicable_consumers`；missing/read failure 需保留 non-blocking missing state。此 context 不改 Daily Radar ranking、bucket、risk labels、matched rules、`observation_score` 或 `data_dates`。
 
 Phase 2A 已新增 shared background context cache foundation。`shared_background_contexts` 保存 `symbol`、`context_type`、`applicable_consumers`、`source`、`as_of_date`、`freshness`、`payload`、`missing_reason` 與 `replay_key`。同一 `symbol` / `context_type` / `replay_key` 可 upsert 更新；不同 `replay_key` 會保留歷史 trace，讓 point-in-time consumer 可回放 `as_of_date <= reference_date` 的最近 context。Phase 2B 起，Daily Radar 是第一個 label/detail consumer：selected symbols 會批次讀 cache，將 raw trace 放入 `input_snapshot.background_context`，並以 `background_context_labels` 顯示大戶持股集中背景、借券空方壓力背景與完整融資融券背景。Missing/stale context 必須保留 freshness 與 missing reason；背景 labels 不改 candidate ranking、bucket、risk labels 或 `observation_score`。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 也讀取相同 shared context vocabulary；read path 會尊重 `applicable_consumers`，lifecycle review 以事件日期做 point-in-time filter，遇到沒有可用歷史 context 且只有未來 context 時只能保留 missing/future-excluded caveat。
 
@@ -454,7 +454,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 | Market context | 大盤狀態、波動與整體風險提示 |
 | Bucket tabs | 四個 setup buckets 與數量 |
 | Candidate list | 股票、bucket、觀察等級或優先順序、風險標籤、repeat 狀態 |
-| Detail drawer | 命中規則、資料日期、隔日觀察重點、shared background context labels、Phase 1 AVWAP context；分數拆解僅作為 advanced trace |
+| Detail drawer | 命中規則、資料日期、隔日觀察重點、shared background context labels、試驗版 AVWAP 脈絡；分數拆解僅作為 advanced trace |
 | Link out | 連到 `/analyze` 做單股完整分析 |
 
 ### 11.2 互動原則
@@ -463,7 +463,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 2. 高風險標籤需在列表直接可見，不能只藏在詳情。
 3. `repeat` 標的需顯示連續天數，避免使用者誤以為每日都是新訊號。
 4. 空狀態需說明是「今日沒有通過濾網的高品質 setup」，不是系統失敗。
-5. Phase 1 AVWAP context 僅能在 detail drawer 作為 trace 顯示，不得在列表卡或排序文案暗示推薦、勝率或交易指令。
+5. 試驗版 AVWAP 脈絡僅能在 detail drawer 作為 trace 顯示，不得在列表卡或排序文案暗示推薦、勝率或交易指令。
 
 ---
 

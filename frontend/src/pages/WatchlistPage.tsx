@@ -56,9 +56,9 @@ const PHASE1_ANCHOR_LABEL: Record<string, string> = {
 };
 
 const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
-  not_in_phase1_universe: "不在 Phase 1 管理範圍",
-  phase1_snapshot_missing: "尚無 Phase 1 快照",
-  phase1_snapshot_read_failed: "Phase 1 快照讀取失敗",
+  not_in_phase1_universe: "不在試驗版管理範圍",
+  phase1_snapshot_missing: "尚無試驗版快照",
+  phase1_snapshot_read_failed: "試驗版快照讀取失敗",
 };
 
 interface WatchlistTechnicalState {
@@ -119,7 +119,7 @@ function WatchlistPhase1Observation({ observation, symbol }: { observation: Phas
     <div className="mt-4 border-t border-border-subtle pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="text-sm font-semibold text-text-primary">Phase 1 AVWAP 觀察</p>
+          <p className="text-sm font-semibold text-text-primary">試驗版 AVWAP 觀察</p>
           <p className="mt-1 text-xs text-text-muted">
             {observation.data_date} · {observation.adjustment_mode}
           </p>
