@@ -26,6 +26,7 @@ from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar, build_phase1_avwap_payload
 from ai_stock_sentinel.phase1_avwap.provider import normalize_finmind_daily_price_rows
 from ai_stock_sentinel.phase1_avwap.projection import (
+    read_phase1_avwap_contexts_for_daily_radar,
     read_phase1_observation_for_analyze,
     read_phase1_position_states_for_portfolio,
 )
@@ -403,6 +404,30 @@ def test_read_phase1_position_states_for_portfolio_reports_read_failure_as_nonbl
     assert state["state"] == "data_unavailable"
     assert state["missing_reason"] == "phase1_snapshot_read_failed"
     assert state["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_avwap_contexts_for_daily_radar_reports_read_failure_as_nonblocking(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ai_stock_sentinel.phase1_avwap.projection as projection_module
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(projection_module, "get_phase1_avwap_snapshots", _raise)
+
+    contexts = projection_module.read_phase1_avwap_contexts_for_daily_radar(
+        db_session,
+        symbols=["2330.TW"],
+        data_date=date(2026, 6, 5),
+    )
+
+    context = contexts["2330.TW"]
+    assert context["freshness"] == "missing"
+    assert context["missing_reason"] == "phase1_snapshot_read_failed"
+    assert context["applicable_consumers"] == ["daily_radar"]
+    assert context["data_quality"]["blocking"] is False
 
 
 def test_phase1_avwap_migration_creates_snapshot_table_constraints_and_indexes() -> None:

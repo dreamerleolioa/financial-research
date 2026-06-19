@@ -543,7 +543,9 @@ Implementation status as of 2026-06-19:
 - Completed `PortfolioRiskSummary.position_risks[].phase1_position_state` projection.
 - The portfolio projection reads `phase1_avwap_snapshots` only; it does not call FinMind or refresh snapshots from the risk-summary read path.
 - Portfolio holding state currently prefers the `entry` anchor, then `breakout_20d`, then `swing_low_60d`; missing snapshots, missing anchors, or read failures return a non-blocking `資料不足` state with explicit `missing_reason`.
-- `DailyRadarCandidate.input_snapshot.phase1_avwap_context` remains pending for the next Phase 1B slice.
+- Completed `DailyRadarCandidate.input_snapshot.phase1_avwap_context` projection.
+- The Daily Radar projection reads `phase1_avwap_snapshots` only and stores the context as detail trace under `input_snapshot.phase1_avwap_context`.
+- Missing snapshots or read failures stay non-blocking in the trace; Daily Radar ranking, scoring, buckets, risk labels, matched rules, and `data_dates` remain unchanged by Phase 1 AVWAP context.
 
 ### Phase 1C: Current-Day Observation Lists and UI
 

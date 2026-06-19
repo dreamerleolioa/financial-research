@@ -138,6 +138,56 @@ def read_phase1_position_states_for_portfolio(
     }
 
 
+def read_phase1_avwap_contexts_for_daily_radar(
+    session: Session,
+    *,
+    symbols: list[str],
+    data_date: date,
+    dataset: str = DEFAULT_PHASE1_DATASET,
+    adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
+) -> dict[str, dict[str, Any]]:
+    normalized_symbols = [_normalize_symbol(symbol) for symbol in symbols]
+    normalized_symbols = [symbol for symbol in dict.fromkeys(normalized_symbols) if symbol]
+    try:
+        snapshots = get_phase1_avwap_snapshots(
+            session,
+            symbols=normalized_symbols,
+            data_date=data_date,
+            dataset=dataset,
+            adjustment_mode=adjustment_mode,
+        )
+    except Exception as exc:
+        logger.warning(
+            "phase1_daily_radar_context_read_failed",
+            extra={
+                "symbols": normalized_symbols,
+                "data_date": data_date.isoformat(),
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        return {
+            symbol: _missing_daily_radar_context(
+                symbol=symbol,
+                data_date=data_date,
+                dataset=dataset,
+                adjustment_mode=adjustment_mode,
+                missing_reason="phase1_snapshot_read_failed",
+            )
+            for symbol in normalized_symbols
+        }
+
+    return {
+        symbol: _daily_radar_context_from_snapshot(
+            symbol=symbol,
+            data_date=data_date,
+            dataset=dataset,
+            adjustment_mode=adjustment_mode,
+            snapshot=snapshots.get(symbol),
+        )
+        for symbol in normalized_symbols
+    }
+
+
 def _missing_observation(
     *,
     symbol: str,
@@ -160,6 +210,79 @@ def _missing_observation(
         },
         "source_granularity": "daily",
         "anchors": {},
+        "data_quality": {
+            "estimated": False,
+            "source_granularity": "daily",
+            "rows_used": 0,
+            "missing_reason": missing_reason,
+            "blocking": False,
+        },
+    }
+
+
+def _daily_radar_context_from_snapshot(
+    *,
+    symbol: str,
+    data_date: date,
+    dataset: str,
+    adjustment_mode: str,
+    snapshot: Any | None,
+) -> dict[str, Any]:
+    if snapshot is None:
+        return _missing_daily_radar_context(
+            symbol=symbol,
+            data_date=data_date,
+            dataset=dataset,
+            adjustment_mode=adjustment_mode,
+            missing_reason="phase1_snapshot_missing",
+        )
+
+    payload = dict(snapshot.payload or {})
+    payload.setdefault("symbol", symbol)
+    payload.setdefault("data_date", data_date.isoformat())
+    payload.setdefault("dataset", dataset)
+    payload.setdefault("adjustment_mode", adjustment_mode)
+    payload["freshness"] = snapshot.freshness
+    payload["missing_reason"] = snapshot.missing_reason
+    payload["source"] = {
+        **dict(payload.get("source") or {}),
+        "provider": snapshot.source_provider,
+        "dataset": snapshot.dataset,
+        "adjustment_mode": snapshot.adjustment_mode,
+    }
+    payload["source_granularity"] = snapshot.source_granularity
+    payload["applicable_consumers"] = ["daily_radar"]
+    data_quality = dict(payload.get("data_quality") or {})
+    data_quality.setdefault("estimated", False)
+    data_quality.setdefault("source_granularity", snapshot.source_granularity)
+    data_quality["blocking"] = False
+    payload["data_quality"] = data_quality
+    return payload
+
+
+def _missing_daily_radar_context(
+    *,
+    symbol: str,
+    data_date: date,
+    dataset: str,
+    adjustment_mode: str,
+    missing_reason: str,
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "data_date": data_date.isoformat(),
+        "dataset": dataset,
+        "adjustment_mode": adjustment_mode,
+        "freshness": "missing",
+        "missing_reason": missing_reason,
+        "source": {
+            "provider": "phase1_avwap_snapshot",
+            "dataset": dataset,
+            "adjustment_mode": adjustment_mode,
+        },
+        "source_granularity": "daily",
+        "anchors": {},
+        "applicable_consumers": ["daily_radar"],
         "data_quality": {
             "estimated": False,
             "source_granularity": "daily",
@@ -337,6 +460,7 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 __all__ = [
+    "read_phase1_avwap_contexts_for_daily_radar",
     "read_phase1_observation_for_analyze",
     "read_phase1_position_states_for_portfolio",
 ]
