@@ -25,6 +25,7 @@ from ai_stock_sentinel.db.models import (
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar, build_phase1_avwap_payload
 from ai_stock_sentinel.phase1_avwap.provider import normalize_finmind_daily_price_rows
+from ai_stock_sentinel.phase1_avwap.projection import read_phase1_observation_for_analyze
 from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
 from ai_stock_sentinel.phase1_avwap.service import refresh_phase1_avwap_snapshots
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_managed_universe
@@ -196,6 +197,98 @@ def test_refresh_phase1_avwap_snapshots_marks_missing_when_requested_date_row_is
     assert snapshot.missing_reason == "daily_price_row_missing_for_data_date"
     assert snapshot.payload["data_quality"]["missing_reason"] == "daily_price_row_missing_for_data_date"
     assert snapshot.payload["anchors"] == {}
+
+
+def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_managed_symbol(
+    db_session: Session,
+) -> None:
+    _seed_user_with_active_holding(db_session)
+    data_date = date(2026, 6, 5)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=data_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": data_date.isoformat(),
+            "anchors": {"swing_low_60d": {"avwap": 900.25}},
+            "data_quality": {"estimated": False, "missing_reason": None},
+        },
+        freshness="fresh",
+    )
+
+    observation = read_phase1_observation_for_analyze(
+        db_session,
+        user_id=1,
+        symbol="2330.TW",
+        data_date=data_date,
+    )
+
+    assert observation["freshness"] == "fresh"
+    assert observation["missing_reason"] is None
+    assert observation["anchors"]["swing_low_60d"]["avwap"] == 900.25
+    assert observation["source"] == {
+        "provider": "finmind",
+        "dataset": "TaiwanStockPrice",
+        "adjustment_mode": "unadjusted",
+    }
+
+
+def test_read_phase1_observation_for_analyze_reports_snapshot_missing_for_managed_symbol(
+    db_session: Session,
+) -> None:
+    _seed_user_with_active_holding(db_session)
+
+    observation = read_phase1_observation_for_analyze(
+        db_session,
+        user_id=1,
+        symbol="2330.TW",
+        data_date=date(2026, 6, 5),
+    )
+
+    assert observation["freshness"] == "missing"
+    assert observation["missing_reason"] == "phase1_snapshot_missing"
+    assert observation["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_observation_for_analyze_reports_out_of_universe_without_fetching(
+    db_session: Session,
+) -> None:
+    _seed_user_with_active_holding(db_session)
+
+    observation = read_phase1_observation_for_analyze(
+        db_session,
+        user_id=1,
+        symbol="9999.TW",
+        data_date=date(2026, 6, 5),
+    )
+
+    assert observation["freshness"] == "missing"
+    assert observation["missing_reason"] == "not_in_phase1_universe"
+    assert observation["anchors"] == {}
+
+
+def test_read_phase1_observation_for_analyze_reports_read_failure_as_nonblocking(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ai_stock_sentinel.phase1_avwap.projection as projection_module
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(projection_module, "resolve_phase1_managed_universe", _raise)
+
+    observation = projection_module.read_phase1_observation_for_analyze(
+        db_session,
+        user_id=1,
+        symbol="2330.TW",
+        data_date=date(2026, 6, 5),
+    )
+
+    assert observation["freshness"] == "missing"
+    assert observation["missing_reason"] == "phase1_snapshot_read_failed"
+    assert observation["data_quality"]["blocking"] is False
 
 
 def test_phase1_avwap_migration_creates_snapshot_table_constraints_and_indexes() -> None:
