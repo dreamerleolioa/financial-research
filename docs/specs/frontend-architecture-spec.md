@@ -118,6 +118,7 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內 raw 技術指標快查。
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
 - Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。
+- Phase 1 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
 股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。
@@ -131,7 +132,7 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
   - 目標：風險摘要、position risk、risk budget、data quality 的核心欄位
 - `frontend/src/lib/analysisSchemas.ts`
   - 驗證 `POST /analyze`
-  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors
+  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、Phase 1 `phase1_observation` trace
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 

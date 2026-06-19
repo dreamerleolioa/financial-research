@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { analyzeSymbol } from "../lib/analyzeApi";
-import type { AnalyzeResponse } from "../lib/analysisTypes";
+import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -46,6 +46,21 @@ function haveSameOrder(left: number[], right: number[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
+const PHASE1_ANCHOR_ORDER = ["swing_low_60d", "breakout_20d", "high_volume_60d", "entry"] as const;
+
+const PHASE1_ANCHOR_LABEL: Record<string, string> = {
+  swing_low_60d: "60 日波段低點",
+  breakout_20d: "20 日突破",
+  high_volume_60d: "60 日大量",
+  entry: "持股進場日",
+};
+
+const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
+  not_in_phase1_universe: "不在 Phase 1 管理範圍",
+  phase1_snapshot_missing: "尚無 Phase 1 快照",
+  phase1_snapshot_read_failed: "Phase 1 快照讀取失敗",
+};
+
 interface WatchlistTechnicalState {
   loading: boolean;
   expanded: boolean;
@@ -61,6 +76,97 @@ const EMPTY_TECHNICAL_STATE: WatchlistTechnicalState = {
   result: null,
   copyStatus: "idle",
 };
+
+function formatPhase1Distance(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function formatPhase1MissingReason(reason: string | null | undefined): string {
+  if (!reason) return "資料不足";
+  return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
+}
+
+function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
+  key: string;
+  label: string;
+  avwap?: number | null;
+  distance?: number | null;
+  anchorDate?: string | null;
+  estimated?: boolean;
+}> {
+  const entries = Object.entries(observation.anchors ?? {}).filter(([, anchor]) => anchor.available !== false);
+  const priority: Map<string, number> = new Map(PHASE1_ANCHOR_ORDER.map((key, index) => [key, index]));
+
+  return entries
+    .sort(([left], [right]) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99) || left.localeCompare(right))
+    .slice(0, 4)
+    .map(([key, anchor]) => ({
+      key,
+      label: PHASE1_ANCHOR_LABEL[key] ?? key,
+      avwap: anchor.avwap,
+      distance: anchor.distance_to_avwap_pct,
+      anchorDate: anchor.anchor_date,
+      estimated: anchor.estimated,
+    }));
+}
+
+function WatchlistPhase1Observation({ observation, symbol }: { observation: Phase1Observation; symbol: string }) {
+  const anchors = getPhase1DisplayAnchors(observation);
+  const isMissing = observation.freshness === "missing" || Boolean(observation.missing_reason);
+
+  return (
+    <div className="mt-4 border-t border-border-subtle pt-4">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-text-primary">Phase 1 AVWAP 觀察</p>
+          <p className="mt-1 text-xs text-text-muted">
+            {observation.data_date} · {observation.adjustment_mode}
+          </p>
+        </div>
+        <span
+          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${
+            isMissing
+              ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+              : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+          }`}
+        >
+          {isMissing ? formatPhase1MissingReason(observation.missing_reason) : "快照可用"}
+        </span>
+      </div>
+
+      {anchors.length > 0 ? (
+        <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+          {anchors.map((anchor) => (
+            <div key={anchor.key}>
+              <p className="mb-1 text-xs text-text-muted">{anchor.label}</p>
+              <p className="font-mono text-sm font-medium text-text-primary">
+                {formatPrice(anchor.avwap, symbol)}
+                <span
+                  className={`ml-2 ${
+                    anchor.distance == null
+                      ? "text-text-faint"
+                      : anchor.distance >= 0
+                        ? "text-emerald-600 dark:text-emerald-300"
+                        : "text-red-600 dark:text-red-300"
+                  }`}
+                >
+                  {formatPhase1Distance(anchor.distance)}
+                </span>
+              </p>
+              {anchor.anchorDate && <p className="mt-1 text-xs text-text-faint">{anchor.anchorDate}</p>}
+              {anchor.estimated && <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">日資料估算</p>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-md border border-border-subtle px-3 py-2 text-xs text-text-muted">
+          {formatPhase1MissingReason(observation.missing_reason)}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function WatchlistTechnicalPanel({
   item,
@@ -79,6 +185,7 @@ function WatchlistTechnicalPanel({
   const quickSnapshot = quickResult?.snapshot ?? {};
   const quickSnapshotSymbol = typeof quickSnapshot.symbol === "string" ? quickSnapshot.symbol : item.symbol;
   const quickIndicators = quickResult?.technical_indicators ?? null;
+  const phase1Observation = quickResult?.phase1_observation ?? null;
   const quickSessionLabel = quickResult?.is_final === false ? "盤中" : "收盤";
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") =>
     first != null || second != null
@@ -189,6 +296,10 @@ function WatchlistTechnicalPanel({
             </div>
           ))}
         </div>
+      )}
+
+      {phase1Observation && (
+        <WatchlistPhase1Observation observation={phase1Observation} symbol={quickSnapshotSymbol} />
       )}
     </div>
   );

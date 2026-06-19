@@ -566,6 +566,8 @@ Implementation status as of 2026-06-19:
 - `phase1_current_day_lists.implemented_lists` and `phase1_current_day_lists.pending_lists` identify which list arrays are currently computed; pullback observation, breakout confirmation, and overheated do-not-chase lists are pending until the non-held watchlist / Daily Radar classification rules are implemented.
 - Completed the first UI slice in `PortfolioPage`: `GET /portfolio/risk-summary` now renders the implemented holding management and holding risk alert lists under a Phase 1 current-day holding observation panel.
 - The UI intentionally does not render pullback observation, breakout confirmation, or overheated do-not-chase lists until those non-held watchlist / Daily Radar classification rules are implemented.
+- Completed the Watchlist quick-lookup UI slice: `POST /analyze` response parsing now validates `phase1_observation`, and `WatchlistPage` displays Phase 1 AVWAP anchors / missing snapshot status inside the existing technical quick lookup panel.
+- Watchlist Phase 1 display remains a read-only trace surface. It does not create a separate watchlist indicator endpoint, does not expand the managed universe, and does not change Daily Radar scoring or portfolio state.
 
 ## Phase 1 Success Criteria
 

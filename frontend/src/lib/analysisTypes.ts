@@ -71,6 +71,43 @@ export interface TechnicalIndicators {
   donchian_position: string | null;
 }
 
+export interface Phase1AvwapAnchor {
+  available?: boolean;
+  anchor_date?: string | null;
+  anchor_reason?: string | null;
+  avwap?: number | null;
+  distance_to_avwap_pct?: number | null;
+  source_granularity?: string;
+  estimated?: boolean;
+  [key: string]: unknown;
+}
+
+export interface Phase1Observation {
+  symbol: string;
+  data_date: string;
+  dataset: string;
+  adjustment_mode: string;
+  freshness: "fresh" | "stale" | "missing" | "unknown" | string;
+  missing_reason: string | null;
+  source: {
+    provider: string;
+    dataset: string;
+    adjustment_mode: string;
+    [key: string]: unknown;
+  };
+  source_granularity: string;
+  anchors: Record<string, Phase1AvwapAnchor>;
+  data_quality: {
+    estimated?: boolean;
+    source_granularity?: string;
+    rows_used?: number;
+    missing_reason?: string | null;
+    blocking?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export interface AnalyzeResponse {
   snapshot: Record<string, unknown>;
   symbol_name?: string | null;
@@ -123,6 +160,7 @@ export interface AnalyzeResponse {
     yield_signal?: string | null;
   } | null;
   shared_context?: SharedContextReadPayload | null;
+  phase1_observation?: Phase1Observation | null;
 }
 
 export interface PositionAnalysis {

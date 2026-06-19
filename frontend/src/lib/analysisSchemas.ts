@@ -77,6 +77,39 @@ const riskControlReferenceSchema = z
   })
   .passthrough();
 
+const phase1AnchorSchema = z
+  .object({
+    available: z.boolean().optional(),
+    anchor_date: nullableString.optional(),
+    anchor_reason: nullableString.optional(),
+    avwap: nullableNumber.optional(),
+    distance_to_avwap_pct: nullableNumber.optional(),
+    source_granularity: z.string().optional(),
+    estimated: z.boolean().optional(),
+  })
+  .passthrough();
+
+const phase1ObservationSchema = z
+  .object({
+    symbol: z.string(),
+    data_date: z.string(),
+    dataset: z.string(),
+    adjustment_mode: z.string(),
+    freshness: z.string(),
+    missing_reason: nullableString,
+    source: z
+      .object({
+        provider: z.string(),
+        dataset: z.string(),
+        adjustment_mode: z.string(),
+      })
+      .passthrough(),
+    source_granularity: z.string(),
+    anchors: z.record(z.string(), phase1AnchorSchema),
+    data_quality: z.record(z.string(), z.unknown()),
+  })
+  .passthrough();
+
 export const analyzeResponseSchema = z
   .object({
     snapshot: recordSchema,
@@ -108,6 +141,7 @@ export const analyzeResponseSchema = z
     errors: z.array(analysisErrorDetailSchema),
     fundamental_data: fundamentalDataSchema.nullable().optional(),
     shared_context: z.unknown().nullable().optional(),
+    phase1_observation: phase1ObservationSchema.nullable().optional(),
   })
   .passthrough();
 
