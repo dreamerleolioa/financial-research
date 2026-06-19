@@ -69,6 +69,13 @@ TanStack Query 管理 server state：
 - `useDecisionContextStatusQuery()` -> `GET /portfolio/decision-context-status`
 - `useLifecyclePlanQuery(id)` -> `GET /portfolio/{id}/lifecycle-plan`
 
+`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C current-day holding observation UI 只渲染 `phase1_current_day_lists.implemented_lists` 目前包含的 holding lists：
+
+- `holding_management_candidates`
+- `holding_risk_alerts`
+
+`pullback_observation_candidates`、`breakout_confirmation_candidates`、`overheated_do_not_chase_candidates` 仍屬 `pending_lists` 時，前端不得用空陣列暗示已完成分類，也不得在 UI 顯示為「沒有候選」。
+
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 - `portfolioKeys.items()`

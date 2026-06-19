@@ -41,6 +41,8 @@ import type {
   LifecycleSetupType,
   PlanAdherence,
   PlannedHoldingPeriod,
+  PortfolioPhase1CurrentDayListKey,
+  PortfolioPhase1ObservationItem,
   PortfolioItem,
   PortfolioRiskSummary,
 } from "../lib/portfolioTypes";
@@ -1236,6 +1238,32 @@ const PORTFOLIO_RISK_STATE_LABEL = {
   data_incomplete: "資料不足",
 } as const;
 
+const PHASE1_LABEL_STYLE = {
+  加碼: "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
+  建倉: "border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
+  續抱: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-300",
+  停損警戒: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
+  資料不足:
+    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+} as const;
+
+const PHASE1_HOLDING_LIST_CONFIG: Array<{
+  key: PortfolioPhase1CurrentDayListKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "holding_risk_alerts",
+    title: "持股風險警戒",
+    description: "優先檢查支撐與風險控制條件。",
+  },
+  {
+    key: "holding_management_candidates",
+    title: "持股管理觀察",
+    description: "追蹤續抱、加碼觀察或獲利保護狀態。",
+  },
+];
+
 function formatPortfolioMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("zh-TW", {
@@ -1246,6 +1274,146 @@ function formatPortfolioMoney(value: number | null | undefined): string {
 function formatPortfolioPct(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return `${value.toFixed(2)}%`;
+}
+
+function formatPhase1AnchorType(type: string | null | undefined): string {
+  if (!type) return "觀察錨點";
+  const labels: Record<string, string> = {
+    breakout: "突破錨點",
+    entry_date: "進場錨點",
+    high_volume: "大量錨點",
+    swing_low: "波段低點錨點",
+  };
+  return labels[type] ?? type;
+}
+
+function formatPhase1Distance(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function phase1LabelClass(label: PortfolioPhase1ObservationItem["label"]): string {
+  return label ? PHASE1_LABEL_STYLE[label] : PHASE1_LABEL_STYLE["資料不足"];
+}
+
+function phase1ObservationDisplayName(item: PortfolioPhase1ObservationItem): string {
+  return item.name ? `${item.name} ${item.symbol}` : item.symbol;
+}
+
+function hasPhase1HoldingLists(summary: PortfolioRiskSummary): boolean {
+  const lists = summary.phase1_current_day_lists;
+  if (!lists) return false;
+  return PHASE1_HOLDING_LIST_CONFIG.some((config) => lists.implemented_lists.includes(config.key));
+}
+
+function PortfolioPhase1ObservationCard({ item }: { item: PortfolioPhase1ObservationItem }) {
+  const anchor = item.display_anchor;
+  const estimated = item.data_quality.estimated === true || anchor?.estimated === true;
+
+  return (
+    <article className="rounded-lg border border-border-subtle bg-background px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-text-primary">{phase1ObservationDisplayName(item)}</p>
+          {anchor?.anchor_date && <p className="mt-0.5 text-xs text-text-faint">{anchor.anchor_date}</p>}
+        </div>
+        <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${phase1LabelClass(item.label)}`}>
+          {item.label ?? "資料不足"}
+        </span>
+      </div>
+
+      <p className="mt-2 text-xs leading-relaxed text-text-secondary">{item.current_day_observation}</p>
+
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+        <div>
+          <p className="text-text-faint">現價</p>
+          <p className="mt-0.5 font-mono font-medium text-text-primary">{formatPrice(item.close, item.symbol)}</p>
+        </div>
+        <div>
+          <p className="text-text-faint">成本</p>
+          <p className="mt-0.5 font-mono font-medium text-text-primary">
+            {formatPrice(item.holding_avg_cost, item.symbol)}
+          </p>
+        </div>
+        <div>
+          <p className="text-text-faint">{formatPhase1AnchorType(anchor?.type)}</p>
+          <p className="mt-0.5 font-mono font-medium text-text-primary">
+            {formatPhase1Distance(anchor?.distance_to_avwap_pct)}
+          </p>
+        </div>
+      </div>
+
+      {item.matched_rules.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {item.matched_rules.slice(0, 3).map((rule) => (
+            <span key={rule} className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+              {rule}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {estimated && <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">使用日資料估算。</p>}
+    </article>
+  );
+}
+
+function PortfolioPhase1CurrentDayPanel({ summary }: { summary: PortfolioRiskSummary }) {
+  const lists = summary.phase1_current_day_lists;
+  if (!lists || !hasPhase1HoldingLists(summary)) return null;
+
+  const visibleGroups = PHASE1_HOLDING_LIST_CONFIG.filter((config) => lists.implemented_lists.includes(config.key)).map(
+    (config) => ({
+      ...config,
+      items: lists[config.key],
+    }),
+  );
+  const totalVisibleItems = visibleGroups.reduce((total, group) => total + group.items.length, 0);
+
+  return (
+    <div className="mt-4 border-t border-border-subtle pt-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold text-text-primary">Phase 1 今日持股觀察</h4>
+          <p className="mt-1 text-xs text-text-faint">依 AVWAP 錨點與持股成本整理，只讀觀察清單。</p>
+        </div>
+        <span className="rounded-md border border-border-subtle bg-card-hover px-2 py-1 text-xs text-text-muted">
+          {totalVisibleItems} 筆
+        </span>
+      </div>
+
+      {totalVisibleItems === 0 ? (
+        <p className="mt-3 rounded-lg border border-border-subtle bg-background px-3 py-2 text-xs text-text-muted">
+          目前沒有持股進入管理觀察或風險警戒清單。
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          {visibleGroups.map((group) => (
+            <div key={group.key}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold text-text-primary">{group.title}</p>
+                  <p className="mt-0.5 text-xs text-text-faint">{group.description}</p>
+                </div>
+                <span className="text-xs text-text-faint">{group.items.length}</span>
+              </div>
+              {group.items.length > 0 ? (
+                <div className="space-y-2">
+                  {group.items.map((item) => (
+                    <PortfolioPhase1ObservationCard key={`${group.key}-${item.symbol}`} item={item} />
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-lg border border-border-subtle bg-background px-3 py-2 text-xs text-text-muted">
+                  目前沒有符合條件的持股。
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskSummary | null; error: string | null }) {
@@ -1329,6 +1497,8 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
           ))}
         </div>
       )}
+
+      <PortfolioPhase1CurrentDayPanel summary={summary} />
     </section>
   );
 }

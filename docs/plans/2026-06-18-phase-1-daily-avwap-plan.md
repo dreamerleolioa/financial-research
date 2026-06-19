@@ -564,7 +564,8 @@ Implementation status as of 2026-06-19:
 - Completed the first backend-only Phase 1C slice under `PortfolioRiskSummary.phase1_current_day_lists`.
 - The first slice exposes the five-list response contract and currently populates holding management candidates plus holding risk alerts from existing `position_risks[].phase1_position_state`.
 - `phase1_current_day_lists.implemented_lists` and `phase1_current_day_lists.pending_lists` identify which list arrays are currently computed; pullback observation, breakout confirmation, and overheated do-not-chase lists are pending until the non-held watchlist / Daily Radar classification rules are implemented.
-- No UI rendering was added in this slice.
+- Completed the first UI slice in `PortfolioPage`: `GET /portfolio/risk-summary` now renders the implemented holding management and holding risk alert lists under a Phase 1 current-day holding observation panel.
+- The UI intentionally does not render pullback observation, breakout confirmation, or overheated do-not-chase lists until those non-held watchlist / Daily Radar classification rules are implemented.
 
 ## Phase 1 Success Criteria
 
