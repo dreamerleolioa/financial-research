@@ -29,6 +29,7 @@ def upgrade() -> None:
         sa.Column("universe", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("symbol_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("market_context", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("step_statuses", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("errors", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),

@@ -533,6 +533,7 @@ class DailyRadarPreparedRun(Base):
     universe: Mapped[list] = mapped_column(JSONB, nullable=False)
     symbol_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     market_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    step_statuses: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'"))
     errors: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

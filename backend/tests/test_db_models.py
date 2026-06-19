@@ -391,11 +391,12 @@ def test_daily_radar_prepared_run_table_name_columns_and_constraints() -> None:
 
     assert {
         "id", "run_date", "market", "status", "selected_symbols", "universe",
-        "symbol_count", "market_context", "errors", "created_at", "updated_at",
+        "symbol_count", "market_context", "step_statuses", "errors", "created_at", "updated_at",
     } <= cols
     assert "uq_daily_radar_prepared_run_date_market" in unique_constraints
     assert isinstance(DailyRadarPreparedRun.__table__.c.selected_symbols.type, JSONB)
     assert isinstance(DailyRadarPreparedRun.__table__.c.universe.type, JSONB)
+    assert isinstance(DailyRadarPreparedRun.__table__.c.step_statuses.type, JSONB)
 
 
 def test_daily_radar_candidate_table_name_and_columns() -> None:

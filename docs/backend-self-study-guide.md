@@ -210,15 +210,16 @@ Daily Radar 是獨立產品表面，不是 `/analyze` 的批次版。
 
 流程：
 
-1. 選 universe：`select_daily_radar_universe()`。
+1. `prepare-universe` 選 universe：`select_daily_radar_universe()`，保存 capped selected symbols 與 prepared step status。
    - same-day institutional leaders
    - recent accumulation/concentration leaders
    - local `StockRawData` 可支撐的日頻 technical trigger tracks
-2. 讀 selected symbols 的 shared background context cache。
-3. 對 selected symbols 補齊缺少的 OHLCV：`ensure_daily_radar_raw_rows()`。
-4. 建立 market context：`YFinanceMarketIndexContextProvider`。
-5. 呼叫 `run_daily_radar()`。
-6. 寫入 `daily_radar_runs` 與 `daily_radar_candidates`。
+2. `refresh-avwap` 對 selected symbols 更新試驗版 Daily AVWAP snapshot。
+3. `refresh-lending` / `refresh-full-margin` 對 selected symbols 更新 shared background context；同日 fresh cache 會重用。
+4. `refresh-ohlcv` 對 selected symbols 補齊缺少的 OHLCV：`ensure_daily_radar_raw_rows()`，並回寫 prepared universe 技術面 tracks。
+5. `refresh-market-context` 建立並保存 market context：`YFinanceMarketIndexContextProvider`。
+6. `run-scoring` 確認所有 refresh step 都是 `completed`，再呼叫 `run_daily_radar()`。
+7. 寫入 `daily_radar_runs` 與 `daily_radar_candidates`。
 
 ### 7.2 Scoring flow
 

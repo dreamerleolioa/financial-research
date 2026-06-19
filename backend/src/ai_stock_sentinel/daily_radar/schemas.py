@@ -48,11 +48,12 @@ class DailyRadarPreparedRunRequest(BaseModel):
 
 
 class DailyRadarPreparedRunResponse(BaseModel):
-    status: Literal["prepared", "completed"]
+    status: Literal["prepared", "completed", "scored"]
     run_date: date
     market: str
     symbol_count: int
     selected_symbols: list[str] = Field(default_factory=list)
+    step_statuses: dict[str, Any] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 

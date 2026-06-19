@@ -70,6 +70,9 @@ jobs:
             cat "$response_file"
             exit 1
           fi
+          if ! jq -e '.status == "prepared"' "$response_file" >/dev/null; then
+            exit 1
+          fi
 
   refresh-avwap:
     name: Refresh Daily Radar AVWAP
@@ -103,6 +106,9 @@ jobs:
           ' "$response_file"
           if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi
 
@@ -215,6 +221,9 @@ jobs:
             cat "$response_file"
             exit 1
           fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
 
   refresh-market-context:
     name: Refresh Daily Radar market context
@@ -246,6 +255,9 @@ jobs:
           ' "$response_file"
           if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi
 

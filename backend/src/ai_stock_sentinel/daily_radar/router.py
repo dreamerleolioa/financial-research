@@ -51,6 +51,7 @@ from ai_stock_sentinel.daily_radar.repository import (
     get_shared_background_context_trace_by_symbol,
     get_symbol_candidate_history,
     update_daily_radar_prepared_market_context,
+    update_daily_radar_prepared_step_status,
     upsert_daily_radar_prepared_run,
 )
 from ai_stock_sentinel.daily_radar.presenter import (
@@ -81,6 +82,7 @@ from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseEntry,
     DailyRadarUniverseProvider,
+    refresh_daily_radar_universe_technical_tracks,
     select_daily_radar_universe,
 )
 from ai_stock_sentinel.db.session import get_db
@@ -96,6 +98,13 @@ router = APIRouter(tags=["daily-radar"])
 logger = logging.getLogger(__name__)
 
 DAILY_RUN_REFRESH_CONTEXT_TYPES = ("lending", "full_margin")
+DAILY_RADAR_REQUIRED_REFRESH_STEPS = (
+    "refresh-avwap",
+    "refresh-lending",
+    "refresh-full-margin",
+    "refresh-ohlcv",
+    "refresh-market-context",
+)
 
 
 def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
@@ -198,6 +207,13 @@ def prepare_daily_radar_universe_endpoint(
         status="prepared",
         errors=[],
     )
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="prepare-universe",
+        status="completed",
+        details={"symbol_count": len(selected_symbols)},
+    )
     db.commit()
     return DailyRadarPreparedRunResponse(
         status="prepared",
@@ -205,6 +221,7 @@ def prepare_daily_radar_universe_endpoint(
         market=prepared.market,
         symbol_count=prepared.symbol_count,
         selected_symbols=list(prepared.selected_symbols),
+        step_statuses=dict(prepared.step_statuses or {}),
         errors=list(prepared.errors or []),
     )
 
@@ -228,9 +245,23 @@ def refresh_daily_radar_avwap_endpoint(
         data_date=run_date,
         provider=provider,
     )
+    status = "failed" if result.missing_symbols else "completed"
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="refresh-avwap",
+        status=status,
+        details={
+            "symbol_count": len(prepared.selected_symbols),
+            "records_written": len(result.fetched_symbols),
+            "reused_symbols": list(result.reused_symbols),
+            "fetched_symbols": list(result.fetched_symbols),
+            "missing_symbols": list(result.missing_symbols),
+        },
+    )
     db.commit()
     return DailyRadarRefreshStepResponse(
-        status="completed",
+        status=status,
         step="refresh-avwap",
         run_date=run_date,
         market=request.market,
@@ -301,14 +332,31 @@ def refresh_daily_radar_ohlcv_endpoint(
         technical_fetcher=technical_fetcher,
         institutional_payloads_by_symbol=_institutional_payloads_by_symbol(universe, run_date=run_date),
     )
+    refreshed_universe = refresh_daily_radar_universe_technical_tracks(universe, rows)
+    prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
+    row_symbols = {row.symbol for row in rows}
+    missing_symbols = [symbol for symbol in prepared.selected_symbols if symbol not in row_symbols]
+    status = "failed" if missing_symbols else "completed"
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="refresh-ohlcv",
+        status=status,
+        details={
+            "symbol_count": len(prepared.selected_symbols),
+            "records_written": len(rows),
+            "missing_symbols": missing_symbols,
+        },
+    )
     db.commit()
     return DailyRadarRefreshStepResponse(
-        status="completed",
+        status=status,
         step="refresh-ohlcv",
         run_date=run_date,
         market=request.market,
         symbol_count=len(prepared.selected_symbols),
         records_written=len(rows),
+        missing_symbols=missing_symbols,
     )
 
 
@@ -329,6 +377,13 @@ def refresh_daily_radar_market_context_endpoint(
         db,
         prepared,
         market_context=dict(market_context_provider.build(run_date=run_date, market=request.market)),
+    )
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="refresh-market-context",
+        status="completed",
+        details={"symbol_count": len(prepared.selected_symbols), "records_written": 1},
     )
     db.commit()
     return DailyRadarRefreshStepResponse(
@@ -353,6 +408,7 @@ def run_daily_radar_scoring_endpoint(
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or _backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    _raise_if_required_refresh_steps_missing(prepared)
     if not prepared.market_context:
         raise HTTPException(
             status_code=409,
@@ -549,6 +605,19 @@ def _refresh_daily_radar_context_step(
         provider=provider,
         symbols=list(prepared.selected_symbols),
         context_types=[context_type],
+        reuse_same_day_fresh=True,
+    )
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step=step,
+        status=str(result["status"]),
+        details={
+            "symbol_count": int(result["symbol_count"]),
+            "records_written": int(result["records_written"]),
+            "reused_symbols": list(result.get("reused_symbols") or []),
+            "errors": list(result["errors"]),
+        },
     )
     db.commit()
     return DailyRadarRefreshStepResponse(
@@ -558,6 +627,7 @@ def _refresh_daily_radar_context_step(
         market=str(result["market"]),
         symbol_count=int(result["symbol_count"]),
         records_written=int(result["records_written"]),
+        reused_symbols=list(result.get("reused_symbols") or []),
         errors=list(result["errors"]),
     )
 
@@ -814,6 +884,26 @@ def _should_refresh_daily_run_chip_context(market: str) -> bool:
     return market.upper() == "TW"
 
 
+def _raise_if_required_refresh_steps_missing(prepared: Any) -> None:
+    step_statuses = dict(prepared.step_statuses or {})
+    incomplete_steps = [
+        step
+        for step in DAILY_RADAR_REQUIRED_REFRESH_STEPS
+        if (step_statuses.get(step) or {}).get("status") != "completed"
+    ]
+    if not incomplete_steps:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "daily_radar_refresh_steps_incomplete",
+            "message": "Daily Radar refresh steps are incomplete; run scoring is blocked.",
+            "incomplete_steps": incomplete_steps,
+            "step_statuses": step_statuses,
+        },
+    )
+
+
 def _institutional_payloads_by_symbol(
     universe: list[DailyRadarUniverseEntry],
     *,
@@ -977,6 +1067,10 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 __all__ = ["router"]

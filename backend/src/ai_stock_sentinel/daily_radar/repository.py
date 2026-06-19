@@ -79,6 +79,7 @@ def upsert_daily_radar_prepared_run(
     universe: list[dict[str, Any]],
     status: str = "prepared",
     market_context: Mapping[str, Any] | None = None,
+    step_statuses: Mapping[str, Any] | None = None,
     errors: list[dict[str, Any]] | None = None,
 ) -> DailyRadarPreparedRun:
     prepared = get_daily_radar_prepared_run(session, run_date=run_date, market=market)
@@ -91,6 +92,7 @@ def upsert_daily_radar_prepared_run(
             symbol_count=len(selected_symbols),
             status=status,
             market_context=dict(market_context) if market_context is not None else None,
+            step_statuses=dict(step_statuses or {}),
             errors=list(errors or []),
         )
     else:
@@ -98,8 +100,8 @@ def upsert_daily_radar_prepared_run(
         prepared.universe = [dict(entry) for entry in universe]
         prepared.symbol_count = len(selected_symbols)
         prepared.status = status
-        if market_context is not None:
-            prepared.market_context = dict(market_context)
+        prepared.market_context = dict(market_context) if market_context is not None else None
+        prepared.step_statuses = dict(step_statuses or {})
         if errors is not None:
             prepared.errors = list(errors)
     session.add(prepared)
@@ -116,6 +118,26 @@ def update_daily_radar_prepared_market_context(
 ) -> DailyRadarPreparedRun:
     prepared.market_context = dict(market_context)
     prepared.status = status
+    session.add(prepared)
+    session.flush()
+    return prepared
+
+
+def update_daily_radar_prepared_step_status(
+    session: Session,
+    prepared: DailyRadarPreparedRun,
+    *,
+    step: str,
+    status: str,
+    details: Mapping[str, Any] | None = None,
+) -> DailyRadarPreparedRun:
+    step_statuses = dict(prepared.step_statuses or {})
+    step_statuses[step] = {
+        "status": status,
+        "updated_at": _utc_now().isoformat(),
+        **dict(details or {}),
+    }
+    prepared.step_statuses = step_statuses
     session.add(prepared)
     session.flush()
     return prepared
@@ -673,5 +695,6 @@ __all__ = [
     "get_symbol_candidate_history",
     "replace_run_candidates",
     "upsert_shared_background_context",
+    "update_daily_radar_prepared_step_status",
     "update_daily_radar_run",
 ]
