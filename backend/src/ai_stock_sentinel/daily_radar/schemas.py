@@ -41,6 +41,39 @@ class DailyRadarRunTriggerResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class DailyRadarPreparedRunRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+    max_symbols: int = Field(default=250, ge=1, le=250)
+
+
+class DailyRadarPreparedRunResponse(BaseModel):
+    status: Literal["prepared", "completed"]
+    run_date: date
+    market: str
+    symbol_count: int
+    selected_symbols: list[str] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DailyRadarRefreshStepRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+
+
+class DailyRadarRefreshStepResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    step: str
+    run_date: date
+    market: str
+    symbol_count: int = 0
+    records_written: int = 0
+    reused_symbols: list[str] = Field(default_factory=list)
+    fetched_symbols: list[str] = Field(default_factory=list)
+    missing_symbols: list[str] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DailyRadarChipContextUpdateRequest(BaseModel):
     run_date: date | None = None
     market: str = Field(default="TW", min_length=1, max_length=20)
@@ -259,6 +292,10 @@ __all__ = [
     "DailyRadarMonthlyRuleReviewResponse",
     "DailyRadarNameBackfillRequest",
     "DailyRadarNameBackfillResponse",
+    "DailyRadarPreparedRunRequest",
+    "DailyRadarPreparedRunResponse",
+    "DailyRadarRefreshStepRequest",
+    "DailyRadarRefreshStepResponse",
     "DailyRadarRunRequest",
     "DailyRadarRunResponse",
     "DailyRadarRunTriggerResponse",

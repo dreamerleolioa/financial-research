@@ -5,6 +5,7 @@ from sqlalchemy import CheckConstraint, UniqueConstraint
 from ai_stock_sentinel.db.models import (
     DailyAnalysisLog,
     DailyRadarCandidate,
+    DailyRadarPreparedRun,
     DailyRadarRun,
     POSITION_EVENT_CONFIDENCE_LEVELS,
     POSITION_EVENT_ENTRY_REASON_CODES,
@@ -376,6 +377,25 @@ def test_daily_radar_run_table_name_and_columns() -> None:
         "id", "run_date", "market", "status", "started_at", "finished_at",
         "universe_count", "prefilter_count", "candidate_count", "errors", "created_at",
     } <= cols
+
+
+def test_daily_radar_prepared_run_table_name_columns_and_constraints() -> None:
+    assert DailyRadarPreparedRun.__tablename__ == "daily_radar_prepared_runs"
+
+    cols = {c.name for c in DailyRadarPreparedRun.__table__.columns}
+    unique_constraints = {
+        constraint.name
+        for constraint in DailyRadarPreparedRun.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert {
+        "id", "run_date", "market", "status", "selected_symbols", "universe",
+        "symbol_count", "market_context", "errors", "created_at", "updated_at",
+    } <= cols
+    assert "uq_daily_radar_prepared_run_date_market" in unique_constraints
+    assert isinstance(DailyRadarPreparedRun.__table__.c.selected_symbols.type, JSONB)
+    assert isinstance(DailyRadarPreparedRun.__table__.c.universe.type, JSONB)
 
 
 def test_daily_radar_candidate_table_name_and_columns() -> None:

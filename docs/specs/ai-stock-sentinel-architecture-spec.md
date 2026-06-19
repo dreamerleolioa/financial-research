@@ -83,7 +83,7 @@
 | Workflow | 責任 |
 | -------- | ---- |
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
-| `daily-radar.yml` | 收盤後呼叫 `/internal/daily-radar/run`，由後端自行完成 universe、selected-symbol 試驗版 Daily AVWAP refresh、selected-symbol 日頻 lending/full margin refresh、selected-symbol OHLCV backfill、Stage 1/2 scoring 與 persistence |
+| `daily-radar.yml` | 收盤後分段呼叫 `/internal/daily-radar/prepare-universe`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段約隔一小時，scoring 只讀已落庫 cache/snapshot |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `daily-radar-rule-review.yml` | 觸發 monthly rule governance report |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |

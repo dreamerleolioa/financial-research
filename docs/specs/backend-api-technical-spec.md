@@ -40,7 +40,7 @@ make run-api
 - **Managed universe**：只合併目前登入使用者的 active holdings、watchlist symbols，以及 latest public Daily Radar selected candidates；任意 Analyze symbol 不會在 Phase 1A 觸發 FinMind historical backfill。
 - **資料來源**：FinMind `TaiwanStockPrice` single-symbol `data_id`；`adjustment_mode = "unadjusted"`。不使用 all-market query，也不使用 `TaiwanStockPriceAdj` 作為預設。
 - **快取表**：`phase1_avwap_snapshots`，以 `symbol` / `data_date` / `dataset` / `adjustment_mode` 唯一 upsert。fresh snapshot 會先被重用，缺漏或 stale 才逐檔 fetch。
-- **更新路徑**：Daily Radar internal run 在 selected universe 確定後，會針對 selected symbols 刷新當日 AVWAP snapshot；Analyze、Portfolio 與 public Daily Radar read path 只讀 snapshot，不觸發 refresh。
+- **更新路徑**：Daily Radar `refresh-avwap` step 會讀 `daily_radar_prepared_runs.selected_symbols`，針對 selected symbols 刷新當日 AVWAP snapshot；Analyze、Portfolio、public Daily Radar read path 與 `run-scoring` 只讀 snapshot，不觸發 refresh。
 - **計算契約**：日頻 AVWAP 使用 `Trading_money / Trading_Volume`；若 source row 缺 `Trading_money` 才用 typical price × volume fallback，且對應 anchor / data quality 必須標記 `estimated = true`。最新 source row 的交易日必須等於 requested `data_date` 才能寫成 `fresh` snapshot；若 FinMind 只回到較早交易日，應寫 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不得把前一交易日資料標成當日 final。
 - **資料品質**：provider/quota/row 缺漏不得產生假中性 AVWAP；應寫入 `freshness = "missing"` 與 `missing_reason`，讓 1B/1C 以 caveat 顯示。
 - **公開 API 狀態**：不新增 public endpoint；只投影到既有 `/analyze`、Portfolio risk summary 與 Daily Radar response。
@@ -1555,22 +1555,36 @@ Daily Radar run status：
 
 公開讀取 API 只暴露 `completed` 與 `stale_data` run。
 
+#### Daily Radar segmented internal pipeline
+
+正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間：
+
+- 18:00 TWT：`POST /internal/daily-radar/prepare-universe`，保存 capped 250 selected symbols 與 universe trace。
+- 19:00 TWT：`POST /internal/daily-radar/refresh-avwap`，刷新 `phase1_avwap_snapshots`。
+- 20:00 TWT：`POST /internal/daily-radar/refresh-lending`，刷新 `shared_background_contexts` 的 `lending`。
+- 21:30 TWT：`POST /internal/daily-radar/refresh-full-margin`，等待 FinMind 21:00 更新後刷新 `full_margin`。
+- 22:30 TWT：`POST /internal/daily-radar/refresh-ohlcv`，刷新 selected-symbol `stock_raw_data`。
+- 23:30 TWT：`POST /internal/daily-radar/refresh-market-context`，刷新並保存 prepared market context。
+- 隔日 00:30 TWT：`POST /internal/daily-radar/run-scoring`，帶前一個台灣交易日 `run_date`，只讀 DB cache/snapshot 並持久化 Daily Radar run/candidates。
+
+`run-scoring` 不得打 FinMind、yfinance、TWSE 或 market index provider；缺少 prepared universe、prepared market context 或 final raw rows 時回 `409`，由 workflow/monitor 顯示資料準備缺口。
+
 #### `POST /internal/daily-radar/run`
 
-- **用途**：供 GitHub Actions 或後端排程觸發 Daily Radar run。
+- **用途**：保留一鍵手動相容入口；正式 GitHub Actions 排程使用 segmented internal pipeline。
 - **Auth**：內部 token 必填，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
 - **環境契約**：後端必須設定 `DAILY_RADAR_INTERNAL_TOKEN`。若後端未設定此 token，回傳 `503 Service Unavailable`。
 - **Auth 錯誤**：request 未帶 token 時回傳 `401 Unauthorized`，並附 Bearer challenge；token 不符時回傳 `403 Forbidden`。
-- **後端 orchestration**：live run 會自行選出 multi-track universe（保留 `same_day_institutional`、`recent_accumulation`，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），針對台股 selected symbols 刷新試驗版 Daily AVWAP snapshot 與日頻 `lending` / `full_margin` shared background context cache，對 selected symbols 補齊缺少的 OHLCV，建立固定 market index context，執行 Stage 1/2 rule-based scoring，然後持久化 run log 與 candidates。
+- **後端 orchestration**：相容入口仍會自行選出 multi-track universe，並一次完成 selected-symbol AVWAP、lending/full margin、OHLCV、market context 與 scoring；正式排程不使用此入口，避免免費 FinMind quota 在同一小時集中消耗。
 - **Fixture fallback**：live run 關閉 fixture fallback，只使用 live provider 與既有 final `StockRawData`。
 - **409 Conflict**：selected universe 為空，或嘗試 backfill 後 selected symbols 仍沒有 final `StockRawData` rows 時回傳。
-- **公開 schema**：後端資料流改為自包含流程後，public Daily Radar read endpoints 與 candidate response schema 不變。
+- **公開 schema**：後端資料流改為分段 pipeline 後，public Daily Radar read endpoints 與 candidate response schema 不變。
 - **資料源 request budget**：
   - TWSE RWD institutional reports：目前 live provider 讀取 `TWT38U` / `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation tracks。這是 report-level 查詢，不是 selected symbols 的逐檔法人 request。
-  - FinMind Phase 1 Daily AVWAP：只對 selected universe symbols 做 single-symbol `TaiwanStockPrice` refresh；同一 `data_date` 已有 fresh snapshot 時直接重用。若 FinMind 尚未提供 requested `run_date` row，寫入 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不阻塞 Daily Radar persistence。
-  - yfinance selected-symbol OHLCV：只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用。
+  - FinMind Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時對 selected universe symbols 做 single-symbol `TaiwanStockPrice` refresh；同一 `data_date` 已有 fresh snapshot 時直接重用。若 FinMind 尚未提供 requested `run_date` row，寫入 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不阻塞 Daily Radar persistence。
+  - yfinance selected-symbol OHLCV：正式排程只在 `refresh-ohlcv` 小時對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用。
   - yfinance market index OHLCV：每次 run 只抓固定 benchmark。TW 使用 `TAIEX` / `^TWII`，US 使用 `SPX` / `^GSPC`，用於 market regime 與 relative strength benchmark。
-  - Shared background context：daily run 先對台股 selected symbols 刷新日頻 `lending` / `full_margin` cache，再批次讀 `shared_background_contexts` 中 selected symbols 的 cache trace；`weekly_major_holders` 仍由週頻背景排程更新，不在 daily run 內強行日更。
+  - Shared background context：正式排程把 `lending` 與 `full_margin` 拆成不同小時 refresh；`weekly_major_holders` 仍由週頻背景排程更新，不在 daily pipeline 內強行日更。
   - Live limits：回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale；完整融資融券與借券內容由 selected-symbol shared context refresh 寫入 cache 後附加為背景 labels。
 
 - **Request Body**
@@ -1705,7 +1719,7 @@ Daily Radar run status：
 #### Internal Daily Radar chip context update
 
 - **Endpoint**：`POST /internal/daily-radar/chip-context/update`
-- **用途**：更新 `shared_background_contexts` cache。這是週頻 `weekly_major_holders` 的正式背景更新路徑，也可作為 `lending` / `full_margin` 維護或補跑入口；正式 Daily Radar run 會在 selected universe 確定後自行刷新台股 selected symbols 的試驗版 Daily AVWAP snapshot 與日頻 `lending` / `full_margin`，再讀 cache 寫入 candidate snapshot。同一 `replay_key` 會 upsert，新的 `replay_key` 會保留為歷史 trace，供 point-in-time consumer 回放。
+- **用途**：更新 `shared_background_contexts` cache。這是週頻 `weekly_major_holders` 的正式背景更新路徑，也可作為 `lending` / `full_margin` 維護或補跑入口；每日正式 Daily Radar pipeline 已改用 `refresh-lending` / `refresh-full-margin` 分段 endpoints，再由 `run-scoring` 讀 cache 寫入 candidate snapshot。同一 `replay_key` 會 upsert，新的 `replay_key` 會保留為歷史 trace，供 point-in-time consumer 回放。
 - **Auth**：沿用 Daily Radar internal token，可使用 `Authorization: Bearer <DAILY_RADAR_INTERNAL_TOKEN>` 或 `X-Internal-Token`。
 - **Request Body**
 

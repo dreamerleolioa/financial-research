@@ -43,12 +43,15 @@ from ai_stock_sentinel.daily_radar.rule_governance import (
 )
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
+    get_daily_radar_prepared_run,
     get_daily_radar_run_by_date,
     get_final_raw_data_rows_for_date,
     get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
     get_shared_background_context_trace_by_symbol,
     get_symbol_candidate_history,
+    update_daily_radar_prepared_market_context,
+    upsert_daily_radar_prepared_run,
 )
 from ai_stock_sentinel.daily_radar.presenter import (
     history_response,
@@ -66,6 +69,10 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarMonthlyRuleReviewResponse,
     DailyRadarNameBackfillRequest,
     DailyRadarNameBackfillResponse,
+    DailyRadarPreparedRunRequest,
+    DailyRadarPreparedRunResponse,
+    DailyRadarRefreshStepRequest,
+    DailyRadarRefreshStepResponse,
     DailyRadarRunRequest,
     DailyRadarRunResponse,
     DailyRadarRunTriggerResponse,
@@ -77,6 +84,7 @@ from ai_stock_sentinel.daily_radar.universe import (
     select_daily_radar_universe,
 )
 from ai_stock_sentinel.db.session import get_db
+from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.phase1_avwap.provider import FinMindDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import (
     DailyPriceProvider,
@@ -152,6 +160,231 @@ def backfill_daily_radar_names_endpoint(
                 "error_type": exc.__class__.__name__,
             },
         ) from exc
+
+
+@router.post(
+    "/internal/daily-radar/prepare-universe",
+    response_model=DailyRadarPreparedRunResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def prepare_daily_radar_universe_endpoint(
+    payload: DailyRadarPreparedRunRequest | None = None,
+    db: Session = Depends(get_db),
+    universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
+) -> DailyRadarPreparedRunResponse:
+    request = payload or DailyRadarPreparedRunRequest()
+    run_date = request.run_date or _backend_today()
+    existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
+    universe = select_daily_radar_universe(
+        universe_provider,
+        run_date=run_date,
+        market=request.market,
+        track_limit=50,
+        technical_records=existing_technical_rows,
+    )
+    capped_universe = universe[: request.max_symbols]
+    if not capped_universe:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Daily Radar universe is empty for {request.market} on {run_date.isoformat()}.",
+        )
+    selected_symbols = [entry.symbol for entry in capped_universe]
+    prepared = upsert_daily_radar_prepared_run(
+        db,
+        run_date=run_date,
+        market=request.market,
+        selected_symbols=selected_symbols,
+        universe=[_universe_entry_payload(entry) for entry in capped_universe],
+        status="prepared",
+        errors=[],
+    )
+    db.commit()
+    return DailyRadarPreparedRunResponse(
+        status="prepared",
+        run_date=prepared.run_date,
+        market=prepared.market,
+        symbol_count=prepared.symbol_count,
+        selected_symbols=list(prepared.selected_symbols),
+        errors=list(prepared.errors or []),
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-avwap",
+    response_model=DailyRadarRefreshStepResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_avwap_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: DailyPriceProvider = Depends(get_phase1_avwap_daily_price_provider),
+) -> DailyRadarRefreshStepResponse:
+    request = payload or DailyRadarRefreshStepRequest()
+    run_date = request.run_date or _backend_today()
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    result = refresh_phase1_avwap_snapshots_for_symbols(
+        db,
+        symbols=list(prepared.selected_symbols),
+        data_date=run_date,
+        provider=provider,
+    )
+    db.commit()
+    return DailyRadarRefreshStepResponse(
+        status="completed",
+        step="refresh-avwap",
+        run_date=run_date,
+        market=request.market,
+        symbol_count=len(prepared.selected_symbols),
+        records_written=len(result.fetched_symbols),
+        reused_symbols=result.reused_symbols,
+        fetched_symbols=result.fetched_symbols,
+        missing_symbols=result.missing_symbols,
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-lending",
+    response_model=DailyRadarRefreshStepResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_lending_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
+) -> DailyRadarRefreshStepResponse:
+    return _refresh_daily_radar_context_step(
+        db,
+        payload=payload,
+        provider=provider,
+        context_type="lending",
+        step="refresh-lending",
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-full-margin",
+    response_model=DailyRadarRefreshStepResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_full_margin_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
+) -> DailyRadarRefreshStepResponse:
+    return _refresh_daily_radar_context_step(
+        db,
+        payload=payload,
+        provider=provider,
+        context_type="full_margin",
+        step="refresh-full-margin",
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-ohlcv",
+    response_model=DailyRadarRefreshStepResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_ohlcv_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+    technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
+) -> DailyRadarRefreshStepResponse:
+    request = payload or DailyRadarRefreshStepRequest()
+    run_date = request.run_date or _backend_today()
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    universe = _prepared_universe_entries(prepared.universe)
+    rows = ensure_daily_radar_raw_rows(
+        db,
+        run_date,
+        list(prepared.selected_symbols),
+        technical_fetcher=technical_fetcher,
+        institutional_payloads_by_symbol=_institutional_payloads_by_symbol(universe, run_date=run_date),
+    )
+    db.commit()
+    return DailyRadarRefreshStepResponse(
+        status="completed",
+        step="refresh-ohlcv",
+        run_date=run_date,
+        market=request.market,
+        symbol_count=len(prepared.selected_symbols),
+        records_written=len(rows),
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-market-context",
+    response_model=DailyRadarRefreshStepResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_market_context_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+    market_context_provider: MarketIndexContextProvider = Depends(get_daily_radar_market_context_provider),
+) -> DailyRadarRefreshStepResponse:
+    request = payload or DailyRadarRefreshStepRequest()
+    run_date = request.run_date or _backend_today()
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    update_daily_radar_prepared_market_context(
+        db,
+        prepared,
+        market_context=dict(market_context_provider.build(run_date=run_date, market=request.market)),
+    )
+    db.commit()
+    return DailyRadarRefreshStepResponse(
+        status="completed",
+        step="refresh-market-context",
+        run_date=run_date,
+        market=request.market,
+        symbol_count=len(prepared.selected_symbols),
+        records_written=1,
+    )
+
+
+@router.post(
+    "/internal/daily-radar/run-scoring",
+    response_model=DailyRadarRunTriggerResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def run_daily_radar_scoring_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+) -> DailyRadarRunTriggerResponse:
+    request = payload or DailyRadarRefreshStepRequest()
+    run_date = request.run_date or _backend_today()
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    if not prepared.market_context:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Daily Radar market context is not prepared for {request.market} on {run_date.isoformat()}.",
+        )
+    selected_symbols = list(prepared.selected_symbols)
+    cache_rows = get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols)
+    if not cache_rows:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No final StockRawData rows are available for prepared Daily Radar symbols on {run_date.isoformat()}.",
+        )
+    background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
+        db,
+        symbols=selected_symbols,
+        context_types=BACKGROUND_CONTEXT_TYPES,
+        reference_date=run_date,
+        point_in_time=True,
+    )
+    run = run_daily_radar(
+        run_date,
+        request.market,
+        session=db,
+        cache_rows=cache_rows,
+        market_context=dict(prepared.market_context),
+        background_contexts_by_symbol=background_contexts_by_symbol,
+        allow_fixture_fallback=False,
+    )
+    prepared.status = "scored"
+    db.add(prepared)
+    db.commit()
+    return run_trigger_response(run)
 
 
 @router.post(
@@ -296,6 +529,84 @@ def _refresh_phase1_avwap_for_daily_radar(
             "[DailyRadar] Phase 1 AVWAP refresh failed; continuing with read-only missing trace run_date=%s",
             run_date.isoformat(),
         )
+
+
+def _refresh_daily_radar_context_step(
+    db: Session,
+    *,
+    payload: DailyRadarRefreshStepRequest | None,
+    provider: BackgroundChipContextProvider,
+    context_type: str,
+    step: str,
+) -> DailyRadarRefreshStepResponse:
+    request = payload or DailyRadarRefreshStepRequest()
+    run_date = request.run_date or _backend_today()
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    result = update_background_chip_context_cache(
+        db,
+        run_date=run_date,
+        market=request.market,
+        provider=provider,
+        symbols=list(prepared.selected_symbols),
+        context_types=[context_type],
+    )
+    db.commit()
+    return DailyRadarRefreshStepResponse(
+        status=result["status"],
+        step=step,
+        run_date=run_date,
+        market=str(result["market"]),
+        symbol_count=int(result["symbol_count"]),
+        records_written=int(result["records_written"]),
+        errors=list(result["errors"]),
+    )
+
+
+def _prepared_run_or_404(db: Session, *, run_date: date, market: str):
+    prepared = get_daily_radar_prepared_run(db, run_date=run_date, market=market)
+    if prepared is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Daily Radar prepared universe is missing for {market} on {run_date.isoformat()}.",
+        )
+    return prepared
+
+
+def _universe_entry_payload(entry: DailyRadarUniverseEntry) -> dict[str, Any]:
+    return {
+        "symbol": entry.symbol,
+        "rank": entry.rank,
+        "primary_track": entry.primary_track,
+        "tracks": list(entry.tracks),
+        "same_day_rank": entry.same_day_rank,
+        "same_day_score": entry.same_day_score,
+        "recent_accumulation_rank": entry.recent_accumulation_rank,
+        "recent_accumulation_score": entry.recent_accumulation_score,
+        "track_metrics": {track: dict(metrics) for track, metrics in entry.track_metrics.items()},
+    }
+
+
+def _prepared_universe_entries(payloads: list[dict[str, Any]]) -> list[DailyRadarUniverseEntry]:
+    entries: list[DailyRadarUniverseEntry] = []
+    for payload in payloads:
+        entries.append(
+            DailyRadarUniverseEntry(
+                symbol=str(payload["symbol"]),
+                rank=int(payload["rank"]),
+                primary_track=payload["primary_track"],
+                tracks=tuple(payload.get("tracks") or (payload["primary_track"],)),
+                same_day_rank=_optional_int(payload.get("same_day_rank")),
+                same_day_score=_optional_float(payload.get("same_day_score")),
+                recent_accumulation_rank=_optional_int(payload.get("recent_accumulation_rank")),
+                recent_accumulation_score=_optional_float(payload.get("recent_accumulation_score")),
+                track_metrics={
+                    str(track): dict(metrics)
+                    for track, metrics in _mapping(payload.get("track_metrics")).items()
+                    if isinstance(metrics, dict)
+                },
+            )
+        )
+    return entries
 
 
 @router.post(
@@ -496,7 +807,7 @@ def get_daily_radar_by_date_endpoint(
 
 
 def _backend_today() -> date:
-    return date.today()
+    return today_taipei()
 
 
 def _should_refresh_daily_run_chip_context(market: str) -> bool:
@@ -642,6 +953,24 @@ def _int_metric(value: Any) -> int | None:
 
 
 def _float_metric(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     try:

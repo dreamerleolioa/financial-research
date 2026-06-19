@@ -196,7 +196,17 @@ Daily Radar 是獨立產品表面，不是 `/analyze` 的批次版。
 
 ### 7.1 Internal run flow
 
-入口：`daily_radar/router.py` 的 `POST /internal/daily-radar/run`
+正式排程入口是 `daily_radar/router.py` 的分段 internal endpoints：
+
+- `POST /internal/daily-radar/prepare-universe`
+- `POST /internal/daily-radar/refresh-avwap`
+- `POST /internal/daily-radar/refresh-lending`
+- `POST /internal/daily-radar/refresh-full-margin`
+- `POST /internal/daily-radar/refresh-ohlcv`
+- `POST /internal/daily-radar/refresh-market-context`
+- `POST /internal/daily-radar/run-scoring`
+
+`POST /internal/daily-radar/run` 保留為一鍵手動相容入口；正式 GitHub Actions 用分段 workflow，避免免費 FinMind quota 在同一小時內被 AVWAP、lending、full margin 同時消耗。
 
 流程：
 

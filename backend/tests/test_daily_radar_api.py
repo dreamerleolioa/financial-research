@@ -21,6 +21,7 @@ from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_co
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
+    DailyRadarPreparedRun,
     DailyRadarRun,
     Phase1AvwapSnapshot,
     SharedBackgroundContext,
@@ -640,6 +641,107 @@ def test_daily_radar_run_endpoint_continues_when_phase1_avwap_refresh_fails(
     assert daily_radar_db_session.query(Phase1AvwapSnapshot).all() == []
 
 
+def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeUniverseProvider(
+        same_day=[
+            InstitutionalLeaderRow("2330.TW", 1, 91.0),
+            InstitutionalLeaderRow("2454.TW", 2, 88.0),
+            InstitutionalLeaderRow("2317.TW", 3, 77.0),
+        ],
+    )
+    client = _api_client(monkeypatch, daily_radar_db_session, universe_provider=provider)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW", "max_symbols": 2},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "prepared"
+    assert body["symbol_count"] == 2
+    assert body["selected_symbols"] == ["2330.TW", "2454.TW"]
+    prepared = daily_radar_db_session.query(DailyRadarPreparedRun).one()
+    assert prepared.run_date == date(2026, 6, 1)
+    assert prepared.selected_symbols == ["2330.TW", "2454.TW"]
+    assert prepared.universe[0]["primary_track"] == "same_day_institutional"
+
+
+def test_daily_radar_refresh_avwap_endpoint_uses_prepared_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-avwap",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["step"] == "refresh-avwap"
+    assert body["symbol_count"] == 1
+    provider = client.fake_phase1_avwap_provider  # type: ignore[attr-defined]
+    assert provider.calls == [("2330.TW", date(2026, 2, 1), date(2026, 6, 1))]
+
+
+def test_daily_radar_run_scoring_requires_prepared_market_context(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert "market context is not prepared" in response.json()["detail"]
+
+
 def test_daily_radar_run_endpoint_rejects_missing_token_on_real_route(monkeypatch) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
 
@@ -755,6 +857,7 @@ def daily_radar_db_session() -> Session:
         engine,
         tables=[
             DailyRadarRun.__table__,
+            DailyRadarPreparedRun.__table__,
             DailyRadarCandidate.__table__,
             Phase1AvwapSnapshot.__table__,
             SharedBackgroundContext.__table__,

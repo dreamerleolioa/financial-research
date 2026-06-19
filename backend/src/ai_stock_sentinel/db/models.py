@@ -517,6 +517,27 @@ class DailyRadarRun(Base):
     )
 
 
+class DailyRadarPreparedRun(Base):
+    __tablename__ = "daily_radar_prepared_runs"
+    __table_args__ = (
+        UniqueConstraint("run_date", "market", name="uq_daily_radar_prepared_run_date_market"),
+        Index("idx_daily_radar_prepared_runs_run_date", "run_date"),
+        Index("idx_daily_radar_prepared_runs_market", "market"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="prepared", server_default="prepared")
+    selected_symbols: Mapped[list] = mapped_column(JSONB, nullable=False)
+    universe: Mapped[list] = mapped_column(JSONB, nullable=False)
+    symbol_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    market_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    errors: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
 class DailyRadarCandidate(Base):
     __tablename__ = "daily_radar_candidates"
     __table_args__ = (
