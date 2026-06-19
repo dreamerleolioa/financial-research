@@ -35,15 +35,11 @@ def _compile_jsonb_sqlite(_type, compiler, **kw):
     return "JSON"
 
 
-def _make_client(active_count: int) -> TestClient:
+def _make_client() -> TestClient:
     mock_user = MagicMock()
     mock_user.id = 1
 
-    mock_result = MagicMock()
-    mock_result.scalar.return_value = active_count
-
     mock_db = MagicMock()
-    mock_db.execute.return_value = mock_result
 
     app = api.app
     app.dependency_overrides[get_current_user] = lambda: mock_user
@@ -51,9 +47,10 @@ def _make_client(active_count: int) -> TestClient:
     return TestClient(app)
 
 
-def test_add_portfolio_success():
-    """active_count < 8 時應成功建立持倉，回傳 201。"""
-    client = _make_client(active_count=7)
+def test_add_portfolio_success(monkeypatch: pytest.MonkeyPatch):
+    """新增持倉應成功建立持倉，回傳 201。"""
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
         "entry_price": 900.0,
@@ -63,8 +60,9 @@ def test_add_portfolio_success():
     assert resp.status_code == 201
 
 
-def test_add_portfolio_assigns_position_group_id_uuid():
-    client = _make_client(active_count=7)
+def test_add_portfolio_assigns_position_group_id_uuid(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
         "entry_price": 900.0,
@@ -78,22 +76,24 @@ def test_add_portfolio_assigns_position_group_id_uuid():
     assert uuid.UUID(entry.position_group_id).version == 4
 
 
-def test_add_portfolio_rejects_when_limit_reached():
-    """active_count >= 8 時應回傳 422，且 detail 含 '8'。"""
-    client = _make_client(active_count=8)
+def test_add_portfolio_allows_more_than_eight_active_holdings(monkeypatch: pytest.MonkeyPatch):
+    """active 持股已達 8 筆時仍可新增持倉。"""
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
     resp = client.post("/portfolio", json={
         "symbol": "2454.TW",
         "entry_price": 800.0,
         "entry_date": "2026-01-01",
         "quantity": 50,
     })
-    assert resp.status_code == 422
-    assert "8" in resp.json()["detail"]
+    assert resp.status_code == 201
+    mock_db = api.app.dependency_overrides[get_db]()
+    mock_db.execute.assert_not_called()
 
 
 @pytest.mark.parametrize("entry_price", [0, -1])
 def test_add_portfolio_rejects_non_positive_entry_price(entry_price):
-    client = _make_client(active_count=7)
+    client = _make_client()
 
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
@@ -1507,6 +1507,40 @@ def test_add_portfolio_persists_initial_entry_event_and_response_shape(
     assert float(event.price) == 900.0
     assert float(event.fees) == 0.0
     assert float(event.taxes) == 0.0
+
+
+def test_add_portfolio_allows_ninth_active_holding(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    for index in range(8):
+        portfolio_db_session.add(UserPortfolio(
+            user_id=1,
+            symbol=f"99{index:02d}.TW",
+            entry_price=100 + index,
+            quantity=100,
+            entry_date=date(2026, 1, 1),
+        ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2454.TW",
+        "entry_price": 800.0,
+        "entry_date": "2026-01-01",
+        "quantity": 50,
+    })
+
+    assert resp.status_code == 201
+    active_rows = portfolio_db_session.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == 1,
+            UserPortfolio.is_active == True,
+        )
+    ).scalars().all()
+    assert len(active_rows) == 9
 
 
 def test_add_portfolio_with_entry_record_persists_event_time_context(
