@@ -52,6 +52,54 @@ def refresh_phase1_avwap_snapshots(
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
 ) -> Phase1AvwapRefreshResult:
     universe = resolve_phase1_managed_universe(session, user_id=user_id, market=market)
+    return _refresh_phase1_avwap_snapshots_for_universe(
+        session,
+        universe=universe,
+        data_date=data_date,
+        lookback_days=lookback_days,
+        provider=provider,
+        dataset=dataset,
+        adjustment_mode=adjustment_mode,
+    )
+
+
+def refresh_phase1_avwap_snapshots_for_symbols(
+    session: Session,
+    *,
+    symbols: list[str],
+    data_date: date,
+    source: str = "daily_radar_candidate",
+    lookback_days: int = 120,
+    provider: DailyPriceProvider | None = None,
+    dataset: str = DEFAULT_PHASE1_DATASET,
+    adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
+) -> Phase1AvwapRefreshResult:
+    universe = [
+        ManagedUniverseSymbol(symbol=symbol, sources=[source])
+        for symbol in dict.fromkeys(str(symbol).strip().upper() for symbol in symbols)
+        if symbol
+    ]
+    return _refresh_phase1_avwap_snapshots_for_universe(
+        session,
+        universe=universe,
+        data_date=data_date,
+        lookback_days=lookback_days,
+        provider=provider,
+        dataset=dataset,
+        adjustment_mode=adjustment_mode,
+    )
+
+
+def _refresh_phase1_avwap_snapshots_for_universe(
+    session: Session,
+    *,
+    universe: list[ManagedUniverseSymbol],
+    data_date: date,
+    lookback_days: int,
+    provider: DailyPriceProvider | None,
+    dataset: str,
+    adjustment_mode: str,
+) -> Phase1AvwapRefreshResult:
     symbols = [item.symbol for item in universe]
     existing = get_phase1_avwap_snapshots(
         session,
@@ -150,4 +198,5 @@ __all__ = [
     "DailyPriceProvider",
     "Phase1AvwapRefreshResult",
     "refresh_phase1_avwap_snapshots",
+    "refresh_phase1_avwap_snapshots_for_symbols",
 ]

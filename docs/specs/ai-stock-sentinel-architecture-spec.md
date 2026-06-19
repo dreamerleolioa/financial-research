@@ -35,7 +35,7 @@
 | `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
 | `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental provider |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
-| `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、FinMind `TaiwanStockPrice` daily row normalization、deterministic daily AVWAP calculation、snapshot repository/service、Analyze/Portfolio/Daily Radar read-only projections |
+| `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、FinMind `TaiwanStockPrice` daily row normalization、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar selected-symbol refresh、Analyze/Portfolio/Daily Radar read-only projections |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
 | `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
@@ -57,7 +57,7 @@
 | Analysis | `analysis/router.py` 承接 `/analyze`、`/analyze/position`、`/history/{symbol}` HTTP boundary 與 shared context attachment；`analysis/schemas.py` 保存 request/response models；`analysis/application/analyze_stock.py` 與 `analyze_position.py` 建立 Graph initial state；`analysis/application/analysis_cache.py` 管理 analysis/raw-data cache helper；`analysis/application/response_builder.py` 負責 response assembly 與 technical indicator extraction；`analysis/adapters/graph_runner.py` 包裝 Graph construction/invocation。`api.py` 只 include router 並保留 internal raw-data maintenance endpoint。 |
 | Portfolio | `portfolio/schemas.py` 保存 request/response models；`portfolio/repository.py` 收斂共享 ownership/query helper；`portfolio/application/*` 承接 create/update/add-entry/close/risk-summary use cases；`fees.py` 與 `risk_summary.py` 保持純 deterministic calculation。Router 仍保留 HTTP dependency、response serialization、lifecycle/review endpoints 與部分 transaction orchestration。 |
 | Daily Radar | `daily_radar/schemas.py` 保存 internal/public request/response models；`daily_radar/presenter.py` 負責 public run/candidate/history 與 run-trigger response serialization；`daily_radar/constants.py` 保存共享常數；`daily_radar/service.py` 是 Daily Radar run application service；`daily_radar/repository.py` 管理 persistence queries；`daily_radar/router.py` 保留 internal workflow trigger、dependency wiring 與 institutional universe payload shaping。 |
-| Phase 1 AVWAP | `phase1_avwap/universe.py` 從 active holdings、watchlist 與 latest Daily Radar candidates 合併 managed universe；`provider.py` 只用 FinMind `TaiwanStockPrice` single-symbol data_id 並維持 `adjustment_mode=unadjusted`；`calculator.py` 以日頻 `Trading_money / Trading_Volume` deterministic 計算 AVWAP anchors；`service.py` 先 reuse fresh `phase1_avwap_snapshots`，缺漏時才逐檔 fetch；`projection.py` 只讀 snapshot，供 `/analyze`、Portfolio risk summary、Daily Radar detail trace 使用，不觸發 backfill、不改 Daily Radar scoring。 |
+| Phase 1 AVWAP | `phase1_avwap/universe.py` 從 active holdings、watchlist 與 latest Daily Radar candidates 合併 managed universe；`provider.py` 只用 FinMind `TaiwanStockPrice` single-symbol data_id 並維持 `adjustment_mode=unadjusted`；`calculator.py` 以日頻 `Trading_money / Trading_Volume` deterministic 計算 AVWAP anchors；`service.py` 先 reuse fresh `phase1_avwap_snapshots`，缺漏時才逐檔 fetch；Daily Radar internal run 會在 selected universe 確定後刷新 selected symbols；`projection.py` 只讀 snapshot，供 `/analyze`、Portfolio risk summary、Daily Radar detail trace 使用，不觸發 backfill、不改 Daily Radar scoring。 |
 | Watchlist | `watchlist/schemas.py` 保存 request models；`watchlist/repository.py` 收斂 query helper；`watchlist/application/items.py` 承接 normalize、idempotent create、reorder completeness、update/delete ownership rules；`watchlist/router.py` 保留 FastAPI dependency、HTTP error mapping 與 response serialization。 |
 | Architecture guard | `backend/tests/test_backend_architecture_boundaries.py` 以 AST 檢查純計算 modules 不引入 FastAPI/SQLAlchemy/external provider/DB；已重構 HTTP boundaries 不重新定義 Pydantic schema；Daily Radar router 不重新吸收 public response presenter helpers。Auth router 尚未納入此 guard，因為它尚未經過同一輪重構。 |
 
@@ -83,7 +83,7 @@
 | Workflow | 責任 |
 | -------- | ---- |
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
-| `daily-radar.yml` | 收盤後呼叫 `/internal/daily-radar/run`，由後端自行完成 universe、selected-symbol 日頻 lending/full margin refresh、selected-symbol OHLCV backfill、Stage 1/2 scoring 與 persistence |
+| `daily-radar.yml` | 收盤後呼叫 `/internal/daily-radar/run`，由後端自行完成 universe、selected-symbol 試驗版 Daily AVWAP refresh、selected-symbol 日頻 lending/full margin refresh、selected-symbol OHLCV backfill、Stage 1/2 scoring 與 persistence |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `daily-radar-rule-review.yml` | 觸發 monthly rule governance report |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
@@ -92,7 +92,7 @@
 
 `shared_background_contexts` 是跨功能背景 evidence cache，不是交易決策覆寫層：
 
-- Daily Radar 主流程會先針對台股 selected symbols 刷新日頻 lending/full margin cache，再批次讀 cache；背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
+- Daily Radar 主流程會先針對台股 selected symbols 刷新試驗版 Daily AVWAP snapshot 與日頻 lending/full margin cache，再批次讀 cache；AVWAP 與背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
 - `/analyze` 與 `/analyze/position` 只把 shared context 附加到 response 作為 evidence/caveat/data quality trace，不放入 LangGraph initial state，也不觸發 weekly major holders、lending、full margin 的即時逐檔查詢。
 - Portfolio diagnosis 與 lifecycle review 以 read/reference 方式使用；lifecycle review 需用事件日期做 point-in-time filter，不能用未來資料改寫過去判斷。
 - missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。

@@ -32,7 +32,10 @@ from ai_stock_sentinel.phase1_avwap.projection import (
     read_phase1_position_states_for_portfolio,
 )
 from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
-from ai_stock_sentinel.phase1_avwap.service import refresh_phase1_avwap_snapshots
+from ai_stock_sentinel.phase1_avwap.service import (
+    refresh_phase1_avwap_snapshots,
+    refresh_phase1_avwap_snapshots_for_symbols,
+)
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_managed_universe
 
 
@@ -202,6 +205,33 @@ def test_refresh_phase1_avwap_snapshots_marks_missing_when_requested_date_row_is
     assert snapshot.missing_reason == "daily_price_row_missing_for_data_date"
     assert snapshot.payload["data_quality"]["missing_reason"] == "daily_price_row_missing_for_data_date"
     assert snapshot.payload["anchors"] == {}
+
+
+def test_refresh_phase1_avwap_snapshots_for_symbols_refreshes_daily_radar_selection(
+    db_session: Session,
+) -> None:
+    data_date = date(2026, 6, 5)
+    provider = FakeDailyPriceProvider()
+
+    result = refresh_phase1_avwap_snapshots_for_symbols(
+        db_session,
+        symbols=["2454.TW", "2454.tw", "2317.TW"],
+        data_date=data_date,
+        lookback_days=30,
+        provider=provider,
+    )
+
+    assert [item.symbol for item in result.universe] == ["2454.TW", "2317.TW"]
+    assert [item.sources for item in result.universe] == [["daily_radar_candidate"], ["daily_radar_candidate"]]
+    assert result.reused_symbols == []
+    assert result.fetched_symbols == ["2454.TW", "2317.TW"]
+    assert provider.calls == [
+        ("2454.TW", data_date - timedelta(days=30), data_date),
+        ("2317.TW", data_date - timedelta(days=30), data_date),
+    ]
+    rows = db_session.scalars(select(Phase1AvwapSnapshot).order_by(Phase1AvwapSnapshot.symbol)).all()
+    assert [row.symbol for row in rows] == ["2317.TW", "2454.TW"]
+    assert all(row.freshness == "fresh" for row in rows)
 
 
 def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_managed_symbol(

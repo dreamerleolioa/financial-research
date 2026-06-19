@@ -47,7 +47,7 @@ Phase 1 should be independently mergeable and useful even if Phase 2 and Phase 3
 4. Current-day holding risk alerts.
 5. Current-day overheated do-not-chase candidates.
 
-Phase 1 should run on a bounded managed universe only: active holdings, watchlist symbols, and Daily Radar selected candidates. It should not attempt whole-market per-symbol pulls on the FinMind free tier, and arbitrary Analyze symbols should not trigger on-demand FinMind historical backfill in the first release.
+Phase 1 should run on a bounded managed universe only: active holdings, watchlist symbols, and Daily Radar selected candidates. Daily Radar internal run refreshes selected-symbol snapshots after the selected universe is determined. It should not attempt whole-market per-symbol pulls on the FinMind free tier, and arbitrary Analyze symbols should not trigger on-demand FinMind historical backfill in the first release.
 
 Before Phase 1 relies on active holdings, remove the current hard 8-position active portfolio cap. Larger portfolios should be handled through quota-aware Phase 1 refresh, cache reuse, and explicit data-quality caveats, not by blocking users from tracking more holdings.
 

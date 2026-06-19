@@ -77,6 +77,11 @@ from ai_stock_sentinel.daily_radar.universe import (
     select_daily_radar_universe,
 )
 from ai_stock_sentinel.db.session import get_db
+from ai_stock_sentinel.phase1_avwap.provider import FinMindDailyPriceProvider
+from ai_stock_sentinel.phase1_avwap.service import (
+    DailyPriceProvider,
+    refresh_phase1_avwap_snapshots_for_symbols,
+)
 
 
 router = APIRouter(tags=["daily-radar"])
@@ -99,6 +104,10 @@ def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
 
 def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
     return DefaultBackgroundChipContextProvider()
+
+
+def get_phase1_avwap_daily_price_provider() -> DailyPriceProvider:
+    return FinMindDailyPriceProvider()
 
 
 @router.post(
@@ -157,6 +166,7 @@ def run_daily_radar_endpoint(
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
     market_context_provider: MarketIndexContextProvider = Depends(get_daily_radar_market_context_provider),
     background_context_provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
+    phase1_avwap_provider: DailyPriceProvider = Depends(get_phase1_avwap_daily_price_provider),
 ) -> DailyRadarRunTriggerResponse:
     failure_stage = "request_initialization"
     try:
@@ -179,6 +189,12 @@ def run_daily_radar_endpoint(
             )
 
         selected_symbols = [entry.symbol for entry in universe]
+        _refresh_phase1_avwap_for_daily_radar(
+            db,
+            symbols=selected_symbols,
+            run_date=run_date,
+            provider=phase1_avwap_provider,
+        )
         if _should_refresh_daily_run_chip_context(market):
             failure_stage = "daily_chip_context_update"
             chip_context_result = update_background_chip_context_cache(
@@ -251,6 +267,35 @@ def run_daily_radar_endpoint(
                 "error_type": exc.__class__.__name__,
             },
         ) from exc
+
+
+def _refresh_phase1_avwap_for_daily_radar(
+    db: Session,
+    *,
+    symbols: list[str],
+    run_date: date,
+    provider: DailyPriceProvider,
+) -> None:
+    try:
+        result = refresh_phase1_avwap_snapshots_for_symbols(
+            db,
+            symbols=symbols,
+            data_date=run_date,
+            provider=provider,
+        )
+        if result.missing_symbols:
+            logger.warning(
+                "[DailyRadar] Phase 1 AVWAP refresh completed with missing snapshots run_date=%s missing_symbols=%s",
+                run_date.isoformat(),
+                result.missing_symbols,
+            )
+    except Exception:
+        with suppress(Exception):
+            db.rollback()
+        logger.exception(
+            "[DailyRadar] Phase 1 AVWAP refresh failed; continuing with read-only missing trace run_date=%s",
+            run_date.isoformat(),
+        )
 
 
 @router.post(

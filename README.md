@@ -37,7 +37,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
 - `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入，並在列表內快速查看技術指標與複製摘要；它不代表進場、部位或交易紀錄。
 - `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。
-- `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
+- `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、刷新 selected-symbol 試驗版 Daily AVWAP snapshot、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `phase1_avwap`：試驗版 Daily AVWAP 觀察層，針對 active holdings、watchlist 與 Daily Radar selected candidates 建立日頻 AVWAP snapshot，並只透過既有 Analyze、Portfolio risk summary、Daily Radar response 顯示，不新增 public endpoint、不改 Daily Radar scoring。
 - `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
 
@@ -184,9 +184,9 @@ docs/
 
 Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages。後端正式執行環境由 Zeabur URL 提供給前端與 internal workflows。
 
-Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。後端會自行選出 multi-track universe（保留法人雙軌，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），對缺少資料的 selected symbols 做 yfinance OHLCV batch backfill，執行 Stage 1/2 rule-based scoring，並持久化 Daily Radar candidates。
+Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。此 workflow 會 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/run`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，request body 固定帶 `{ "market": "TW" }`。後端會自行選出 multi-track universe（保留法人雙軌，並加入本地 final `StockRawData` 可支撐的日頻技術 trigger tracks），針對 selected symbols 刷新試驗版 Daily AVWAP snapshot，對缺少資料的 selected symbols 做 yfinance OHLCV batch backfill，執行 Stage 1/2 rule-based scoring，並持久化 Daily Radar candidates。
 
-Daily Radar 的 live 資料載入有 request budget：法人 universe 目前使用 TWSE RWD fund reports `TWT38U` / `TWT44U` 的 report-level 查詢，不做逐檔法人 request；yfinance 只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，既有 `StockRawData` 會重用；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Daily Radar run 會先選出 selected universe，再針對這批台股 symbols 刷新日頻 `lending` / `full_margin` shared background context cache，接著重讀 `shared_background_contexts` 並把 labels 寫進 candidate snapshot；`weekly_major_holders` 維持週頻 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 更新 cache。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action、verdict、classification 或 lifecycle replay。
+Daily Radar 的 live 資料載入有 request budget：法人 universe 目前使用 TWSE RWD fund reports `TWT38U` / `TWT44U` 的 report-level 查詢，不做逐檔法人 request；FinMind `TaiwanStockPrice` 只針對 selected universe 刷新試驗版 Daily AVWAP snapshot，既有同日 fresh snapshot 會重用；yfinance 只對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，既有 `StockRawData` 會重用；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Daily Radar run 會先選出 selected universe，再針對這批台股 symbols 刷新試驗版 Daily AVWAP snapshot 與日頻 `lending` / `full_margin` shared background context cache，接著重讀 `shared_background_contexts` 並把 labels 寫進 candidate snapshot；`weekly_major_holders` 維持週頻 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 更新 cache。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action、verdict、classification 或 lifecycle replay。
 
 CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-architecture-spec.md` 的 workflow 地圖為準。
 
@@ -335,7 +335,7 @@ make run-api
 - `POST /analyze` — 新倉策略分析
 - `POST /analyze/position` — 持股操作建議
 - `POST /internal/fetch-raw-data` — 觸發原始資料預取（內部用）
-- `POST /internal/daily-radar/run`：執行 Daily Radar 自包含內部流程，包含 multi-track universe selection、selected-symbol OHLCV batch backfill、Stage 1/2 scoring 與 candidates persistence，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `POST /internal/daily-radar/run`：執行 Daily Radar 自包含內部流程，包含 multi-track universe selection、selected-symbol 試驗版 Daily AVWAP refresh、selected-symbol OHLCV batch backfill、Stage 1/2 scoring 與 candidates persistence，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `POST /internal/daily-radar/chip-context/update`：更新 shared background context cache，背景資料包含 weekly major holders、lending 與 full margin
 - `POST /internal/daily-radar/forward-validation/run`：執行 Daily Radar 成熟候選 forward validation，寫入可回放 validation result
 - `POST /internal/daily-radar/rule-review/monthly`：以 production validation result 產生月度 rule governance 報告
