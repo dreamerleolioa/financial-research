@@ -48,8 +48,9 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 2. 再讀 LangGraph：`graph/builder.py`、`graph/nodes.py`、`graph/state.py`
 3. 再讀資料來源：`data_sources/`
 4. 再讀 Daily Radar：`daily_radar/router.py`、`daily_radar/service.py`、`daily_radar/scoring.py`
-5. 再讀 Portfolio lifecycle：`portfolio/router.py`、`analysis/position_lifecycle.py`、`analysis/trade_review.py`
-6. 最後讀 DB model：`db/models.py`
+5. 再讀 Phase 1 AVWAP：`phase1_avwap/service.py`、`phase1_avwap/projection.py`、`phase1_avwap/calculator.py`
+6. 再讀 Portfolio lifecycle：`portfolio/router.py`、`analysis/position_lifecycle.py`、`analysis/trade_review.py`
+7. 最後讀 DB model：`db/models.py`
 
 | 路徑 | 責任 |
 | ---- | ---- |
@@ -60,6 +61,7 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 | `analysis/` | `/analyze` router、schemas、application use cases、cache/response assembly、LLM analyzer、news cleaner、quality gate、confidence scorer、technical metrics、strategy generator、position scorer、trade/lifecycle review |
 | `data_sources/` | yfinance、RSS、FinMind、institutional flow provider、fundamental provider |
 | `daily_radar/` | universe、raw data backfill、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance |
+| `phase1_avwap/` | managed-universe resolver、FinMind `TaiwanStockPrice` daily provider、日頻 AVWAP calculation、snapshot repository/service、Daily Radar selected-symbol refresh、Analyze/Portfolio/Daily Radar read-only projections |
 | `portfolio/` | portfolio CRUD、entry record contract、fees、risk summary、history router |
 | `watchlist/` | watchlist schemas、repository、application use cases、CRUD/reorder router |
 | `shared_context.py` | 讀取 shared background context 並轉成 evidence/caveat/data quality payload |
@@ -194,19 +196,30 @@ Daily Radar 是獨立產品表面，不是 `/analyze` 的批次版。
 
 ### 7.1 Internal run flow
 
-入口：`daily_radar/router.py` 的 `POST /internal/daily-radar/run`
+正式排程入口是 `daily_radar/router.py` 的分段 internal endpoints：
+
+- `POST /internal/daily-radar/prepare-universe`
+- `POST /internal/daily-radar/refresh-avwap`
+- `POST /internal/daily-radar/refresh-lending`
+- `POST /internal/daily-radar/refresh-full-margin`
+- `POST /internal/daily-radar/refresh-ohlcv`
+- `POST /internal/daily-radar/refresh-market-context`
+- `POST /internal/daily-radar/run-scoring`
+
+`POST /internal/daily-radar/run` 保留為一鍵手動相容入口；正式 GitHub Actions 用分段 workflow，避免免費 FinMind quota 在同一小時內被 AVWAP、lending、full margin 同時消耗。
 
 流程：
 
-1. 選 universe：`select_daily_radar_universe()`。
+1. `prepare-universe` 選 universe：`select_daily_radar_universe()`，保存 capped selected symbols 與 prepared step status。
    - same-day institutional leaders
    - recent accumulation/concentration leaders
    - local `StockRawData` 可支撐的日頻 technical trigger tracks
-2. 讀 selected symbols 的 shared background context cache。
-3. 對 selected symbols 補齊缺少的 OHLCV：`ensure_daily_radar_raw_rows()`。
-4. 建立 market context：`YFinanceMarketIndexContextProvider`。
-5. 呼叫 `run_daily_radar()`。
-6. 寫入 `daily_radar_runs` 與 `daily_radar_candidates`。
+2. `refresh-avwap` 對 selected symbols 更新試驗版 Daily AVWAP snapshot。
+3. `refresh-lending` / `refresh-full-margin` 對 selected symbols 更新 shared background context；同日 fresh cache 會重用。
+4. `refresh-ohlcv` 對 selected symbols 補齊缺少的 OHLCV：`ensure_daily_radar_raw_rows()`，並回寫 prepared universe 技術面 tracks。
+5. `refresh-market-context` 建立並保存 market context：`YFinanceMarketIndexContextProvider`。
+6. `run-scoring` 確認所有 refresh step 都是 `completed`，再呼叫 `run_daily_radar()`。
+7. 寫入 `daily_radar_runs` 與 `daily_radar_candidates`。
 
 ### 7.2 Scoring flow
 

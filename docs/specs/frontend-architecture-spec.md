@@ -69,6 +69,16 @@ TanStack Query 管理 server state：
 - `useDecisionContextStatusQuery()` -> `GET /portfolio/decision-context-status`
 - `useLifecyclePlanQuery(id)` -> `GET /portfolio/{id}/lifecycle-plan`
 
+`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C `phase1_current_day_lists` 在 Portfolio UI 分成兩個區塊顯示：
+
+- `holding_management_candidates`
+- `holding_risk_alerts`
+- `breakout_confirmation_candidates`
+- `pullback_observation_candidates`
+- `overheated_do_not_chase_candidates`
+
+Holding lists 顯示在 `試驗版今日觀察清單` 的持股區塊內，非持股 lists 顯示在獨立 `非持股觀察清單` 區塊。非持股清單只讀 watchlist / Daily Radar managed-universe projection，不得混入持股管理清單，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。
+
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 - `portfolioKeys.items()`
@@ -111,9 +121,18 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內 raw 技術指標快查。
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
 - Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。
+- 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
 股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。
+
+## Daily Radar Surface
+
+`DailyRadarPage` 是每日觀察清單，不是交易指令頁。列表使用後端已排序的 candidates；前端不得因試驗版 AVWAP trace 重新排序、重新分類或調整風險標籤。
+
+- Candidate list：顯示 symbol/name、bucket、repeat status、風險標籤、加入關注與單股分析 link。
+- Detail drawer：顯示觀察理由、背景脈絡、`input_snapshot.phase1_avwap_context` 的試驗版 AVWAP 脈絡、技術 trace 與資料日期。
+- 試驗版 AVWAP trace：只在 detail drawer 顯示 anchors、距離、資料日期、dataset、adjustment mode 與 missing snapshot 狀態；不得寫入 watchlist/portfolio，也不得改 Daily Radar scoring/ranking/bucket/matched rules。
 
 ## API Boundary Validation
 
@@ -124,7 +143,7 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
   - 目標：風險摘要、position risk、risk budget、data quality 的核心欄位
 - `frontend/src/lib/analysisSchemas.ts`
   - 驗證 `POST /analyze`
-  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors
+  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、Phase 1 `phase1_observation` trace
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 

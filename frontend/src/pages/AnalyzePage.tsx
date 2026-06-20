@@ -39,8 +39,6 @@ interface AddPortfolioForm {
   notes: string;
 }
 
-const MAX_PORTFOLIO_COUNT = 8;
-
 const SIGNAL_LABEL: Record<string, string> = {
   bullish: "看多",
   bearish: "看空",
@@ -264,7 +262,6 @@ export default function AnalyzePage() {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const [portfolioSymbols, setPortfolioSymbols] = useState<Set<string>>(new Set());
-  const [portfolioCount, setPortfolioCount] = useState(0);
   const [watchlistSymbols, setWatchlistSymbols] = useState<Set<string>>(new Set());
   const [watchlistLoading, setWatchlistLoading] = useState(false);
   const [watchlistStatus, setWatchlistStatus] = useState<"idle" | "success" | "error">("idle");
@@ -303,7 +300,6 @@ export default function AnalyzePage() {
     try {
       const data = await fetchPortfolioItems();
       setPortfolioSymbols(new Set(data.map((r) => r.symbol.trim().toUpperCase())));
-      setPortfolioCount(data.length);
     } catch {
       /* ignore */
     }
@@ -442,7 +438,6 @@ export default function AnalyzePage() {
   const normalizedAnalyzedSymbol = analyzedSymbol.trim().toUpperCase();
   const isTracked = portfolioSymbols.has(normalizedAnalyzedSymbol);
   const isWatchlisted = watchlistSymbols.has(normalizedAnalyzedSymbol);
-  const portfolioFull = portfolioCount >= MAX_PORTFOLIO_COUNT;
   const analyzedSymbolName = getAnalyzeSymbolName(result, snapshot);
   const analyzedDisplayName = analyzedSymbolName ? `${analyzedSymbolName} ${analyzedSymbol}` : analyzedSymbol;
   const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
@@ -575,8 +570,8 @@ export default function AnalyzePage() {
                   setAddForm(createInitialAddPortfolioForm());
                   setShowAddModal(true);
                 }}
-                disabled={isTracked || portfolioFull}
-                title={isTracked ? "已追蹤" : portfolioFull ? `最多追蹤 ${MAX_PORTFOLIO_COUNT} 筆持股` : "加入我的持股"}
+                disabled={isTracked}
+                title={isTracked ? "已追蹤" : "加入我的持股"}
                 className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-600 dark:text-indigo-400 dark:hover:bg-indigo-950"
               >
                 {isTracked ? "已追蹤" : "加入我的持股"}

@@ -111,6 +111,7 @@ class AnalyzeResponse(BaseModel):
     fundamental_data: dict[str, Any] | None = None
     position_analysis: PositionAnalysis | None = None
     shared_context: dict[str, Any] | None = None
+    phase1_observation: dict[str, Any] | None = None
     technical_indicators: TechnicalIndicators | None = None
     is_final: bool = True
     intraday_disclaimer: str | None = None

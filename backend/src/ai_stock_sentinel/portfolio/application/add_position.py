@@ -14,11 +14,7 @@ from ai_stock_sentinel.portfolio.application.events import (
     entry_reason_code,
     entry_record_has_lifecycle_plan,
 )
-from ai_stock_sentinel.portfolio.repository import count_active_portfolios
 from ai_stock_sentinel.portfolio.schemas import PortfolioCreateRequest
-
-
-PORTFOLIO_LIMIT = 8
 
 
 def create_portfolio(
@@ -27,16 +23,7 @@ def create_portfolio(
     user_id: int,
     payload: PortfolioCreateRequest,
     symbol_exists_checker: Callable[[str], bool],
-    portfolio_limit: int = PORTFOLIO_LIMIT,
 ) -> UserPortfolio:
-    active_count = count_active_portfolios(db, user_id=user_id)
-
-    if active_count >= portfolio_limit:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"最多只能追蹤 {portfolio_limit} 筆持股",
-        )
-
     if not symbol_exists_checker(payload.symbol):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

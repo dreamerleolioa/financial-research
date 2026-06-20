@@ -8,7 +8,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
+from ai_stock_sentinel.db.models import (
+    DailyRadarCandidate,
+    DailyRadarPreparedRun,
+    DailyRadarRun,
+    SharedBackgroundContext,
+    StockRawData,
+)
 
 
 PUBLIC_RUN_STATUSES = ("completed", "stale_data")
@@ -62,6 +68,95 @@ def update_daily_radar_run(
     session.add(run)
     session.flush()
     return run
+
+
+def upsert_daily_radar_prepared_run(
+    session: Session,
+    *,
+    run_date: date,
+    market: str,
+    selected_symbols: list[str],
+    universe: list[dict[str, Any]],
+    status: str = "prepared",
+    market_context: Mapping[str, Any] | None = None,
+    step_statuses: Mapping[str, Any] | None = None,
+    errors: list[dict[str, Any]] | None = None,
+) -> DailyRadarPreparedRun:
+    prepared = get_daily_radar_prepared_run(session, run_date=run_date, market=market)
+    if prepared is None:
+        prepared = DailyRadarPreparedRun(
+            run_date=run_date,
+            market=market,
+            selected_symbols=list(selected_symbols),
+            universe=[dict(entry) for entry in universe],
+            symbol_count=len(selected_symbols),
+            status=status,
+            market_context=dict(market_context) if market_context is not None else None,
+            step_statuses=dict(step_statuses or {}),
+            errors=list(errors or []),
+        )
+    else:
+        prepared.selected_symbols = list(selected_symbols)
+        prepared.universe = [dict(entry) for entry in universe]
+        prepared.symbol_count = len(selected_symbols)
+        prepared.status = status
+        prepared.market_context = dict(market_context) if market_context is not None else None
+        prepared.step_statuses = dict(step_statuses or {})
+        if errors is not None:
+            prepared.errors = list(errors)
+    session.add(prepared)
+    session.flush()
+    return prepared
+
+
+def update_daily_radar_prepared_market_context(
+    session: Session,
+    prepared: DailyRadarPreparedRun,
+    *,
+    market_context: Mapping[str, Any],
+    status: str = "market_context_ready",
+) -> DailyRadarPreparedRun:
+    prepared.market_context = dict(market_context)
+    prepared.status = status
+    session.add(prepared)
+    session.flush()
+    return prepared
+
+
+def update_daily_radar_prepared_step_status(
+    session: Session,
+    prepared: DailyRadarPreparedRun,
+    *,
+    step: str,
+    status: str,
+    details: Mapping[str, Any] | None = None,
+) -> DailyRadarPreparedRun:
+    step_statuses = dict(prepared.step_statuses or {})
+    step_statuses[step] = {
+        "status": status,
+        "updated_at": _utc_now().isoformat(),
+        **dict(details or {}),
+    }
+    prepared.step_statuses = step_statuses
+    session.add(prepared)
+    session.flush()
+    return prepared
+
+
+def get_daily_radar_prepared_run(
+    session: Session,
+    *,
+    run_date: date,
+    market: str,
+) -> DailyRadarPreparedRun | None:
+    return session.execute(
+        select(DailyRadarPreparedRun)
+        .where(
+            DailyRadarPreparedRun.run_date == run_date,
+            DailyRadarPreparedRun.market == market,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def replace_run_candidates(
@@ -600,5 +695,6 @@ __all__ = [
     "get_symbol_candidate_history",
     "replace_run_candidates",
     "upsert_shared_background_context",
+    "update_daily_radar_prepared_step_status",
     "update_daily_radar_run",
 ]

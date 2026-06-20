@@ -26,6 +26,7 @@ from ai_stock_sentinel.daily_radar.repository import (
 from ai_stock_sentinel.daily_radar.scoring import score_daily_radar_record
 from ai_stock_sentinel.db.models import DailyRadarRun
 from ai_stock_sentinel.db.session import _get_session_local
+from ai_stock_sentinel.phase1_avwap.projection import read_phase1_avwap_contexts_for_daily_radar
 
 
 DEFAULT_CANDIDATE_LIMIT = 100
@@ -130,6 +131,11 @@ def _run_daily_radar_with_session(
         scored_candidates = _with_background_contexts(
             scored_candidates,
             background_contexts_by_symbol=background_contexts_by_symbol,
+        )
+        scored_candidates = _with_phase1_avwap_contexts(
+            session,
+            scored_candidates,
+            run_date=run_date,
         )
         history = list(history_candidates) if history_candidates is not None else _history_from_repository_or_fixture(
             session,
@@ -253,6 +259,31 @@ def _with_background_contexts(
         if context_dates:
             data_dates["background_context"] = max(context_dates)
         next_candidate["data_dates"] = data_dates
+        enriched.append(next_candidate)
+    return enriched
+
+
+def _with_phase1_avwap_contexts(
+    session: Session,
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    run_date: date,
+) -> list[dict[str, Any]]:
+    candidate_rows = [dict(candidate) for candidate in candidates]
+    symbols = [str(candidate.get("symbol") or "") for candidate in candidate_rows]
+    contexts = read_phase1_avwap_contexts_for_daily_radar(
+        session,
+        symbols=symbols,
+        data_date=run_date,
+    )
+
+    enriched: list[dict[str, Any]] = []
+    for candidate in candidate_rows:
+        symbol = str(candidate.get("symbol") or "")
+        next_candidate = dict(candidate)
+        input_snapshot = dict(_mapping(next_candidate.get("input_snapshot")))
+        input_snapshot["phase1_avwap_context"] = contexts.get(symbol.upper())
+        next_candidate["input_snapshot"] = input_snapshot
         enriched.append(next_candidate)
     return enriched
 

@@ -902,3 +902,39 @@ def test_chip_context_workflow_uses_internal_endpoint_and_existing_secrets() -> 
     assert ".status == \"completed\"" in text
     assert "sk-" not in text
     assert "token=" not in text.lower()
+
+
+def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() -> None:
+    workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
+    text = workflow.read_text(encoding="utf-8")
+
+    assert "GitHub cron uses UTC. Taiwan time = UTC+8." in text
+    assert 'cron: "0 10 * * 1-5"' in text  # 18:00 TWT prepare universe
+    assert 'cron: "0 11 * * 1-5"' in text  # 19:00 TWT AVWAP
+    assert 'cron: "0 12 * * 1-5"' in text  # 20:00 TWT lending
+    assert 'cron: "30 13 * * 1-5"' in text  # 21:30 TWT full margin
+    assert 'cron: "30 14 * * 1-5"' in text  # 22:30 TWT OHLCV
+    assert 'cron: "30 15 * * 1-5"' in text  # 23:30 TWT market context
+    assert 'cron: "30 16 * * 1-5"' in text  # 00:30 TWT next day scoring
+    assert "intended Taiwan trading date" in text
+    assert "run_date:" in text
+    assert "DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}" in text
+    assert text.count("DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}") == 7
+    assert text.count("scheduled_run_date()") == 7
+    assert text.count('run_date="$(scheduled_run_date)"') == 7
+    assert text.count('elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]') == 7
+    assert 'date -u -d "1 day ago" +%F' in text
+    assert 'run_date="$(TZ=Asia/Taipei date +%F)"' in text
+    assert "daily_radar_payload=" in text
+    assert '\\"run_date\\":\\"${run_date}\\"' in text
+    assert "/internal/daily-radar/prepare-universe" in text
+    assert "/internal/daily-radar/refresh-avwap" in text
+    assert "/internal/daily-radar/refresh-lending" in text
+    assert "/internal/daily-radar/refresh-full-margin" in text
+    assert "/internal/daily-radar/refresh-ohlcv" in text
+    assert "/internal/daily-radar/refresh-market-context" in text
+    assert "/internal/daily-radar/run-scoring" in text
+    assert "date -d 'yesterday'" not in text
+    assert "DAILY_RADAR_PAYLOAD" not in text
+    assert '--data "${daily_radar_payload}"' in text
+    assert "DAILY_RADAR_ENDPOINT: /internal/daily-radar/run\n" not in text

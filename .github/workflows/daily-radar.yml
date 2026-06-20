@@ -2,63 +2,450 @@ name: Daily Radar
 
 on:
   workflow_dispatch:
+    inputs:
+      step:
+        description: "Daily Radar pipeline step to run."
+        required: true
+        default: prepare-universe
+        type: choice
+        options:
+          - prepare-universe
+          - refresh-avwap
+          - refresh-lending
+          - refresh-full-margin
+          - refresh-ohlcv
+          - refresh-market-context
+          - run-scoring
+      run_date:
+        description: "Optional Daily Radar run_date in Asia/Taipei calendar, YYYY-MM-DD. Scheduled runs compute this automatically."
+        required: false
+        default: ""
+        type: string
   schedule:
-    # 台灣時間週一至週五 20:30，收盤與資料更新後執行
-    - cron: "30 12 * * 1-5"
+    # GitHub cron uses UTC. Taiwan time = UTC+8.
+    # Scheduled jobs use the UTC cron date as the intended Taiwan trading date, so delayed starts after Taiwan midnight still target the original trading date.
+    # 台灣時間週一至週五 18:00，準備 selected universe。
+    - cron: "0 10 * * 1-5"
+    # 台灣時間週一至週五 19:00，刷新試驗版 Daily AVWAP。
+    - cron: "0 11 * * 1-5"
+    # 台灣時間週一至週五 20:00，刷新 lending。
+    - cron: "0 12 * * 1-5"
+    # 台灣時間週一至週五 21:30，等待 FinMind margin 21:00 更新後刷新 full margin。
+    - cron: "30 13 * * 1-5"
+    # 台灣時間週一至週五 22:30，刷新 selected-symbol OHLCV。
+    - cron: "30 14 * * 1-5"
+    # 台灣時間週一至週五 23:30，刷新 market context。
+    - cron: "30 15 * * 1-5"
+    # 台灣時間週二至週六 00:30，對前一個台北交易日 run_date 做 scoring。
+    - cron: "30 16 * * 1-5"
 
 permissions:
   contents: read
 
 jobs:
-  # ── Zeabur Daily Radar 排程 ───────────────────────────────────
-  run-daily-radar:
-    name: Run Daily Radar on Zeabur
+  prepare-universe:
+    name: Prepare Daily Radar universe
     runs-on: ubuntu-latest
-
+    if: github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe')
     steps:
-      - name: Trigger Daily Radar
+      - name: Trigger prepare-universe
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/prepare-universe
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
           set -euo pipefail
-
-          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/run"
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\",\"max_symbols\":250}"
+          echo "Daily Radar prepare-universe run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "$endpoint" \
             -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data '{"market":"TW"}')"
-
+            --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
-
-          if jq -e . "$response_file" >/dev/null 2>&1; then
-            jq -r '
-              "run_id: \(.run_id // "n/a")",
-              "status: \(.status // "n/a")",
-              "universe_count: \(.universe_count // "n/a")",
-              "prefilter_count: \(.prefilter_count // "n/a")",
-              "candidate_count: \(.candidate_count // "n/a")",
-              "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
-              "detail_code: \(.detail.code // "n/a")",
-              "detail_stage: \(.detail.stage // "n/a")",
-              "detail_error_type: \(.detail.error_type // "n/a")",
-              "detail_message: \(.detail.message // .detail // "n/a")"
-            ' "$response_file"
-          else
-            echo "Response summary: non-JSON response"
-            python3 - <<'PY' "$response_file"
-          import sys
-          from pathlib import Path
-
-          body = Path(sys.argv[1]).read_text(errors="replace").replace("\n", " ")
-          print(f"Response preview: {body[:300]}")
-          PY
+          jq -r '
+            "status: \(.status // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "market: \(.market // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "prepared"' "$response_file" >/dev/null; then
+            exit 1
           fi
 
+  refresh-avwap:
+    name: Refresh Daily Radar AVWAP
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 11 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-avwap')
+    steps:
+      - name: Trigger refresh-avwap
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-avwap
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar refresh-avwap run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "missing_symbols_count: \(if (.missing_symbols | type) == "array" then (.missing_symbols | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
           if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            echo "Daily Radar trigger failed with HTTP status ${http_status}"
+            cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
+
+  refresh-lending:
+    name: Refresh Daily Radar lending
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 12 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-lending')
+    steps:
+      - name: Trigger refresh-lending
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-lending
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar refresh-lending run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
+
+  refresh-full-margin:
+    name: Refresh Daily Radar full margin
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 13 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-full-margin')
+    steps:
+      - name: Trigger refresh-full-margin
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-full-margin
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar refresh-full-margin run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
+
+  refresh-ohlcv:
+    name: Refresh Daily Radar OHLCV
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv')
+    steps:
+      - name: Trigger refresh-ohlcv
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-ohlcv
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar refresh-ohlcv run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
+
+  refresh-market-context:
+    name: Refresh Daily Radar market context
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-context')
+    steps:
+      - name: Trigger refresh-market-context
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-market-context
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar refresh-market-context run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
+
+  run-scoring:
+    name: Run Daily Radar scoring
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring')
+    steps:
+      - name: Trigger run-scoring
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/run-scoring
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar scoring run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          jq -r '
+            "run_id: \(.run_id // "n/a")",
+            "status: \(.status // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "universe_count: \(.universe_count // "n/a")",
+            "prefilter_count: \(.prefilter_count // "n/a")",
+            "candidate_count: \(.candidate_count // "n/a")",
+            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
             exit 1
           fi

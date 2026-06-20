@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time as _time
+from datetime import date, datetime, time as _time
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, text
@@ -49,11 +48,13 @@ from ai_stock_sentinel.analysis.schemas import (
     TechnicalIndicators,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.clock import TAIPEI_TZ, today_taipei
 from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
 from ai_stock_sentinel.db.models import StockAnalysisCache, StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import get_db
+from ai_stock_sentinel.phase1_avwap.projection import read_phase1_observation_for_analyze as _read_phase1_observation_for_analyze
 from ai_stock_sentinel.services.history_loader import (
     backfill_yesterday_indicators,
     load_yesterday_context,
@@ -69,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["analysis"])
 
-_TZ_TAIPEI = ZoneInfo("Asia/Taipei")
+_TZ_TAIPEI = TAIPEI_TZ
 
 
 def get_analysis_cache(db: Session, symbol: str, analysis_type: str = "general") -> StockAnalysisCache | None:
@@ -321,6 +322,47 @@ def _with_shared_context(
     return response
 
 
+def _with_phase1_observation(
+    response: AnalyzeResponse,
+    db: Session,
+    *,
+    user_id: int,
+    symbol: str,
+) -> AnalyzeResponse:
+    response.phase1_observation = _read_phase1_observation_for_analyze(
+        db,
+        user_id=user_id,
+        symbol=symbol,
+        data_date=_today_taipei(),
+    )
+    return response
+
+
+def _with_analyze_response_contexts(
+    response: AnalyzeResponse,
+    db: Session,
+    *,
+    user_id: int,
+    symbol: str,
+) -> AnalyzeResponse:
+    response = _with_shared_context(
+        response,
+        db,
+        symbol=symbol,
+        consumer=SHARED_CONTEXT_CONSUMER_ANALYZE,
+    )
+    return _with_phase1_observation(
+        response,
+        db,
+        user_id=user_id,
+        symbol=symbol,
+    )
+
+
+def _today_taipei() -> date:
+    return today_taipei()
+
+
 def _build_graph_singleton():
     return build_graph_singleton()
 
@@ -368,11 +410,11 @@ def analyze(
             hit = _handle_cache_hit(cache, now_time)
             if hit:
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-                return _with_shared_context(
+                return _with_analyze_response_contexts(
                     _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result),
                     db,
+                    user_id=current_user.id,
                     symbol=payload.symbol,
-                    consumer=SHARED_CONTEXT_CONSUMER_ANALYZE,
                 )
 
     raw_cache = None
@@ -453,11 +495,11 @@ def analyze(
     response = _response
     response.is_final = is_final
     response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
-    return _with_shared_context(
+    return _with_analyze_response_contexts(
         response,
         db,
+        user_id=current_user.id,
         symbol=payload.symbol,
-        consumer=SHARED_CONTEXT_CONSUMER_ANALYZE,
     )
 
 

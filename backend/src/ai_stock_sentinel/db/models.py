@@ -413,6 +413,40 @@ class StockAnalysisCache(Base):
     updated_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class Phase1AvwapSnapshot(Base):
+    __tablename__ = "phase1_avwap_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "data_date",
+            "dataset",
+            "adjustment_mode",
+            name="uq_phase1_avwap_symbol_date_dataset_mode",
+        ),
+        CheckConstraint(
+            "freshness IN ('fresh', 'stale', 'missing', 'unknown')",
+            name="ck_phase1_avwap_snapshot_freshness",
+        ),
+        Index("idx_phase1_avwap_snapshots_symbol", "symbol"),
+        Index("idx_phase1_avwap_snapshots_data_date", "data_date"),
+        Index("idx_phase1_avwap_snapshots_freshness", "freshness"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    data_date: Mapped[date] = mapped_column(Date, nullable=False)
+    dataset: Mapped[str] = mapped_column(String(50), nullable=False, default="TaiwanStockPrice", server_default="TaiwanStockPrice")
+    adjustment_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="unadjusted", server_default="unadjusted")
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False, default="finmind", server_default="finmind")
+    source_granularity: Mapped[str] = mapped_column(String(20), nullable=False, default="daily", server_default="daily")
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    freshness: Mapped[str] = mapped_column(String(20), nullable=False, default="fresh", server_default="fresh")
+    missing_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
 class BacktestRun(Base):
     __tablename__ = "backtest_run"
 
@@ -481,6 +515,28 @@ class DailyRadarRun(Base):
     candidates: Mapped[list["DailyRadarCandidate"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+
+
+class DailyRadarPreparedRun(Base):
+    __tablename__ = "daily_radar_prepared_runs"
+    __table_args__ = (
+        UniqueConstraint("run_date", "market", name="uq_daily_radar_prepared_run_date_market"),
+        Index("idx_daily_radar_prepared_runs_run_date", "run_date"),
+        Index("idx_daily_radar_prepared_runs_market", "market"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="prepared", server_default="prepared")
+    selected_symbols: Mapped[list] = mapped_column(JSONB, nullable=False)
+    universe: Mapped[list] = mapped_column(JSONB, nullable=False)
+    symbol_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    market_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    step_statuses: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'"))
+    errors: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class DailyRadarCandidate(Base):

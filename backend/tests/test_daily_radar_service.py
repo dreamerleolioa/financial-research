@@ -12,11 +12,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
+from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, Phase1AvwapSnapshot
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_fixture_records
 from ai_stock_sentinel.daily_radar import service as service_module
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
+from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
 
 
 @compiles(JSONB, "sqlite")
@@ -37,7 +38,7 @@ def db_session() -> Session:
 
     Base.metadata.create_all(
         engine,
-        tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__],
+        tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__, Phase1AvwapSnapshot.__table__],
     )
     with Session(engine) as session:
         yield session
@@ -303,6 +304,73 @@ def test_run_daily_radar_attaches_background_context_without_changing_score_or_b
         }
     ]
     assert with_background.data_dates["background_context"] == "2026-05-24"
+
+
+def test_run_daily_radar_attaches_phase1_avwap_context_without_changing_score_or_bucket(
+    db_session: Session,
+) -> None:
+    record = deepcopy(_joined_record("2330.TW"))
+    run_date = date(2026, 5, 29)
+
+    baseline_run = run_daily_radar(
+        run_date,
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+    )
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=run_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": run_date.isoformat(),
+            "dataset": "TaiwanStockPrice",
+            "adjustment_mode": "unadjusted",
+            "anchors": {
+                "breakout_20d": {
+                    "available": True,
+                    "anchor_date": "2026-05-29",
+                    "anchor_reason": "breakout_20d_high",
+                    "avwap": 915.25,
+                    "distance_to_avwap_pct": 2.5,
+                    "source_granularity": "daily",
+                    "estimated": False,
+                }
+            },
+            "data_quality": {"estimated": False, "rows_used": 60},
+        },
+        freshness="fresh",
+    )
+    with_phase1_run = run_daily_radar(
+        run_date,
+        "TW",
+        session=db_session,
+        records=[record],
+        market_context={"market": {"regime": "constructive"}, "data_dates": {"market_index": "2026-05-29"}},
+    )
+    db_session.commit()
+
+    baseline = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == baseline_run.id).one()
+    with_phase1 = db_session.query(DailyRadarCandidate).filter(DailyRadarCandidate.run_id == with_phase1_run.id).one()
+
+    assert with_phase1.observation_score == baseline.observation_score
+    assert with_phase1.primary_bucket == baseline.primary_bucket
+    assert with_phase1.secondary_buckets == baseline.secondary_buckets
+    assert with_phase1.risk_labels == baseline.risk_labels
+
+    context = with_phase1.input_snapshot["phase1_avwap_context"]
+    assert context["freshness"] == "fresh"
+    assert context["source"] == {
+        "provider": "finmind",
+        "dataset": "TaiwanStockPrice",
+        "adjustment_mode": "unadjusted",
+    }
+    assert context["anchors"]["breakout_20d"]["avwap"] == 915.25
+    assert context["applicable_consumers"] == ["daily_radar"]
+    assert context["data_quality"]["blocking"] is False
+    assert "phase1_avwap" not in with_phase1.data_dates
 
 
 def test_run_daily_radar_ranking_is_unchanged_when_background_context_is_removed(db_session: Session) -> None:

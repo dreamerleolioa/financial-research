@@ -139,6 +139,39 @@ def select_daily_radar_universe(
     return [replace(entry, rank=index + 1) for index, entry in enumerate(entries)]
 
 
+def refresh_daily_radar_universe_technical_tracks(
+    universe: Iterable[DailyRadarUniverseEntry],
+    technical_records: Iterable[Any] | None,
+) -> list[DailyRadarUniverseEntry]:
+    entries = [_entry_without_technical_tracks(entry) for entry in universe]
+    indexes_by_symbol = {entry.symbol: index for index, entry in enumerate(entries)}
+    technical_metrics_by_symbol = _technical_track_metrics_by_symbol(technical_records)
+    for track in TECHNICAL_TRIGGER_TRACKS:
+        trigger_rows = _ranked_technical_trigger_rows(
+            track,
+            technical_metrics_by_symbol,
+            track_limit=len(entries) or 1,
+        )
+        _merge_technical_rows(entries, indexes_by_symbol, rows=trigger_rows)
+    _attach_missing_technical_trace(entries, technical_metrics_by_symbol)
+    return [replace(entry, rank=index + 1) for index, entry in enumerate(entries)]
+
+
+def _entry_without_technical_tracks(entry: DailyRadarUniverseEntry) -> DailyRadarUniverseEntry:
+    retained_tracks = tuple(track for track in entry.tracks if track not in TECHNICAL_TRIGGER_TRACKS)
+    retained_metrics = {
+        track: dict(metrics)
+        for track, metrics in entry.track_metrics.items()
+        if track not in TECHNICAL_TRIGGER_TRACKS
+    }
+    return replace(
+        entry,
+        primary_track=retained_tracks[0] if retained_tracks else entry.primary_track,
+        tracks=retained_tracks,
+        track_metrics=retained_metrics,
+    )
+
+
 def _merge_institutional_rows(
     entries: list[DailyRadarUniverseEntry],
     indexes_by_symbol: dict[str, int],
@@ -510,6 +543,7 @@ __all__ = [
     "InstitutionalLeaderRow",
     "TECHNICAL_TRIGGER_TRACKS",
     "TechnicalTriggerRow",
+    "refresh_daily_radar_universe_technical_tracks",
     "select_daily_radar_universe",
     "select_dual_track_universe",
 ]

@@ -14,10 +14,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.portfolio.application import get_risk_summary as portfolio_risk_summary_app
 from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.db.models import (
+    DailyRadarCandidate,
+    DailyRadarRun,
+    Phase1AvwapSnapshot,
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
@@ -25,6 +29,7 @@ from ai_stock_sentinel.db.models import (
     StockRawData,
     TradeReview,
     UserPortfolio,
+    UserWatchlist,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.user_models.user import User
@@ -35,15 +40,11 @@ def _compile_jsonb_sqlite(_type, compiler, **kw):
     return "JSON"
 
 
-def _make_client(active_count: int) -> TestClient:
+def _make_client() -> TestClient:
     mock_user = MagicMock()
     mock_user.id = 1
 
-    mock_result = MagicMock()
-    mock_result.scalar.return_value = active_count
-
     mock_db = MagicMock()
-    mock_db.execute.return_value = mock_result
 
     app = api.app
     app.dependency_overrides[get_current_user] = lambda: mock_user
@@ -51,9 +52,10 @@ def _make_client(active_count: int) -> TestClient:
     return TestClient(app)
 
 
-def test_add_portfolio_success():
-    """active_count < 8 時應成功建立持倉，回傳 201。"""
-    client = _make_client(active_count=7)
+def test_add_portfolio_success(monkeypatch: pytest.MonkeyPatch):
+    """新增持倉應成功建立持倉，回傳 201。"""
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
         "entry_price": 900.0,
@@ -63,8 +65,9 @@ def test_add_portfolio_success():
     assert resp.status_code == 201
 
 
-def test_add_portfolio_assigns_position_group_id_uuid():
-    client = _make_client(active_count=7)
+def test_add_portfolio_assigns_position_group_id_uuid(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
         "entry_price": 900.0,
@@ -78,22 +81,39 @@ def test_add_portfolio_assigns_position_group_id_uuid():
     assert uuid.UUID(entry.position_group_id).version == 4
 
 
-def test_add_portfolio_rejects_when_limit_reached():
-    """active_count >= 8 時應回傳 422，且 detail 含 '8'。"""
-    client = _make_client(active_count=8)
+def test_add_portfolio_allows_more_than_eight_active_holdings(monkeypatch: pytest.MonkeyPatch):
+    """active 持股已達 8 筆時仍可新增持倉。"""
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
     resp = client.post("/portfolio", json={
         "symbol": "2454.TW",
         "entry_price": 800.0,
         "entry_date": "2026-01-01",
         "quantity": 50,
     })
-    assert resp.status_code == 422
-    assert "8" in resp.json()["detail"]
+    assert resp.status_code == 201
+    mock_db = api.app.dependency_overrides[get_db]()
+    mock_db.execute.assert_not_called()
+
+
+def test_add_portfolio_rejects_invalid_symbol(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: False)
+    client = _make_client()
+
+    resp = client.post("/portfolio", json={
+        "symbol": "9999.TW",
+        "entry_price": 800.0,
+        "entry_date": "2026-01-01",
+        "quantity": 50,
+    })
+
+    assert resp.status_code == 404
+    assert "查詢目標不存在" in resp.json()["detail"]
 
 
 @pytest.mark.parametrize("entry_price", [0, -1])
 def test_add_portfolio_rejects_non_positive_entry_price(entry_price):
-    client = _make_client(active_count=7)
+    client = _make_client()
 
     resp = client.post("/portfolio", json={
         "symbol": "2330.TW",
@@ -606,9 +626,13 @@ def portfolio_db_session() -> Session:
         tables=[
             User.__table__,
             UserPortfolio.__table__,
+            UserWatchlist.__table__,
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
             PositionEvent.__table__,
             PositionLifecyclePlan.__table__,
             PositionLifecycleReview.__table__,
+            Phase1AvwapSnapshot.__table__,
             TradeReview.__table__,
             StockRawData.__table__,
             SharedBackgroundContext.__table__,
@@ -820,9 +844,12 @@ def test_decision_context_status_attaches_shared_context_without_portfolio_actio
 
 
 def test_portfolio_risk_summary_reads_active_user_positions_only(
+    monkeypatch: pytest.MonkeyPatch,
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
+    summary_date = date(2026, 6, 20)
+    monkeypatch.setattr(portfolio_risk_summary_app, "today_taipei", lambda: summary_date)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
     portfolio_db_session.add(UserPortfolio(
@@ -869,13 +896,62 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     ))
     portfolio_db_session.add(StockRawData(
         symbol="2330.TW",
-        record_date=date.today(),
+        record_date=summary_date,
         technical={"close_price": 120},
         raw_data_is_final=True,
     ))
+    portfolio_db_session.add(Phase1AvwapSnapshot(
+        symbol="2330.TW",
+        data_date=summary_date,
+        dataset="TaiwanStockPrice",
+        adjustment_mode="unadjusted",
+        source_provider="finmind",
+        source_granularity="daily",
+        is_final=True,
+        freshness="fresh",
+        missing_reason=None,
+        payload={
+            "symbol": "2330.TW",
+            "ohlcv": {"close": 120},
+            "bars": [
+                {
+                    "date": "2026-06-01",
+                    "open": 115,
+                    "high": 116,
+                    "low": 114,
+                    "close": 115,
+                    "volume": 100,
+                    "amount": 11500,
+                    "estimated_amount": False,
+                },
+                {
+                    "date": summary_date.isoformat(),
+                    "open": 120,
+                    "high": 121,
+                    "low": 119,
+                    "close": 120,
+                    "volume": 100,
+                    "amount": 11500,
+                    "estimated_amount": False,
+                },
+            ],
+            "anchors": {
+                "swing_low_60d": {
+                    "available": True,
+                    "anchor_date": "2026-06-01",
+                    "anchor_reason": "swing_low_60d",
+                    "avwap": 115,
+                    "distance_to_avwap_pct": 4.3478,
+                    "source_granularity": "daily",
+                    "estimated": False,
+                },
+            },
+            "data_quality": {"estimated": False, "rows_used": 12},
+        },
+    ))
     portfolio_db_session.add(StockRawData(
         symbol="2317.TW",
-        record_date=date.today(),
+        record_date=summary_date,
         technical={"close_price": 60},
         raw_data_is_final=True,
     ))
@@ -890,6 +966,11 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     assert data["total_at_risk"] == 250
     assert [row["symbol"] for row in data["position_risks"]] == ["2330.TW"]
     assert [row["name"] for row in data["position_risks"]] == ["台積電"]
+    phase1_state = data["position_risks"][0]["phase1_position_state"]
+    assert phase1_state["state"] == "hold"
+    assert phase1_state["label"] == "續抱"
+    assert phase1_state["display_anchor"]["type"] == "entry"
+    assert phase1_state["data_quality"]["blocking"] is False
     assert "recommended_action" not in data
     assert "portfolio_action" not in data
     assert portfolio_db_session.query(PositionEvent).count() == 0
@@ -1507,6 +1588,40 @@ def test_add_portfolio_persists_initial_entry_event_and_response_shape(
     assert float(event.price) == 900.0
     assert float(event.fees) == 0.0
     assert float(event.taxes) == 0.0
+
+
+def test_add_portfolio_allows_ninth_active_holding(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    for index in range(8):
+        portfolio_db_session.add(UserPortfolio(
+            user_id=1,
+            symbol=f"99{index:02d}.TW",
+            entry_price=100 + index,
+            quantity=100,
+            entry_date=date(2026, 1, 1),
+        ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio", json={
+        "symbol": "2454.TW",
+        "entry_price": 800.0,
+        "entry_date": "2026-01-01",
+        "quantity": 50,
+    })
+
+    assert resp.status_code == 201
+    active_rows = portfolio_db_session.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == 1,
+            UserPortfolio.is_active == True,
+        )
+    ).scalars().all()
+    assert len(active_rows) == 9
 
 
 def test_add_portfolio_with_entry_record_persists_event_time_context(

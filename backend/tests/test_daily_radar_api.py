@@ -19,8 +19,16 @@ from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPa
 from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
-from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, SharedBackgroundContext, StockRawData
+from ai_stock_sentinel.db.models import (
+    DailyRadarCandidate,
+    DailyRadarPreparedRun,
+    DailyRadarRun,
+    Phase1AvwapSnapshot,
+    SharedBackgroundContext,
+    StockRawData,
+)
 from ai_stock_sentinel.db.session import Base, get_db
+from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
 
 
 @compiles(JSONB, "sqlite")
@@ -125,6 +133,28 @@ class FakeBatchTechnicalFetcher:
         return {symbol: self.payloads.get(symbol) or _technical_payload(symbol, run_date) for symbol in symbols}
 
 
+class FakePhase1AvwapDailyPriceProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, date, date]] = []
+
+    def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
+        self.calls.append((symbol, start_date, end_date))
+        return [
+            DailyPriceBar(date(2026, 5, 27), 900, 910, 890, 905, 1000, 905000),
+            DailyPriceBar(date(2026, 5, 28), 906, 920, 900, 918, 1000, 918000),
+            DailyPriceBar(end_date, 920, 930, 910, 925, 1000, 925000),
+        ]
+
+
+class RaisingPhase1AvwapDailyPriceProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, date, date]] = []
+
+    def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
+        self.calls.append((symbol, start_date, end_date))
+        raise RuntimeError("simulated AVWAP outage")
+
+
 class FakeMarketIndexContextProvider:
     def __init__(self, context: dict[str, Any] | None = None) -> None:
         self.context = context or _market_context()
@@ -208,6 +238,7 @@ def _clear_daily_radar_api_overrides() -> None:
         daily_radar_router.get_daily_radar_technical_fetcher,
         daily_radar_router.get_daily_radar_market_context_provider,
         daily_radar_router.get_daily_radar_background_chip_context_provider,
+        daily_radar_router.get_phase1_avwap_daily_price_provider,
         get_daily_radar_symbol_name_resolver,
     ):
         api.app.dependency_overrides.pop(dependency, None)
@@ -222,6 +253,7 @@ def _api_client(
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
     market_context_provider: FakeMarketIndexContextProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
+    phase1_avwap_provider: FakePhase1AvwapDailyPriceProvider | RaisingPhase1AvwapDailyPriceProvider | None = None,
     raise_server_exceptions: bool = True,
     run_error: Exception | None = None,
 ) -> TestClient:
@@ -233,6 +265,7 @@ def _api_client(
     fetcher = technical_fetcher or FakeBatchTechnicalFetcher()
     context_provider = market_context_provider or FakeMarketIndexContextProvider()
     chip_context_provider = background_context_provider or FakeBackgroundChipContextProvider()
+    phase1_provider = phase1_avwap_provider or FakePhase1AvwapDailyPriceProvider()
 
     def fake_run_daily_radar(run_date: date, market: str, **kwargs: Any) -> SimpleNamespace:
         captured["run_date"] = run_date
@@ -249,12 +282,14 @@ def _api_client(
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_context_provider] = lambda: context_provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: chip_context_provider
+    api.app.dependency_overrides[daily_radar_router.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
     client.fake_universe_provider = provider  # type: ignore[attr-defined]
     client.fake_technical_fetcher = fetcher  # type: ignore[attr-defined]
     client.fake_market_context_provider = context_provider  # type: ignore[attr-defined]
     client.fake_background_context_provider = chip_context_provider  # type: ignore[attr-defined]
+    client.fake_phase1_avwap_provider = phase1_provider  # type: ignore[attr-defined]
     return client
 
 
@@ -333,6 +368,16 @@ def _market_context() -> dict[str, Any]:
             "volatility_state": "normal",
             "market_risk_flags": [],
         },
+    }
+
+
+def _completed_segmented_step_statuses() -> dict[str, dict[str, Any]]:
+    return {
+        "refresh-avwap": {"status": "completed"},
+        "refresh-lending": {"status": "completed"},
+        "refresh-full-margin": {"status": "completed"},
+        "refresh-ohlcv": {"status": "completed"},
+        "refresh-market-context": {"status": "completed"},
     }
 
 
@@ -555,6 +600,287 @@ def test_daily_radar_run_endpoint_preserves_stale_data_status(monkeypatch, daily
     assert response.json()["status"] == "stale_data"
 
 
+def test_daily_radar_run_endpoint_refreshes_phase1_avwap_for_selected_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_raw_data(daily_radar_db_session, record_date=date(2026, 6, 1))
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    provider = client.fake_phase1_avwap_provider  # type: ignore[attr-defined]
+    assert provider.calls == [("2330.TW", date(2026, 2, 1), date(2026, 6, 1))]
+    snapshot = daily_radar_db_session.query(Phase1AvwapSnapshot).filter_by(symbol="2330.TW").one()
+    assert snapshot.data_date == date(2026, 6, 1)
+    assert snapshot.freshness == "fresh"
+    assert snapshot.payload["anchors"]["swing_low_60d"]["available"] is True
+
+
+def test_daily_radar_run_endpoint_continues_when_phase1_avwap_refresh_fails(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_raw_data(daily_radar_db_session, record_date=date(2026, 6, 1))
+    phase1_provider = RaisingPhase1AvwapDailyPriceProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        phase1_avwap_provider=phase1_provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert phase1_provider.calls == [("2330.TW", date(2026, 2, 1), date(2026, 6, 1))]
+    assert daily_radar_db_session.query(Phase1AvwapSnapshot).all() == []
+
+
+def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeUniverseProvider(
+        same_day=[
+            InstitutionalLeaderRow("2330.TW", 1, 91.0),
+            InstitutionalLeaderRow("2454.TW", 2, 88.0),
+            InstitutionalLeaderRow("2317.TW", 3, 77.0),
+        ],
+    )
+    client = _api_client(monkeypatch, daily_radar_db_session, universe_provider=provider)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW", "max_symbols": 2},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "prepared"
+    assert body["symbol_count"] == 2
+    assert body["selected_symbols"] == ["2330.TW", "2454.TW"]
+    prepared = daily_radar_db_session.query(DailyRadarPreparedRun).one()
+    assert prepared.run_date == date(2026, 6, 1)
+    assert prepared.selected_symbols == ["2330.TW", "2454.TW"]
+    assert prepared.universe[0]["primary_track"] == "same_day_institutional"
+
+
+def test_daily_radar_refresh_avwap_endpoint_uses_prepared_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-avwap",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["step"] == "refresh-avwap"
+    assert body["symbol_count"] == 1
+    provider = client.fake_phase1_avwap_provider  # type: ignore[attr-defined]
+    assert provider.calls == [("2330.TW", date(2026, 2, 1), date(2026, 6, 1))]
+
+
+def test_daily_radar_refresh_lending_reuses_same_day_fresh_cache(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    upsert_shared_background_context(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        context_type="lending",
+        applicable_consumers=("daily_radar",),
+        source={"domain": "background_context", "provider": "fixture_provider"},
+        as_of_date=date(2026, 6, 1),
+        freshness="fresh",
+        payload={"label": "cached_lending"},
+        replay_key="background_context:2330.TW:lending:2026-06-01",
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-lending",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["records_written"] == 0
+    assert response.json()["reused_symbols"] == ["2330.TW"]
+    provider = client.fake_background_context_provider  # type: ignore[attr-defined]
+    assert provider.calls == []
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-lending"]["status"] == "completed"
+
+
+def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    daily_radar_db_session.refresh(prepared)
+    assert "price_volume" in prepared.universe[0]["tracks"]
+    assert prepared.universe[0]["track_metrics"]["price_volume"]["matched"] is True
+    assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
+
+
+def test_daily_radar_run_scoring_requires_completed_refresh_steps(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        market_context=_market_context(),
+        step_statuses={
+            "refresh-avwap": {"status": "completed"},
+            "refresh-market-context": {"status": "completed"},
+        },
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "daily_radar_refresh_steps_incomplete"
+    assert detail["incomplete_steps"] == ["refresh-lending", "refresh-full-margin", "refresh-ohlcv"]
+
+
+def test_daily_radar_run_scoring_requires_prepared_market_context(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        step_statuses=_completed_segmented_step_statuses(),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert "market context is not prepared" in response.json()["detail"]
+
+
 def test_daily_radar_run_endpoint_rejects_missing_token_on_real_route(monkeypatch) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
 
@@ -670,7 +996,9 @@ def daily_radar_db_session() -> Session:
         engine,
         tables=[
             DailyRadarRun.__table__,
+            DailyRadarPreparedRun.__table__,
             DailyRadarCandidate.__table__,
+            Phase1AvwapSnapshot.__table__,
             SharedBackgroundContext.__table__,
             StockRawData.__table__,
         ],

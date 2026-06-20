@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR,
     BACKGROUND_CONTEXT_TYPES,
+    get_shared_background_context_rows,
     get_latest_daily_radar_run,
     upsert_shared_background_context,
 )
@@ -101,6 +102,7 @@ def update_background_chip_context_cache(
     provider: BackgroundChipContextProvider | None = None,
     symbols: Iterable[str] | None = None,
     context_types: Iterable[str] | None = None,
+    reuse_same_day_fresh: bool = False,
 ) -> dict[str, Any]:
     active_provider = provider or StubBackgroundChipContextProvider()
     selected_symbols = _ordered_unique(symbols or _latest_daily_radar_symbols(session, market=market))
@@ -117,28 +119,66 @@ def update_background_chip_context_cache(
         }
 
     records_written = 0
+    reused_pairs: set[tuple[str, str]] = set()
     errors: list[dict[str, Any]] = []
-    try:
-        payloads = active_provider.fetch(
+    fetch_symbols_by_context_type = {context_type: list(selected_symbols) for context_type in active_context_types}
+    if reuse_same_day_fresh:
+        fresh_rows = get_shared_background_context_rows(
+            session,
             symbols=selected_symbols,
             context_types=active_context_types,
-            run_date=run_date,
-            market=market,
+            reference_date=run_date,
+            point_in_time=True,
         )
-        for payload in payloads:
-            upsert_shared_background_context(
-                session,
-                symbol=payload.symbol,
-                context_type=payload.context_type,
-                applicable_consumers=payload.applicable_consumers,
-                source=payload.source,
-                as_of_date=payload.as_of_date,
-                freshness=payload.freshness,
-                payload=payload.payload,
-                missing_reason=payload.missing_reason,
-                replay_key=payload.replay_key,
+        reused_pairs = {
+            (row.symbol, row.context_type)
+            for row in fresh_rows
+            if row.as_of_date == run_date and row.freshness == "fresh"
+        }
+        fetch_symbols_by_context_type = {
+            context_type: [
+                symbol
+                for symbol in selected_symbols
+                if (symbol, context_type) not in reused_pairs
+            ]
+            for context_type in active_context_types
+        }
+    try:
+        if reuse_same_day_fresh:
+            payloads_by_batch = (
+                active_provider.fetch(
+                    symbols=fetch_symbols,
+                    context_types=[context_type],
+                    run_date=run_date,
+                    market=market,
+                )
+                for context_type in active_context_types
+                if (fetch_symbols := fetch_symbols_by_context_type[context_type])
             )
-            records_written += 1
+        else:
+            payloads_by_batch = (
+                active_provider.fetch(
+                    symbols=selected_symbols,
+                    context_types=active_context_types,
+                    run_date=run_date,
+                    market=market,
+                ),
+            )
+        for payloads in payloads_by_batch:
+            for payload in payloads:
+                upsert_shared_background_context(
+                    session,
+                    symbol=payload.symbol,
+                    context_type=payload.context_type,
+                    applicable_consumers=payload.applicable_consumers,
+                    source=payload.source,
+                    as_of_date=payload.as_of_date,
+                    freshness=payload.freshness,
+                    payload=payload.payload,
+                    missing_reason=payload.missing_reason,
+                    replay_key=payload.replay_key,
+                )
+                records_written += 1
     except Exception as exc:
         errors.append(
             {
@@ -155,6 +195,7 @@ def update_background_chip_context_cache(
         "symbol_count": len(selected_symbols),
         "context_types": active_context_types,
         "records_written": records_written,
+        "reused_symbols": sorted({symbol for symbol, _context_type in reused_pairs}),
         "errors": errors,
     }
 

@@ -8,6 +8,7 @@ PRIMARY_SURFACE_FILES = [
     ROOT / "frontend/src/pages/DailyRadarPage.tsx",
     ROOT / "frontend/src/pages/AnalyzePage.tsx",
     ROOT / "frontend/src/pages/PortfolioPage.tsx",
+    ROOT / "frontend/src/pages/WatchlistPage.tsx",
     ROOT / "frontend/src/pages/ClosedPortfolioPage.tsx",
 ]
 
@@ -34,7 +35,12 @@ ALLOWLISTED_PRIMARY_COPY: dict[str, dict[str, list[str]]] = {
     },
     "frontend/src/pages/PortfolioPage.tsx": {
         "投資建議": ["本診斷結果僅供研究與紀律檢查，不構成投資建議。"],
-        "加碼": ["加碼"],
+        "加碼": [
+            "加碼",
+            '加碼: "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300",',
+            'add_watch: "加碼觀察",',
+            'description: "追蹤續抱、加碼觀察或獲利保護狀態。",',
+        ],
         "出場": ["出場"],
     },
     "frontend/src/pages/ClosedPortfolioPage.tsx": {
@@ -93,7 +99,12 @@ def test_primary_frontend_surfaces_use_risk_language_with_allowlist() -> None:
 
 def test_copy_guard_allowlist_documents_intent() -> None:
     assert "frontend/src/pages/PortfolioPage.tsx" in ALLOWLISTED_PRIMARY_COPY
-    assert ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"] == ["加碼"]
+    assert "加碼" in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
+    assert (
+        'description: "追蹤續抱、加碼觀察或獲利保護狀態。",'
+        in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
+    )
+    assert 'add_watch: "加碼觀察",' in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
     assert ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["出場"] == ["出場"]
     assert (
         '<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'

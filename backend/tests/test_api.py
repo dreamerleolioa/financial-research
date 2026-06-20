@@ -328,6 +328,74 @@ def test_analyze_response_includes_shared_context_without_passing_it_to_graph(mo
     assert "background_context" not in graph_input
 
 
+def test_analyze_response_includes_phase1_observation_without_passing_it_to_graph(monkeypatch) -> None:
+    """Phase 1 AVWAP projection is response evidence only, not graph/LLM input."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        api_module,
+        "_read_phase1_observation_for_analyze",
+        lambda db, *, user_id, symbol, data_date: {
+            "symbol": symbol,
+            "data_date": data_date.isoformat(),
+            "freshness": "fresh",
+            "missing_reason": None,
+            "anchors": {"swing_low_60d": {"avwap": 900.25}},
+            "data_quality": {"estimated": False, "missing_reason": None},
+        },
+    )
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["phase1_observation"]["symbol"] == "2330.TW"
+    assert body["phase1_observation"]["freshness"] == "fresh"
+    assert body["phase1_observation"]["anchors"]["swing_low_60d"]["avwap"] == 900.25
+    graph_input = graph.invoke.call_args.args[0]
+    assert "phase1_observation" not in graph_input
+    assert "phase1_avwap" not in graph_input
+
+
+def test_analyze_phase1_observation_read_failure_is_nonblocking(monkeypatch) -> None:
+    import ai_stock_sentinel.phase1_avwap.projection as projection_module
+
+    monkeypatch.setattr(analysis_router, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(projection_module, "resolve_phase1_managed_universe", _raise)
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis"] == "分析結果"
+    assert body["phase1_observation"]["freshness"] == "missing"
+    assert body["phase1_observation"]["missing_reason"] == "phase1_snapshot_read_failed"
+    assert body["phase1_observation"]["data_quality"]["blocking"] is False
+
+
 def test_analyze_response_includes_strategy_fields() -> None:
     """AnalyzeResponse 必須包含 strategy/confidence 欄位（值可為 None）。"""
     graph = _make_graph(

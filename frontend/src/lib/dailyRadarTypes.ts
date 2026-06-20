@@ -23,6 +23,32 @@ export type DailyRadarDateMap = Record<string, string>;
 export type DailyRadarTracePayload = Record<string, unknown>;
 export type DailyRadarBucketScores = Partial<Record<DailyRadarBucket, number>>;
 
+export interface DailyRadarPhase1AvwapAnchor {
+  available?: boolean;
+  anchor_date?: string | null;
+  anchor_reason?: string | null;
+  avwap?: number | null;
+  distance_to_avwap_pct?: number | null;
+  source_granularity?: string;
+  estimated?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DailyRadarPhase1AvwapContext {
+  symbol: string;
+  data_date: string;
+  dataset: string;
+  adjustment_mode: string;
+  freshness: string;
+  missing_reason?: string | null;
+  source?: DailyRadarTracePayload;
+  source_granularity?: string;
+  anchors: Record<string, DailyRadarPhase1AvwapAnchor>;
+  applicable_consumers?: string[];
+  data_quality?: DailyRadarTracePayload;
+  [key: string]: unknown;
+}
+
 export interface DailyRadarSignalEvidence {
   evidence_type: string;
   source: DailyRadarTracePayload;

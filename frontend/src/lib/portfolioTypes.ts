@@ -16,6 +16,41 @@ export interface PortfolioRiskCaveat {
   count?: number;
 }
 
+export interface PortfolioPhase1PositionState {
+  symbol: string;
+  data_date: string;
+  dataset: string;
+  adjustment_mode: string;
+  state: "hold" | "add_watch" | "profit_take_watch" | "warning" | "exit_risk" | "data_unavailable";
+  label: "加碼" | "建倉" | "續抱" | "停損警戒" | "資料不足";
+  freshness: "fresh" | "stale" | "missing" | "unknown" | string;
+  missing_reason: string | null;
+  display_anchor: {
+    type: string;
+    anchor_date?: string | null;
+    anchor_reason?: string | null;
+    avwap?: number | null;
+    distance_to_avwap_pct?: number | null;
+    source_granularity?: string;
+    estimated?: boolean;
+  } | null;
+  matched_rules: string[];
+  source: {
+    provider: string;
+    dataset: string;
+    adjustment_mode: string;
+  };
+  source_granularity: string;
+  data_quality: {
+    estimated?: boolean;
+    source_granularity?: string;
+    rows_used?: number;
+    missing_reason?: string | null;
+    blocking?: boolean;
+    [key: string]: unknown;
+  };
+}
+
 export interface PortfolioPositionRisk {
   symbol: string;
   name?: string | null;
@@ -33,10 +68,42 @@ export interface PortfolioPositionRisk {
   portfolio_weight_pct: number | null;
   risk_state: "contained" | "watch" | "elevated" | "defense_reference_touched" | "data_incomplete";
   discipline_triggers: string[];
+  phase1_position_state?: PortfolioPhase1PositionState | null;
   data_quality: {
     status: "ok" | "caution" | "insufficient";
     caveats: PortfolioRiskCaveat[];
   };
+}
+
+export interface PortfolioPhase1ObservationItem {
+  symbol: string;
+  name?: string | null;
+  label?: "加碼" | "建倉" | "續抱" | "停損警戒" | "資料不足" | null;
+  position_state?: "hold" | "add_watch" | "profit_take_watch" | "warning" | "exit_risk" | "data_unavailable" | string;
+  close?: number | null;
+  holding_avg_cost?: number | null;
+  display_anchor?: PortfolioPhase1PositionState["display_anchor"];
+  matched_rules: string[];
+  current_day_observation: string;
+  data_quality: Record<string, unknown>;
+}
+
+export type PortfolioPhase1CurrentDayListKey =
+  | "pullback_observation_candidates"
+  | "breakout_confirmation_candidates"
+  | "holding_management_candidates"
+  | "holding_risk_alerts"
+  | "overheated_do_not_chase_candidates";
+
+export interface PortfolioPhase1CurrentDayLists {
+  version: string;
+  implemented_lists: PortfolioPhase1CurrentDayListKey[];
+  pending_lists: PortfolioPhase1CurrentDayListKey[];
+  pullback_observation_candidates: PortfolioPhase1ObservationItem[];
+  breakout_confirmation_candidates: PortfolioPhase1ObservationItem[];
+  holding_management_candidates: PortfolioPhase1ObservationItem[];
+  holding_risk_alerts: PortfolioPhase1ObservationItem[];
+  overheated_do_not_chase_candidates: PortfolioPhase1ObservationItem[];
 }
 
 export interface PortfolioRiskSummary {
@@ -47,6 +114,7 @@ export interface PortfolioRiskSummary {
   total_at_risk: number;
   total_at_risk_pct: number | null;
   position_risks: PortfolioPositionRisk[];
+  phase1_current_day_lists?: PortfolioPhase1CurrentDayLists;
   concentration: {
     by_symbol: Array<{
       type: "symbol";

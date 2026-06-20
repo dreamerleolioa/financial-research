@@ -2,19 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import PositionLifecyclePlan, StockRawData, UserPortfolio
-
-
-def count_active_portfolios(db: Session, *, user_id: int) -> int:
-    return db.execute(
-        select(func.count()).select_from(UserPortfolio).where(
-            UserPortfolio.user_id == user_id,
-            UserPortfolio.is_active == True,
-        )
-    ).scalar()
 
 
 def list_active_portfolios(db: Session, *, user_id: int) -> list[UserPortfolio]:
