@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.portfolio.application import get_risk_summary as portfolio_risk_summary_app
 from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -843,9 +844,12 @@ def test_decision_context_status_attaches_shared_context_without_portfolio_actio
 
 
 def test_portfolio_risk_summary_reads_active_user_positions_only(
+    monkeypatch: pytest.MonkeyPatch,
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
+    summary_date = date(2026, 6, 20)
+    monkeypatch.setattr(portfolio_risk_summary_app, "today_taipei", lambda: summary_date)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     portfolio_db_session.add(User(id=2, google_sub="user-2", email="other@example.com"))
     portfolio_db_session.add(UserPortfolio(
@@ -892,13 +896,13 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     ))
     portfolio_db_session.add(StockRawData(
         symbol="2330.TW",
-        record_date=date.today(),
+        record_date=summary_date,
         technical={"close_price": 120},
         raw_data_is_final=True,
     ))
     portfolio_db_session.add(Phase1AvwapSnapshot(
         symbol="2330.TW",
-        data_date=date.today(),
+        data_date=summary_date,
         dataset="TaiwanStockPrice",
         adjustment_mode="unadjusted",
         source_provider="finmind",
@@ -924,7 +928,7 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     ))
     portfolio_db_session.add(StockRawData(
         symbol="2317.TW",
-        record_date=date.today(),
+        record_date=summary_date,
         technical={"close_price": 60},
         raw_data_is_final=True,
     ))

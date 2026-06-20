@@ -1557,7 +1557,7 @@ Daily Radar run status：
 
 #### Daily Radar segmented internal pipeline
 
-正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間：
+正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會由 `github.event.schedule` 的 UTC cron slot 推導該 schedule 應服務的台股交易日，讓 18:00-23:30 TWT data steps 即使延遲到台灣午夜後啟動，也仍寫入原本交易日；手動執行可指定 `run_date`，未指定時才使用台北今天。
 
 - 18:00 TWT：`POST /internal/daily-radar/prepare-universe`，保存 capped 250 selected symbols、universe trace 與 prepared step status。
 - 19:00 TWT：`POST /internal/daily-radar/refresh-avwap`，刷新 `phase1_avwap_snapshots`。
@@ -1565,7 +1565,7 @@ Daily Radar run status：
 - 21:30 TWT：`POST /internal/daily-radar/refresh-full-margin`，等待 FinMind 21:00 更新後刷新 `full_margin`。
 - 22:30 TWT：`POST /internal/daily-radar/refresh-ohlcv`，刷新 selected-symbol `stock_raw_data`，並用 refreshed raw rows 回寫 prepared universe 技術面 tracks。
 - 23:30 TWT：`POST /internal/daily-radar/refresh-market-context`，刷新並保存 prepared market context。
-- 隔日 00:30 TWT：`POST /internal/daily-radar/run-scoring`，帶前一個台灣交易日 `run_date`，只讀 DB cache/snapshot 並持久化 Daily Radar run/candidates。
+- 隔日 00:30 TWT：`POST /internal/daily-radar/run-scoring`，使用同一個 intended trading date 作為 `run_date`，只讀 DB cache/snapshot 並持久化 Daily Radar run/candidates。
 
 `run-scoring` 不得打 FinMind、yfinance、TWSE 或 market index provider；缺少 prepared universe、prepared market context、final raw rows，或任一 required refresh step 不是 `completed` 時回 `409`，由 workflow/monitor 顯示資料準備缺口。Required refresh steps 為 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`。
 
@@ -1598,7 +1598,7 @@ Daily Radar run status：
 ```
 
 - **欄位說明**
-  - `run_date`：選填，Daily Radar run 日期，未提供時由後端使用當日日期。
+  - `run_date`：選填，Daily Radar run 日期，未提供時由後端使用當日台北日期；正式 GitHub Actions workflow 必須顯式傳入此欄位。
   - `market`：選填，市場代碼，預設 `TW`。
 
 - **Response 200**
