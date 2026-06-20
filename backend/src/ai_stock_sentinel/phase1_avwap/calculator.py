@@ -31,8 +31,6 @@ def build_phase1_avwap_payload(
     data_date: date,
     dataset: str,
     adjustment_mode: str,
-    holding_entry_date: date | None = None,
-    holding_avg_cost: float | None = None,
 ) -> dict[str, Any]:
     ordered_bars = sorted(
         (bar for bar in bars if bar.trade_date <= data_date),
@@ -65,28 +63,6 @@ def build_phase1_avwap_payload(
             current_close=latest.close,
         ),
     }
-    if holding_entry_date is None:
-        anchors["entry"] = {
-            "available": False,
-            "missing_reason": "holding_entry_date_missing",
-        }
-    else:
-        entry_anchor = _first_on_or_after(ordered_bars, holding_entry_date)
-        anchors["entry"] = (
-            _anchor_payload(
-                ordered_bars,
-                anchor=entry_anchor,
-                anchor_reason="holding_entry_date",
-                current_close=latest.close,
-            )
-            if entry_anchor is not None
-            else {
-                "available": False,
-                "anchor_date": holding_entry_date.isoformat(),
-                "missing_reason": "no_price_row_on_or_after_holding_entry_date",
-            }
-        )
-
     estimated = any(bar.estimated_amount for bar in ordered_bars)
     return {
         "symbol": symbol,
@@ -108,10 +84,7 @@ def build_phase1_avwap_payload(
             "volume": latest.volume,
             "amount": latest.amount,
         },
-        "holding": {
-            "entry_date": holding_entry_date.isoformat() if holding_entry_date else None,
-            "avg_cost": holding_avg_cost,
-        },
+        "bars": [_bar_payload(bar) for bar in ordered_bars],
         "anchors": anchors,
         "data_quality": {
             "estimated": estimated,
@@ -172,6 +145,19 @@ def _anchor_payload(
     }
 
 
+def _bar_payload(bar: DailyPriceBar) -> dict[str, Any]:
+    return {
+        "date": bar.trade_date.isoformat(),
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+        "amount": bar.amount,
+        "estimated_amount": bar.estimated_amount,
+    }
+
+
 def _avwap(bars: list[DailyPriceBar]) -> float:
     volume = sum(bar.volume for bar in bars)
     if volume <= 0:
@@ -195,10 +181,6 @@ def _highest_high(bars: list[DailyPriceBar]) -> DailyPriceBar:
 
 def _highest_volume(bars: list[DailyPriceBar]) -> DailyPriceBar:
     return max(bars, key=lambda bar: (bar.volume, bar.trade_date))
-
-
-def _first_on_or_after(bars: list[DailyPriceBar], anchor_date: date) -> DailyPriceBar | None:
-    return next((bar for bar in bars if bar.trade_date >= anchor_date), None)
 
 
 __all__ = [

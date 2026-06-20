@@ -39,7 +39,7 @@ make run-api
 - **用途**：建立 Phase 1 日頻 AVWAP snapshot cache，供後續 `/analyze`、Portfolio risk summary 與 Daily Radar response projection 讀取。
 - **Managed universe**：只合併目前登入使用者的 active holdings、watchlist symbols，以及 latest public Daily Radar selected candidates；任意 Analyze symbol 不會在 Phase 1A 觸發 FinMind historical backfill。
 - **資料來源**：FinMind `TaiwanStockPrice` single-symbol `data_id`；`adjustment_mode = "unadjusted"`。不使用 all-market query，也不使用 `TaiwanStockPriceAdj` 作為預設。
-- **快取表**：`phase1_avwap_snapshots`，以 `symbol` / `data_date` / `dataset` / `adjustment_mode` 唯一 upsert。fresh snapshot 會先被重用，缺漏或 stale 才逐檔 fetch。
+- **快取表**：`phase1_avwap_snapshots`，以 `symbol` / `data_date` / `dataset` / `adjustment_mode` 唯一 upsert。此表是全域市場 cache，只保存 market bars、generic anchors、data quality 與 FinMind source trace，不保存任何使用者持股 `entry_date`、`avg_cost` 或 holding-specific entry anchor。fresh snapshot 會先被重用，缺漏或 stale 才逐檔 fetch。
 - **更新路徑**：Daily Radar `refresh-avwap` step 會讀 `daily_radar_prepared_runs.selected_symbols`，針對 selected symbols 刷新當日 AVWAP snapshot；Analyze、Portfolio、public Daily Radar read path 與 `run-scoring` 只讀 snapshot，不觸發 refresh。
 - **計算契約**：日頻 AVWAP 使用 `Trading_money / Trading_Volume`；若 source row 缺 `Trading_money` 才用 typical price × volume fallback，且對應 anchor / data quality 必須標記 `estimated = true`。最新 source row 的交易日必須等於 requested `data_date` 才能寫成 `fresh` snapshot；若 FinMind 只回到較早交易日，應寫 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不得把前一交易日資料標成當日 final。
 - **資料品質**：provider/quota/row 缺漏不得產生假中性 AVWAP；應寫入 `freshness = "missing"` 與 `missing_reason`，讓 1B/1C 以 caveat 顯示。
@@ -749,7 +749,7 @@ make run-api
 - **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data`、`user_watchlist`、latest Daily Radar run/candidates 與 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 FinMind backfill 或 snapshot refresh。
 - **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
-- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。Backend 會由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`，並由非持股 managed universe（watchlist 與 latest Daily Radar candidates）既有 snapshot 產生 `pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates`。此 projection 只讀 cache，不觸發 FinMind backfill，不改 Daily Radar ranking/scoring。
+- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。Backend 會由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`，並由非持股 managed universe（watchlist 與 latest Daily Radar candidates）既有 snapshot 產生 `pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates`。Holding-specific entry anchor 與 avg cost 只在 Portfolio read projection 時由目前使用者的 portfolio rows 套用到 shared market snapshot，不寫回 `phase1_avwap_snapshots`。此 projection 只讀 cache，不觸發 FinMind backfill，不改 Daily Radar ranking/scoring。
 
 - **Response 200**
 

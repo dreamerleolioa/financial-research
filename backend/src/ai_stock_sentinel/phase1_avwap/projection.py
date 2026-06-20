@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -12,6 +13,14 @@ from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_managed_unive
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PositionStateRequest:
+    key: str
+    symbol: str
+    holding_entry_date: date | None
+    holding_avg_cost: float | None
 
 
 def read_phase1_observation_for_analyze(
@@ -72,6 +81,7 @@ def read_phase1_observation_for_analyze(
         )
 
     payload = dict(snapshot.payload or {})
+    _strip_internal_snapshot_fields(payload)
     payload.setdefault("symbol", normalized_symbol)
     payload.setdefault("data_date", data_date.isoformat())
     payload.setdefault("dataset", dataset)
@@ -91,13 +101,14 @@ def read_phase1_observation_for_analyze(
 def read_phase1_position_states_for_portfolio(
     session: Session,
     *,
-    symbols: list[str],
+    symbols: list[str] | None = None,
+    positions: list[Any] | None = None,
     data_date: date,
     dataset: str = DEFAULT_PHASE1_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
 ) -> dict[str, dict[str, Any]]:
-    normalized_symbols = [_normalize_symbol(symbol) for symbol in symbols]
-    normalized_symbols = [symbol for symbol in dict.fromkeys(normalized_symbols) if symbol]
+    requests = _position_state_requests(symbols=symbols, positions=positions)
+    normalized_symbols = [symbol for symbol in dict.fromkeys(request.symbol for request in requests) if symbol]
     try:
         snapshots = get_phase1_avwap_snapshots(
             session,
@@ -116,25 +127,27 @@ def read_phase1_position_states_for_portfolio(
             },
         )
         return {
-            symbol: _missing_position_state(
-                symbol=symbol,
+            request.key: _missing_position_state(
+                symbol=request.symbol,
                 data_date=data_date,
                 dataset=dataset,
                 adjustment_mode=adjustment_mode,
                 missing_reason="phase1_snapshot_read_failed",
             )
-            for symbol in normalized_symbols
+            for request in requests
         }
 
     return {
-        symbol: _position_state_from_snapshot(
-            symbol=symbol,
+        request.key: _position_state_from_snapshot(
+            symbol=request.symbol,
             data_date=data_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
-            snapshot=snapshots.get(symbol),
+            snapshot=snapshots.get(request.symbol),
+            holding_entry_date=request.holding_entry_date,
+            holding_avg_cost=request.holding_avg_cost,
         )
-        for symbol in normalized_symbols
+        for request in requests
     }
 
 
@@ -301,7 +314,7 @@ def _current_day_observation_from_snapshot(
     payload = dict(snapshot.payload or {})
     freshness = snapshot.freshness
     missing_reason = snapshot.missing_reason or payload.get("missing_reason")
-    anchors = dict(payload.get("anchors") or {})
+    anchors = _shared_snapshot_anchors(payload)
     ohlcv = dict(payload.get("ohlcv") or {})
     close = _number_or_none(ohlcv.get("close"))
     swing_anchor = _select_anchor(anchors, "swing_low_60d")
@@ -474,6 +487,7 @@ def _daily_radar_context_from_snapshot(
         )
 
     payload = dict(snapshot.payload or {})
+    _strip_internal_snapshot_fields(payload)
     payload.setdefault("symbol", symbol)
     payload.setdefault("data_date", data_date.isoformat())
     payload.setdefault("dataset", dataset)
@@ -536,6 +550,8 @@ def _position_state_from_snapshot(
     dataset: str,
     adjustment_mode: str,
     snapshot: Any | None,
+    holding_entry_date: date | None = None,
+    holding_avg_cost: float | None = None,
 ) -> dict[str, Any]:
     if snapshot is None:
         return _missing_position_state(
@@ -549,11 +565,17 @@ def _position_state_from_snapshot(
     payload = dict(snapshot.payload or {})
     freshness = snapshot.freshness
     missing_reason = snapshot.missing_reason or payload.get("missing_reason")
-    anchors = dict(payload.get("anchors") or {})
+    anchors = _shared_snapshot_anchors(payload)
+    entry_anchor = _entry_anchor_from_snapshot_payload(
+        payload,
+        holding_entry_date=holding_entry_date,
+    )
+    if entry_anchor is not None:
+        anchors["entry"] = entry_anchor
     display_anchor = _select_position_display_anchor(anchors)
 
     if freshness == "missing" or display_anchor is None:
-        reason = missing_reason or "phase1_position_anchor_missing"
+        reason = missing_reason or _position_anchor_missing_reason(payload, holding_entry_date=holding_entry_date)
         state = _missing_position_state(
             symbol=symbol,
             data_date=data_date,
@@ -571,6 +593,7 @@ def _position_state_from_snapshot(
             missing_reason=missing_reason,
             display_anchor=display_anchor,
             snapshot=payload,
+            holding_avg_cost=holding_avg_cost,
         )
 
     state["source"] = {
@@ -593,6 +616,7 @@ def _classify_position_state(
     missing_reason: str | None,
     display_anchor: dict[str, Any],
     snapshot: dict[str, Any],
+    holding_avg_cost: float | None,
 ) -> dict[str, Any]:
     distance = display_anchor.get("distance_to_avwap_pct")
     if not isinstance(distance, int | float):
@@ -629,6 +653,7 @@ def _classify_position_state(
         "freshness": freshness,
         "missing_reason": missing_reason,
         "display_anchor": display_anchor,
+        "holding_avg_cost": holding_avg_cost,
         "matched_rules": matched_rules,
         "source": {
             "provider": "phase1_avwap_snapshot",
@@ -689,6 +714,144 @@ def _select_position_display_anchor(anchors: dict[str, Any]) -> dict[str, Any] |
                 "estimated": bool(anchor.get("estimated", False)),
             }
     return None
+
+
+def _strip_internal_snapshot_fields(payload: dict[str, Any]) -> None:
+    payload.pop("bars", None)
+    payload.pop("holding", None)
+    anchors = dict(payload.get("anchors") or {})
+    anchors.pop("entry", None)
+    payload["anchors"] = anchors
+
+
+def _shared_snapshot_anchors(payload: dict[str, Any]) -> dict[str, Any]:
+    anchors = dict(payload.get("anchors") or {})
+    anchors.pop("entry", None)
+    return anchors
+
+
+def _position_state_requests(
+    *,
+    symbols: list[str] | None,
+    positions: list[Any] | None,
+) -> list[_PositionStateRequest]:
+    if positions is not None:
+        requests: list[_PositionStateRequest] = []
+        for position in positions:
+            symbol = _normalize_symbol(str(getattr(position, "symbol", "")))
+            if not symbol:
+                continue
+            key = str(getattr(position, "position_group_id", "") or symbol)
+            entry_date = getattr(position, "entry_date", None)
+            if hasattr(entry_date, "date"):
+                entry_date = entry_date.date()
+            requests.append(
+                _PositionStateRequest(
+                    key=key,
+                    symbol=symbol,
+                    holding_entry_date=entry_date if isinstance(entry_date, date) else None,
+                    holding_avg_cost=_number_or_none(getattr(position, "entry_price", None)),
+                )
+            )
+        return requests
+
+    normalized_symbols = [_normalize_symbol(symbol) for symbol in (symbols or [])]
+    return [
+        _PositionStateRequest(
+            key=symbol,
+            symbol=symbol,
+            holding_entry_date=None,
+            holding_avg_cost=None,
+        )
+        for symbol in dict.fromkeys(normalized_symbols)
+        if symbol
+    ]
+
+
+def _position_anchor_missing_reason(payload: dict[str, Any], *, holding_entry_date: date | None) -> str:
+    if holding_entry_date is None:
+        return "holding_entry_date_missing"
+    bars = _snapshot_bars(payload)
+    if not bars:
+        return "phase1_snapshot_bars_missing"
+    if bars[0]["date"] > holding_entry_date:
+        return "holding_entry_date_before_snapshot_history"
+    return "phase1_position_anchor_missing"
+
+
+def _entry_anchor_from_snapshot_payload(
+    payload: dict[str, Any],
+    *,
+    holding_entry_date: date | None,
+) -> dict[str, Any] | None:
+    if holding_entry_date is None:
+        return None
+    bars = _snapshot_bars(payload)
+    if not bars or bars[0]["date"] > holding_entry_date:
+        return None
+    anchor_index = next((index for index, bar in enumerate(bars) if bar["date"] >= holding_entry_date), None)
+    if anchor_index is None:
+        return {
+            "available": False,
+            "anchor_date": holding_entry_date.isoformat(),
+            "missing_reason": "no_price_row_on_or_after_holding_entry_date",
+        }
+    anchor = bars[anchor_index]
+    anchor_bars = bars[anchor_index:]
+    volume = sum(bar["volume"] for bar in anchor_bars)
+    if volume <= 0:
+        return None
+    avwap = round(sum(bar["amount"] for bar in anchor_bars) / volume, 4)
+    current_close = _number_or_none(dict(payload.get("ohlcv") or {}).get("close"))
+    if current_close is None and bars:
+        current_close = bars[-1]["close"]
+    return {
+        "available": True,
+        "anchor_date": anchor["date"].isoformat(),
+        "anchor_reason": "holding_entry_date",
+        "avwap": avwap,
+        "distance_to_avwap_pct": _pct_distance(current_close, avwap),
+        "source_granularity": "daily",
+        "estimated": any(bar["estimated_amount"] for bar in anchor_bars),
+    }
+
+
+def _snapshot_bars(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    parsed: list[dict[str, Any]] = []
+    for row in payload.get("bars") or []:
+        if not isinstance(row, dict):
+            continue
+        trade_date = _date_or_none(row.get("date") or row.get("trade_date"))
+        volume = _number_or_none(row.get("volume"))
+        amount = _number_or_none(row.get("amount"))
+        close = _number_or_none(row.get("close"))
+        if trade_date is None or volume is None or amount is None or close is None:
+            continue
+        parsed.append({
+            "date": trade_date,
+            "volume": volume,
+            "amount": amount,
+            "close": close,
+            "estimated_amount": bool(row.get("estimated_amount", False)),
+        })
+    return sorted(parsed, key=lambda bar: bar["date"])
+
+
+def _date_or_none(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _pct_distance(price: float | None, reference: float) -> float | None:
+    if price is None or reference == 0:
+        return None
+    return round((price - reference) / reference * 100, 4)
 
 
 def _select_anchor(anchors: dict[str, Any], anchor_type: str) -> dict[str, Any] | None:

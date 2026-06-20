@@ -130,8 +130,6 @@ def _refresh_phase1_avwap_snapshots_for_universe(
                 data_date=data_date,
                 dataset=dataset,
                 adjustment_mode=adjustment_mode,
-                holding_entry_date=item.holding_entry_date,
-                holding_avg_cost=item.holding_avg_cost,
             )
         except (FinMindClientError, KeyError, ValueError) as exc:
             reason = _missing_reason(exc)
@@ -180,10 +178,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
 
 
 def _history_start_date(item: ManagedUniverseSymbol, *, data_date: date, lookback_days: int) -> date:
-    default_start = data_date - timedelta(days=lookback_days)
-    if item.holding_entry_date is None:
-        return default_start
-    return min(default_start, item.holding_entry_date)
+    return data_date - timedelta(days=lookback_days)
 
 
 def _missing_reason(exc: Exception) -> str:

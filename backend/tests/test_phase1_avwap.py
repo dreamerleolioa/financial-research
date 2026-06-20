@@ -115,19 +115,27 @@ def test_build_phase1_avwap_payload_computes_daily_anchors_from_amount_over_volu
         data_date=date(2026, 6, 5),
         dataset="TaiwanStockPrice",
         adjustment_mode="unadjusted",
-        holding_entry_date=date(2026, 6, 3),
-        holding_avg_cost=13.5,
     )
 
     assert payload["source_granularity"] == "daily"
     assert payload["data_quality"]["estimated"] is False
+    assert "holding" not in payload
+    assert "entry" not in payload["anchors"]
+    assert payload["bars"][0] == {
+        "date": "2026-06-01",
+        "open": 10,
+        "high": 10,
+        "low": 9,
+        "close": 10,
+        "volume": 100,
+        "amount": 1000,
+        "estimated_amount": False,
+    }
     assert payload["anchors"]["swing_low_60d"]["anchor_date"] == "2026-06-02"
     assert payload["anchors"]["swing_low_60d"]["avwap"] == pytest.approx(14.6667)
     assert payload["anchors"]["breakout_20d"]["anchor_date"] == "2026-06-05"
     assert payload["anchors"]["breakout_20d"]["avwap"] == pytest.approx(18.0)
     assert payload["anchors"]["high_volume_60d"]["anchor_date"] == "2026-06-03"
-    assert payload["anchors"]["entry"]["anchor_date"] == "2026-06-03"
-    assert payload["anchors"]["entry"]["avwap"] == pytest.approx(15.2)
 
 
 def test_resolve_phase1_managed_universe_merges_holdings_watchlist_and_latest_daily_radar(
@@ -172,7 +180,7 @@ def test_refresh_phase1_avwap_snapshots_reuses_fresh_rows_before_fetching(
     assert result.fetched_symbols == ["2330.TW", "2317.TW"]
     assert result.missing_symbols == []
     assert provider.calls == [
-        ("2330.TW", date(2026, 1, 15), data_date),
+        ("2330.TW", data_date - timedelta(days=30), data_date),
         ("2317.TW", data_date - timedelta(days=30), data_date),
     ]
     rows = db_session.scalars(select(Phase1AvwapSnapshot).order_by(Phase1AvwapSnapshot.symbol)).all()
@@ -180,6 +188,8 @@ def test_refresh_phase1_avwap_snapshots_reuses_fresh_rows_before_fetching(
     assert rows[0].dataset == "TaiwanStockPrice"
     assert rows[0].adjustment_mode == "unadjusted"
     assert rows[0].payload["anchors"]["swing_low_60d"]["avwap"] == pytest.approx(14.6667)
+    assert "holding" not in rows[1].payload
+    assert "entry" not in rows[1].payload["anchors"]
 
 
 def test_refresh_phase1_avwap_snapshots_marks_missing_when_requested_date_row_is_absent(
@@ -246,7 +256,18 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
         payload={
             "symbol": "2330.TW",
             "data_date": data_date.isoformat(),
-            "anchors": {"swing_low_60d": {"avwap": 900.25}},
+            "holding": {"entry_date": "2026-01-15", "avg_cost": 900},
+            "bars": [{"date": "2026-06-05", "close": 900, "volume": 100, "amount": 90000}],
+            "anchors": {
+                "entry": {
+                    "available": True,
+                    "anchor_date": "2026-01-15",
+                    "anchor_reason": "holding_entry_date",
+                    "avwap": 880,
+                    "distance_to_avwap_pct": 2,
+                },
+                "swing_low_60d": {"avwap": 900.25},
+            },
             "data_quality": {"estimated": False, "missing_reason": None},
         },
         freshness="fresh",
@@ -261,6 +282,9 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
 
     assert observation["freshness"] == "fresh"
     assert observation["missing_reason"] is None
+    assert "bars" not in observation
+    assert "holding" not in observation
+    assert "entry" not in observation["anchors"]
     assert observation["anchors"]["swing_low_60d"]["avwap"] == 900.25
     assert observation["source"] == {
         "provider": "finmind",
@@ -330,6 +354,14 @@ def test_read_phase1_position_states_for_portfolio_projects_snapshot_state(
     db_session: Session,
 ) -> None:
     data_date = date(2026, 6, 5)
+    portfolio = UserPortfolio(
+        user_id=1,
+        position_group_id="group-entry-anchor",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 15),
+    )
     upsert_phase1_avwap_snapshot(
         db_session,
         symbol="2330.TW",
@@ -337,16 +369,30 @@ def test_read_phase1_position_states_for_portfolio_projects_snapshot_state(
         payload={
             "symbol": "2330.TW",
             "data_date": data_date.isoformat(),
-            "anchors": {
-                "entry": {
-                    "available": True,
-                    "anchor_date": "2026-01-15",
-                    "anchor_reason": "holding_entry_date",
-                    "avwap": 900.0,
-                    "distance_to_avwap_pct": 3.5,
-                    "source_granularity": "daily",
-                    "estimated": False,
+            "ohlcv": {"close": 935},
+            "bars": [
+                {
+                    "date": "2026-01-15",
+                    "open": 900,
+                    "high": 905,
+                    "low": 895,
+                    "close": 900,
+                    "volume": 100,
+                    "amount": 90000,
+                    "estimated_amount": False,
                 },
+                {
+                    "date": "2026-06-05",
+                    "open": 935,
+                    "high": 940,
+                    "low": 930,
+                    "close": 935,
+                    "volume": 100,
+                    "amount": 90000,
+                    "estimated_amount": False,
+                },
+            ],
+            "anchors": {
                 "breakout_20d": {
                     "available": True,
                     "anchor_date": "2026-06-05",
@@ -362,15 +408,16 @@ def test_read_phase1_position_states_for_portfolio_projects_snapshot_state(
 
     states = read_phase1_position_states_for_portfolio(
         db_session,
-        symbols=["2330.TW"],
+        positions=[portfolio],
         data_date=data_date,
     )
 
-    state = states["2330.TW"]
+    state = states["group-entry-anchor"]
     assert state["state"] == "hold"
     assert state["label"] == "續抱"
     assert state["display_anchor"]["type"] == "entry"
-    assert state["display_anchor"]["distance_to_avwap_pct"] == 3.5
+    assert state["display_anchor"]["distance_to_avwap_pct"] == pytest.approx(3.8889)
+    assert state["holding_avg_cost"] == 900.0
     assert state["matched_rules"] == ["phase1_display_anchor_supported"]
     assert state["data_quality"]["blocking"] is False
 
@@ -379,6 +426,14 @@ def test_read_phase1_position_states_for_portfolio_reports_missing_distance_reas
     db_session: Session,
 ) -> None:
     data_date = date(2026, 6, 5)
+    portfolio = UserPortfolio(
+        user_id=1,
+        position_group_id="group-missing-bars",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 15),
+    )
     upsert_phase1_avwap_snapshot(
         db_session,
         symbol="2330.TW",
@@ -386,14 +441,52 @@ def test_read_phase1_position_states_for_portfolio_reports_missing_distance_reas
         payload={
             "symbol": "2330.TW",
             "data_date": data_date.isoformat(),
+            "anchors": {},
+            "data_quality": {"estimated": False, "rows_used": 80},
+        },
+        freshness="fresh",
+    )
+
+    states = read_phase1_position_states_for_portfolio(
+        db_session,
+        positions=[portfolio],
+        data_date=data_date,
+    )
+
+    state = states["group-missing-bars"]
+    assert state["state"] == "data_unavailable"
+    assert state["missing_reason"] == "phase1_snapshot_bars_missing"
+    assert state["data_quality"]["missing_reason"] == "phase1_snapshot_bars_missing"
+    assert state["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_position_states_for_portfolio_ignores_legacy_private_snapshot_anchor(
+    db_session: Session,
+) -> None:
+    data_date = date(2026, 6, 5)
+    portfolio = UserPortfolio(
+        user_id=1,
+        position_group_id="group-legacy-private-anchor",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 15),
+    )
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=data_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": data_date.isoformat(),
+            "holding": {"entry_date": "2026-01-15", "avg_cost": 900},
             "anchors": {
                 "entry": {
                     "available": True,
                     "anchor_date": "2026-01-15",
                     "anchor_reason": "holding_entry_date",
-                    "avwap": 900.0,
-                    "source_granularity": "daily",
-                    "estimated": False,
+                    "avwap": 900,
+                    "distance_to_avwap_pct": 5,
                 },
             },
             "data_quality": {"estimated": False, "rows_used": 80},
@@ -403,15 +496,13 @@ def test_read_phase1_position_states_for_portfolio_reports_missing_distance_reas
 
     states = read_phase1_position_states_for_portfolio(
         db_session,
-        symbols=["2330.TW"],
+        positions=[portfolio],
         data_date=data_date,
     )
 
-    state = states["2330.TW"]
+    state = states["group-legacy-private-anchor"]
     assert state["state"] == "data_unavailable"
-    assert state["missing_reason"] == "phase1_distance_to_avwap_missing"
-    assert state["data_quality"]["missing_reason"] == "phase1_distance_to_avwap_missing"
-    assert state["data_quality"]["blocking"] is False
+    assert state["missing_reason"] == "phase1_snapshot_bars_missing"
 
 
 def test_read_phase1_position_states_for_portfolio_reports_read_failure_as_nonblocking(
@@ -528,6 +619,46 @@ def test_read_phase1_avwap_contexts_for_daily_radar_reports_read_failure_as_nonb
     assert context["missing_reason"] == "phase1_snapshot_read_failed"
     assert context["applicable_consumers"] == ["daily_radar"]
     assert context["data_quality"]["blocking"] is False
+
+
+def test_read_phase1_avwap_contexts_for_daily_radar_strips_internal_bars(
+    db_session: Session,
+) -> None:
+    data_date = date(2026, 6, 5)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=data_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": data_date.isoformat(),
+            "holding": {"entry_date": "2026-01-15", "avg_cost": 900},
+            "bars": [{"date": "2026-06-05", "close": 900, "volume": 100, "amount": 90000}],
+            "anchors": {
+                "entry": {
+                    "available": True,
+                    "anchor_date": "2026-01-15",
+                    "anchor_reason": "holding_entry_date",
+                    "avwap": 880,
+                    "distance_to_avwap_pct": 2,
+                },
+                "swing_low_60d": {"avwap": 900.25},
+            },
+            "data_quality": {"estimated": False, "missing_reason": None},
+        },
+        freshness="fresh",
+    )
+
+    contexts = read_phase1_avwap_contexts_for_daily_radar(
+        db_session,
+        symbols=["2330.TW"],
+        data_date=data_date,
+    )
+
+    assert "bars" not in contexts["2330.TW"]
+    assert "holding" not in contexts["2330.TW"]
+    assert "entry" not in contexts["2330.TW"]["anchors"]
+    assert contexts["2330.TW"]["anchors"]["swing_low_60d"]["avwap"] == 900.25
 
 
 def test_phase1_avwap_migration_creates_snapshot_table_constraints_and_indexes() -> None:

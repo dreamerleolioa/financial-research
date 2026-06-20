@@ -35,7 +35,7 @@ def build_user_portfolio_risk_summary(
     summary_date = as_of_date or today_taipei()
     phase1_position_states_by_symbol = read_phase1_position_states_for_portfolio(
         db,
-        symbols=symbols,
+        positions=rows,
         data_date=summary_date,
     )
     phase1_current_day_observations_by_symbol = read_phase1_current_day_observations_for_managed_universe(

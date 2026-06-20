@@ -123,7 +123,12 @@ def build_portfolio_risk_summary(
             },
         }
         if phase1_states is not None:
-            position_draft["phase1_position_state"] = phase1_states.get(symbol) or phase1_states.get(symbol.upper())
+            group_key = str(getattr(position, "position_group_id", "") or "")
+            position_draft["phase1_position_state"] = (
+                phase1_states.get(group_key)
+                or phase1_states.get(symbol)
+                or phase1_states.get(symbol.upper())
+            )
         position_drafts.append(position_draft)
 
     for draft in position_drafts:

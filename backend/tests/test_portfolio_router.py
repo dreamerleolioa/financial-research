@@ -912,16 +912,39 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
         missing_reason=None,
         payload={
             "symbol": "2330.TW",
+            "ohlcv": {"close": 120},
+            "bars": [
+                {
+                    "date": "2026-06-01",
+                    "open": 115,
+                    "high": 116,
+                    "low": 114,
+                    "close": 115,
+                    "volume": 100,
+                    "amount": 11500,
+                    "estimated_amount": False,
+                },
+                {
+                    "date": summary_date.isoformat(),
+                    "open": 120,
+                    "high": 121,
+                    "low": 119,
+                    "close": 120,
+                    "volume": 100,
+                    "amount": 11500,
+                    "estimated_amount": False,
+                },
+            ],
             "anchors": {
-                "entry": {
+                "swing_low_60d": {
                     "available": True,
                     "anchor_date": "2026-06-01",
-                    "anchor_reason": "holding_entry_date",
+                    "anchor_reason": "swing_low_60d",
                     "avwap": 115,
                     "distance_to_avwap_pct": 4.3478,
                     "source_granularity": "daily",
                     "estimated": False,
-                }
+                },
             },
             "data_quality": {"estimated": False, "rows_used": 12},
         },
