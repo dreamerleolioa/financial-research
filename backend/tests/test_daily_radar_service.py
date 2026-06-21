@@ -18,6 +18,7 @@ from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_fixture_r
 from ai_stock_sentinel.daily_radar import service as service_module
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
+from ai_stock_sentinel.phase1_avwap.provider import DEFAULT_PHASE1_DATASET, TWSE_STOCK_DAY_DATASET
 
 
 @compiles(JSONB, "sqlite")
@@ -326,8 +327,13 @@ def test_run_daily_radar_attaches_phase1_avwap_context_without_changing_score_or
         payload={
             "symbol": "2330.TW",
             "data_date": run_date.isoformat(),
-            "dataset": "TaiwanStockPrice",
+            "dataset": DEFAULT_PHASE1_DATASET,
             "adjustment_mode": "unadjusted",
+            "source": {
+                "provider": "twse",
+                "dataset": TWSE_STOCK_DAY_DATASET,
+                "adjustment_mode": "unadjusted",
+            },
             "anchors": {
                 "breakout_20d": {
                     "available": True,
@@ -363,8 +369,8 @@ def test_run_daily_radar_attaches_phase1_avwap_context_without_changing_score_or
     context = with_phase1.input_snapshot["phase1_avwap_context"]
     assert context["freshness"] == "fresh"
     assert context["source"] == {
-        "provider": "finmind",
-        "dataset": "TaiwanStockPrice",
+        "provider": "twse",
+        "dataset": TWSE_STOCK_DAY_DATASET,
         "adjustment_mode": "unadjusted",
     }
     assert context["anchors"]["breakout_20d"]["avwap"] == 915.25

@@ -31,7 +31,7 @@ The core principle is data honesty: every output must expose its source granular
 
 The current system already has daily OHLCV through yfinance-backed raw data paths and explicit `technical_indicators` outputs for indicators such as Bollinger Band Width, ATR, OBV, MFI, ADX, and Donchian Channel.
 
-The missing input for a reliable daily AVWAP is daily traded amount / turnover value. FinMind's free tier can provide this for single-symbol daily queries through `TaiwanStockPrice` or `TaiwanStockPriceAdj`, using `Trading_money` and `Trading_Volume`. Without amount, the system can only approximate daily VWAP using a typical price formula, which must be marked as estimated.
+The missing input for a reliable daily AVWAP is daily traded amount / turnover value. The current Phase 1 source policy is TWSE-first: listed `.TW` symbols use TWSE `STOCK_DAY` monthly single-symbol queries with `成交金額` and `成交股數`, while OTC `.TWO` symbols retain FinMind `TaiwanStockPrice` fallback with `Trading_money` and `Trading_Volume`. Without amount, the system can only approximate daily VWAP using a typical price formula, which must be marked as estimated.
 
 ## Phase 1: Daily AVWAP
 
@@ -39,7 +39,7 @@ Phase 1 Daily AVWAP is implemented. Durable backend/API/frontend facts now live 
 `docs/specs/backend-api-technical-spec.md`, `docs/specs/ai-stock-sentinel-architecture-spec.md`,
 `docs/specs/daily-stock-radar-spec.md`, and `docs/specs/frontend-architecture-spec.md`.
 
-Phase 1 should be independently mergeable and useful even if Phase 2 and Phase 3 never ship. It should use FinMind single-symbol daily `Trading_money` and `Trading_Volume` to compute daily AVWAP from deterministic anchors, then generate five current-day observation lists from the prior close:
+Phase 1 should be independently mergeable and useful even if Phase 2 and Phase 3 never ship. It should use source daily traded amount and volume to compute daily AVWAP from deterministic anchors, then generate five current-day observation lists from the prior close:
 
 1. Current-day pullback observation candidates.
 2. Current-day breakout confirmation candidates.
@@ -47,7 +47,7 @@ Phase 1 should be independently mergeable and useful even if Phase 2 and Phase 3
 4. Current-day holding risk alerts.
 5. Current-day overheated do-not-chase candidates.
 
-Phase 1 should run on a bounded managed universe only: active holdings, watchlist symbols, and Daily Radar selected candidates. Daily Radar internal run refreshes selected-symbol snapshots after the selected universe is determined. It should not attempt whole-market per-symbol pulls on the FinMind free tier, and arbitrary Analyze symbols should not trigger on-demand FinMind historical backfill in the first release.
+Phase 1 should run on a bounded managed universe only: active holdings, watchlist symbols, and Daily Radar selected candidates. Daily Radar internal run refreshes selected-symbol snapshots after the selected universe is determined. It should not attempt whole-market per-symbol pulls, and arbitrary Analyze symbols should not trigger on-demand provider historical backfill in the first release.
 
 Before Phase 1 relies on active holdings, remove the current hard 8-position active portfolio cap. Larger portfolios should be handled through quota-aware Phase 1 refresh, cache reuse, and explicit data-quality caveats, not by blocking users from tracking more holdings.
 
@@ -140,7 +140,7 @@ Provide swing support/resistance context through volume concentration zones. The
 
 ## Phase 1 Success Criteria
 
-At the total-roadmap level, Phase 1 is complete: the outdated 8-position active portfolio cap is removed, daily AVWAP fields are available through managed-universe snapshots, and the five deterministic current-day observation lists are exposed through existing response contracts without requiring a new public endpoint, arbitrary Analyze-symbol FinMind backfill, intraday data, whole-market FinMind pulls, or Daily Radar scoring changes.
+At the total-roadmap level, Phase 1 is complete: the outdated 8-position active portfolio cap is removed, daily AVWAP fields are available through managed-universe snapshots, and the five deterministic current-day observation lists are exposed through existing response contracts without requiring a new public endpoint, arbitrary Analyze-symbol provider backfill, intraday data, whole-market pulls, or Daily Radar scoring changes.
 
 ## Documentation Sync Checklist After Implementation
 
@@ -157,7 +157,7 @@ When this plan is implemented, delete this file and move durable facts into cano
 
 ## Resolved Phase 1 Decisions
 
-1. Phase 1 uses FinMind `TaiwanStockPrice` with `adjustment_mode = "unadjusted"` as the free-tier-compatible default; adjusted mode is deferred until the account tier supports it.
+1. Phase 1 uses TWSE `STOCK_DAY` as the default for listed `.TW` symbols and keeps FinMind `TaiwanStockPrice` fallback for OTC `.TWO`; `adjustment_mode = "unadjusted"` remains the default.
 2. Phase 1 exposes swing-low and high-volume anchors on 60 trading days, plus breakout on 20 trading days.
 3. Daily Radar only displays trial AVWAP context in the detail drawer; it does not affect ranking, bucket, score, matched rules, or risk labels.
 4. Portfolio UI displays all five current-day lists, with holding risk/management separated from non-held watchlist / Daily Radar observation lists.

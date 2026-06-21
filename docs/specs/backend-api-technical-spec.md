@@ -37,11 +37,11 @@ make run-api
 ### Phase 1 Daily AVWAP backend foundation（internal service，無公開 endpoint）
 
 - **用途**：建立 Phase 1 日頻 AVWAP snapshot cache，供後續 `/analyze`、Portfolio risk summary 與 Daily Radar response projection 讀取。
-- **Managed universe**：只合併目前登入使用者的 active holdings、watchlist symbols，以及 latest public Daily Radar selected candidates；任意 Analyze symbol 不會在 Phase 1A 觸發 FinMind historical backfill。
-- **資料來源**：FinMind `TaiwanStockPrice` single-symbol `data_id`；`adjustment_mode = "unadjusted"`。不使用 all-market query，也不使用 `TaiwanStockPriceAdj` 作為預設。
-- **快取表**：`phase1_avwap_snapshots`，以 `symbol` / `data_date` / `dataset` / `adjustment_mode` 唯一 upsert。此表是全域市場 cache，只保存 market bars、generic anchors、data quality 與 FinMind source trace，不保存任何使用者持股 `entry_date`、`avg_cost` 或 holding-specific entry anchor。fresh snapshot 會先被重用，缺漏或 stale 才逐檔 fetch。
+- **Managed universe**：只合併目前登入使用者的 active holdings、watchlist symbols，以及 latest public Daily Radar selected candidates；任意 Analyze symbol 不會在 Phase 1A 觸發 historical backfill。
+- **資料來源**：TWSE 上市 `.TW` 預設使用 `STOCK_DAY` single-symbol monthly query，逐月補齊 requested lookback window；上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback。`adjustment_mode = "unadjusted"`，不使用 `TaiwanStockPriceAdj` 作為預設。
+- **快取表**：`phase1_avwap_snapshots`，以 `symbol` / `data_date` / logical `dataset = "phase1_daily_ohlcv_amount"` / `adjustment_mode` 唯一 upsert。此表是全域市場 cache，只保存 market bars、generic anchors、data quality 與 source trace，不保存任何使用者持股 `entry_date`、`avg_cost` 或 holding-specific entry anchor。fresh snapshot 會先被重用，缺漏或 stale 才逐檔 fetch。
 - **更新路徑**：Daily Radar `refresh-avwap` step 會讀 `daily_radar_prepared_runs.selected_symbols`，針對 selected symbols 刷新當日 AVWAP snapshot；Analyze、Portfolio、public Daily Radar read path 與 `run-scoring` 只讀 snapshot，不觸發 refresh。
-- **計算契約**：日頻 AVWAP 使用 `Trading_money / Trading_Volume`；若 source row 缺 `Trading_money` 才用 typical price × volume fallback，且對應 anchor / data quality 必須標記 `estimated = true`。最新 source row 的交易日必須等於 requested `data_date` 才能寫成 `fresh` snapshot；若 FinMind 只回到較早交易日，應寫 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不得把前一交易日資料標成當日 final。
+- **計算契約**：日頻 AVWAP 使用 source traded amount / volume。TWSE 對應 `成交金額 / 成交股數`，FinMind fallback 對應 `Trading_money / Trading_Volume`；若 source row 缺 amount 才用 typical price × volume fallback，且對應 anchor / data quality 必須標記 `estimated = true`。最新 source row 的交易日必須等於 requested `data_date` 才能寫成 `fresh` snapshot；若 provider 只回到較早交易日，應寫 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不得把前一交易日資料標成當日 final。
 - **資料品質**：provider/quota/row 缺漏不得產生假中性 AVWAP；應寫入 `freshness = "missing"` 與 `missing_reason`，讓 1B/1C 以 caveat 顯示。
 - **公開 API 狀態**：不新增 public endpoint；只投影到既有 `/analyze`、Portfolio risk summary 與 Daily Radar response。
 
@@ -215,7 +215,7 @@ make run-api
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
   | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；前端主要呈現應改用 risk-language 欄位 |
   | `shared_context`           | object \| null | Phase 2C shared background context read payload；只作 evidence/caveat 與資料完整度 trace，不參與 LLM 數值計算、ranking、bucket、`action_plan` 或 rule-based 欄位覆寫 |
-  | `phase1_observation`       | object \| null | Phase 1 Daily AVWAP snapshot read projection；只讀 `phase1_avwap_snapshots`，不進入 Graph / LLM input，也不觸發 FinMind backfill。Out-of-universe 回 `missing_reason = "not_in_phase1_universe"`；managed universe 內但未有 snapshot 回 `missing_reason = "phase1_snapshot_missing"`；snapshot read failure 回 `missing_reason = "phase1_snapshot_read_failed"` |
+  | `phase1_observation`       | object \| null | Phase 1 Daily AVWAP snapshot read projection；只讀 `phase1_avwap_snapshots`，不進入 Graph / LLM input，也不觸發 provider backfill。Out-of-universe 回 `missing_reason = "not_in_phase1_universe"`；managed universe 內但未有 snapshot 回 `missing_reason = "phase1_snapshot_missing"`；snapshot read failure 回 `missing_reason = "phase1_snapshot_read_failed"` |
   | `data_sources`             | array          | 本次實際成功取得資料的來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                                                                                                          |
   | `institutional_flow_label` | enum \| null   | 籌碼歸屬標籤：`institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                                                                                                                                                                                                      |
   | `action_plan_tag`          | enum \| null   | 燈號標籤（rule-based，後端計算）：`opportunity` / `overheated` / `neutral`；前端僅做顯示映射                                                                                                                                                                                                    |
@@ -231,7 +231,7 @@ make run-api
 
 > **Shared context read contract（Phase 2C）**：`shared_context` 由 `shared_background_contexts` cache 以 selected symbol 批次/單檔讀取產生，欄位包含 `version`（目前 `shared-context-read-v1`）、`symbol`、`consumer`、`contexts[]`、`caveats[]` 與 `data_quality`。`contexts[]`/`caveats[]` 使用 consumer-neutral 欄位：`context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers`；read path 會尊重 `applicable_consumers`，若 cache row 不適用目標 consumer，會回傳 non-blocking `context_not_applicable_to_consumer` caveat。資料缺漏或 stale 時以 caveat 呈現且 `data_quality.blocking=false`。此 payload 在 response 組裝階段附加，不進入 LangGraph initial state 或 LLM prompt，不觸發 weekly major holders、lending、full margin 的即時逐檔昂貴查詢。
 
-> **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state 或 LLM prompt，不觸發 FinMind 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；未命中或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
+> **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state 或 LLM prompt，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；未命中或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
 > **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
 >
@@ -746,10 +746,10 @@ make run-api
 ### `GET /portfolio/risk-summary`
 
 - **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
-- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data`、`user_watchlist`、latest Daily Radar run/candidates 與 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 FinMind backfill 或 snapshot refresh。
+- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data`、`user_watchlist`、latest Daily Radar run/candidates 與 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 provider backfill 或 snapshot refresh。
 - **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
-- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。Backend 會由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`，並由非持股 managed universe（watchlist 與 latest Daily Radar candidates）既有 snapshot 產生 `pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates`。Holding-specific entry anchor 與 avg cost 只在 Portfolio read projection 時由目前使用者的 portfolio rows 套用到 shared market snapshot，不寫回 `phase1_avwap_snapshots`。此 projection 只讀 cache，不觸發 FinMind backfill，不改 Daily Radar ranking/scoring。
+- **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Phase 1C current-day list projection。Backend 會由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`，並由非持股 managed universe（watchlist 與 latest Daily Radar candidates）既有 snapshot 產生 `pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates`。Holding-specific entry anchor 與 avg cost 只在 Portfolio read projection 時由目前使用者的 portfolio rows 套用到 shared market snapshot，不寫回 `phase1_avwap_snapshots`。此 projection 只讀 cache，不觸發 provider backfill，不改 Daily Radar ranking/scoring。
 
 - **Response 200**
 
@@ -784,7 +784,7 @@ make run-api
       "phase1_position_state": {
         "symbol": "2330.TW",
         "data_date": "2026-06-12",
-        "dataset": "TaiwanStockPrice",
+        "dataset": "phase1_daily_ohlcv_amount",
         "adjustment_mode": "unadjusted",
         "state": "hold",
         "label": "續抱",
@@ -801,8 +801,8 @@ make run-api
         },
         "matched_rules": ["phase1_display_anchor_supported"],
         "source": {
-          "provider": "finmind",
-          "dataset": "TaiwanStockPrice",
+          "provider": "twse",
+          "dataset": "TWSE_STOCK_DAY",
           "adjustment_mode": "unadjusted"
         },
         "source_granularity": "daily",
@@ -1581,7 +1581,7 @@ Daily Radar run status：
 - **公開 schema**：後端資料流改為分段 pipeline 後，public Daily Radar read endpoints 與 candidate response schema 不變。
 - **資料源 request budget**：
   - TWSE RWD institutional reports：目前 live provider 讀取 `TWT38U` / `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation tracks。這是 report-level 查詢，不是 selected symbols 的逐檔法人 request。
-  - FinMind Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時對 selected universe symbols 做 single-symbol `TaiwanStockPrice` refresh；同一 `data_date` 已有 fresh snapshot 時直接重用。若 FinMind 尚未提供 requested `run_date` row，step status 會標記 failed，`run-scoring` 不放行。
+  - TWSE-first Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時對 selected universe symbols 做 refresh；上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，step status 會標記 failed，`run-scoring` 不放行。
   - FinMind lending / full margin：正式排程分別在 `refresh-lending` / `refresh-full-margin` 小時對 selected universe symbols refresh；同一 `run_date` 已有 fresh shared context 時直接重用，不再呼叫 provider。
   - yfinance selected-symbol OHLCV：正式排程只在 `refresh-ohlcv` 小時對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用；refresh 完成後會把技術面 tracks 回寫到 prepared universe。
   - yfinance market index OHLCV：每次 run 只抓固定 benchmark。TW 使用 `TAIEX` / `^TWII`，US 使用 `SPX` / `^GSPC`，用於 market regime 與 relative strength benchmark。

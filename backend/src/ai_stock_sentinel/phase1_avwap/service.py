@@ -15,9 +15,11 @@ from ai_stock_sentinel.phase1_avwap.calculator import (
     build_phase1_avwap_payload,
 )
 from ai_stock_sentinel.phase1_avwap.provider import (
+    DailyPriceProviderError,
     DEFAULT_ADJUSTMENT_MODE,
     DEFAULT_PHASE1_DATASET,
-    FinMindDailyPriceProvider,
+    TWSE_STOCK_DAY_DATASET,
+    TwseDailyPriceProvider,
 )
 from ai_stock_sentinel.phase1_avwap.repository import (
     get_phase1_avwap_snapshots,
@@ -112,7 +114,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
     reused_symbols: list[str] = []
     fetched_symbols: list[str] = []
     missing_symbols: list[str] = []
-    active_provider = provider or FinMindDailyPriceProvider()
+    active_provider = provider or TwseDailyPriceProvider()
 
     for item in universe:
         existing_snapshot = existing.get(item.symbol)
@@ -122,6 +124,8 @@ def _refresh_phase1_avwap_snapshots_for_universe(
             continue
 
         start_date = _history_start_date(item, data_date=data_date, lookback_days=lookback_days)
+        source_provider = _provider_metadata(active_provider, "source_provider", item.symbol, default="twse")
+        source_dataset = _provider_metadata(active_provider, "source_dataset", item.symbol, default=TWSE_STOCK_DAY_DATASET)
         try:
             bars = active_provider.fetch_history(item.symbol, start_date=start_date, end_date=data_date)
             payload = build_phase1_avwap_payload(
@@ -130,14 +134,18 @@ def _refresh_phase1_avwap_snapshots_for_universe(
                 data_date=data_date,
                 dataset=dataset,
                 adjustment_mode=adjustment_mode,
+                source_provider=source_provider,
+                source_dataset=source_dataset,
             )
-        except (FinMindClientError, KeyError, ValueError) as exc:
+        except (DailyPriceProviderError, FinMindClientError, KeyError, ValueError) as exc:
             reason = _missing_reason(exc)
             payload = build_missing_phase1_avwap_payload(
                 symbol=item.symbol,
                 data_date=data_date,
                 dataset=dataset,
                 adjustment_mode=adjustment_mode,
+                source_provider=source_provider,
+                source_dataset=source_dataset,
                 missing_reason=reason,
             )
             snapshot = upsert_phase1_avwap_snapshot(
@@ -146,6 +154,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
                 data_date=data_date,
                 dataset=dataset,
                 adjustment_mode=adjustment_mode,
+                source_provider=source_provider,
                 payload=payload,
                 freshness="missing",
                 missing_reason=reason,
@@ -161,6 +170,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
             data_date=data_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
+            source_provider=source_provider,
             payload=payload,
             freshness="fresh",
             missing_reason=None,
@@ -184,9 +194,20 @@ def _history_start_date(item: ManagedUniverseSymbol, *, data_date: date, lookbac
 def _missing_reason(exc: Exception) -> str:
     if isinstance(exc, Phase1AvwapDataError):
         return exc.reason
+    if isinstance(exc, DailyPriceProviderError):
+        return exc.code
     if isinstance(exc, FinMindClientError):
         return exc.code
     return "daily_price_history_unavailable"
+
+
+def _provider_metadata(provider: object, name: str, symbol: str, *, default: str) -> str:
+    value = getattr(provider, name, None)
+    if callable(value):
+        return str(value(symbol))
+    if value:
+        return str(value)
+    return default
 
 
 __all__ = [

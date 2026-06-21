@@ -88,12 +88,7 @@ def read_phase1_observation_for_analyze(
     payload.setdefault("adjustment_mode", adjustment_mode)
     payload["freshness"] = snapshot.freshness
     payload["missing_reason"] = snapshot.missing_reason
-    payload["source"] = {
-        **dict(payload.get("source") or {}),
-        "provider": snapshot.source_provider,
-        "dataset": snapshot.dataset,
-        "adjustment_mode": snapshot.adjustment_mode,
-    }
+    payload["source"] = _snapshot_source(payload, snapshot)
     payload["source_granularity"] = snapshot.source_granularity
     return payload
 
@@ -353,12 +348,7 @@ def _current_day_observation_from_snapshot(
             snapshot=payload,
         )
 
-    observation["source"] = {
-        **dict(observation.get("source") or {}),
-        "provider": snapshot.source_provider,
-        "dataset": snapshot.dataset,
-        "adjustment_mode": snapshot.adjustment_mode,
-    }
+    observation["source"] = _snapshot_source(payload, snapshot)
     observation["source_granularity"] = snapshot.source_granularity
     return observation
 
@@ -494,12 +484,7 @@ def _daily_radar_context_from_snapshot(
     payload.setdefault("adjustment_mode", adjustment_mode)
     payload["freshness"] = snapshot.freshness
     payload["missing_reason"] = snapshot.missing_reason
-    payload["source"] = {
-        **dict(payload.get("source") or {}),
-        "provider": snapshot.source_provider,
-        "dataset": snapshot.dataset,
-        "adjustment_mode": snapshot.adjustment_mode,
-    }
+    payload["source"] = _snapshot_source(payload, snapshot)
     payload["source_granularity"] = snapshot.source_granularity
     payload["applicable_consumers"] = ["daily_radar"]
     data_quality = dict(payload.get("data_quality") or {})
@@ -596,12 +581,7 @@ def _position_state_from_snapshot(
             holding_avg_cost=holding_avg_cost,
         )
 
-    state["source"] = {
-        **dict(state.get("source") or {}),
-        "provider": snapshot.source_provider,
-        "dataset": snapshot.dataset,
-        "adjustment_mode": snapshot.adjustment_mode,
-    }
+    state["source"] = _snapshot_source(payload, snapshot)
     state["source_granularity"] = snapshot.source_granularity
     return state
 
@@ -722,6 +702,16 @@ def _strip_internal_snapshot_fields(payload: dict[str, Any]) -> None:
     anchors = dict(payload.get("anchors") or {})
     anchors.pop("entry", None)
     payload["anchors"] = anchors
+
+
+def _snapshot_source(payload: dict[str, Any], snapshot: Any) -> dict[str, Any]:
+    source = dict(payload.get("source") or {})
+    return {
+        **source,
+        "provider": snapshot.source_provider,
+        "dataset": source.get("dataset") or snapshot.dataset,
+        "adjustment_mode": snapshot.adjustment_mode,
+    }
 
 
 def _shared_snapshot_anchors(payload: dict[str, Any]) -> dict[str, Any]:
