@@ -763,6 +763,25 @@ def test_phase1_avwap_migration_creates_snapshot_table_constraints_and_indexes()
     assert "JSONB" in sql
 
 
+def test_phase1_avwap_twse_default_migration_rekeys_existing_finmind_rows() -> None:
+    upgrade_sql = _render_migration_sql("upgrade", pattern="*_update_phase1_avwap_twse_defaults.py")
+    downgrade_sql = _render_migration_sql("downgrade", pattern="*_update_phase1_avwap_twse_defaults.py")
+
+    assert "UPDATE phase1_avwap_snapshots AS legacy" in upgrade_sql
+    assert "dataset = 'phase1_daily_ohlcv_amount'" in upgrade_sql
+    assert "legacy.dataset = 'TaiwanStockPrice'" in upgrade_sql
+    assert "jsonb_set(" in upgrade_sql
+    assert "to_jsonb('phase1_daily_ohlcv_amount'::text)" in upgrade_sql
+    assert "NOT EXISTS" in upgrade_sql
+
+    assert "UPDATE phase1_avwap_snapshots AS legacy" in downgrade_sql
+    assert "dataset = 'TaiwanStockPrice'" in downgrade_sql
+    assert "legacy.dataset = 'phase1_daily_ohlcv_amount'" in downgrade_sql
+    assert "legacy.source_provider = 'finmind'" in downgrade_sql
+    assert "to_jsonb('TaiwanStockPrice'::text)" in downgrade_sql
+    assert "NOT EXISTS" in downgrade_sql
+
+
 def _seed_user_universe(session: Session) -> None:
     _seed_user_with_active_holding(session)
     session.add(UserWatchlist(user_id=1, symbol="2454.TW", sort_order=0))
@@ -890,12 +909,12 @@ def _phase1_snapshot_payload(
     }
 
 
-def _load_phase1_avwap_migration() -> ModuleType:
+def _load_phase1_avwap_migration(pattern: str = "*_add_phase1_avwap_snapshots.py") -> ModuleType:
     migration_paths = sorted(
-        Path(__file__).parents[1].joinpath("alembic", "versions").glob("*_add_phase1_avwap_snapshots.py")
+        Path(__file__).parents[1].joinpath("alembic", "versions").glob(pattern)
     )
     assert len(migration_paths) == 1
-    spec = importlib.util.spec_from_file_location("phase1_avwap_snapshot_migration", migration_paths[0])
+    spec = importlib.util.spec_from_file_location(f"phase1_avwap_migration_{migration_paths[0].stem}", migration_paths[0])
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -903,8 +922,8 @@ def _load_phase1_avwap_migration() -> ModuleType:
     return module
 
 
-def _render_migration_sql(direction: str) -> str:
-    migration = _load_phase1_avwap_migration()
+def _render_migration_sql(direction: str, *, pattern: str = "*_add_phase1_avwap_snapshots.py") -> str:
+    migration = _load_phase1_avwap_migration(pattern)
     buffer = StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",
