@@ -32,6 +32,7 @@ from ai_stock_sentinel.db.models import (
     UserWatchlist,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.phase1_avwap.provider import DEFAULT_PHASE1_DATASET, TWSE_STOCK_DAY_DATASET
 from ai_stock_sentinel.user_models.user import User
 
 
@@ -903,15 +904,20 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     portfolio_db_session.add(Phase1AvwapSnapshot(
         symbol="2330.TW",
         data_date=summary_date,
-        dataset="TaiwanStockPrice",
+        dataset=DEFAULT_PHASE1_DATASET,
         adjustment_mode="unadjusted",
-        source_provider="finmind",
+        source_provider="twse",
         source_granularity="daily",
         is_final=True,
         freshness="fresh",
         missing_reason=None,
         payload={
             "symbol": "2330.TW",
+            "source": {
+                "provider": "twse",
+                "dataset": TWSE_STOCK_DAY_DATASET,
+                "adjustment_mode": "unadjusted",
+            },
             "ohlcv": {"close": 120},
             "bars": [
                 {

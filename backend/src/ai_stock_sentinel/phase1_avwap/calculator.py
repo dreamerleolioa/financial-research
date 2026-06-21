@@ -31,6 +31,8 @@ def build_phase1_avwap_payload(
     data_date: date,
     dataset: str,
     adjustment_mode: str,
+    source_provider: str = "finmind",
+    source_dataset: str | None = None,
 ) -> dict[str, Any]:
     ordered_bars = sorted(
         (bar for bar in bars if bar.trade_date <= data_date),
@@ -70,8 +72,8 @@ def build_phase1_avwap_payload(
         "dataset": dataset,
         "adjustment_mode": adjustment_mode,
         "source": {
-            "provider": "finmind",
-            "dataset": dataset,
+            "provider": source_provider,
+            "dataset": source_dataset or dataset,
             "adjustment_mode": adjustment_mode,
         },
         "source_granularity": "daily",
@@ -101,6 +103,8 @@ def build_missing_phase1_avwap_payload(
     data_date: date,
     dataset: str,
     adjustment_mode: str,
+    source_provider: str = "finmind",
+    source_dataset: str | None = None,
     missing_reason: str,
 ) -> dict[str, Any]:
     return {
@@ -109,8 +113,8 @@ def build_missing_phase1_avwap_payload(
         "dataset": dataset,
         "adjustment_mode": adjustment_mode,
         "source": {
-            "provider": "finmind",
-            "dataset": dataset,
+            "provider": source_provider,
+            "dataset": source_dataset or dataset,
             "adjustment_mode": adjustment_mode,
         },
         "source_granularity": "daily",

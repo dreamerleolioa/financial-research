@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 from alembic.migration import MigrationContext
@@ -24,7 +25,14 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar, build_phase1_avwap_payload
-from ai_stock_sentinel.phase1_avwap.provider import normalize_finmind_daily_price_rows
+from ai_stock_sentinel.phase1_avwap.provider import (
+    DEFAULT_PHASE1_DATASET,
+    FINMIND_TAIWAN_STOCK_PRICE_DATASET,
+    TWSE_STOCK_DAY_DATASET,
+    TwseDailyPriceProvider,
+    normalize_finmind_daily_price_rows,
+    normalize_twse_stock_day_payload,
+)
 from ai_stock_sentinel.phase1_avwap.projection import (
     read_phase1_avwap_contexts_for_daily_radar,
     read_phase1_current_day_observations_for_managed_universe,
@@ -68,6 +76,9 @@ def db_session() -> Session:
 
 
 class FakeDailyPriceProvider:
+    source_provider = "test"
+    source_dataset = "test_daily_price"
+
     def __init__(self, bars_by_symbol: dict[str, list[DailyPriceBar]] | None = None) -> None:
         self.bars_by_symbol = bars_by_symbol or {}
         self.calls: list[tuple[str, date, date]] = []
@@ -108,16 +119,88 @@ def test_normalize_finmind_rows_uses_trading_money_and_marks_fallback_estimated(
     assert rows[1].estimated_amount is True
 
 
+def test_normalize_twse_stock_day_payload_maps_roc_dates_and_trading_amount() -> None:
+    rows = normalize_twse_stock_day_payload(
+        {
+            "stat": "OK",
+            "fields": ["日期", "成交股數", "成交金額", "開盤價", "最高價", "最低價", "收盤價"],
+            "data": [["115/05/04", "44,458,732", "99,944,198,300", "2,200.00", "2,285.00", "2,195.00", "2,275.00"]],
+        }
+    )
+
+    assert rows == [
+        DailyPriceBar(
+            trade_date=date(2026, 5, 4),
+            open=2200.0,
+            high=2285.0,
+            low=2195.0,
+            close=2275.0,
+            volume=44_458_732.0,
+            amount=99_944_198_300.0,
+            estimated_amount=False,
+        )
+    ]
+
+
+def test_twse_daily_price_provider_fetches_months_and_filters_requested_window() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: int):
+        calls.append({"url": url, "params": params, "timeout": timeout})
+        payloads = {
+            "20260501": _twse_payload([["115/05/29", "100", "1000", "10", "11", "9", "10"]]),
+            "20260601": _twse_payload([["115/06/01", "200", "2400", "11", "13", "10", "12"]]),
+        }
+        return _FakeResponse(payloads[params["date"]])
+
+    provider = TwseDailyPriceProvider(request_get=fake_get, timeout=7)
+
+    rows = provider.fetch_history("2330.TW", start_date=date(2026, 5, 30), end_date=date(2026, 6, 2))
+
+    assert provider.source_provider("2330.TW") == "twse"
+    assert provider.source_dataset("2330.TW") == TWSE_STOCK_DAY_DATASET
+    assert [call["params"] for call in calls] == [
+        {"response": "json", "date": "20260501", "stockNo": "2330"},
+        {"response": "json", "date": "20260601", "stockNo": "2330"},
+    ]
+    assert [row.trade_date for row in rows] == [date(2026, 6, 1)]
+    assert rows[0].amount == 2400
+
+
+def test_twse_daily_price_provider_uses_finmind_fallback_for_tpex_symbols() -> None:
+    fallback = FakeDailyPriceProvider({"6488.TWO": _bars(date(2026, 6, 5))})
+    fallback.source_provider = "finmind"
+    fallback.source_dataset = FINMIND_TAIWAN_STOCK_PRICE_DATASET
+    provider = TwseDailyPriceProvider(
+        request_get=lambda *args, **kwargs: pytest.fail("TWSE should not be called for .TWO symbols"),
+        fallback_provider=fallback,  # type: ignore[arg-type]
+    )
+
+    rows = provider.fetch_history("6488.TWO", start_date=date(2026, 6, 1), end_date=date(2026, 6, 5))
+
+    assert provider.source_provider("6488.TWO") == "finmind"
+    assert provider.source_dataset("6488.TWO") == FINMIND_TAIWAN_STOCK_PRICE_DATASET
+    assert fallback.calls == [("6488.TWO", date(2026, 6, 1), date(2026, 6, 5))]
+    assert rows == _bars(date(2026, 6, 5))
+
+
 def test_build_phase1_avwap_payload_computes_daily_anchors_from_amount_over_volume() -> None:
     payload = build_phase1_avwap_payload(
         symbol="2330.TW",
         bars=_bars(date(2026, 6, 5)),
         data_date=date(2026, 6, 5),
-        dataset="TaiwanStockPrice",
+        dataset=DEFAULT_PHASE1_DATASET,
         adjustment_mode="unadjusted",
+        source_provider="twse",
+        source_dataset=TWSE_STOCK_DAY_DATASET,
     )
 
     assert payload["source_granularity"] == "daily"
+    assert payload["source"] == {
+        "provider": "twse",
+        "dataset": TWSE_STOCK_DAY_DATASET,
+        "adjustment_mode": "unadjusted",
+    }
     assert payload["data_quality"]["estimated"] is False
     assert "holding" not in payload
     assert "entry" not in payload["anchors"]
@@ -185,8 +268,11 @@ def test_refresh_phase1_avwap_snapshots_reuses_fresh_rows_before_fetching(
     ]
     rows = db_session.scalars(select(Phase1AvwapSnapshot).order_by(Phase1AvwapSnapshot.symbol)).all()
     assert [row.symbol for row in rows] == ["2317.TW", "2330.TW", "2454.TW"]
-    assert rows[0].dataset == "TaiwanStockPrice"
+    assert rows[0].dataset == DEFAULT_PHASE1_DATASET
     assert rows[0].adjustment_mode == "unadjusted"
+    assert rows[0].source_provider == "test"
+    assert rows[0].payload["source"]["provider"] == "test"
+    assert rows[0].payload["source"]["dataset"] == "test_daily_price"
     assert rows[0].payload["anchors"]["swing_low_60d"]["avwap"] == pytest.approx(14.6667)
     assert "holding" not in rows[1].payload
     assert "entry" not in rows[1].payload["anchors"]
@@ -269,6 +355,11 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
                 "swing_low_60d": {"avwap": 900.25},
             },
             "data_quality": {"estimated": False, "missing_reason": None},
+            "source": {
+                "provider": "twse",
+                "dataset": TWSE_STOCK_DAY_DATASET,
+                "adjustment_mode": "unadjusted",
+            },
         },
         freshness="fresh",
     )
@@ -287,8 +378,8 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
     assert "entry" not in observation["anchors"]
     assert observation["anchors"]["swing_low_60d"]["avwap"] == 900.25
     assert observation["source"] == {
-        "provider": "finmind",
-        "dataset": "TaiwanStockPrice",
+        "provider": "twse",
+        "dataset": TWSE_STOCK_DAY_DATASET,
         "adjustment_mode": "unadjusted",
     }
 
@@ -672,6 +763,25 @@ def test_phase1_avwap_migration_creates_snapshot_table_constraints_and_indexes()
     assert "JSONB" in sql
 
 
+def test_phase1_avwap_twse_default_migration_rekeys_existing_finmind_rows() -> None:
+    upgrade_sql = _render_migration_sql("upgrade", pattern="*_update_phase1_avwap_twse_defaults.py")
+    downgrade_sql = _render_migration_sql("downgrade", pattern="*_update_phase1_avwap_twse_defaults.py")
+
+    assert "UPDATE phase1_avwap_snapshots AS legacy" in upgrade_sql
+    assert "dataset = 'phase1_daily_ohlcv_amount'" in upgrade_sql
+    assert "legacy.dataset = 'TaiwanStockPrice'" in upgrade_sql
+    assert "jsonb_set(" in upgrade_sql
+    assert "to_jsonb('phase1_daily_ohlcv_amount'::text)" in upgrade_sql
+    assert "NOT EXISTS" in upgrade_sql
+
+    assert "UPDATE phase1_avwap_snapshots AS legacy" in downgrade_sql
+    assert "dataset = 'TaiwanStockPrice'" in downgrade_sql
+    assert "legacy.dataset = 'phase1_daily_ohlcv_amount'" in downgrade_sql
+    assert "legacy.source_provider = 'finmind'" in downgrade_sql
+    assert "to_jsonb('TaiwanStockPrice'::text)" in downgrade_sql
+    assert "NOT EXISTS" in downgrade_sql
+
+
 def _seed_user_universe(session: Session) -> None:
     _seed_user_with_active_holding(session)
     session.add(UserWatchlist(user_id=1, symbol="2454.TW", sort_order=0))
@@ -729,6 +839,25 @@ def _add_candidate(session: Session, run: DailyRadarRun, *, symbol: str, score: 
     )
 
 
+class _FakeResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+def _twse_payload(rows: list[list[str]]) -> dict[str, Any]:
+    return {
+        "stat": "OK",
+        "fields": ["日期", "成交股數", "成交金額", "開盤價", "最高價", "最低價", "收盤價"],
+        "data": rows,
+    }
+
+
 def _bars(end_date: date) -> list[DailyPriceBar]:
     return [
         DailyPriceBar(date(2026, 6, 1), 10, 10, 9, 10, 100, 1000),
@@ -753,7 +882,7 @@ def _phase1_snapshot_payload(
     return {
         "symbol": symbol,
         "data_date": "2026-06-05",
-        "dataset": "TaiwanStockPrice",
+        "dataset": DEFAULT_PHASE1_DATASET,
         "adjustment_mode": "unadjusted",
         "ohlcv": {"close": close},
         "anchors": {
@@ -780,12 +909,12 @@ def _phase1_snapshot_payload(
     }
 
 
-def _load_phase1_avwap_migration() -> ModuleType:
+def _load_phase1_avwap_migration(pattern: str = "*_add_phase1_avwap_snapshots.py") -> ModuleType:
     migration_paths = sorted(
-        Path(__file__).parents[1].joinpath("alembic", "versions").glob("*_add_phase1_avwap_snapshots.py")
+        Path(__file__).parents[1].joinpath("alembic", "versions").glob(pattern)
     )
     assert len(migration_paths) == 1
-    spec = importlib.util.spec_from_file_location("phase1_avwap_snapshot_migration", migration_paths[0])
+    spec = importlib.util.spec_from_file_location(f"phase1_avwap_migration_{migration_paths[0].stem}", migration_paths[0])
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -793,8 +922,8 @@ def _load_phase1_avwap_migration() -> ModuleType:
     return module
 
 
-def _render_migration_sql(direction: str) -> str:
-    migration = _load_phase1_avwap_migration()
+def _render_migration_sql(direction: str, *, pattern: str = "*_add_phase1_avwap_snapshots.py") -> str:
+    migration = _load_phase1_avwap_migration(pattern)
     buffer = StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",

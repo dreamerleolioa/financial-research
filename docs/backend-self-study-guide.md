@@ -61,7 +61,7 @@ AI Stock Sentinel 後端目前有四個主要產品表面：
 | `analysis/` | `/analyze` router、schemas、application use cases、cache/response assembly、LLM analyzer、news cleaner、quality gate、confidence scorer、technical metrics、strategy generator、position scorer、trade/lifecycle review |
 | `data_sources/` | yfinance、RSS、FinMind、institutional flow provider、fundamental provider |
 | `daily_radar/` | universe、raw data backfill、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance |
-| `phase1_avwap/` | managed-universe resolver、FinMind `TaiwanStockPrice` daily provider、日頻 AVWAP calculation、snapshot repository/service、Daily Radar selected-symbol refresh、Analyze/Portfolio/Daily Radar read-only projections |
+| `phase1_avwap/` | managed-universe resolver、TWSE-first daily provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind fallback）、日頻 AVWAP calculation、snapshot repository/service、Daily Radar selected-symbol refresh、Analyze/Portfolio/Daily Radar read-only projections |
 | `portfolio/` | portfolio CRUD、entry record contract、fees、risk summary、history router |
 | `watchlist/` | watchlist schemas、repository、application use cases、CRUD/reorder router |
 | `shared_context.py` | 讀取 shared background context 並轉成 evidence/caveat/data quality payload |

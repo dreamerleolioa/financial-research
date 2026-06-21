@@ -1,4 +1,4 @@
-import type { AnalyzeResponse, TechnicalIndicators } from "./analysisTypes";
+import type { AnalyzeResponse, Phase1Observation, TechnicalIndicators } from "./analysisTypes";
 import { formatPrice, formatVolume } from "./formatters";
 
 export type CopyStatus = "idle" | "success" | "error";
@@ -82,6 +82,21 @@ const DONCHIAN_POSITION_LABEL: Record<string, { label: string }> = {
   flat: { label: "區間平坦" },
 };
 
+const PHASE1_ANCHOR_ORDER = ["swing_low_60d", "breakout_20d", "high_volume_60d", "entry"] as const;
+
+const PHASE1_ANCHOR_LABEL: Record<string, string> = {
+  swing_low_60d: "60 日波段低點 AVWAP",
+  breakout_20d: "20 日突破 AVWAP",
+  high_volume_60d: "60 日大量 AVWAP",
+  entry: "持股進場日 AVWAP",
+};
+
+const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
+  not_in_phase1_universe: "不在試驗版管理範圍",
+  phase1_snapshot_missing: "尚無試驗版快照",
+  phase1_snapshot_read_failed: "試驗版快照讀取失敗",
+};
+
 const TECHNICAL_LABELS = {
   bollinger_position: BOLLINGER_POSITION_LABEL,
   macd_bias: MACD_BIAS_LABEL,
@@ -124,6 +139,52 @@ export function formatMovingAverages(indicators: TechnicalIndicators, snapshotSy
     : "—";
 }
 
+function formatPhase1Distance(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function formatPhase1MissingReason(reason: string | null | undefined): string {
+  if (!reason) return "資料不足";
+  return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
+}
+
+function buildPhase1AvwapCopyRows(
+  observation: Phase1Observation | null | undefined,
+  snapshotSymbol?: string,
+): Array<[string, string]> {
+  if (!observation) return [];
+
+  const entries = Object.entries(observation.anchors ?? {}).filter(([, anchor]) => anchor.available !== false);
+  const priority: Map<string, number> = new Map(PHASE1_ANCHOR_ORDER.map((key, index) => [key, index]));
+  const anchorRows: Array<[string, string]> = entries
+    .sort(([left], [right]) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99) || left.localeCompare(right))
+    .map(([key, anchor]) => {
+      const parts = [
+        formatPrice(anchor.avwap, snapshotSymbol),
+        `距離 ${formatPhase1Distance(anchor.distance_to_avwap_pct)}`,
+      ];
+      if (anchor.anchor_date) parts.push(`錨點日 ${anchor.anchor_date}`);
+      if (anchor.estimated) parts.push("日資料估算");
+      return [PHASE1_ANCHOR_LABEL[key] ?? `${key} AVWAP`, parts.join(" / ")];
+    });
+
+  if (anchorRows.length > 0) {
+    return [
+      ["AVWAP 資料日", observation.data_date],
+      ["AVWAP 狀態", observation.freshness === "missing" ? formatPhase1MissingReason(observation.missing_reason) : "快照可用"],
+      ...anchorRows,
+      ["AVWAP 來源", `${observation.source?.provider ?? "—"} / ${observation.source?.dataset ?? observation.dataset}`],
+    ];
+  }
+
+  if (!observation.missing_reason || observation.missing_reason === "not_in_phase1_universe") return [];
+  return [
+    ["AVWAP 資料日", observation.data_date],
+    ["AVWAP 狀態", formatPhase1MissingReason(observation.missing_reason)],
+  ];
+}
+
 export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Record<string, unknown>): string {
   const indicators = result.technical_indicators;
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
@@ -152,6 +213,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
       `股票代碼：${displaySymbol}`,
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
+      ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol).map(([label, value]) => `${label}：${value}`),
     ].join("\n");
   }
 
@@ -191,6 +253,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
     ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
     ["MFI", formatIndicatorNumber(indicators.mfi, 1)],
     ["唐奇安通道上/下緣", indicatorPair(indicators.donchian_upper, 2, indicators.donchian_lower)],
+    ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol),
   ];
 
   return ["技術指標摘要", ...rows.map(([label, value]) => `${label}：${value}`)].join("\n");

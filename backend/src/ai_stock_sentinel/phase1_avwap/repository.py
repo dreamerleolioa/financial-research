@@ -41,7 +41,7 @@ def upsert_phase1_avwap_snapshot(
     payload: Mapping[str, Any],
     dataset: str = DEFAULT_PHASE1_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
-    source_provider: str = "finmind",
+    source_provider: str = "twse",
     source_granularity: str = "daily",
     is_final: bool = True,
     freshness: str = "fresh",

@@ -87,7 +87,7 @@ from ai_stock_sentinel.daily_radar.universe import (
 )
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.clock import today_taipei
-from ai_stock_sentinel.phase1_avwap.provider import FinMindDailyPriceProvider
+from ai_stock_sentinel.phase1_avwap.provider import TwseDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import (
     DailyPriceProvider,
     refresh_phase1_avwap_snapshots_for_symbols,
@@ -124,7 +124,7 @@ def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextP
 
 
 def get_phase1_avwap_daily_price_provider() -> DailyPriceProvider:
-    return FinMindDailyPriceProvider()
+    return TwseDailyPriceProvider()
 
 
 @router.post(
