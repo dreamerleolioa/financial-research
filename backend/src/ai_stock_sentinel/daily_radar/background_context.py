@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol
 
+import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.repository import (
@@ -14,6 +15,7 @@ from ai_stock_sentinel.daily_radar.repository import (
     get_latest_daily_radar_run,
     upsert_shared_background_context,
 )
+from ai_stock_sentinel.db.models import UserPortfolio, UserWatchlist
 
 
 BACKGROUND_CONTEXT_LABELS: dict[str, str] = {
@@ -105,22 +107,33 @@ def update_background_chip_context_cache(
     reuse_same_day_fresh: bool = False,
 ) -> dict[str, Any]:
     active_provider = provider or StubBackgroundChipContextProvider()
-    selected_symbols = _ordered_unique(symbols or _latest_daily_radar_symbols(session, market=market))
     active_context_types = _ordered_unique(context_types or BACKGROUND_CONTEXT_TYPES)
+    source_errors: list[dict[str, Any]] = []
+    selected_symbols = _ordered_unique(
+        symbols if symbols is not None else _default_refresh_symbols(
+            session,
+            market=market,
+            context_types=active_context_types,
+            errors=source_errors,
+        )
+    )
     if not selected_symbols:
         return {
-            "status": "completed",
+            "status": "completed" if not source_errors else "failed",
             "market": market,
             "run_date": run_date.isoformat(),
             "symbol_count": 0,
             "context_types": active_context_types,
             "records_written": 0,
-            "errors": [{"code": "no_selected_symbols", "message": "No selected symbols were available for context update."}],
+            "errors": [
+                *source_errors,
+                {"code": "no_selected_symbols", "message": "No selected symbols were available for context update."},
+            ],
         }
 
     records_written = 0
     reused_pairs: set[tuple[str, str]] = set()
-    errors: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = list(source_errors)
     fetch_symbols_by_context_type = {context_type: list(selected_symbols) for context_type in active_context_types}
     if reuse_same_day_fresh:
         fresh_rows = get_shared_background_context_rows(
@@ -236,6 +249,69 @@ def _latest_daily_radar_symbols(session: Session, *, market: str) -> list[str]:
     if latest_run is None:
         return []
     return [candidate.symbol for candidate in latest_run.candidates]
+
+
+def _default_refresh_symbols(
+    session: Session,
+    *,
+    market: str,
+    context_types: list[str],
+    errors: list[dict[str, Any]],
+) -> list[str]:
+    if "weekly_major_holders" not in context_types:
+        return _collect_symbols(
+            errors,
+            source="latest_daily_radar_candidates",
+            getter=lambda: _latest_daily_radar_symbols(session, market=market),
+        )
+
+    symbols: list[str] = []
+    for source, getter in (
+        ("active_portfolio_holdings", lambda: _active_portfolio_symbols(session)),
+        ("watchlist", lambda: _watchlist_symbols(session)),
+        ("latest_daily_radar_candidates", lambda: _latest_daily_radar_symbols(session, market=market)),
+    ):
+        symbols.extend(_collect_symbols(errors, source=source, getter=getter))
+    return symbols
+
+
+def _collect_symbols(
+    errors: list[dict[str, Any]],
+    *,
+    source: str,
+    getter: Callable[[], Iterable[str]],
+) -> list[str]:
+    try:
+        return list(getter())
+    except Exception as exc:
+        errors.append(
+            {
+                "code": "background_context_symbol_source_failed",
+                "source": source,
+                "message": str(exc),
+                "error_type": exc.__class__.__name__,
+            }
+        )
+        return []
+
+
+def _active_portfolio_symbols(session: Session) -> list[str]:
+    return list(
+        session.scalars(
+            sa.select(UserPortfolio.symbol)
+            .where(UserPortfolio.is_active.is_(True))
+            .order_by(UserPortfolio.symbol.asc())
+        ).all()
+    )
+
+
+def _watchlist_symbols(session: Session) -> list[str]:
+    return list(
+        session.scalars(
+            sa.select(UserWatchlist.symbol)
+            .order_by(UserWatchlist.symbol.asc())
+        ).all()
+    )
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:
