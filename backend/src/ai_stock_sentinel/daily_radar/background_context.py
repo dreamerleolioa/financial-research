@@ -109,13 +109,17 @@ def update_background_chip_context_cache(
     active_provider = provider or StubBackgroundChipContextProvider()
     active_context_types = _ordered_unique(context_types or BACKGROUND_CONTEXT_TYPES)
     source_errors: list[dict[str, Any]] = []
+    selected_symbols_by_context_type = _selected_symbols_by_context_type(
+        session,
+        market=market,
+        context_types=active_context_types,
+        symbols=symbols,
+        errors=source_errors,
+    )
     selected_symbols = _ordered_unique(
-        symbols if symbols is not None else _default_refresh_symbols(
-            session,
-            market=market,
-            context_types=active_context_types,
-            errors=source_errors,
-        )
+        symbol
+        for context_type in active_context_types
+        for symbol in selected_symbols_by_context_type.get(context_type, [])
     )
     if not selected_symbols:
         return {
@@ -134,7 +138,10 @@ def update_background_chip_context_cache(
     records_written = 0
     reused_pairs: set[tuple[str, str]] = set()
     errors: list[dict[str, Any]] = list(source_errors)
-    fetch_symbols_by_context_type = {context_type: list(selected_symbols) for context_type in active_context_types}
+    fetch_symbols_by_context_type = {
+        context_type: list(selected_symbols_by_context_type.get(context_type, []))
+        for context_type in active_context_types
+    }
     if reuse_same_day_fresh:
         fresh_rows = get_shared_background_context_rows(
             session,
@@ -151,34 +158,22 @@ def update_background_chip_context_cache(
         fetch_symbols_by_context_type = {
             context_type: [
                 symbol
-                for symbol in selected_symbols
+                for symbol in context_symbols
                 if (symbol, context_type) not in reused_pairs
             ]
-            for context_type in active_context_types
+            for context_type, context_symbols in fetch_symbols_by_context_type.items()
         }
     try:
-        if reuse_same_day_fresh:
-            payloads_by_batch = (
-                active_provider.fetch(
-                    symbols=fetch_symbols,
-                    context_types=[context_type],
-                    run_date=run_date,
-                    market=market,
-                )
-                for context_type in active_context_types
-                if (fetch_symbols := fetch_symbols_by_context_type[context_type])
-            )
-        else:
-            payloads_by_batch = (
-                active_provider.fetch(
-                    symbols=selected_symbols,
-                    context_types=active_context_types,
-                    run_date=run_date,
-                    market=market,
-                ),
-            )
-        for payloads in payloads_by_batch:
-            for payload in payloads:
+        for fetch_symbols, fetch_context_types in _context_fetch_batches(
+            fetch_symbols_by_context_type,
+            context_types=active_context_types,
+        ):
+            for payload in active_provider.fetch(
+                symbols=fetch_symbols,
+                context_types=fetch_context_types,
+                run_date=run_date,
+                market=market,
+            ):
                 upsert_shared_background_context(
                     session,
                     symbol=payload.symbol,
@@ -211,6 +206,69 @@ def update_background_chip_context_cache(
         "reused_symbols": sorted({symbol for symbol, _context_type in reused_pairs}),
         "errors": errors,
     }
+
+
+def _selected_symbols_by_context_type(
+    session: Session,
+    *,
+    market: str,
+    context_types: list[str],
+    symbols: Iterable[str] | None,
+    errors: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    if symbols is not None:
+        selected_symbols = _ordered_unique(symbols)
+        return {context_type: list(selected_symbols) for context_type in context_types}
+
+    return _default_refresh_symbols_by_context_type(
+        session,
+        market=market,
+        context_types=context_types,
+        errors=errors,
+    )
+
+
+def _context_fetch_batches(
+    symbols_by_context_type: Mapping[str, list[str]],
+    *,
+    context_types: list[str],
+) -> Iterable[tuple[list[str], list[str]]]:
+    batches: dict[tuple[str, ...], list[str]] = {}
+    for context_type in context_types:
+        fetch_symbols = tuple(symbols_by_context_type.get(context_type, []))
+        if not fetch_symbols:
+            continue
+        batches.setdefault(fetch_symbols, []).append(context_type)
+    for fetch_symbols, fetch_context_types in batches.items():
+        yield list(fetch_symbols), fetch_context_types
+
+
+def _default_refresh_symbols_by_context_type(
+    session: Session,
+    *,
+    market: str,
+    context_types: list[str],
+    errors: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    latest_symbols = _collect_symbols(
+        errors,
+        source="latest_daily_radar_candidates",
+        getter=lambda: _latest_daily_radar_symbols(session, market=market),
+    )
+    symbols_by_context_type: dict[str, list[str]] = {
+        context_type: _ordered_unique(latest_symbols)
+        for context_type in context_types
+    }
+    if "weekly_major_holders" in context_types:
+        weekly_symbols: list[str] = []
+        for source, getter in (
+            ("active_portfolio_holdings", lambda: _active_portfolio_symbols(session)),
+            ("watchlist", lambda: _watchlist_symbols(session)),
+        ):
+            weekly_symbols.extend(_collect_symbols(errors, source=source, getter=getter))
+        weekly_symbols.extend(latest_symbols)
+        symbols_by_context_type["weekly_major_holders"] = _ordered_unique(weekly_symbols)
+    return symbols_by_context_type
 
 
 def build_background_context_labels(
@@ -249,30 +307,6 @@ def _latest_daily_radar_symbols(session: Session, *, market: str) -> list[str]:
     if latest_run is None:
         return []
     return [candidate.symbol for candidate in latest_run.candidates]
-
-
-def _default_refresh_symbols(
-    session: Session,
-    *,
-    market: str,
-    context_types: list[str],
-    errors: list[dict[str, Any]],
-) -> list[str]:
-    if "weekly_major_holders" not in context_types:
-        return _collect_symbols(
-            errors,
-            source="latest_daily_radar_candidates",
-            getter=lambda: _latest_daily_radar_symbols(session, market=market),
-        )
-
-    symbols: list[str] = []
-    for source, getter in (
-        ("active_portfolio_holdings", lambda: _active_portfolio_symbols(session)),
-        ("watchlist", lambda: _watchlist_symbols(session)),
-        ("latest_daily_radar_candidates", lambda: _latest_daily_radar_symbols(session, market=market)),
-    ):
-        symbols.extend(_collect_symbols(errors, source=source, getter=getter))
-    return symbols
 
 
 def _collect_symbols(

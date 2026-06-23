@@ -1204,6 +1204,87 @@ def test_daily_radar_weekly_chip_context_update_uses_holdings_watchlist_and_late
         assert "entry_price" not in row.payload
 
 
+def test_daily_radar_chip_context_update_keeps_daily_contexts_on_latest_candidates_when_context_types_default(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    provider = FakeBackgroundChipContextProvider()
+    user = User(google_sub="user-1", email="user@example.com", name="User")
+    daily_radar_db_session.add(user)
+    daily_radar_db_session.flush()
+    daily_radar_db_session.add_all(
+        [
+            UserPortfolio(
+                user_id=user.id,
+                symbol="2330.TW",
+                entry_price=Decimal("900.00"),
+                quantity=1,
+                entry_date=date(2026, 6, 1),
+                is_active=True,
+            ),
+            UserWatchlist(user_id=user.id, symbol="2454.TW", sort_order=1),
+        ]
+    )
+    run = _persist_daily_radar_run(daily_radar_db_session, run_date=date(2026, 6, 2))
+    _persist_daily_radar_candidate(daily_radar_db_session, run, symbol="2317.TW", score=88)
+    _persist_daily_radar_candidate(daily_radar_db_session, run, symbol="2330.TW", score=86)
+    daily_radar_db_session.commit()
+
+    api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/chip-context/update",
+            json={
+                "run_date": "2026-06-02",
+                "market": "TW",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "completed",
+        "run_date": "2026-06-02",
+        "market": "TW",
+        "symbol_count": 3,
+        "context_types": ["weekly_major_holders", "lending", "full_margin"],
+        "records_written": 7,
+        "errors": [],
+    }
+    assert provider.calls == [
+        {
+            "symbols": ["2330.TW", "2454.TW", "2317.TW"],
+            "context_types": ["weekly_major_holders"],
+            "run_date": date(2026, 6, 2),
+            "market": "TW",
+        },
+        {
+            "symbols": ["2317.TW", "2330.TW"],
+            "context_types": ["lending", "full_margin"],
+            "run_date": date(2026, 6, 2),
+            "market": "TW",
+        },
+    ]
+    rows = daily_radar_db_session.query(SharedBackgroundContext).all()
+    assert {
+        row.symbol
+        for row in rows
+        if row.context_type == "weekly_major_holders"
+    } == {"2330.TW", "2454.TW", "2317.TW"}
+    assert {
+        row.symbol
+        for row in rows
+        if row.context_type in {"lending", "full_margin"}
+    } == {"2317.TW", "2330.TW"}
+
+
 def test_daily_radar_weekly_chip_context_update_reports_symbol_source_failures(
     monkeypatch,
     daily_radar_db_session: Session,
