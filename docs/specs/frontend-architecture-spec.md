@@ -1,6 +1,6 @@
 # 前端架構規格
 
-> 最近同步：2026-06-16。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
+> 最近同步：2026-06-23。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
 
 ## 技術棧
 
@@ -76,6 +76,8 @@ TanStack Query 管理 server state：
 
 Portfolio UI 標題為 `持股 AVWAP 觀察`，不得在持股頁顯示 watchlist / Daily Radar 的非持股候選。`breakout_confirmation_candidates`、`pullback_observation_candidates` 與 `overheated_do_not_chase_candidates` 可因 API 相容性保留在 parsed response shape，但不作為 Portfolio UI 顯示來源；非持股 AVWAP 候選應回 Daily Radar 或關注清單語境呈現，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。Phase 1 AVWAP snapshot 過期時 backend 會回 `missing_reason = "phase1_snapshot_stale"`，前端應以資料不足/風險 caveat 呈現，不把舊 snapshot 當今日觀察依據。
 
+`GET /portfolio/risk-summary` parser 也接受每個 `position_risks[]` 的 `weekly_major_holders` 與 `chip_stability_context`。Portfolio UI 可顯示籌碼穩定性摘要，但它只作 active holding 的週頻 TDCC 補充資訊：千張大戶增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定，下降代表籌碼穩定性轉弱或集中度下降但不能單獨判定看空。前端不得用這個欄位重新排序持股、改 risk state、改 risk score 或生成加減碼文案。
+
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 - `portfolioKeys.items()`
@@ -119,6 +121,7 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
 - Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。頁面可單筆查詢，也可一鍵批次補查尚未載入的關注標的；所有標的已載入後，批次按鈕改為重新快查全部。
 - 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
+- 籌碼穩定性補充：Watchlist quick lookup / Analyze response 可接收 `chip_stability_context`，但它不是技術指標分數的一部分。複製完整指標摘要時，若 response 有此欄位，`buildTechnicalIndicatorsCopyText()` 會加入 `[Chip stability companion]` 區塊，且文案必須標注 `TDCC 週頻籌碼穩定性補充，不納入 technical score。`
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
 股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。
@@ -137,10 +140,10 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
 
 - `frontend/src/lib/portfolioSchemas.ts`
   - 驗證 `GET /portfolio/risk-summary`
-  - 目標：風險摘要、position risk、risk budget、data quality 的核心欄位
+  - 目標：風險摘要、position risk、risk budget、data quality、`weekly_major_holders` 與 `chip_stability_context` 的核心欄位
 - `frontend/src/lib/analysisSchemas.ts`
   - 驗證 `POST /analyze`
-  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、Phase 1 `phase1_observation` trace
+  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、Phase 1 `phase1_observation` trace、`chip_stability_context`
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 

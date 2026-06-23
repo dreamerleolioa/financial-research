@@ -75,7 +75,7 @@
 | `daily_analysis_log` | 每日分析歷史紀錄與 strategy trace |
 | `daily_radar_runs` / `daily_radar_candidates` | Daily Radar run log、候選清單、score breakdown、input snapshot、matched rules |
 | `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
-| `shared_background_contexts` | weekly major holders、lending、full margin 等背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
+| `shared_background_contexts` | weekly major holders、lending、full margin 等 market-only 背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
 | `phase1_avwap_snapshots` | Phase 1 日頻 AVWAP shared market snapshot cache；以 `symbol` / `data_date` / logical `dataset` / `adjustment_mode` upsert，保存 market bars、generic anchors、data quality、missing reason 與 source trace；不得保存使用者持股 entry date、avg cost 或 holding-specific entry anchor |
 
 ### 0.4 Workflow 與排程
@@ -93,9 +93,10 @@
 `shared_background_contexts` 是跨功能背景 evidence cache，不是交易決策覆寫層：
 
 - Daily Radar 主流程會先針對 selected symbols、active holdings 與 watchlist symbols 刷新試驗版 Daily AVWAP snapshot，並針對 selected symbols 刷新日頻 lending/full margin cache，再批次讀 cache；AVWAP 與背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
-- `/analyze` 與 `/analyze/position` 只把 shared context 附加到 response 作為 evidence/caveat/data quality trace，不放入 LangGraph initial state，也不觸發 weekly major holders、lending、full margin 的即時逐檔查詢。
+- 週頻 TDCC `weekly_major_holders` updater 在未指定 symbols 時可合併 active holdings、watchlist symbols 與 latest Daily Radar candidates 提高覆蓋；日頻 lending/full margin updater 仍維持 latest Daily Radar candidates 範圍，避免消耗 FinMind quota。Holdings/watchlist 只作 selector，不得寫入 `shared_background_contexts.payload`，shared cache 不保存 user id、quantity、avg cost、holding ownership 或 watchlist ownership。
+- `/analyze` 與 `/analyze/position` 只把 shared context 附加到 response 作為 evidence/caveat/data quality trace，不放入 LangGraph initial state，也不觸發 weekly major holders、lending、full margin 的即時逐檔查詢。`chip_stability_context` 是由 TDCC `weekly_major_holders` 派生的 response-only companion，只提供 state/trend/summary/caveats；千張大戶增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定，下降代表籌碼穩定性轉弱或集中度下降但不能單獨判定看空。
 - Portfolio diagnosis 與 lifecycle review 以 read/reference 方式使用；lifecycle review 需用事件日期做 point-in-time filter，不能用未來資料改寫過去判斷。
-- missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。
+- missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。Shared context 與 `chip_stability_context` 不提供直接分數，不改 technical score、Daily Radar ranking、portfolio risk score、action、verdict 或 lifecycle classification。
 
 ## 1. 目標與方向
 
