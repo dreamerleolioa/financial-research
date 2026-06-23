@@ -78,6 +78,48 @@ def test_portfolio_risk_summary_calculates_position_risk_and_totals():
     assert first["defense_reference"] == {"price": 95.0, "source": "planned_stop_price"}
 
 
+def test_portfolio_risk_summary_projects_weekly_major_holders_without_changing_risk_state():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95", setup_type="breakout")},
+        raw_data_by_symbol={"2330.TW": _raw("2330.TW", 120)},
+        weekly_major_holders_by_symbol={
+            "2330.TW": {
+                "status": "fresh",
+                "as_of_date": "2026-06-13",
+                "previous_as_of_date": "2026-06-06",
+                "thousand_lot_holder_ratio": 38.2,
+                "thousand_lot_holder_ratio_delta_pp": 1.52,
+                "large_holder_400_lot_plus_ratio": 51.58,
+                "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
+                "retail_100_lot_or_less_ratio": 38.49,
+                "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+                "consecutive_thousand_lot_holder_ratio_increase_count": 2,
+            }
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    position = summary["position_risks"][0]
+    assert position["risk_state"] == "elevated"
+    assert position["weekly_major_holders"] == {
+        "status": "fresh",
+        "as_of_date": "2026-06-13",
+        "previous_as_of_date": "2026-06-06",
+        "thousand_lot_holder_ratio": 38.2,
+        "thousand_lot_holder_ratio_delta_pp": 1.52,
+        "large_holder_400_lot_plus_ratio": 51.58,
+        "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
+        "retail_100_lot_or_less_ratio": 38.49,
+        "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+        "consecutive_thousand_lot_holder_ratio_increase_count": 2,
+    }
+    assert position["chip_stability_context"]["source"] == "tdcc_weekly_major_holders"
+    assert position["chip_stability_context"]["state"] == "stable"
+    assert position["chip_stability_context"]["trend"] == "strengthening"
+    assert position["chip_stability_context"]["summary"] == "千張大戶持股比例連續增加，籌碼愈加穩定。"
+
+
 def test_portfolio_risk_summary_builds_phase1_current_day_holding_lists():
     summary = build_portfolio_risk_summary(
         [
@@ -221,6 +263,7 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     monkeypatch.setattr(risk_summary_module, "list_active_portfolios", lambda *_args, **_kwargs: [position])
     monkeypatch.setattr(risk_summary_module, "list_lifecycle_plans_for_groups", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(risk_summary_module, "latest_final_raw_data_by_symbol", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(risk_summary_module, "weekly_major_holders_projection_by_symbol", lambda *_args, **_kwargs: {})
 
     def _read_phase1(*_args, **kwargs):
         captured["phase1_data_date"] = kwargs["data_date"]
@@ -244,3 +287,41 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     assert captured["phase1_data_date"] == date(2026, 6, 19)
     assert captured["summary_as_of_date"] == date(2026, 6, 19)
     assert captured["phase1_current_day_observations"] is None
+
+
+def test_build_user_portfolio_risk_summary_degrades_when_weekly_major_holders_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import ai_stock_sentinel.portfolio.application.get_risk_summary as risk_summary_module
+
+    captured: dict[str, object] = {}
+    position = _position(symbol="2330.TW", group="g1")
+
+    monkeypatch.setattr(risk_summary_module, "list_active_portfolios", lambda *_args, **_kwargs: [position])
+    monkeypatch.setattr(risk_summary_module, "list_lifecycle_plans_for_groups", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(risk_summary_module, "latest_final_raw_data_by_symbol", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(risk_summary_module, "read_phase1_position_states_for_portfolio", lambda *_args, **_kwargs: {})
+
+    def _raise_weekly_major_holders_read_failure(*_args, **_kwargs):
+        raise RuntimeError("shared background read unavailable")
+
+    def _build_summary(*_args, **kwargs):
+        captured["weekly_major_holders_by_symbol"] = kwargs["weekly_major_holders_by_symbol"]
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        risk_summary_module,
+        "weekly_major_holders_projection_by_symbol",
+        _raise_weekly_major_holders_read_failure,
+    )
+    monkeypatch.setattr(risk_summary_module, "build_portfolio_risk_summary", _build_summary)
+
+    result = risk_summary_module.build_user_portfolio_risk_summary(
+        object(),
+        user_id=1,
+        symbol_name_resolver=lambda _symbol: None,
+        as_of_date=date(2026, 6, 19),
+    )
+
+    assert result == {"ok": True}
+    assert captured["weekly_major_holders_by_symbol"] == {}

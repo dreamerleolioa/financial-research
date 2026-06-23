@@ -982,6 +982,180 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     assert portfolio_db_session.query(PositionEvent).count() == 0
 
 
+def test_portfolio_risk_summary_projects_weekly_major_holders_with_previous_delta(
+    monkeypatch: pytest.MonkeyPatch,
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    summary_date = date(2026, 6, 20)
+    monkeypatch.setattr(portfolio_risk_summary_app, "today_taipei", lambda: summary_date)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-weekly-holder",
+        symbol="2330.TW",
+        entry_price=100,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-weekly-holder",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_stop_price=95,
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=summary_date,
+        technical={"close_price": 120},
+        raw_data_is_final=True,
+    ))
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["portfolio_diagnosis"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 5, 30),
+        freshness="fresh",
+        payload={
+            "thousand_lot_holder_ratio": 35.0,
+            "large_holder_400_lot_plus_ratio": 49.0,
+            "retail_100_lot_or_less_ratio": 41.0,
+        },
+        missing_reason=None,
+    )
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["portfolio_diagnosis"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 6, 6),
+        freshness="fresh",
+        payload={
+            "thousand_lot_holder_ratio": 36.68,
+            "large_holder_400_lot_plus_ratio": 50.7,
+            "retail_100_lot_or_less_ratio": 39.59,
+        },
+        missing_reason=None,
+    )
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["portfolio_diagnosis"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 6, 13),
+        freshness="fresh",
+        payload={
+            "thousand_lot_holder_ratio": 38.2,
+            "large_holder_400_lot_plus_ratio": 51.58,
+            "retail_100_lot_or_less_ratio": 38.49,
+        },
+        missing_reason=None,
+    )
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["portfolio_diagnosis"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=date(2026, 6, 27),
+        freshness="fresh",
+        payload={
+            "thousand_lot_holder_ratio": 99.0,
+            "large_holder_400_lot_plus_ratio": 99.0,
+            "retail_100_lot_or_less_ratio": 1.0,
+        },
+        missing_reason=None,
+    )
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert resp.status_code == 200
+    position = resp.json()["position_risks"][0]
+    assert position["weekly_major_holders"] == {
+        "status": "fresh",
+        "as_of_date": "2026-06-13",
+        "previous_as_of_date": "2026-06-06",
+        "thousand_lot_holder_ratio": 38.2,
+        "thousand_lot_holder_ratio_delta_pp": 1.52,
+        "large_holder_400_lot_plus_ratio": 51.58,
+        "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
+        "retail_100_lot_or_less_ratio": 38.49,
+        "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+        "previous_thousand_lot_holder_ratio_delta_pp": 1.68,
+        "consecutive_thousand_lot_holder_ratio_increase_count": 2,
+    }
+    assert position["chip_stability_context"]["source"] == "tdcc_weekly_major_holders"
+    assert position["chip_stability_context"]["state"] == "stable"
+    assert position["chip_stability_context"]["trend"] == "strengthening"
+    assert position["chip_stability_context"]["summary"] == "千張大戶持股比例連續增加，籌碼愈加穩定。"
+    assert all("score" not in key for key in position["chip_stability_context"])
+    assert position["risk_state"] == "elevated"
+
+
+def test_portfolio_risk_summary_omits_missing_weekly_major_holders_context(
+    monkeypatch: pytest.MonkeyPatch,
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    summary_date = date(2026, 6, 20)
+    monkeypatch.setattr(portfolio_risk_summary_app, "today_taipei", lambda: summary_date)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-weekly-holder-missing",
+        symbol="2330.TW",
+        entry_price=100,
+        quantity=10,
+        entry_date=date(2026, 6, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-weekly-holder-missing",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_stop_price=95,
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=summary_date,
+        technical={"close_price": 120},
+        raw_data_is_final=True,
+    ))
+    upsert_shared_background_context(
+        portfolio_db_session,
+        symbol="2330.TW",
+        context_type="weekly_major_holders",
+        applicable_consumers=["portfolio_diagnosis"],
+        source={"domain": "background_context", "provider": "fixture"},
+        as_of_date=None,
+        freshness="missing",
+        payload={},
+        missing_reason="tdcc_symbol_not_found",
+        replay_key="background_context:2330.TW:weekly_major_holders:2026-06-20:missing:tdcc_symbol_not_found",
+    )
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert resp.status_code == 200
+    position = resp.json()["position_risks"][0]
+    assert "weekly_major_holders" not in position
+    assert "chip_stability_context" not in position
+    assert position["risk_state"] == "elevated"
+
+
 def test_portfolio_risk_summary_ignores_newer_non_final_raw_data(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,

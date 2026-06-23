@@ -15,8 +15,16 @@ TDCC_WEEKLY_HOLDERS_URL = "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5"
 _TDCC_REQUEST_HEADERS = {"User-Agent": "ai-stock-sentinel/1.0"}
 
 _CONTEXT_TYPE = "weekly_major_holders"
-_MAJOR_HOLDER_LEVELS = frozenset({12, 13, 14, 15})
-_RETAIL_HOLDER_LEVELS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9})
+_HOLDER_LEVEL_SCHEMA_VERSION = "tdcc-holder-level-v2"
+_THOUSAND_LOT_HOLDER_LEVELS = frozenset({15})
+_LARGE_HOLDER_400_LOT_PLUS_LEVELS = frozenset({12, 13, 14, 15})
+_RETAIL_100_LOT_OR_LESS_LEVELS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9})
+_TDCC_HOLDER_LEVEL_SCHEMA = {
+    "12": "approximately 400 to 600 lots",
+    "13": "approximately 600 to 800 lots",
+    "14": "approximately 800 to 1000 lots",
+    "15": "approximately 1000 lots or more",
+}
 
 
 @dataclass(frozen=True)
@@ -126,9 +134,16 @@ class TdccWeeklyMajorHoldersProvider:
         freshness, missing_reason = self._freshness(as_of_date=as_of_date, run_date=run_date)
         distribution = [_distribution_item(row) for row in rows]
         distribution = [item for item in distribution if item is not None]
-        major_items = [item for item in distribution if item["level"] in _MAJOR_HOLDER_LEVELS]
-        retail_items = [item for item in distribution if item["level"] in _RETAIL_HOLDER_LEVELS]
+        thousand_lot_items = [item for item in distribution if item["level"] in _THOUSAND_LOT_HOLDER_LEVELS]
+        large_holder_400_lot_plus_items = [
+            item for item in distribution if item["level"] in _LARGE_HOLDER_400_LOT_PLUS_LEVELS
+        ]
+        retail_100_lot_or_less_items = [
+            item for item in distribution if item["level"] in _RETAIL_100_LOT_OR_LESS_LEVELS
+        ]
         total_item = next((item for item in distribution if item["level"] == 17), None)
+        large_holder_400_lot_plus_ratio = _sum_ratio(large_holder_400_lot_plus_items)
+        retail_100_lot_or_less_ratio = _sum_ratio(retail_100_lot_or_less_items)
 
         return BackgroundContextPayload(
             symbol=symbol,
@@ -140,12 +155,20 @@ class TdccWeeklyMajorHoldersProvider:
             payload={
                 "provider": self.provider_name,
                 "dataset": "tdcc_shareholder_distribution",
-                "major_holder_levels": sorted(_MAJOR_HOLDER_LEVELS),
-                "retail_holder_levels": sorted(_RETAIL_HOLDER_LEVELS),
-                "major_holder_ratio": _sum_ratio(major_items),
-                "major_holder_people": _sum_int(major_items, "people"),
-                "major_holder_shares": _sum_int(major_items, "shares"),
-                "retail_holder_ratio": _sum_ratio(retail_items),
+                "holder_level_schema_version": _HOLDER_LEVEL_SCHEMA_VERSION,
+                "holder_level_schema": _TDCC_HOLDER_LEVEL_SCHEMA,
+                "thousand_lot_holder_levels": sorted(_THOUSAND_LOT_HOLDER_LEVELS),
+                "large_holder_400_lot_plus_levels": sorted(_LARGE_HOLDER_400_LOT_PLUS_LEVELS),
+                "retail_100_lot_or_less_levels": sorted(_RETAIL_100_LOT_OR_LESS_LEVELS),
+                "thousand_lot_holder_ratio": _sum_ratio(thousand_lot_items),
+                "large_holder_400_lot_plus_ratio": large_holder_400_lot_plus_ratio,
+                "retail_100_lot_or_less_ratio": retail_100_lot_or_less_ratio,
+                "major_holder_levels": sorted(_LARGE_HOLDER_400_LOT_PLUS_LEVELS),
+                "retail_holder_levels": sorted(_RETAIL_100_LOT_OR_LESS_LEVELS),
+                "major_holder_ratio": large_holder_400_lot_plus_ratio,
+                "major_holder_people": _sum_int(large_holder_400_lot_plus_items, "people"),
+                "major_holder_shares": _sum_int(large_holder_400_lot_plus_items, "shares"),
+                "retail_holder_ratio": retail_100_lot_or_less_ratio,
                 "total_people": total_item["people"] if total_item else None,
                 "total_shares": total_item["shares"] if total_item else None,
                 "distribution": distribution,

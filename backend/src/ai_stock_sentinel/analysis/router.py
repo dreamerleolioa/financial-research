@@ -48,6 +48,10 @@ from ai_stock_sentinel.analysis.schemas import (
     TechnicalIndicators,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.chip_stability_context import (
+    chip_stability_context_from_weekly_major_holders,
+    weekly_major_holders_projection_by_symbol,
+)
 from ai_stock_sentinel.clock import TAIPEI_TZ, today_taipei
 from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
@@ -322,6 +326,47 @@ def _with_shared_context(
     return response
 
 
+def _with_chip_stability_context(
+    response: AnalyzeResponse,
+    db: Session,
+    *,
+    symbol: str,
+    consumer: str,
+) -> AnalyzeResponse:
+    try:
+        weekly_major_holders_by_symbol = weekly_major_holders_projection_by_symbol(
+            db,
+            symbols=[symbol],
+            consumer=consumer,
+            reference_date=_today_taipei(),
+        )
+        response.chip_stability_context = chip_stability_context_from_weekly_major_holders(
+            weekly_major_holders_by_symbol.get(symbol)
+        )
+    except Exception as exc:
+        logger.warning(
+            "chip_stability_context_read_failed",
+            extra={
+                "symbol": symbol,
+                "consumer": consumer,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        response.chip_stability_context = None
+    return response
+
+
+def _with_shared_and_chip_context(
+    response: AnalyzeResponse,
+    db: Session,
+    *,
+    symbol: str,
+    consumer: str,
+) -> AnalyzeResponse:
+    response = _with_shared_context(response, db, symbol=symbol, consumer=consumer)
+    return _with_chip_stability_context(response, db, symbol=symbol, consumer=consumer)
+
+
 def _with_phase1_observation(
     response: AnalyzeResponse,
     db: Session,
@@ -345,7 +390,7 @@ def _with_analyze_response_contexts(
     user_id: int,
     symbol: str,
 ) -> AnalyzeResponse:
-    response = _with_shared_context(
+    response = _with_shared_and_chip_context(
         response,
         db,
         symbol=symbol,
@@ -542,7 +587,7 @@ def analyze_position(
             full = cache.full_result or {}
             if _position_cache_matches(full, payload):
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
-                return _with_shared_context(
+                return _with_shared_and_chip_context(
                     _build_response_from_cache(hit, payload.symbol, full_result=full),
                     db,
                     symbol=payload.symbol,
@@ -606,7 +651,7 @@ def analyze_position(
     response = _response
     response.is_final = is_final
     response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
-    return _with_shared_context(
+    return _with_shared_and_chip_context(
         response,
         db,
         symbol=payload.symbol,

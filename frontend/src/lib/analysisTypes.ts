@@ -108,6 +108,23 @@ export interface Phase1Observation {
   [key: string]: unknown;
 }
 
+export interface ChipStabilityContext {
+  source: "tdcc_weekly_major_holders" | string;
+  status: "fresh" | "stale" | "missing" | "unknown" | string;
+  as_of_date?: string | null;
+  previous_as_of_date?: string | null;
+  thousand_lot_holder_ratio?: number | null;
+  thousand_lot_holder_ratio_delta_pp?: number | null;
+  state?: "stable" | "weakening" | "unknown" | string;
+  trend?: "strengthening" | "improving" | "weakening" | "flat" | "unavailable" | string;
+  summary?: string | null;
+  caveats: Array<{
+    code: string;
+    message?: string;
+    [key: string]: unknown;
+  }>;
+}
+
 export interface AnalyzeResponse {
   snapshot: Record<string, unknown>;
   symbol_name?: string | null;
@@ -160,6 +177,7 @@ export interface AnalyzeResponse {
     yield_signal?: string | null;
   } | null;
   shared_context?: SharedContextReadPayload | null;
+  chip_stability_context?: ChipStabilityContext | null;
   phase1_observation?: Phase1Observation | null;
 }
 

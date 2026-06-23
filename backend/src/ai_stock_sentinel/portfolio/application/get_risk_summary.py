@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date
 
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.chip_stability_context import weekly_major_holders_projection_by_symbol
 from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.portfolio.repository import (
     latest_final_raw_data_by_symbol,
@@ -13,6 +15,10 @@ from ai_stock_sentinel.portfolio.repository import (
 )
 from ai_stock_sentinel.portfolio.risk_summary import build_portfolio_risk_summary
 from ai_stock_sentinel.phase1_avwap.projection import read_phase1_position_states_for_portfolio
+
+
+_PORTFOLIO_DIAGNOSIS_CONSUMER = "portfolio_diagnosis"
+logger = logging.getLogger(__name__)
 
 
 def build_user_portfolio_risk_summary(
@@ -35,11 +41,30 @@ def build_user_portfolio_risk_summary(
         positions=rows,
         data_date=summary_date,
     )
+    try:
+        weekly_major_holders_by_symbol = weekly_major_holders_projection_by_symbol(
+            db,
+            symbols=symbols,
+            consumer=_PORTFOLIO_DIAGNOSIS_CONSUMER,
+            reference_date=summary_date,
+        )
+    except Exception as exc:
+        logger.warning(
+            "portfolio_risk_summary_weekly_major_holders_read_failed",
+            extra={
+                "user_id": user_id,
+                "symbol_count": len(symbols),
+                "consumer": _PORTFOLIO_DIAGNOSIS_CONSUMER,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        weekly_major_holders_by_symbol = {}
     return build_portfolio_risk_summary(
         rows,
         plans_by_group=plans_by_group,
         raw_data_by_symbol=raw_data_by_symbol,
         symbol_names_by_symbol={symbol: symbol_name_resolver(symbol) for symbol in symbols},
         phase1_position_states_by_symbol=phase1_position_states_by_symbol,
+        weekly_major_holders_by_symbol=weekly_major_holders_by_symbol,
         as_of_date=summary_date,
     )

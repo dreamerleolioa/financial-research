@@ -110,6 +110,28 @@ const phase1ObservationSchema = z
   })
   .passthrough();
 
+const chipStabilityContextSchema = z
+  .object({
+    source: z.string(),
+    status: z.string(),
+    as_of_date: nullableString.optional(),
+    previous_as_of_date: nullableString.optional(),
+    thousand_lot_holder_ratio: nullableNumber.optional(),
+    thousand_lot_holder_ratio_delta_pp: nullableNumber.optional(),
+    state: z.string().optional(),
+    trend: z.string().optional(),
+    summary: nullableString.optional(),
+    caveats: z.array(
+      z
+        .object({
+          code: z.string(),
+          message: z.string().optional(),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
 export const analyzeResponseSchema = z
   .object({
     snapshot: recordSchema,
@@ -141,6 +163,7 @@ export const analyzeResponseSchema = z
     errors: z.array(analysisErrorDetailSchema),
     fundamental_data: fundamentalDataSchema.nullable().optional(),
     shared_context: z.unknown().nullable().optional(),
+    chip_stability_context: chipStabilityContextSchema.nullable().optional(),
     phase1_observation: phase1ObservationSchema.nullable().optional(),
   })
   .passthrough();

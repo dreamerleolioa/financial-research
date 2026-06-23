@@ -770,6 +770,19 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
     assert tsmc.source["tls_verify"] is True
     assert tsmc.source["tls_hostname_check"] is True
     assert tsmc.source["tls_x509_strict"] is False
+    assert tsmc.payload["holder_level_schema_version"] == "tdcc-holder-level-v2"
+    assert tsmc.payload["holder_level_schema"] == {
+        "12": "approximately 400 to 600 lots",
+        "13": "approximately 600 to 800 lots",
+        "14": "approximately 800 to 1000 lots",
+        "15": "approximately 1000 lots or more",
+    }
+    assert tsmc.payload["thousand_lot_holder_levels"] == [15]
+    assert tsmc.payload["large_holder_400_lot_plus_levels"] == [12, 13, 14, 15]
+    assert tsmc.payload["retail_100_lot_or_less_levels"] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert tsmc.payload["thousand_lot_holder_ratio"] == pytest.approx(85.42)
+    assert tsmc.payload["large_holder_400_lot_plus_ratio"] == pytest.approx(88.12)
+    assert tsmc.payload["retail_100_lot_or_less_ratio"] == pytest.approx(2.05)
     assert tsmc.payload["major_holder_levels"] == [12, 13, 14, 15]
     assert tsmc.payload["major_holder_ratio"] == pytest.approx(88.12)
     assert tsmc.payload["major_holder_people"] == 2619
@@ -779,6 +792,8 @@ def test_tdcc_weekly_major_holders_provider_parses_distribution_once_for_selecte
     assert tsmc.payload["total_shares"] == 25932524521
     assert tsmc.replay_key == "background_context:2330.TW:weekly_major_holders:2026-06-05"
     assert by_symbol["2454.TW"].payload["major_holder_ratio"] == pytest.approx(25.0)
+    assert by_symbol["2454.TW"].payload["thousand_lot_holder_ratio"] == pytest.approx(22.5)
+    assert by_symbol["2454.TW"].payload["large_holder_400_lot_plus_ratio"] == pytest.approx(25.0)
     assert by_symbol["9999.TW"].freshness == "missing"
     assert by_symbol["9999.TW"].missing_reason == "tdcc_symbol_not_found"
 

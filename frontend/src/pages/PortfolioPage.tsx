@@ -1276,6 +1276,11 @@ function formatPortfolioPct(value: number | null | undefined): string {
   return `${value.toFixed(2)}%`;
 }
 
+function formatPortfolioDeltaPp(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)} pp`;
+}
+
 function formatPhase1AnchorType(type: string | null | undefined): string {
   if (!type) return "觀察錨點";
   const labels: Record<string, string> = {
@@ -1542,6 +1547,19 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
                 <p className="mt-2 line-clamp-2 text-xs text-amber-600 dark:text-amber-300">
                   {risk.data_quality.caveats.map((caveat) => caveat.message ?? caveat.code).join("；")}
                 </p>
+              )}
+              {risk.chip_stability_context && (
+                <div className="mt-2 border-t border-border-subtle pt-2">
+                  <p className="text-xs font-medium text-text-primary">籌碼穩定性</p>
+                  <p className="mt-1 line-clamp-2 text-xs text-text-muted">
+                    {risk.chip_stability_context.summary ?? "TDCC 週頻籌碼穩定性補充"}
+                  </p>
+                  <p className="mt-1 text-xs text-text-faint">
+                    千張大戶 {formatPortfolioPct(risk.chip_stability_context.thousand_lot_holder_ratio)}
+                    {" / "}
+                    {formatPortfolioDeltaPp(risk.chip_stability_context.thousand_lot_holder_ratio_delta_pp)}
+                  </p>
+                </div>
               )}
             </div>
           ))}

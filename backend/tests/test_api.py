@@ -328,6 +328,61 @@ def test_analyze_response_includes_shared_context_without_passing_it_to_graph(mo
     assert "background_context" not in graph_input
 
 
+def test_analyze_response_includes_chip_stability_context_without_passing_it_to_graph(monkeypatch) -> None:
+    """TDCC chip stability is response evidence only, not graph/LLM input or technical score."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        api_module,
+        "weekly_major_holders_projection_by_symbol",
+        lambda db, *, symbols, consumer, reference_date: {
+            symbols[0]: {
+                "status": "fresh",
+                "as_of_date": "2026-06-13",
+                "previous_as_of_date": "2026-06-06",
+                "thousand_lot_holder_ratio": 38.2,
+                "thousand_lot_holder_ratio_delta_pp": 1.52,
+                "consecutive_thousand_lot_holder_ratio_increase_count": 1,
+            }
+        },
+    )
+    graph = _make_graph(
+        {
+            "snapshot": asdict(_SNAPSHOT),
+            "analysis": "分析結果",
+            "cleaned_news": None,
+            "errors": [],
+        }
+    )
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chip_stability_context"] == {
+        "source": "tdcc_weekly_major_holders",
+        "status": "fresh",
+        "as_of_date": "2026-06-13",
+        "previous_as_of_date": "2026-06-06",
+        "thousand_lot_holder_ratio": 38.2,
+        "thousand_lot_holder_ratio_delta_pp": 1.52,
+        "state": "stable",
+        "trend": "improving",
+        "summary": "千張大戶持股比例增加，籌碼穩定性提升。",
+        "caveats": [
+            {
+                "code": "weekly_chip_stability_companion_only",
+                "message": "TDCC 週頻籌碼穩定性補充，不納入 technical score、Daily Radar ranking 或 portfolio risk 分數。",
+            }
+        ],
+    }
+    graph_input = graph.invoke.call_args.args[0]
+    assert "chip_stability_context" not in graph_input
+    assert "technical_profile" not in body
+
+
 def test_analyze_response_includes_phase1_observation_without_passing_it_to_graph(monkeypatch) -> None:
     """Phase 1 AVWAP projection is response evidence only, not graph/LLM input."""
     import ai_stock_sentinel.analysis.router as api_module

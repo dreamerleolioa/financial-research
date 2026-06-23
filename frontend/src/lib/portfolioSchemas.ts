@@ -51,6 +51,28 @@ const phase1PositionStateSchema = z
   })
   .passthrough();
 
+const chipStabilityContextSchema = z
+  .object({
+    source: z.string(),
+    status: z.string(),
+    as_of_date: z.string().nullable().optional(),
+    previous_as_of_date: z.string().nullable().optional(),
+    thousand_lot_holder_ratio: z.number().nullable().optional(),
+    thousand_lot_holder_ratio_delta_pp: z.number().nullable().optional(),
+    state: z.string().optional(),
+    trend: z.string().optional(),
+    summary: z.string().nullable().optional(),
+    caveats: z.array(
+      z
+        .object({
+          code: z.string(),
+          message: z.string().optional(),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
 const portfolioPositionRiskSchema = z
   .object({
     symbol: z.string(),
@@ -72,6 +94,8 @@ const portfolioPositionRiskSchema = z
     risk_state: z.enum(["contained", "watch", "elevated", "defense_reference_touched", "data_incomplete"]),
     discipline_triggers: z.array(z.string()),
     phase1_position_state: phase1PositionStateSchema.nullable().optional(),
+    weekly_major_holders: z.record(z.string(), z.unknown()).optional(),
+    chip_stability_context: chipStabilityContextSchema.nullable().optional(),
     data_quality: dataQualitySchema,
   })
   .passthrough();
