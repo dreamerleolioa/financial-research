@@ -413,6 +413,87 @@ def test_read_phase1_observation_for_analyze_reports_snapshot_missing_for_manage
     assert observation["data_quality"]["blocking"] is False
 
 
+def test_read_phase1_observation_for_analyze_uses_latest_fresh_snapshot_before_requested_date(
+    db_session: Session,
+) -> None:
+    _seed_user_with_active_holding(db_session)
+    snapshot_date = date(2026, 6, 22)
+    requested_date = date(2026, 6, 23)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=snapshot_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": snapshot_date.isoformat(),
+            "anchors": {
+                "swing_low_60d": {
+                    "available": True,
+                    "anchor_date": "2026-06-18",
+                    "anchor_reason": "swing_low_60d",
+                    "avwap": 2400,
+                    "distance_to_avwap_pct": 4.5,
+                },
+            },
+            "data_quality": {"estimated": False, "missing_reason": None},
+        },
+        freshness="fresh",
+    )
+
+    observation = read_phase1_observation_for_analyze(
+        db_session,
+        user_id=1,
+        symbol="2330.TW",
+        data_date=requested_date,
+    )
+
+    assert observation["freshness"] == "fresh"
+    assert observation["data_date"] == snapshot_date.isoformat()
+    assert observation["requested_data_date"] == requested_date.isoformat()
+    assert observation["anchors"]["swing_low_60d"]["avwap"] == 2400
+
+
+def test_read_phase1_observation_for_analyze_marks_old_snapshot_stale(
+    db_session: Session,
+) -> None:
+    _seed_user_with_active_holding(db_session)
+    snapshot_date = date(2026, 6, 1)
+    requested_date = date(2026, 6, 23)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2330.TW",
+        data_date=snapshot_date,
+        payload={
+            "symbol": "2330.TW",
+            "data_date": snapshot_date.isoformat(),
+            "anchors": {
+                "swing_low_60d": {
+                    "available": True,
+                    "anchor_date": "2026-05-30",
+                    "anchor_reason": "swing_low_60d",
+                    "avwap": 900,
+                    "distance_to_avwap_pct": 2,
+                },
+            },
+            "data_quality": {"estimated": False, "missing_reason": None},
+        },
+        freshness="fresh",
+    )
+
+    observation = read_phase1_observation_for_analyze(
+        db_session,
+        user_id=1,
+        symbol="2330.TW",
+        data_date=requested_date,
+    )
+
+    assert observation["freshness"] == "missing"
+    assert observation["data_date"] == snapshot_date.isoformat()
+    assert observation["requested_data_date"] == requested_date.isoformat()
+    assert observation["missing_reason"] == "phase1_snapshot_stale"
+    assert observation["anchors"] == {}
+
+
 def test_read_phase1_observation_for_analyze_reports_out_of_universe_without_fetching(
     db_session: Session,
 ) -> None:

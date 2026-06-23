@@ -179,7 +179,7 @@ function buildPhase1AvwapCopyRows(
     ];
   }
 
-  if (!observation.missing_reason || observation.missing_reason === "not_in_phase1_universe") return [];
+  if (!observation.missing_reason) return [];
   return [
     ["AVWAP 資料日", observation.data_date],
     ["AVWAP 狀態", formatPhase1MissingReason(observation.missing_reason)],
