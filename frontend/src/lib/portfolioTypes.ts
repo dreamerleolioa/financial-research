@@ -1,3 +1,4 @@
+import type { ChipStabilityContext } from "./analysisTypes";
 import type { SharedContextReadPayload } from "./sharedContextTypes";
 
 export interface PortfolioItem {
@@ -69,6 +70,8 @@ export interface PortfolioPositionRisk {
   risk_state: "contained" | "watch" | "elevated" | "defense_reference_touched" | "data_incomplete";
   discipline_triggers: string[];
   phase1_position_state?: PortfolioPhase1PositionState | null;
+  weekly_major_holders?: Record<string, unknown>;
+  chip_stability_context?: ChipStabilityContext | null;
   data_quality: {
     status: "ok" | "caution" | "insufficient";
     caveats: PortfolioRiskCaveat[];

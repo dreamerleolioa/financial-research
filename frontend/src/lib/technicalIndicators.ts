@@ -1,4 +1,4 @@
-import type { AnalyzeResponse, Phase1Observation, TechnicalIndicators } from "./analysisTypes";
+import type { AnalyzeResponse, ChipStabilityContext, Phase1Observation, TechnicalIndicators } from "./analysisTypes";
 import { formatPrice, formatVolume } from "./formatters";
 
 export type CopyStatus = "idle" | "success" | "error";
@@ -186,6 +186,40 @@ function buildPhase1AvwapCopyRows(
   ];
 }
 
+function formatSignedDelta(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)} pp`;
+}
+
+function formatRatioPct(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${value.toFixed(2)}%`;
+}
+
+function buildChipStabilityCopyRows(
+  context: ChipStabilityContext | null | undefined,
+): Array<[string, string]> {
+  if (!context) return [];
+  const caveatText = context.caveats
+    .map((caveat) => caveat.message ?? caveat.code)
+    .filter(Boolean)
+    .join("；");
+  return [
+    ["[Chip stability companion]", "TDCC 週頻籌碼穩定性補充"],
+    ["說明", "此段為 TDCC 週頻籌碼穩定性補充，不納入 technical score。"],
+    ["狀態", `${context.status}${context.trend ? ` / ${context.trend}` : ""}`],
+    ["資料日", context.as_of_date ?? "—"],
+    ["上一期資料日", context.previous_as_of_date ?? "—"],
+    [
+      "千張大戶持股比例",
+      formatRatioPct(context.thousand_lot_holder_ratio),
+    ],
+    ["千張大戶持股比例變化", formatSignedDelta(context.thousand_lot_holder_ratio_delta_pp)],
+    ["籌碼穩定性摘要", context.summary ?? "—"],
+    ["限制", caveatText || "—"],
+  ];
+}
+
 export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Record<string, unknown>): string {
   const indicators = result.technical_indicators;
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
@@ -215,6 +249,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
       ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol).map(([label, value]) => `${label}：${value}`),
+      ...buildChipStabilityCopyRows(result.chip_stability_context).map(([label, value]) => `${label}：${value}`),
     ].join("\n");
   }
 
@@ -255,6 +290,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
     ["MFI", formatIndicatorNumber(indicators.mfi, 1)],
     ["唐奇安通道上/下緣", indicatorPair(indicators.donchian_upper, 2, indicators.donchian_lower)],
     ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol),
+    ...buildChipStabilityCopyRows(result.chip_stability_context),
   ];
 
   return ["技術指標摘要", ...rows.map(([label, value]) => `${label}：${value}`)].join("\n");

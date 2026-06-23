@@ -5,6 +5,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from ai_stock_sentinel.chip_stability_context import chip_stability_context_from_weekly_major_holders
+
 
 PORTFOLIO_RISK_SUMMARY_VERSION = "portfolio-risk-summary-v1"
 PHASE1_CURRENT_DAY_LISTS_VERSION = "phase1-current-day-lists-v1"
@@ -127,7 +129,13 @@ def build_portfolio_risk_summary(
                 or phase1_states.get(symbol.upper())
             )
         if symbol in weekly_major_holders:
-            position_draft["weekly_major_holders"] = dict(weekly_major_holders[symbol])
+            weekly_major_holders_projection = dict(weekly_major_holders[symbol])
+            position_draft["weekly_major_holders"] = weekly_major_holders_projection
+            chip_stability_context = chip_stability_context_from_weekly_major_holders(
+                weekly_major_holders_projection
+            )
+            if chip_stability_context is not None:
+                position_draft["chip_stability_context"] = chip_stability_context
         position_drafts.append(position_draft)
 
     for draft in position_drafts:

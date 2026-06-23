@@ -94,6 +94,7 @@ def test_portfolio_risk_summary_projects_weekly_major_holders_without_changing_r
                 "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
                 "retail_100_lot_or_less_ratio": 38.49,
                 "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+                "consecutive_thousand_lot_holder_ratio_increase_count": 2,
             }
         },
         as_of_date=date(2026, 6, 12),
@@ -111,7 +112,12 @@ def test_portfolio_risk_summary_projects_weekly_major_holders_without_changing_r
         "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
         "retail_100_lot_or_less_ratio": 38.49,
         "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+        "consecutive_thousand_lot_holder_ratio_increase_count": 2,
     }
+    assert position["chip_stability_context"]["source"] == "tdcc_weekly_major_holders"
+    assert position["chip_stability_context"]["state"] == "stable"
+    assert position["chip_stability_context"]["trend"] == "strengthening"
+    assert position["chip_stability_context"]["summary"] == "千張大戶持股比例連續增加，籌碼愈加穩定。"
 
 
 def test_portfolio_risk_summary_builds_phase1_current_day_holding_lists():
@@ -257,7 +263,7 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     monkeypatch.setattr(risk_summary_module, "list_active_portfolios", lambda *_args, **_kwargs: [position])
     monkeypatch.setattr(risk_summary_module, "list_lifecycle_plans_for_groups", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(risk_summary_module, "latest_final_raw_data_by_symbol", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(risk_summary_module, "_weekly_major_holders_by_symbol", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(risk_summary_module, "weekly_major_holders_projection_by_symbol", lambda *_args, **_kwargs: {})
 
     def _read_phase1(*_args, **kwargs):
         captured["phase1_data_date"] = kwargs["data_date"]
