@@ -38,6 +38,7 @@ def build_portfolio_risk_summary(
     raw_data_by_symbol: dict[str, Any] | None = None,
     symbol_names_by_symbol: dict[str, str | None] | None = None,
     phase1_position_states_by_symbol: dict[str, dict[str, Any]] | None = None,
+    weekly_major_holders_by_symbol: dict[str, dict[str, Any]] | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
     as_of = as_of_date or date.today()
@@ -45,6 +46,7 @@ def build_portfolio_risk_summary(
     raw_rows = raw_data_by_symbol or {}
     symbol_names = symbol_names_by_symbol or {}
     phase1_states = phase1_position_states_by_symbol
+    weekly_major_holders = weekly_major_holders_by_symbol or {}
 
     position_drafts: list[dict[str, Any]] = []
     portfolio_value = Decimal("0")
@@ -124,6 +126,8 @@ def build_portfolio_risk_summary(
                 or phase1_states.get(symbol)
                 or phase1_states.get(symbol.upper())
             )
+        if symbol in weekly_major_holders:
+            position_draft["weekly_major_holders"] = dict(weekly_major_holders[symbol])
         position_drafts.append(position_draft)
 
     for draft in position_drafts:

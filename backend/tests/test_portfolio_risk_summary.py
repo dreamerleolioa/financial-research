@@ -78,6 +78,42 @@ def test_portfolio_risk_summary_calculates_position_risk_and_totals():
     assert first["defense_reference"] == {"price": 95.0, "source": "planned_stop_price"}
 
 
+def test_portfolio_risk_summary_projects_weekly_major_holders_without_changing_risk_state():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95", setup_type="breakout")},
+        raw_data_by_symbol={"2330.TW": _raw("2330.TW", 120)},
+        weekly_major_holders_by_symbol={
+            "2330.TW": {
+                "status": "fresh",
+                "as_of_date": "2026-06-13",
+                "previous_as_of_date": "2026-06-06",
+                "thousand_lot_holder_ratio": 38.2,
+                "thousand_lot_holder_ratio_delta_pp": 1.52,
+                "large_holder_400_lot_plus_ratio": 51.58,
+                "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
+                "retail_100_lot_or_less_ratio": 38.49,
+                "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+            }
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    position = summary["position_risks"][0]
+    assert position["risk_state"] == "elevated"
+    assert position["weekly_major_holders"] == {
+        "status": "fresh",
+        "as_of_date": "2026-06-13",
+        "previous_as_of_date": "2026-06-06",
+        "thousand_lot_holder_ratio": 38.2,
+        "thousand_lot_holder_ratio_delta_pp": 1.52,
+        "large_holder_400_lot_plus_ratio": 51.58,
+        "large_holder_400_lot_plus_ratio_delta_pp": 0.88,
+        "retail_100_lot_or_less_ratio": 38.49,
+        "retail_100_lot_or_less_ratio_delta_pp": -1.1,
+    }
+
+
 def test_portfolio_risk_summary_builds_phase1_current_day_holding_lists():
     summary = build_portfolio_risk_summary(
         [
@@ -221,6 +257,7 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     monkeypatch.setattr(risk_summary_module, "list_active_portfolios", lambda *_args, **_kwargs: [position])
     monkeypatch.setattr(risk_summary_module, "list_lifecycle_plans_for_groups", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(risk_summary_module, "latest_final_raw_data_by_symbol", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(risk_summary_module, "_weekly_major_holders_by_symbol", lambda *_args, **_kwargs: {})
 
     def _read_phase1(*_args, **kwargs):
         captured["phase1_data_date"] = kwargs["data_date"]
