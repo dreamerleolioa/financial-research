@@ -264,14 +264,10 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
 
     def _build_summary(*_args, **kwargs):
         captured["summary_as_of_date"] = kwargs["as_of_date"]
+        captured["phase1_current_day_observations"] = kwargs.get("phase1_current_day_observations_by_symbol")
         return {"ok": True}
 
     monkeypatch.setattr(risk_summary_module, "read_phase1_position_states_for_portfolio", _read_phase1)
-    monkeypatch.setattr(
-        risk_summary_module,
-        "read_phase1_current_day_observations_for_managed_universe",
-        lambda *_args, **_kwargs: {},
-    )
     monkeypatch.setattr(risk_summary_module, "build_portfolio_risk_summary", _build_summary)
 
     result = risk_summary_module.build_user_portfolio_risk_summary(
@@ -283,3 +279,4 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     assert result == {"ok": True}
     assert captured["phase1_data_date"] == date(2026, 6, 19)
     assert captured["summary_as_of_date"] == date(2026, 6, 19)
+    assert captured["phase1_current_day_observations"] is None
