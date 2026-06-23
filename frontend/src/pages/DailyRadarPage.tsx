@@ -776,10 +776,10 @@ function getPhase1AvwapDisplayAnchors(context: DailyRadarPhase1AvwapContext): Ar
 
 function formatPhase1AvwapDistanceLine(anchor: { distance?: number | null; referenceLabel: string }): string {
   const distance = toFiniteNumber(anchor.distance);
-  if (distance === null) return `現價相對 ${anchor.referenceLabel}`;
-  if (distance > 0) return `現價高於 ${anchor.referenceLabel}`;
-  if (distance < 0) return `現價低於 ${anchor.referenceLabel}`;
-  return `現價貼近 ${anchor.referenceLabel}`;
+  if (distance === null) return `資料日價格相對 ${anchor.referenceLabel}`;
+  if (distance > 0) return `資料日價格高於 ${anchor.referenceLabel}`;
+  if (distance < 0) return `資料日價格低於 ${anchor.referenceLabel}`;
+  return `資料日價格貼近 ${anchor.referenceLabel}`;
 }
 
 function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate }) {

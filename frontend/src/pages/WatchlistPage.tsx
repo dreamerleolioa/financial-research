@@ -89,12 +89,22 @@ function formatPhase1Distance(value: number | null | undefined): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function calculatePhase1DistanceFromPrice(
+  price: number | null | undefined,
+  reference: number | null | undefined,
+): number | null {
+  if (price == null || reference == null || Number.isNaN(price) || Number.isNaN(reference) || reference === 0) {
+    return null;
+  }
+  return (price - reference) / reference * 100;
+}
+
 function formatPhase1MissingReason(reason: string | null | undefined): string {
   if (!reason) return "資料不足";
   return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
 }
 
-function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
+function getPhase1DisplayAnchors(observation: Phase1Observation, currentPrice?: number | null): Array<{
   key: string;
   label: string;
   avwap?: number | null;
@@ -112,14 +122,22 @@ function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
       key,
       label: PHASE1_ANCHOR_LABEL[key] ?? key,
       avwap: anchor.avwap,
-      distance: anchor.distance_to_avwap_pct,
+      distance: calculatePhase1DistanceFromPrice(currentPrice, anchor.avwap) ?? anchor.distance_to_avwap_pct,
       anchorDate: anchor.anchor_date,
       estimated: anchor.estimated,
     }));
 }
 
-function WatchlistPhase1Observation({ observation, symbol }: { observation: Phase1Observation; symbol: string }) {
-  const anchors = getPhase1DisplayAnchors(observation);
+function WatchlistPhase1Observation({
+  observation,
+  symbol,
+  currentPrice,
+}: {
+  observation: Phase1Observation;
+  symbol: string;
+  currentPrice?: number | null;
+}) {
+  const anchors = getPhase1DisplayAnchors(observation, currentPrice);
   const isMissing = observation.freshness === "missing" || Boolean(observation.missing_reason);
 
   return (
@@ -194,13 +212,14 @@ function WatchlistTechnicalPanel({
   const quickIndicators = quickResult?.technical_indicators ?? null;
   const phase1Observation = quickResult?.phase1_observation ?? null;
   const quickSessionLabel = quickResult?.is_final === false ? "盤中" : "收盤";
+  const quickCurrentPrice = typeof quickSnapshot.current_price === "number" ? quickSnapshot.current_price : null;
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") =>
     first != null || second != null
       ? `${formatPrice(first, quickSnapshotSymbol)} / ${formatPrice(second, quickSnapshotSymbol)}`
       : emptyLabel;
   const indicatorRows = quickIndicators
     ? [
-        ["現價", formatPrice(quickSnapshot.current_price as number | null | undefined, quickSnapshotSymbol)],
+        ["現價", formatPrice(quickCurrentPrice, quickSnapshotSymbol)],
         ["成交量", formatVolume(quickSnapshot.volume)],
         ["均線 MA5／20／60", formatMovingAverages(quickIndicators, quickSnapshotSymbol)],
         ["20 日最高／最低", pricePair(quickIndicators.high_20d, quickIndicators.low_20d)],
@@ -306,7 +325,11 @@ function WatchlistTechnicalPanel({
       )}
 
       {phase1Observation && (
-        <WatchlistPhase1Observation observation={phase1Observation} symbol={quickSnapshotSymbol} />
+        <WatchlistPhase1Observation
+          observation={phase1Observation}
+          symbol={quickSnapshotSymbol}
+          currentPrice={quickCurrentPrice}
+        />
       )}
     </div>
   );
