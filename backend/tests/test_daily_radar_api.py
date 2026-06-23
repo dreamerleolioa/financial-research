@@ -26,6 +26,9 @@ from ai_stock_sentinel.db.models import (
     Phase1AvwapSnapshot,
     SharedBackgroundContext,
     StockRawData,
+    User,
+    UserPortfolio,
+    UserWatchlist,
 )
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
@@ -155,6 +158,18 @@ class RaisingPhase1AvwapDailyPriceProvider:
         raise RuntimeError("simulated AVWAP outage")
 
 
+class MissingPhase1AvwapDailyPriceProvider:
+    source_provider = "test"
+    source_dataset = "test_daily_price"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, date, date]] = []
+
+    def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
+        self.calls.append((symbol, start_date, end_date))
+        return [DailyPriceBar(date(2026, 5, 30), 900, 910, 890, 905, 1000, 905000)]
+
+
 class FakeMarketIndexContextProvider:
     def __init__(self, context: dict[str, Any] | None = None) -> None:
         self.context = context or _market_context()
@@ -253,7 +268,7 @@ def _api_client(
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
     market_context_provider: FakeMarketIndexContextProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
-    phase1_avwap_provider: FakePhase1AvwapDailyPriceProvider | RaisingPhase1AvwapDailyPriceProvider | None = None,
+    phase1_avwap_provider: FakePhase1AvwapDailyPriceProvider | RaisingPhase1AvwapDailyPriceProvider | MissingPhase1AvwapDailyPriceProvider | None = None,
     raise_server_exceptions: bool = True,
     run_error: Exception | None = None,
 ) -> TestClient:
@@ -724,6 +739,107 @@ def test_daily_radar_refresh_avwap_endpoint_uses_prepared_symbols(
     assert provider.calls == [("2330.TW", date(2026, 2, 1), date(2026, 6, 1))]
 
 
+def test_daily_radar_refresh_avwap_endpoint_includes_active_holdings_and_watchlist(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    daily_radar_db_session.add(
+        User(id=1, google_sub="user-1", email="user@example.com", name="User")
+    )
+    daily_radar_db_session.flush()
+    daily_radar_db_session.add(
+        UserPortfolio(
+            user_id=1,
+            symbol="2449.TW",
+            entry_price=334.5,
+            quantity=50,
+            entry_date=date(2026, 6, 22),
+            is_active=True,
+        )
+    )
+    daily_radar_db_session.add(UserWatchlist(user_id=1, symbol="3035.TW", sort_order=1))
+    daily_radar_db_session.add(UserWatchlist(user_id=1, symbol="AAPL", sort_order=2))
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-avwap",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["symbol_count"] == 3
+    assert body["skipped_symbols"] == ["AAPL"]
+    assert body["skipped_symbol_reasons"] == {"AAPL": "unsupported_phase1_avwap_market"}
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-avwap"]["skipped_symbol_reasons"] == {
+        "AAPL": "unsupported_phase1_avwap_market"
+    }
+    provider = client.fake_phase1_avwap_provider  # type: ignore[attr-defined]
+    assert provider.calls == [
+        ("2330.TW", date(2026, 2, 1), date(2026, 6, 1)),
+        ("2449.TW", date(2026, 2, 1), date(2026, 6, 1)),
+        ("3035.TW", date(2026, 2, 1), date(2026, 6, 1)),
+    ]
+
+
+def test_daily_radar_refresh_avwap_endpoint_reports_missing_symbol_reasons(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    provider = MissingPhase1AvwapDailyPriceProvider()
+    client = _api_client(monkeypatch, daily_radar_db_session, phase1_avwap_provider=provider)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-avwap",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["missing_symbols"] == ["2330.TW"]
+    assert body["missing_symbol_reasons"] == {"2330.TW": "daily_price_row_missing_for_data_date"}
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-avwap"]["missing_symbol_reasons"] == {
+        "2330.TW": "daily_price_row_missing_for_data_date"
+    }
+
+
 def test_daily_radar_refresh_lending_reuses_same_day_fresh_cache(
     monkeypatch,
     daily_radar_db_session: Session,
@@ -850,6 +966,50 @@ def test_daily_radar_run_scoring_requires_completed_refresh_steps(
     detail = response.json()["detail"]
     assert detail["code"] == "daily_radar_refresh_steps_incomplete"
     assert detail["incomplete_steps"] == ["refresh-lending", "refresh-full-margin", "refresh-ohlcv"]
+
+
+def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=date(2026, 6, 1))
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        market_context=_market_context(),
+        step_statuses={
+            "refresh-avwap": {
+                "status": "failed",
+                "missing_symbols": ["2330.TW"],
+                "missing_symbol_reasons": {"2330.TW": "daily_price_row_missing_for_data_date"},
+            },
+            "refresh-lending": {"status": "completed"},
+            "refresh-full-margin": {"status": "completed"},
+            "refresh-ohlcv": {"status": "completed"},
+            "refresh-market-context": {"status": "completed"},
+        },
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
+    assert [row.symbol for row in captured["cache_rows"]] == ["2330.TW"]
 
 
 def test_daily_radar_run_scoring_requires_prepared_market_context(
@@ -1001,6 +1161,9 @@ def daily_radar_db_session() -> Session:
             Phase1AvwapSnapshot.__table__,
             SharedBackgroundContext.__table__,
             StockRawData.__table__,
+            User.__table__,
+            UserPortfolio.__table__,
+            UserWatchlist.__table__,
         ],
     )
     with Session(engine) as session:

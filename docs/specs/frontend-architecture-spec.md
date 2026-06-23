@@ -77,7 +77,7 @@ TanStack Query 管理 server state：
 - `pullback_observation_candidates`
 - `overheated_do_not_chase_candidates`
 
-Holding lists 顯示在 `試驗版今日觀察清單` 的持股區塊內，非持股 lists 顯示在獨立 `非持股觀察清單` 區塊。非持股清單只讀 watchlist / Daily Radar managed-universe projection，不得混入持股管理清單，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。
+Holding lists 顯示在 `試驗版今日觀察清單` 的持股區塊內，非持股 lists 顯示在獨立 `非持股觀察清單` 區塊。非持股清單只讀 watchlist / Daily Radar managed-universe projection，不得混入持股管理清單，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。Phase 1 AVWAP snapshot 過期時 backend 會回 `missing_reason = "phase1_snapshot_stale"`，前端應以資料不足/風險 caveat 呈現，不把舊 snapshot 當今日觀察依據。
 
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
@@ -120,7 +120,7 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - route：`frontend/src/main.tsx` 以 `ProtectedRoute` 保護 `/watchlist`。
 - page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內 raw 技術指標快查。
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
-- Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。
+- Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。頁面可單筆查詢，也可一鍵批次補查尚未載入的關注標的；所有標的已載入後，批次按鈕改為重新快查全部。
 - 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 

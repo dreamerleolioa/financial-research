@@ -8,11 +8,15 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.phase1_avwap.provider import DEFAULT_ADJUSTMENT_MODE, DEFAULT_PHASE1_DATASET
-from ai_stock_sentinel.phase1_avwap.repository import get_phase1_avwap_snapshots
+from ai_stock_sentinel.phase1_avwap.repository import (
+    get_latest_phase1_avwap_snapshots_on_or_before,
+    get_phase1_avwap_snapshots,
+)
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_managed_universe
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_PHASE1_SNAPSHOT_MAX_AGE_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -101,11 +105,12 @@ def read_phase1_position_states_for_portfolio(
     data_date: date,
     dataset: str = DEFAULT_PHASE1_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
+    max_snapshot_age_days: int | None = DEFAULT_PHASE1_SNAPSHOT_MAX_AGE_DAYS,
 ) -> dict[str, dict[str, Any]]:
     requests = _position_state_requests(symbols=symbols, positions=positions)
     normalized_symbols = [symbol for symbol in dict.fromkeys(request.symbol for request in requests) if symbol]
     try:
-        snapshots = get_phase1_avwap_snapshots(
+        snapshots = get_latest_phase1_avwap_snapshots_on_or_before(
             session,
             symbols=normalized_symbols,
             data_date=data_date,
@@ -141,6 +146,7 @@ def read_phase1_position_states_for_portfolio(
             snapshot=snapshots.get(request.symbol),
             holding_entry_date=request.holding_entry_date,
             holding_avg_cost=request.holding_avg_cost,
+            max_snapshot_age_days=max_snapshot_age_days,
         )
         for request in requests
     }
@@ -204,6 +210,7 @@ def read_phase1_current_day_observations_for_managed_universe(
     market: str = "TW",
     dataset: str = DEFAULT_PHASE1_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
+    max_snapshot_age_days: int | None = DEFAULT_PHASE1_SNAPSHOT_MAX_AGE_DAYS,
 ) -> dict[str, dict[str, Any]]:
     universe = resolve_phase1_managed_universe(session, user_id=user_id, market=market)
     non_holding_items = [
@@ -214,7 +221,7 @@ def read_phase1_current_day_observations_for_managed_universe(
     ]
     symbols = [item.symbol for item in non_holding_items]
     try:
-        snapshots = get_phase1_avwap_snapshots(
+        snapshots = get_latest_phase1_avwap_snapshots_on_or_before(
             session,
             symbols=symbols,
             data_date=data_date,
@@ -250,6 +257,7 @@ def read_phase1_current_day_observations_for_managed_universe(
             dataset=dataset,
             adjustment_mode=adjustment_mode,
             snapshot=snapshots.get(item.symbol),
+            max_snapshot_age_days=max_snapshot_age_days,
         )
         for item in non_holding_items
     }
@@ -295,6 +303,7 @@ def _current_day_observation_from_snapshot(
     dataset: str,
     adjustment_mode: str,
     snapshot: Any | None,
+    max_snapshot_age_days: int | None,
 ) -> dict[str, Any]:
     if snapshot is None:
         return _missing_current_day_observation(
@@ -307,6 +316,7 @@ def _current_day_observation_from_snapshot(
         )
 
     payload = dict(snapshot.payload or {})
+    snapshot_date = snapshot.data_date or data_date
     freshness = snapshot.freshness
     missing_reason = snapshot.missing_reason or payload.get("missing_reason")
     anchors = _shared_snapshot_anchors(payload)
@@ -315,11 +325,20 @@ def _current_day_observation_from_snapshot(
     swing_anchor = _select_anchor(anchors, "swing_low_60d")
     breakout_anchor = _select_anchor(anchors, "breakout_20d")
 
-    if freshness == "missing":
+    if _snapshot_is_stale(snapshot_date=snapshot_date, requested_date=data_date, max_age_days=max_snapshot_age_days):
         observation = _missing_current_day_observation(
             symbol=symbol,
             sources=sources,
-            data_date=data_date,
+            data_date=snapshot_date,
+            dataset=dataset,
+            adjustment_mode=adjustment_mode,
+            missing_reason="phase1_snapshot_stale",
+        )
+    elif freshness == "missing":
+        observation = _missing_current_day_observation(
+            symbol=symbol,
+            sources=sources,
+            data_date=snapshot_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
             missing_reason=missing_reason or "phase1_snapshot_missing",
@@ -328,7 +347,7 @@ def _current_day_observation_from_snapshot(
         observation = _missing_current_day_observation(
             symbol=symbol,
             sources=sources,
-            data_date=data_date,
+            data_date=snapshot_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
             missing_reason=missing_reason or "phase1_close_missing",
@@ -337,7 +356,7 @@ def _current_day_observation_from_snapshot(
         observation = _classify_current_day_observation(
             symbol=symbol,
             sources=sources,
-            data_date=data_date,
+            data_date=snapshot_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
             freshness=freshness,
@@ -348,6 +367,7 @@ def _current_day_observation_from_snapshot(
             snapshot=payload,
         )
 
+    observation["requested_data_date"] = data_date.isoformat()
     observation["source"] = _snapshot_source(payload, snapshot)
     observation["source_granularity"] = snapshot.source_granularity
     return observation
@@ -537,6 +557,7 @@ def _position_state_from_snapshot(
     snapshot: Any | None,
     holding_entry_date: date | None = None,
     holding_avg_cost: float | None = None,
+    max_snapshot_age_days: int | None = DEFAULT_PHASE1_SNAPSHOT_MAX_AGE_DAYS,
 ) -> dict[str, Any]:
     if snapshot is None:
         return _missing_position_state(
@@ -548,6 +569,7 @@ def _position_state_from_snapshot(
         )
 
     payload = dict(snapshot.payload or {})
+    snapshot_date = snapshot.data_date or data_date
     freshness = snapshot.freshness
     missing_reason = snapshot.missing_reason or payload.get("missing_reason")
     anchors = _shared_snapshot_anchors(payload)
@@ -559,11 +581,19 @@ def _position_state_from_snapshot(
         anchors["entry"] = entry_anchor
     display_anchor = _select_position_display_anchor(anchors)
 
-    if freshness == "missing" or display_anchor is None:
+    if _snapshot_is_stale(snapshot_date=snapshot_date, requested_date=data_date, max_age_days=max_snapshot_age_days):
+        state = _missing_position_state(
+            symbol=symbol,
+            data_date=snapshot_date,
+            dataset=dataset,
+            adjustment_mode=adjustment_mode,
+            missing_reason="phase1_snapshot_stale",
+        )
+    elif freshness == "missing" or display_anchor is None:
         reason = missing_reason or _position_anchor_missing_reason(payload, holding_entry_date=holding_entry_date)
         state = _missing_position_state(
             symbol=symbol,
-            data_date=data_date,
+            data_date=snapshot_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
             missing_reason=reason,
@@ -571,7 +601,7 @@ def _position_state_from_snapshot(
     else:
         state = _classify_position_state(
             symbol=symbol,
-            data_date=data_date,
+            data_date=snapshot_date,
             dataset=dataset,
             adjustment_mode=adjustment_mode,
             freshness=freshness,
@@ -581,9 +611,14 @@ def _position_state_from_snapshot(
             holding_avg_cost=holding_avg_cost,
         )
 
+    state["requested_data_date"] = data_date.isoformat()
     state["source"] = _snapshot_source(payload, snapshot)
     state["source_granularity"] = snapshot.source_granularity
     return state
+
+
+def _snapshot_is_stale(*, snapshot_date: date, requested_date: date, max_age_days: int | None) -> bool:
+    return max_age_days is not None and (requested_date - snapshot_date).days > max_age_days
 
 
 def _classify_position_state(

@@ -74,6 +74,7 @@ const PHASE1_AVWAP_ANCHOR_LABEL: Record<string, string> = {
 
 const PHASE1_AVWAP_MISSING_REASON_LABEL: Record<string, string> = {
   phase1_snapshot_missing: "尚無試驗版快照",
+  phase1_snapshot_stale: "試驗版快照已過期",
   phase1_snapshot_read_failed: "試驗版快照讀取失敗",
 };
 

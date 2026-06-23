@@ -88,10 +88,8 @@ from ai_stock_sentinel.daily_radar.universe import (
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.phase1_avwap.provider import TwseDailyPriceProvider
-from ai_stock_sentinel.phase1_avwap.service import (
-    DailyPriceProvider,
-    refresh_phase1_avwap_snapshots_for_symbols,
-)
+from ai_stock_sentinel.phase1_avwap.service import DailyPriceProvider, refresh_phase1_avwap_snapshots_for_symbols
+from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbol_set
 
 
 router = APIRouter(tags=["daily-radar"])
@@ -99,7 +97,6 @@ logger = logging.getLogger(__name__)
 
 DAILY_RUN_REFRESH_CONTEXT_TYPES = ("lending", "full_margin")
 DAILY_RADAR_REQUIRED_REFRESH_STEPS = (
-    "refresh-avwap",
     "refresh-lending",
     "refresh-full-margin",
     "refresh-ohlcv",
@@ -239,24 +236,31 @@ def refresh_daily_radar_avwap_endpoint(
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or _backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=list(prepared.selected_symbols))
+    refresh_symbols = refresh_symbol_set.symbols
     result = refresh_phase1_avwap_snapshots_for_symbols(
         db,
-        symbols=list(prepared.selected_symbols),
+        symbols=refresh_symbols,
         data_date=run_date,
         provider=provider,
     )
     status = "failed" if result.missing_symbols else "completed"
+    missing_symbol_reasons = dict(result.missing_symbol_reasons)
     update_daily_radar_prepared_step_status(
         db,
         prepared,
         step="refresh-avwap",
         status=status,
         details={
-            "symbol_count": len(prepared.selected_symbols),
+            "symbol_count": len(refresh_symbols),
+            "selected_symbol_count": len(prepared.selected_symbols),
             "records_written": len(result.fetched_symbols),
             "reused_symbols": list(result.reused_symbols),
             "fetched_symbols": list(result.fetched_symbols),
             "missing_symbols": list(result.missing_symbols),
+            "missing_symbol_reasons": missing_symbol_reasons,
+            "skipped_symbols": list(refresh_symbol_set.skipped_symbol_reasons),
+            "skipped_symbol_reasons": dict(refresh_symbol_set.skipped_symbol_reasons),
         },
     )
     db.commit()
@@ -265,11 +269,14 @@ def refresh_daily_radar_avwap_endpoint(
         step="refresh-avwap",
         run_date=run_date,
         market=request.market,
-        symbol_count=len(prepared.selected_symbols),
+        symbol_count=len(refresh_symbols),
         records_written=len(result.fetched_symbols),
         reused_symbols=result.reused_symbols,
         fetched_symbols=result.fetched_symbols,
         missing_symbols=result.missing_symbols,
+        missing_symbol_reasons=missing_symbol_reasons,
+        skipped_symbols=list(refresh_symbol_set.skipped_symbol_reasons),
+        skipped_symbol_reasons=dict(refresh_symbol_set.skipped_symbol_reasons),
     )
 
 
@@ -566,17 +573,25 @@ def _refresh_phase1_avwap_for_daily_radar(
     provider: DailyPriceProvider,
 ) -> None:
     try:
+        refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=symbols)
+        refresh_symbols = refresh_symbol_set.symbols
         result = refresh_phase1_avwap_snapshots_for_symbols(
             db,
-            symbols=symbols,
+            symbols=refresh_symbols,
             data_date=run_date,
             provider=provider,
         )
         if result.missing_symbols:
             logger.warning(
-                "[DailyRadar] Phase 1 AVWAP refresh completed with missing snapshots run_date=%s missing_symbols=%s",
+                "[DailyRadar] Phase 1 AVWAP refresh completed with missing snapshots run_date=%s missing_symbol_reasons=%s",
                 run_date.isoformat(),
-                result.missing_symbols,
+                result.missing_symbol_reasons,
+            )
+        if refresh_symbol_set.skipped_symbol_reasons:
+            logger.info(
+                "[DailyRadar] Phase 1 AVWAP refresh skipped unsupported symbols run_date=%s skipped_symbol_reasons=%s",
+                run_date.isoformat(),
+                refresh_symbol_set.skipped_symbol_reasons,
             )
     except Exception:
         with suppress(Exception):

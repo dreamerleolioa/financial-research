@@ -19,6 +19,12 @@ class ManagedUniverseSymbol:
     holding_avg_cost: float | None = None
 
 
+@dataclass(frozen=True)
+class Phase1RefreshSymbolSet:
+    symbols: list[str]
+    skipped_symbol_reasons: dict[str, str] = field(default_factory=dict)
+
+
 def resolve_phase1_managed_universe(
     session: Session,
     *,
@@ -53,6 +59,60 @@ def resolve_phase1_managed_universe(
     return list(by_symbol.values())
 
 
+def resolve_phase1_refresh_symbols(
+    session: Session,
+    *,
+    seed_symbols: list[str] | None = None,
+) -> list[str]:
+    return resolve_phase1_refresh_symbol_set(session, seed_symbols=seed_symbols).symbols
+
+
+def resolve_phase1_refresh_symbol_set(
+    session: Session,
+    *,
+    seed_symbols: list[str] | None = None,
+) -> Phase1RefreshSymbolSet:
+    symbols: dict[str, None] = {}
+    skipped_symbol_reasons: dict[str, str] = {}
+    for symbol in seed_symbols or []:
+        _add_refresh_symbol(symbols, skipped_symbol_reasons, symbol)
+
+    for symbol in session.scalars(
+        select(UserPortfolio.symbol)
+        .where(UserPortfolio.is_active.is_(True))
+        .order_by(UserPortfolio.symbol.asc())
+    ).all():
+        _add_refresh_symbol(symbols, skipped_symbol_reasons, symbol)
+
+    for symbol in session.scalars(
+        select(UserWatchlist.symbol).order_by(UserWatchlist.symbol.asc())
+    ).all():
+        _add_refresh_symbol(symbols, skipped_symbol_reasons, symbol)
+
+    return Phase1RefreshSymbolSet(symbols=list(symbols), skipped_symbol_reasons=skipped_symbol_reasons)
+
+
+def is_phase1_refresh_supported_symbol(symbol: str) -> bool:
+    normalized = str(symbol).strip().upper()
+    return normalized.endswith(".TW") or normalized.endswith(".TWO")
+
+
+def _add_refresh_symbol(
+    symbols: dict[str, None],
+    skipped_symbol_reasons: dict[str, str],
+    symbol: str,
+) -> None:
+    normalized = str(symbol).strip().upper()
+    if not normalized:
+        return
+    if is_phase1_refresh_supported_symbol(normalized):
+        symbols[normalized] = None
+        skipped_symbol_reasons.pop(normalized, None)
+        return
+    if normalized not in symbols:
+        skipped_symbol_reasons[normalized] = "unsupported_phase1_avwap_market"
+
+
 def _ensure_item(items: dict[str, ManagedUniverseSymbol], symbol: str) -> ManagedUniverseSymbol:
     normalized = str(symbol).strip().upper()
     if normalized not in items:
@@ -75,5 +135,9 @@ def _candidate_sort_key(candidate: DailyRadarCandidate) -> tuple[int, str]:
 
 __all__ = [
     "ManagedUniverseSymbol",
+    "Phase1RefreshSymbolSet",
+    "resolve_phase1_refresh_symbols",
+    "resolve_phase1_refresh_symbol_set",
+    "is_phase1_refresh_supported_symbol",
     "resolve_phase1_managed_universe",
 ]

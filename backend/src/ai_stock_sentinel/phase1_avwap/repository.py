@@ -33,6 +33,34 @@ def get_phase1_avwap_snapshots(
     return {row.symbol: row for row in rows}
 
 
+def get_latest_phase1_avwap_snapshots_on_or_before(
+    session: Session,
+    *,
+    symbols: Iterable[str],
+    data_date: date,
+    dataset: str = DEFAULT_PHASE1_DATASET,
+    adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
+) -> dict[str, Phase1AvwapSnapshot]:
+    ordered_symbols = _ordered_unique_symbols(symbols)
+    if not ordered_symbols:
+        return {}
+    rows = session.scalars(
+        select(Phase1AvwapSnapshot)
+        .where(
+            Phase1AvwapSnapshot.symbol.in_(ordered_symbols),
+            Phase1AvwapSnapshot.data_date <= data_date,
+            Phase1AvwapSnapshot.dataset == dataset,
+            Phase1AvwapSnapshot.adjustment_mode == adjustment_mode,
+            Phase1AvwapSnapshot.freshness == "fresh",
+        )
+        .order_by(Phase1AvwapSnapshot.symbol.asc(), Phase1AvwapSnapshot.data_date.desc())
+    ).all()
+    snapshots: dict[str, Phase1AvwapSnapshot] = {}
+    for row in rows:
+        snapshots.setdefault(row.symbol, row)
+    return snapshots
+
+
 def upsert_phase1_avwap_snapshot(
     session: Session,
     *,
@@ -91,5 +119,6 @@ def _normalize_symbol(symbol: str) -> str:
 
 __all__ = [
     "get_phase1_avwap_snapshots",
+    "get_latest_phase1_avwap_snapshots_on_or_before",
     "upsert_phase1_avwap_snapshot",
 ]

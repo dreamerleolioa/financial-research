@@ -39,6 +39,7 @@ class Phase1AvwapRefreshResult:
     reused_symbols: list[str]
     fetched_symbols: list[str]
     missing_symbols: list[str]
+    missing_symbol_reasons: dict[str, str]
     universe: list[ManagedUniverseSymbol]
 
 
@@ -114,6 +115,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
     reused_symbols: list[str] = []
     fetched_symbols: list[str] = []
     missing_symbols: list[str] = []
+    missing_symbol_reasons: dict[str, str] = {}
     active_provider = provider or TwseDailyPriceProvider()
 
     for item in universe:
@@ -162,6 +164,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
             snapshots.append(snapshot)
             fetched_symbols.append(item.symbol)
             missing_symbols.append(item.symbol)
+            missing_symbol_reasons[item.symbol] = reason
             continue
 
         snapshot = upsert_phase1_avwap_snapshot(
@@ -183,6 +186,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
         reused_symbols=reused_symbols,
         fetched_symbols=fetched_symbols,
         missing_symbols=missing_symbols,
+        missing_symbol_reasons=missing_symbol_reasons,
         universe=universe,
     )
 
