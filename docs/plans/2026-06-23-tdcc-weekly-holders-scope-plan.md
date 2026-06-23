@@ -2,11 +2,12 @@
 
 ## 背景
 
-目前 `weekly_major_holders` 已由 TDCC `getOD.ashx?id=1-5` 匯入 `shared_background_contexts`，但仍有三個待修正點：
+目前 `weekly_major_holders` 已由 TDCC `getOD.ashx?id=1-5` 匯入 `shared_background_contexts`，但仍有四個待修正點：
 
 1. TDCC 持股分級的產品命名需更精準。
 2. 每週 TDCC 更新範圍目前只跟最新 Daily Radar candidates 對齊，沒有穩定包含使用者當前持股與 watchlist。
 3. `/portfolio/risk-summary` 尚未在 `position_risks[]` 投影 shared context 或 weekly holders 摘要。
+4. 既有分析層尚未把 TDCC 千張大戶持股比例增減納入籌碼穩定性判斷。
 
 ## 待修正項目
 
@@ -109,7 +110,54 @@ TDCC provider 也需同步更新，讓新寫入的 `weekly_major_holders` payloa
 - `missing` 不得被解讀為大戶未進場、散戶未增加或籌碼中性。
 - `stale` 可顯示資料日期與 stale 狀態，但不得當作 fresh 訊號強化風險判斷或趨勢判讀。
 
-### 5. Production rerun
+### 5. 在分析層納入千張大戶增減作為籌碼穩定性指標
+
+`thousand_lot_holder_ratio_delta_pp` 需納入 analysis / portfolio risk summary 可讀的籌碼穩定性指標，但語意必須清楚標注為「籌碼穩定」問題，而不是技術指標、Daily Radar ranking driver 或直接買賣建議。
+
+產品定位：
+
+- 放進系統：是，作為 `chip_stability_context` 或同等命名的籌碼穩定性 context。
+- 放進 technical score：不要。
+- 放進 Daily Radar ranking driver：暫時不要；可先作為 detail trace / companion context 顯示。
+- 放進 portfolio / analyze 的籌碼穩定性摘要：可以。
+- 放進 copy-to-AI：可以，但必須標注為「TDCC 週頻籌碼穩定性補充」，不得和技術指標分數混在同一 bucket。
+
+建議輸出 shape：
+
+```json
+{
+  "chip_stability_context": {
+    "source": "tdcc_weekly_major_holders",
+    "status": "fresh",
+    "as_of_date": "2026-06-18",
+    "previous_as_of_date": "2026-06-05",
+    "thousand_lot_holder_ratio": 38.2,
+    "thousand_lot_holder_ratio_delta_pp": 1.52,
+    "state": "stable",
+    "trend": "strengthening",
+    "summary": "千張大戶持股比例增加，籌碼穩定性提升",
+    "caveats": []
+  }
+}
+```
+
+判讀原則：
+
+- `thousand_lot_holder_ratio_delta_pp > 0`：千張大戶持股比例增加，代表籌碼更加穩定。
+- 連續多期 `thousand_lot_holder_ratio_delta_pp > 0`：代表籌碼愈加穩定，可標記為 `chip_stability = "strengthening"` 或同等語意。
+- `thousand_lot_holder_ratio_delta_pp < 0`：代表籌碼穩定性轉弱或集中度下降，但不得單獨解讀為看空、出場或風險升高。
+- 缺少上一期、`missing` 或 `stale` 時，不產生籌碼穩定性強化判斷。
+
+實作邊界：
+
+- 新分析邏輯應優先使用 TDCC v2 欄位 `thousand_lot_holder_ratio_delta_pp`，不得再用 legacy `major_holder_ratio_delta_pct` 假裝千張大戶變化。
+- 若既有分析敘事仍顯示「大戶持股比例增加/下降」，需改成更精準的「千張大戶持股比例增加/下降」或「400 張以上持股比例增加/下降」。
+- 若要判定「連續增加」，需基於多期有效 `shared_background_contexts` snapshot 的 period-over-period delta，不得從單一期資料推論。
+- 分析輸出應使用狀態型文字，例如「千張大戶持股比例連續增加，籌碼穩定性提升」，避免輸出直接交易建議。
+- `chip_stability_context` 只提供 `state`、`trend`、`summary`、`caveats` 等解釋欄位，不提供直接分數。
+- 若未來要讓千張大戶穩定性影響 portfolio risk、observation confidence 或 Daily Radar ranking，需先做 production replay / forward validation，確認它與後續走勢、回撤或持倉風險有穩定關係，再另行升級規格。
+
+### 6. Production rerun
 
 程式修正後，需補一次 production rerun：
 
@@ -125,6 +173,24 @@ Production rerun 不放在 Alembic migration 裡。Migration 只做既有 payloa
 - `payload.thousand_lot_holder_ratio`
 - `payload.large_holder_400_lot_plus_ratio`
 - `payload.retail_100_lot_or_less_ratio`
+- `payload.thousand_lot_holder_ratio_delta_pp`
+- 分析或 portfolio projection 是否能呈現千張大戶增減對籌碼穩定性的判讀
+- `chip_stability_context.state`
+- `chip_stability_context.trend`
+- `chip_stability_context.summary`
+- `chip_stability_context.caveats`
+- copy-to-AI 是否標注為「TDCC 週頻籌碼穩定性補充」
+- technical score 與 Daily Radar ranking 是否未受 `chip_stability_context` 影響
 - `freshness`
 - `missing_reason`
 - `/portfolio/risk-summary` 是否有對應 projection。
+
+### 7. 完成後文件收尾
+
+此檔屬於暫時計畫文件，不是長期 canonical spec。實作完成且 production 驗證通過後，需執行文件收尾：
+
+- 刪除 `docs/plans/2026-06-23-tdcc-weekly-holders-scope-plan.md`。
+- 將穩定後的 API contract、shared context 欄位與 migration/backfill 邊界更新到 `docs/specs/backend-api-technical-spec.md`。
+- 將 TDCC provider、weekly background context 更新範圍與 market-only shared cache 邊界更新到 `docs/specs/ai-stock-sentinel-architecture-spec.md` 或 `docs/specs/daily-stock-radar-spec.md`。
+- 若 frontend 顯示或 parser contract 有變更，更新 `docs/specs/frontend-architecture-spec.md`。
+- 不要把此暫時計畫加入 `docs/specs/README.md`；只有完成後回寫的 canonical specs 需要維持索引一致。
