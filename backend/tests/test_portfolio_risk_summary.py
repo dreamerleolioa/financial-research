@@ -287,3 +287,41 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     assert captured["phase1_data_date"] == date(2026, 6, 19)
     assert captured["summary_as_of_date"] == date(2026, 6, 19)
     assert captured["phase1_current_day_observations"] is None
+
+
+def test_build_user_portfolio_risk_summary_degrades_when_weekly_major_holders_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import ai_stock_sentinel.portfolio.application.get_risk_summary as risk_summary_module
+
+    captured: dict[str, object] = {}
+    position = _position(symbol="2330.TW", group="g1")
+
+    monkeypatch.setattr(risk_summary_module, "list_active_portfolios", lambda *_args, **_kwargs: [position])
+    monkeypatch.setattr(risk_summary_module, "list_lifecycle_plans_for_groups", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(risk_summary_module, "latest_final_raw_data_by_symbol", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(risk_summary_module, "read_phase1_position_states_for_portfolio", lambda *_args, **_kwargs: {})
+
+    def _raise_weekly_major_holders_read_failure(*_args, **_kwargs):
+        raise RuntimeError("shared background read unavailable")
+
+    def _build_summary(*_args, **kwargs):
+        captured["weekly_major_holders_by_symbol"] = kwargs["weekly_major_holders_by_symbol"]
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        risk_summary_module,
+        "weekly_major_holders_projection_by_symbol",
+        _raise_weekly_major_holders_read_failure,
+    )
+    monkeypatch.setattr(risk_summary_module, "build_portfolio_risk_summary", _build_summary)
+
+    result = risk_summary_module.build_user_portfolio_risk_summary(
+        object(),
+        user_id=1,
+        symbol_name_resolver=lambda _symbol: None,
+        as_of_date=date(2026, 6, 19),
+    )
+
+    assert result == {"ok": True}
+    assert captured["weekly_major_holders_by_symbol"] == {}

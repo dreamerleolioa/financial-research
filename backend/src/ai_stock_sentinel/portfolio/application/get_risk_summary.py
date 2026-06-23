@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date
 
@@ -17,6 +18,7 @@ from ai_stock_sentinel.phase1_avwap.projection import read_phase1_position_state
 
 
 _PORTFOLIO_DIAGNOSIS_CONSUMER = "portfolio_diagnosis"
+logger = logging.getLogger(__name__)
 
 
 def build_user_portfolio_risk_summary(
@@ -39,12 +41,24 @@ def build_user_portfolio_risk_summary(
         positions=rows,
         data_date=summary_date,
     )
-    weekly_major_holders_by_symbol = weekly_major_holders_projection_by_symbol(
-        db,
-        symbols=symbols,
-        consumer=_PORTFOLIO_DIAGNOSIS_CONSUMER,
-        reference_date=summary_date,
-    )
+    try:
+        weekly_major_holders_by_symbol = weekly_major_holders_projection_by_symbol(
+            db,
+            symbols=symbols,
+            consumer=_PORTFOLIO_DIAGNOSIS_CONSUMER,
+            reference_date=summary_date,
+        )
+    except Exception as exc:
+        logger.warning(
+            "portfolio_risk_summary_weekly_major_holders_read_failed",
+            extra={
+                "user_id": user_id,
+                "symbol_count": len(symbols),
+                "consumer": _PORTFOLIO_DIAGNOSIS_CONSUMER,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        weekly_major_holders_by_symbol = {}
     return build_portfolio_risk_summary(
         rows,
         plans_by_group=plans_by_group,
