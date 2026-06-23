@@ -94,6 +94,7 @@ const PHASE1_ANCHOR_LABEL: Record<string, string> = {
 const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
   not_in_phase1_universe: "不在試驗版管理範圍",
   phase1_snapshot_missing: "尚無試驗版快照",
+  phase1_snapshot_stale: "試驗版快照已過期",
   phase1_snapshot_read_failed: "試驗版快照讀取失敗",
 };
 

@@ -58,6 +58,7 @@ const PHASE1_ANCHOR_LABEL: Record<string, string> = {
 const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
   not_in_phase1_universe: "不在試驗版管理範圍",
   phase1_snapshot_missing: "尚無試驗版快照",
+  phase1_snapshot_stale: "試驗版快照已過期",
   phase1_snapshot_read_failed: "試驗版快照讀取失敗",
 };
 
@@ -67,6 +68,12 @@ interface WatchlistTechnicalState {
   error: string | null;
   result: AnalyzeResponse | null;
   copyStatus: CopyStatus;
+}
+
+interface BulkTechnicalLookupState {
+  running: boolean;
+  completed: number;
+  total: number;
 }
 
 const EMPTY_TECHNICAL_STATE: WatchlistTechnicalState = {
@@ -318,6 +325,7 @@ export default function WatchlistPage() {
   const [dragOverItemId, setDragOverItemId] = useState<number | null>(null);
   const [dragPreviewIds, setDragPreviewIds] = useState<number[] | null>(null);
   const [technicalStateByItemId, setTechnicalStateByItemId] = useState<Record<number, WatchlistTechnicalState>>({});
+  const [bulkTechnicalLookup, setBulkTechnicalLookup] = useState<BulkTechnicalLookupState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const technicalCopyResetTimersRef = useRef<Record<number, number>>({});
 
@@ -336,6 +344,22 @@ export default function WatchlistPage() {
       .filter((item): item is WatchlistItem => Boolean(item));
     return previewItems.length === sortedItems.length ? previewItems : sortedItems;
   }, [dragPreviewIds, sortedItems]);
+  const technicalResultCount = useMemo(
+    () => sortedItems.filter((item) => Boolean(technicalStateByItemId[item.id]?.result)).length,
+    [sortedItems, technicalStateByItemId],
+  );
+  const bulkTechnicalLookupRunning = bulkTechnicalLookup?.running === true;
+  const listActionBusy = reordering || busyItemId !== null || bulkTechnicalLookupRunning;
+  const allItemsHaveTechnicalResults = itemCount > 0 && technicalResultCount === itemCount;
+  const bulkLookupButtonLabel = bulkTechnicalLookupRunning
+    ? `快查中 ${bulkTechnicalLookup?.completed ?? 0}/${bulkTechnicalLookup?.total ?? itemCount}`
+    : allItemsHaveTechnicalResults
+      ? "重新快查全部"
+      : technicalResultCount > 0
+        ? `補查 ${itemCount - technicalResultCount} 檔`
+        : itemCount > 0
+          ? `一鍵快查 ${itemCount} 檔`
+          : "一鍵快查";
 
   async function refreshWatchlist() {
     setLoading(true);
@@ -408,12 +432,27 @@ export default function WatchlistPage() {
     }
   }
 
-  async function handleQuickTechnicalLookup(item: WatchlistItem, forceRefresh = false) {
+  async function loadTechnicalLookup(
+    item: WatchlistItem,
+    {
+      forceRefresh = false,
+      expandCached = false,
+      toggleCached = false,
+    }: {
+      forceRefresh?: boolean;
+      expandCached?: boolean;
+      toggleCached?: boolean;
+    } = {},
+  ): Promise<void> {
     const currentState = getTechnicalState(item.id);
     if (currentState.loading) return;
 
     if (currentState.result && !forceRefresh) {
-      updateTechnicalState(item.id, (state) => ({ ...state, expanded: !state.expanded, error: null }));
+      updateTechnicalState(item.id, (state) => ({
+        ...state,
+        expanded: toggleCached ? !state.expanded : expandCached || state.expanded,
+        error: null,
+      }));
       return;
     }
 
@@ -441,6 +480,49 @@ export default function WatchlistPage() {
         expanded: true,
         error: err instanceof Error ? err.message : "技術指標快查失敗",
       }));
+    }
+  }
+
+  async function handleQuickTechnicalLookup(item: WatchlistItem, forceRefresh = false) {
+    await loadTechnicalLookup(item, { forceRefresh, toggleCached: !forceRefresh, expandCached: true });
+  }
+
+  async function handleBulkTechnicalLookup() {
+    if (bulkTechnicalLookupRunning || loading || itemCount === 0 || reordering || busyItemId !== null) return;
+
+    const shouldRefreshAll = allItemsHaveTechnicalResults;
+    const cachedItems = shouldRefreshAll
+      ? []
+      : sortedItems.filter((item) => Boolean(getTechnicalState(item.id).result));
+    cachedItems.forEach((item) => {
+      updateTechnicalState(item.id, (state) => ({ ...state, expanded: true, error: null }));
+    });
+
+    const targetItems = shouldRefreshAll
+      ? sortedItems
+      : sortedItems.filter((item) => !getTechnicalState(item.id).result);
+    if (targetItems.length === 0) return;
+
+    setBulkTechnicalLookup({ running: true, completed: 0, total: targetItems.length });
+    setError(null);
+
+    let nextIndex = 0;
+    const workerCount = Math.min(3, targetItems.length);
+    const runWorker = async () => {
+      while (nextIndex < targetItems.length) {
+        const item = targetItems[nextIndex];
+        nextIndex += 1;
+        await loadTechnicalLookup(item, { forceRefresh: true, expandCached: true });
+        setBulkTechnicalLookup((state) =>
+          state ? { ...state, completed: Math.min(state.completed + 1, state.total) } : state,
+        );
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: workerCount }, runWorker));
+    } finally {
+      setBulkTechnicalLookup(null);
     }
   }
 
@@ -523,7 +605,7 @@ export default function WatchlistPage() {
 
   function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>, item: WatchlistItem) {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    if (reordering || busyItemId !== null) {
+    if (listActionBusy) {
       event.preventDefault();
       return;
     }
@@ -615,14 +697,24 @@ export default function WatchlistPage() {
       )}
 
       <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-        <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-base font-semibold text-text-primary">關注列表</h2>
             <p className="mt-1 text-xs text-text-muted">
               儲存還沒進入持股的觀察標的，可在列表內快速查看技術指標並複製摘要。
             </p>
           </div>
-          <span className="text-xs text-text-faint">{itemCount} 檔關注中</span>
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <span className="text-xs text-text-faint">{itemCount} 檔關注中</span>
+            <button
+              type="button"
+              onClick={() => void handleBulkTechnicalLookup()}
+              disabled={loading || itemCount === 0 || listActionBusy}
+              className="rounded-lg border border-indigo-500/70 bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:border-border disabled:bg-card-hover disabled:text-text-faint"
+            >
+              {bulkLookupButtonLabel}
+            </button>
+          </div>
         </div>
 
         <form
@@ -676,7 +768,7 @@ export default function WatchlistPage() {
               const noteDraft = noteDrafts[item.id] ?? "";
               const noteChanged = noteDraft !== (item.notes ?? "");
               const itemBusy = busyItemId === item.id;
-              const listBusy = reordering || busyItemId !== null;
+              const listBusy = listActionBusy;
               const isDragging = draggedItemId === item.id;
               const isDropTarget = dragOverItemId === item.id && draggedItemId !== item.id;
               const technicalState = getTechnicalState(item.id);

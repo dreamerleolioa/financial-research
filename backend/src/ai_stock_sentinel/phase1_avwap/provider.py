@@ -88,7 +88,10 @@ class TwseDailyPriceProvider:
                 payload = response.json() if hasattr(response, "json") else response
             except Exception as exc:
                 raise DailyPriceProviderError("twse_stock_day_request_failed") from exc
-            rows.extend(normalize_twse_stock_day_payload(payload))
+            try:
+                rows.extend(normalize_twse_stock_day_payload(payload))
+            except ValueError as exc:
+                raise DailyPriceProviderError("twse_stock_day_parser_error") from exc
         return [
             bar
             for bar in sorted(rows, key=lambda item: item.trade_date)

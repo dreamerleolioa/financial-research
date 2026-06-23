@@ -167,6 +167,18 @@ def test_twse_daily_price_provider_fetches_months_and_filters_requested_window()
     assert rows[0].amount == 2400
 
 
+def test_twse_daily_price_provider_reports_parser_error_reason() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int):
+        return _FakeResponse({"stat": "OK", "fields": ["日期"], "data": [["115/06/01"]]})
+
+    provider = TwseDailyPriceProvider(request_get=fake_get)
+
+    with pytest.raises(Exception) as exc_info:
+        provider.fetch_history("2330.TW", start_date=date(2026, 6, 1), end_date=date(2026, 6, 1))
+
+    assert getattr(exc_info.value, "code", None) == "twse_stock_day_parser_error"
+
+
 def test_twse_daily_price_provider_uses_finmind_fallback_for_tpex_symbols() -> None:
     fallback = FakeDailyPriceProvider({"6488.TWO": _bars(date(2026, 6, 5))})
     fallback.source_provider = "finmind"
@@ -513,6 +525,128 @@ def test_read_phase1_position_states_for_portfolio_projects_snapshot_state(
     assert state["data_quality"]["blocking"] is False
 
 
+def test_read_phase1_position_states_for_portfolio_uses_latest_fresh_snapshot_before_requested_date(
+    db_session: Session,
+) -> None:
+    snapshot_date = date(2026, 6, 22)
+    requested_date = date(2026, 6, 23)
+    portfolio = UserPortfolio(
+        user_id=1,
+        position_group_id="group-latest-snapshot",
+        symbol="2449.TW",
+        entry_price=330,
+        quantity=50,
+        entry_date=date(2026, 6, 20),
+    )
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2449.TW",
+        data_date=snapshot_date,
+        payload={
+            "symbol": "2449.TW",
+            "data_date": snapshot_date.isoformat(),
+            "ohlcv": {"close": 350},
+            "bars": [
+                {
+                    "date": "2026-06-20",
+                    "open": 330,
+                    "high": 335,
+                    "low": 328,
+                    "close": 330,
+                    "volume": 100,
+                    "amount": 33000,
+                    "estimated_amount": False,
+                },
+                {
+                    "date": "2026-06-22",
+                    "open": 345,
+                    "high": 352,
+                    "low": 342,
+                    "close": 350,
+                    "volume": 100,
+                    "amount": 35000,
+                    "estimated_amount": False,
+                },
+            ],
+            "anchors": {
+                "swing_low_60d": {
+                    "available": True,
+                    "anchor_date": "2026-06-20",
+                    "anchor_reason": "swing_low_60d",
+                    "avwap": 340,
+                    "distance_to_avwap_pct": 2.9412,
+                },
+            },
+            "data_quality": {"estimated": False, "rows_used": 2},
+        },
+        freshness="fresh",
+    )
+
+    states = read_phase1_position_states_for_portfolio(
+        db_session,
+        positions=[portfolio],
+        data_date=requested_date,
+    )
+
+    state = states["group-latest-snapshot"]
+    assert state["freshness"] == "fresh"
+    assert state["data_date"] == snapshot_date.isoformat()
+    assert state["requested_data_date"] == requested_date.isoformat()
+    assert state["display_anchor"]["type"] == "entry"
+
+
+def test_read_phase1_position_states_for_portfolio_marks_old_snapshot_stale(
+    db_session: Session,
+) -> None:
+    snapshot_date = date(2026, 6, 1)
+    requested_date = date(2026, 6, 23)
+    portfolio = UserPortfolio(
+        user_id=1,
+        position_group_id="group-stale-snapshot",
+        symbol="2449.TW",
+        entry_price=330,
+        quantity=50,
+        entry_date=date(2026, 5, 30),
+    )
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2449.TW",
+        data_date=snapshot_date,
+        payload={
+            "symbol": "2449.TW",
+            "data_date": snapshot_date.isoformat(),
+            "ohlcv": {"close": 350},
+            "bars": [
+                {
+                    "date": "2026-06-01",
+                    "open": 345,
+                    "high": 352,
+                    "low": 342,
+                    "close": 350,
+                    "volume": 100,
+                    "amount": 35000,
+                    "estimated_amount": False,
+                },
+            ],
+            "anchors": {},
+            "data_quality": {"estimated": False, "rows_used": 1},
+        },
+        freshness="fresh",
+    )
+
+    states = read_phase1_position_states_for_portfolio(
+        db_session,
+        positions=[portfolio],
+        data_date=requested_date,
+    )
+
+    state = states["group-stale-snapshot"]
+    assert state["freshness"] == "missing"
+    assert state["missing_reason"] == "phase1_snapshot_stale"
+    assert state["data_date"] == snapshot_date.isoformat()
+    assert state["requested_data_date"] == requested_date.isoformat()
+
+
 def test_read_phase1_position_states_for_portfolio_reports_missing_distance_reason(
     db_session: Session,
 ) -> None:
@@ -605,7 +739,7 @@ def test_read_phase1_position_states_for_portfolio_reports_read_failure_as_nonbl
     def _raise(*args, **kwargs):
         raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(projection_module, "get_phase1_avwap_snapshots", _raise)
+    monkeypatch.setattr(projection_module, "get_latest_phase1_avwap_snapshots_on_or_before", _raise)
 
     states = projection_module.read_phase1_position_states_for_portfolio(
         db_session,
@@ -661,6 +795,33 @@ def test_read_phase1_current_day_observations_classifies_non_holding_managed_sym
     assert observations["2317.TW"]["data_quality"]["blocking"] is False
 
 
+def test_read_phase1_current_day_observations_marks_old_snapshot_stale(
+    db_session: Session,
+) -> None:
+    _seed_user_universe(db_session)
+    snapshot_date = date(2026, 6, 1)
+    requested_date = date(2026, 6, 23)
+    upsert_phase1_avwap_snapshot(
+        db_session,
+        symbol="2454.TW",
+        data_date=snapshot_date,
+        payload=_phase1_snapshot_payload(symbol="2454.TW", close=100, swing_distance=3, breakout_distance=8),
+        freshness="fresh",
+    )
+
+    observations = read_phase1_current_day_observations_for_managed_universe(
+        db_session,
+        user_id=1,
+        data_date=requested_date,
+    )
+
+    watchlist_observation = observations["2454.TW"]
+    assert watchlist_observation["freshness"] == "missing"
+    assert watchlist_observation["missing_reason"] == "phase1_snapshot_stale"
+    assert watchlist_observation["data_date"] == snapshot_date.isoformat()
+    assert watchlist_observation["requested_data_date"] == requested_date.isoformat()
+
+
 def test_read_phase1_current_day_observations_reports_read_failure_as_nonblocking(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -672,7 +833,7 @@ def test_read_phase1_current_day_observations_reports_read_failure_as_nonblockin
     def _raise(*args, **kwargs):
         raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(projection_module, "get_phase1_avwap_snapshots", _raise)
+    monkeypatch.setattr(projection_module, "get_latest_phase1_avwap_snapshots_on_or_before", _raise)
 
     observations = projection_module.read_phase1_current_day_observations_for_managed_universe(
         db_session,

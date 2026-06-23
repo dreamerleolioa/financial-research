@@ -16,6 +16,7 @@ on:
           - refresh-ohlcv
           - refresh-market-context
           - run-scoring
+          - repair-avwap-and-rescore
       run_date:
         description: "Optional Daily Radar run_date in Asia/Taipei calendar, YYYY-MM-DD. Scheduled runs compute this automatically."
         required: false
@@ -38,6 +39,8 @@ on:
     - cron: "30 15 * * 1-5"
     # 台灣時間週二至週六 00:30，對前一個台北交易日 run_date 做 scoring。
     - cron: "30 16 * * 1-5"
+    # 台灣時間週二至週六 07:00，補修前一個台股交易日 AVWAP，成功後重跑 scoring。
+    - cron: "0 23 * * 1-5"
 
 permissions:
   contents: read
@@ -150,6 +153,9 @@ jobs:
             "symbol_count: \(.symbol_count // "n/a")",
             "records_written: \(.records_written // "n/a")",
             "missing_symbols_count: \(if (.missing_symbols | type) == "array" then (.missing_symbols | length) else "n/a" end)",
+            "missing_symbol_reasons: \(.missing_symbol_reasons // {})",
+            "skipped_symbols_count: \(if (.skipped_symbols | type) == "array" then (.skipped_symbols | length) else "n/a" end)",
+            "skipped_symbol_reasons: \(.skipped_symbol_reasons // {})",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
           if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
@@ -157,7 +163,7 @@ jobs:
             exit 1
           fi
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
-            exit 1
+            echo "AVWAP refresh is optional evidence for scoring; leaving job successful for non-completed business status."
           fi
 
   refresh-lending:
@@ -447,5 +453,95 @@ jobs:
           ' "$response_file"
           if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$response_file"
+            exit 1
+          fi
+
+  repair-avwap-and-rescore:
+    name: Repair Daily Radar AVWAP and rescore
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore')
+    steps:
+      - name: Repair AVWAP and rescore
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          scheduled_run_date() {
+            local cron_minute cron_hour current_hhmm schedule_hhmm
+            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
+            current_hhmm="$(date -u +%H%M)"
+            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
+            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
+              date -u -d "1 day ago" +%F
+            else
+              date -u +%F
+            fi
+          }
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            run_date="$(scheduled_run_date)"
+          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
+            run_date="${DAILY_RADAR_RUN_DATE}"
+          else
+            run_date="$(TZ=Asia/Taipei date +%F)"
+          fi
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+
+          refresh_response_file="$(mktemp)"
+          refresh_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-avwap"
+          echo "Daily Radar repair refresh-avwap run_date: ${run_date}"
+          refresh_http_status="$(curl -sS -o "$refresh_response_file" -w "%{http_code}" \
+            -X POST "$refresh_endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "Refresh HTTP status: ${refresh_http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "missing_symbols_count: \(if (.missing_symbols | type) == "array" then (.missing_symbols | length) else "n/a" end)",
+            "missing_symbol_reasons: \(.missing_symbol_reasons // {})",
+            "skipped_symbols_count: \(if (.skipped_symbols | type) == "array" then (.skipped_symbols | length) else "n/a" end)",
+            "skipped_symbol_reasons: \(.skipped_symbol_reasons // {})",
+            "detail: \(.detail // "n/a")"
+          ' "$refresh_response_file"
+          if [[ ! "$refresh_http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$refresh_response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$refresh_response_file" >/dev/null; then
+            echo "AVWAP repair did not complete; skip rescore and fail repair monitor."
+            exit 1
+          fi
+
+          scoring_response_file="$(mktemp)"
+          scoring_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/run-scoring"
+          echo "Daily Radar repair run-scoring run_date: ${run_date}"
+          scoring_http_status="$(curl -sS -o "$scoring_response_file" -w "%{http_code}" \
+            -X POST "$scoring_endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "Scoring HTTP status: ${scoring_http_status}"
+          jq -r '
+            "run_id: \(.run_id // "n/a")",
+            "status: \(.status // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "universe_count: \(.universe_count // "n/a")",
+            "prefilter_count: \(.prefilter_count // "n/a")",
+            "candidate_count: \(.candidate_count // "n/a")",
+            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")"
+          ' "$scoring_response_file"
+          if [[ ! "$scoring_http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$scoring_response_file"
+            exit 1
+          fi
+          if ! jq -e '.status == "completed" or .status == "stale_data"' "$scoring_response_file" >/dev/null; then
             exit 1
           fi
