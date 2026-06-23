@@ -28,7 +28,9 @@ export interface DailyRadarPhase1AvwapAnchor {
   anchor_date?: string | null;
   anchor_reason?: string | null;
   avwap?: number | null;
+  snapshot_close?: number | null;
   distance_to_avwap_pct?: number | null;
+  distance_basis?: string | null;
   source_granularity?: string;
   estimated?: boolean;
   [key: string]: unknown;

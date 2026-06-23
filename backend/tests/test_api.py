@@ -391,7 +391,7 @@ def test_analyze_response_includes_phase1_observation_without_passing_it_to_grap
     monkeypatch.setattr(
         api_module,
         "_read_phase1_observation_for_analyze",
-        lambda db, *, user_id, symbol, data_date: {
+        lambda db, *, user_id, symbol, data_date, current_price=None: {
             "symbol": symbol,
             "data_date": data_date.isoformat(),
             "freshness": "fresh",

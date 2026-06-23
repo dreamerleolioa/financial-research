@@ -120,8 +120,8 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內 raw 技術指標快查。
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
 - Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。頁面可單筆查詢，也可一鍵批次補查尚未載入的關注標的；所有標的已載入後，批次按鈕改為重新快查全部。
-- 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
-- 籌碼穩定性補充：Watchlist quick lookup / Analyze response 可接收 `chip_stability_context`，但它不是技術指標分數的一部分。複製完整指標摘要時，若 response 有此欄位，`buildTechnicalIndicatorsCopyText()` 會加入 `[Chip stability companion]` 區塊，且文案必須標注 `TDCC 週頻籌碼穩定性補充，不納入 technical score。`
+- 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。Analyze / Watchlist / copy-to-AI 顯示「現價距離 AVWAP」時必須使用 `current_distance_to_avwap_pct`；`distance_to_avwap_pct` 是 snapshot 資料日 `snapshot_close` 距離，只能作資料日 trace。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
+- 籌碼穩定性補充：Watchlist quick lookup / Analyze response 可接收 `chip_stability_context`，但它不是技術指標分數的一部分。複製完整指標摘要時，若 response 有此欄位，`buildTechnicalIndicatorsCopyText()` 只輸出 `千張大戶持股比例`、`較上週變化`，以及最多 5 週歷史資料；不輸出 companion 標題、長 caveat 或 score/ranking 說明文字。
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
 股票名稱仍遵守 display metadata 規則：watchlist response 的 `name` 只供顯示，前端不自行查資料源，也不得用於策略、排序、風險計算或 cache key 判斷。

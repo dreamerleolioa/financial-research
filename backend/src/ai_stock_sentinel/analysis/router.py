@@ -374,11 +374,13 @@ def _with_phase1_observation(
     user_id: int,
     symbol: str,
 ) -> AnalyzeResponse:
+    current_price = response.snapshot.get("current_price") if isinstance(response.snapshot, dict) else None
     response.phase1_observation = _read_phase1_observation_for_analyze(
         db,
         user_id=user_id,
         symbol=symbol,
         data_date=_today_taipei(),
+        current_price=current_price if isinstance(current_price, int | float) else None,
     )
     return response
 

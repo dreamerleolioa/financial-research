@@ -89,22 +89,12 @@ function formatPhase1Distance(value: number | null | undefined): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-function calculatePhase1DistanceFromPrice(
-  price: number | null | undefined,
-  reference: number | null | undefined,
-): number | null {
-  if (price == null || reference == null || Number.isNaN(price) || Number.isNaN(reference) || reference === 0) {
-    return null;
-  }
-  return (price - reference) / reference * 100;
-}
-
 function formatPhase1MissingReason(reason: string | null | undefined): string {
   if (!reason) return "資料不足";
   return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
 }
 
-function getPhase1DisplayAnchors(observation: Phase1Observation, currentPrice?: number | null): Array<{
+function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
   key: string;
   label: string;
   avwap?: number | null;
@@ -122,7 +112,7 @@ function getPhase1DisplayAnchors(observation: Phase1Observation, currentPrice?: 
       key,
       label: PHASE1_ANCHOR_LABEL[key] ?? key,
       avwap: anchor.avwap,
-      distance: calculatePhase1DistanceFromPrice(currentPrice, anchor.avwap) ?? anchor.distance_to_avwap_pct,
+      distance: anchor.current_distance_to_avwap_pct ?? anchor.distance_to_avwap_pct,
       anchorDate: anchor.anchor_date,
       estimated: anchor.estimated,
     }));
@@ -131,13 +121,11 @@ function getPhase1DisplayAnchors(observation: Phase1Observation, currentPrice?: 
 function WatchlistPhase1Observation({
   observation,
   symbol,
-  currentPrice,
 }: {
   observation: Phase1Observation;
   symbol: string;
-  currentPrice?: number | null;
 }) {
-  const anchors = getPhase1DisplayAnchors(observation, currentPrice);
+  const anchors = getPhase1DisplayAnchors(observation);
   const isMissing = observation.freshness === "missing" || Boolean(observation.missing_reason);
 
   return (
@@ -328,7 +316,6 @@ function WatchlistTechnicalPanel({
         <WatchlistPhase1Observation
           observation={phase1Observation}
           symbol={quickSnapshotSymbol}
-          currentPrice={quickCurrentPrice}
         />
       )}
     </div>
