@@ -118,6 +118,28 @@ const chipStabilityContextSchema = z
     previous_as_of_date: nullableString.optional(),
     thousand_lot_holder_ratio: nullableNumber.optional(),
     thousand_lot_holder_ratio_delta_pp: nullableNumber.optional(),
+    weekly_history: z
+      .array(
+        z
+          .object({
+            as_of_date: nullableString.optional(),
+            thousand_lot_holder_ratio: nullableNumber.optional(),
+            thousand_lot_holder_ratio_delta_pp: nullableNumber.optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+    history: z
+      .array(
+        z
+          .object({
+            as_of_date: nullableString.optional(),
+            thousand_lot_holder_ratio: nullableNumber.optional(),
+            thousand_lot_holder_ratio_delta_pp: nullableNumber.optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
     state: z.string().optional(),
     trend: z.string().optional(),
     summary: nullableString.optional(),

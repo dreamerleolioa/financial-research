@@ -173,9 +173,7 @@ function buildPhase1AvwapCopyRows(
   if (anchorRows.length > 0) {
     return [
       ["AVWAP 資料日", observation.data_date],
-      ["AVWAP 狀態", observation.freshness === "missing" ? formatPhase1MissingReason(observation.missing_reason) : "快照可用"],
       ...anchorRows,
-      ["AVWAP 來源", `${observation.source?.provider ?? "—"} / ${observation.source?.dataset ?? observation.dataset}`],
     ];
   }
 
@@ -196,27 +194,24 @@ function formatRatioPct(value: number | null | undefined): string {
   return `${value.toFixed(2)}%`;
 }
 
+function buildChipStabilityHistoryRows(context: ChipStabilityContext): Array<[string, string]> {
+  const history = context.weekly_history ?? context.history ?? [];
+  return history.slice(0, 5).map((entry) => {
+    const dateLabel = entry.as_of_date ?? "—";
+    const ratio = formatRatioPct(entry.thousand_lot_holder_ratio);
+    const delta = formatSignedDelta(entry.thousand_lot_holder_ratio_delta_pp);
+    return [`千張大戶週資料 ${dateLabel}`, `${ratio} / 週變化 ${delta}`];
+  });
+}
+
 function buildChipStabilityCopyRows(
   context: ChipStabilityContext | null | undefined,
 ): Array<[string, string]> {
   if (!context) return [];
-  const caveatText = context.caveats
-    .map((caveat) => caveat.message ?? caveat.code)
-    .filter(Boolean)
-    .join("；");
   return [
-    ["[Chip stability companion]", "TDCC 週頻籌碼穩定性補充"],
-    ["說明", "此段為 TDCC 週頻籌碼穩定性補充，不納入 technical score。"],
-    ["狀態", `${context.status}${context.trend ? ` / ${context.trend}` : ""}`],
-    ["資料日", context.as_of_date ?? "—"],
-    ["上一期資料日", context.previous_as_of_date ?? "—"],
-    [
-      "千張大戶持股比例",
-      formatRatioPct(context.thousand_lot_holder_ratio),
-    ],
-    ["千張大戶持股比例變化", formatSignedDelta(context.thousand_lot_holder_ratio_delta_pp)],
-    ["籌碼穩定性摘要", context.summary ?? "—"],
-    ["限制", caveatText || "—"],
+    ["千張大戶持股比例", `${formatRatioPct(context.thousand_lot_holder_ratio)}${context.as_of_date ? `（${context.as_of_date}）` : ""}`],
+    ["較上週變化", formatSignedDelta(context.thousand_lot_holder_ratio_delta_pp)],
+    ...buildChipStabilityHistoryRows(context),
   ];
 }
 

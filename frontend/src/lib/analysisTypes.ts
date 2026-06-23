@@ -115,6 +115,16 @@ export interface ChipStabilityContext {
   previous_as_of_date?: string | null;
   thousand_lot_holder_ratio?: number | null;
   thousand_lot_holder_ratio_delta_pp?: number | null;
+  weekly_history?: Array<{
+    as_of_date?: string | null;
+    thousand_lot_holder_ratio?: number | null;
+    thousand_lot_holder_ratio_delta_pp?: number | null;
+  }>;
+  history?: Array<{
+    as_of_date?: string | null;
+    thousand_lot_holder_ratio?: number | null;
+    thousand_lot_holder_ratio_delta_pp?: number | null;
+  }>;
   state?: "stable" | "weakening" | "unknown" | string;
   trend?: "strengthening" | "improving" | "weakening" | "flat" | "unavailable" | string;
   summary?: string | null;
