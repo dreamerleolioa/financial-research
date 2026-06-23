@@ -69,15 +69,12 @@ TanStack Query 管理 server state：
 - `useDecisionContextStatusQuery()` -> `GET /portfolio/decision-context-status`
 - `useLifecyclePlanQuery(id)` -> `GET /portfolio/{id}/lifecycle-plan`
 
-`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C `phase1_current_day_lists` 在 Portfolio UI 分成兩個區塊顯示：
+`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C `phase1_current_day_lists` 在 Portfolio UI 只顯示目前 active holdings 對應的 AVWAP 觀察：
 
 - `holding_management_candidates`
 - `holding_risk_alerts`
-- `breakout_confirmation_candidates`
-- `pullback_observation_candidates`
-- `overheated_do_not_chase_candidates`
 
-Holding lists 顯示在 `試驗版今日觀察清單` 的持股區塊內，非持股 lists 顯示在獨立 `非持股觀察清單` 區塊。非持股清單只讀 watchlist / Daily Radar managed-universe projection，不得混入持股管理清單，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。Phase 1 AVWAP snapshot 過期時 backend 會回 `missing_reason = "phase1_snapshot_stale"`，前端應以資料不足/風險 caveat 呈現，不把舊 snapshot 當今日觀察依據。
+Portfolio UI 標題為 `持股 AVWAP 觀察`，不得在持股頁顯示 watchlist / Daily Radar 的非持股候選。`breakout_confirmation_candidates`、`pullback_observation_candidates` 與 `overheated_do_not_chase_candidates` 可因 API 相容性保留在 parsed response shape，但不作為 Portfolio UI 顯示來源；非持股 AVWAP 候選應回 Daily Radar 或關注清單語境呈現，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。Phase 1 AVWAP snapshot 過期時 backend 會回 `missing_reason = "phase1_snapshot_stale"`，前端應以資料不足/風險 caveat 呈現，不把舊 snapshot 當今日觀察依據。
 
 Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 

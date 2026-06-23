@@ -65,11 +65,11 @@ const BACKGROUND_CONTEXT_FRESHNESS_LABEL: Record<string, string> = {
 
 const PHASE1_AVWAP_ANCHOR_ORDER = ["swing_low_60d", "breakout_20d", "high_volume_60d", "entry"] as const;
 
-const PHASE1_AVWAP_ANCHOR_LABEL: Record<string, string> = {
-  swing_low_60d: "60 日波段低點",
-  breakout_20d: "20 日突破",
-  high_volume_60d: "60 日大量",
-  entry: "持股進場日",
+const PHASE1_AVWAP_ANCHOR_REFERENCE_LABEL: Record<string, string> = {
+  swing_low_60d: "60 日低點 AVWAP",
+  breakout_20d: "20 日突破 AVWAP",
+  high_volume_60d: "60 日大量 AVWAP",
+  entry: "持股進場日 AVWAP",
 };
 
 const PHASE1_AVWAP_MISSING_REASON_LABEL: Record<string, string> = {
@@ -752,7 +752,7 @@ function getPhase1AvwapContext(candidate: DailyRadarCandidate): DailyRadarPhase1
 
 function getPhase1AvwapDisplayAnchors(context: DailyRadarPhase1AvwapContext): Array<{
   key: string;
-  label: string;
+  referenceLabel: string;
   avwap?: number | null;
   distance?: number | null;
   anchorDate?: string | null;
@@ -766,12 +766,20 @@ function getPhase1AvwapDisplayAnchors(context: DailyRadarPhase1AvwapContext): Ar
     .slice(0, 4)
     .map(([key, anchor]) => ({
       key,
-      label: PHASE1_AVWAP_ANCHOR_LABEL[key] ?? formatTraceKey(key),
+      referenceLabel: PHASE1_AVWAP_ANCHOR_REFERENCE_LABEL[key] ?? `${formatTraceKey(key)} AVWAP`,
       avwap: anchor.avwap,
       distance: anchor.distance_to_avwap_pct,
       anchorDate: anchor.anchor_date,
       estimated: anchor.estimated,
     }));
+}
+
+function formatPhase1AvwapDistanceLine(anchor: { distance?: number | null; referenceLabel: string }): string {
+  const distance = toFiniteNumber(anchor.distance);
+  if (distance === null) return `現價相對 ${anchor.referenceLabel}`;
+  if (distance > 0) return `現價高於 ${anchor.referenceLabel}`;
+  if (distance < 0) return `現價低於 ${anchor.referenceLabel}`;
+  return `現價貼近 ${anchor.referenceLabel}`;
 }
 
 function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate }) {
@@ -822,7 +830,7 @@ function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate
                 <article key={anchor.key} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="text-xs font-semibold text-text-muted">{anchor.label}</p>
+                      <p className="text-xs font-semibold text-text-muted">{anchor.referenceLabel}</p>
                       {anchor.anchorDate && <p className="mt-1 text-xs text-text-faint">{anchor.anchorDate}</p>}
                     </div>
                     {anchor.estimated && (
@@ -831,21 +839,27 @@ function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate
                       </span>
                     )}
                   </div>
-                  <div className="mt-3 flex flex-wrap items-end gap-3">
-                    <p className="font-mono text-lg font-semibold text-text-primary">
-                      {formatMetric(anchor.avwap) ?? "—"}
-                    </p>
-                    <p
-                      className={`font-mono text-sm font-semibold ${
-                        anchor.distance == null
-                          ? "text-text-faint"
-                          : anchor.distance >= 0
-                            ? "text-emerald-600 dark:text-emerald-300"
-                            : "text-red-600 dark:text-red-300"
-                      }`}
-                    >
-                      {formatSignedPct(anchor.distance)}
-                    </p>
+                  <div className="mt-3 grid gap-2">
+                    <div>
+                      <p className="text-xs text-text-faint">AVWAP 錨點值</p>
+                      <p className="mt-0.5 font-mono text-lg font-semibold text-text-primary">
+                        {formatMetric(anchor.avwap) ?? "—"}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-baseline justify-between gap-2 border-t border-border-subtle pt-2">
+                      <p className="text-xs text-text-muted">{formatPhase1AvwapDistanceLine(anchor)}</p>
+                      <p
+                        className={`font-mono text-sm font-semibold ${
+                          anchor.distance == null
+                            ? "text-text-faint"
+                            : anchor.distance >= 0
+                              ? "text-emerald-600 dark:text-emerald-300"
+                              : "text-red-600 dark:text-red-300"
+                        }`}
+                      >
+                        {formatSignedPct(anchor.distance)}
+                      </p>
+                    </div>
                   </div>
                 </article>
               ))}

@@ -16,11 +16,8 @@ PHASE1_CURRENT_DAY_LIST_KEYS = (
     "overheated_do_not_chase_candidates",
 )
 PHASE1_CURRENT_DAY_IMPLEMENTED_LISTS = (
-    "pullback_observation_candidates",
-    "breakout_confirmation_candidates",
     "holding_management_candidates",
     "holding_risk_alerts",
-    "overheated_do_not_chase_candidates",
 )
 PHASE1_CURRENT_DAY_PENDING_LISTS = tuple(
     key for key in PHASE1_CURRENT_DAY_LIST_KEYS if key not in PHASE1_CURRENT_DAY_IMPLEMENTED_LISTS
@@ -41,7 +38,6 @@ def build_portfolio_risk_summary(
     raw_data_by_symbol: dict[str, Any] | None = None,
     symbol_names_by_symbol: dict[str, str | None] | None = None,
     phase1_position_states_by_symbol: dict[str, dict[str, Any]] | None = None,
-    phase1_current_day_observations_by_symbol: dict[str, dict[str, Any]] | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
     as_of = as_of_date or date.today()
@@ -49,7 +45,6 @@ def build_portfolio_risk_summary(
     raw_rows = raw_data_by_symbol or {}
     symbol_names = symbol_names_by_symbol or {}
     phase1_states = phase1_position_states_by_symbol
-    phase1_current_day_observations = phase1_current_day_observations_by_symbol or {}
 
     position_drafts: list[dict[str, Any]] = []
     portfolio_value = Decimal("0")
@@ -144,10 +139,7 @@ def build_portfolio_risk_summary(
 
     concentration = _build_symbol_concentration(position_drafts, portfolio_value)
     shared_exposures = _build_shared_exposures(position_drafts, positions, plans, portfolio_value)
-    phase1_current_day_lists = _build_phase1_current_day_lists(
-        position_drafts,
-        phase1_current_day_observations_by_symbol=phase1_current_day_observations,
-    )
+    phase1_current_day_lists = _build_phase1_current_day_lists(position_drafts)
     total_risk_pct = _pct(total_at_risk, portfolio_value)
 
     return {
@@ -355,11 +347,7 @@ def _build_shared_exposures(
     return exposures
 
 
-def _build_phase1_current_day_lists(
-    position_risks: list[dict[str, Any]],
-    *,
-    phase1_current_day_observations_by_symbol: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+def _build_phase1_current_day_lists(position_risks: list[dict[str, Any]]) -> dict[str, Any]:
     lists = {key: [] for key in PHASE1_CURRENT_DAY_LIST_KEYS}
     for risk in position_risks:
         state = risk.get("phase1_position_state")
@@ -370,13 +358,6 @@ def _build_phase1_current_day_lists(
             lists["holding_management_candidates"].append(_phase1_holding_observation_item(risk, state))
         elif position_state in {"warning", "exit_risk"}:
             lists["holding_risk_alerts"].append(_phase1_holding_observation_item(risk, state))
-    for observation in (phase1_current_day_observations_by_symbol or {}).values():
-        if not isinstance(observation, dict):
-            continue
-        list_key = _phase1_non_holding_list_key(observation)
-        if list_key is None:
-            continue
-        lists[list_key].append(_phase1_non_holding_observation_item(observation))
     for key in PHASE1_CURRENT_DAY_LIST_KEYS:
         lists[key].sort(key=_phase1_observation_sort_key)
     return {
@@ -385,19 +366,6 @@ def _build_phase1_current_day_lists(
         "pending_lists": list(PHASE1_CURRENT_DAY_PENDING_LISTS),
         **lists,
     }
-
-
-def _phase1_non_holding_list_key(observation: dict[str, Any]) -> str | None:
-    if observation.get("freshness") == "missing":
-        return None
-    state = str(observation.get("state") or "")
-    if state == "pullback_watch":
-        return "pullback_observation_candidates"
-    if state == "strong_breakout":
-        return "breakout_confirmation_candidates"
-    if state == "overheated":
-        return "overheated_do_not_chase_candidates"
-    return None
 
 
 def _phase1_holding_observation_item(risk: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -417,23 +385,6 @@ def _phase1_holding_observation_item(risk: dict[str, Any], state: dict[str, Any]
     }
 
 
-def _phase1_non_holding_observation_item(observation: dict[str, Any]) -> dict[str, Any]:
-    state = str(observation.get("state") or "data_unavailable")
-    display_anchor = observation.get("display_anchor") if isinstance(observation.get("display_anchor"), dict) else None
-    return {
-        "symbol": observation["symbol"],
-        "name": observation.get("name"),
-        "label": observation.get("label"),
-        "position_state": state,
-        "close": observation.get("close"),
-        "holding_avg_cost": None,
-        "display_anchor": display_anchor,
-        "matched_rules": list(observation.get("matched_rules") or []),
-        "current_day_observation": _phase1_non_holding_observation_text(state, display_anchor),
-        "data_quality": dict(observation.get("data_quality") or {}),
-    }
-
-
 def _phase1_current_day_observation_text(position_state: str, display_anchor: dict[str, Any] | None) -> str:
     anchor_type = str(display_anchor.get("type")) if display_anchor else "phase1_anchor"
     if position_state == "add_watch":
@@ -445,17 +396,6 @@ def _phase1_current_day_observation_text(position_state: str, display_anchor: di
     if position_state == "exit_risk":
         return f"已跌破 {anchor_type} 觀察線，優先檢查風險控制條件。"
     return f"觀察 {anchor_type} 是否維持支撐，結構仍偏健康。"
-
-
-def _phase1_non_holding_observation_text(state: str, display_anchor: dict[str, Any] | None) -> str:
-    anchor_type = str(display_anchor.get("type")) if display_anchor else "phase1_anchor"
-    if state == "strong_breakout":
-        return f"觀察是否持續站穩 {anchor_type}，避免追高解讀。"
-    if state == "pullback_watch":
-        return f"觀察回測 {anchor_type} 是否維持支撐。"
-    if state == "overheated":
-        return f"距離 {anchor_type} 偏遠，先等待均線或 AVWAP 支撐重新整理。"
-    return "目前僅保留 Phase 1 觀察 trace，尚未進入今日清單。"
 
 
 def _phase1_observation_sort_key(item: dict[str, Any]) -> tuple[int, str]:

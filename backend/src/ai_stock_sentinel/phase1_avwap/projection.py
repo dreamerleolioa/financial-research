@@ -36,6 +36,7 @@ def read_phase1_observation_for_analyze(
     market: str = "TW",
     dataset: str = DEFAULT_PHASE1_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
+    max_snapshot_age_days: int | None = DEFAULT_PHASE1_SNAPSHOT_MAX_AGE_DAYS,
 ) -> dict[str, Any]:
     normalized_symbol = _normalize_symbol(symbol)
     try:
@@ -50,7 +51,7 @@ def read_phase1_observation_for_analyze(
                 missing_reason="not_in_phase1_universe",
             )
 
-        snapshot = get_phase1_avwap_snapshots(
+        snapshot = get_latest_phase1_avwap_snapshots_on_or_before(
             session,
             symbols=[normalized_symbol],
             data_date=data_date,
@@ -85,15 +86,30 @@ def read_phase1_observation_for_analyze(
         )
 
     payload = dict(snapshot.payload or {})
+    snapshot_date = snapshot.data_date or data_date
+    if _snapshot_is_stale(snapshot_date=snapshot_date, requested_date=data_date, max_age_days=max_snapshot_age_days):
+        observation = _missing_observation(
+            symbol=normalized_symbol,
+            data_date=snapshot_date,
+            dataset=dataset,
+            adjustment_mode=adjustment_mode,
+            missing_reason="phase1_snapshot_stale",
+        )
+        observation["requested_data_date"] = data_date.isoformat()
+        observation["source"] = _snapshot_source(payload, snapshot)
+        observation["source_granularity"] = snapshot.source_granularity
+        return observation
+
     _strip_internal_snapshot_fields(payload)
     payload.setdefault("symbol", normalized_symbol)
-    payload.setdefault("data_date", data_date.isoformat())
+    payload.setdefault("data_date", snapshot_date.isoformat())
     payload.setdefault("dataset", dataset)
     payload.setdefault("adjustment_mode", adjustment_mode)
     payload["freshness"] = snapshot.freshness
     payload["missing_reason"] = snapshot.missing_reason
     payload["source"] = _snapshot_source(payload, snapshot)
     payload["source_granularity"] = snapshot.source_granularity
+    payload["requested_data_date"] = data_date.isoformat()
     return payload
 
 
