@@ -114,6 +114,7 @@ class AnalyzeResponse(BaseModel):
     chip_stability_context: dict[str, Any] | None = None
     phase1_observation: dict[str, Any] | None = None
     technical_indicators: TechnicalIndicators | None = None
+    technical_profile: dict[str, Any] | None = None
     is_final: bool = True
     intraday_disclaimer: str | None = None
     strategy_version: str | None = None

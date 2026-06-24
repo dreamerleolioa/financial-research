@@ -38,7 +38,7 @@ def build_technical_profile_from_snapshot(
     if not closes:
         return None
 
-    snapshot_data_date = data_date or _string_or_none(snapshot.get("data_date"))
+    snapshot_data_date = data_date or _string_or_none(snapshot.get("data_date")) or _date_string_or_none(snapshot.get("fetched_at"))
     current_price = _number_or_none(snapshot.get("current_price"))
     return build_technical_profile_payload(
         closes=closes,
@@ -526,3 +526,10 @@ def _string_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _date_string_or_none(value: Any) -> str | None:
+    text = _string_or_none(value)
+    if not text:
+        return None
+    return text[:10] if len(text) >= 10 else text

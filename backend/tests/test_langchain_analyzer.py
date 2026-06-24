@@ -404,7 +404,13 @@ def test_analyze_node_passes_compact_signal_summary_to_analyzer():
     assert '"kd_signal"' in signal_summary
     assert '"adx"' in signal_summary
     assert '"obv_signal"' in signal_summary
-    technical_evidence = json.loads(signal_summary)["technical_evidence"]
+    packet = json.loads(signal_summary)
+    assert packet["technical_profile"]["version"] == "technical-layer-v1"
+    assert packet["technical_profile"]["risk_overheat_filters"]["rsi_state"]["impact"] <= 0
+    assert packet["technical_profile"]["score_summary"]["technical_score"] == round(
+        50 + packet["technical_profile"]["score_summary"]["capped_total"] * (17 / 5)
+    )
+    technical_evidence = packet["technical_evidence"]
     assert technical_evidence["high_20d"] == 179.0
     assert technical_evidence["low_20d"] == 140.0
     assert technical_evidence["high_60d"] == 179.0

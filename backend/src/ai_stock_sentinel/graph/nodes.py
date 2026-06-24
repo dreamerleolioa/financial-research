@@ -20,6 +20,7 @@ from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
+from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
 
 
 def _round_value(value: Any, digits: int = 2) -> float | None:
@@ -88,6 +89,11 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
     cleaned_news = state.get("cleaned_news") or {}
     inst = state.get("institutional_flow") or {}
     action_plan = state.get("action_plan") or {}
+    technical_payload = build_technical_profile_from_snapshot(
+        asdict(snapshot),
+        is_final=bool(state.get("is_final", True)),
+    )
+    technical_profile = technical_payload.get("technical_profile") if technical_payload else None
 
     packet = {
         "rule_based_labels": {
@@ -98,6 +104,7 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
             "data_confidence": state.get("data_confidence"),
             "cross_validation_note": state.get("cross_validation_note"),
         },
+        "technical_profile": technical_profile,
         "technical_evidence": {
             "close": _round_value(close),
             "ma5": _round_value(calc_ma(closes, 5)),

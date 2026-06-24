@@ -25,71 +25,22 @@ from ai_stock_sentinel.analysis.schemas import (
     PositionAnalyzeRequest,
     TechnicalIndicators,
 )
+from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
 
 
 def compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
-    recent_closes = snapshot.get("recent_closes") or []
-    closes = [float(v) for v in recent_closes if v is not None]
-    if not closes:
+    payload = build_technical_profile_from_snapshot(snapshot)
+    if not payload:
         return None
-    highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
-    lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
-    volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
-    bb = _bollinger_bands(closes)
-    macd_data = _macd(closes)
-    kd_data = _stochastic_kd(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    adx_data = _adx(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    aligned_volume = len(volumes) == len(closes)
-    atr_data = _atr(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    mfi_data = _mfi(closes, highs, lows, volumes) if len(highs) == len(closes) and len(lows) == len(closes) and aligned_volume else None
-    donchian_data = _donchian_channel(closes, highs, lows) if len(highs) == len(closes) and len(lows) == len(closes) else None
-    obv_data = _obv(closes, volumes) if aligned_volume else None
-    if bb is None and macd_data is None and kd_data is None and adx_data is None and obv_data is None and atr_data is None and mfi_data is None and donchian_data is None:
+    return TechnicalIndicators.model_validate(payload["technical_indicators"])
+
+
+def compute_technical_profile(snapshot: dict, *, is_final: bool = True) -> dict[str, Any] | None:
+    payload = build_technical_profile_from_snapshot(snapshot, is_final=is_final)
+    if not payload:
         return None
-    bollinger_position = compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
-    aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
-    high_source = highs if aligned_hilo else closes
-    low_source = lows if aligned_hilo else closes
-    return TechnicalIndicators(
-        ma5=_ma(closes, 5),
-        ma20=_ma(closes, 20),
-        ma60=_ma(closes, 60),
-        high_20d=max(high_source[-20:]) if len(high_source) >= 20 else None,
-        low_20d=min(low_source[-20:]) if len(low_source) >= 20 else None,
-        high_60d=max(high_source[-60:]) if len(high_source) >= 60 else None,
-        low_60d=min(low_source[-60:]) if len(low_source) >= 60 else None,
-        bollinger_upper=bb["bollinger_upper"] if bb else None,
-        bollinger_mid=bb["bollinger_mid"] if bb else None,
-        bollinger_lower=bb["bollinger_lower"] if bb else None,
-        bollinger_bandwidth=bb.get("bollinger_bandwidth") if bb else None,
-        bollinger_position=bollinger_position,
-        macd_line=macd_data["macd_line"] if macd_data else None,
-        macd_signal=macd_data["macd_signal"] if macd_data else None,
-        macd_hist=macd_data["macd_hist"] if macd_data else None,
-        macd_bias=macd_data["macd_bias"] if macd_data else None,
-        kd_k=kd_data["k"] if kd_data else None,
-        kd_d=kd_data["d"] if kd_data else None,
-        kd_signal=kd_data["kd_signal"] if kd_data else None,
-        kd_zone=kd_data["kd_zone"] if kd_data else None,
-        adx=adx_data["adx"] if adx_data else None,
-        adx_trend_strength=adx_data["trend_strength"] if adx_data else None,
-        adx_trend_direction=adx_data["trend_direction"] if adx_data else None,
-        obv=obv_data["obv"] if obv_data else None,
-        obv_signal=obv_data["obv_signal"] if obv_data else None,
-        obv_trend_20d=obv_data["obv_trend_20d"] if obv_data else None,
-        obv_trend_mid_long=obv_data["obv_trend_mid_long"] if obv_data else None,
-        obv_trend_mid_long_window=obv_data["obv_trend_mid_long_window"] if obv_data else None,
-        atr=atr_data["atr"] if atr_data else None,
-        atr_pct=atr_data["atr_pct"] if atr_data else None,
-        volatility_level=atr_data["volatility_level"] if atr_data else None,
-        mfi=mfi_data["mfi"] if mfi_data else None,
-        mfi_signal=mfi_data["mfi_signal"] if mfi_data else None,
-        donchian_upper=donchian_data["donchian_upper"] if donchian_data else None,
-        donchian_lower=donchian_data["donchian_lower"] if donchian_data else None,
-        donchian_mid=donchian_data["donchian_mid"] if donchian_data else None,
-        donchian_width_pct=donchian_data["donchian_width_pct"] if donchian_data else None,
-        donchian_position=donchian_data["donchian_position"] if donchian_data else None,
-    )
+    profile = payload.get("technical_profile")
+    return profile if isinstance(profile, dict) else None
 
 
 def extract_indicators(result: dict) -> dict:
@@ -205,6 +156,7 @@ def build_response_from_cache(
             resp.intraday_disclaimer = hit.intraday_disclaimer
             resp.strategy_version = hit.strategy_version
             snapshot = dict(resp.snapshot or {})
+            _hydrate_cached_technical_payload(resp, snapshot=snapshot, is_final=hit.is_final)
             resp.symbol_name = display_symbol_name(
                 symbol,
                 resp.symbol_name or snapshot.get("name"),
@@ -226,6 +178,29 @@ def build_response_from_cache(
         intraday_disclaimer=hit.intraday_disclaimer,
         strategy_version=hit.strategy_version,
     )
+
+
+def _hydrate_cached_technical_payload(
+    response: AnalyzeResponse,
+    *,
+    snapshot: dict[str, Any],
+    is_final: bool,
+) -> None:
+    payload = build_technical_profile_from_snapshot(snapshot, is_final=is_final)
+    if payload:
+        if response.technical_indicators is None:
+            response.technical_indicators = TechnicalIndicators.model_validate(payload["technical_indicators"])
+        if response.technical_profile is None and isinstance(payload.get("technical_profile"), dict):
+            response.technical_profile = payload["technical_profile"]
+    _set_profile_finality(response.technical_profile, is_final=is_final)
+
+
+def _set_profile_finality(profile: dict[str, Any] | None, *, is_final: bool) -> None:
+    if not isinstance(profile, dict):
+        return
+    data_quality = profile.get("data_quality")
+    if isinstance(data_quality, dict):
+        data_quality["is_final"] = is_final
 
 
 def display_symbol_name(
@@ -347,7 +322,20 @@ def build_response(
             holding_days=result.get("holding_days"),
         )
 
-    technical_indicators = compute_technical_indicators(snapshot if isinstance(snapshot, dict) else {})
+    technical_payload = build_technical_profile_from_snapshot(
+        snapshot if isinstance(snapshot, dict) else {},
+        is_final=bool(result.get("is_final", True)),
+    )
+    technical_indicators = (
+        TechnicalIndicators.model_validate(technical_payload["technical_indicators"])
+        if technical_payload
+        else None
+    )
+    technical_profile = (
+        technical_payload.get("technical_profile")
+        if technical_payload and isinstance(technical_payload.get("technical_profile"), dict)
+        else None
+    )
     analyze_risk_language = build_analyze_risk_language(result)
 
     return AnalyzeResponse(
@@ -381,6 +369,7 @@ def build_response(
         fundamental_data=result.get("fundamental_data"),
         position_analysis=position_analysis,
         technical_indicators=technical_indicators,
+        technical_profile=technical_profile,
         errors=response_errors,
         strategy_version=STRATEGY_VERSION,
     )
