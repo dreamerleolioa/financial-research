@@ -8,6 +8,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = BACKEND_ROOT / "src" / "ai_stock_sentinel"
 
 PURE_DOMAIN_MODULES = (
+    SRC_ROOT / "technical" / "metrics.py",
+    SRC_ROOT / "technical" / "profile.py",
     SRC_ROOT / "analysis" / "metrics.py",
     SRC_ROOT / "analysis" / "confidence_scorer.py",
     SRC_ROOT / "analysis" / "position_scorer.py",
