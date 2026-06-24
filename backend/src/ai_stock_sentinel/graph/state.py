@@ -24,6 +24,7 @@ class _MarketDataStateFields(TypedDict, total=False):
     institutional_flow: dict[str, Any] | None
     fundamental_data: dict[str, Any] | None
     technical_context: str | None
+    technical_profile: dict[str, Any] | None
     institutional_context: str | None
     fundamental_context: str | None
     high_20d: float | None
@@ -98,6 +99,7 @@ class GraphState(TypedDict):
     institutional_flow: dict[str, Any] | None
     fundamental_data: dict[str, Any] | None
     technical_context: str | None
+    technical_profile: dict[str, Any] | None
     institutional_context: str | None
     fundamental_context: str | None
     high_20d: float | None

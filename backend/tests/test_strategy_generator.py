@@ -519,6 +519,93 @@ def test_momentum_expectation_neutral_without_levels():
 from ai_stock_sentinel.analysis.strategy_generator import _compute_evidence_scores, EvidenceScores
 
 
+def _profile_with_scores(
+    *,
+    primary: int = 0,
+    risk: int = 0,
+    secondary: int = 0,
+    bollinger_impact: int = 0,
+) -> dict:
+    return {
+        "score_summary": {
+            "primary_score": primary,
+            "risk_filter_score": risk,
+            "secondary_score": secondary,
+            "capped_total": max(-5, min(5, primary + risk + secondary)),
+            "technical_score": round(50 + max(-5, min(5, primary + risk + secondary)) * (17 / 5)),
+        },
+        "risk_overheat_filters": {
+            "bollinger_state": {
+                "state": "upper_overheated" if bollinger_impact <= -2 else "neutral",
+                "impact": bollinger_impact,
+            }
+        },
+        "display_only": {
+            "kd_k": 5.0,
+            "kd_d": 3.0,
+            "mfi": 85.0,
+        },
+    }
+
+
+def test_evidence_scores_use_technical_profile_buckets_when_present():
+    """technical_profile 存在時，technical/risk 只取 bucket cap 後分數，不疊加 raw RSI/KD/MFI。"""
+    scores = _compute_evidence_scores(
+        bias=2.0,
+        rsi=55.0,
+        close=105.0,
+        ma5=103.0,
+        ma20=100.0,
+        sentiment_label="neutral",
+        flow_label="neutral",
+        kd_data={"kd_signal": "bullish_cross", "kd_zone": "oversold"},
+        mfi_data={"mfi_signal": "bullish_flow"},
+        donchian_data={"donchian_position": "breakout_up"},
+        technical_profile=_profile_with_scores(primary=1, risk=-2, secondary=1),
+    )
+    assert scores.technical == 2
+    assert scores.risk_penalty == -2
+
+
+def test_evidence_scores_profile_ignores_legacy_raw_overheat_penalty():
+    """profile 存在時，raw RSI/BIAS/BB 過熱不再額外改 risk 或 hard-alert。"""
+    scores = _compute_evidence_scores(
+        bias=16.0,
+        rsi=78.0,
+        close=105.0,
+        ma5=103.0,
+        ma20=100.0,
+        sentiment_label="neutral",
+        flow_label="neutral",
+        bb={
+            "bollinger_mid": 100.0,
+            "bollinger_upper": 106.0,
+            "bollinger_lower": 94.0,
+            "bollinger_bandwidth": 0.12,
+        },
+        technical_profile=_profile_with_scores(primary=3, risk=0, secondary=1),
+    )
+    assert scores.technical == 4
+    assert scores.risk_penalty == 0
+    assert scores.bollinger_upper_alert is False
+
+
+def test_evidence_scores_profile_display_only_does_not_score():
+    """display_only raw values remain visible data, not evidence score inputs."""
+    scores = _compute_evidence_scores(
+        bias=None,
+        rsi=None,
+        close=None,
+        ma5=None,
+        ma20=None,
+        sentiment_label="neutral",
+        flow_label="neutral",
+        technical_profile=_profile_with_scores(primary=0, risk=0, secondary=0),
+    )
+    assert scores.technical == 0
+    assert scores.risk_penalty == 0
+
+
 def test_evidence_scores_bullish_ma_alignment():
     """close > ma5 > ma20 → technical +2"""
     scores = _compute_evidence_scores(
@@ -628,6 +715,52 @@ def test_generate_strategy_returns_evidence_scores():
     assert "risk_penalty" in ev
     assert "total" in ev
     assert "signal_conflict" in ev
+
+
+def test_generate_strategy_uses_technical_profile_for_strategy_weighting():
+    """profile bucket score can drive strategy, while raw overheat hard rules are ignored when profile exists."""
+    tech = {
+        "sentiment_label": "neutral",
+        "rsi": 80.0,
+        "bias": 16.0,
+        "close": 105.0,
+        "ma5": 103.0,
+        "ma20": 100.0,
+        "bb": {
+            "bollinger_mid": 100.0,
+            "bollinger_upper": 106.0,
+            "bollinger_lower": 94.0,
+            "bollinger_bandwidth": 0.12,
+        },
+        "technical_profile": _profile_with_scores(primary=3, risk=0, secondary=1),
+    }
+    result = generate_strategy(tech, {"flow_label": "institutional_accumulation"})
+    assert result["strategy_type"] == "mid_term"
+    assert result["evidence_scores"]["technical"] == 4
+    assert result["evidence_scores"]["risk_penalty"] == 0
+    assert result["evidence_scores"]["bollinger_upper_alert"] is False
+
+
+def test_generate_strategy_profile_ignores_legacy_macd_below_mid_gate():
+    """profile 存在時，raw MACD/BB 中軌 gate 不再覆寫 profile-driven strategy。"""
+    tech = {
+        "sentiment_label": "neutral",
+        "rsi": 55.0,
+        "bias": 2.0,
+        "close": 103.0,
+        "ma5": 101.0,
+        "ma20": 99.0,
+        "macd_data": {"macd_line": -1.5, "macd_signal": -1.0, "macd_hist": -0.5, "macd_bias": "bearish"},
+        "bb": {
+            "bollinger_mid": 105.0,
+            "bollinger_upper": 115.0,
+            "bollinger_lower": 95.0,
+            "bollinger_bandwidth": 0.19,
+        },
+        "technical_profile": _profile_with_scores(primary=3, risk=0, secondary=1),
+    }
+    result = generate_strategy(tech, {"flow_label": "institutional_accumulation"})
+    assert result["strategy_type"] == "mid_term"
 
 
 def test_generate_strategy_evidence_scores_reflect_inputs():

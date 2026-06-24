@@ -2,14 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse } from "../lib/analysisTypes";
-import { formatPrice, formatVolume } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
+import { TechnicalIndicatorsPanel } from "../components/TechnicalIndicatorsPanel";
 import { createPortfolioItem, fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
 import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
 import {
   buildTechnicalIndicatorsCopyText,
   COPY_STATUS_RESET_MS,
-  formatIndicatorNumber,
   getAnalyzeSymbolName,
   type CopyStatus,
   writeClipboardText,
@@ -86,83 +85,6 @@ const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
   high: { label: "高信心", cls: "bg-emerald-100 text-emerald-800" },
   medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
   low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const BOLLINGER_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
-  near_upper: { label: "接近上軌", cls: "bg-red-100 text-red-800" },
-  above_mid: { label: "中軌上方", cls: "bg-emerald-100 text-emerald-800" },
-  below_mid: { label: "中軌下方", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-  near_lower: { label: "接近下軌", cls: "bg-blue-100 text-blue-800" },
-  flat: { label: "通道平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const MACD_BIAS_LABEL: Record<string, { label: string; cls: string }> = {
-  bullish: { label: "多方動能", cls: "bg-emerald-100 text-emerald-800" },
-  bearish: { label: "空方動能", cls: "bg-red-100 text-red-800" },
-  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const KD_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
-  bullish_cross: { label: "黃金交叉", cls: "bg-emerald-100 text-emerald-800" },
-  bearish_cross: { label: "死亡交叉", cls: "bg-red-100 text-red-800" },
-  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const KD_ZONE_LABEL: Record<string, { label: string; cls: string }> = {
-  oversold: { label: "低檔區", cls: "bg-blue-100 text-blue-800" },
-  overbought: { label: "高檔區", cls: "bg-orange-100 text-orange-800" },
-  neutral: { label: "中性區", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const ADX_STRENGTH_LABEL: Record<string, { label: string; cls: string }> = {
-  strong: { label: "趨勢明確", cls: "bg-emerald-100 text-emerald-800" },
-  neutral: { label: "趨勢中等", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-  weak: { label: "趨勢偏弱", cls: "bg-yellow-100 text-yellow-800" },
-};
-
-const ADX_DIRECTION_LABEL: Record<string, { label: string; cls: string }> = {
-  bullish: { label: "多方趨勢", cls: "bg-emerald-100 text-emerald-800" },
-  bearish: { label: "空方趨勢", cls: "bg-red-100 text-red-800" },
-  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const OBV_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
-  price_volume_confirm: { label: "量價確認", cls: "bg-emerald-100 text-emerald-800" },
-  bearish_divergence: { label: "量價背離", cls: "bg-red-100 text-red-800" },
-  bullish_divergence: { label: "低檔承接", cls: "bg-blue-100 text-blue-800" },
-  price_volume_weak: { label: "量價轉弱", cls: "bg-red-100 text-red-800" },
-  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const OBV_TREND_LABEL: Record<string, { label: string; cls: string }> = {
-  rising: { label: "上升", cls: "bg-emerald-100 text-emerald-800" },
-  falling: { label: "下降", cls: "bg-red-100 text-red-800" },
-  flat: { label: "盤整", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const VOLATILITY_LEVEL_LABEL: Record<string, { label: string; cls: string }> = {
-  high: { label: "高波動", cls: "bg-red-100 text-red-800" },
-  medium: { label: "中波動", cls: "bg-yellow-100 text-yellow-800" },
-  low: { label: "低波動", cls: "bg-emerald-100 text-emerald-800" },
-  unknown: { label: "未知", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const MFI_SIGNAL_LABEL: Record<string, { label: string; cls: string }> = {
-  overbought: { label: "資金過熱", cls: "bg-orange-100 text-orange-800" },
-  oversold: { label: "資金低檔", cls: "bg-blue-100 text-blue-800" },
-  bullish_flow: { label: "資金偏多", cls: "bg-emerald-100 text-emerald-800" },
-  bearish_flow: { label: "資金偏弱", cls: "bg-red-100 text-red-800" },
-  neutral: { label: "中性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-};
-
-const DONCHIAN_POSITION_LABEL: Record<string, { label: string; cls: string }> = {
-  breakout_up: { label: "突破上緣", cls: "bg-emerald-100 text-emerald-800" },
-  breakdown_down: { label: "跌破下緣", cls: "bg-red-100 text-red-800" },
-  near_upper: { label: "接近上緣", cls: "bg-yellow-100 text-yellow-800" },
-  near_lower: { label: "接近下緣", cls: "bg-blue-100 text-blue-800" },
-  upper_half: { label: "區間上半", cls: "bg-emerald-100 text-emerald-800" },
-  lower_half: { label: "區間下半", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
-  flat: { label: "區間平坦", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 function TriggersSection({
@@ -891,10 +813,11 @@ export default function AnalyzePage() {
         </div>
       )}
 
-      {result?.technical_indicators && (
-        <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold text-text-muted">技術指標摘要</h3>
+      {(result?.technical_profile || result?.technical_indicators) && (
+        <TechnicalIndicatorsPanel
+          result={result}
+          snapshot={snapshot}
+          actions={
             <button
               type="button"
               onClick={() => void handleCopyTechnicalIndicators()}
@@ -909,292 +832,8 @@ export default function AnalyzePage() {
             >
               {technicalCopyStatus === "success" ? "已複製" : technicalCopyStatus === "error" ? "複製失敗" : "複製指標"}
             </button>
-          </div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
-            <div>
-              <p className="text-xs text-text-muted mb-1">現價</p>
-              <p className="text-sm font-medium text-text-primary">
-                {formatPrice(
-                  snapshot.current_price as number | null | undefined,
-                  snapshot.symbol as string | undefined,
-                )}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">成交量</p>
-              <p className="text-sm font-medium text-text-primary">{formatVolume(snapshot.volume)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">均線 MA5／20／60</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.ma5 != null ||
-                result.technical_indicators.ma20 != null ||
-                result.technical_indicators.ma60 != null
-                  ? `${formatPrice(result.technical_indicators.ma5, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.ma20, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.ma60, snapshot.symbol as string | undefined)}`
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">20 日最高／最低</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.high_20d != null || result.technical_indicators.low_20d != null
-                  ? `${formatPrice(result.technical_indicators.high_20d, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.low_20d, snapshot.symbol as string | undefined)}`
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">60 日最高／最低</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.high_60d != null || result.technical_indicators.low_60d != null
-                  ? `${formatPrice(result.technical_indicators.high_60d, snapshot.symbol as string | undefined)} / ${formatPrice(result.technical_indicators.low_60d, snapshot.symbol as string | undefined)}`
-                  : "資料不足"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">布林通道位階</p>
-              {result.technical_indicators.bollinger_position &&
-              BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position].cls}`}
-                >
-                  {BOLLINGER_POSITION_LABEL[result.technical_indicators.bollinger_position].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">指數平滑異同移動平均方向（MACD）</p>
-              {result.technical_indicators.macd_bias && MACD_BIAS_LABEL[result.technical_indicators.macd_bias] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MACD_BIAS_LABEL[result.technical_indicators.macd_bias].cls}`}
-                >
-                  {MACD_BIAS_LABEL[result.technical_indicators.macd_bias].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">隨機指標交叉（KD）</p>
-              {result.technical_indicators.kd_signal && KD_SIGNAL_LABEL[result.technical_indicators.kd_signal] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${KD_SIGNAL_LABEL[result.technical_indicators.kd_signal].cls}`}
-                >
-                  {KD_SIGNAL_LABEL[result.technical_indicators.kd_signal].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">隨機指標區間（KD）</p>
-              {result.technical_indicators.kd_zone && KD_ZONE_LABEL[result.technical_indicators.kd_zone] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${KD_ZONE_LABEL[result.technical_indicators.kd_zone].cls}`}
-                >
-                  {KD_ZONE_LABEL[result.technical_indicators.kd_zone].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">平均趨向指標強度（ADX）</p>
-              {result.technical_indicators.adx_trend_strength &&
-              ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength].cls}`}
-                >
-                  {ADX_STRENGTH_LABEL[result.technical_indicators.adx_trend_strength].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">平均趨向指標方向（ADX）</p>
-              {result.technical_indicators.adx_trend_direction &&
-              ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction].cls}`}
-                >
-                  {ADX_DIRECTION_LABEL[result.technical_indicators.adx_trend_direction].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">能量潮訊號（OBV）</p>
-              {result.technical_indicators.obv_signal && OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].cls}`}
-                >
-                  {OBV_SIGNAL_LABEL[result.technical_indicators.obv_signal].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">OBV 20 日趨勢</p>
-              {result.technical_indicators.obv_trend_20d &&
-              OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d].cls}`}
-                >
-                  {OBV_TREND_LABEL[result.technical_indicators.obv_trend_20d].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">OBV 中長期趨勢</p>
-              {result.technical_indicators.obv_trend_mid_long &&
-              OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long].cls}`}
-                >
-                  {OBV_TREND_LABEL[result.technical_indicators.obv_trend_mid_long].label}
-                  {result.technical_indicators.obv_trend_mid_long_window
-                    ? `（${result.technical_indicators.obv_trend_mid_long_window}）`
-                    : ""}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">資料不足</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">平均真實波幅（ATR）</p>
-              {result.technical_indicators.volatility_level &&
-              VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].cls}`}
-                >
-                  {VOLATILITY_LEVEL_LABEL[result.technical_indicators.volatility_level].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">資金流量訊號（MFI）</p>
-              {result.technical_indicators.mfi_signal && MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal].cls}`}
-                >
-                  {MFI_SIGNAL_LABEL[result.technical_indicators.mfi_signal].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">唐奇安通道位階</p>
-              {result.technical_indicators.donchian_position &&
-              DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position] ? (
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position].cls}`}
-                >
-                  {DONCHIAN_POSITION_LABEL[result.technical_indicators.donchian_position].label}
-                </span>
-              ) : (
-                <span className="text-sm text-text-faint">—</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">布林上軌</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.bollinger_upper != null
-                  ? result.technical_indicators.bollinger_upper.toFixed(2)
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">布林中軌</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.bollinger_mid != null
-                  ? result.technical_indicators.bollinger_mid.toFixed(2)
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">布林下軌</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.bollinger_lower != null
-                  ? result.technical_indicators.bollinger_lower.toFixed(2)
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">MACD 線</p>
-              <p
-                className={`text-sm font-medium ${result.technical_indicators.macd_line != null ? (result.technical_indicators.macd_line >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}
-              >
-                {result.technical_indicators.macd_line != null ? result.technical_indicators.macd_line.toFixed(3) : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">MACD 訊號線（趨勢判斷基準）</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.macd_signal != null
-                  ? result.technical_indicators.macd_signal.toFixed(3)
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">MACD 動能柱狀體（正負差值）</p>
-              <p
-                className={`text-sm font-medium ${result.technical_indicators.macd_hist != null ? (result.technical_indicators.macd_hist >= 0 ? "text-emerald-600" : "text-red-600") : "text-text-primary"}`}
-              >
-                {result.technical_indicators.macd_hist != null ? result.technical_indicators.macd_hist.toFixed(3) : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">隨機指標 K／D（KD）</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.kd_k != null || result.technical_indicators.kd_d != null
-                  ? `${formatIndicatorNumber(result.technical_indicators.kd_k, 1)} / ${formatIndicatorNumber(result.technical_indicators.kd_d, 1)}`
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">ADX</p>
-              <p className="text-sm font-medium text-text-primary">
-                {formatIndicatorNumber(result.technical_indicators.adx, 1)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">OBV 累積值參考</p>
-              <p className="text-sm font-medium text-text-secondary">{formatVolume(result.technical_indicators.obv)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">平均真實波幅／百分比（ATR）</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.atr != null || result.technical_indicators.atr_pct != null
-                  ? `${formatIndicatorNumber(result.technical_indicators.atr, 2)} / ${formatIndicatorNumber(result.technical_indicators.atr_pct, 2)}%`
-                  : "—"}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">資金流量指標（MFI）</p>
-              <p className="text-sm font-medium text-text-primary">
-                {formatIndicatorNumber(result.technical_indicators.mfi, 1)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-text-muted mb-1">唐奇安通道上／下緣</p>
-              <p className="text-sm font-medium text-text-primary">
-                {result.technical_indicators.donchian_upper != null ||
-                result.technical_indicators.donchian_lower != null
-                  ? `${formatIndicatorNumber(result.technical_indicators.donchian_upper, 2)} / ${formatIndicatorNumber(result.technical_indicators.donchian_lower, 2)}`
-                  : "—"}
-              </p>
-            </div>
-          </div>
-        </article>
+          }
+        />
       )}
 
       <section className="space-y-4">

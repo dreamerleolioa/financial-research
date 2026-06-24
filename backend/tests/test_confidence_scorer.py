@@ -277,6 +277,33 @@ def test_technical_score_insufficient_data():
     assert derive_technical_score([100.0] * 15, rsi=60.0, bias=0.0) == 50
 
 
+def test_technical_score_prefers_profile_score_summary_over_raw_inputs():
+    """有 technical_profile 時，以 capped score_summary 為準，不再讓 raw RSI/KD 另加分。"""
+    profile = {
+        "score_summary": {
+            "primary_score": 0,
+            "risk_filter_score": -3,
+            "secondary_score": 0,
+            "capped_total": -3,
+            "technical_score": 40,
+        },
+        "display_only": {
+            "kd_k": 8.0,
+            "kd_d": 6.0,
+            "mfi": 82.0,
+        },
+    }
+    result = derive_technical_score(
+        [100.0 + idx for idx in range(30)],
+        rsi=80.0,
+        bias=2.0,
+        kd_data={"kd_signal": "bullish_cross", "kd_zone": "oversold"},
+        adx_data={"trend_strength": "strong", "trend_direction": "bullish"},
+        technical_profile=profile,
+    )
+    assert result == 40
+
+
 def test_technical_score_all_bullish():
     """三個舊訊號全多頭（RSI+BIAS+MA）：score=+3 → 60（位於 bullish 門檻）"""
     closes = list(range(80, 101))  # 21 根，遞增排列，ma5 > ma20

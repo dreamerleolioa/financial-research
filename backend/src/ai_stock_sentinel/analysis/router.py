@@ -208,6 +208,16 @@ def _build_response(result: dict[str, Any]) -> AnalyzeResponse:
     return _response_build_response(result, symbol_name_resolver=resolve_symbol_name)
 
 
+def _set_response_finality(response: AnalyzeResponse, *, is_final: bool) -> None:
+    response.is_final = is_final
+    response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
+    profile = response.technical_profile
+    if isinstance(profile, dict):
+        data_quality = profile.get("data_quality")
+        if isinstance(data_quality, dict):
+            data_quality["is_final"] = is_final
+
+
 def has_active_portfolio(user_id: int, symbol: str, db: Session) -> bool:
     return db.execute(
         select(func.count()).select_from(UserPortfolio).where(
@@ -510,7 +520,8 @@ def analyze(
         )
 
     is_final = now_time >= MARKET_CLOSE
-    _response = _build_response(result)
+    _response = _build_response({**result, "is_final": is_final})
+    _set_response_finality(_response, is_final=is_final)
 
     if not payload.skip_ai:
         upsert_analysis_cache(
@@ -539,11 +550,8 @@ def analyze(
             raw_data_is_final=is_final,
         )
 
-    response = _response
-    response.is_final = is_final
-    response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
     return _with_analyze_response_contexts(
-        response,
+        _response,
         db,
         user_id=current_user.id,
         symbol=payload.symbol,
@@ -620,7 +628,8 @@ def analyze_position(
         )
 
     is_final = now_time >= MARKET_CLOSE
-    _response = _build_response(result)
+    _response = _build_response({**result, "is_final": is_final})
+    _set_response_finality(_response, is_final=is_final)
     full_result = _response.model_dump()
     full_result["_position_request"] = {
         "entry_price": payload.entry_price,
@@ -650,11 +659,8 @@ def analyze_position(
     )
     _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
 
-    response = _response
-    response.is_final = is_final
-    response.intraday_disclaimer = INTRADAY_DISCLAIMER if not is_final else None
     return _with_shared_and_chip_context(
-        response,
+        _response,
         db,
         symbol=payload.symbol,
         consumer=SHARED_CONTEXT_CONSUMER_POSITION,

@@ -71,6 +71,47 @@ export interface TechnicalIndicators {
   donchian_position: string | null;
 }
 
+export interface TechnicalProfileSignal {
+  state: string;
+  impact: number;
+  reason: string;
+  value?: number | string | null;
+  [key: string]: unknown;
+}
+
+export interface TechnicalProfile {
+  version: string;
+  primary_score_inputs: Record<string, TechnicalProfileSignal>;
+  risk_overheat_filters: Record<string, TechnicalProfileSignal>;
+  secondary_evidence: Record<string, TechnicalProfileSignal>;
+  display_only: Record<string, unknown>;
+  score_summary: {
+    primary_score: number;
+    risk_filter_score: number;
+    secondary_score: number;
+    capped_total: number;
+    technical_score: number;
+  };
+  data_quality: {
+    data_date?: string | null;
+    is_final?: boolean | null;
+    lookback_days_available?: number | null;
+    required_lookback_days?: number | null;
+    ohlcv_aligned?: boolean | null;
+    volume_aligned?: boolean | null;
+    price_level_basis?: string | null;
+    missing_fields?: string[];
+    [key: string]: unknown;
+  };
+  formula_versions: {
+    metrics?: string;
+    layering?: string;
+    [key: string]: unknown;
+  };
+  companion_context_refs?: Record<string, unknown>;
+  caveats?: string[];
+}
+
 export interface Phase1AvwapAnchor {
   available?: boolean;
   anchor_date?: string | null;
@@ -156,6 +197,7 @@ export interface AnalyzeResponse {
   holding_period: string | null;
   action_plan_tag: "opportunity" | "overheated" | "neutral" | null;
   technical_indicators?: TechnicalIndicators | null;
+  technical_profile?: TechnicalProfile | null;
   action_plan: {
     action?: string | null;
     target_zone?: string | null;

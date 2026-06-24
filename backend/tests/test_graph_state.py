@@ -72,6 +72,13 @@ def test_graph_state_has_news_display_items_field() -> None:
     assert "news_display_items" in hints
 
 
+def test_graph_state_has_technical_profile_field() -> None:
+    """GraphState includes canonical technical profile after preprocess."""
+    import typing
+    hints = typing.get_type_hints(GraphState)
+    assert "technical_profile" in hints
+
+
 def test_graph_state_has_position_fields():
     """GraphState must include all PositionState optional fields."""
     import typing

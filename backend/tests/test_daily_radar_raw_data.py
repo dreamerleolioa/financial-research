@@ -290,6 +290,16 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
     assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
     assert payloads["2330.TW"]["name"] == "台積電"
     assert payloads["2454.TW"]["indicators"]["missing_trading_days_60"] == 0
+    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v1"
+    assert payloads["2330.TW"]["technical_profile"]["formula_versions"] == {
+        "metrics": "technical-metrics-v1",
+        "layering": "technical-layer-v1",
+    }
+    assert payloads["2330.TW"]["technical_profile"]["data_quality"]["data_date"] == "2026-06-02"
+    assert payloads["2330.TW"]["data_dates"]["technical_profile"] == "2026-06-02"
+    assert payloads["2330.TW"]["indicators"]["macd_histogram"] is not None
+    assert payloads["2330.TW"]["indicators"]["mfi14"] is not None
+    assert payloads["2330.TW"]["indicators"]["atr14"] is not None
     assert len(payloads["2330.TW"]["price_history"]) == 60
     assert payloads["2330.TW"]["price_history"][-1] == {"date": "2026-06-02", "close": 159.0}
     assert {"ma5", "ma20", "ma60", "rsi14", "bias20", "volume_ratio"} <= set(
@@ -327,6 +337,39 @@ def test_yfinance_batch_fetcher_ignores_future_rows_after_run_date(
         {"date": "2026-06-01", "close": 101.0},
         {"date": "2026-06-02", "close": 202.0},
     ]
+
+
+def test_yfinance_batch_fetcher_does_not_project_close_fallback_levels_as_support_resistance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeYFinance:
+        def download(self, symbols: list[str], **kwargs: Any) -> pd.DataFrame:
+            dates = pd.bdate_range(end="2026-06-02", periods=60)
+            columns = pd.MultiIndex.from_product([["2330.TW"], ["Open", "High", "Low", "Close", "Volume"]])
+            data = []
+            for index in range(60):
+                price = 100.0 + index
+                high = None if index == 20 else price + 2
+                data.append([price - 1, high, price - 3, price, 1_000_000 + index * 10_000])
+            return pd.DataFrame(data, index=dates, columns=columns)
+
+        def Ticker(self, symbol: str) -> object:
+            raise AssertionError(f"per-symbol yfinance Ticker call is forbidden: {symbol}")
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf", FakeYFinance())
+
+    payloads = YFinanceBatchTechnicalFetcher(name_resolver=lambda _symbol: "台積電").fetch(["2330.TW"], run_date=date(2026, 6, 2))
+
+    profile = payloads["2330.TW"]["technical_profile"]
+    indicators = payloads["2330.TW"]["indicators"]
+
+    assert profile["data_quality"]["ohlcv_aligned"] is False
+    assert profile["data_quality"]["price_level_basis"] == "close_fallback"
+    assert payloads["2330.TW"]["technical_profile"]["primary_score_inputs"]["support_resistance"]["state"] == "missing"
+    assert indicators["support"] is None
+    assert indicators["resistance"] is None
+    assert indicators["support_level"] is None
+    assert indicators["resistance_level"] is None
 
 
 def test_empty_yfinance_symbol_response_does_not_create_or_finalize_raw_data(

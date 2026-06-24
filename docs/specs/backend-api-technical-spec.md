@@ -1,8 +1,8 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-23
-> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股不再有 8 筆硬上限；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；新增 authenticated `/watchlist` read/write API contract，定義關注列表為尚未進入持股的觀察標的，不代表進場或交易紀錄；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier；Phase 1 Daily AVWAP 已完成 managed-universe snapshot、Daily Radar optional evidence refresh、`/analyze` `phase1_observation`、Portfolio risk summary `phase1_position_state` / `phase1_current_day_lists`、Daily Radar `input_snapshot.phase1_avwap_context` projection；TDCC `weekly_major_holders` 已升級為 holder-level v2，補出千張大戶、400 張以上大戶與 100 張以下散戶比例，並提供獨立 `chip_stability_context` 作為週頻籌碼穩定性補充；不新增公開 endpoint。
+> 更新日期：2026-06-24
+> 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；新增 canonical `technical_profile` 分層 contract，作為後端 scoring、LLM input summary、Daily Radar trace 與前端分層摘要的主要技術語意來源，並保留 raw `technical_indicators` 作相容與 copy/export；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股不再有 8 筆硬上限；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；新增 authenticated `/watchlist` read/write API contract，定義關注列表為尚未進入持股的觀察標的，不代表進場或交易紀錄；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier；Phase 1 Daily AVWAP 已完成 managed-universe snapshot、Daily Radar optional evidence refresh、`/analyze` `phase1_observation`、Portfolio risk summary `phase1_position_state` / `phase1_current_day_lists`、Daily Radar `input_snapshot.phase1_avwap_context` projection；TDCC `weekly_major_holders` 已升級為 holder-level v2，補出千張大戶、400 張以上大戶與 100 張以下散戶比例，並提供獨立 `chip_stability_context` 作為週頻籌碼穩定性補充；不新增公開 endpoint。
 
 ## 1) 目的
 
@@ -135,6 +135,65 @@ make run-api
     "obv": 42850000.0,
     "obv_signal": "price_volume_confirm"
   },
+  "technical_profile": {
+    "version": "technical-layer-v1",
+    "primary_score_inputs": {
+      "ma_structure": {
+        "state": "bullish_alignment",
+        "impact": 2,
+        "reason": "close > MA5 > MA20"
+      },
+      "support_resistance": {
+        "state": "range_mid",
+        "impact": 0,
+        "reason": "price is between support and resistance"
+      }
+    },
+    "risk_overheat_filters": {
+      "rsi_state": {
+        "state": "not_overheated",
+        "impact": 0,
+        "reason": "RSI below overheat threshold"
+      }
+    },
+    "secondary_evidence": {
+      "kd": {
+        "state": "overbought",
+        "impact": -1,
+        "reason": "KD is in high zone"
+      }
+    },
+    "display_only": {
+      "bollinger_upper": 932.41,
+      "bollinger_mid": 905.2,
+      "bollinger_lower": 878.0
+    },
+    "score_summary": {
+      "primary_score": 2,
+      "risk_filter_score": 0,
+      "secondary_score": -1,
+      "capped_total": 1,
+      "technical_score": 53
+    },
+    "data_quality": {
+      "data_date": "2026-03-03",
+      "is_final": true,
+      "lookback_days_available": 60,
+      "required_lookback_days": 60,
+      "ohlcv_aligned": true,
+      "volume_aligned": true,
+      "price_level_basis": "ohlc_high_low",
+      "missing_fields": []
+    },
+    "formula_versions": {
+      "metrics": "technical-metrics-v1",
+      "layering": "technical-layer-v1"
+    },
+    "companion_context_refs": {
+      "chip_stability_context": "tdcc_weekly_major_holders"
+    },
+    "caveats": []
+  },
   "chip_stability_context": {
     "version": "chip-stability-context-v1",
     "source": "tdcc_weekly_major_holders",
@@ -227,6 +286,7 @@ make run-api
   | `holding_period`           | string \| null | 預期持股期間（rule-based）                                                                                                                                                                                                                                                                      |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出，包含 `summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict`（Session 8 新增分維度欄位）                                                                                   |
   | `technical_indicators`     | object \| null | 技術指標顯性輸出，包含布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel 數值與標籤（詳見下方 `technical_indicators` 欄位說明）                                                                                                                                                           |
+  | `technical_profile`        | object \| null | Canonical technical profile，將 raw 指標投影為 primary scoring inputs、risk overheat filters、secondary evidence、display-only values、score summary 與 data quality；後端 scoring 與前端分層摘要優先使用此欄位，raw `technical_indicators` 保留相容與 copy/export |
   | `chip_stability_context`   | object \| null | TDCC 週頻千張大戶持股比例變化產生的籌碼穩定性補充；只提供 state/trend/summary/caveats，不給分、不進 technical score、不改 Daily Radar ranking，也不作為單獨看空/看多判斷 |
   | `sentiment_label`          | string \| null | 新聞情緒標籤（從 `cleaned_news.sentiment_label` 浮出）：`positive` / `negative` / `neutral`                                                                                                                                                                                                     |
   | `action_plan`              | object \| null | rule-based 新倉戰術行動計劃（含 `action` / `target_zone` / `defense_line` / `momentum_expectation` / `breakeven_note` / `conviction_level` / `thesis_points` / `upgrade_triggers` / `downgrade_triggers` / `invalidation_conditions` / `suggested_position_size`）；前端主要呈現應改用 risk-language 欄位 |
@@ -248,6 +308,8 @@ make run-api
 > **Shared context read contract（Phase 2C）**：`shared_context` 由 `shared_background_contexts` cache 以 selected symbol 批次/單檔讀取產生，欄位包含 `version`（目前 `shared-context-read-v1`）、`symbol`、`consumer`、`contexts[]`、`caveats[]` 與 `data_quality`。`contexts[]`/`caveats[]` 使用 consumer-neutral 欄位：`context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers`；read path 會尊重 `applicable_consumers`，若 cache row 不適用目標 consumer，會回傳 non-blocking `context_not_applicable_to_consumer` caveat。資料缺漏或 stale 時以 caveat 呈現且 `data_quality.blocking=false`。此 payload 在 response 組裝階段附加，不進入 LangGraph initial state 或 LLM prompt，不觸發 weekly major holders、lending、full margin 的即時逐檔昂貴查詢。
 
 > **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver、portfolio risk score 或 action/verdict/classification 覆寫。
+
+> **Canonical technical profile（2026-06-24）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`skip_ai: true` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v1`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v1 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
 
 > **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state 或 LLM prompt，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / Watchlist / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
@@ -287,6 +349,8 @@ make run-api
 > | `donchian_upper` / `donchian_lower` / `donchian_mid`    | number \| null | Donchian Channel 20 日區間上緣、下緣、中線                                                             |
 > | `donchian_width_pct`                                    | number \| null | Donchian 區間寬度百分比                                                                                |
 > | `donchian_position`                                     | string \| null | `breakout_up` / `breakdown_down` / `near_upper` / `near_lower` / `upper_half` / `lower_half` / `flat`  |
+
+> **相容策略**：`technical_indicators` 仍是公開 response 欄位與 copy/export raw data 來源，不可因 `technical_profile` 上線而移除。舊 cache 若缺 `technical_profile` 但 snapshot 仍足以重建 profile，read path 可 backfill projection；若無法建立 profile，前端 fallback 到 legacy raw 指標顯示，不顯示分層結論。
 
 > **LLM input contract：`signal_summary`（內部欄位，非 API response）**
 >
@@ -440,6 +504,7 @@ make run-api
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                                          |
   | `analysis_detail`          | object \| null | LLM 結構化分析輸出（持股版 context + `signal_summary`，強化持股健康度與風險脈絡解釋）            |
   | `technical_indicators`     | object \| null | 技術指標顯性輸出（與 `/analyze` 相同，包含布林通道、MACD、KD、ADX、OBV，供前端技術指標卡片使用） |
+  | `technical_profile`        | object \| null | Canonical technical profile（與 `/analyze` 相同）；持股診斷可用作技術 score/trace，但不得覆寫 position-specific rule-based 欄位 |
   | `shared_context`           | object \| null | Phase 2C shared background context read payload；只作持股風險 caveat 與資料完整度 trace，不覆寫 `recommended_action`、`trailing_stop` 或 `exit_reason` |
   | `institutional_flow_label` | enum \| null   | `institutional_accumulation` / `retail_chasing` / `distribution` / `neutral`                     |
   | `action_plan`              | object \| null | legacy/internal 行動欄位，前端主要呈現應改用 risk-language 欄位                                  |
@@ -1723,8 +1788,8 @@ Daily Radar run status：
   | `scoring_version`   | string \| null | scoring version trace，舊資料可為 `null` |
   | `rule_version`      | string \| null | rule version trace，舊資料可為 `null` |
   | `bucket_scores`     | object         | 各 bucket 的 rule-based 內部分數 |
-  | `score_breakdown`   | object         | 分數拆解，用於 advanced trace / debug evidence；包含 bucket scores、cross confirmation、market context、relative strength、freshness、risk penalties、observation score 與 version trace |
-  | `input_snapshot`    | object         | 產生候選時使用的輸入快照；包含 market context、relative strength、版本資訊與 replayable evidence |
+  | `score_breakdown`   | object         | 分數拆解，用於 advanced trace / debug evidence；包含 bucket scores、technical profile layer impact、cross confirmation、market context、relative strength、freshness、risk penalties、observation score 與 version trace |
+  | `input_snapshot`    | object         | 產生候選時使用的輸入快照；包含 market context、relative strength、canonical `technical_profile`、版本資訊與 replayable evidence |
   | `data_dates`        | object         | 各資料來源對應日期            |
   | `matched_rules`     | array          | 命中的 rule ID 或規則名稱     |
   | `background_context_labels` | array | Phase 2B shared background context labels，用於 Daily Radar detail surface，不參與分數或排序 |
@@ -1736,6 +1801,7 @@ Daily Radar run status：
   - `input_snapshot.background_context[]` 可表示 Phase 2A shared background context cache trace，包含 `context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `payload`。Missing/stale context 不改 `observation_score`、bucket、risk labels 或排序。
   - `background_context_labels[]` 由 background context trace 派生，包含 `context_type`、`label`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `applicable_consumers`。目前 labels 包含 weekly major holders 背景持股集中脈絡、lending 借券空方壓力背景、full margin 完整融資融券背景。這些 labels 是 context/detail surface，不是交易 action、portfolio recommendation 或 score driver。
   - `score_breakdown.relative_strength` 表示 benchmark symbol、lookback window、candidate return、benchmark return、relative value、score impact、freshness、data dates、aligned dates 與 missing reason。資料不足時 `relative_value` 為 `null`，不可補 0 假裝中性。
+  - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
   - Current version trace：`daily-radar-scoring-v2.1c` / `daily-radar-rules-v2.1c`。
 

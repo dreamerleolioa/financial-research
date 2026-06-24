@@ -20,6 +20,7 @@ from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.models import AnalysisDetail, StockSnapshot
+from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
 
 
 def _round_value(value: Any, digits: int = 2) -> float | None:
@@ -88,6 +89,13 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
     cleaned_news = state.get("cleaned_news") or {}
     inst = state.get("institutional_flow") or {}
     action_plan = state.get("action_plan") or {}
+    technical_profile = state.get("technical_profile")
+    if not isinstance(technical_profile, dict):
+        technical_payload = build_technical_profile_from_snapshot(
+            asdict(snapshot),
+            is_final=bool(state.get("is_final", True)),
+        )
+        technical_profile = technical_payload.get("technical_profile") if technical_payload else None
 
     packet = {
         "rule_based_labels": {
@@ -98,6 +106,7 @@ def _build_llm_signal_summary(state: GraphState, snapshot: StockSnapshot) -> str
             "data_confidence": state.get("data_confidence"),
             "cross_validation_note": state.get("cross_validation_note"),
         },
+        "technical_profile": technical_profile,
         "technical_evidence": {
             "close": _round_value(close),
             "ma5": _round_value(calc_ma(closes, 5)),
@@ -365,6 +374,12 @@ def preprocess_node(state: GraphState) -> dict[str, Any]:
         "rsi14": rsi14_val,
         "entry_price": state.get("entry_price"),
     }
+    technical_payload = build_technical_profile_from_snapshot(
+        snapshot,
+        is_final=bool(state.get("is_final", True)),
+    )
+    if technical_payload and isinstance(technical_payload.get("technical_profile"), dict):
+        updates["technical_profile"] = technical_payload["technical_profile"]
 
     # ── Position Diagnosis (only when entry_price is provided) ──
     entry_price = state.get("entry_price")
@@ -405,8 +420,22 @@ def _derive_technical_signal(
     highs: list[float] | None = None,
     lows: list[float] | None = None,
     volumes: list[float] | None = None,
+    technical_profile: dict[str, Any] | None = None,
 ) -> str:
-    """由 close/ma5/ma20/RSI/BIAS/MACD/布林通道推導 technical_signal（多條件加權）。"""
+    """Derive technical_signal from the canonical profile, falling back to raw indicators."""
+    if technical_profile is not None:
+        tech_score = derive_technical_score(
+            closes,
+            rsi=rsi,
+            bias=None,
+            technical_profile=technical_profile,
+        )
+        if tech_score >= 60:
+            return "bullish"
+        if tech_score <= 40:
+            return "bearish"
+        return "sideways"
+
     if len(closes) < 20:
         return "sideways"
     close = closes[-1]
@@ -491,6 +520,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
         highs=highs,
         lows=lows,
         volumes=volumes,
+        technical_profile=state.get("technical_profile") if isinstance(state.get("technical_profile"), dict) else None,
     )
 
     # DATE_UNKNOWN 旗標
@@ -861,6 +891,7 @@ def strategy_node(state: GraphState) -> dict[str, Any]:
         "atr_data": atr_data,
         "mfi_data": mfi_data,
         "donchian_data": donchian_data,
+        "technical_profile": state.get("technical_profile") if isinstance(state.get("technical_profile"), dict) else None,
     }
 
     strategy = generate_strategy(technical_context_data, inst_data)

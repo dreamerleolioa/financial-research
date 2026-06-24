@@ -380,7 +380,9 @@ def test_analyze_response_includes_chip_stability_context_without_passing_it_to_
     }
     graph_input = graph.invoke.call_args.args[0]
     assert "chip_stability_context" not in graph_input
-    assert "technical_profile" not in body
+    assert body["technical_profile"] is not None
+    assert body["technical_profile"]["companion_context_refs"]["chip_stability_context"] == "tdcc_weekly_major_holders"
+    assert "technical_profile" not in graph_input
 
 
 def test_analyze_response_includes_phase1_observation_without_passing_it_to_graph(monkeypatch) -> None:
@@ -497,7 +499,7 @@ def test_analyze_response_includes_strategy_fields() -> None:
 
 
 def test_analyze_response_includes_extended_technical_indicators() -> None:
-    """AnalyzeResponse technical_indicators 應包含 KD、ADX、OBV 欄位。"""
+    """AnalyzeResponse keeps raw indicators and adds canonical technical_profile."""
     closes = [100.0 + idx * 0.5 for idx in range(40)]
     snapshot = asdict(_SNAPSHOT)
     snapshot.update({
@@ -520,7 +522,8 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
     response = client.post("/analyze", json={"symbol": "2330.TW"})
 
     assert response.status_code == 200
-    indicators = response.json()["technical_indicators"]
+    body = response.json()
+    indicators = body["technical_indicators"]
     assert indicators["ma5"] is not None
     assert indicators["ma20"] is not None
     assert indicators["ma60"] is None
@@ -546,6 +549,19 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
     assert indicators["obv_trend_20d"] in {"rising", "falling", "flat"}
     assert indicators["obv_trend_mid_long"] is None
     assert indicators["obv_trend_mid_long_window"] is None
+    profile = body["technical_profile"]
+    assert profile["version"] == "technical-layer-v1"
+    assert profile["primary_score_inputs"]["ma_structure"]["state"] in {
+        "bullish_alignment",
+        "above_ma20",
+    }
+    assert profile["risk_overheat_filters"]["rsi_state"]["impact"] <= 0
+    assert profile["secondary_evidence"]["kd"]["impact"] in {-1, 0, 1}
+    assert profile["score_summary"]["technical_score"] == round(
+        50 + profile["score_summary"]["capped_total"] * (17 / 5)
+    )
+    assert profile["data_quality"]["lookback_days_available"] == 40
+    assert "lookback_60d" in profile["data_quality"]["missing_fields"]
 
 
 # ---------------------------------------------------------------------------
@@ -1395,6 +1411,45 @@ def test_cache_hit_replaces_symbol_placeholder_name(monkeypatch) -> None:
 
     assert response.symbol_name == "台積電"
     assert response.snapshot["name"] == "台積電"
+
+
+def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
+    """Old cache rows may predate technical_profile but still have enough snapshot data."""
+    from unittest.mock import MagicMock
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx * 0.5 for idx in range(70)]
+    full = {
+        "snapshot": {
+            "symbol": "2330.TW",
+            "current_price": closes[-1],
+            "recent_closes": closes,
+            "recent_highs": [price + 1.0 for price in closes],
+            "recent_lows": [price - 1.0 for price in closes],
+            "recent_volumes": [1000 + idx * 10 for idx in range(70)],
+            "fetched_at": "2026-06-23T06:30:00+00:00",
+        },
+        "analysis": "舊快取分析內容",
+        "technical_profile": None,
+        "is_final": False,
+        "intraday_disclaimer": None,
+        "errors": [],
+    }
+    cache = MagicMock()
+    cache.is_final = True
+    cache.intraday_disclaimer = None
+    cache.strategy_version = "strategy-v1"
+    cache.final_verdict = "舊快取分析內容"
+    cache.signal_confidence = None
+    cache.action_tag = None
+
+    response = api_module._build_response_from_cache(cache, "2330.TW", full_result=full)
+
+    assert response.technical_indicators is not None
+    assert response.technical_profile is not None
+    assert response.technical_profile["version"] == "technical-layer-v1"
+    assert response.technical_profile["data_quality"]["data_date"] == "2026-06-23"
+    assert response.technical_profile["data_quality"]["is_final"] is True
 
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:

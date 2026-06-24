@@ -56,114 +56,118 @@ def _compute_evidence_scores(
     flow_strength: str | None = None,
     dominant_buyer: str | None = None,
     dominant_seller: str | None = None,
+    technical_profile: dict[str, Any] | None = None,
 ) -> EvidenceScores:
     """計算四組 evidence score，供策略分類使用。"""
     scores = EvidenceScores()
 
     # ── 1. technical_evidence ──────────────────────────────────
-    if _is_bullish_ma_alignment(close=close, ma5=ma5, ma20=ma20):
-        scores.technical += 2
-    if rsi is not None:
-        if 45 <= rsi <= 65:
-            scores.technical += 1
-        elif rsi < 30:
-            # 超賣且非明顯強弱趨勢 → 反彈候選
-            scores.technical += 1
-    if bias is not None and bias > 10:
-        scores.technical -= 2
+    if technical_profile is not None:
+        _apply_technical_profile_scores(scores, technical_profile)
+    else:
+        if _is_bullish_ma_alignment(close=close, ma5=ma5, ma20=ma20):
+            scores.technical += 2
+        if rsi is not None:
+            if 45 <= rsi <= 65:
+                scores.technical += 1
+            elif rsi < 30:
+                # 超賣且非明顯強弱趨勢 → 反彈候選
+                scores.technical += 1
+        if bias is not None and bias > 10:
+            scores.technical -= 2
 
-    # MACD 動能貢獻
-    if macd_data is not None:
-        macd_line = macd_data.get("macd_line")
-        macd_bias_val = macd_data.get("macd_bias")
-        macd_hist = macd_data.get("macd_hist")
-        # MACD 翻多且零軸上方：偏多加分
-        if macd_bias_val == "bullish" and macd_line is not None and macd_line > 0:
-            scores.technical += 1
-        # MACD 翻空且零軸下方：偏空扣分
-        elif macd_bias_val == "bearish" and macd_line is not None and macd_line < 0:
-            scores.technical -= 1
-        # 柱狀體縮短但仍正值 → 動能減弱，小幅扣分
-        elif (
-            macd_hist is not None
-            and macd_bias_val == "bullish"
-            and macd_data.get("macd_signal") is not None
-            and abs(macd_hist) < abs(macd_data.get("macd_signal", 1.0)) * 0.3
-        ):
-            scores.technical -= 1
+        # MACD 動能貢獻
+        if macd_data is not None:
+            macd_line = macd_data.get("macd_line")
+            macd_bias_val = macd_data.get("macd_bias")
+            macd_hist = macd_data.get("macd_hist")
+            # MACD 翻多且零軸上方：偏多加分
+            if macd_bias_val == "bullish" and macd_line is not None and macd_line > 0:
+                scores.technical += 1
+            # MACD 翻空且零軸下方：偏空扣分
+            elif macd_bias_val == "bearish" and macd_line is not None and macd_line < 0:
+                scores.technical -= 1
+            # 柱狀體縮短但仍正值 → 動能減弱，小幅扣分
+            elif (
+                macd_hist is not None
+                and macd_bias_val == "bullish"
+                and macd_data.get("macd_signal") is not None
+                and abs(macd_hist) < abs(macd_data.get("macd_signal", 1.0)) * 0.3
+            ):
+                scores.technical -= 1
 
-    # 布林通道貢獻
-    if bb is not None and close is not None:
-        upper = bb.get("bollinger_upper")
-        lower = bb.get("bollinger_lower")
-        mid = bb.get("bollinger_mid")
-        if upper is not None and lower is not None and mid is not None:
-            band_range = upper - lower
-            if band_range > 0:
-                # 接近下軌 + MACD 柱狀體縮短 → 反彈觀察區（小幅加分）
-                if close <= lower * 1.02:
+        # 布林通道貢獻
+        if bb is not None and close is not None:
+            upper = bb.get("bollinger_upper")
+            lower = bb.get("bollinger_lower")
+            mid = bb.get("bollinger_mid")
+            if upper is not None and lower is not None and mid is not None:
+                band_range = upper - lower
+                if band_range > 0:
+                    # 接近下軌 + MACD 柱狀體縮短 → 反彈觀察區（小幅加分）
+                    if close <= lower * 1.02:
+                        if (
+                            macd_data is not None
+                            and macd_data.get("macd_hist") is not None
+                            and abs(macd_data["macd_hist"]) < abs(macd_data.get("macd_signal", 1.0) or 1.0) * 0.5
+                        ):
+                            scores.technical += 1
+                    # MACD 翻空且價格失守布林中軌：加重空頭扣分
                     if (
-                        macd_data is not None
-                        and macd_data.get("macd_hist") is not None
-                        and abs(macd_data["macd_hist"]) < abs(macd_data.get("macd_signal", 1.0) or 1.0) * 0.5
+                        close < mid
+                        and macd_data is not None
+                        and macd_data.get("macd_bias") == "bearish"
                     ):
-                        scores.technical += 1
-                # MACD 翻空且價格失守布林中軌：加重空頭扣分
-                if (
-                    close < mid
-                    and macd_data is not None
-                    and macd_data.get("macd_bias") == "bearish"
-                ):
-                    scores.risk_penalty -= 1
+                        scores.risk_penalty -= 1
 
-    # KD 低檔反轉 / 高檔轉弱
-    if kd_data is not None:
-        kd_signal = kd_data.get("kd_signal")
-        kd_zone = kd_data.get("kd_zone")
-        if kd_signal == "bullish_cross" and kd_zone == "oversold":
-            scores.technical += 1
-        elif kd_signal == "bearish_cross" and kd_zone == "overbought":
-            scores.technical -= 1
+        # KD 低檔反轉 / 高檔轉弱
+        if kd_data is not None:
+            kd_signal = kd_data.get("kd_signal")
+            kd_zone = kd_data.get("kd_zone")
+            if kd_signal == "bullish_cross" and kd_zone == "oversold":
+                scores.technical += 1
+            elif kd_signal == "bearish_cross" and kd_zone == "overbought":
+                scores.technical -= 1
 
-    # ADX 趨勢濾網：強趨勢加權，弱趨勢降低追價信心
-    if adx_data is not None:
-        trend_strength = adx_data.get("trend_strength")
-        trend_direction = adx_data.get("trend_direction")
-        if trend_strength == "strong" and trend_direction == "bullish":
-            scores.technical += 1
-        elif trend_strength == "strong" and trend_direction == "bearish":
-            scores.technical -= 1
-        elif trend_strength == "weak" and scores.technical > 1:
-            scores.technical -= 1
+        # ADX 趨勢濾網：強趨勢加權，弱趨勢降低追價信心
+        if adx_data is not None:
+            trend_strength = adx_data.get("trend_strength")
+            trend_direction = adx_data.get("trend_direction")
+            if trend_strength == "strong" and trend_direction == "bullish":
+                scores.technical += 1
+            elif trend_strength == "strong" and trend_direction == "bearish":
+                scores.technical -= 1
+            elif trend_strength == "weak" and scores.technical > 1:
+                scores.technical -= 1
 
-    # OBV 量價確認 / 背離
-    if obv_data is not None:
-        obv_signal = obv_data.get("obv_signal")
-        if obv_signal == "price_volume_confirm":
-            scores.technical += 1
-        elif obv_signal in {"bearish_divergence", "price_volume_weak"}:
+        # OBV 量價確認 / 背離
+        if obv_data is not None:
+            obv_signal = obv_data.get("obv_signal")
+            if obv_signal == "price_volume_confirm":
+                scores.technical += 1
+            elif obv_signal in {"bearish_divergence", "price_volume_weak"}:
+                scores.risk_penalty -= 1
+            elif obv_signal == "bullish_divergence":
+                scores.technical += 1
+
+        if mfi_data is not None:
+            mfi_signal = mfi_data.get("mfi_signal")
+            if mfi_signal == "bullish_flow":
+                scores.technical += 1
+            elif mfi_signal == "overbought":
+                scores.risk_penalty -= 1
+            elif mfi_signal == "bearish_flow":
+                scores.technical -= 1
+
+        if donchian_data is not None:
+            position = donchian_data.get("donchian_position")
+            if position == "breakout_up":
+                scores.technical += 1
+            elif position == "breakdown_down":
+                scores.risk_penalty -= 2
+
+        if atr_data is not None and atr_data.get("volatility_level") == "high":
             scores.risk_penalty -= 1
-        elif obv_signal == "bullish_divergence":
-            scores.technical += 1
-
-    if mfi_data is not None:
-        mfi_signal = mfi_data.get("mfi_signal")
-        if mfi_signal == "bullish_flow":
-            scores.technical += 1
-        elif mfi_signal == "overbought":
-            scores.risk_penalty -= 1
-        elif mfi_signal == "bearish_flow":
-            scores.technical -= 1
-
-    if donchian_data is not None:
-        position = donchian_data.get("donchian_position")
-        if position == "breakout_up":
-            scores.technical += 1
-        elif position == "breakdown_down":
-            scores.risk_penalty -= 2
-
-    if atr_data is not None and atr_data.get("volatility_level") == "high":
-        scores.risk_penalty -= 1
 
     # ── 2. flow_evidence ──────────────────────────────────────
     if flow_label == "institutional_accumulation":
@@ -196,25 +200,48 @@ def _compute_evidence_scores(
         scores.risk_penalty -= 2
         scores.signal_conflict = True
 
-    # 價格過熱：bias 超高且 rsi 偏熱
-    if bias is not None and bias > 15:
-        scores.risk_penalty -= 1
-    if rsi is not None and rsi > 70 and bias is not None and bias > 10:
-        scores.risk_penalty -= 1
+    if technical_profile is None:
+        # 價格過熱：bias 超高且 rsi 偏熱
+        if bias is not None and bias > 15:
+            scores.risk_penalty -= 1
+        if rsi is not None and rsi > 70 and bias is not None and bias > 10:
+            scores.risk_penalty -= 1
 
-    # 布林上軌 + RSI 及 BIAS 同時過熱：強制防守旗標
-    if bb is not None and close is not None:
-        upper = bb.get("bollinger_upper")
-        if (
-            upper is not None
-            and close >= upper * 0.99
-            and rsi is not None and rsi > 70
-            and bias is not None and bias > 10
-        ):
-            scores.bollinger_upper_alert = True
-            scores.risk_penalty -= 2
+        # 布林上軌 + RSI 及 BIAS 同時過熱：強制防守旗標
+        if bb is not None and close is not None:
+            upper = bb.get("bollinger_upper")
+            if (
+                upper is not None
+                and close >= upper * 0.99
+                and rsi is not None and rsi > 70
+                and bias is not None and bias > 10
+            ):
+                scores.bollinger_upper_alert = True
+                scores.risk_penalty -= 2
 
     return scores
+
+
+def _apply_technical_profile_scores(scores: EvidenceScores, technical_profile: dict[str, Any]) -> None:
+    score_summary = technical_profile.get("score_summary")
+    if not isinstance(score_summary, dict):
+        return
+    scores.technical += _int_value(score_summary.get("primary_score"))
+    scores.technical += _int_value(score_summary.get("secondary_score"))
+    scores.risk_penalty += _int_value(score_summary.get("risk_filter_score"))
+
+    risk = technical_profile.get("risk_overheat_filters")
+    if isinstance(risk, dict):
+        bollinger = risk.get("bollinger_state")
+        if isinstance(bollinger, dict) and _int_value(bollinger.get("impact")) <= -2:
+            scores.bollinger_upper_alert = True
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def generate_strategy(
@@ -266,6 +293,7 @@ def generate_strategy(
     atr_data: dict | None = technical_context_data.get("atr_data")
     mfi_data: dict | None = technical_context_data.get("mfi_data")
     donchian_data: dict | None = technical_context_data.get("donchian_data")
+    technical_profile = _canonical_technical_profile(technical_context_data.get("technical_profile"))
 
     flow_label: str | None = inst_data.get("flow_label") if inst_data else None
     flow_strength: str | None = inst_data.get("flow_strength") if inst_data else None
@@ -291,6 +319,7 @@ def generate_strategy(
         flow_strength=flow_strength,
         dominant_buyer=dominant_buyer,
         dominant_seller=dominant_seller,
+        technical_profile=technical_profile,
     )
 
     strategy_type = _determine_strategy_from_scores(
@@ -304,6 +333,7 @@ def generate_strategy(
         flow_label=flow_label,
         macd_data=macd_data,
         bb=bb,
+        technical_profile=technical_profile,
     )
 
     entry_zone = _determine_entry_zone(bias=bias, support_20d=support_20d, ma20=ma20)
@@ -339,6 +369,7 @@ def _determine_strategy_from_scores(
     flow_label: str | None,
     macd_data: dict | None = None,
     bb: dict | None = None,
+    technical_profile: dict[str, Any] | None = None,
 ) -> str:
     """依 evidence scores 與 hard rules 決定策略類型。
 
@@ -350,7 +381,7 @@ def _determine_strategy_from_scores(
         return STRATEGY_DEFENSIVE_WAIT
 
     # 嚴重過熱（bias > 10）直接觀望
-    if bias is not None and bias > 10:
+    if technical_profile is None and bias is not None and bias > 10:
         return STRATEGY_DEFENSIVE_WAIT
 
     # 布林上軌 + RSI + BIAS 三重過熱：強制防守（已在 risk_penalty 計算，這裡再加 hard rule）
@@ -360,7 +391,8 @@ def _determine_strategy_from_scores(
     # MACD 翻空且價格失守布林中軌：偏防守（降為最多 short_term，若分數不足則 defensive_wait）
     macd_bearish_below_mid = False
     if (
-        macd_data is not None
+        technical_profile is None
+        and macd_data is not None
         and macd_data.get("macd_bias") == "bearish"
         and bb is not None
         and close is not None
@@ -387,7 +419,8 @@ def _determine_strategy_from_scores(
     # 原有條件：positive sentiment + RSI 超賣
     # MACD 翻多但價格偏離上軌過大（近上軌 + bias > 5）→ 不直接追價，改為觀望等回測
     if (
-        macd_data is not None
+        technical_profile is None
+        and macd_data is not None
         and macd_data.get("macd_bias") == "bullish"
         and bb is not None
         and close is not None
@@ -421,6 +454,12 @@ def _is_bullish_ma_alignment(
     if close is None or ma5 is None or ma20 is None:
         return False
     return close > ma5 > ma20
+
+
+def _canonical_technical_profile(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return value if isinstance(value.get("score_summary"), dict) else None
 
 
 def _determine_entry_zone(

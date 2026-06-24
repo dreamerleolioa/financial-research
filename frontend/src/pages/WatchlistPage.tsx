@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
-import { formatPrice, formatVolume } from "../lib/formatters";
+import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
+import { formatPrice } from "../lib/formatters";
 import {
   buildTechnicalIndicatorsCopyText,
   COPY_STATUS_RESET_MS,
-  formatIndicatorNumber,
-  formatMovingAverages,
-  getTechnicalIndicatorLabel,
   type CopyStatus,
   writeClipboardText,
 } from "../lib/technicalIndicators";
@@ -197,49 +195,9 @@ function WatchlistTechnicalPanel({
   const quickResult = technicalState.result;
   const quickSnapshot = quickResult?.snapshot ?? {};
   const quickSnapshotSymbol = typeof quickSnapshot.symbol === "string" ? quickSnapshot.symbol : item.symbol;
-  const quickIndicators = quickResult?.technical_indicators ?? null;
   const phase1Observation = quickResult?.phase1_observation ?? null;
+  const technicalProfile = quickResult?.technical_profile ?? null;
   const quickSessionLabel = quickResult?.is_final === false ? "盤中" : "收盤";
-  const quickCurrentPrice = typeof quickSnapshot.current_price === "number" ? quickSnapshot.current_price : null;
-  const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") =>
-    first != null || second != null
-      ? `${formatPrice(first, quickSnapshotSymbol)} / ${formatPrice(second, quickSnapshotSymbol)}`
-      : emptyLabel;
-  const indicatorRows = quickIndicators
-    ? [
-        ["現價", formatPrice(quickCurrentPrice, quickSnapshotSymbol)],
-        ["成交量", formatVolume(quickSnapshot.volume)],
-        ["均線 MA5／20／60", formatMovingAverages(quickIndicators, quickSnapshotSymbol)],
-        ["20 日最高／最低", pricePair(quickIndicators.high_20d, quickIndicators.low_20d)],
-        ["60 日最高／最低", pricePair(quickIndicators.high_60d, quickIndicators.low_60d, "資料不足")],
-        ["布林通道", getTechnicalIndicatorLabel("bollinger_position", quickIndicators.bollinger_position)],
-        ["MACD 方向", getTechnicalIndicatorLabel("macd_bias", quickIndicators.macd_bias)],
-        [
-          "KD",
-          `${getTechnicalIndicatorLabel("kd_zone", quickIndicators.kd_zone)} / ${getTechnicalIndicatorLabel("kd_signal", quickIndicators.kd_signal)}（K/D ${formatIndicatorNumber(quickIndicators.kd_k, 1)} / ${formatIndicatorNumber(quickIndicators.kd_d, 1)}）`,
-        ],
-        [
-          "ADX",
-          `${getTechnicalIndicatorLabel("adx_trend_strength", quickIndicators.adx_trend_strength)} / ${getTechnicalIndicatorLabel("adx_trend_direction", quickIndicators.adx_trend_direction)}（${formatIndicatorNumber(quickIndicators.adx, 1)}）`,
-        ],
-        [
-          "OBV",
-          `${getTechnicalIndicatorLabel("obv_signal", quickIndicators.obv_signal)} / ${getTechnicalIndicatorLabel("obv_trend", quickIndicators.obv_trend_20d)}`,
-        ],
-        [
-          "ATR / ATR%",
-          `${formatIndicatorNumber(quickIndicators.atr, 2)} / ${formatIndicatorNumber(quickIndicators.atr_pct, 2)}%`,
-        ],
-        [
-          "MFI",
-          `${formatIndicatorNumber(quickIndicators.mfi, 1)} / ${getTechnicalIndicatorLabel("mfi_signal", quickIndicators.mfi_signal)}`,
-        ],
-        [
-          "唐奇安通道",
-          `${getTechnicalIndicatorLabel("donchian_position", quickIndicators.donchian_position)}（${formatIndicatorNumber(quickIndicators.donchian_upper, 2)} / ${formatIndicatorNumber(quickIndicators.donchian_lower, 2)}）`,
-        ],
-      ]
-    : [];
 
   return (
     <div className="rounded-lg border border-border bg-card-hover/50 p-4 md:col-span-4">
@@ -295,27 +253,28 @@ function WatchlistTechnicalPanel({
         </div>
       )}
 
-      {quickResult && !quickIndicators && !technicalState.error && (
-        <div className="rounded-md border border-border bg-card px-3 py-2 text-sm text-text-muted">
-          技術指標資料不足，請稍後更新。
-        </div>
-      )}
-
-      {quickIndicators && (
-        <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-          {indicatorRows.map(([label, value]) => (
-            <div key={label}>
-              <p className="mb-1 text-xs text-text-muted">{label}</p>
-              <p className="text-sm font-medium text-text-primary">{value}</p>
-            </div>
-          ))}
-        </div>
+      {quickResult && !technicalState.error && (
+        <TechnicalIndicatorsPanel
+          result={quickResult}
+          snapshot={quickSnapshot}
+          compact
+          className="mt-3"
+          showProfileDisclosure={false}
+        />
       )}
 
       {phase1Observation && (
         <WatchlistPhase1Observation
           observation={phase1Observation}
           symbol={quickSnapshotSymbol}
+        />
+      )}
+
+      {technicalProfile && (
+        <TechnicalProfileDisclosure
+          profile={technicalProfile}
+          responseIsFinal={quickResult?.is_final}
+          className="mt-4"
         />
       )}
     </div>

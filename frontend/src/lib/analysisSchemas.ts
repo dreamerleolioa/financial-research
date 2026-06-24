@@ -115,6 +115,38 @@ const phase1ObservationSchema = z
   })
   .passthrough();
 
+const technicalProfileSignalSchema = z
+  .object({
+    state: z.string(),
+    impact: z.number(),
+    reason: z.string(),
+    value: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .passthrough();
+
+const technicalProfileSchema = z
+  .object({
+    version: z.string(),
+    primary_score_inputs: z.record(z.string(), technicalProfileSignalSchema),
+    risk_overheat_filters: z.record(z.string(), technicalProfileSignalSchema),
+    secondary_evidence: z.record(z.string(), technicalProfileSignalSchema),
+    display_only: recordSchema,
+    score_summary: z
+      .object({
+        primary_score: z.number(),
+        risk_filter_score: z.number(),
+        secondary_score: z.number(),
+        capped_total: z.number(),
+        technical_score: z.number(),
+      })
+      .passthrough(),
+    data_quality: recordSchema,
+    formula_versions: recordSchema,
+    companion_context_refs: recordSchema.optional(),
+    caveats: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
 const chipStabilityContextSchema = z
   .object({
     source: z.string(),
@@ -176,6 +208,7 @@ export const analyzeResponseSchema = z
     holding_period: nullableString,
     action_plan_tag: z.enum(["opportunity", "overheated", "neutral"]).nullable(),
     technical_indicators: recordSchema.nullable().optional(),
+    technical_profile: technicalProfileSchema.nullable().optional(),
     action_plan: actionPlanSchema.nullable(),
     risk_state: nullableString.optional(),
     risk_state_label: nullableString.optional(),
