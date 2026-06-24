@@ -40,8 +40,8 @@ export const DEFAULT_STOP_RULE_LABEL = {
   break_ma20: "跌破 20 日線",
   break_ma60: "跌破 60 日線",
   cost_minus_pct: "成本下方固定百分比",
-  fixed_price: "固定價格停損",
-  no_stop_recorded: "未設定停損",
+  fixed_price: "固定防守價",
+  no_stop_recorded: "未設定防守",
   not_recorded: "未記錄",
 } satisfies Record<DefaultStopRule, string>;
 

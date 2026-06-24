@@ -283,15 +283,15 @@ export default function AnalyzePage() {
     try {
       const parsedStopPrice = parseOptionalNumberInput(addForm.planned_stop_price);
       if (parsedStopPrice === null) {
-        setAddError("停損價必須是有效數字。");
+        setAddError("防守價必須是有效數字。");
         return;
       }
       if (parsedStopPrice != null && parsedStopPrice <= 0) {
-        setAddError("停損價必須大於 0。");
+        setAddError("防守價必須大於 0。");
         return;
       }
       if (addForm.default_stop_rule === "fixed_price" && parsedStopPrice == null) {
-        setAddError("選擇固定價格停損時，請填寫停損價。");
+        setAddError("選擇固定防守價時，請填寫防守價。");
         return;
       }
 
@@ -800,7 +800,7 @@ export default function AnalyzePage() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">預設停損規則</span>
+                    <span className="text-xs font-medium text-text-muted">預設防守規則</span>
                     <select
                       value={addForm.default_stop_rule}
                       onChange={(e) => handleDefaultStopRuleChange(e.target.value as AddPortfolioForm["default_stop_rule"])}
@@ -815,7 +815,7 @@ export default function AnalyzePage() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">停損價</span>
+                    <span className="text-xs font-medium text-text-muted">防守價</span>
                     <input
                       type="number"
                       value={addForm.planned_stop_price}
@@ -824,7 +824,7 @@ export default function AnalyzePage() {
                       step="0.01"
                       placeholder={
                         addForm.default_stop_rule === "fixed_price"
-                          ? "請輸入固定停損價"
+                          ? "請輸入固定防守價"
                           : autoPlannedStopPrice != null
                             ? formatPriceForInput(autoPlannedStopPrice)
                             : "未選擇則不送出"

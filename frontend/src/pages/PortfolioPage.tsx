@@ -139,28 +139,28 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
     let parsedRiskAmount: number | undefined;
     let parsedRiskPct: number | undefined;
     try {
-      parsedStopPrice = parseOptionalNumber(plannedStopPrice, "停損價");
-      parsedRiskAmount = parseOptionalNumber(plannedRiskAmount, "停損金額");
-      parsedRiskPct = parseOptionalNumber(plannedRiskPct, "停損比例");
+      parsedStopPrice = parseOptionalNumber(plannedStopPrice, "防守價");
+      parsedRiskAmount = parseOptionalNumber(plannedRiskAmount, "防守金額");
+      parsedRiskPct = parseOptionalNumber(plannedRiskPct, "防守比例");
     } catch (err) {
       setError(err instanceof Error ? err.message : "請確認數字欄位。");
       return;
     }
 
     if (parsedStopPrice != null && parsedStopPrice <= 0) {
-      setError("停損價必須大於 0。");
+      setError("防守價必須大於 0。");
       return;
     }
     if (defaultStopRule === "fixed_price" && parsedStopPrice == null) {
-      setError("選擇固定價格停損時，請填寫停損價。");
+      setError("選擇固定防守價時，請填寫防守價。");
       return;
     }
     if (parsedRiskAmount != null && parsedRiskAmount < 0) {
-      setError("停損金額不可小於 0。");
+      setError("防守金額不可小於 0。");
       return;
     }
     if (parsedRiskPct != null && parsedRiskPct < 0) {
-      setError("停損比例不可小於 0。");
+      setError("防守比例不可小於 0。");
       return;
     }
 
@@ -281,7 +281,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
               </select>
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">預設停損規則</span>
+              <span className="text-xs font-medium text-text-muted">預設防守規則</span>
               <select
                 value={defaultStopRule}
                 onChange={(e) => setDefaultStopRule(e.target.value as DefaultStopRule | "")}
@@ -324,7 +324,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
 
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">停損價</span>
+              <span className="text-xs font-medium text-text-muted">防守價</span>
               <input
                 type="number"
                 step="0.01"
@@ -334,7 +334,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">停損金額</span>
+              <span className="text-xs font-medium text-text-muted">防守金額</span>
               <input
                 type="number"
                 step="0.01"
@@ -344,7 +344,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">停損比例 %</span>
+              <span className="text-xs font-medium text-text-muted">防守比例 %</span>
               <input
                 type="number"
                 step="0.01"
@@ -508,7 +508,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
       })
       .catch((err) => {
         if (err instanceof Error && err.name === "AbortError") return;
-        setStopReferenceError(err instanceof Error ? err.message : "無法取得最新停損參考價。");
+        setStopReferenceError(err instanceof Error ? err.message : "無法取得最新防守參考價。");
       })
       .finally(() => {
         if (!controller.signal.aborted) setStopReferenceLoading(false);
@@ -547,11 +547,11 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
       return;
     }
     if (parsedStopPrice !== undefined && parsedStopPrice <= 0) {
-      setError("停損價必須大於 0。");
+      setError("防守價必須大於 0。");
       return;
     }
     if (defaultStopRule === "fixed_price" && parsedStopPrice == null) {
-      setError("選擇固定價格停損時，請填寫停損價。");
+      setError("選擇固定防守價時，請填寫防守價。");
       return;
     }
 
@@ -639,7 +639,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
         <div className="space-y-4 p-5">
           {saved ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              持倉資訊與操作計畫已更新。若成本價、日期或停損價有變更，請重新觸發分析以確保診斷數據正確。
+              持倉資訊與操作計畫已更新。若成本價、日期或防守價有變更，請重新觸發分析以確保診斷數據正確。
             </div>
           ) : (
             <>
@@ -738,7 +738,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">停損規則</span>
+                    <span className="text-xs font-medium text-text-muted">防守規則</span>
                     <select
                       value={defaultStopRule}
                       onChange={(e) => handleDefaultStopRuleChange(e.target.value as DefaultStopRule | "")}
@@ -778,7 +778,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
                   />
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs font-medium text-text-muted">停損價</span>
+                  <span className="text-xs font-medium text-text-muted">防守價</span>
                   <input
                     type="number"
                     step="0.01"
@@ -789,7 +789,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
                     }}
                     placeholder={
                       defaultStopRule === "fixed_price"
-                        ? "請輸入固定停損價"
+                        ? "請輸入固定防守價"
                         : autoPlannedStopPrice != null
                           ? formatPriceForInput(autoPlannedStopPrice)
                           : stopReferenceLoading
@@ -804,7 +804,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
                   </span>
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs font-medium text-text-muted">目標 / 分批出場規則</span>
+                  <span className="text-xs font-medium text-text-muted">目標 / 分批處理規則</span>
                   <textarea
                     value={plannedTargetOrScaleOutRule}
                     onChange={(e) => setPlannedTargetOrScaleOutRule(e.target.value)}
@@ -1607,7 +1607,7 @@ function formatPhase1ObservationState(state: string | undefined): string {
   const labels: Record<string, string> = {
     add_watch: "加碼觀察",
     data_unavailable: "資料不足",
-    exit_risk: "停損警戒",
+    exit_risk: "防守警戒",
     hold: "續抱",
     overheated: "過熱",
     profit_take_watch: "獲利保護",
@@ -1620,6 +1620,7 @@ function formatPhase1ObservationState(state: string | undefined): string {
 }
 
 function phase1BadgeText(item: PortfolioPhase1ObservationItem): string {
+  if (item.label === "停損警戒") return "防守警戒";
   return item.label ?? formatPhase1ObservationState(item.position_state);
 }
 
@@ -1643,7 +1644,7 @@ function riskBudgetDisplay(summary: PortfolioRiskSummary): { label: string; note
   if (missingDefenseCount > 0) {
     return {
       label: "估算不完整",
-      note: `${missingDefenseCount} 檔缺停損價，先補齊後再判讀可能回吐。`,
+      note: `${missingDefenseCount} 檔缺防守價，先補齊後再判讀可能回吐。`,
     };
   }
   if (missingPriceCount > 0) {
@@ -1661,7 +1662,7 @@ function riskBudgetDisplay(summary: PortfolioRiskSummary): { label: string; note
 
   return {
     label: PORTFOLIO_RISK_BUDGET_LABEL[summary.risk_budget_status.status],
-    note: `若照目前停損出場，可能回吐約 ${formatPortfolioPct(summary.total_at_risk_pct)} 的持股市值。`,
+    note: `若跌到目前防守價，可能回吐約 ${formatPortfolioPct(summary.total_at_risk_pct)} 的持股市值。`,
   };
 }
 
@@ -1674,7 +1675,7 @@ function stopLossCheckReason(summary: PortfolioRiskSummary): string {
   const missingDefenseCount = findRiskCaveatCount(summary, "missing_defense_reference");
   const missingPriceCount = findRiskCaveatCount(summary, "missing_price");
   const zeroQuantityCount = findRiskCaveatCount(summary, "zero_quantity");
-  if (missingDefenseCount > 0) return `${missingDefenseCount} 檔缺停損價，暫時不能完整判斷。`;
+  if (missingDefenseCount > 0) return `${missingDefenseCount} 檔缺防守價，暫時不能完整判斷。`;
   if (missingPriceCount > 0) return `${missingPriceCount} 檔缺近期價格，暫時不能完整判斷。`;
   if (zeroQuantityCount > 0) return `${zeroQuantityCount} 檔數量為 0，已排除在估算外。`;
 
@@ -1682,11 +1683,11 @@ function stopLossCheckReason(summary: PortfolioRiskSummary): string {
     .filter((risk) => (risk.estimated_risk_amount ?? 0) > 0)
     .sort((a, b) => (b.estimated_risk_amount ?? 0) - (a.estimated_risk_amount ?? 0));
   const primary = contributors[0];
-  if (!primary) return "目前持股已接近或低於停損價，停損前可能回吐為 0。";
+  if (!primary) return "目前持股已接近或低於防守價，防守線前可能回吐為 0。";
 
   const primaryName = portfolioDisplayName(primary);
   if (contributors.length === 1) {
-    return `原因：主要來自 ${primaryName}，若跌到停損價，可能回吐 ${formatPortfolioMoney(primary.estimated_risk_amount)}。`;
+    return `原因：主要來自 ${primaryName}，若跌到防守價，可能回吐 ${formatPortfolioMoney(primary.estimated_risk_amount)}。`;
   }
 
   const contributionPct =
@@ -1707,9 +1708,9 @@ function totalRiskExplanation(summary: PortfolioRiskSummary): string | null {
       risk.current_price <= risk.defense_reference.price,
   ).length;
 
-  if (missingDefenseCount > 0) return `${missingDefenseCount} 檔缺停損價，未納入可能回吐估算。`;
+  if (missingDefenseCount > 0) return `${missingDefenseCount} 檔缺防守價，未納入可能回吐估算。`;
   if (missingPriceCount > 0) return `${missingPriceCount} 檔缺近期價格，未納入可能回吐估算。`;
-  if (touchedReferenceCount > 0) return `${touchedReferenceCount} 檔已觸及或低於停損價，剩餘可能回吐為 0。`;
+  if (touchedReferenceCount > 0) return `${touchedReferenceCount} 檔已觸及或低於防守價，剩餘可能回吐為 0。`;
   return null;
 }
 
@@ -1861,7 +1862,7 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
   if (error) {
     return (
       <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-        停損檢查暫不可用：{error}
+        防守檢查暫不可用：{error}
       </section>
     );
   }
@@ -1875,8 +1876,8 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
     <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-text-primary">停損檢查</h3>
-          <p className="mt-1 text-xs text-text-faint">檢查目前停損設定下，整體可能回吐多少。</p>
+          <h3 className="text-sm font-semibold text-text-primary">防守檢查</h3>
+          <p className="mt-1 text-xs text-text-faint">檢查目前防守設定下，整體可能回吐多少。</p>
         </div>
       </div>
 
@@ -1909,7 +1910,7 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
           aria-expanded={expanded}
           className="rounded-lg border border-border-subtle bg-background px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-card-hover hover:text-text-primary"
         >
-          {expanded ? "收起停損細節" : "展開停損細節"}
+          {expanded ? "收起防守細節" : "展開防守細節"}
         </button>
       </div>
 
@@ -1917,7 +1918,7 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
         <>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-              <p className="text-xs text-text-faint">若照停損出場</p>
+              <p className="text-xs text-text-faint">若跌到防守價</p>
               <p className="mt-1 text-sm font-semibold text-text-primary">
                 可能回吐 {formatPortfolioMoney(summary.total_at_risk)}
                 <span className="ml-1 text-xs font-normal text-text-faint">
@@ -1927,7 +1928,7 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
               <p className="mt-1 text-xs text-text-faint">佔目前持股總市值的比例</p>
             </div>
             <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-              <p className="text-xs text-text-faint">整體停損回吐狀態</p>
+              <p className="text-xs text-text-faint">整體防守回吐狀態</p>
               <p className="mt-1 text-sm font-semibold text-text-primary">{riskBudget.label}</p>
               <p className="mt-1 text-xs leading-relaxed text-text-faint">{stopCheckReason}</p>
             </div>
@@ -2496,10 +2497,10 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
                     {stopLossRisk && (
                       <div className="mt-3 rounded-lg border border-border-subtle bg-background px-3 py-2">
-                        <p className="text-xs font-semibold text-text-primary">停損檢查</p>
+                        <p className="text-xs font-semibold text-text-primary">防守檢查</p>
                         {stopLossRisk.estimated_risk_amount != null ? (
                           <p className="mt-1 text-sm font-medium text-text-primary">
-                            若跌到停損價，可能回吐 {formatPortfolioMoney(stopLossRisk.estimated_risk_amount)}
+                            若跌到防守價，可能回吐 {formatPortfolioMoney(stopLossRisk.estimated_risk_amount)}
                             {stopLossPullbackPctValue != null && (
                               <span className="ml-1 text-xs font-normal text-text-faint">
                                 {formatPortfolioPct(stopLossPullbackPctValue)}
@@ -2507,11 +2508,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                             )}
                           </p>
                         ) : (
-                          <p className="mt-1 text-sm font-medium text-text-muted">停損前回吐暫無法估算</p>
+                          <p className="mt-1 text-sm font-medium text-text-muted">防守線前回吐暫無法估算</p>
                         )}
                         <div className="mt-1 flex flex-wrap gap-2 text-xs text-text-faint">
                           {stopLossRisk.defense_reference.price != null && (
-                            <span>停損價 {formatPrice(stopLossRisk.defense_reference.price, item.symbol)}</span>
+                            <span>防守價 {formatPrice(stopLossRisk.defense_reference.price, item.symbol)}</span>
                           )}
                           {stopLossRisk.current_price != null && (
                             <span>現價 {formatPrice(stopLossRisk.current_price, item.symbol)}</span>
