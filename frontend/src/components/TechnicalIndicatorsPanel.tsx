@@ -168,7 +168,6 @@ function profileCaveats(profile: TechnicalProfile, responseIsFinal: boolean | un
   if (dataQuality.volume_aligned === false) {
     caveats.add("成交量序列不完整，量能與 OBV 相關判斷需保守。");
   }
-  for (const caveat of profile.caveats ?? []) caveats.add(caveat);
   return Array.from(caveats);
 }
 

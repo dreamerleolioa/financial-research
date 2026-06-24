@@ -99,6 +99,7 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - 分層 signal row 只顯示中文狀態與 impact，不顯示 backend reason 原文；完整推理仍保留在 API trace，不作預設 UI 噪音。
 - `technical_profile.data_quality.is_final === false` 或 response `is_final === false` 時，前端需顯示盤中 caveat，不能當成完整收盤判斷。
 - `technical_profile.data_quality.ohlcv_aligned === false` 時，支撐壓力相關分層需顯示 caveat；前端不得自行補 high/low 或推算支撐壓力分數。
+- 前端只顯示 data-quality caveat，不直接顯示 backend `technical_profile.caveats` 的內部分層規則提醒；這些 rule trace 留在 API/debug contract。
 - `chip_stability_context` 是 companion evidence，不屬於技術分層面板的 scoring bucket；若頁面呈現，應使用籌碼穩定性語言，且不得改技術分或排序。
 - Watchlist quick lookup 的內容順序固定為完整指標值、試驗版 AVWAP 觀察、技術分層摘要；分層摘要需放在 AVWAP 區塊下方，避免搶在 AVWAP context 前面。
 
