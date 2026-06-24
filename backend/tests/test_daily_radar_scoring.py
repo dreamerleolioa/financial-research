@@ -347,6 +347,59 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["rule_version"] == "daily-radar-rules-v2.1c"
 
 
+def test_daily_radar_scoring_records_technical_profile_layer_trace_without_changing_scores() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2303.TW"])
+    baseline = score_daily_radar_record(record, market_context=_market_context())
+    record["technical_profile"] = {
+        "version": "technical-layer-v1",
+        "primary_score_inputs": {
+            "ma_structure": {"state": "above_ma20", "impact": 1, "reason": "close is above MA20."},
+            "support_resistance": {"state": "near_support", "impact": 1, "reason": "close is within support zone."},
+        },
+        "risk_overheat_filters": {
+            "rsi_state": {"state": "not_overheated", "impact": 0, "reason": "RSI does not add positive score."},
+            "atr_state": {"state": "normal", "impact": 0, "reason": "ATR volatility does not add positive score."},
+        },
+        "secondary_evidence": {
+            "mfi": {"state": "neutral", "impact": 0, "reason": "MFI is secondary evidence only."},
+        },
+        "score_summary": {
+            "primary_score": 2,
+            "risk_filter_score": 0,
+            "secondary_score": 0,
+            "capped_total": 2,
+            "technical_score": 57,
+        },
+        "data_quality": {
+            "data_date": "2026-05-29",
+            "is_final": True,
+            "lookback_days_available": 80,
+            "required_lookback_days": 60,
+            "ohlcv_aligned": True,
+            "volume_aligned": True,
+            "missing_fields": [],
+        },
+        "formula_versions": {
+            "metrics": "technical-metrics-v1",
+            "layering": "technical-layer-v1",
+        },
+    }
+
+    result = score_daily_radar_record(record, market_context=_market_context())
+    trace = result["score_breakdown"]["technical_profile"]
+
+    assert result["observation_score"] == baseline["observation_score"]
+    assert result["bucket_scores"] == baseline["bucket_scores"]
+    assert result["input_snapshot"]["technical_profile"] == record["technical_profile"]
+    assert trace["version"] == "technical-layer-v1"
+    assert trace["formula_versions"]["metrics"] == "technical-metrics-v1"
+    assert trace["data_quality"]["lookback_days_available"] == 80
+    assert trace["score_summary"]["capped_total"] == 2
+    assert trace["primary_score_inputs"]["ma_structure"]["impact"] == 1
+    assert trace["risk_overheat_filters"]["rsi_state"]["impact"] == 0
+    assert trace["secondary_evidence"]["mfi"]["state"] == "neutral"
+
+
 def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_trace() -> None:
     record = deepcopy(_joined_records_by_symbol()["2303.TW"])
     record["price_history"] = _price_history(date(2026, 5, 9), [100.0 + index for index in range(21)])

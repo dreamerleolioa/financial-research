@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.db.models import StockRawData
+from ai_stock_sentinel.technical.profile import build_technical_profile_payload
 
 
 class BatchTechnicalFetcher(Protocol):
@@ -156,14 +157,19 @@ def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any], *, run
         technical["ohlcv"] = {}
     if "indicators" not in technical:
         technical["indicators"] = {}
+    if "technical_profile" not in technical:
+        technical["technical_profile"] = {}
     technical["name"] = str(technical.get("name") or symbol)
     technical["ohlcv"] = dict(_mapping(technical.get("ohlcv")))
     technical["indicators"] = dict(_mapping(technical.get("indicators")))
+    technical["technical_profile"] = dict(_mapping(technical.get("technical_profile")))
     technical["data_dates"] = {
         "ohlcv": run_date.isoformat(),
         "technical_indicators": run_date.isoformat(),
         **{key: str(value) for key, value in _mapping(technical.get("data_dates")).items()},
     }
+    if technical["technical_profile"] and "technical_profile" not in technical["data_dates"]:
+        technical["data_dates"]["technical_profile"] = run_date.isoformat()
     return technical
 
 
@@ -183,15 +189,20 @@ def _build_technical_payload(symbol: str, frame: Any, *, run_date: date, name: s
     low = _last(lows)
     volume = int(_last(volumes))
     avg_volume_20 = _mean(volumes[-20:])
-    ma5 = _mean(closes[-5:])
-    ma20 = _mean(closes[-20:])
-    ma60 = _mean(closes[-60:])
-    support = min(lows[-20:]) if lows else low
-    resistance = max(highs[-20:]) if highs else high
-    macd = _macd(closes)
-    kd = _kd(highs, lows, closes)
-    obv, obv_trend = _obv(volumes, closes)
     data_date = _last_index_date(frame) or run_date.isoformat()
+    profile_payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        current_price=close,
+        data_date=data_date,
+        is_final=True,
+    )
+    if profile_payload is None:
+        return None
+    technical_indicators = dict(_mapping(profile_payload.get("technical_indicators")))
+    technical_profile = dict(_mapping(profile_payload.get("technical_profile")))
 
     return {
         "name": name or symbol,
@@ -205,33 +216,59 @@ def _build_technical_payload(symbol: str, frame: Any, *, run_date: date, name: s
             "volume": volume,
             "avg_volume_20": avg_volume_20,
         },
-        "indicators": {
-            "ma5": ma5,
-            "ma20": ma20,
-            "ma60": ma60,
-            "rsi14": _rsi(closes, 14),
-            "bias20": ((close - ma20) / ma20 * 100) if ma20 else 0.0,
-            "volume_ratio": (volume / avg_volume_20) if avg_volume_20 else 0.0,
-            "missing_trading_days_60": max(0, 60 - len(closes[-60:])),
-            "mfi14": _mfi(highs, lows, closes, volumes, 14),
-            "macd": macd["macd"],
-            "macd_signal": macd["signal"],
-            "macd_histogram": macd["histogram"],
-            "kd_k": kd["k"],
-            "kd_d": kd["d"],
-            "atr14": _atr(highs, lows, closes, 14),
-            "support": support,
-            "resistance": resistance,
-            "support_level": support,
-            "resistance_level": resistance,
-            "obv": obv,
-            "obv_trend": obv_trend,
-        },
+        "indicators": _daily_radar_indicators_from_profile(
+            technical_indicators,
+            technical_profile=technical_profile,
+            lookback_days=len(closes),
+        ),
+        "technical_profile": technical_profile,
         "data_dates": {
             "ohlcv": data_date,
             "technical_indicators": data_date,
+            "technical_profile": data_date,
         },
     }
+
+
+def _daily_radar_indicators_from_profile(
+    technical_indicators: Mapping[str, Any],
+    *,
+    technical_profile: Mapping[str, Any],
+    lookback_days: int,
+) -> dict[str, Any]:
+    has_ohlc_price_levels = _has_ohlc_price_levels(technical_profile)
+    support = technical_indicators.get("low_20d") if has_ohlc_price_levels else None
+    resistance = technical_indicators.get("high_20d") if has_ohlc_price_levels else None
+    return {
+        "ma5": technical_indicators.get("ma5"),
+        "ma20": technical_indicators.get("ma20"),
+        "ma60": technical_indicators.get("ma60"),
+        "rsi14": technical_indicators.get("rsi14"),
+        "bias20": technical_indicators.get("bias20"),
+        "volume_ratio": technical_indicators.get("volume_ratio"),
+        "missing_trading_days_60": max(0, 60 - lookback_days),
+        "mfi14": technical_indicators.get("mfi"),
+        "macd": technical_indicators.get("macd_line"),
+        "macd_signal": technical_indicators.get("macd_signal"),
+        "macd_histogram": technical_indicators.get("macd_hist"),
+        "kd_k": technical_indicators.get("kd_k"),
+        "kd_d": technical_indicators.get("kd_d"),
+        "atr14": technical_indicators.get("atr"),
+        "support": support,
+        "resistance": resistance,
+        "support_level": support,
+        "resistance_level": resistance,
+        "obv": technical_indicators.get("obv"),
+        "obv_trend": technical_indicators.get("obv_trend_20d"),
+    }
+
+
+def _has_ohlc_price_levels(technical_profile: Mapping[str, Any]) -> bool:
+    data_quality = _mapping(technical_profile.get("data_quality"))
+    return (
+        data_quality.get("ohlcv_aligned") is True
+        and data_quality.get("price_level_basis") == "ohlc_high_low"
+    )
 
 
 def _symbol_frame(history: Any, symbol: str) -> Any:
@@ -333,118 +370,6 @@ def _last(values: Sequence[float]) -> float:
 
 def _mean(values: Sequence[float]) -> float:
     return float(sum(values) / len(values)) if values else 0.0
-
-
-def _rsi(closes: Sequence[float], period: int) -> float:
-    if len(closes) < 2:
-        return 50.0
-    deltas = [closes[index] - closes[index - 1] for index in range(1, len(closes))][-period:]
-    gains = [delta for delta in deltas if delta > 0]
-    losses = [-delta for delta in deltas if delta < 0]
-    avg_gain = _mean(gains) if gains else 0.0
-    avg_loss = _mean(losses) if losses else 0.0
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-    return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
-
-
-def _mfi(
-    highs: Sequence[float],
-    lows: Sequence[float],
-    closes: Sequence[float],
-    volumes: Sequence[float],
-    period: int,
-) -> float:
-    length = min(len(highs), len(lows), len(closes), len(volumes))
-    if length < 2:
-        return 50.0
-    typical_prices = [(highs[index] + lows[index] + closes[index]) / 3 for index in range(length)]
-    positive_flow = 0.0
-    negative_flow = 0.0
-    start = max(1, length - period)
-    for index in range(start, length):
-        flow = typical_prices[index] * volumes[index]
-        if typical_prices[index] >= typical_prices[index - 1]:
-            positive_flow += flow
-        else:
-            negative_flow += flow
-    if negative_flow == 0:
-        return 100.0 if positive_flow > 0 else 50.0
-    return 100.0 - (100.0 / (1.0 + (positive_flow / negative_flow)))
-
-
-def _macd(closes: Sequence[float]) -> dict[str, float]:
-    if not closes:
-        return {"macd": 0.0, "signal": 0.0, "histogram": 0.0}
-    ema12 = _ema_values(closes, 12)
-    ema26 = _ema_values(closes, 26)
-    macd_values = [fast - slow for fast, slow in zip(ema12, ema26)]
-    macd_line = macd_values[-1]
-    signal = _ema(macd_values, 9)
-    return {"macd": macd_line, "signal": signal, "histogram": macd_line - signal}
-
-
-def _ema(values: Sequence[float], period: int) -> float:
-    ema_values = _ema_values(values, period)
-    return ema_values[-1] if ema_values else 0.0
-
-
-def _ema_values(values: Sequence[float], period: int) -> list[float]:
-    if not values:
-        return []
-    smoothing = 2 / (period + 1)
-    ema = values[0]
-    ema_values = [ema]
-    for value in values[1:]:
-        ema = (value * smoothing) + (ema * (1 - smoothing))
-        ema_values.append(ema)
-    return ema_values
-
-
-def _kd(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float]) -> dict[str, float]:
-    length = min(len(highs), len(lows), len(closes))
-    if length == 0:
-        return {"k": 50.0, "d": 50.0}
-    start = max(0, length - 9)
-    lowest_low = min(lows[start:length])
-    highest_high = max(highs[start:length])
-    if highest_high == lowest_low:
-        return {"k": 50.0, "d": 50.0}
-    k = (closes[length - 1] - lowest_low) / (highest_high - lowest_low) * 100
-    return {"k": k, "d": k}
-
-
-def _atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int) -> float:
-    length = min(len(highs), len(lows), len(closes))
-    if length == 0:
-        return 0.0
-    true_ranges: list[float] = []
-    for index in range(length):
-        previous_close = closes[index - 1] if index > 0 else closes[index]
-        true_ranges.append(max(highs[index] - lows[index], abs(highs[index] - previous_close), abs(lows[index] - previous_close)))
-    return _mean(true_ranges[-period:])
-
-
-def _obv(volumes: Sequence[float], closes: Sequence[float]) -> tuple[float, str]:
-    length = min(len(volumes), len(closes))
-    if length < 2:
-        return 0.0, "flat"
-    obv = 0.0
-    recent_changes: list[float] = []
-    for index in range(1, length):
-        change = 0.0
-        if closes[index] > closes[index - 1]:
-            change = volumes[index]
-        elif closes[index] < closes[index - 1]:
-            change = -volumes[index]
-        obv += change
-        recent_changes.append(change)
-    recent_sum = sum(recent_changes[-5:])
-    if recent_sum > 0:
-        return obv, "rising"
-    if recent_sum < 0:
-        return obv, "falling"
-    return obv, "flat"
 
 
 def _ordered_unique_symbols(symbols: Iterable[str]) -> list[str]:

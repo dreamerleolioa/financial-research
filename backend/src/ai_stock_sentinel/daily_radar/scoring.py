@@ -56,6 +56,7 @@ def score_daily_radar_record(
     normalized = _normalize_record(record)
     ohlcv = normalized["ohlcv"]
     indicators = normalized["indicators"]
+    technical_profile = normalized["technical_profile"]
     flow = normalized["institutional_flow"]
     margin = normalized["margin"]
 
@@ -136,6 +137,7 @@ def score_daily_radar_record(
             "market_context": market_component,
             "relative_strength": relative_strength_component,
             "freshness": freshness_component,
+            "technical_profile": _technical_profile_breakdown(technical_profile),
             "risk_penalties": risk_penalties,
             "risk_adjustment": risk_adjustment,
             "observation_score": observation_score,
@@ -148,6 +150,7 @@ def score_daily_radar_record(
             },
             "ohlcv": dict(ohlcv),
             "indicators": dict(indicators),
+            "technical_profile": dict(technical_profile),
             "price_history": _price_history_trace(normalized["price_history"]),
             "institutional_flow": dict(flow),
             "universe": _universe_trace(flow),
@@ -457,11 +460,13 @@ def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
     if source_record:
         ohlcv = _mapping(source_record.get("ohlcv"))
         indicators = _mapping(source_record.get("indicators"))
+        technical_profile = _mapping(source_record.get("technical_profile"))
         flow = _mapping(source_record.get("institutional_flow"))
         margin = _mapping(source_record.get("margin"))
     else:
         ohlcv = _mapping(record.get("ohlcv"))
         indicators = _mapping(record.get("indicators"))
+        technical_profile = _mapping(record.get("technical_profile"))
         flow = _mapping(record.get("institutional_flow"))
         margin = _mapping(record.get("margin"))
 
@@ -471,6 +476,7 @@ def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "record_date": str(record.get("record_date")),
         "ohlcv": ohlcv,
         "indicators": indicators,
+        "technical_profile": technical_profile,
         "price_history": _as_list(source_record.get("price_history") if source_record else record.get("price_history")),
         "institutional_flow": flow,
         "margin": margin,
@@ -487,6 +493,32 @@ def _candidate_data_dates(
     data_dates.update(dict(_mapping(_mapping(market_context).get("data_dates"))))
     data_dates.update(dict(_mapping(_mapping(relative_strength).get("data_dates"))))
     return data_dates
+
+
+def _technical_profile_breakdown(technical_profile: Mapping[str, Any]) -> dict[str, Any]:
+    if not technical_profile:
+        return {"freshness": "missing", "missing_reason": "technical_profile_missing"}
+    return {
+        "version": technical_profile.get("version"),
+        "formula_versions": dict(_mapping(technical_profile.get("formula_versions"))),
+        "data_quality": dict(_mapping(technical_profile.get("data_quality"))),
+        "score_summary": dict(_mapping(technical_profile.get("score_summary"))),
+        "primary_score_inputs": _layer_impacts(technical_profile.get("primary_score_inputs")),
+        "risk_overheat_filters": _layer_impacts(technical_profile.get("risk_overheat_filters")),
+        "secondary_evidence": _layer_impacts(technical_profile.get("secondary_evidence")),
+    }
+
+
+def _layer_impacts(value: Any) -> dict[str, dict[str, Any]]:
+    layers: dict[str, dict[str, Any]] = {}
+    for key, item in _mapping(value).items():
+        signal = _mapping(item)
+        layers[str(key)] = {
+            "state": signal.get("state"),
+            "impact": signal.get("impact"),
+            "reason": signal.get("reason"),
+        }
+    return layers
 
 
 def _relative_strength_component(

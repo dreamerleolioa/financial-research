@@ -44,6 +44,9 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
     profile = payload["technical_profile"]
 
     assert raw["ma20"] == canonical_metrics.ma(closes, 20)
+    assert raw["rsi14"] == canonical_metrics.calc_rsi(closes, period=14)
+    assert raw["bias20"] is not None
+    assert raw["volume_ratio"] is not None
     assert raw["macd_hist"] is not None
     assert profile["version"] == TECHNICAL_LAYER_VERSION
     assert profile["formula_versions"] == {

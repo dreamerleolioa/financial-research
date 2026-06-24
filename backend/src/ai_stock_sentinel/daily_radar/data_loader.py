@@ -43,6 +43,7 @@ class DailyRadarJoinedRecord:
     record_date: str
     ohlcv: dict[str, Any]
     indicators: dict[str, Any]
+    technical_profile: dict[str, Any]
     price_history: list[dict[str, Any]]
     institutional_flow: dict[str, Any]
     margin: dict[str, Any]
@@ -59,6 +60,7 @@ class DailyRadarJoinedRecord:
             "record_date": self.record_date,
             "ohlcv": dict(self.ohlcv),
             "indicators": dict(self.indicators),
+            "technical_profile": dict(self.technical_profile),
             "price_history": list(self.price_history),
             "institutional_flow": dict(self.institutional_flow),
             "margin": dict(self.margin),
@@ -86,6 +88,7 @@ def load_daily_radar_fixture_records(fixture_dir: str | Path) -> list[dict[str, 
                 record_date=str(ohlcv_record["record_date"]),
                 ohlcv=dict(ohlcv_record["ohlcv"]),
                 indicators=dict(ohlcv_record["indicators"]),
+                technical_profile=dict(_as_mapping(ohlcv_record.get("technical_profile"))),
                 price_history=list(_as_list(ohlcv_record.get("price_history"))),
                 institutional_flow=dict(flow_record["institutional_flow"]),
                 margin=dict(margin_record["margin"]),
@@ -112,6 +115,7 @@ def load_daily_radar_cache_records(rows: Iterable[Any]) -> list[dict[str, Any]]:
                 record_date=_date_to_string(_read_field(row, "record_date")),
                 ohlcv=dict(_as_mapping(technical.get("ohlcv"))),
                 indicators=dict(_as_mapping(technical.get("indicators"))),
+                technical_profile=dict(_as_mapping(technical.get("technical_profile"))),
                 price_history=list(_as_list(technical.get("price_history"))),
                 institutional_flow=_normalize_institutional_flow(institutional_payload),
                 margin=dict(_as_mapping(fundamental.get("margin"))),
