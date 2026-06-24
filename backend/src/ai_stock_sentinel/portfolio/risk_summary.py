@@ -180,6 +180,42 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _as_mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _number_series(value: Any) -> list[Decimal]:
+    if not isinstance(value, list):
+        return []
+    values: list[Decimal] = []
+    for item in value:
+        number = _to_decimal(item)
+        if number is not None:
+            values.append(number)
+    return values
+
+
+def _mean_last(values: list[Decimal], count: int) -> Decimal | None:
+    if len(values) < count:
+        return None
+    window = values[-count:]
+    return sum(window, Decimal("0")) / Decimal(count)
+
+
+def _min_last(values: list[Decimal], count: int) -> Decimal | None:
+    if len(values) < count:
+        return None
+    return min(values[-count:])
+
+
+def _first_decimal(*values: Any) -> Decimal | None:
+    for value in values:
+        number = _to_decimal(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _extract_current_price(raw_row: Any) -> Decimal | None:
     if raw_row is None:
         return None
@@ -213,10 +249,31 @@ def _extract_defense_reference(plan: Any) -> tuple[Decimal | None, str | None]:
 
 def _extract_auto_defense_prices(raw_row: Any) -> dict[str, float | None]:
     technical = getattr(raw_row, "technical", None) or {}
+    indicators = _as_mapping(technical.get("indicators"))
+    technical_indicators = _as_mapping(technical.get("technical_indicators"))
+    recent_closes = _number_series(technical.get("recent_closes"))
+    recent_lows = _number_series(technical.get("recent_lows")) or recent_closes
     return {
-        "break_20d_low": _float_or_none(_to_decimal(technical.get("low_20d"))),
-        "break_ma20": _float_or_none(_to_decimal(technical.get("ma20"))),
-        "break_ma60": _float_or_none(_to_decimal(technical.get("ma60"))),
+        "break_20d_low": _float_or_none(_first_decimal(
+            technical.get("low_20d"),
+            indicators.get("low_20d"),
+            indicators.get("support_level"),
+            indicators.get("support"),
+            technical_indicators.get("low_20d"),
+            _min_last(recent_lows, 20),
+        )),
+        "break_ma20": _float_or_none(_first_decimal(
+            technical.get("ma20"),
+            indicators.get("ma20"),
+            technical_indicators.get("ma20"),
+            _mean_last(recent_closes, 20),
+        )),
+        "break_ma60": _float_or_none(_first_decimal(
+            technical.get("ma60"),
+            indicators.get("ma60"),
+            technical_indicators.get("ma60"),
+            _mean_last(recent_closes, 60),
+        )),
     }
 
 
