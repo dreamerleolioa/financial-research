@@ -143,7 +143,9 @@ def _anchor_payload(
         "anchor_date": anchor.trade_date.isoformat(),
         "anchor_reason": anchor_reason,
         "avwap": avwap,
+        "snapshot_close": current_close,
         "distance_to_avwap_pct": _pct_distance(current_close, avwap),
+        "distance_basis": "snapshot_close",
         "source_granularity": "daily",
         "estimated": any(bar.estimated_amount for bar in anchor_bars),
     }

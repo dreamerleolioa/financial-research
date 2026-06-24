@@ -145,16 +145,6 @@ function formatPhase1Distance(value: number | null | undefined): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-function calculatePhase1DistanceFromPrice(
-  price: number | null | undefined,
-  reference: number | null | undefined,
-): number | null {
-  if (price == null || reference == null || Number.isNaN(price) || Number.isNaN(reference) || reference === 0) {
-    return null;
-  }
-  return (price - reference) / reference * 100;
-}
-
 function formatPhase1MissingReason(reason: string | null | undefined): string {
   if (!reason) return "資料不足";
   return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
@@ -163,7 +153,6 @@ function formatPhase1MissingReason(reason: string | null | undefined): string {
 function buildPhase1AvwapCopyRows(
   observation: Phase1Observation | null | undefined,
   snapshotSymbol?: string,
-  currentPrice?: number | null,
 ): Array<[string, string]> {
   if (!observation) return [];
 
@@ -172,7 +161,7 @@ function buildPhase1AvwapCopyRows(
   const anchorRows: Array<[string, string]> = entries
     .sort(([left], [right]) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99) || left.localeCompare(right))
     .map(([key, anchor]) => {
-      const distance = calculatePhase1DistanceFromPrice(currentPrice, anchor.avwap) ?? anchor.distance_to_avwap_pct;
+      const distance = anchor.current_distance_to_avwap_pct ?? anchor.distance_to_avwap_pct;
       const parts = [
         formatPrice(anchor.avwap, snapshotSymbol),
         `距離 ${formatPhase1Distance(distance)}`,
@@ -256,7 +245,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
       `股票代碼：${displaySymbol}`,
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
-      ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol, currentPrice).map(([label, value]) => `${label}：${value}`),
+      ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol).map(([label, value]) => `${label}：${value}`),
       ...buildChipStabilityCopyRows(result.chip_stability_context).map(([label, value]) => `${label}：${value}`),
     ].join("\n");
   }
@@ -297,7 +286,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
     ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
     ["MFI", formatIndicatorNumber(indicators.mfi, 1)],
     ["唐奇安通道上/下緣", indicatorPair(indicators.donchian_upper, 2, indicators.donchian_lower)],
-    ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol, currentPrice),
+    ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol),
     ...buildChipStabilityCopyRows(result.chip_stability_context),
   ];
 

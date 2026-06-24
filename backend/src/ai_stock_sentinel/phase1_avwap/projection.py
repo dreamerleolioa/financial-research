@@ -33,6 +33,7 @@ def read_phase1_observation_for_analyze(
     user_id: int,
     symbol: str,
     data_date: date,
+    current_price: float | None = None,
     market: str = "TW",
     dataset: str = DEFAULT_PHASE1_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
@@ -105,6 +106,7 @@ def read_phase1_observation_for_analyze(
     payload.setdefault("data_date", snapshot_date.isoformat())
     payload.setdefault("dataset", dataset)
     payload.setdefault("adjustment_mode", adjustment_mode)
+    _enrich_analyze_anchor_distances(payload, current_price=current_price)
     payload["freshness"] = snapshot.freshness
     payload["missing_reason"] = snapshot.missing_reason
     payload["source"] = _snapshot_source(payload, snapshot)
@@ -750,9 +752,39 @@ def _select_position_display_anchor(anchors: dict[str, Any]) -> dict[str, Any] |
 def _strip_internal_snapshot_fields(payload: dict[str, Any]) -> None:
     payload.pop("bars", None)
     payload.pop("holding", None)
-    anchors = dict(payload.get("anchors") or {})
+    anchors = {
+        key: dict(anchor) if isinstance(anchor, dict) else anchor
+        for key, anchor in dict(payload.get("anchors") or {}).items()
+    }
     anchors.pop("entry", None)
     payload["anchors"] = anchors
+
+
+def _enrich_analyze_anchor_distances(payload: dict[str, Any], *, current_price: float | None) -> None:
+    anchors = payload.get("anchors")
+    if not isinstance(anchors, dict):
+        return
+    snapshot_close = _number_or_none(dict(payload.get("ohlcv") or {}).get("close"))
+    for anchor in anchors.values():
+        if not isinstance(anchor, dict):
+            continue
+        avwap = _number_or_none(anchor.get("avwap"))
+        if avwap is None:
+            continue
+        if anchor.get("snapshot_close") is None and snapshot_close is not None:
+            anchor["snapshot_close"] = snapshot_close
+        anchor_snapshot_close = _number_or_none(anchor.get("snapshot_close"))
+        if anchor.get("distance_to_avwap_pct") is None:
+            snapshot_distance = _pct_distance(anchor_snapshot_close, avwap)
+            if snapshot_distance is not None:
+                anchor["distance_to_avwap_pct"] = snapshot_distance
+        if anchor.get("distance_to_avwap_pct") is not None:
+            anchor.setdefault("distance_basis", "snapshot_close")
+        current_distance = _pct_distance(current_price, avwap)
+        if current_distance is not None:
+            anchor["current_price"] = current_price
+            anchor["current_distance_to_avwap_pct"] = current_distance
+            anchor["current_distance_basis"] = "analyze_current_price"
 
 
 def _snapshot_source(payload: dict[str, Any], snapshot: Any) -> dict[str, Any]:
@@ -851,7 +883,9 @@ def _entry_anchor_from_snapshot_payload(
         "anchor_date": anchor["date"].isoformat(),
         "anchor_reason": "holding_entry_date",
         "avwap": avwap,
+        "snapshot_close": current_close,
         "distance_to_avwap_pct": _pct_distance(current_close, avwap),
+        "distance_basis": "snapshot_close",
         "source_granularity": "daily",
         "estimated": any(bar["estimated_amount"] for bar in anchor_bars),
     }
@@ -904,7 +938,9 @@ def _select_anchor(anchors: dict[str, Any], anchor_type: str) -> dict[str, Any] 
         "anchor_date": anchor.get("anchor_date"),
         "anchor_reason": anchor.get("anchor_reason"),
         "avwap": anchor.get("avwap"),
+        "snapshot_close": anchor.get("snapshot_close"),
         "distance_to_avwap_pct": anchor.get("distance_to_avwap_pct"),
+        "distance_basis": anchor.get("distance_basis"),
         "source_granularity": anchor.get("source_granularity", "daily"),
         "estimated": bool(anchor.get("estimated", False)),
     }

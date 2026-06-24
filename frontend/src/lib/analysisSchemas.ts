@@ -83,7 +83,12 @@ const phase1AnchorSchema = z
     anchor_date: nullableString.optional(),
     anchor_reason: nullableString.optional(),
     avwap: nullableNumber.optional(),
+    snapshot_close: nullableNumber.optional(),
     distance_to_avwap_pct: nullableNumber.optional(),
+    distance_basis: nullableString.optional(),
+    current_price: nullableNumber.optional(),
+    current_distance_to_avwap_pct: nullableNumber.optional(),
+    current_distance_basis: nullableString.optional(),
     source_granularity: z.string().optional(),
     estimated: z.boolean().optional(),
   })

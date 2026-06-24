@@ -39,7 +39,7 @@ from ai_stock_sentinel.phase1_avwap.projection import (
     read_phase1_observation_for_analyze,
     read_phase1_position_states_for_portfolio,
 )
-from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
+from ai_stock_sentinel.phase1_avwap.repository import get_latest_phase1_avwap_snapshots_on_or_before, upsert_phase1_avwap_snapshot
 from ai_stock_sentinel.phase1_avwap.service import (
     refresh_phase1_avwap_snapshots,
     refresh_phase1_avwap_snapshots_for_symbols,
@@ -228,6 +228,8 @@ def test_build_phase1_avwap_payload_computes_daily_anchors_from_amount_over_volu
     }
     assert payload["anchors"]["swing_low_60d"]["anchor_date"] == "2026-06-02"
     assert payload["anchors"]["swing_low_60d"]["avwap"] == pytest.approx(14.6667)
+    assert payload["anchors"]["swing_low_60d"]["snapshot_close"] == pytest.approx(18)
+    assert payload["anchors"]["swing_low_60d"]["distance_basis"] == "snapshot_close"
     assert payload["anchors"]["breakout_20d"]["anchor_date"] == "2026-06-05"
     assert payload["anchors"]["breakout_20d"]["avwap"] == pytest.approx(18.0)
     assert payload["anchors"]["high_volume_60d"]["anchor_date"] == "2026-06-03"
@@ -355,6 +357,7 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
             "symbol": "2330.TW",
             "data_date": data_date.isoformat(),
             "holding": {"entry_date": "2026-01-15", "avg_cost": 900},
+            "ohlcv": {"close": 900},
             "bars": [{"date": "2026-06-05", "close": 900, "volume": 100, "amount": 90000}],
             "anchors": {
                 "entry": {
@@ -381,6 +384,7 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
         user_id=1,
         symbol="2330.TW",
         data_date=data_date,
+        current_price=890,
     )
 
     assert observation["freshness"] == "fresh"
@@ -389,6 +393,18 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
     assert "holding" not in observation
     assert "entry" not in observation["anchors"]
     assert observation["anchors"]["swing_low_60d"]["avwap"] == 900.25
+    assert observation["anchors"]["swing_low_60d"]["snapshot_close"] == 900
+    assert observation["anchors"]["swing_low_60d"]["distance_basis"] == "snapshot_close"
+    assert observation["anchors"]["swing_low_60d"]["current_price"] == 890
+    assert observation["anchors"]["swing_low_60d"]["current_distance_to_avwap_pct"] == pytest.approx(-1.1386)
+    assert observation["anchors"]["swing_low_60d"]["current_distance_basis"] == "analyze_current_price"
+    persisted = get_latest_phase1_avwap_snapshots_on_or_before(
+        db_session,
+        symbols=["2330.TW"],
+        data_date=data_date,
+    )["2330.TW"]
+    assert "current_distance_to_avwap_pct" not in persisted.payload["anchors"]["swing_low_60d"]
+    assert "current_distance_basis" not in persisted.payload["anchors"]["swing_low_60d"]
     assert observation["source"] == {
         "provider": "twse",
         "dataset": TWSE_STOCK_DAY_DATASET,

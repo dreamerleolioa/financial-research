@@ -32,7 +32,9 @@ const phase1PositionStateSchema = z
         anchor_date: z.string().nullable().optional(),
         anchor_reason: z.string().nullable().optional(),
         avwap: z.number().nullable().optional(),
+        snapshot_close: z.number().nullable().optional(),
         distance_to_avwap_pct: z.number().nullable().optional(),
+        distance_basis: z.string().nullable().optional(),
         source_granularity: z.string().optional(),
         estimated: z.boolean().optional(),
       })
