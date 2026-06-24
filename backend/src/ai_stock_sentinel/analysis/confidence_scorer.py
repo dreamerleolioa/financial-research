@@ -18,13 +18,22 @@ def derive_technical_score(
     atr_data: dict | None = None,
     mfi_data: dict | None = None,
     donchian_data: dict | None = None,
+    technical_profile: dict | None = None,
 ) -> int:
-    """依據 RSI、BIAS、MA、MACD、布林通道、KD、ADX、OBV、MFI、Donchian 計算技術面信心分數。
+    """Return the technical score used by confidence scoring.
+
+    When a canonical technical_profile is available, its capped score_summary is
+    authoritative. The raw-indicator path remains as a compatibility fallback
+    for older callers that have not been migrated yet.
 
     - 資料不足（< 20 根）→ 回傳 50
     - score 範圍仍夾在 -5 ~ +5，映射至 33 ~ 67（避免技術面單維過度放大）
     - 映射公式：round(50 + score * (17 / 5))
     """
+    profile_score = _technical_score_from_profile(technical_profile)
+    if profile_score is not None:
+        return profile_score
+
     if len(closes) < 20:
         return 50
 
@@ -145,6 +154,18 @@ def derive_technical_score(
 
     clamped = max(-5, min(5, score))
     return round(50 + clamped * (17 / 5))
+
+
+def _technical_score_from_profile(technical_profile: dict | None) -> int | None:
+    if not isinstance(technical_profile, dict):
+        return None
+    score_summary = technical_profile.get("score_summary")
+    if not isinstance(score_summary, dict):
+        return None
+    try:
+        return int(score_summary["technical_score"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # Sentiment 分數對照

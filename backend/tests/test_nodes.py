@@ -31,6 +31,21 @@ def test_derive_technical_signal_insufficient():
     assert result == "sideways"
 
 
+def test_derive_technical_signal_prefers_profile_score_summary():
+    """technical_profile score_summary is authoritative when present."""
+    profile = {
+        "score_summary": {
+            "primary_score": 3,
+            "risk_filter_score": 0,
+            "secondary_score": 1,
+            "capped_total": 4,
+            "technical_score": 64,
+        }
+    }
+    result = _derive_technical_signal([100.0] * 15, rsi=20.0, technical_profile=profile)
+    assert result == "bullish"
+
+
 def test_derive_technical_signal_mixed_signals():
     """衝突訊號（bullish RSI 但空頭 MA 排列）→ sideways（加權後中性）"""
     # 遞減序列（MA 空頭排列），最後幾根反彈（RSI 偏高）
@@ -55,6 +70,29 @@ def test_score_node_with_real_bullish_data():
     assert result["signal_confidence"] > 50
     assert result["data_confidence"] is not None
     assert result["confidence_score"] == result["signal_confidence"]  # 向後相容
+
+
+def test_score_node_uses_existing_technical_profile_for_signal():
+    """score_node should not recalculate scattered raw signals when a profile is already present."""
+    from ai_stock_sentinel.graph.nodes import score_node
+    state = {
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": {"recent_closes": [100.0] * 30},
+        "technical_profile": {
+            "score_summary": {
+                "primary_score": -3,
+                "risk_filter_score": -1,
+                "secondary_score": 0,
+                "capped_total": -4,
+                "technical_score": 36,
+            }
+        },
+        "cleaned_news_quality": None,
+        "errors": [],
+    }
+    result = score_node(state)
+    assert result["technical_signal"] == "bearish"
 
 
 # ---------------------------------------------------------------------------
