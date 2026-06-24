@@ -77,6 +77,19 @@ def test_entry_record_context_rejects_invalid_fixed_options(field: str, value: s
         EntryRecordContext(**{field: value})
 
 
+def test_entry_record_context_accepts_positive_planned_stop_price():
+    context = EntryRecordContext(planned_stop_price=95)
+
+    assert context.planned_stop_price == 95
+    assert context.model_fields_set == {"planned_stop_price"}
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf")])
+def test_entry_record_context_rejects_invalid_planned_stop_price(value: float):
+    with pytest.raises(ValidationError):
+        EntryRecordContext(planned_stop_price=value)
+
+
 def test_entry_record_context_preserves_missing_explicit_null_and_not_recorded():
     missing = EntryRecordContext()
     explicit_null = EntryRecordContext(entry_reason=None)

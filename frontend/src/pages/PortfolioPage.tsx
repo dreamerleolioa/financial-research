@@ -5,6 +5,7 @@ import {
   useBackfillLifecyclePlanMutation,
   useClosePortfolioItemMutation,
   useDeletePortfolioItemMutation,
+  useUpdateLifecyclePlanMutation,
   useUpdatePortfolioItemMutation,
 } from "../features/portfolio/mutations";
 import {
@@ -16,7 +17,8 @@ import {
 } from "../features/portfolio/queries";
 import { portfolioKeys } from "../features/portfolio/queryKeys";
 import { deleteAsyncMapValue, setAsyncMapValue } from "../lib/asyncMap";
-import type { PositionResult } from "../lib/analysisTypes";
+import { analyzeSymbol } from "../lib/analyzeApi";
+import type { AnalyzeResponse, PositionResult } from "../lib/analysisTypes";
 import { formatPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
 import {
@@ -60,6 +62,8 @@ import {
 } from "../lib/portfolioLabels";
 
 type HistoryEntry = PortfolioHistoryEntry;
+type PortfolioPositionRiskItem = PortfolioRiskSummary["position_risks"][number];
+type AutoDefensePrices = NonNullable<PortfolioRiskSummary["position_risks"][number]["auto_defense_prices"]>;
 
 interface PortfolioPageProps {
   onNavigateAnalyze: (symbol: string) => void;
@@ -81,6 +85,11 @@ function parseOptionalNumberInput(value: string): number | null | undefined {
   if (trimmedValue === "") return undefined;
   const parsedValue = Number(trimmedValue);
   return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function trimmedTextOrNull(value: string): string | null {
+  const trimmedValue = value.trim();
+  return trimmedValue || null;
 }
 
 interface BackfillPlanModalProps {
@@ -130,24 +139,28 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
     let parsedRiskAmount: number | undefined;
     let parsedRiskPct: number | undefined;
     try {
-      parsedStopPrice = parseOptionalNumber(plannedStopPrice, "計畫風險控制價");
-      parsedRiskAmount = parseOptionalNumber(plannedRiskAmount, "計畫風險金額");
-      parsedRiskPct = parseOptionalNumber(plannedRiskPct, "計畫風險百分比");
+      parsedStopPrice = parseOptionalNumber(plannedStopPrice, "防守價");
+      parsedRiskAmount = parseOptionalNumber(plannedRiskAmount, "防守金額");
+      parsedRiskPct = parseOptionalNumber(plannedRiskPct, "防守比例");
     } catch (err) {
       setError(err instanceof Error ? err.message : "請確認數字欄位。");
       return;
     }
 
     if (parsedStopPrice != null && parsedStopPrice <= 0) {
-      setError("計畫風險控制價必須大於 0。");
+      setError("防守價必須大於 0。");
+      return;
+    }
+    if (defaultStopRule === "fixed_price" && parsedStopPrice == null) {
+      setError("選擇固定防守價時，請填寫防守價。");
       return;
     }
     if (parsedRiskAmount != null && parsedRiskAmount < 0) {
-      setError("計畫風險金額不可小於 0。");
+      setError("防守金額不可小於 0。");
       return;
     }
     if (parsedRiskPct != null && parsedRiskPct < 0) {
-      setError("計畫風險百分比不可小於 0。");
+      setError("防守比例不可小於 0。");
       return;
     }
 
@@ -268,7 +281,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
               </select>
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">預設風險控制規則</span>
+              <span className="text-xs font-medium text-text-muted">預設防守規則</span>
               <select
                 value={defaultStopRule}
                 onChange={(e) => setDefaultStopRule(e.target.value as DefaultStopRule | "")}
@@ -311,7 +324,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
 
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">計畫風險控制價</span>
+              <span className="text-xs font-medium text-text-muted">防守價</span>
               <input
                 type="number"
                 step="0.01"
@@ -321,7 +334,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">計畫風險金額</span>
+              <span className="text-xs font-medium text-text-muted">防守金額</span>
               <input
                 type="number"
                 step="0.01"
@@ -331,7 +344,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">計畫風險 %</span>
+              <span className="text-xs font-medium text-text-muted">防守比例 %</span>
               <input
                 type="number"
                 step="0.01"
@@ -393,21 +406,116 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
 
 interface EditPortfolioModalProps {
   item: PortfolioItem;
+  autoDefensePrices?: PortfolioRiskSummary["position_risks"][number]["auto_defense_prices"];
   onClose: () => void;
   onSaved: (updated: PortfolioItem) => void;
 }
 
-function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps) {
+function formatPriceForInput(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return String(Number(value.toFixed(2)));
+}
+
+function autoDefensePricesFromIndicators(indicators: AnalyzeResponse["technical_indicators"]): AutoDefensePrices | null {
+  if (!indicators) return null;
+  return {
+    break_20d_low: indicators.low_20d,
+    break_ma20: indicators.ma20,
+    break_ma60: indicators.ma60,
+  };
+}
+
+function derivePlanStopPrice(
+  rule: DefaultStopRule | "",
+  autoDefensePrices?: AutoDefensePrices | null,
+): number | null {
+  const value = rule ? autoDefensePrices?.[rule as keyof NonNullable<typeof autoDefensePrices>] : null;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditPortfolioModalProps) {
   const updatePortfolioItemMutation = useUpdatePortfolioItemMutation();
+  const updateLifecyclePlanMutation = useUpdateLifecyclePlanMutation();
+  const lifecyclePlanQuery = useLifecyclePlanQuery(item.id);
   const backdropRef = useRef<HTMLDivElement>(null);
   const mouseDownOnBackdrop = useRef(false);
   const [entryPrice, setEntryPrice] = useState(String(item.entry_price));
   const [quantity, setQuantity] = useState(String(item.quantity));
   const [entryDate, setEntryDate] = useState(item.entry_date);
   const [notes, setNotes] = useState(item.notes ?? "");
+  const [thesis, setThesis] = useState("");
+  const [setupType, setSetupType] = useState<LifecycleSetupType | "">("");
+  const [plannedHoldingPeriod, setPlannedHoldingPeriod] = useState<PlannedHoldingPeriod | "">("");
+  const [defaultStopRule, setDefaultStopRule] = useState<DefaultStopRule | "">("");
+  const [addEntryCondition, setAddEntryCondition] = useState<AddEntryCondition | "">("");
+  const [plannedInvalidation, setPlannedInvalidation] = useState("");
+  const [plannedStopPrice, setPlannedStopPrice] = useState("");
+  const [plannedTargetOrScaleOutRule, setPlannedTargetOrScaleOutRule] = useState("");
+  const [plannedRiskAmount, setPlannedRiskAmount] = useState("");
+  const [plannedRiskPct, setPlannedRiskPct] = useState("");
+  const [positionSizingRationale, setPositionSizingRationale] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [latestAutoDefensePrices, setLatestAutoDefensePrices] = useState<AutoDefensePrices | null>(null);
+  const [stopReferenceLoading, setStopReferenceLoading] = useState(false);
+  const [stopReferenceError, setStopReferenceError] = useState<string | null>(null);
+  const stopPriceTouchedRef = useRef(false);
+  const effectiveAutoDefensePrices = latestAutoDefensePrices ?? autoDefensePrices ?? null;
+  const autoPlannedStopPrice = derivePlanStopPrice(defaultStopRule, effectiveAutoDefensePrices);
+
+  useEffect(() => {
+    const plan = lifecyclePlanQuery.data;
+    if (!plan) return;
+    const planDefaultStopRule = plan.default_stop_rule ?? "";
+    const derivedStopPrice = derivePlanStopPrice(planDefaultStopRule, autoDefensePrices ?? null);
+    setThesis(plan.thesis ?? "");
+    setSetupType(plan.setup_type ?? "");
+    setPlannedHoldingPeriod(plan.planned_holding_period ?? "");
+    setDefaultStopRule(planDefaultStopRule);
+    setAddEntryCondition(plan.add_entry_condition ?? "");
+    setPlannedInvalidation(plan.planned_invalidation ?? "");
+    if (plan.planned_stop_price != null) {
+      setPlannedStopPrice(String(plan.planned_stop_price));
+      stopPriceTouchedRef.current = false;
+    } else if (!stopPriceTouchedRef.current) {
+      setPlannedStopPrice(derivedStopPrice != null ? formatPriceForInput(derivedStopPrice) : "");
+    }
+    setPlannedTargetOrScaleOutRule(plan.planned_target_or_scale_out_rule ?? "");
+    setPlannedRiskAmount(plan.planned_risk_amount != null ? String(plan.planned_risk_amount) : "");
+    setPlannedRiskPct(plan.planned_risk_pct != null ? String(plan.planned_risk_pct) : "");
+    setPositionSizingRationale(plan.position_sizing_rationale ?? "");
+  }, [lifecyclePlanQuery.data]);
+
+  useEffect(() => {
+    const plan = lifecyclePlanQuery.data;
+    if (plan?.planned_stop_price != null || stopPriceTouchedRef.current) return;
+    const derivedStopPrice = derivePlanStopPrice(defaultStopRule, effectiveAutoDefensePrices);
+    if (derivedStopPrice != null) {
+      setPlannedStopPrice(formatPriceForInput(derivedStopPrice));
+    }
+  }, [defaultStopRule, effectiveAutoDefensePrices, lifecyclePlanQuery.data]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setStopReferenceLoading(true);
+    setStopReferenceError(null);
+    void analyzeSymbol({ symbol: item.symbol, skip_ai: true }, controller.signal)
+      .then((result) => {
+        const prices = autoDefensePricesFromIndicators(result.technical_indicators ?? null);
+        setLatestAutoDefensePrices(prices);
+        if (!prices) setStopReferenceError("找不到可用的 MA20 / MA60 / 20 日低點。");
+      })
+      .catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setStopReferenceError(err instanceof Error ? err.message : "無法取得最新防守參考價。");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setStopReferenceLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [item.symbol]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -419,17 +527,63 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
 
   async function handleSave() {
     setError(null);
+
+    const parsedEntryPrice = parseRequiredNumberInput(entryPrice);
+    const parsedQuantity = parseRequiredNumberInput(quantity);
+    const parsedStopPrice = parseOptionalNumberInput(plannedStopPrice);
+    const parsedRiskAmount = parseOptionalNumberInput(plannedRiskAmount);
+    const parsedRiskPct = parseOptionalNumberInput(plannedRiskPct);
+
+    if (parsedEntryPrice == null || parsedEntryPrice <= 0) {
+      setError("成本價必須是大於 0 的有效數字。");
+      return;
+    }
+    if (parsedQuantity == null || parsedQuantity < 0 || !Number.isInteger(parsedQuantity)) {
+      setError("持有股數必須是 0 或正整數。");
+      return;
+    }
+    if (parsedStopPrice === null || parsedRiskAmount === null || parsedRiskPct === null) {
+      setError("請確認計畫中的數字欄位。");
+      return;
+    }
+    if (parsedStopPrice !== undefined && parsedStopPrice <= 0) {
+      setError("防守價必須大於 0。");
+      return;
+    }
+    if (defaultStopRule === "fixed_price" && parsedStopPrice == null) {
+      setError("選擇固定防守價時，請填寫防守價。");
+      return;
+    }
+
+    const planBody: BackfillLifecyclePlanRequest = {
+      thesis: trimmedTextOrNull(thesis),
+      setup_type: setupType || null,
+      planned_holding_period: plannedHoldingPeriod || null,
+      default_stop_rule: defaultStopRule || null,
+      add_entry_condition: addEntryCondition || null,
+      planned_invalidation: trimmedTextOrNull(plannedInvalidation),
+      planned_stop_price: parsedStopPrice ?? null,
+      planned_target_or_scale_out_rule: trimmedTextOrNull(plannedTargetOrScaleOutRule),
+      planned_risk_amount: parsedRiskAmount ?? null,
+      planned_risk_pct: parsedRiskPct ?? null,
+      position_sizing_rationale: trimmedTextOrNull(positionSizingRationale),
+    };
+    const hasPlanValue = Object.values(planBody).some((value) => value != null);
+
     setSaving(true);
     try {
       const updated = await updatePortfolioItemMutation.mutateAsync({
         id: item.id,
         body: {
-          entry_price: parseFloat(entryPrice),
-          quantity: parseInt(quantity, 10),
+          entry_price: parsedEntryPrice,
+          quantity: parsedQuantity,
           entry_date: entryDate,
           notes: notes.trim() || null,
         },
       });
+      if (hasPlanValue || lifecyclePlanQuery.data?.source != null) {
+        await updateLifecyclePlanMutation.mutateAsync({ id: item.id, body: planBody });
+      }
       onSaved(updated);
       setSaved(true);
     } catch (err) {
@@ -437,6 +591,13 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleDefaultStopRuleChange(value: DefaultStopRule | "") {
+    const derivedStopPrice = derivePlanStopPrice(value, effectiveAutoDefensePrices);
+    setDefaultStopRule(value);
+    stopPriceTouchedRef.current = false;
+    setPlannedStopPrice(derivedStopPrice != null ? formatPriceForInput(derivedStopPrice) : "");
   }
 
   return (
@@ -451,9 +612,16 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
       }}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
     >
-      <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
+      <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
-          <p className="font-semibold text-text-primary">編輯持股 · {portfolioDisplayName(item)}</p>
+          <div>
+            <p className="font-semibold text-text-primary">編輯持股與計畫 · {portfolioDisplayName(item)}</p>
+            {lifecyclePlanQuery.data?.source && (
+              <p className="mt-1 text-xs text-text-faint">
+                計畫來源：{lifecyclePlanQuery.data.created_after_entry ? "事後補填" : "進場時記錄"}
+              </p>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
@@ -471,50 +639,189 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
         <div className="space-y-4 p-5">
           {saved ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              持倉資訊已更新。若成本價或日期有變更，請重新觸發分析以確保診斷數據正確。
+              持倉資訊與操作計畫已更新。若成本價、日期或防守價有變更，請重新觸發分析以確保診斷數據正確。
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="space-y-1">
-                  <span className="text-xs font-medium text-text-muted">成本價</span>
+              <section className="space-y-3">
+                <p className="text-xs font-semibold text-text-muted">持股資料</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">成本價</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={entryPrice}
+                      onChange={(e) => setEntryPrice(e.target.value)}
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">持有股數</span>
+                    <input
+                      type="number"
+                      step="1"
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    />
+                  </label>
+                </div>
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">購入日期</span>
+                  <input
+                    type="date"
+                    value={entryDate}
+                    onChange={(e) => setEntryDate(e.target.value)}
+                    className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">備註（選填）</span>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    rows={2}
+                    className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </label>
+              </section>
+
+              <section className="space-y-3 border-t border-border-subtle pt-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold text-text-muted">操作計畫</p>
+                  {lifecyclePlanQuery.isLoading && <span className="text-xs text-text-faint">讀取中…</span>}
+                </div>
+                {lifecyclePlanQuery.error && (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    無法讀取現有計畫，仍可儲存持股資料。
+                  </p>
+                )}
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">投資假設 / Thesis</span>
+                  <textarea
+                    value={thesis}
+                    onChange={(e) => setThesis(e.target.value)}
+                    rows={2}
+                    className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">Setup type</span>
+                    <select
+                      value={setupType}
+                      onChange={(e) => setSetupType(e.target.value as LifecycleSetupType | "")}
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option value="">未選擇</option>
+                      {LIFECYCLE_SETUP_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">預計持有期間</span>
+                    <select
+                      value={plannedHoldingPeriod}
+                      onChange={(e) => setPlannedHoldingPeriod(e.target.value as PlannedHoldingPeriod | "")}
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option value="">未選擇</option>
+                      {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">防守規則</span>
+                    <select
+                      value={defaultStopRule}
+                      onChange={(e) => handleDefaultStopRuleChange(e.target.value as DefaultStopRule | "")}
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option value="">未選擇</option>
+                      {DEFAULT_STOP_RULE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">新增批次條件</span>
+                    <select
+                      value={addEntryCondition}
+                      onChange={(e) => setAddEntryCondition(e.target.value as AddEntryCondition | "")}
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option value="">未選擇</option>
+                      {ADD_ENTRY_CONDITION_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">失效條件</span>
+                  <textarea
+                    value={plannedInvalidation}
+                    onChange={(e) => setPlannedInvalidation(e.target.value)}
+                    rows={2}
+                    className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">防守價</span>
                   <input
                     type="number"
                     step="0.01"
-                    value={entryPrice}
-                    onChange={(e) => setEntryPrice(e.target.value)}
+                    value={plannedStopPrice}
+                    onChange={(e) => {
+                      stopPriceTouchedRef.current = true;
+                      setPlannedStopPrice(e.target.value);
+                    }}
+                    placeholder={
+                      defaultStopRule === "fixed_price"
+                        ? "請輸入固定防守價"
+                        : autoPlannedStopPrice != null
+                          ? formatPriceForInput(autoPlannedStopPrice)
+                          : stopReferenceLoading
+                            ? "讀取最新參考價..."
+                            : "未選擇則不送出"
+                    }
                     className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
                   />
+                  <span className="block text-xs leading-relaxed text-text-faint">
+                    {stopReferenceError ??
+                      "MA20、MA60、20 日低點會從最新個股技術指標自動帶入；固定價格請手動確認。"}
+                  </span>
                 </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-medium text-text-muted">持有股數</span>
-                  <input
-                    type="number"
-                    step="1"
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
-                    className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">目標 / 分批處理規則</span>
+                  <textarea
+                    value={plannedTargetOrScaleOutRule}
+                    onChange={(e) => setPlannedTargetOrScaleOutRule(e.target.value)}
+                    rows={2}
+                    className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
                   />
                 </label>
-              </div>
-              <label className="block space-y-1">
-                <span className="text-xs font-medium text-text-muted">購入日期</span>
-                <input
-                  type="date"
-                  value={entryDate}
-                  onChange={(e) => setEntryDate(e.target.value)}
-                  className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                />
-              </label>
-              <label className="block space-y-1">
-                <span className="text-xs font-medium text-text-muted">備註（選填）</span>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  rows={2}
-                  className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                />
-              </label>
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-text-muted">倉位 sizing 理由</span>
+                  <textarea
+                    value={positionSizingRationale}
+                    onChange={(e) => setPositionSizingRationale(e.target.value)}
+                    rows={2}
+                    className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </label>
+              </section>
               {error && (
                 <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
                   {error}
@@ -537,7 +844,7 @@ function EditPortfolioModal({ item, onClose, onSaved }: EditPortfolioModalProps)
               disabled={saving}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              {saving ? "儲存中…" : "儲存"}
+              {saving ? "儲存中…" : "儲存持股與計畫"}
             </button>
           )}
         </div>
@@ -1224,18 +1531,10 @@ const BATCH_STATUS_STYLES = {
 } as const;
 
 const PORTFOLIO_RISK_BUDGET_LABEL = {
-  available: "風險預算可用",
-  watch: "風險預算需觀察",
-  constrained: "風險預算受限",
-  unknown: "資料不足",
-} as const;
-
-const PORTFOLIO_RISK_STATE_LABEL = {
-  contained: "風險受控",
-  watch: "需要觀察",
-  elevated: "曝險偏高",
-  defense_reference_touched: "觸及風險控制",
-  data_incomplete: "資料不足",
+  available: "可能回吐可控",
+  watch: "回吐空間偏大",
+  constrained: "可能回吐過高",
+  unknown: "暫無法估算",
 } as const;
 
 const PHASE1_LABEL_STYLE = {
@@ -1243,8 +1542,7 @@ const PHASE1_LABEL_STYLE = {
   建倉: "border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
   續抱: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-300",
   停損警戒: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-  資料不足:
-    "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  資料不足: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
 } as const;
 
 const PHASE1_HOLDING_LIST_CONFIG: Array<{
@@ -1252,17 +1550,17 @@ const PHASE1_HOLDING_LIST_CONFIG: Array<{
   title: string;
   description: string;
 }> = [
-  {
-    key: "holding_risk_alerts",
-    title: "持股風險警戒",
-    description: "優先檢查支撐與風險控制條件。",
-  },
-  {
-    key: "holding_management_candidates",
-    title: "持股管理觀察",
-    description: "追蹤續抱、加碼觀察或獲利保護狀態。",
-  },
-];
+    {
+      key: "holding_risk_alerts",
+      title: "持股風險警戒",
+      description: "優先檢查支撐與風險控制條件。",
+    },
+    {
+      key: "holding_management_candidates",
+      title: "持股管理觀察",
+      description: "追蹤續抱、加碼觀察或獲利保護狀態。",
+    },
+  ];
 
 function formatPortfolioMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -1274,11 +1572,6 @@ function formatPortfolioMoney(value: number | null | undefined): string {
 function formatPortfolioPct(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return `${value.toFixed(2)}%`;
-}
-
-function formatPortfolioDeltaPp(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value)) return "—";
-  return `${value > 0 ? "+" : ""}${value.toFixed(2)} pp`;
 }
 
 function formatPhase1AnchorType(type: string | null | undefined): string {
@@ -1314,7 +1607,7 @@ function formatPhase1ObservationState(state: string | undefined): string {
   const labels: Record<string, string> = {
     add_watch: "加碼觀察",
     data_unavailable: "資料不足",
-    exit_risk: "停損警戒",
+    exit_risk: "防守警戒",
     hold: "續抱",
     overheated: "過熱",
     profit_take_watch: "獲利保護",
@@ -1323,10 +1616,11 @@ function formatPhase1ObservationState(state: string | undefined): string {
     strong_breakout: "突破觀察",
     warning: "警戒",
   };
-  return state ? labels[state] ?? state : "觀察";
+  return state ? (labels[state] ?? state) : "觀察";
 }
 
 function phase1BadgeText(item: PortfolioPhase1ObservationItem): string {
+  if (item.label === "停損警戒") return "防守警戒";
   return item.label ?? formatPhase1ObservationState(item.position_state);
 }
 
@@ -1336,6 +1630,88 @@ function phase1BadgeClass(item: PortfolioPhase1ObservationItem): string {
     return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300";
   }
   return PHASE1_LABEL_STYLE["資料不足"];
+}
+
+function findRiskCaveatCount(summary: PortfolioRiskSummary, code: string): number {
+  return summary.data_quality.caveats.find((caveat) => caveat.code === code)?.count ?? 0;
+}
+
+function riskBudgetDisplay(summary: PortfolioRiskSummary): { label: string; note: string } {
+  const missingDefenseCount = findRiskCaveatCount(summary, "missing_defense_reference");
+  const missingPriceCount = findRiskCaveatCount(summary, "missing_price");
+  const zeroQuantityCount = findRiskCaveatCount(summary, "zero_quantity");
+
+  if (missingDefenseCount > 0) {
+    return {
+      label: "估算不完整",
+      note: `${missingDefenseCount} 檔缺防守價，先補齊後再判讀可能回吐。`,
+    };
+  }
+  if (missingPriceCount > 0) {
+    return {
+      label: "估算不完整",
+      note: `${missingPriceCount} 檔缺近期價格，先更新價格後再判讀可能回吐。`,
+    };
+  }
+  if (zeroQuantityCount > 0) {
+    return {
+      label: "估算不完整",
+      note: `${zeroQuantityCount} 檔數量為 0，未納入可能回吐判讀。`,
+    };
+  }
+
+  return {
+    label: PORTFOLIO_RISK_BUDGET_LABEL[summary.risk_budget_status.status],
+    note: `若跌到目前防守價，可能回吐約 ${formatPortfolioPct(summary.total_at_risk_pct)} 的持股市值。`,
+  };
+}
+
+function stopLossPullbackPct(risk: PortfolioPositionRiskItem): number | null {
+  if (risk.current_price == null || risk.defense_reference.price == null || risk.current_price <= 0) return null;
+  return Math.max(0, ((risk.current_price - risk.defense_reference.price) / risk.current_price) * 100);
+}
+
+function stopLossCheckReason(summary: PortfolioRiskSummary): string {
+  const missingDefenseCount = findRiskCaveatCount(summary, "missing_defense_reference");
+  const missingPriceCount = findRiskCaveatCount(summary, "missing_price");
+  const zeroQuantityCount = findRiskCaveatCount(summary, "zero_quantity");
+  if (missingDefenseCount > 0) return `${missingDefenseCount} 檔缺防守價，暫時不能完整判斷。`;
+  if (missingPriceCount > 0) return `${missingPriceCount} 檔缺近期價格，暫時不能完整判斷。`;
+  if (zeroQuantityCount > 0) return `${zeroQuantityCount} 檔數量為 0，已排除在估算外。`;
+
+  const contributors = summary.position_risks
+    .filter((risk) => (risk.estimated_risk_amount ?? 0) > 0)
+    .sort((a, b) => (b.estimated_risk_amount ?? 0) - (a.estimated_risk_amount ?? 0));
+  const primary = contributors[0];
+  if (!primary) return "目前持股已接近或低於防守價，防守線前可能回吐為 0。";
+
+  const primaryName = portfolioDisplayName(primary);
+  if (contributors.length === 1) {
+    return `原因：主要來自 ${primaryName}，若跌到防守價，可能回吐 ${formatPortfolioMoney(primary.estimated_risk_amount)}。`;
+  }
+
+  const contributionPct =
+    summary.total_at_risk > 0 && primary.estimated_risk_amount != null
+      ? (primary.estimated_risk_amount / summary.total_at_risk) * 100
+      : null;
+  return `原因：${contributors.length} 檔持股合計可能回吐 ${formatPortfolioMoney(summary.total_at_risk)}，其中 ${primaryName} 佔 ${formatPortfolioPct(contributionPct)}。`;
+}
+
+function totalRiskExplanation(summary: PortfolioRiskSummary): string | null {
+  if (summary.total_at_risk !== 0) return null;
+  const missingDefenseCount = findRiskCaveatCount(summary, "missing_defense_reference");
+  const missingPriceCount = findRiskCaveatCount(summary, "missing_price");
+  const touchedReferenceCount = summary.position_risks.filter(
+    (risk) =>
+      risk.current_price != null &&
+      risk.defense_reference.price != null &&
+      risk.current_price <= risk.defense_reference.price,
+  ).length;
+
+  if (missingDefenseCount > 0) return `${missingDefenseCount} 檔缺防守價，未納入可能回吐估算。`;
+  if (missingPriceCount > 0) return `${missingPriceCount} 檔缺近期價格，未納入可能回吐估算。`;
+  if (touchedReferenceCount > 0) return `${touchedReferenceCount} 檔已觸及或低於防守價，剩餘可能回吐為 0。`;
+  return null;
 }
 
 function hasPhase1CurrentDayLists(summary: PortfolioRiskSummary): boolean {
@@ -1349,49 +1725,58 @@ function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1Observat
   const estimated = item.data_quality.estimated === true || anchor?.estimated === true;
 
   return (
-    <article className="grid gap-3 border-t border-border-subtle px-3 py-3 first:border-t-0 sm:grid-cols-[minmax(9rem,1fr)_minmax(14rem,1.5fr)_minmax(12rem,1fr)] sm:items-center">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-semibold text-text-primary">{phase1ObservationDisplayName(item)}</p>
-        {anchor?.anchor_date && (
-          <p className="mt-1 text-xs text-text-faint">{formatPhase1AnchorType(anchor.type)}：{anchor.anchor_date}</p>
-        )}
-        <span className={`rounded-md border px-2 py-0.5 text-xs font-medium ${phase1BadgeClass(item)}`}>
+    <article className="border-t border-border-subtle px-3 py-3 first:border-t-0">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-text-primary">{phase1ObservationDisplayName(item)}</p>
+          {anchor?.anchor_date && (
+            <p className="mt-1 text-xs text-text-faint">
+              {formatPhase1AnchorType(anchor.type)}：{anchor.anchor_date}
+            </p>
+          )}
+        </div>
+        <span className={`shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium ${phase1BadgeClass(item)}`}>
           {phase1BadgeText(item)}
         </span>
       </div>
 
-      <div className="min-w-0">
-        <p className="text-xs leading-relaxed text-text-secondary">{item.current_day_observation}</p>
-        {item.matched_rules.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {item.matched_rules.slice(0, 2).map((rule) => (
-              <span key={rule} className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                {rule}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-1 sm:text-right">
-        <div>
-          <p className="text-text-faint">現價</p>
-          <p className="mt-0.5 font-mono font-semibold text-text-primary">{formatPrice(item.close, item.symbol)}</p>
+      <p className="mt-2 text-xs leading-relaxed text-text-secondary">{item.current_day_observation}</p>
+      {item.matched_rules.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {item.matched_rules.slice(0, 2).map((rule) => (
+            <span
+              key={rule}
+              className="max-w-full break-words rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text"
+            >
+              {rule}
+            </span>
+          ))}
         </div>
-        <div>
+      )}
+
+      <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-border-subtle bg-card px-3 py-2 text-xs">
+        <div className="min-w-0">
+          <p className="text-text-faint">現價</p>
+          <p className="mt-0.5 truncate font-mono font-semibold text-text-primary">
+            {formatPrice(item.close, item.symbol)}
+          </p>
+        </div>
+        <div className="min-w-0">
           <p className="text-text-faint">成本</p>
-          <p className="mt-0.5 font-mono font-semibold text-text-primary">
+          <p className="mt-0.5 truncate font-mono font-semibold text-text-primary">
             {formatPrice(item.holding_avg_cost, item.symbol)}
           </p>
         </div>
-        <div>
-          <p className="text-text-faint">相對 {formatPhase1AnchorType(anchor?.type)}</p>
-          <p className={`mt-0.5 font-mono font-semibold ${phase1DistanceClass(anchor?.distance_to_avwap_pct)}`}>
+        <div className="min-w-0">
+          <p className="text-text-faint">相對錨點</p>
+          <p
+            className={`mt-0.5 truncate font-mono font-semibold ${phase1DistanceClass(anchor?.distance_to_avwap_pct)}`}
+          >
             {formatPhase1Distance(anchor?.distance_to_avwap_pct)}
           </p>
         </div>
-        {estimated && <p className="col-span-3 text-xs text-amber-600 dark:text-amber-300 sm:col-span-1">日資料估算</p>}
       </div>
+      {estimated && <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">日資料估算</p>}
     </article>
   );
 }
@@ -1472,33 +1857,31 @@ function Phase1ObservationGroupList({
 }
 
 function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskSummary | null; error: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (error) {
     return (
       <section className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-        投資組合風險摘要暫不可用：{error}
+        防守檢查暫不可用：{error}
       </section>
     );
   }
   if (!summary) return null;
 
-  const topRisks = [...summary.position_risks]
-    .sort((a, b) => (b.estimated_risk_pct_of_portfolio ?? -1) - (a.estimated_risk_pct_of_portfolio ?? -1))
-    .slice(0, 3);
-  const caveatCount = summary.data_quality.caveats.reduce((total, caveat) => total + (caveat.count ?? 0), 0);
+  const riskExplanation = totalRiskExplanation(summary);
+  const riskBudget = riskBudgetDisplay(summary);
+  const stopCheckReason = stopLossCheckReason(summary);
 
   return (
     <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-text-primary">投資組合風險摘要</h3>
-          <p className="mt-1 text-xs text-text-faint">只讀風險紀律檢查，不產生交易指令。</p>
+          <h3 className="text-sm font-semibold text-text-primary">防守檢查</h3>
+          <p className="mt-1 text-xs text-text-faint">檢查目前防守設定下，整體可能回吐多少。</p>
         </div>
-        <span className="rounded-md border border-border-subtle bg-card-hover px-2 py-1 text-xs text-text-muted">
-          {PORTFOLIO_RISK_BUDGET_LABEL[summary.risk_budget_status.status]}
-        </span>
       </div>
 
-      <div className="mt-4 grid gap-2 sm:grid-cols-4">
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
         <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
           <p className="text-xs text-text-faint">總市值</p>
           <p className="mt-1 text-sm font-semibold text-text-primary">
@@ -1514,59 +1897,46 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
             {formatPortfolioMoney(summary.total_unrealized_pnl)}
           </p>
         </div>
-        <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-          <p className="text-xs text-text-faint">估計總曝險</p>
-          <p className="mt-1 text-sm font-semibold text-text-primary">
-            {formatPortfolioMoney(summary.total_at_risk)}
-            <span className="ml-1 text-xs font-normal text-text-faint">
-              {formatPortfolioPct(summary.total_at_risk_pct)}
-            </span>
-          </p>
-        </div>
-        <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-          <p className="text-xs text-text-faint">資料 caveat</p>
-          <p className="mt-1 text-sm font-semibold text-text-primary">{caveatCount}</p>
-        </div>
       </div>
 
-      {topRisks.length > 0 && (
-        <div className="mt-4 grid gap-2 md:grid-cols-3">
-          {topRisks.map((risk) => (
-            <div key={risk.symbol} className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-text-primary">{portfolioDisplayName(risk)}</span>
-                <span className="text-xs text-text-faint">{PORTFOLIO_RISK_STATE_LABEL[risk.risk_state]}</span>
-              </div>
-              <div className="mt-2 flex items-end justify-between gap-2">
-                <span className="text-xs text-text-faint">估計曝險</span>
-                <span className="text-sm font-semibold text-text-primary">
-                  {formatPortfolioPct(risk.estimated_risk_pct_of_portfolio)}
-                </span>
-              </div>
-              {risk.data_quality.caveats.length > 0 && (
-                <p className="mt-2 line-clamp-2 text-xs text-amber-600 dark:text-amber-300">
-                  {risk.data_quality.caveats.map((caveat) => caveat.message ?? caveat.code).join("；")}
-                </p>
-              )}
-              {risk.chip_stability_context && (
-                <div className="mt-2 border-t border-border-subtle pt-2">
-                  <p className="text-xs font-medium text-text-primary">籌碼穩定性</p>
-                  <p className="mt-1 line-clamp-2 text-xs text-text-muted">
-                    {risk.chip_stability_context.summary ?? "TDCC 週頻籌碼穩定性補充"}
-                  </p>
-                  <p className="mt-1 text-xs text-text-faint">
-                    千張大戶 {formatPortfolioPct(risk.chip_stability_context.thousand_lot_holder_ratio)}
-                    {" / "}
-                    {formatPortfolioDeltaPp(risk.chip_stability_context.thousand_lot_holder_ratio_delta_pp)}
-                  </p>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <div
+        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3 ${riskExplanation ? "justify-between" : "justify-end"
+          }`}
+      >
+        {riskExplanation && <div className="min-w-0 text-xs text-text-faint">{riskExplanation}</div>}
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          className="rounded-lg border border-border-subtle bg-background px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-card-hover hover:text-text-primary"
+        >
+          {expanded ? "收起防守細節" : "展開防守細節"}
+        </button>
+      </div>
 
-      <PortfolioPhase1CurrentDayPanel summary={summary} />
+      {expanded && (
+        <>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
+              <p className="text-xs text-text-faint">若跌到防守價</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">
+                可能回吐 {formatPortfolioMoney(summary.total_at_risk)}
+                <span className="ml-1 text-xs font-normal text-text-faint">
+                  {formatPortfolioPct(summary.total_at_risk_pct)}
+                </span>
+              </p>
+              <p className="mt-1 text-xs text-text-faint">佔目前持股總市值的比例</p>
+            </div>
+            <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
+              <p className="text-xs text-text-faint">整體防守回吐狀態</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">{riskBudget.label}</p>
+              <p className="mt-1 text-xs leading-relaxed text-text-faint">{stopCheckReason}</p>
+            </div>
+          </div>
+
+          <PortfolioPhase1CurrentDayPanel summary={summary} />
+        </>
+      )}
     </section>
   );
 }
@@ -1692,9 +2062,8 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                       <div className="text-center">
                         <div className="text-text-faint">損益</div>
                         <div
-                          className={`font-mono font-medium ${
-                            pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
-                          }`}
+                          className={`font-mono font-medium ${pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
+                            }`}
                         >
                           {pa.profit_loss_pct != null
                             ? `${pa.profit_loss_pct > 0 ? "+" : ""}${pa.profit_loss_pct.toFixed(2)}%`
@@ -1813,6 +2182,20 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     }
     return names;
   }, [riskSummary]);
+  const autoDefensePricesBySymbol = useMemo(() => {
+    const prices = new Map<string, PortfolioRiskSummary["position_risks"][number]["auto_defense_prices"]>();
+    for (const risk of riskSummary?.position_risks ?? []) {
+      prices.set(risk.symbol, risk.auto_defense_prices);
+    }
+    return prices;
+  }, [riskSummary]);
+  const stopLossRiskBySymbol = useMemo(() => {
+    const risks = new Map<string, PortfolioPositionRiskItem>();
+    for (const risk of riskSummary?.position_risks ?? []) {
+      risks.set(risk.symbol, risk);
+    }
+    return risks;
+  }, [riskSummary]);
   const [historyMap, setHistoryMap] = useState<Record<number, HistoryEntry[]>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState<Record<number, boolean>>({});
@@ -1897,7 +2280,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function openAnalysis(item: PortfolioItem): Promise<void> {
     setModalItem(item);
-    await runPositionAnalysis(item).catch(() => {});
+    await runPositionAnalysis(item).catch(() => { });
   }
 
   async function runBatchAnalysis(): Promise<void> {
@@ -2036,6 +2419,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
               const isExpanded = expandedId === item.id;
               const isAnalyzing = analysisLoading[item.id];
               const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
+              const stopLossRisk = stopLossRiskBySymbol.get(item.symbol) ?? null;
+              const stopLossPullbackPctValue = stopLossRisk ? stopLossPullbackPct(stopLossRisk) : null;
 
               return (
                 <article key={item.id} className="rounded-xl border border-border bg-card shadow-sm">
@@ -2055,11 +2440,10 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
                         return plPct != null ? (
                           <span
-                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${
-                              plPct >= 0
-                                ? "bg-green-50 text-green-600 border border-green-200"
-                                : "bg-red-50 text-red-600 border border-red-200"
-                            }`}
+                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${plPct >= 0
+                              ? "bg-green-50 text-green-600 border border-green-200"
+                              : "bg-red-50 text-red-600 border border-red-200"
+                              }`}
                           >
                             {plPct > 0 ? "+" : ""}
                             {plPct.toFixed(2)}%
@@ -2110,6 +2494,37 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           </div>
                         );
                       })()}
+
+                    {stopLossRisk && (
+                      <div className="mt-3 rounded-lg border border-border-subtle bg-background px-3 py-2">
+                        <p className="text-xs font-semibold text-text-primary">防守檢查</p>
+                        {stopLossRisk.estimated_risk_amount != null ? (
+                          <p className="mt-1 text-sm font-medium text-text-primary">
+                            若跌到防守價，可能回吐 {formatPortfolioMoney(stopLossRisk.estimated_risk_amount)}
+                            {stopLossPullbackPctValue != null && (
+                              <span className="ml-1 text-xs font-normal text-text-faint">
+                                {formatPortfolioPct(stopLossPullbackPctValue)}
+                              </span>
+                            )}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-sm font-medium text-text-muted">防守線前回吐暫無法估算</p>
+                        )}
+                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-text-faint">
+                          {stopLossRisk.defense_reference.price != null && (
+                            <span>防守價 {formatPrice(stopLossRisk.defense_reference.price, item.symbol)}</span>
+                          )}
+                          {stopLossRisk.current_price != null && (
+                            <span>現價 {formatPrice(stopLossRisk.current_price, item.symbol)}</span>
+                          )}
+                        </div>
+                        {stopLossRisk.data_quality.caveats.length > 0 && (
+                          <p className="mt-1 line-clamp-2 text-xs text-amber-600 dark:text-amber-300">
+                            {stopLossRisk.data_quality.caveats.map((caveat) => caveat.message ?? caveat.code).join("；")}
+                          </p>
+                        )}
+                      </div>
+                    )}
 
                     {decisionStatus?.operation_plan_status === "missing" && (
                       <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
@@ -2221,9 +2636,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                                   <td className="py-1">{row.record_date}</td>
                                   <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
                                   <td
-                                    className={`py-1 text-right font-mono text-xs ${
-                                      plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
-                                    }`}
+                                    className={`py-1 text-right font-mono text-xs ${plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
+                                      }`}
                                   >
                                     {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
                                   </td>
@@ -2257,6 +2671,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       {editItem && (
         <EditPortfolioModal
           item={editItem}
+          autoDefensePrices={autoDefensePricesBySymbol.get(editItem.symbol)}
           onClose={() => setEditItem(null)}
           onSaved={() => {
             setEditItem(null);

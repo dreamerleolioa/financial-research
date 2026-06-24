@@ -66,6 +66,11 @@ export interface PortfolioPositionRisk {
     price: number | null;
     source: string | null;
   };
+  auto_defense_prices?: {
+    break_20d_low?: number | null;
+    break_ma20?: number | null;
+    break_ma60?: number | null;
+  };
   estimated_risk_amount: number | null;
   estimated_risk_pct_of_portfolio: number | null;
   portfolio_weight_pct: number | null;
@@ -312,6 +317,7 @@ export interface EntryRecordContext {
   entry_reason?: EntryRecordReason | null;
   planned_holding_period?: PlannedHoldingPeriod | null;
   default_stop_rule?: DefaultStopRule | null;
+  planned_stop_price?: number | null;
   add_entry_condition?: AddEntryCondition | null;
   note?: string | null;
 }
@@ -698,17 +704,17 @@ export interface LifecyclePlanResponse {
 }
 
 export interface BackfillLifecyclePlanRequest {
-  thesis?: string;
-  setup_type?: LifecycleSetupType;
-  planned_holding_period?: PlannedHoldingPeriod;
-  default_stop_rule?: DefaultStopRule;
-  add_entry_condition?: AddEntryCondition;
-  planned_invalidation?: string;
-  planned_stop_price?: number;
-  planned_target_or_scale_out_rule?: string;
-  planned_risk_amount?: number;
-  planned_risk_pct?: number;
-  position_sizing_rationale?: string;
+  thesis?: string | null;
+  setup_type?: LifecycleSetupType | null;
+  planned_holding_period?: PlannedHoldingPeriod | null;
+  default_stop_rule?: DefaultStopRule | null;
+  add_entry_condition?: AddEntryCondition | null;
+  planned_invalidation?: string | null;
+  planned_stop_price?: number | null;
+  planned_target_or_scale_out_rule?: string | null;
+  planned_risk_amount?: number | null;
+  planned_risk_pct?: number | null;
+  position_sizing_rationale?: string | null;
 }
 
 export type BackfillLifecyclePlanResponse = LifecyclePlanResponse;

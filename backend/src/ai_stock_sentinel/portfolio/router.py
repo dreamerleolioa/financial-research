@@ -144,6 +144,22 @@ def _serialize_lifecycle_plan(item: UserPortfolio, plan: PositionLifecyclePlan |
     }
 
 
+def _lifecycle_plan_values(payload: BackfillLifecyclePlanRequest) -> dict:
+    return {
+        "thesis": payload.thesis,
+        "setup_type": payload.setup_type,
+        "planned_holding_period": payload.planned_holding_period,
+        "default_stop_rule": payload.default_stop_rule,
+        "add_entry_condition": payload.add_entry_condition,
+        "planned_invalidation": payload.planned_invalidation,
+        "planned_stop_price": Decimal(str(payload.planned_stop_price)) if payload.planned_stop_price is not None else None,
+        "planned_target_or_scale_out_rule": payload.planned_target_or_scale_out_rule,
+        "planned_risk_amount": Decimal(str(payload.planned_risk_amount)) if payload.planned_risk_amount is not None else None,
+        "planned_risk_pct": Decimal(str(payload.planned_risk_pct)) if payload.planned_risk_pct is not None else None,
+        "position_sizing_rationale": payload.position_sizing_rationale,
+    }
+
+
 def _serialize_decision_context_status(
     item: UserPortfolio,
     plan: PositionLifecyclePlan | None,
@@ -390,6 +406,45 @@ def get_portfolio_lifecycle_plan(
     return _serialize_lifecycle_plan(item, plan)
 
 
+@router.put("/{portfolio_id}/lifecycle-plan")
+def update_portfolio_lifecycle_plan(
+    portfolio_id: int,
+    payload: BackfillLifecyclePlanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = _get_owned_active_portfolio_for_update(db, portfolio_id, current_user.id)
+    plan = db.execute(
+        select(PositionLifecyclePlan).where(
+            PositionLifecyclePlan.user_id == current_user.id,
+            PositionLifecyclePlan.position_group_id == item.position_group_id,
+        )
+    ).scalar_one_or_none()
+
+    plan_values = _lifecycle_plan_values(payload)
+
+    if plan is None:
+        plan = PositionLifecyclePlan(
+            user_id=item.user_id,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            source_portfolio_id=item.id,
+            source="user_backfilled",
+            created_after_entry=True,
+            **plan_values,
+        )
+        db.add(plan)
+    else:
+        for key, value in plan_values.items():
+            setattr(plan, key, value)
+        plan.source_portfolio_id = item.id
+        plan.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(plan)
+    return _serialize_lifecycle_plan(item, plan)
+
+
 @router.put("/{portfolio_id}/lifecycle-plan/backfill")
 def backfill_portfolio_lifecycle_plan(
     portfolio_id: int,
@@ -408,19 +463,7 @@ def backfill_portfolio_lifecycle_plan(
     if plan is not None and plan.source != "user_backfilled":
         raise HTTPException(status_code=409, detail="已有原始進場計畫，不可改為事後補填")
 
-    plan_values = {
-        "thesis": payload.thesis,
-        "setup_type": payload.setup_type,
-        "planned_holding_period": payload.planned_holding_period,
-        "default_stop_rule": payload.default_stop_rule,
-        "add_entry_condition": payload.add_entry_condition,
-        "planned_invalidation": payload.planned_invalidation,
-        "planned_stop_price": Decimal(str(payload.planned_stop_price)) if payload.planned_stop_price is not None else None,
-        "planned_target_or_scale_out_rule": payload.planned_target_or_scale_out_rule,
-        "planned_risk_amount": Decimal(str(payload.planned_risk_amount)) if payload.planned_risk_amount is not None else None,
-        "planned_risk_pct": Decimal(str(payload.planned_risk_pct)) if payload.planned_risk_pct is not None else None,
-        "position_sizing_rationale": payload.position_sizing_rationale,
-    }
+    plan_values = _lifecycle_plan_values(payload)
 
     if plan is None:
         plan = PositionLifecyclePlan(

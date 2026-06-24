@@ -4,6 +4,7 @@ import {
   backfillLifecyclePlan,
   closePortfolioItem,
   deletePortfolioItem,
+  updateLifecyclePlan,
   updatePortfolioItem,
   type AddEntryRequest,
   type ClosePortfolioRequest,
@@ -44,6 +45,16 @@ export function useBackfillLifecyclePlanMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: number; body: BackfillLifecyclePlanRequest }) => backfillLifecyclePlan(id, body),
+    onSuccess: (_data, variables) => {
+      invalidatePortfolioItemData(queryClient, variables.id);
+    },
+  });
+}
+
+export function useUpdateLifecyclePlanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: number; body: BackfillLifecyclePlanRequest }) => updateLifecyclePlan(id, body),
     onSuccess: (_data, variables) => {
       invalidatePortfolioItemData(queryClient, variables.id);
     },

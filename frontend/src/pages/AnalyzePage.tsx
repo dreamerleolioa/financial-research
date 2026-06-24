@@ -34,6 +34,7 @@ interface AddPortfolioForm {
   entry_reason: EntryRecordReason | "";
   planned_holding_period: PlannedHoldingPeriod | "";
   default_stop_rule: DefaultStopRule | "";
+  planned_stop_price: string;
   add_entry_condition: AddEntryCondition | "";
   notes: string;
 }
@@ -151,18 +152,53 @@ function createInitialAddPortfolioForm(): AddPortfolioForm {
     entry_reason: "",
     planned_holding_period: "",
     default_stop_rule: "",
+    planned_stop_price: "",
     add_entry_condition: "",
     notes: "",
   };
 }
 
-function buildEntryRecord(addForm: AddPortfolioForm): EntryRecordContext | undefined {
+function parseOptionalNumberInput(value: string): number | null | undefined {
+  const trimmedValue = value.trim();
+  if (trimmedValue === "") return undefined;
+  const parsedValue = Number(trimmedValue);
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function formatPriceForInput(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return String(Number(value.toFixed(2)));
+}
+
+function derivePlannedStopPrice(
+  rule: AddPortfolioForm["default_stop_rule"],
+  indicators: AnalyzeResponse["technical_indicators"],
+): number | null {
+  if (!indicators) return null;
+
+  const value =
+    rule === "break_20d_low"
+      ? indicators.low_20d
+      : rule === "break_ma20"
+        ? indicators.ma20
+        : rule === "break_ma60"
+          ? indicators.ma60
+          : null;
+
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function buildEntryRecord(
+  addForm: AddPortfolioForm,
+  plannedStopPrice: number | undefined,
+): EntryRecordContext | undefined {
   const entryRecord: EntryRecordContext = {};
   const note = addForm.notes.trim();
 
   if (addForm.entry_reason) entryRecord.entry_reason = addForm.entry_reason;
   if (addForm.planned_holding_period) entryRecord.planned_holding_period = addForm.planned_holding_period;
   if (addForm.default_stop_rule) entryRecord.default_stop_rule = addForm.default_stop_rule;
+  if (plannedStopPrice !== undefined) entryRecord.planned_stop_price = plannedStopPrice;
   if (addForm.add_entry_condition) entryRecord.add_entry_condition = addForm.add_entry_condition;
   if (note) entryRecord.note = note;
 
@@ -245,7 +281,21 @@ export default function AnalyzePage() {
     setAddLoading(true);
     setAddError(null);
     try {
-      const entryRecord = buildEntryRecord(addForm);
+      const parsedStopPrice = parseOptionalNumberInput(addForm.planned_stop_price);
+      if (parsedStopPrice === null) {
+        setAddError("防守價必須是有效數字。");
+        return;
+      }
+      if (parsedStopPrice != null && parsedStopPrice <= 0) {
+        setAddError("防守價必須大於 0。");
+        return;
+      }
+      if (addForm.default_stop_rule === "fixed_price" && parsedStopPrice == null) {
+        setAddError("選擇固定防守價時，請填寫防守價。");
+        return;
+      }
+
+      const entryRecord = buildEntryRecord(addForm, parsedStopPrice);
       const notes = addForm.notes.trim();
       const payload: CreatePortfolioRequest = {
         symbol,
@@ -362,6 +412,7 @@ export default function AnalyzePage() {
   const isWatchlisted = watchlistSymbols.has(normalizedAnalyzedSymbol);
   const analyzedSymbolName = getAnalyzeSymbolName(result, snapshot);
   const analyzedDisplayName = analyzedSymbolName ? `${analyzedSymbolName} ${analyzedSymbol}` : analyzedSymbol;
+  const autoPlannedStopPrice = derivePlannedStopPrice(addForm.default_stop_rule, result?.technical_indicators ?? null);
   const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
   const observationConditions: string[] = Array.isArray(result?.observation_conditions)
     ? result.observation_conditions.filter((item): item is string => typeof item === "string")
@@ -402,6 +453,15 @@ export default function AnalyzePage() {
       <p className={`text-sm text-text-primary ${row.strong ? "font-medium" : ""}`}>{String(row.value)}</p>
     </div>
   ));
+
+  function handleDefaultStopRuleChange(value: AddPortfolioForm["default_stop_rule"]) {
+    const derivedStopPrice = derivePlannedStopPrice(value, result?.technical_indicators ?? null);
+    setAddForm((form) => ({
+      ...form,
+      default_stop_rule: value,
+      planned_stop_price: derivedStopPrice != null ? formatPriceForInput(derivedStopPrice) : "",
+    }));
+  }
   const observationContent: ReactNode =
     observationConditions.length > 0 ? (
       <div>
@@ -638,175 +698,247 @@ export default function AnalyzePage() {
       </section>
 
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="max-h-screen w-full max-w-lg overflow-y-auto rounded-xl bg-card p-6 shadow-xl">
-            <h3 className="mb-4 text-base font-semibold text-text-primary">加入我的持股</h3>
-            <form onSubmit={handleAddPortfolio} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-text-muted">股票代碼</label>
-                <input
-                  value={symbol}
-                  readOnly
-                  className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted"
-                />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-text-primary">加入我的持股</h3>
+                <p className="mt-1 text-xs text-text-faint">
+                  {analyzedDisplayName}，只儲存你在表單中確認的持股與進場紀錄。
+                </p>
               </div>
-              {analyzedSymbolName && (
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-text-muted">股票名稱</label>
-                  <input
-                    value={analyzedSymbolName}
-                    readOnly
-                    className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm text-text-muted"
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                className="rounded-lg p-1.5 text-text-faint transition hover:bg-card-hover hover:text-text-secondary"
+                aria-label="關閉"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path
+                    fillRule="evenodd"
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                    clipRule="evenodd"
                   />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleAddPortfolio} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="space-y-5">
+                  <section className="space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">股票代碼</span>
+                        <input
+                          value={symbol}
+                          readOnly
+                          className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm font-medium text-text-secondary"
+                        />
+                      </label>
+                      {analyzedSymbolName && (
+                        <label className="space-y-1">
+                          <span className="text-xs font-medium text-text-muted">股票名稱</span>
+                          <input
+                            value={analyzedSymbolName}
+                            readOnly
+                            className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm font-medium text-text-secondary"
+                          />
+                        </label>
+                      )}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">成本價 *</span>
+                        <input
+                          type="number"
+                          value={addForm.entry_price}
+                          onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))}
+                          required
+                          min="0.01"
+                          step="0.01"
+                          placeholder="980"
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">持有股數 *</span>
+                        <input
+                          type="number"
+                          value={addForm.quantity}
+                          onChange={(e) => setAddForm((f) => ({ ...f, quantity: e.target.value }))}
+                          required
+                          min="1"
+                          placeholder="1000"
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">購入日期</span>
+                        <input
+                          type="date"
+                          value={addForm.entry_date}
+                          onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))}
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        />
+                      </label>
+                    </div>
+                  </section>
+
+                  <section className="border-t border-border-subtle pt-4">
+                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-text-primary">進場紀錄</p>
+                        <p className="mt-1 text-xs leading-relaxed text-text-faint">
+                          選填，用來保存你當下確認過的進場脈絡。
+                        </p>
+                      </div>
+                      <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                        不會自動引用 AI 分析
+                      </span>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">進場理由</span>
+                        <select
+                          value={addForm.entry_reason}
+                          onChange={(e) =>
+                            setAddForm((f) => ({
+                              ...f,
+                              entry_reason: e.target.value as AddPortfolioForm["entry_reason"],
+                            }))
+                          }
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        >
+                          <option value="">未選擇（不送出）</option>
+                          {ENTRY_RECORD_REASON_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">預計持有期間</span>
+                        <select
+                          value={addForm.planned_holding_period}
+                          onChange={(e) =>
+                            setAddForm((f) => ({
+                              ...f,
+                              planned_holding_period: e.target.value as AddPortfolioForm["planned_holding_period"],
+                            }))
+                          }
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        >
+                          <option value="">未選擇（不送出）</option>
+                          {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">預設防守規則</span>
+                        <select
+                          value={addForm.default_stop_rule}
+                          onChange={(e) =>
+                            handleDefaultStopRuleChange(e.target.value as AddPortfolioForm["default_stop_rule"])
+                          }
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        >
+                          <option value="">未選擇（不送出）</option>
+                          {DEFAULT_STOP_RULE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-text-muted">防守價</span>
+                        <input
+                          type="number"
+                          value={addForm.planned_stop_price}
+                          onChange={(e) => setAddForm((f) => ({ ...f, planned_stop_price: e.target.value }))}
+                          min="0.01"
+                          step="0.01"
+                          placeholder={
+                            addForm.default_stop_rule === "fixed_price"
+                              ? "請輸入固定防守價"
+                              : autoPlannedStopPrice != null
+                                ? formatPriceForInput(autoPlannedStopPrice)
+                                : "未選擇則不送出"
+                          }
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        />
+                        <span className="block text-xs leading-relaxed text-text-faint">
+                          MA20、MA60、20 日低點可從本次分析帶入；固定價格請手動確認。
+                        </span>
+                      </label>
+                      <label className="space-y-1 sm:col-span-2">
+                        <span className="text-xs font-medium text-text-muted">新增批次條件</span>
+                        <select
+                          value={addForm.add_entry_condition}
+                          onChange={(e) =>
+                            setAddForm((f) => ({
+                              ...f,
+                              add_entry_condition: e.target.value as AddPortfolioForm["add_entry_condition"],
+                            }))
+                          }
+                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        >
+                          <option value="">未選擇（不送出）</option>
+                          {ADD_ENTRY_CONDITION_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <label className="mt-3 block space-y-1">
+                      <span className="text-xs font-medium text-text-muted">備註（選填）</span>
+                      <textarea
+                        value={addForm.notes}
+                        onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
+                        rows={3}
+                        placeholder="補充你已確認的進場脈絡"
+                        className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                      />
+                    </label>
+                  </section>
                 </div>
-              )}
-              <div>
-                <label className="mb-1 block text-xs font-medium text-text-muted">成本價 *</label>
-                <input
-                  type="number"
-                  value={addForm.entry_price}
-                  onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))}
-                  required
-                  min="0.01"
-                  step="0.01"
-                  placeholder="980"
-                  className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                />
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-text-muted">持有股數 *</label>
-                <input
-                  type="number"
-                  value={addForm.quantity}
-                  onChange={(e) => setAddForm((f) => ({ ...f, quantity: e.target.value }))}
-                  required
-                  min="1"
-                  placeholder="1000"
-                  className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-text-muted">購入日期</label>
-                <input
-                  type="date"
-                  value={addForm.entry_date}
-                  onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))}
-                  className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                />
-              </div>
-              <div className="rounded-lg border border-border bg-card-hover/70 p-3">
-                <div className="mb-3">
-                  <p className="text-xs font-semibold text-text-primary">進場紀錄（選填）</p>
-                  <p className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                    AI 分析輸出不會自動儲存為你的進場意圖；只有在此表單明確確認的欄位才會寫入進場紀錄。
-                  </p>
+
+              <div className="border-t border-border-subtle bg-card px-5 py-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  {addError ? (
+                    <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                      {addError}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-text-faint">必填欄位完成後即可加入持股。</p>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddModal(false)}
+                      className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted transition hover:bg-card-hover"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={addLoading}
+                      className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:opacity-60"
+                    >
+                      {addLoading ? "新增中..." : "確認新增"}
+                    </button>
+                  </div>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">進場理由</span>
-                    <select
-                      value={addForm.entry_reason}
-                      onChange={(e) =>
-                        setAddForm((f) => ({ ...f, entry_reason: e.target.value as AddPortfolioForm["entry_reason"] }))
-                      }
-                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                    >
-                      <option value="">未選擇（不送出）</option>
-                      {ENTRY_RECORD_REASON_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">預計持有期間</span>
-                    <select
-                      value={addForm.planned_holding_period}
-                      onChange={(e) =>
-                        setAddForm((f) => ({
-                          ...f,
-                          planned_holding_period: e.target.value as AddPortfolioForm["planned_holding_period"],
-                        }))
-                      }
-                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                    >
-                      <option value="">未選擇（不送出）</option>
-                      {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">預設風險控制規則</span>
-                    <select
-                      value={addForm.default_stop_rule}
-                      onChange={(e) =>
-                        setAddForm((f) => ({
-                          ...f,
-                          default_stop_rule: e.target.value as AddPortfolioForm["default_stop_rule"],
-                        }))
-                      }
-                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                    >
-                      <option value="">未選擇（不送出）</option>
-                      {DEFAULT_STOP_RULE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">新增批次條件</span>
-                    <select
-                      value={addForm.add_entry_condition}
-                      onChange={(e) =>
-                        setAddForm((f) => ({
-                          ...f,
-                          add_entry_condition: e.target.value as AddPortfolioForm["add_entry_condition"],
-                        }))
-                      }
-                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                    >
-                      <option value="">未選擇（不送出）</option>
-                      {ADD_ENTRY_CONDITION_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="mt-3">
-                  <label className="mb-1 block text-xs font-medium text-text-muted">備註（選填，補充脈絡）</label>
-                  <textarea
-                    value={addForm.notes}
-                    onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
-                    rows={3}
-                    placeholder="僅補充你已確認的進場脈絡，不會自動引用分析結果"
-                    className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
-                  />
-                </div>
-              </div>
-              {addError && <p className="text-sm text-red-600 dark:text-red-400">{addError}</p>}
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAddModal(false)}
-                  className="rounded-lg px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
-                >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  disabled={addLoading}
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
-                >
-                  {addLoading ? "新增中..." : "確認新增"}
-                </button>
               </div>
             </form>
           </div>

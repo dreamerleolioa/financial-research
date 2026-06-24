@@ -89,5 +89,5 @@ def add_entry_reason_code(reason_code: str) -> str | None:
 def entry_record_has_lifecycle_plan(entry_record: EntryRecordContext) -> bool:
     return any(
         field in entry_record.model_fields_set
-        for field in ("planned_holding_period", "default_stop_rule", "add_entry_condition")
+        for field in ("planned_holding_period", "default_stop_rule", "planned_stop_price", "add_entry_condition")
     )

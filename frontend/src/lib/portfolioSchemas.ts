@@ -90,6 +90,14 @@ const portfolioPositionRiskSchema = z
         source: z.string().nullable(),
       })
       .passthrough(),
+    auto_defense_prices: z
+      .object({
+        break_20d_low: z.number().nullable().optional(),
+        break_ma20: z.number().nullable().optional(),
+        break_ma60: z.number().nullable().optional(),
+      })
+      .passthrough()
+      .optional(),
     estimated_risk_amount: z.number().nullable(),
     estimated_risk_pct_of_portfolio: z.number().nullable(),
     portfolio_weight_pct: z.number().nullable(),
