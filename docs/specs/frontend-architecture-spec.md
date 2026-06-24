@@ -1,6 +1,6 @@
 # 前端架構規格
 
-> 最近同步：2026-06-23。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
+> 最近同步：2026-06-24。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
 
 ## 技術棧
 
@@ -89,6 +89,21 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 這些 key 是 cache topology 的正式邊界。新增 portfolio read surface 時，先補 query key，再補 query hook，最後才接 page。
 
+## Analyze Technical Indicator Surface
+
+`AnalyzePage` 與 Watchlist quick lookup 共用 `frontend/src/components/TechnicalIndicatorsPanel.tsx` 顯示技術指標。`POST /analyze` response 經 `frontend/src/lib/analysisSchemas.ts` 驗證後可包含 `technical_profile` 與 legacy `technical_indicators`：
+
+- `technical_profile` 存在時，面板先顯示完整指標值，再於下方提供預設收合的技術分層摘要；展開後顯示技術分、主要判斷、風險與過熱濾網、輔助證據與 data-quality caveat。
+- 缺少 `technical_profile` 時，面板 fallback 為 legacy raw 技術指標值，不顯示分層結論。
+- 缺少 raw `technical_indicators` 時，面板保留分層摘要可見性，並在完整指標值區顯示資料不足提示。
+- 分層 signal row 只顯示中文狀態與 impact，不顯示 backend reason 原文；完整推理仍保留在 API trace，不作預設 UI 噪音。
+- `technical_profile.data_quality.is_final === false` 或 response `is_final === false` 時，前端需顯示盤中 caveat，不能當成完整收盤判斷。
+- `technical_profile.data_quality.ohlcv_aligned === false` 時，支撐壓力相關分層需顯示 caveat；前端不得自行補 high/low 或推算支撐壓力分數。
+- `chip_stability_context` 是 companion evidence，不屬於技術分層面板的 scoring bucket；若頁面呈現，應使用籌碼穩定性語言，且不得改技術分或排序。
+- Watchlist quick lookup 的內容順序固定為完整指標值、試驗版 AVWAP 觀察、技術分層摘要；分層摘要需放在 AVWAP 區塊下方，避免搶在 AVWAP context 前面。
+
+`frontend/src/lib/technicalIndicators.ts` 的 `buildTechnicalIndicatorsCopyText()` 是 copy-to-AI 專用 raw/context formatter。它必須維持中立資料包：股票、資料狀態、價格成交量、raw 技術指標、AVWAP context 與千張大戶資料。它不得輸出 `technical_profile` 的 Primary/Risk/Secondary/Display-only 分段、bucket impact、score summary、cap 後分數或任何內部 scoring 權重；此契約由 `backend/tests/test_technical_indicator_copy_contract.py` 以 source guard 保護。
+
 ## Portfolio Mutations
 
 Portfolio write action 集中在 `frontend/src/features/portfolio/mutations.ts`：
@@ -117,10 +132,10 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 前端 watchlist public surface：
 
 - route：`frontend/src/main.tsx` 以 `ProtectedRoute` 保護 `/watchlist`。
-- page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內 raw 技術指標快查。
+- page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內技術指標快查。
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
-- Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，只取得 deterministic 技術指標與 snapshot；面板支援複製完整指標摘要供外部 AI agent 深度分析。頁面可單筆查詢，也可一鍵批次補查尚未載入的關注標的；所有標的已載入後，批次按鈕改為重新快查全部。
-- 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation` 並在技術快查 panel 內顯示可用 AVWAP anchors 或 missing snapshot 狀態。Analyze / Watchlist / copy-to-AI 顯示「現價距離 AVWAP」時必須使用 `current_distance_to_avwap_pct`；`distance_to_avwap_pct` 是 snapshot 資料日 `snapshot_close` 距離，只能作資料日 trace。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
+- Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，取得 deterministic `technical_profile`、legacy raw 技術指標與 snapshot，不執行完整 AI 分析；面板與 Analyze 共用 `TechnicalIndicatorsPanel`，支援複製完整 raw/context 指標摘要供外部 AI agent 深度分析。頁面可單筆查詢，也可一鍵批次補查尚未載入的關注標的；所有標的已載入後，批次按鈕改為重新快查全部。
+- 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation`，並在完整技術指標值下方、技術分層摘要上方顯示可用 AVWAP anchors 或 missing snapshot 狀態。Analyze / Watchlist / copy-to-AI 顯示「現價距離 AVWAP」時必須使用 `current_distance_to_avwap_pct`；`distance_to_avwap_pct` 是 snapshot 資料日 `snapshot_close` 距離，只能作資料日 trace。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
 - 籌碼穩定性補充：Watchlist quick lookup / Analyze response 可接收 `chip_stability_context`，但它不是技術指標分數的一部分。複製完整指標摘要時，若 response 有此欄位，`buildTechnicalIndicatorsCopyText()` 只輸出 `千張大戶持股比例`、`較上週變化`，以及最多 5 週歷史資料；不輸出 companion 標題、長 caveat 或 score/ranking 說明文字。
 - Cross-page write：`AnalyzePage` 與 `DailyRadarPage` 可以新增關注項目；此 mutation 只保存 observation item，不影響 Daily Radar scoring/ranking，也不寫入 portfolio。
 
@@ -143,7 +158,7 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
   - 目標：風險摘要、position risk、risk budget、data quality、`weekly_major_holders` 與 `chip_stability_context` 的核心欄位
 - `frontend/src/lib/analysisSchemas.ts`
   - 驗證 `POST /analyze`
-  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、Phase 1 `phase1_observation` trace、`chip_stability_context`
+  - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、`technical_profile`、Phase 1 `phase1_observation` trace、`chip_stability_context`
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 

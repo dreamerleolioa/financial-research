@@ -113,7 +113,6 @@ function TechnicalLayerSection({
               </span>
             </div>
             <p className="text-sm font-medium text-text-primary">{formatSignalState(signal.state)}</p>
-            <p className="mt-1 text-xs leading-relaxed text-text-faint">{signal.reason}</p>
           </div>
         ))}
       </div>
@@ -175,21 +174,13 @@ function ProfileSummary({
           </p>
         </div>
       </div>
-      <div className="flex flex-wrap gap-2 text-xs">
-        <span className="rounded-md border border-border-subtle px-2 py-1 text-text-muted">
-          {profile.version}
-        </span>
-        {profile.data_quality.data_date && (
+      {profile.data_quality.data_date && (
+        <div className="flex flex-wrap gap-2 text-xs">
           <span className="rounded-md border border-border-subtle px-2 py-1 text-text-muted">
             資料日 {profile.data_quality.data_date}
           </span>
-        )}
-        {profile.data_quality.lookback_days_available != null && (
-          <span className="rounded-md border border-border-subtle px-2 py-1 text-text-muted">
-            回看 {profile.data_quality.lookback_days_available}/{profile.data_quality.required_lookback_days ?? 60}
-          </span>
-        )}
-      </div>
+        </div>
+      )}
       {caveats.length > 0 && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
           {caveats.slice(0, 3).join("；")}
@@ -276,18 +267,68 @@ function RawIndicatorsGrid({
   );
 }
 
+function MissingRawIndicators({ title }: { title: string }) {
+  return (
+    <section className="border-t border-border-subtle pt-4">
+      <h4 className="mb-3 text-xs font-semibold text-text-muted">{title}</h4>
+      <div className="rounded-md border border-border-subtle px-3 py-2 text-sm text-text-muted">
+        技術指標資料不足，請稍後更新。
+      </div>
+    </section>
+  );
+}
+
+export function TechnicalProfileDisclosure({
+  profile,
+  responseIsFinal,
+  className = "",
+}: {
+  profile: TechnicalProfile;
+  responseIsFinal: boolean | undefined;
+  className?: string;
+}) {
+  const summary = profile.score_summary;
+  return (
+    <details className={`group border-t border-border-subtle pt-4 ${className}`}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-border-subtle bg-card-hover/70 px-3 py-3 text-left transition hover:border-indigo-300 hover:bg-indigo-50/60 focus-visible:ring-2 focus-visible:ring-indigo-300 focus-visible:outline-none dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30 [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0">
+          <h4 className="text-xs font-semibold text-text-muted">技術指標分層摘要</h4>
+          <p className="mt-1 text-xs text-text-faint">
+            技術分 {summary.technical_score} · 主要 {impactLabel(summary.primary_score)} · 風險{" "}
+            {impactLabel(summary.risk_filter_score)} · 輔助 {impactLabel(summary.secondary_score)}
+          </p>
+        </div>
+        <span className="inline-flex shrink-0 items-center rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white transition group-open:hidden">
+          查看分層
+        </span>
+        <span className="hidden shrink-0 items-center rounded-md border border-indigo-300 bg-card px-2.5 py-1.5 text-xs font-medium text-indigo-600 transition group-open:inline-flex dark:border-indigo-700 dark:text-indigo-300">
+          收起
+        </span>
+      </summary>
+      <div className="mt-4 space-y-5">
+        <ProfileSummary profile={profile} responseIsFinal={responseIsFinal} />
+        <TechnicalLayerSection title="主要判斷" signals={profile.primary_score_inputs} labels={PRIMARY_LABELS} />
+        <TechnicalLayerSection title="風險與過熱濾網" signals={profile.risk_overheat_filters} labels={RISK_LABELS} />
+        <TechnicalLayerSection title="輔助證據" signals={profile.secondary_evidence} labels={SECONDARY_LABELS} />
+      </div>
+    </details>
+  );
+}
+
 export function TechnicalIndicatorsPanel({
   result,
   snapshot,
   actions,
   compact = false,
   className = "rounded-xl border border-border bg-card p-4 shadow-sm",
+  showProfileDisclosure = true,
 }: {
   result: AnalyzeResponse;
   snapshot: Record<string, unknown>;
   actions?: ReactNode;
   compact?: boolean;
   className?: string;
+  showProfileDisclosure?: boolean;
 }) {
   const indicators = result.technical_indicators ?? null;
   const profile = result.technical_profile ?? null;
@@ -298,34 +339,33 @@ export function TechnicalIndicatorsPanel({
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-xs font-semibold text-text-muted">
-            {profile ? "技術指標分層摘要" : "技術指標摘要"}
+            技術指標摘要
           </h3>
           <p className="mt-1 text-xs text-text-faint">
-            {profile ? `${sessionLabel} · ${profile.version}` : sessionLabel}
+            {sessionLabel}
           </p>
         </div>
         {actions}
       </div>
 
-      {!indicators ? (
+      {!profile && !indicators ? (
         <div className="rounded-md border border-border-subtle px-3 py-2 text-sm text-text-muted">
           技術指標資料不足，請稍後更新。
         </div>
       ) : (
         <div className={compact ? "space-y-4" : "space-y-5"}>
-          {profile && (
-            <>
-              <ProfileSummary profile={profile} responseIsFinal={result.is_final} />
-              <TechnicalLayerSection title="主要判斷" signals={profile.primary_score_inputs} labels={PRIMARY_LABELS} />
-              <TechnicalLayerSection title="風險與過熱濾網" signals={profile.risk_overheat_filters} labels={RISK_LABELS} />
-              <TechnicalLayerSection title="輔助證據" signals={profile.secondary_evidence} labels={SECONDARY_LABELS} />
-            </>
+          {indicators ? (
+            <RawIndicatorsGrid
+              indicators={indicators}
+              snapshot={snapshot}
+              title={profile ? "完整指標值" : "技術指標值"}
+            />
+          ) : (
+            <MissingRawIndicators title="完整指標值" />
           )}
-          <RawIndicatorsGrid
-            indicators={indicators}
-            snapshot={snapshot}
-            title={profile ? "完整指標值" : "技術指標值"}
-          />
+          {showProfileDisclosure && profile && (
+            <TechnicalProfileDisclosure profile={profile} responseIsFinal={result.is_final} />
+          )}
         </div>
       )}
     </article>

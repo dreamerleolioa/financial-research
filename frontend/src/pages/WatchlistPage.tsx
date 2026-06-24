@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
-import { TechnicalIndicatorsPanel } from "../components/TechnicalIndicatorsPanel";
+import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
 import { formatPrice } from "../lib/formatters";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -196,6 +196,7 @@ function WatchlistTechnicalPanel({
   const quickSnapshot = quickResult?.snapshot ?? {};
   const quickSnapshotSymbol = typeof quickSnapshot.symbol === "string" ? quickSnapshot.symbol : item.symbol;
   const phase1Observation = quickResult?.phase1_observation ?? null;
+  const technicalProfile = quickResult?.technical_profile ?? null;
   const quickSessionLabel = quickResult?.is_final === false ? "盤中" : "收盤";
 
   return (
@@ -258,6 +259,7 @@ function WatchlistTechnicalPanel({
           snapshot={quickSnapshot}
           compact
           className="mt-3"
+          showProfileDisclosure={false}
         />
       )}
 
@@ -265,6 +267,14 @@ function WatchlistTechnicalPanel({
         <WatchlistPhase1Observation
           observation={phase1Observation}
           symbol={quickSnapshotSymbol}
+        />
+      )}
+
+      {technicalProfile && (
+        <TechnicalProfileDisclosure
+          profile={technicalProfile}
+          responseIsFinal={quickResult?.is_final}
+          className="mt-4"
         />
       )}
     </div>
