@@ -37,8 +37,22 @@ def _plan(
     )
 
 
-def _raw(symbol: str, close: float | None, record_date: date = date(2026, 6, 10)) -> SimpleNamespace:
+def _raw(
+    symbol: str,
+    close: float | None,
+    record_date: date = date(2026, 6, 10),
+    *,
+    low_20d: float | None = None,
+    ma20: float | None = None,
+    ma60: float | None = None,
+) -> SimpleNamespace:
     technical = {"close_price": close} if close is not None else {}
+    if low_20d is not None:
+        technical["low_20d"] = low_20d
+    if ma20 is not None:
+        technical["ma20"] = ma20
+    if ma60 is not None:
+        technical["ma60"] = ma60
     return SimpleNamespace(
         symbol=symbol,
         record_date=record_date,
@@ -76,6 +90,23 @@ def test_portfolio_risk_summary_calculates_position_risk_and_totals():
     assert first["estimated_risk_amount"] == 250
     assert first["estimated_risk_pct_of_portfolio"] == 10.4167
     assert first["defense_reference"] == {"price": 95.0, "source": "planned_stop_price"}
+
+
+def test_portfolio_risk_summary_exposes_auto_defense_prices_for_plan_editing():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95", setup_type="breakout")},
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 120, low_20d=88, ma20=96.5, ma60=91.25),
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    assert summary["position_risks"][0]["auto_defense_prices"] == {
+        "break_20d_low": 88.0,
+        "break_ma20": 96.5,
+        "break_ma60": 91.25,
+    }
 
 
 def test_portfolio_risk_summary_projects_weekly_major_holders_without_changing_risk_state():

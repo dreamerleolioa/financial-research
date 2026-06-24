@@ -61,6 +61,11 @@ def create_portfolio(
             source_portfolio_id=entry.id,
             planned_holding_period=payload.entry_record.planned_holding_period,
             default_stop_rule=payload.entry_record.default_stop_rule,
+            planned_stop_price=(
+                Decimal(str(payload.entry_record.planned_stop_price))
+                if payload.entry_record.planned_stop_price is not None
+                else None
+            ),
             add_entry_condition=payload.entry_record.add_entry_condition,
             source="user_recorded_at_event_time",
             created_after_entry=False,

@@ -34,6 +34,7 @@ interface AddPortfolioForm {
   entry_reason: EntryRecordReason | "";
   planned_holding_period: PlannedHoldingPeriod | "";
   default_stop_rule: DefaultStopRule | "";
+  planned_stop_price: string;
   add_entry_condition: AddEntryCondition | "";
   notes: string;
 }
@@ -151,18 +152,53 @@ function createInitialAddPortfolioForm(): AddPortfolioForm {
     entry_reason: "",
     planned_holding_period: "",
     default_stop_rule: "",
+    planned_stop_price: "",
     add_entry_condition: "",
     notes: "",
   };
 }
 
-function buildEntryRecord(addForm: AddPortfolioForm): EntryRecordContext | undefined {
+function parseOptionalNumberInput(value: string): number | null | undefined {
+  const trimmedValue = value.trim();
+  if (trimmedValue === "") return undefined;
+  const parsedValue = Number(trimmedValue);
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function formatPriceForInput(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return String(Number(value.toFixed(2)));
+}
+
+function derivePlannedStopPrice(
+  rule: AddPortfolioForm["default_stop_rule"],
+  indicators: AnalyzeResponse["technical_indicators"],
+): number | null {
+  if (!indicators) return null;
+
+  const value =
+    rule === "break_20d_low"
+      ? indicators.low_20d
+      : rule === "break_ma20"
+        ? indicators.ma20
+        : rule === "break_ma60"
+          ? indicators.ma60
+          : null;
+
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function buildEntryRecord(
+  addForm: AddPortfolioForm,
+  plannedStopPrice: number | undefined,
+): EntryRecordContext | undefined {
   const entryRecord: EntryRecordContext = {};
   const note = addForm.notes.trim();
 
   if (addForm.entry_reason) entryRecord.entry_reason = addForm.entry_reason;
   if (addForm.planned_holding_period) entryRecord.planned_holding_period = addForm.planned_holding_period;
   if (addForm.default_stop_rule) entryRecord.default_stop_rule = addForm.default_stop_rule;
+  if (plannedStopPrice !== undefined) entryRecord.planned_stop_price = plannedStopPrice;
   if (addForm.add_entry_condition) entryRecord.add_entry_condition = addForm.add_entry_condition;
   if (note) entryRecord.note = note;
 
@@ -245,7 +281,21 @@ export default function AnalyzePage() {
     setAddLoading(true);
     setAddError(null);
     try {
-      const entryRecord = buildEntryRecord(addForm);
+      const parsedStopPrice = parseOptionalNumberInput(addForm.planned_stop_price);
+      if (parsedStopPrice === null) {
+        setAddError("停損價必須是有效數字。");
+        return;
+      }
+      if (parsedStopPrice != null && parsedStopPrice <= 0) {
+        setAddError("停損價必須大於 0。");
+        return;
+      }
+      if (addForm.default_stop_rule === "fixed_price" && parsedStopPrice == null) {
+        setAddError("選擇固定價格停損時，請填寫停損價。");
+        return;
+      }
+
+      const entryRecord = buildEntryRecord(addForm, parsedStopPrice);
       const notes = addForm.notes.trim();
       const payload: CreatePortfolioRequest = {
         symbol,
@@ -362,6 +412,7 @@ export default function AnalyzePage() {
   const isWatchlisted = watchlistSymbols.has(normalizedAnalyzedSymbol);
   const analyzedSymbolName = getAnalyzeSymbolName(result, snapshot);
   const analyzedDisplayName = analyzedSymbolName ? `${analyzedSymbolName} ${analyzedSymbol}` : analyzedSymbol;
+  const autoPlannedStopPrice = derivePlannedStopPrice(addForm.default_stop_rule, result?.technical_indicators ?? null);
   const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
   const observationConditions: string[] = Array.isArray(result?.observation_conditions)
     ? result.observation_conditions.filter((item): item is string => typeof item === "string")
@@ -402,6 +453,15 @@ export default function AnalyzePage() {
       <p className={`text-sm text-text-primary ${row.strong ? "font-medium" : ""}`}>{String(row.value)}</p>
     </div>
   ));
+
+  function handleDefaultStopRuleChange(value: AddPortfolioForm["default_stop_rule"]) {
+    const derivedStopPrice = derivePlannedStopPrice(value, result?.technical_indicators ?? null);
+    setAddForm((form) => ({
+      ...form,
+      default_stop_rule: value,
+      planned_stop_price: derivedStopPrice != null ? formatPriceForInput(derivedStopPrice) : "",
+    }));
+  }
   const observationContent: ReactNode =
     observationConditions.length > 0 ? (
       <div>
@@ -740,15 +800,10 @@ export default function AnalyzePage() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="text-xs font-medium text-text-muted">預設風險控制規則</span>
+                    <span className="text-xs font-medium text-text-muted">預設停損規則</span>
                     <select
                       value={addForm.default_stop_rule}
-                      onChange={(e) =>
-                        setAddForm((f) => ({
-                          ...f,
-                          default_stop_rule: e.target.value as AddPortfolioForm["default_stop_rule"],
-                        }))
-                      }
+                      onChange={(e) => handleDefaultStopRuleChange(e.target.value as AddPortfolioForm["default_stop_rule"])}
                       className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
                     >
                       <option value="">未選擇（不送出）</option>
@@ -758,6 +813,27 @@ export default function AnalyzePage() {
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-text-muted">停損價</span>
+                    <input
+                      type="number"
+                      value={addForm.planned_stop_price}
+                      onChange={(e) => setAddForm((f) => ({ ...f, planned_stop_price: e.target.value }))}
+                      min="0.01"
+                      step="0.01"
+                      placeholder={
+                        addForm.default_stop_rule === "fixed_price"
+                          ? "請輸入固定停損價"
+                          : autoPlannedStopPrice != null
+                            ? formatPriceForInput(autoPlannedStopPrice)
+                            : "未選擇則不送出"
+                      }
+                      className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                    />
+                    <span className="block text-xs leading-relaxed text-text-faint">
+                      MA20、MA60、20 日低點會從本次分析自動帶入；固定價格請手動確認。
+                    </span>
                   </label>
                   <label className="space-y-1">
                     <span className="text-xs font-medium text-text-muted">新增批次條件</span>

@@ -66,6 +66,11 @@ export interface PortfolioPositionRisk {
     price: number | null;
     source: string | null;
   };
+  auto_defense_prices?: {
+    break_20d_low?: number | null;
+    break_ma20?: number | null;
+    break_ma60?: number | null;
+  };
   estimated_risk_amount: number | null;
   estimated_risk_pct_of_portfolio: number | null;
   portfolio_weight_pct: number | null;
@@ -312,6 +317,7 @@ export interface EntryRecordContext {
   entry_reason?: EntryRecordReason | null;
   planned_holding_period?: PlannedHoldingPeriod | null;
   default_stop_rule?: DefaultStopRule | null;
+  planned_stop_price?: number | null;
   add_entry_condition?: AddEntryCondition | null;
   note?: string | null;
 }

@@ -103,6 +103,7 @@ def build_portfolio_risk_summary(
                 "price": _float_or_none(defense_reference),
                 "source": defense_source,
             },
+            "auto_defense_prices": _extract_auto_defense_prices(raw_row),
             "estimated_risk_amount": _float_or_none(estimated_risk_amount),
             "estimated_risk_pct_of_portfolio": None,
             "risk_state": "data_incomplete",
@@ -208,6 +209,15 @@ def _extract_defense_reference(plan: Any) -> tuple[Decimal | None, str | None]:
     if planned_stop_price is not None and planned_stop_price > 0:
         return planned_stop_price, "planned_stop_price"
     return None, None
+
+
+def _extract_auto_defense_prices(raw_row: Any) -> dict[str, float | None]:
+    technical = getattr(raw_row, "technical", None) or {}
+    return {
+        "break_20d_low": _float_or_none(_to_decimal(technical.get("low_20d"))),
+        "break_ma20": _float_or_none(_to_decimal(technical.get("ma20"))),
+        "break_ma60": _float_or_none(_to_decimal(technical.get("ma60"))),
+    }
 
 
 def _is_stale(raw_row: Any, as_of_date: date) -> bool:

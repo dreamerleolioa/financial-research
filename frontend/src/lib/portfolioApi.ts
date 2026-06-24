@@ -38,6 +38,7 @@ export interface CreatePortfolioRequest {
     entry_reason?: string | null;
     planned_holding_period?: string | null;
     default_stop_rule?: string | null;
+    planned_stop_price?: number | null;
     add_entry_condition?: string | null;
     note?: string | null;
   };
@@ -145,6 +146,16 @@ export function backfillLifecyclePlan(
   body: BackfillLifecyclePlanRequest,
 ): Promise<BackfillLifecyclePlanResponse> {
   return requestJson<BackfillLifecyclePlanResponse>(`/portfolio/${id}/lifecycle-plan/backfill`, {
+    method: "PUT",
+    body,
+  });
+}
+
+export function updateLifecyclePlan(
+  id: number,
+  body: BackfillLifecyclePlanRequest,
+): Promise<BackfillLifecyclePlanResponse> {
+  return requestJson<BackfillLifecyclePlanResponse>(`/portfolio/${id}/lifecycle-plan`, {
     method: "PUT",
     body,
   });
