@@ -61,6 +61,8 @@
 - `macd_momentum`：MACD histogram / momentum state。
 - `obv_trend`：OBV 20 日與中長期趨勢。
 
+`atr_risk` 在 primary bucket 內只能回答「支撐距離 / 停損距離是否因波動而仍可控」，不得同時把高波動本身再當成方向訊號加扣分。高波動懲罰屬於 `risk_overheat_filters.atr_state`，避免 ATR 在 primary 與 risk bucket 內重複計票。
+
 Primary bucket score cap：
 
 - 每個 primary signal 的 `impact` 只能落在 `-2` 到 `+2`。
@@ -285,6 +287,8 @@ Scoring 邊界：
   ]
 }
 ```
+
+`data_quality.required_lookback_days` 表示 technical profile v1 的最低完整判斷門檻，不代表每一個 signal 都只需要 60 日資料。OBV mid-long 等較長週期訊號可能需要 120 / 240 日；profile builder 必須在各 signal 的 `state`、`reason`、`caveats` 或 `missing_fields` 中標出單一訊號的資料不足，不得只用全域 `required_lookback_days` 判斷所有欄位完整。
 
 ## 後端實作計劃
 
