@@ -20,11 +20,11 @@
 目標結果：
 
 - 保留既有 `technical_indicators` raw API 欄位，避免破壞前端與既有 consumer。
-- 新增或投影 `technical_profile` 作為後端 scoring、LLM input summary、前端摘要與複製文字的主要語意來源。
+- 新增或投影 `technical_profile` 作為後端 scoring、LLM input summary 與前端摘要的主要語意來源。
 - 統一 Analyze 與 Daily Radar 的技術指標公式來源。
 - 降低重複計票風險，讓同一類訊號只在同一個 bucket 內貢獻有限分數。
-- 前端仍可顯示與複製完整 raw 指標，但要清楚標示哪些是主要判斷、哪些是風險濾網、哪些只是輔助或 display-only。
-- 若畫面或複製文字同時呈現 TDCC 千張大戶資訊，必須標注為「籌碼穩定性」 companion signal，不得混入 technical score。
+- 前端仍可顯示分層摘要與完整 raw 指標；複製文字維持中立 raw/context 資料包，供外部 AI 獨立分析，不暴露內部 scoring 分層。
+- 若畫面或複製文字同時呈現 TDCC 千張大戶資訊，必須標注為籌碼資料或籌碼穩定性 context，不得混入 technical score。
 
 ## 非目標
 
@@ -35,6 +35,18 @@
 - 不新增即時昂貴資料源。
 - 不與 TDCC weekly holders、Phase 1 AVWAP 或 portfolio risk-summary 的未完成改動混在同一個實作 PR；本計劃只定義技術分層與籌碼穩定性 companion signal 的顯示 / copy 邊界。
 - 不把所有 raw 指標都從 UI 移除；此計劃是「分層與權重治理」，不是「指標刪減」。
+
+## 2026-06-24 repo 現況校準
+
+重新對照目前專案後，計劃方向仍然成立，但實作順序需要更保守：
+
+- `backend/src/ai_stock_sentinel/analysis/metrics.py` 目前已經是純數學工具，不依賴 route、schema、LLM 或 Daily Radar repository。第一階段不應重寫公式，而是把這些 pure metrics 搬到或 re-export 到 `ai_stock_sentinel.technical.metrics`，讓 Analyze 與 Daily Radar 都能依賴同一個 domain module。
+- 目前尚未存在 `backend/src/ai_stock_sentinel/technical/`，也尚未存在 `technical_profile` response contract。Analyze response 仍只回 `technical_indicators`。
+- `confidence_scorer.py` 與 `strategy_generator.py` 仍直接把 RSI、BIAS、Bollinger、MACD、KD、ADX、OBV、MFI、Donchian 等 raw 訊號加到 technical / risk 分數，這正是本計劃要治理的重複計票問題。
+- Daily Radar 目前在 `daily_radar/raw_data.py` 仍有自己的簡化 `_rsi`、`_mfi`、`_macd`、`_kd`、`_atr`、`_obv` 實作，且 fallback 語意與 Analyze 不同；但 `daily_radar/scoring.py` 已深度依賴舊 `indicators` key 與 bucket rules，所以不能一次硬切。
+- 前端 Analyze / Watchlist 目前直接渲染 `technical_indicators` raw 欄位。分層 UI 應作為 enhancement，必須保留舊 response / 舊 cache fallback。
+- `buildTechnicalIndicatorsCopyText()` 目前已是中立 raw/context 資料包，不應改成暴露 internal layer 的格式。本計劃只保護 copy contract，不主動重排 copy payload。
+- 現有 backend tests 會保護舊模型，例如期待 RSI 健康區間、KD、MFI、Donchian 等直接加分；實作本計劃時必須同步改測試語意，不能只新增欄位。
 
 ## 分層定義與分數規格
 
@@ -281,12 +293,13 @@ Scoring 邊界：
 目標檔案：
 
 - `backend/src/ai_stock_sentinel/technical/profile.py`
-- `backend/src/ai_stock_sentinel/technical/metrics.py`（若需要從 `analysis.metrics` 搬出 pure metrics）
+- `backend/src/ai_stock_sentinel/technical/metrics.py`
+- `backend/src/ai_stock_sentinel/analysis/metrics.py`（相容 re-export wrapper）
 
 職責：
 
 - 接收 OHLCV arrays / snapshot。
-- 呼叫同一套 canonical metrics 計算。
+- 呼叫同一套 canonical metrics 計算；優先搬遷既有 `analysis.metrics` pure functions，不重寫已驗證公式。
 - 回傳 `technical_indicators` raw values。
 - 回傳 `technical_profile` layer semantics。
 - 負責 score bucket cap 與 caveat 產生。
@@ -296,7 +309,7 @@ Scoring 邊界：
 - `ai_stock_sentinel.technical` 必須是 pure domain module。
 - 不得依賴 `analysis.schemas`、`analysis.router`、`graph`、FastAPI route、LLM prompt、Daily Radar repository 或 frontend contract。
 - `analysis` 與 `daily_radar` 都只能呼叫此 pure module，不得讓 `daily_radar` 反向依賴 analysis feature module。
-- 若保留 `analysis.metrics` 作為相容 wrapper，也只能 re-export pure metrics，不得保留兩套公式。
+- `analysis.metrics` 短期保留為相容 wrapper，只能 re-export pure metrics，不得保留第二套公式。
 
 ### 2. 收斂 Analyze technical 計算入口
 
@@ -328,6 +341,7 @@ Scoring 邊界：
 - 改用 `technical_profile.score_summary` 或 layer impact。
 - Primary / risk / secondary bucket 必須使用本文件定義的固定 cap 與 technical score mapping。
 - Display-only 不進分。
+- 現有測試若仍期待 RSI 健康區間、KD、MFI、Donchian 等直接推升 technical score，必須同步改成驗證 layer bucket 與 cap，而不是保護舊的平權模型。
 
 ### 4. 統一 Daily Radar 技術計算
 
@@ -343,8 +357,9 @@ Scoring 邊界：
 - 移除或降級 `daily_radar/raw_data.py` 內自有簡化 RSI / MFI / MACD / KD / ATR / OBV 實作。
 - Daily Radar prepared raw data 仍保留舊 `indicators` key，避免破壞 candidate trace。
 - 新增 `technical_profile` 或等價 projection 到 `input_snapshot`。
-- Scoring 逐步改用 layer semantics，而不是直接拿每個 raw 指標加分。
+- Scoring 逐步改用 layer semantics，而不是直接拿每個 raw 指標加分；第一步允許保留舊 bucket rules，但 `score_breakdown` 必須開始記錄 technical profile 版本與 layer trace。
 - `score_breakdown` 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`。
+- 不得一次刪除舊 `indicators` 或改名既有 trace key；Daily Radar modal、fixture 與歷史 replay 仍依賴舊 key 做可讀 trace。
 
 Daily Radar 排名變動驗證：
 
@@ -365,7 +380,7 @@ Daily Radar 排名變動驗證：
 調整：
 
 - 新增 `TechnicalProfile` type。
-- 技術指標卡片改成分層顯示：
+- 技術指標卡片在 `technical_profile` 存在時改成分層顯示：
   - 主要判斷
   - 風險 / 過熱濾網
   - 輔助證據
@@ -374,51 +389,28 @@ Daily Radar 排名變動驗證：
 - Watchlist quick lookup 使用同一套 formatter，不另外 fork copy 邏輯。
 - 缺少 `technical_profile` 的舊 response 或舊 cache，只能顯示 legacy raw 技術指標卡，不顯示分層結論。
 - 若 `technical_profile.data_quality` 顯示資料不足或盤中資料，前端分層摘要需顯示對應 caveat，不能當成完整收盤判斷。
+- `buildTechnicalIndicatorsCopyText()` 不納入分層 UI 改版範圍，只需維持現有中立 raw/context copy contract。
 
-### 6. 複製文字升級
+### 6. 複製文字契約保護
 
-`buildTechnicalIndicatorsCopyText()` 需改成 AI-friendly format：
+`buildTechnicalIndicatorsCopyText()` 目前已接近目標型態：提供股票、資料狀態、價格成交量、raw 技術指標、AVWAP context 與千張大戶資料，讓外部 AI agent 自行綜合判斷。
 
-```text
-技術指標摘要
-股票名稱：
-股票代碼：
-資料狀態：收盤 / 盤中
-用途說明：以下分層為系統判斷權重，raw 指標供外部 AI 交叉檢查，不代表全部都等權進入系統 scoring。
+本計劃不應把 `technical_profile` 的 `primary_score_inputs`、`risk_overheat_filters`、`secondary_evidence`、`display_only` 等內部分層直接輸出到複製文字。原因是外部 AI 的用途是交叉分析，而不是複述系統內部 scoring 權重；若把內部分層寫進 payload，反而會錨定外部 AI 的判斷。
 
-[Primary score inputs]
-...
+複製文字只需維持以下契約：
 
-[Risk / overheat filters]
-...
-
-[Secondary evidence]
-...
-
-[Display-only raw values]
-...
-
-[Chip stability companion]
-千張大戶持股比例：
-千張大戶持股比例變化：
-籌碼穩定性狀態：
-說明：此段為 TDCC 週頻籌碼穩定性補充，不納入 technical score。
-
-[Data caveats]
-...
-```
-
-複製文字必須同時滿足：
-
+- 保留現有中立 raw/context 資料包格式，不新增 Primary / Risk / Secondary / Display-only 分段。
 - 足夠完整，讓使用者不用再次打 API 就能請外部 AI 分析。
-- 足夠明確，避免外部 AI 將 display-only 指標誤解為系統主要判斷。
-- 保留 `phase1_observation` / AVWAP 相關 rows，但需維持其 non-blocking evidence 語意。
-- 若包含 TDCC 千張大戶資訊，需清楚寫明這是「籌碼穩定性」 companion signal；千張大戶增加代表籌碼更加穩定，連續增加代表籌碼愈加穩定，但不等於直接買賣建議。
+- 保留 `phase1_observation` / AVWAP 相關 rows，維持其 context / evidence 語意，不把它包進 technical score。
+- 若包含 TDCC 千張大戶資訊，文字需看得出這是 TDCC 籌碼資料或籌碼穩定性 context，而不是技術指標本身。
+- 保留資料狀態、資料不足與盤中 / 收盤提示。
+- 不輸出 `technical_profile.score_summary`、bucket impact、cap 後分數或任何內部 scoring 權重。
 
 ## 測試計劃
 
 Backend tests：
 
+- `analysis.metrics` 相容 wrapper 與 `technical.metrics` canonical implementation 回傳一致結果，避免搬遷後產生兩套公式。
 - canonical profile builder 可產生四層分組。
 - score cap 與 `technical_score = round(50 + capped_total * (17 / 5))` 映射固定且可測。
 - RSI / BIAS / Bollinger 只進 risk filter，不作一般正向加分。
@@ -429,8 +421,10 @@ Backend tests：
 - 新增 display-only 欄位時，未更新 contract/copy/type/tests 會失敗。
 - 資料不足時 raw 欄位為 `null`，profile caveats 明確，主流程不失敗。
 - Daily Radar 與 Analyze 使用同一套 metrics 公式，至少針對固定 OHLCV fixture 驗證 MACD / KD / ATR / MFI / OBV 結果一致。
+- Daily Radar 舊 `indicators` key、candidate trace 與 modal-readable fields 仍存在，直到 replacement trace 已完成並通過 replay 驗證。
 - Daily Radar scoring 的排名變動需可 trace：score breakdown 中應看得到 layer impact。
 - Daily Radar production-like replay 需比較 selected candidates、bucket score、matched rules 與排序變動。
+- 舊有直接加分語意的測試需改寫為 layer/cap 測試；不得保留「RSI 健康區間直接加 technical 正分」這類舊模型期待。
 
 Frontend tests：
 
@@ -438,8 +432,9 @@ Frontend tests：
 - Analyze 技術指標卡片能顯示分層摘要與 raw 區塊。
 - 缺少 `technical_profile` 時 UI fallback 到 legacy raw 指標卡，不顯示分層結論。
 - Watchlist quick lookup 仍能複製完整技術指標。
-- `buildTechnicalIndicatorsCopyText()` 包含四層分組、raw values、data caveats、資料狀態與 symbol/name。
-- 若 payload 包含 `chip_stability_context`，copy 文字需包含獨立 `[Chip stability companion]` 區塊，並標明不納入 technical score。
+- `buildTechnicalIndicatorsCopyText()` 維持中立 raw/context 資料包，包含 raw values、資料狀態、symbol/name 與必要資料不足提示。
+- `buildTechnicalIndicatorsCopyText()` 不輸出 Primary / Risk / Secondary / Display-only 分段、bucket impact、cap 後分數或內部 scoring 權重。
+- 若 payload 包含 `chip_stability_context`，copy 文字需讓使用者看得出這是 TDCC 籌碼資料或籌碼穩定性 context，而不是技術指標本身。
 - 缺少 `technical_profile` 的舊 response 仍 fallback 到舊 `technical_indicators` copy。
 
 ## 驗收標準
@@ -450,11 +445,12 @@ Frontend tests：
 - `/analyze` 新增 `technical_profile`。
 - `skip_ai: true` 回傳足以支援 Watchlist quick lookup 與複製文字。
 - Daily Radar 不再依賴簡化 KD/MFI/MACD/ATR 實作作為主要 scoring 來源。
+- Daily Radar 過渡期仍保留舊 `indicators` 與 trace key，直到 replay 證明新 layer trace 可替代既有排查用途。
 - Scoring 不會因高度相關指標重複加分而過度偏多。
 - `technical_profile` 具有明確 `version`、`data_quality` 與 `formula_versions`。
 - TDCC 千張大戶持股比例增減若被呈現，需獨立於 technical score，並標注為籌碼穩定性：增加代表籌碼更加穩定，連續增加代表籌碼愈加穩定。
 - Daily Radar replay 驗證已說明排名變動與可接受原因。
-- 前端複製文字可直接貼給外部 AI agent，並清楚說明 raw 指標與 scoring 權重的差異。
+- 前端複製文字可直接貼給外部 AI agent，且維持中立 raw/context 資料包，不暴露內部 `technical_profile` scoring 分層。
 
 ## Release 與文件收尾
 
