@@ -5,6 +5,7 @@ so feature modules can adapt the contract without creating dependency cycles.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -74,7 +75,7 @@ def build_technical_profile_payload(
 
     high_source = high_values if aligned_hilo else close_values
     low_source = low_values if aligned_hilo else close_values
-    close = current_price if current_price is not None else close_values[-1]
+    close = _positive_finite_number_or_none(current_price) or close_values[-1]
 
     bb = bollinger_bands(close_values)
     macd_data = macd(close_values)
@@ -91,8 +92,8 @@ def build_technical_profile_payload(
     low_20d = min(low_source[-20:]) if len(low_source) >= 20 else None
     high_60d = max(high_source[-60:]) if len(high_source) >= 60 else None
     low_60d = min(low_source[-60:]) if len(low_source) >= 60 else None
-    primary_high_20d = high_20d if aligned_hilo else None
-    primary_low_20d = low_20d if aligned_hilo else None
+    primary_high_20d = _prior_window_max(high_values, 20) if aligned_hilo else None
+    primary_low_20d = _prior_window_min(low_values, 20) if aligned_hilo else None
     volume_ratio = _volume_ratio(volume_values)
     bias20 = calc_bias(close, ma20) if ma20 is not None else None
     rsi14 = calc_rsi(close_values, period=14)
@@ -478,6 +479,18 @@ def _volume_ratio(volumes: Sequence[float] | None) -> float | None:
     return volumes[-1] / avg_volume_20
 
 
+def _prior_window_max(values: Sequence[float] | None, window: int) -> float | None:
+    if values is None or len(values) < window + 1:
+        return None
+    return max(values[-(window + 1):-1])
+
+
+def _prior_window_min(values: Sequence[float] | None, window: int) -> float | None:
+    if values is None or len(values) < window + 1:
+        return None
+    return min(values[-(window + 1):-1])
+
+
 def _signal(state: str, impact: int, reason: str, **extra: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "state": state,
@@ -522,6 +535,13 @@ def _number_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _positive_finite_number_or_none(value: Any) -> float | None:
+    number = _number_or_none(value)
+    if number is None or not math.isfinite(number) or number <= 0:
+        return None
+    return number
 
 
 def _string_or_none(value: Any) -> str | None:

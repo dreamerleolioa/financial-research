@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ai_stock_sentinel.analysis import metrics as compatibility_metrics
 from ai_stock_sentinel.technical import metrics as canonical_metrics
 from ai_stock_sentinel.technical.profile import (
@@ -158,6 +160,50 @@ def test_profile_does_not_score_support_from_close_fallback_when_high_low_missin
     assert atr_primary["impact"] == 0
 
 
+def test_profile_scores_support_breakdown_against_prior_completed_bars() -> None:
+    closes = [110.0] * 24 + [95.0]
+    highs = [115.0] * 24 + [100.0]
+    lows = [100.0] * 24 + [94.0]
+    volumes = [1000.0 + index for index in range(len(closes))]
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    support = payload["technical_profile"]["primary_score_inputs"]["support_resistance"]
+
+    assert raw["low_20d"] == 94.0
+    assert support["state"] == "breakdown"
+    assert support["impact"] == -2
+
+
+def test_profile_requires_prior_completed_bars_for_support_scoring() -> None:
+    closes = [100.0] * 19 + [95.0]
+    highs = [105.0] * len(closes)
+    lows = [95.0] * len(closes)
+    volumes = [1000.0 + index for index in range(len(closes))]
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    support = payload["technical_profile"]["primary_score_inputs"]["support_resistance"]
+
+    assert raw["low_20d"] == 95.0
+    assert support["state"] == "missing"
+    assert support["impact"] == 0
+
+
 def test_profile_from_snapshot_builds_without_analysis_schema_dependency() -> None:
     closes, highs, lows, volumes = _series()
     snapshot = {
@@ -178,3 +224,53 @@ def test_profile_from_snapshot_builds_without_analysis_schema_dependency() -> No
     assert profile["companion_context_refs"]["chip_stability_context"] == "tdcc_weekly_major_holders"
     for bucket_name in ("primary_score_inputs", "risk_overheat_filters", "secondary_evidence", "display_only"):
         assert "chip_stability_context" not in profile[bucket_name]
+
+
+def test_profile_from_snapshot_ignores_zero_current_price_sentinel() -> None:
+    closes, highs, lows, volumes = _series()
+    snapshot = {
+        "current_price": 0.0,
+        "recent_closes": closes,
+        "recent_highs": highs,
+        "recent_lows": lows,
+        "recent_volumes": volumes,
+    }
+
+    payload = build_technical_profile_from_snapshot(snapshot)
+    fallback_payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
+
+    assert payload is not None
+    assert fallback_payload is not None
+    assert payload["technical_indicators"]["bias20"] == fallback_payload["technical_indicators"]["bias20"]
+    assert payload["technical_indicators"]["bollinger_position"] == fallback_payload["technical_indicators"]["bollinger_position"]
+    assert payload["technical_profile"]["score_summary"] == fallback_payload["technical_profile"]["score_summary"]
+    assert payload["technical_profile"]["primary_score_inputs"]["support_resistance"] == fallback_payload["technical_profile"]["primary_score_inputs"]["support_resistance"]
+
+
+@pytest.mark.parametrize("current_price", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_profile_payload_falls_back_to_latest_close_for_invalid_current_price(current_price: float) -> None:
+    closes, highs, lows, volumes = _series()
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        current_price=current_price,
+    )
+    fallback_payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
+
+    assert payload is not None
+    assert fallback_payload is not None
+    assert payload["technical_indicators"]["bias20"] == fallback_payload["technical_indicators"]["bias20"]
+    assert payload["technical_profile"]["primary_score_inputs"]["ma_structure"] == fallback_payload["technical_profile"]["primary_score_inputs"]["ma_structure"]
