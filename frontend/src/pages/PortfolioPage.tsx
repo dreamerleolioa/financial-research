@@ -87,6 +87,11 @@ function parseOptionalNumberInput(value: string): number | null | undefined {
   return Number.isFinite(parsedValue) ? parsedValue : null;
 }
 
+function trimmedTextOrNull(value: string): string | null {
+  const trimmedValue = value.trim();
+  return trimmedValue || null;
+}
+
 interface BackfillPlanModalProps {
   item: PortfolioItem;
   onClose: () => void;
@@ -550,23 +555,20 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
       return;
     }
 
-    const planBody: BackfillLifecyclePlanRequest = {};
-    const trimmedThesis = thesis.trim();
-    const trimmedInvalidation = plannedInvalidation.trim();
-    const trimmedTargetRule = plannedTargetOrScaleOutRule.trim();
-    const trimmedSizingRationale = positionSizingRationale.trim();
-
-    if (trimmedThesis) planBody.thesis = trimmedThesis;
-    if (setupType) planBody.setup_type = setupType;
-    if (plannedHoldingPeriod) planBody.planned_holding_period = plannedHoldingPeriod;
-    if (defaultStopRule) planBody.default_stop_rule = defaultStopRule;
-    if (addEntryCondition) planBody.add_entry_condition = addEntryCondition;
-    if (trimmedInvalidation) planBody.planned_invalidation = trimmedInvalidation;
-    if (parsedStopPrice !== undefined) planBody.planned_stop_price = parsedStopPrice;
-    if (trimmedTargetRule) planBody.planned_target_or_scale_out_rule = trimmedTargetRule;
-    if (parsedRiskAmount !== undefined) planBody.planned_risk_amount = parsedRiskAmount;
-    if (parsedRiskPct !== undefined) planBody.planned_risk_pct = parsedRiskPct;
-    if (trimmedSizingRationale) planBody.position_sizing_rationale = trimmedSizingRationale;
+    const planBody: BackfillLifecyclePlanRequest = {
+      thesis: trimmedTextOrNull(thesis),
+      setup_type: setupType || null,
+      planned_holding_period: plannedHoldingPeriod || null,
+      default_stop_rule: defaultStopRule || null,
+      add_entry_condition: addEntryCondition || null,
+      planned_invalidation: trimmedTextOrNull(plannedInvalidation),
+      planned_stop_price: parsedStopPrice ?? null,
+      planned_target_or_scale_out_rule: trimmedTextOrNull(plannedTargetOrScaleOutRule),
+      planned_risk_amount: parsedRiskAmount ?? null,
+      planned_risk_pct: parsedRiskPct ?? null,
+      position_sizing_rationale: trimmedTextOrNull(positionSizingRationale),
+    };
+    const hasPlanValue = Object.values(planBody).some((value) => value != null);
 
     setSaving(true);
     try {
@@ -579,7 +581,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
           notes: notes.trim() || null,
         },
       });
-      if (Object.keys(planBody).length > 0 || lifecyclePlanQuery.data?.source != null) {
+      if (hasPlanValue || lifecyclePlanQuery.data?.source != null) {
         await updateLifecyclePlanMutation.mutateAsync({ id: item.id, body: planBody });
       }
       onSaved(updated);
@@ -792,7 +794,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
                           ? formatPriceForInput(autoPlannedStopPrice)
                           : stopReferenceLoading
                             ? "讀取最新參考價..."
-                          : "未選擇則不送出"
+                            : "未選擇則不送出"
                     }
                     className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
                   />
@@ -1548,17 +1550,17 @@ const PHASE1_HOLDING_LIST_CONFIG: Array<{
   title: string;
   description: string;
 }> = [
-  {
-    key: "holding_risk_alerts",
-    title: "持股風險警戒",
-    description: "優先檢查支撐與風險控制條件。",
-  },
-  {
-    key: "holding_management_candidates",
-    title: "持股管理觀察",
-    description: "追蹤續抱、加碼觀察或獲利保護狀態。",
-  },
-];
+    {
+      key: "holding_risk_alerts",
+      title: "持股風險警戒",
+      description: "優先檢查支撐與風險控制條件。",
+    },
+    {
+      key: "holding_management_candidates",
+      title: "持股管理觀察",
+      description: "追蹤續抱、加碼觀察或獲利保護狀態。",
+    },
+  ];
 
 function formatPortfolioMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -1897,9 +1899,8 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
       </div>
 
       <div
-        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3 ${
-          riskExplanation ? "justify-between" : "justify-end"
-        }`}
+        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3 ${riskExplanation ? "justify-between" : "justify-end"
+          }`}
       >
         {riskExplanation && <div className="min-w-0 text-xs text-text-faint">{riskExplanation}</div>}
         <button
@@ -1926,7 +1927,7 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
               <p className="mt-1 text-xs text-text-faint">佔目前持股總市值的比例</p>
             </div>
             <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-              <p className="text-xs text-text-faint">為什麼是這個狀態</p>
+              <p className="text-xs text-text-faint">整體停損回吐狀態</p>
               <p className="mt-1 text-sm font-semibold text-text-primary">{riskBudget.label}</p>
               <p className="mt-1 text-xs leading-relaxed text-text-faint">{stopCheckReason}</p>
             </div>
@@ -2060,9 +2061,8 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                       <div className="text-center">
                         <div className="text-text-faint">損益</div>
                         <div
-                          className={`font-mono font-medium ${
-                            pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
-                          }`}
+                          className={`font-mono font-medium ${pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
+                            }`}
                         >
                           {pa.profit_loss_pct != null
                             ? `${pa.profit_loss_pct > 0 ? "+" : ""}${pa.profit_loss_pct.toFixed(2)}%`
@@ -2279,7 +2279,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function openAnalysis(item: PortfolioItem): Promise<void> {
     setModalItem(item);
-    await runPositionAnalysis(item).catch(() => {});
+    await runPositionAnalysis(item).catch(() => { });
   }
 
   async function runBatchAnalysis(): Promise<void> {
@@ -2439,11 +2439,10 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
                         return plPct != null ? (
                           <span
-                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${
-                              plPct >= 0
-                                ? "bg-green-50 text-green-600 border border-green-200"
-                                : "bg-red-50 text-red-600 border border-red-200"
-                            }`}
+                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${plPct >= 0
+                              ? "bg-green-50 text-green-600 border border-green-200"
+                              : "bg-red-50 text-red-600 border border-red-200"
+                              }`}
                           >
                             {plPct > 0 ? "+" : ""}
                             {plPct.toFixed(2)}%
@@ -2636,9 +2635,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                                   <td className="py-1">{row.record_date}</td>
                                   <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
                                   <td
-                                    className={`py-1 text-right font-mono text-xs ${
-                                      plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
-                                    }`}
+                                    className={`py-1 text-right font-mono text-xs ${plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
+                                      }`}
                                   >
                                     {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
                                   </td>
