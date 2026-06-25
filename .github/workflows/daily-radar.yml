@@ -491,6 +491,7 @@ jobs:
 
           refresh_response_file="$(mktemp)"
           refresh_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-avwap"
+          avwap_repair_completed=true
           echo "Daily Radar repair refresh-avwap run_date: ${run_date}"
           refresh_http_status="$(curl -sS -o "$refresh_response_file" -w "%{http_code}" \
             -X POST "$refresh_endpoint" \
@@ -515,8 +516,8 @@ jobs:
             exit 1
           fi
           if ! jq -e '.status == "completed"' "$refresh_response_file" >/dev/null; then
-            echo "AVWAP repair did not complete; skip rescore and fail repair monitor."
-            exit 1
+            echo "AVWAP repair did not complete; continue to rescore so optional evidence does not mask scoring readiness."
+            avwap_repair_completed=false
           fi
 
           scoring_response_file="$(mktemp)"
@@ -543,5 +544,9 @@ jobs:
             exit 1
           fi
           if ! jq -e '.status == "completed" or .status == "stale_data"' "$scoring_response_file" >/dev/null; then
+            exit 1
+          fi
+          if [[ "$avwap_repair_completed" != "true" ]]; then
+            echo "AVWAP repair still incomplete after rescore attempt; fail repair monitor."
             exit 1
           fi

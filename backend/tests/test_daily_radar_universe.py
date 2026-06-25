@@ -346,6 +346,34 @@ def test_twse_same_day_leaders_parse_comma_separated_net_values() -> None:
     assert leaders[1].score == pytest.approx(50.0)
 
 
+def test_twse_institutional_leaders_skip_warrant_like_ids_but_keep_etf_ids() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload(
+                    [
+                        _twse_foreign_row(stock_id="07652U", buy="10,000", sell="0", net="10,000"),
+                        _twse_foreign_row(stock_id="00983A", buy="1,000", sell="0", net="1,000"),
+                        _twse_foreign_row(stock_id="2330", buy="500", sell="0", net="500"),
+                    ]
+                )
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        recent_market_days=1,
+        recent_calendar_window_days=0,
+    )
+
+    same_day = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=3)
+    recent = provider.recent_accumulation_leaders(run_date=date(2026, 6, 2), market="TW", limit=3)
+
+    assert [row.symbol for row in same_day] == ["00983A.TW", "2330.TW"]
+    assert [row.symbol for row in recent] == ["00983A.TW", "2330.TW"]
+
+
 def test_twse_same_day_leaders_support_rows_without_leading_blank_column() -> None:
     def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
         report_id = url.rsplit("/", maxsplit=1)[-1]

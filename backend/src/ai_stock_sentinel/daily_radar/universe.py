@@ -25,6 +25,22 @@ TECHNICAL_TRIGGER_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
 TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *TECHNICAL_TRIGGER_TRACKS)
 
 
+def is_daily_radar_supported_symbol(symbol: str) -> bool:
+    normalized = str(symbol).strip().upper()
+    if normalized.endswith(".TW"):
+        return is_daily_radar_supported_tw_stock_id(normalized.removesuffix(".TW"))
+    return True
+
+
+def is_daily_radar_supported_tw_stock_id(stock_id: str) -> bool:
+    normalized = str(stock_id).strip().upper()
+    if not normalized.isalnum():
+        return False
+    if len(normalized) == 4 and normalized.isdigit():
+        return True
+    return normalized.startswith("00")
+
+
 @dataclass(frozen=True, slots=True)
 class InstitutionalLeaderRow:
     symbol: str
