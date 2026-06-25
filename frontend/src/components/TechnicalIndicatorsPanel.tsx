@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
-import type { AnalyzeResponse, TechnicalIndicators, TechnicalProfile, TechnicalProfileSignal } from "../lib/analysisTypes";
+import type {
+  AnalyzeResponse,
+  TechnicalIndicators,
+  TechnicalProfile,
+  TechnicalProfileSignal,
+} from "../lib/analysisTypes";
 import { formatPrice, formatVolume } from "../lib/formatters";
-import {
-  formatIndicatorNumber,
-  formatMovingAverages,
-  getTechnicalIndicatorLabel,
-} from "../lib/technicalIndicators";
+import { formatIndicatorNumber, formatMovingAverages, getTechnicalIndicatorLabel } from "../lib/technicalIndicators";
 
 const PRIMARY_LABELS: Record<string, string> = {
   ma_structure: "均線結構",
@@ -222,10 +223,7 @@ function ProfileSummary({
   );
 }
 
-function rawIndicatorRows(
-  indicators: TechnicalIndicators,
-  snapshot: Record<string, unknown>,
-): Array<[string, string]> {
+function rawIndicatorRows(indicators: TechnicalIndicators, snapshot: Record<string, unknown>): Array<[string, string]> {
   const symbol = snapshotSymbol(snapshot);
   const price = (value: number | null | undefined) => formatPrice(value, symbol);
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") =>
@@ -262,15 +260,27 @@ function rawIndicatorRows(
       "OBV",
       `${getTechnicalIndicatorLabel("obv_signal", indicators.obv_signal)} / ${getTechnicalIndicatorLabel("obv_trend", indicators.obv_trend_20d)}`,
     ],
-    ["OBV 中長期", `${getTechnicalIndicatorLabel("obv_trend", indicators.obv_trend_mid_long, "資料不足")}${indicators.obv_trend_mid_long_window ? `（${indicators.obv_trend_mid_long_window}）` : ""}`],
+    [
+      "OBV 中長期",
+      `${getTechnicalIndicatorLabel("obv_trend", indicators.obv_trend_mid_long, "資料不足")}${indicators.obv_trend_mid_long_window ? `（${indicators.obv_trend_mid_long_window}）` : ""}`,
+    ],
     ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
-    ["MFI", `${formatIndicatorNumber(indicators.mfi, 1)} / ${getTechnicalIndicatorLabel("mfi_signal", indicators.mfi_signal)}`],
+    [
+      "MFI",
+      `${formatIndicatorNumber(indicators.mfi, 1)} / ${getTechnicalIndicatorLabel("mfi_signal", indicators.mfi_signal)}`,
+    ],
     [
       "唐奇安通道",
       `${getTechnicalIndicatorLabel("donchian_position", indicators.donchian_position)}（${formatIndicatorNumber(indicators.donchian_upper, 2)} / ${formatIndicatorNumber(indicators.donchian_lower, 2)}）`,
     ],
-    ["布林上/中/下軌", `${formatIndicatorNumber(indicators.bollinger_upper, 2)} / ${formatIndicatorNumber(indicators.bollinger_mid, 2)} / ${formatIndicatorNumber(indicators.bollinger_lower, 2)}`],
-    ["MACD 線/訊號/柱", `${formatIndicatorNumber(indicators.macd_line, 3)} / ${formatIndicatorNumber(indicators.macd_signal, 3)} / ${formatIndicatorNumber(indicators.macd_hist, 3)}`],
+    [
+      "布林上/中/下軌",
+      `${formatIndicatorNumber(indicators.bollinger_upper, 2)} / ${formatIndicatorNumber(indicators.bollinger_mid, 2)} / ${formatIndicatorNumber(indicators.bollinger_lower, 2)}`,
+    ],
+    [
+      "MACD 線/訊號/柱",
+      `${formatIndicatorNumber(indicators.macd_line, 3)} / ${formatIndicatorNumber(indicators.macd_signal, 3)} / ${formatIndicatorNumber(indicators.macd_hist, 3)}`,
+    ],
   ];
 }
 
@@ -370,12 +380,8 @@ export function TechnicalIndicatorsPanel({
     <article className={className}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-xs font-semibold text-text-muted">
-            技術指標摘要
-          </h3>
-          <p className="mt-1 text-xs text-text-faint">
-            {sessionLabel}
-          </p>
+          <h3 className="text-xs font-semibold text-text-muted">技術指標摘要</h3>
+          <p className="mt-1 text-xs text-text-faint">{sessionLabel}</p>
         </div>
         {actions}
       </div>

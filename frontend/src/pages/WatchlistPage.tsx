@@ -116,13 +116,7 @@ function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
     }));
 }
 
-function WatchlistPhase1Observation({
-  observation,
-  symbol,
-}: {
-  observation: Phase1Observation;
-  symbol: string;
-}) {
+function WatchlistPhase1Observation({ observation, symbol }: { observation: Phase1Observation; symbol: string }) {
   const anchors = getPhase1DisplayAnchors(observation);
   const isMissing = observation.freshness === "missing" || Boolean(observation.missing_reason);
 
@@ -263,12 +257,7 @@ function WatchlistTechnicalPanel({
         />
       )}
 
-      {phase1Observation && (
-        <WatchlistPhase1Observation
-          observation={phase1Observation}
-          symbol={quickSnapshotSymbol}
-        />
-      )}
+      {phase1Observation && <WatchlistPhase1Observation observation={phase1Observation} symbol={quickSnapshotSymbol} />}
 
       {technicalProfile && (
         <TechnicalProfileDisclosure
