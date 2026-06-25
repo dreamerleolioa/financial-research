@@ -162,20 +162,14 @@ function buildPhase1AvwapCopyRows(
     .sort(([left], [right]) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99) || left.localeCompare(right))
     .map(([key, anchor]) => {
       const distance = anchor.current_distance_to_avwap_pct ?? anchor.distance_to_avwap_pct;
-      const parts = [
-        formatPrice(anchor.avwap, snapshotSymbol),
-        `距離 ${formatPhase1Distance(distance)}`,
-      ];
+      const parts = [formatPrice(anchor.avwap, snapshotSymbol), `距離 ${formatPhase1Distance(distance)}`];
       if (anchor.anchor_date) parts.push(`錨點日 ${anchor.anchor_date}`);
       if (anchor.estimated) parts.push("日資料估算");
       return [PHASE1_ANCHOR_LABEL[key] ?? `${key} AVWAP`, parts.join(" / ")];
     });
 
   if (anchorRows.length > 0) {
-    return [
-      ["AVWAP 資料日", observation.data_date],
-      ...anchorRows,
-    ];
+    return [["AVWAP 資料日", observation.data_date], ...anchorRows];
   }
 
   if (!observation.missing_reason) return [];
@@ -205,12 +199,13 @@ function buildChipStabilityHistoryRows(context: ChipStabilityContext): Array<[st
   });
 }
 
-function buildChipStabilityCopyRows(
-  context: ChipStabilityContext | null | undefined,
-): Array<[string, string]> {
+function buildChipStabilityCopyRows(context: ChipStabilityContext | null | undefined): Array<[string, string]> {
   if (!context) return [];
   return [
-    ["千張大戶持股比例", `${formatRatioPct(context.thousand_lot_holder_ratio)}${context.as_of_date ? `（${context.as_of_date}）` : ""}`],
+    [
+      "千張大戶持股比例",
+      `${formatRatioPct(context.thousand_lot_holder_ratio)}${context.as_of_date ? `（${context.as_of_date}）` : ""}`,
+    ],
     ["較上週變化", formatSignedDelta(context.thousand_lot_holder_ratio_delta_pp)],
     ...buildChipStabilityHistoryRows(context),
   ];
@@ -245,7 +240,9 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
       `股票代碼：${displaySymbol}`,
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
-      ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol).map(([label, value]) => `${label}：${value}`),
+      ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol).map(
+        ([label, value]) => `${label}：${value}`,
+      ),
       ...buildChipStabilityCopyRows(result.chip_stability_context).map(([label, value]) => `${label}：${value}`),
     ].join("\n");
   }

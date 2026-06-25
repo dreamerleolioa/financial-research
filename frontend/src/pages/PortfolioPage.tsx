@@ -416,7 +416,9 @@ function formatPriceForInput(value: number | null | undefined): string {
   return String(Number(value.toFixed(2)));
 }
 
-function autoDefensePricesFromIndicators(indicators: AnalyzeResponse["technical_indicators"]): AutoDefensePrices | null {
+function autoDefensePricesFromIndicators(
+  indicators: AnalyzeResponse["technical_indicators"],
+): AutoDefensePrices | null {
   if (!indicators) return null;
   return {
     break_20d_low: indicators.low_20d,
@@ -425,10 +427,7 @@ function autoDefensePricesFromIndicators(indicators: AnalyzeResponse["technical_
   };
 }
 
-function derivePlanStopPrice(
-  rule: DefaultStopRule | "",
-  autoDefensePrices?: AutoDefensePrices | null,
-): number | null {
+function derivePlanStopPrice(rule: DefaultStopRule | "", autoDefensePrices?: AutoDefensePrices | null): number | null {
   const value = rule ? autoDefensePrices?.[rule as keyof NonNullable<typeof autoDefensePrices>] : null;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
@@ -799,8 +798,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
                     className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
                   />
                   <span className="block text-xs leading-relaxed text-text-faint">
-                    {stopReferenceError ??
-                      "MA20、MA60、20 日低點會從最新個股技術指標自動帶入；固定價格請手動確認。"}
+                    {stopReferenceError ?? "MA20、MA60、20 日低點會從最新個股技術指標自動帶入；固定價格請手動確認。"}
                   </span>
                 </label>
                 <label className="block space-y-1">
@@ -1550,17 +1548,17 @@ const PHASE1_HOLDING_LIST_CONFIG: Array<{
   title: string;
   description: string;
 }> = [
-    {
-      key: "holding_risk_alerts",
-      title: "持股風險警戒",
-      description: "優先檢查支撐與風險控制條件。",
-    },
-    {
-      key: "holding_management_candidates",
-      title: "持股管理觀察",
-      description: "追蹤續抱、加碼觀察或獲利保護狀態。",
-    },
-  ];
+  {
+    key: "holding_risk_alerts",
+    title: "持股風險警戒",
+    description: "優先檢查支撐與風險控制條件。",
+  },
+  {
+    key: "holding_management_candidates",
+    title: "持股管理觀察",
+    description: "追蹤續抱、加碼觀察或獲利保護狀態。",
+  },
+];
 
 function formatPortfolioMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -1900,8 +1898,9 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
       </div>
 
       <div
-        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3 ${riskExplanation ? "justify-between" : "justify-end"
-          }`}
+        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3 ${
+          riskExplanation ? "justify-between" : "justify-end"
+        }`}
       >
         {riskExplanation && <div className="min-w-0 text-xs text-text-faint">{riskExplanation}</div>}
         <button
@@ -2062,8 +2061,9 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                       <div className="text-center">
                         <div className="text-text-faint">損益</div>
                         <div
-                          className={`font-mono font-medium ${pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
-                            }`}
+                          className={`font-mono font-medium ${
+                            pa.profit_loss_pct != null && pa.profit_loss_pct >= 0 ? "text-green-600" : "text-red-600"
+                          }`}
                         >
                           {pa.profit_loss_pct != null
                             ? `${pa.profit_loss_pct > 0 ? "+" : ""}${pa.profit_loss_pct.toFixed(2)}%`
@@ -2280,7 +2280,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function openAnalysis(item: PortfolioItem): Promise<void> {
     setModalItem(item);
-    await runPositionAnalysis(item).catch(() => { });
+    await runPositionAnalysis(item).catch(() => {});
   }
 
   async function runBatchAnalysis(): Promise<void> {
@@ -2440,10 +2440,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
                         return plPct != null ? (
                           <span
-                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${plPct >= 0
-                              ? "bg-green-50 text-green-600 border border-green-200"
-                              : "bg-red-50 text-red-600 border border-red-200"
-                              }`}
+                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${
+                              plPct >= 0
+                                ? "bg-green-50 text-green-600 border border-green-200"
+                                : "bg-red-50 text-red-600 border border-red-200"
+                            }`}
                           >
                             {plPct > 0 ? "+" : ""}
                             {plPct.toFixed(2)}%
@@ -2520,7 +2521,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         </div>
                         {stopLossRisk.data_quality.caveats.length > 0 && (
                           <p className="mt-1 line-clamp-2 text-xs text-amber-600 dark:text-amber-300">
-                            {stopLossRisk.data_quality.caveats.map((caveat) => caveat.message ?? caveat.code).join("；")}
+                            {stopLossRisk.data_quality.caveats
+                              .map((caveat) => caveat.message ?? caveat.code)
+                              .join("；")}
                           </p>
                         )}
                       </div>
@@ -2636,8 +2639,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                                   <td className="py-1">{row.record_date}</td>
                                   <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
                                   <td
-                                    className={`py-1 text-right font-mono text-xs ${plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
-                                      }`}
+                                    className={`py-1 text-right font-mono text-xs ${
+                                      plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
+                                    }`}
                                   >
                                     {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
                                   </td>

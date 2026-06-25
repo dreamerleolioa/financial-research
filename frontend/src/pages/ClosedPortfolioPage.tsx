@@ -1146,7 +1146,10 @@ function LifecyclePerspectives({
           label="破位後降低曝險比例"
           value={getSignedPercentText(exitSequence?.percentage_sold_after_breakdown)}
         />
-        <ReviewMetric label="保護獲利" value={getSignedRoundedMoneyText(exitSequence?.profit_protected_by_partial_exits)} />
+        <ReviewMetric
+          label="保護獲利"
+          value={getSignedRoundedMoneyText(exitSequence?.profit_protected_by_partial_exits)}
+        />
       </LifecyclePerspectiveCard>
     </div>
   );
