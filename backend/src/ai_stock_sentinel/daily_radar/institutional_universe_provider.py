@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any
 
-from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
+from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow, is_daily_radar_supported_tw_stock_id
 
 TWSE_FUND_RWD_URL_TEMPLATE = "https://www.twse.com.tw/rwd/zh/fund/{report_id}"
 TWSE_FOREIGN_BUY_TOP_REPORT = "TWT38U"
@@ -194,7 +194,7 @@ def _rank_same_day(
         if actor not in _REQUIRED_ACTORS:
             continue
         stock_id = _stock_id(row)
-        if not stock_id:
+        if not stock_id or not is_daily_radar_supported_tw_stock_id(stock_id):
             continue
         totals[actor][stock_id] += _net_amount(row)
         volume = _volume(row)
@@ -281,7 +281,7 @@ def _rank_recent_accumulation(
         if actor not in _REQUIRED_ACTORS:
             continue
         stock_id = _stock_id(row)
-        if not stock_id:
+        if not stock_id or not is_daily_radar_supported_tw_stock_id(stock_id):
             continue
         daily_net[stock_id][row_date] += _net_amount(row)
         volume = _volume(row)

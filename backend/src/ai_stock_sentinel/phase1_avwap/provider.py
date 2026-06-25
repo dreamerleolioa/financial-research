@@ -142,6 +142,8 @@ def normalize_twse_stock_day_payload(payload: Mapping[str, Any]) -> list[DailyPr
     for row in data:
         if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
             continue
+        if _twse_row_has_placeholder_prices(row, indexes):
+            continue
         trade_date = _twse_trade_date(_sequence_cell(row, indexes, "日期"))
         open_price = _parse_number(_sequence_cell(row, indexes, "開盤價"))
         high = _parse_number(_sequence_cell(row, indexes, "最高價"))
@@ -194,6 +196,16 @@ def _sequence_cell(row: Sequence[Any], indexes: Mapping[str, int], field: str) -
     if index is None or index >= len(row):
         raise ValueError(f"missing twse field: {field}")
     return str(row[index]).strip()
+
+
+def _twse_row_has_placeholder_prices(row: Sequence[Any], indexes: Mapping[str, int]) -> bool:
+    try:
+        return any(
+            _sequence_cell(row, indexes, field) == "--"
+            for field in ("開盤價", "最高價", "最低價", "收盤價")
+        )
+    except ValueError:
+        return False
 
 
 def _twse_trade_date(value: str) -> date:

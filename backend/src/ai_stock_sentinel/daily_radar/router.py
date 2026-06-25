@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from contextlib import suppress
 from datetime import date, timedelta
 from typing import Any
@@ -82,6 +83,7 @@ from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseEntry,
     DailyRadarUniverseProvider,
+    is_daily_radar_supported_symbol,
     refresh_daily_radar_universe_technical_tracks,
     select_daily_radar_universe,
 )
@@ -332,17 +334,23 @@ def refresh_daily_radar_ohlcv_endpoint(
     run_date = request.run_date or _backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     universe = _prepared_universe_entries(prepared.universe)
+    selected_symbols, skipped_symbol_reasons = _supported_daily_radar_symbols(prepared.selected_symbols)
+    if skipped_symbol_reasons:
+        skipped_symbols = set(skipped_symbol_reasons)
+        universe = [entry for entry in universe if entry.symbol not in skipped_symbols]
+        prepared.selected_symbols = selected_symbols
+        prepared.symbol_count = len(selected_symbols)
     rows = ensure_daily_radar_raw_rows(
         db,
         run_date,
-        list(prepared.selected_symbols),
+        selected_symbols,
         technical_fetcher=technical_fetcher,
         institutional_payloads_by_symbol=_institutional_payloads_by_symbol(universe, run_date=run_date),
     )
     refreshed_universe = refresh_daily_radar_universe_technical_tracks(universe, rows)
     prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
     row_symbols = {row.symbol for row in rows}
-    missing_symbols = [symbol for symbol in prepared.selected_symbols if symbol not in row_symbols]
+    missing_symbols = [symbol for symbol in selected_symbols if symbol not in row_symbols]
     status = "failed" if missing_symbols else "completed"
     update_daily_radar_prepared_step_status(
         db,
@@ -350,9 +358,11 @@ def refresh_daily_radar_ohlcv_endpoint(
         step="refresh-ohlcv",
         status=status,
         details={
-            "symbol_count": len(prepared.selected_symbols),
+            "symbol_count": len(selected_symbols),
             "records_written": len(rows),
             "missing_symbols": missing_symbols,
+            "skipped_symbols": list(skipped_symbol_reasons),
+            "skipped_symbol_reasons": skipped_symbol_reasons,
         },
     )
     db.commit()
@@ -361,9 +371,11 @@ def refresh_daily_radar_ohlcv_endpoint(
         step="refresh-ohlcv",
         run_date=run_date,
         market=request.market,
-        symbol_count=len(prepared.selected_symbols),
+        symbol_count=len(selected_symbols),
         records_written=len(rows),
         missing_symbols=missing_symbols,
+        skipped_symbols=list(skipped_symbol_reasons),
+        skipped_symbol_reasons=skipped_symbol_reasons,
     )
 
 
@@ -925,6 +937,20 @@ def _institutional_payloads_by_symbol(
     run_date: date,
 ) -> dict[str, dict[str, Any]]:
     return {entry.symbol: _institutional_payload(entry, run_date=run_date) for entry in universe}
+
+
+def _supported_daily_radar_symbols(symbols: Iterable[str]) -> tuple[list[str], dict[str, str]]:
+    supported_symbols: list[str] = []
+    skipped_symbol_reasons: dict[str, str] = {}
+    for symbol in symbols:
+        normalized = str(symbol).strip()
+        if not normalized:
+            continue
+        if is_daily_radar_supported_symbol(normalized):
+            supported_symbols.append(normalized)
+            continue
+        skipped_symbol_reasons[normalized] = "unsupported_daily_radar_symbol"
+    return supported_symbols, skipped_symbol_reasons
 
 
 def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) -> dict[str, Any]:

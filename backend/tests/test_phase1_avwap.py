@@ -142,6 +142,23 @@ def test_normalize_twse_stock_day_payload_maps_roc_dates_and_trading_amount() ->
     ]
 
 
+def test_normalize_twse_stock_day_payload_skips_placeholder_price_rows() -> None:
+    rows = normalize_twse_stock_day_payload(
+        {
+            "stat": "OK",
+            "fields": ["日期", "成交股數", "成交金額", "開盤價", "最高價", "最低價", "收盤價"],
+            "data": [
+                ["115/04/08", "0", "0", "--", "--", "--", "--"],
+                ["115/06/24", "16,175,499", "127,707,576", "7.76", "7.99", "7.72", "7.99"],
+            ],
+        }
+    )
+
+    assert [row.trade_date for row in rows] == [date(2026, 6, 24)]
+    assert rows[0].close == 7.99
+    assert rows[0].amount == 127_707_576.0
+
+
 def test_twse_daily_price_provider_fetches_months_and_filters_requested_window() -> None:
     calls: list[dict[str, Any]] = []
 

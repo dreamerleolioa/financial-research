@@ -934,6 +934,61 @@ def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
 
 
+def test_daily_radar_refresh_ohlcv_prunes_unsupported_prepared_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW", "07652U.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            },
+            {
+                "symbol": "07652U.TW",
+                "rank": 2,
+                "primary_track": "recent_accumulation",
+                "tracks": ["recent_accumulation"],
+                "track_metrics": {"recent_accumulation": {"score": 80.0}},
+            },
+        ],
+        symbol_count=2,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    fetcher = FakeBatchTechnicalFetcher()
+    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["skipped_symbol_reasons"] == {"07652U.TW": "unsupported_daily_radar_symbol"}
+    assert fetcher.calls == [(["2330.TW"], date(2026, 6, 1))]
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.selected_symbols == ["2330.TW"]
+    assert prepared.symbol_count == 1
+    assert [entry["symbol"] for entry in prepared.universe] == ["2330.TW"]
+    assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
+    assert prepared.step_statuses["refresh-ohlcv"]["skipped_symbol_reasons"] == {
+        "07652U.TW": "unsupported_daily_radar_symbol"
+    }
+
+
 def test_daily_radar_run_scoring_requires_completed_refresh_steps(
     monkeypatch,
     daily_radar_db_session: Session,
