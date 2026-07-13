@@ -112,7 +112,7 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 | 資料源 | 目前 live 規則 |
 | ------ | -------------- |
-| TWSE `MI_INDEX` market session | 每次 workflow 先以 intended `run_date` 查詢交易日狀態；明確無資料代表休市，下游 jobs 全部 skip。HTTP、payload、日期或未知 status 異常都 fail closed，不當成休市。 |
+| TWSE RWD `MI_INDEX` market session | 使用 `/rwd/zh/afterTrading/MI_INDEX` 的 `tables[*].data` payload，每次 workflow 先以 intended `run_date` 查詢交易日狀態；明確無資料代表休市，下游 jobs 全部 skip。HTTP、payload、日期或未知 status 異常都 fail closed，不當成休市。Legacy `/exchangeReport/MI_INDEX` 的 `data1…data9` shape 不得與 RWD parser 混用。 |
 | TWSE RWD institutional reports | 目前 live provider 讀取 `TWT38U` 與 `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation universe。這是 report-level all-report 查詢，不是 selected symbols 的逐檔法人 request。 |
 | TWSE-first Phase 1 Daily AVWAP | 合併 selected universe symbols、active holdings 與 watchlist symbols 做 refresh；正式排程台灣時間 19:00 執行。上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback；其他 symbol 以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄，不呼叫 AVWAP provider。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，會寫入 missing snapshot trace，並將 `refresh-avwap` step 標記為 `failed` 與輸出 per-symbol missing reason；TWSE 延遲、request failure、parser error 至少需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`；`run-scoring` 不因此阻塞，候選 detail 保留 `freshness = missing` / `missing_reason`。 |
 | yfinance selected-symbol OHLCV | 正式排程台灣時間 22:30 執行。只對 selected universe 中缺少 final `StockRawData` 的 symbol 做一次 batch download。Batch 以 `run_date - 120 days` 到 `run_date + 1 day` 取日線，再只保留 `run_date` 當日或之前的資料。已有 final raw rows 會重用，不重抓。 |

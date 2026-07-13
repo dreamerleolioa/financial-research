@@ -1652,7 +1652,7 @@ Daily Radar run status：
 
 #### `POST /internal/daily-radar/market-session`
 
-- **用途**：正式 workflow 的最前置 guard，以 `run_date` 查詢 TWSE `MI_INDEX`。
+- **用途**：正式 workflow 的最前置 guard，以 `run_date` 查詢 TWSE RWD `/rwd/zh/afterTrading/MI_INDEX`，並解析 `tables[*].data`。不可改用 legacy `/exchangeReport/MI_INDEX` 卻繼續沿用 RWD parser。
 - **Auth**：與其他 Daily Radar internal endpoints 相同，需 `DAILY_RADAR_INTERNAL_TOKEN`。
 - **Response**：成功時回傳 `status = open | closed`、`run_date`、`market`、`provider = twse`、`dataset = MI_INDEX`。
 - **Fail-closed**：只有 TWSE 明確的 no-data 狀態才視為 `closed`；request failure、無效 payload、response date 不符、開市回應無 rows 或未知 status 回 `503`，不得靜默 skip。

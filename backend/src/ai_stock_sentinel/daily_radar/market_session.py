@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any, Literal, Protocol
 
 
-TWSE_MI_INDEX_URL = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
+TWSE_MI_INDEX_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 TWSE_MI_INDEX_DATASET = "MI_INDEX"
 TWSE_NO_DATA_MARKERS = ("沒有符合條件的資料", "查無資料")
 
