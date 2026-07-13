@@ -18,7 +18,7 @@ on:
           - run-scoring
           - repair-avwap-and-rescore
       run_date:
-        description: "Optional Daily Radar run_date in Asia/Taipei calendar, YYYY-MM-DD. Scheduled runs compute this automatically."
+        description: "Optional Daily Radar run_date in Asia/Taipei calendar, YYYY-MM-DD. When omitted, the workflow run creation date is used."
         required: false
         default: ""
         type: string
@@ -44,42 +44,102 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  resolve-run-context:
+    name: Resolve Daily Radar run context
+    runs-on: ubuntu-latest
+    outputs:
+      run_date: ${{ steps.resolve-date.outputs.run_date }}
+      market_open: ${{ steps.market-session.outputs.market_open }}
+    steps:
+      - name: Check out run-date resolver
+        uses: actions/checkout@v4
+
+      - name: Resolve immutable run_date
+        id: resolve-date
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          run_created_at="$(curl --fail-with-body -sS -L \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            | jq -r ".created_at")"
+          run_date="$(python .github/scripts/resolve_daily_radar_run_date.py \
+            --event-name "${GITHUB_EVENT_NAME}" \
+            --schedule "${DAILY_RADAR_SCHEDULE}" \
+            --run-created-at "${run_created_at}" \
+            --input-run-date "${DAILY_RADAR_RUN_DATE}")"
+          echo "Daily Radar resolved run_date: ${run_date}"
+          echo "run_date=${run_date}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve TW market session
+        id: market-session
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ steps.resolve-date.outputs.run_date }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/market-session"
+          response_file="$(mktemp)"
+          payload="{\"market\":\"TW\",\"run_date\":\"${DAILY_RADAR_RUN_DATE}\"}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}")"
+          echo "Market-session HTTP status: ${http_status}"
+          jq -r '
+            "status: \(.status // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "market: \(.market // "n/a")",
+            "provider: \(.provider // "n/a")",
+            "dataset: \(.dataset // "n/a")",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          market_status="$(jq -r '.status // "unknown"' "$response_file")"
+          case "$market_status" in
+            open)
+              echo "market_open=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            closed)
+              echo "Daily Radar skipped: TW market is closed on ${DAILY_RADAR_RUN_DATE}."
+              echo "market_open=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "Unknown market-session status: ${market_status}"
+              exit 1
+              ;;
+          esac
+
   prepare-universe:
     name: Prepare Daily Radar universe
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe'))
     steps:
       - name: Trigger prepare-universe
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/prepare-universe
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\",\"max_symbols\":250}"
           echo "Daily Radar prepare-universe run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -107,37 +167,20 @@ jobs:
   refresh-avwap:
     name: Refresh Daily Radar AVWAP
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 11 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-avwap')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 11 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-avwap'))
     steps:
       - name: Trigger refresh-avwap
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-avwap
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
           echo "Daily Radar refresh-avwap run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -169,37 +212,20 @@ jobs:
   refresh-lending:
     name: Refresh Daily Radar lending
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 12 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-lending')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 12 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-lending'))
     steps:
       - name: Trigger refresh-lending
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-lending
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
           echo "Daily Radar refresh-lending run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -228,37 +254,20 @@ jobs:
   refresh-full-margin:
     name: Refresh Daily Radar full margin
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 13 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-full-margin')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 13 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-full-margin'))
     steps:
       - name: Trigger refresh-full-margin
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-full-margin
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
           echo "Daily Radar refresh-full-margin run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -287,37 +296,20 @@ jobs:
   refresh-ohlcv:
     name: Refresh Daily Radar OHLCV
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv'))
     steps:
       - name: Trigger refresh-ohlcv
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-ohlcv
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
           echo "Daily Radar refresh-ohlcv run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -345,37 +337,20 @@ jobs:
   refresh-market-context:
     name: Refresh Daily Radar market context
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-context')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-context'))
     steps:
       - name: Trigger refresh-market-context
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-market-context
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
           echo "Daily Radar refresh-market-context run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -402,37 +377,20 @@ jobs:
   run-scoring:
     name: Run Daily Radar scoring
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring'))
     steps:
       - name: Trigger run-scoring
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_ENDPOINT: /internal/daily-radar/run-scoring
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
           response_file="$(mktemp)"
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
           echo "Daily Radar scoring run_date: ${run_date}"
           http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
@@ -459,34 +417,17 @@ jobs:
   repair-avwap-and-rescore:
     name: Repair Daily Radar AVWAP and rescore
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore')
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore'))
     steps:
       - name: Repair AVWAP and rescore
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
-          DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}
-          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
         run: |
           set -euo pipefail
-          scheduled_run_date() {
-            local cron_minute cron_hour current_hhmm schedule_hhmm
-            read -r cron_minute cron_hour _ <<< "${DAILY_RADAR_SCHEDULE}"
-            current_hhmm="$(date -u +%H%M)"
-            schedule_hhmm="$(printf "%02d%02d" "${cron_hour}" "${cron_minute}")"
-            if [[ "${current_hhmm}" < "${schedule_hhmm}" ]]; then
-              date -u -d "1 day ago" +%F
-            else
-              date -u +%F
-            fi
-          }
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            run_date="$(scheduled_run_date)"
-          elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]; then
-            run_date="${DAILY_RADAR_RUN_DATE}"
-          else
-            run_date="$(TZ=Asia/Taipei date +%F)"
-          fi
+          run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
 
           refresh_response_file="$(mktemp)"

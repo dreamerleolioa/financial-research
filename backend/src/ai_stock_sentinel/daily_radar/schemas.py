@@ -41,6 +41,19 @@ class DailyRadarRunTriggerResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class DailyRadarMarketSessionRequest(BaseModel):
+    run_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+
+
+class DailyRadarMarketSessionResponse(BaseModel):
+    status: Literal["open", "closed"]
+    run_date: date
+    market: str
+    provider: str
+    dataset: str
+
+
 class DailyRadarPreparedRunRequest(BaseModel):
     run_date: date | None = None
     market: str = Field(default="TW", min_length=1, max_length=20)
@@ -291,6 +304,8 @@ __all__ = [
     "DailyRadarCandidateResponse",
     "DailyRadarForwardValidationRunRequest",
     "DailyRadarForwardValidationRunResponse",
+    "DailyRadarMarketSessionRequest",
+    "DailyRadarMarketSessionResponse",
     "DailyRadarMatchedRule",
     "DailyRadarMonthlyRuleReviewRequest",
     "DailyRadarMonthlyRuleReviewResponse",

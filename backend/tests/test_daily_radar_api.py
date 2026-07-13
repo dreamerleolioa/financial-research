@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -17,6 +17,7 @@ from sqlalchemy.pool import StaticPool
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
+from ai_stock_sentinel.daily_radar.market_session import MarketSessionProviderError, MarketSessionResult
 from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
@@ -245,6 +246,27 @@ class RaisingBackgroundChipContextProvider:
         raise RuntimeError("simulated chip context outage")
 
 
+class FakeMarketSessionProvider:
+    def __init__(self, status: Literal["open", "closed"] = "open") -> None:
+        self.status = status
+        self.calls: list[tuple[date, str]] = []
+
+    def resolve(self, *, run_date: date, market: str) -> MarketSessionResult:
+        self.calls.append((run_date, market))
+        return MarketSessionResult(
+            status=self.status,
+            run_date=run_date,
+            market=market,
+            provider="twse",
+            dataset="MI_INDEX",
+        )
+
+
+class RaisingMarketSessionProvider(FakeMarketSessionProvider):
+    def resolve(self, *, run_date: date, market: str) -> MarketSessionResult:
+        raise MarketSessionProviderError("twse_market_session_request_failed")
+
+
 def _clear_daily_radar_api_overrides() -> None:
     from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
@@ -253,6 +275,7 @@ def _clear_daily_radar_api_overrides() -> None:
         daily_radar_router.get_daily_radar_universe_provider,
         daily_radar_router.get_daily_radar_technical_fetcher,
         daily_radar_router.get_daily_radar_market_context_provider,
+        daily_radar_router.get_daily_radar_market_session_provider,
         daily_radar_router.get_daily_radar_background_chip_context_provider,
         daily_radar_router.get_phase1_avwap_daily_price_provider,
         get_daily_radar_symbol_name_resolver,
@@ -268,6 +291,7 @@ def _api_client(
     universe_provider: FakeUniverseProvider | None = None,
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
     market_context_provider: FakeMarketIndexContextProvider | None = None,
+    market_session_provider: FakeMarketSessionProvider | RaisingMarketSessionProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
     phase1_avwap_provider: FakePhase1AvwapDailyPriceProvider | RaisingPhase1AvwapDailyPriceProvider | MissingPhase1AvwapDailyPriceProvider | None = None,
     raise_server_exceptions: bool = True,
@@ -280,6 +304,7 @@ def _api_client(
     provider = universe_provider or FakeUniverseProvider()
     fetcher = technical_fetcher or FakeBatchTechnicalFetcher()
     context_provider = market_context_provider or FakeMarketIndexContextProvider()
+    session_provider = market_session_provider or FakeMarketSessionProvider()
     chip_context_provider = background_context_provider or FakeBackgroundChipContextProvider()
     phase1_provider = phase1_avwap_provider or FakePhase1AvwapDailyPriceProvider()
 
@@ -297,6 +322,7 @@ def _api_client(
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_context_provider] = lambda: context_provider
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_session_provider] = lambda: session_provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: chip_context_provider
     api.app.dependency_overrides[daily_radar_router.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
@@ -304,6 +330,7 @@ def _api_client(
     client.fake_universe_provider = provider  # type: ignore[attr-defined]
     client.fake_technical_fetcher = fetcher  # type: ignore[attr-defined]
     client.fake_market_context_provider = context_provider  # type: ignore[attr-defined]
+    client.fake_market_session_provider = session_provider  # type: ignore[attr-defined]
     client.fake_background_context_provider = chip_context_provider  # type: ignore[attr-defined]
     client.fake_phase1_avwap_provider = phase1_provider  # type: ignore[attr-defined]
     return client
@@ -416,6 +443,62 @@ def _persist_raw_data(
     session.add(row)
     session.commit()
     return row
+
+
+@pytest.mark.parametrize("status", ["open", "closed"])
+def test_daily_radar_market_session_endpoint_returns_provider_status(
+    monkeypatch,
+    daily_radar_db_session: Session,
+    status: Literal["open", "closed"],
+) -> None:
+    provider = FakeMarketSessionProvider(status)
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        market_session_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/market-session",
+            json={"run_date": "2026-07-10", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": status,
+        "run_date": "2026-07-10",
+        "market": "TW",
+        "provider": "twse",
+        "dataset": "MI_INDEX",
+    }
+    assert provider.calls == [(date(2026, 7, 10), "TW")]
+
+
+def test_daily_radar_market_session_endpoint_does_not_convert_provider_errors_to_closed(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        market_session_provider=RaisingMarketSessionProvider(),
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/market-session",
+            json={"run_date": "2026-07-10", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "twse_market_session_request_failed"
 
 
 def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkeypatch, daily_radar_db_session: Session) -> None:

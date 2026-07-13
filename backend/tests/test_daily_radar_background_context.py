@@ -932,15 +932,25 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert 'cron: "30 15 * * 1-5"' in text  # 23:30 TWT market context
     assert 'cron: "30 16 * * 1-5"' in text  # 00:30 TWT next day scoring
     assert 'cron: "0 23 * * 1-5"' in text  # 07:00 TWT next day AVWAP repair
+    assert "actions: read" in text
+    assert "resolve-run-context:" in text
+    assert "/actions/runs/${GITHUB_RUN_ID}" in text
+    assert 'jq -r ".created_at"' in text
+    assert "resolve_daily_radar_run_date.py" in text
+    assert "/internal/daily-radar/market-session" in text
+    assert 'market_open == \'true\'' in text
+    assert text.count("needs: resolve-run-context") == 8
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 8
+    assert (
+        text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
+        == 8
+    )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text
     assert "DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}" in text
-    assert text.count("DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}") == 8
-    assert text.count("scheduled_run_date()") == 8
-    assert text.count('run_date="$(scheduled_run_date)"') == 8
-    assert text.count('elif [[ -n "${DAILY_RADAR_RUN_DATE}" ]]') == 8
-    assert 'date -u -d "1 day ago" +%F' in text
-    assert 'run_date="$(TZ=Asia/Taipei date +%F)"' in text
+    assert "DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}" in text
+    assert "scheduled_run_date()" not in text
+    assert 'date -u -d "1 day ago" +%F' not in text
     assert "daily_radar_payload=" in text
     assert '\\"run_date\\":\\"${run_date}\\"' in text
     assert "/internal/daily-radar/prepare-universe" in text

@@ -1648,7 +1648,14 @@ Daily Radar run status：
 
 #### Daily Radar segmented internal pipeline
 
-正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會由 `github.event.schedule` 的 UTC cron slot 推導該 schedule 應服務的台股交易日，讓 18:00-23:30 TWT data steps 即使延遲到台灣午夜後啟動，也仍寫入原本交易日；手動執行可指定 `run_date`，未指定時才使用台北今天。
+正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會用 GitHub Actions run API 讀取原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；啟動延遲、跨過台灣午夜與對舊 run 按 Re-run 都不會改變原本 intended trading date。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期。接著 workflow 先呼叫 `POST /internal/daily-radar/market-session`；TWSE 明確回報休市時所有下游 jobs skip，provider 或 payload 異常時 fail closed。
+
+#### `POST /internal/daily-radar/market-session`
+
+- **用途**：正式 workflow 的最前置 guard，以 `run_date` 查詢 TWSE RWD `/rwd/zh/afterTrading/MI_INDEX`，並解析 `tables[*].data`。不可改用 legacy `/exchangeReport/MI_INDEX` 卻繼續沿用 RWD parser。
+- **Auth**：與其他 Daily Radar internal endpoints 相同，需 `DAILY_RADAR_INTERNAL_TOKEN`。
+- **Response**：成功時回傳 `status = open | closed`、`run_date`、`market`、`provider = twse`、`dataset = MI_INDEX`。
+- **Fail-closed**：只有 TWSE 明確的 no-data 狀態才視為 `closed`；request failure、無效 payload、response date 不符、開市回應無 rows 或未知 status 回 `503`，不得靜默 skip。
 
 - 18:00 TWT：`POST /internal/daily-radar/prepare-universe`，保存 capped 250 selected symbols、universe trace 與 prepared step status。
 - 19:00 TWT：`POST /internal/daily-radar/refresh-avwap`，刷新 `phase1_avwap_snapshots`。
