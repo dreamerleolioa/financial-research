@@ -83,7 +83,7 @@
 | Workflow | 責任 |
 | -------- | ---- |
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
-| `daily-radar.yml` | 收盤後分段呼叫 `/internal/daily-radar/prepare-universe`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段約隔一小時，workflow 顯式傳入 `run_date`，scheduled run 由 `github.event.schedule` 的 UTC cron slot 推導該 schedule 應服務的台股交易日，手動執行未指定日期時才使用台北今天；refresh status 會寫入 prepared run，scoring 只讀已落庫 cache/snapshot，對 lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT AVWAP repair-and-rescore 補修排程 |
+| `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時整條 pipeline skip，provider 異常時 fail closed。開市後才分段呼叫 `/internal/daily-radar/prepare-universe`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段約隔一小時且共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期；refresh status 會寫入 prepared run，scoring 只讀已落庫 cache/snapshot，對 lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT AVWAP repair-and-rescore 補修排程，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `daily-radar-rule-review.yml` | 觸發 monthly rule governance report |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |

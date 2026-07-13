@@ -106,12 +106,13 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 原則：Stage 1 不應對全市場逐檔打昂貴外部 API。GitHub Actions 以分段 internal endpoints 準備資料；正式 scoring 階段不得再打 FinMind、yfinance、TWSE 或 market index provider，只能讀已落庫的 cache/snapshot。若未來需要新增資料源，應新增獨立 refresh step，不得直接重用 `/internal/fetch-raw-data`。
 
-目前已落地的 live pipeline 是分段流程：`prepare-universe` 先呼叫 multi-track universe 選股並保存 capped 250 selected symbols；`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context` 分別準備資料並寫入 prepared run step status；`run-scoring` 只讀 DB cache/snapshot，且必須看到 lending、full-margin、OHLCV、market context required steps 都是 `completed` 才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
+目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時整條 pipeline skip，但 provider 錯誤或無法判斷時 fail closed；開市後 `prepare-universe` 才呼叫 multi-track universe 選股並保存 capped 250 selected symbols；`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context` 分別準備資料並寫入 prepared run step status；`run-scoring` 只讀 DB cache/snapshot，且必須看到 lending、full-margin、OHLCV、market context required steps 都是 `completed` 才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
 
 ### 4.3 外部資料 request budget
 
 | 資料源 | 目前 live 規則 |
 | ------ | -------------- |
+| TWSE `MI_INDEX` market session | 每次 workflow 先以 intended `run_date` 查詢交易日狀態；明確無資料代表休市，下游 jobs 全部 skip。HTTP、payload、日期或未知 status 異常都 fail closed，不當成休市。 |
 | TWSE RWD institutional reports | 目前 live provider 讀取 `TWT38U` 與 `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation universe。這是 report-level all-report 查詢，不是 selected symbols 的逐檔法人 request。 |
 | TWSE-first Phase 1 Daily AVWAP | 合併 selected universe symbols、active holdings 與 watchlist symbols 做 refresh；正式排程台灣時間 19:00 執行。上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback；其他 symbol 以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄，不呼叫 AVWAP provider。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，會寫入 missing snapshot trace，並將 `refresh-avwap` step 標記為 `failed` 與輸出 per-symbol missing reason；TWSE 延遲、request failure、parser error 至少需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`；`run-scoring` 不因此阻塞，候選 detail 保留 `freshness = missing` / `missing_reason`。 |
 | yfinance selected-symbol OHLCV | 正式排程台灣時間 22:30 執行。只對 selected universe 中缺少 final `StockRawData` 的 symbol 做一次 batch download。Batch 以 `run_date - 120 days` 到 `run_date + 1 day` 取日線，再只保留 `run_date` 當日或之前的資料。已有 final raw rows 會重用，不重抓。 |
@@ -357,6 +358,7 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
 
 | Method | Path | 用途 |
 | ------ | ---- | ---- |
+| `POST` | `/internal/daily-radar/market-session` | 由 GitHub Actions 在所有下游 jobs 前呼叫，以 TWSE `MI_INDEX` 判斷 intended `run_date` 是開市或休市 |
 | `POST` | `/internal/daily-radar/prepare-universe` | 由 GitHub Actions 呼叫的 selected universe 準備端點，正式排程 capped 250 symbols |
 | `POST` | `/internal/daily-radar/refresh-avwap` | 由 GitHub Actions 呼叫的試驗版 Daily AVWAP refresh 端點 |
 | `POST` | `/internal/daily-radar/refresh-lending` | 由 GitHub Actions 呼叫的 lending refresh 端點 |
@@ -488,11 +490,13 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 建議流程：
 
 1. 台股收盤且資料源更新後，GitHub Actions 以 cron 觸發。
-2. Action 以分段 schedule 呼叫 Zeabur 後端 internal endpoints，且所有 step 都由 workflow 明確傳入 `run_date`。Scheduled run 會由 `github.event.schedule` 的 UTC cron slot 推導該 schedule 應服務的台股交易日，18:00-23:30 TWT data steps 即使延遲到台灣午夜後啟動也不會寫到隔天；手動執行可指定 `run_date`，未指定時才使用台北今天。排程為 18:00 `prepare-universe`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`、22:30 `refresh-ohlcv`、23:30 `refresh-market-context`、隔日 00:30 `run-scoring`。
-3. 核心 refresh step 都讀同一筆 `daily_radar_prepared_runs` 的 selected symbols；不得重選 universe。`refresh-avwap` 另會合併 active holdings 與 watchlist symbols 刷新 shared market snapshot，但只支援 `.TW` / `.TWO`，其他 symbol 以 skipped reason 記錄；不得把使用者 entry date、avg cost 或 holding-specific anchor 寫入 cache。
-4. `run-scoring` 只讀 DB cache/snapshot；若 lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
-5. 台灣時間週二至週六 07:00 會補跑前一個 intended trading date 的 `refresh-avwap`；成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
-6. 前端 `GET /daily-radar/latest` 顯示最新完成版本。
+2. Scheduled run 用 Actions run API 的原始 `created_at` 回推 `github.event.schedule` 對應的 UTC cron slot，得到不受啟動延遲或 Re-run 時間影響的 immutable `run_date`。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期，保證 Re-run 不改日。
+3. Workflow 先呼叫 `/internal/daily-radar/market-session`。週末、國定假日、颱風停市等明確 closed 結果會讓所有下游 jobs skip；provider 異常或無法判斷時 fail closed。
+4. 開市時 Action 才以分段 schedule 呼叫 Zeabur 後端 internal endpoints，且所有 step 都明確傳入同一個 `run_date`。排程為 18:00 `prepare-universe`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`、22:30 `refresh-ohlcv`、23:30 `refresh-market-context`、隔日 00:30 `run-scoring`。
+5. 核心 refresh step 都讀同一筆 `daily_radar_prepared_runs` 的 selected symbols；不得重選 universe。`refresh-avwap` 另會合併 active holdings 與 watchlist symbols 刷新 shared market snapshot，但只支援 `.TW` / `.TWO`，其他 symbol 以 skipped reason 記錄；不得把使用者 entry date、avg cost 或 holding-specific anchor 寫入 cache。
+6. `run-scoring` 只讀 DB cache/snapshot；若 lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
+7. 台灣時間週二至週六 07:00 會補跑前一個 intended trading date 的 `refresh-avwap`；成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
+8. 前端 `GET /daily-radar/latest` 顯示最新完成版本。
 
 內部端點需使用 internal token 驗證。token 放在 GitHub Actions secrets 與 Zeabur environment variables，不寫入 repo。
 
@@ -520,11 +524,12 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 | ---- | -------- |
 | Unit tests | 前置濾網、bucket 判定、分數計算、風險扣分、冷卻邏輯 |
 | Snapshot tests | 固定輸入資料產生穩定 candidate、內部 score breakdown 與 user-facing 觀察等級 |
-| API tests | 分段 internal endpoints、`/internal/daily-radar/run` 相容入口、`/daily-radar/latest`、日期查詢、symbol 查詢 |
+| API tests | market-session fail-closed guard、分段 internal endpoints、`/internal/daily-radar/run` 相容入口、`/daily-radar/latest`、日期查詢、symbol 查詢 |
 | Persistence tests | run 與 candidate 寫入、重跑行為、依日期與 symbol 查詢 |
 | Data freshness tests | stale data、缺法人資料、缺融資資料時的降級行為 |
 | Calibration tests | 固定 fixture 重跑產出穩定 calibration report，並覆蓋 rank cutoff、bucket threshold、risk/overheat、relative strength 與 skip reasons |
 | Background context tests | migration/model、repository upsert/read、internal updater endpoint、workflow request budget、分段 workflow 會在不同小時刷新日頻 selected-symbol context，且 background labels 不改 ranking |
+| Workflow context tests | Scheduled Re-run 保留原始 cron-slot `run_date`；開市、休市與 provider 異常都有回歸覆蓋；所有下游 jobs 共用同一 run context guard |
 | Background label tests | API/schema 可表示 labels、freshness、missing reason；移除 background context 後 score/ranking 不變 |
 | Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、ablation snapshot、monthly rule-review API、artifact workflow 基本檢查 |
 

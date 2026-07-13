@@ -14,6 +14,11 @@ from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
     YFinanceMarketIndexContextProvider,
 )
+from ai_stock_sentinel.daily_radar.market_session import (
+    MarketSessionProvider,
+    MarketSessionProviderError,
+    TwseMarketSessionProvider,
+)
 from ai_stock_sentinel.daily_radar.name_backfill import (
     SymbolNameResolver,
     backfill_daily_radar_symbol_names,
@@ -67,6 +72,8 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarChipContextUpdateResponse,
     DailyRadarForwardValidationRunRequest,
     DailyRadarForwardValidationRunResponse,
+    DailyRadarMarketSessionRequest,
+    DailyRadarMarketSessionResponse,
     DailyRadarMonthlyRuleReviewRequest,
     DailyRadarMonthlyRuleReviewResponse,
     DailyRadarNameBackfillRequest,
@@ -118,12 +125,52 @@ def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
     return YFinanceMarketIndexContextProvider()
 
 
+def get_daily_radar_market_session_provider() -> MarketSessionProvider:
+    return TwseMarketSessionProvider()
+
+
 def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
     return DefaultBackgroundChipContextProvider()
 
 
 def get_phase1_avwap_daily_price_provider() -> DailyPriceProvider:
     return TwseDailyPriceProvider()
+
+
+@router.post(
+    "/internal/daily-radar/market-session",
+    response_model=DailyRadarMarketSessionResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def resolve_daily_radar_market_session_endpoint(
+    payload: DailyRadarMarketSessionRequest | None = None,
+    provider: MarketSessionProvider = Depends(get_daily_radar_market_session_provider),
+) -> DailyRadarMarketSessionResponse:
+    request = payload or DailyRadarMarketSessionRequest()
+    run_date = request.run_date or _backend_today()
+    try:
+        result = provider.resolve(run_date=run_date, market=request.market)
+    except MarketSessionProviderError as exc:
+        logger.exception(
+            "Daily Radar market-session lookup failed run_date=%s market=%s code=%s",
+            run_date.isoformat(),
+            request.market,
+            exc.code,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": exc.code,
+                "message": "Daily Radar market-session lookup failed.",
+            },
+        ) from exc
+    return DailyRadarMarketSessionResponse(
+        status=result.status,
+        run_date=result.run_date,
+        market=result.market,
+        provider=result.provider,
+        dataset=result.dataset,
+    )
 
 
 @router.post(
