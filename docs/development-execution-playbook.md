@@ -162,7 +162,8 @@ rg -n 'requirements[.]txt|Rende[r]|Python 3[.]10|Node[.]js 20|docs/plans/202[6]|
 | Shared Context Gate | shared context 只作 evidence/caveat/data quality，不改 action/ranking/verdict/classification | shared context tests、consumer tests、spec 更新 |
 | Portfolio Discipline Gate | entry record、event ledger、lifecycle plan/review 能 point-in-time 回放 | portfolio/lifecycle tests、position spec 更新 |
 | Copy Guard Gate | 使用者文案採研究/風險語言，不用命令式買賣語言 | risk language copy tests、frontend build |
-| Release Gate | backend release gate tests + frontend build 通過 | GitHub Actions 或本機等價命令輸出 |
+| Frontend UX Gate | 已驗收的登入、導覽、空狀態、copy、confirmation、overlay 與 viewport 契約不回歸 | frontend lint、Playwright E2E、frontend build |
+| Release Gate | backend release gate tests + frontend lint/E2E/build 通過 | GitHub Actions 或本機等價命令輸出 |
 
 未過 Gate 不進入部署或 PR merge。
 

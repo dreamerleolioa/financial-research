@@ -26,6 +26,7 @@ backend/vent/
 .coverage
 .coverage.*
 htmlcov/
+.pnpm-store/
 
 # Type checking / lint cache
 .mypy_cache/

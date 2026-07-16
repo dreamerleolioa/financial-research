@@ -50,6 +50,17 @@
 - Dialog 必須提供 `role="dialog"` 或 `role="alertdialog"`、`aria-modal`、可讀 label，並支援 Escape 關閉。包含長表單或長內容時，scroll 應限制在 overlay 內並使用 `overscroll-contain`。
 - 非必要動效保持短促，只用於按壓回饋與資料更新提示。`prefers-reduced-motion` 啟用時必須移除 refresh highlight 與非必要 transition，不得讓動效成為理解狀態的唯一方式。
 
+## Frontend E2E Quality Gate
+
+`frontend/e2e/` 使用 Playwright Chromium 保護已驗收的跨路由使用流程。E2E 是 browser-level contract，不是視覺 snapshot：
+
+- `playwright.config.ts` 自行啟動隔離的 4173 Vite server，不使用開發者正在操作的 5173，也不沿用既有 4173 process。
+- 測試以 browser context localStorage 與 route interception 提供固定 auth user、假 token 和 deterministic API fixtures，不依賴個人 Google session、production data 或真實 backend。
+- Google OAuth script 在 E2E 中明確阻擋；測試只驗證 login/callback UI、protected route 與 recovery path，不嘗試自動化第三方 Google 登入頁。
+- 穩定 selector 優先使用 role、accessible name、label 與 route URL。只有語意 selector 無法唯一描述互動時才可增加 test id；不得以 Tailwind class、DOM 深度或像素位置作主要契約。
+- 核心保護範圍包括 App Shell 導覽、portfolio 子檢視、theme persistence、Analyze/Watchlist copy-to-AI、Portfolio destructive confirmation、Radar drawer keyboard focus，以及 1280px、375px、320px 的無水平溢出。
+- Pull request release gate 必須依序通過 dependency install、Playwright Chromium install、lint、E2E 與 build。
+
 ## 目錄責任
 
 | 路徑 | 責任 |
@@ -58,6 +69,7 @@
 | `frontend/src/components/` | 跨頁可重用 UI component |
 | `frontend/src/components/app-shell/` | 登入後共用導覽、route family 與響應式 App Shell component |
 | `frontend/src/components/brand/` | 登入前後共用的產品識別 component |
+| `frontend/e2e/` | Playwright browser-level regression tests 與 deterministic API fixtures |
 | `frontend/src/stores/` | Client-only app state，目前主要是 auth |
 | `frontend/src/lib/config.ts` | 前端環境變數正規化 |
 | `frontend/src/lib/apiClient.ts` | HTTP request、token attach、query string、錯誤處理 |
