@@ -6,7 +6,7 @@ import {
 } from "./components/app-shell/AppNavigation";
 import { useAuth } from "./stores/auth";
 import { useDarkMode } from "./stores/theme";
-import { ProductBrand } from "./components/app-shell/ProductBrand";
+import { ProductBrand } from "./components/brand/ProductBrand";
 
 const routeTitles = [
   { matches: (pathname: string) => pathname.startsWith("/watchlist"), title: "關注列表" },

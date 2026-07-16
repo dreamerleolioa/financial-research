@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse } from "../lib/analysisTypes";
@@ -207,6 +207,7 @@ function buildEntryRecord(
 }
 
 export default function AnalyzePage() {
+  const addPortfolioTitleId = useId();
   const [searchParams] = useSearchParams();
   const querySymbol = searchParams.get("symbol") ?? "2330.TW";
   const [symbol, setSymbol] = useState(querySymbol);
@@ -227,6 +228,8 @@ export default function AnalyzePage() {
   const [watchlistStatus, setWatchlistStatus] = useState<"idle" | "success" | "error">("idle");
   const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const addPortfolioDialogRef = useRef<HTMLDivElement>(null);
+  const addPortfolioCloseButtonRef = useRef<HTMLButtonElement>(null);
   const [addForm, setAddForm] = useState<AddPortfolioForm>(() => createInitialAddPortfolioForm());
   const [addLoading, setAddLoading] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -240,6 +243,51 @@ export default function AnalyzePage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!showAddModal) return;
+
+    const previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    addPortfolioCloseButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setShowAddModal(false);
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const dialog = addPortfolioDialogRef.current;
+      if (!dialog) return;
+
+      const focusableElements = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getAttribute("aria-hidden") !== "true");
+      if (focusableElements.length === 0) return;
+
+      const firstFocusableElement = focusableElements[0];
+      const lastFocusableElement = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (event.shiftKey && activeElement === firstFocusableElement) {
+        event.preventDefault();
+        lastFocusableElement.focus();
+      } else if (!event.shiftKey && activeElement === lastFocusableElement) {
+        event.preventDefault();
+        firstFocusableElement.focus();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      previouslyFocusedElement?.focus();
+    };
+  }, [showAddModal]);
 
   function updateTechnicalCopyStatus(status: CopyStatus) {
     if (technicalCopyResetTimerRef.current != null) {
@@ -631,12 +679,11 @@ export default function AnalyzePage() {
             <button
               type="button"
               onClick={() => {
-                setSymbol("2330.TW");
                 symbolInputRef.current?.focus();
               }}
               className="ui-button-secondary"
             >
-              帶入範例代碼
+              開始輸入標的
             </button>
           }
         />
@@ -658,7 +705,7 @@ export default function AnalyzePage() {
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <div
-                className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400"
+                className="h-10 w-10 animate-spin rounded-full border-4 border-accent-soft border-t-accent"
                 style={{ animationDuration: "1s" }}
               />
               <p className="text-sm font-medium text-text-primary">{isRawOnly ? "資料讀取中" : "AI 分析中"}</p>
@@ -708,7 +755,7 @@ export default function AnalyzePage() {
                         </div>
                         <div className="h-2 rounded-full bg-border">
                           <div
-                            className="h-2 rounded-full bg-indigo-600 transition-all"
+                            className="h-2 rounded-full bg-accent"
                             style={{ width: `${Math.max(0, Math.min(confidenceScore ?? 0, 100))}%` }}
                           />
                         </div>
@@ -770,22 +817,37 @@ export default function AnalyzePage() {
       )}
 
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
-          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4">
+          <div
+            ref={addPortfolioDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={addPortfolioTitleId}
+            className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[calc(100dvh-2rem)] sm:rounded-[14px]"
+          >
             <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
               <div className="min-w-0">
-                <h3 className="text-base font-semibold text-text-primary">加入我的持股</h3>
+                <h3 id={addPortfolioTitleId} className="text-base font-semibold text-text-primary">
+                  加入我的持股
+                </h3>
                 <p className="mt-1 text-xs text-text-faint">
                   {analyzedDisplayName}，只儲存你在表單中確認的持股與進場紀錄。
                 </p>
               </div>
               <button
                 type="button"
+                ref={addPortfolioCloseButtonRef}
                 onClick={() => setShowAddModal(false)}
-                className="rounded-lg p-1.5 text-text-faint transition hover:bg-card-hover hover:text-text-secondary"
-                aria-label="關閉"
+                className="ui-icon-button shrink-0 border border-border"
+                aria-label="關閉加入持股視窗"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
                   <path
                     fillRule="evenodd"
                     d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -796,7 +858,7 @@ export default function AnalyzePage() {
             </div>
 
             <form onSubmit={handleAddPortfolio} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              <div className="min-h-0 flex-1 overscroll-contain overflow-y-auto px-5 py-4">
                 <div className="space-y-5">
                   <section className="space-y-3">
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -805,7 +867,7 @@ export default function AnalyzePage() {
                         <input
                           value={symbol}
                           readOnly
-                          className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm font-medium text-text-secondary"
+                          className="ui-input bg-card-hover font-medium text-text-secondary"
                         />
                       </label>
                       {analyzedSymbolName && (
@@ -814,7 +876,7 @@ export default function AnalyzePage() {
                           <input
                             value={analyzedSymbolName}
                             readOnly
-                            className="w-full rounded-lg border border-border bg-card-hover px-3 py-2 text-sm font-medium text-text-secondary"
+                            className="ui-input bg-card-hover font-medium text-text-secondary"
                           />
                         </label>
                       )}
@@ -830,7 +892,7 @@ export default function AnalyzePage() {
                           min="0.01"
                           step="0.01"
                           placeholder="980"
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         />
                       </label>
                       <label className="space-y-1">
@@ -842,7 +904,7 @@ export default function AnalyzePage() {
                           required
                           min="1"
                           placeholder="1000"
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         />
                       </label>
                       <label className="space-y-1">
@@ -851,7 +913,7 @@ export default function AnalyzePage() {
                           type="date"
                           value={addForm.entry_date}
                           onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))}
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         />
                       </label>
                     </div>
@@ -881,7 +943,7 @@ export default function AnalyzePage() {
                               entry_reason: e.target.value as AddPortfolioForm["entry_reason"],
                             }))
                           }
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         >
                           <option value="">未選擇（不送出）</option>
                           {ENTRY_RECORD_REASON_OPTIONS.map((option) => (
@@ -901,7 +963,7 @@ export default function AnalyzePage() {
                               planned_holding_period: e.target.value as AddPortfolioForm["planned_holding_period"],
                             }))
                           }
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         >
                           <option value="">未選擇（不送出）</option>
                           {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => (
@@ -918,7 +980,7 @@ export default function AnalyzePage() {
                           onChange={(e) =>
                             handleDefaultStopRuleChange(e.target.value as AddPortfolioForm["default_stop_rule"])
                           }
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         >
                           <option value="">未選擇（不送出）</option>
                           {DEFAULT_STOP_RULE_OPTIONS.map((option) => (
@@ -943,7 +1005,7 @@ export default function AnalyzePage() {
                                 ? formatPriceForInput(autoPlannedStopPrice)
                                 : "未選擇則不送出"
                           }
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         />
                         <span className="block text-xs leading-relaxed text-text-faint">
                           MA20、MA60、20 日低點可從本次分析帶入；固定價格請手動確認。
@@ -959,7 +1021,7 @@ export default function AnalyzePage() {
                               add_entry_condition: e.target.value as AddPortfolioForm["add_entry_condition"],
                             }))
                           }
-                          className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                          className="ui-input"
                         >
                           <option value="">未選擇（不送出）</option>
                           {ADD_ENTRY_CONDITION_OPTIONS.map((option) => (
@@ -978,14 +1040,14 @@ export default function AnalyzePage() {
                         onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
                         rows={3}
                         placeholder="補充你已確認的進場脈絡"
-                        className="w-full resize-none rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 dark:ring-indigo-500"
+                        className="ui-input resize-none py-2"
                       />
                     </label>
                   </section>
                 </div>
               </div>
 
-              <div className="border-t border-border-subtle bg-card px-5 py-4">
+              <div className="border-t border-border-subtle bg-surface-raised px-5 py-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))]">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   {addError ? (
                     <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
@@ -995,18 +1057,10 @@ export default function AnalyzePage() {
                     <p className="text-xs text-text-faint">必填欄位完成後即可加入持股。</p>
                   )}
                   <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowAddModal(false)}
-                      className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted transition hover:bg-card-hover"
-                    >
+                    <button type="button" onClick={() => setShowAddModal(false)} className="ui-button-secondary">
                       取消
                     </button>
-                    <button
-                      type="submit"
-                      disabled={addLoading}
-                      className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:opacity-60"
-                    >
+                    <button type="submit" disabled={addLoading} className="ui-button-primary">
                       {addLoading ? "新增中..." : "確認新增"}
                     </button>
                   </div>

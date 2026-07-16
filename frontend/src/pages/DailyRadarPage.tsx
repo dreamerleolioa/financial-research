@@ -1244,17 +1244,17 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
   const dataDateEntries = Object.entries(candidate.data_dates);
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/45 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/55" onClick={onClose}>
       <aside
         ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="h-full w-full max-w-2xl overscroll-contain overflow-y-auto border-l border-border bg-card shadow-2xl"
+        className="h-full w-full max-w-2xl overscroll-contain overflow-y-auto border-l border-border bg-surface-raised shadow-panel"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="sticky top-0 z-10 border-b border-border-subtle bg-card/95 px-5 py-4 backdrop-blur">
+        <div className="sticky top-0 z-10 border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide text-text-faint">候選追蹤細節</p>
@@ -1387,7 +1387,11 @@ function WholeRunEmptyState({ onRefresh }: { onRefresh?: () => void }) {
           <button type="button" onClick={onRefresh} className="ui-button-primary">
             重新讀取雷達
           </button>
-        ) : undefined
+        ) : (
+          <Link to="/analyze" className="ui-button-secondary">
+            前往個股分析
+          </Link>
+        )
       }
     />
   );

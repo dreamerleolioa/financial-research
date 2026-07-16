@@ -1315,10 +1315,15 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
       ref={backdropRef}
       onMouseDown={handleBackdropMouseDown}
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-card shadow-xl">
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${portfolioDisplayName(item)} 檢討分析`}
+        className="max-h-[92dvh] w-full max-w-3xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 檢討分析</p>
             <p className="mt-1 text-xs text-text-faint">
@@ -1329,7 +1334,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
             aria-label="關閉檢討分析"
           >
             <svg
@@ -1351,7 +1356,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
         <div className="space-y-4 p-5">
           {loading && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
+              <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
               <p className="text-sm font-medium text-text-primary">載入檢討分析中</p>
               <p className="text-xs text-text-muted">若尚未產生，會建立這筆結案批次的檢討。</p>
             </div>
@@ -1370,11 +1375,7 @@ function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence,
                   <p className="text-xs font-medium text-text-muted">檢討版本</p>
                   <p className="mt-1 text-sm text-text-primary">{review.review_version}</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={onCopyEvidence}
-                  className="rounded-lg border border-indigo-500/40 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:text-indigo-300 dark:hover:bg-indigo-950"
-                >
+                <button type="button" onClick={onCopyEvidence} className="ui-button-secondary">
                   {copyStatus === "success" ? "已複製指標資料" : copyStatus === "error" ? "複製失敗" : "複製指標資料"}
                 </button>
               </div>
@@ -1422,10 +1423,15 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
       ref={backdropRef}
       onMouseDown={handleBackdropMouseDown}
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="max-h-[85vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-card shadow-xl">
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${portfolioDisplayName(group)} 事件時間線`}
+        className="max-h-[92dvh] w-full max-w-4xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件時間線</p>
             <p className="mt-1 text-xs text-text-faint">
@@ -1435,7 +1441,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
             aria-label="關閉事件時間線"
           >
             <svg
@@ -1471,7 +1477,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
 
           {loading && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
+              <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
               <p className="text-sm font-medium text-text-primary">載入事件時間線中</p>
               <p className="text-xs text-text-muted">正在讀取這個部位群組的事件紀錄。</p>
             </div>
@@ -1641,10 +1647,15 @@ function LifecycleReviewModal({
       ref={backdropRef}
       onMouseDown={handleBackdropMouseDown}
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="max-h-[85vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-card shadow-xl">
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${portfolioDisplayName(group)} 整體部位檢討`}
+        className="max-h-[92dvh] w-full max-w-5xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 整體部位檢討</p>
             <p className="mt-1 text-xs text-text-faint">
@@ -1654,7 +1665,7 @@ function LifecycleReviewModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
             aria-label="關閉整體部位檢討"
           >
             <svg
@@ -1692,7 +1703,7 @@ function LifecycleReviewModal({
 
           {loading && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
+              <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
               <p className="text-sm font-medium text-text-primary">載入整體部位檢討中</p>
               <p className="text-xs text-text-muted">若尚未產生，會建立這個部位群組的生命週期檢討。</p>
             </div>
@@ -1711,11 +1722,7 @@ function LifecycleReviewModal({
                   <p className="text-xs font-medium text-text-muted">檢討版本</p>
                   <p className="mt-1 text-sm text-text-primary">{review.review_version}</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={onCopyEvidence}
-                  className="rounded-lg border border-indigo-500/40 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:text-indigo-300 dark:hover:bg-indigo-950"
-                >
+                <button type="button" onClick={onCopyEvidence} className="ui-button-secondary">
                   {copyStatus === "success"
                     ? "已複製生命週期證據"
                     : copyStatus === "error"

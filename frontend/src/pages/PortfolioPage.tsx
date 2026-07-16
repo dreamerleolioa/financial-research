@@ -207,10 +207,15 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
         if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
         mouseDownOnBackdrop.current = false;
       }}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`補填 ${portfolioDisplayName(item)} 操作計畫`}
+        className="max-h-[92dvh] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">補填操作計畫 · {portfolioDisplayName(item)}</p>
             <p className="mt-1 text-xs text-text-faint">
@@ -218,10 +223,18 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
+            aria-label="關閉補填操作計畫"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path
                 fillRule="evenodd"
                 d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -381,18 +394,11 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
           )}
         </div>
 
-        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border-subtle bg-card px-5 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
-          >
+        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border-subtle bg-surface-raised px-5 py-4">
+          <button type="button" onClick={onClose} className="ui-button-secondary">
             取消
           </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
+          <button type="button" onClick={handleSave} disabled={saving} className="ui-button-primary">
             {saving ? "儲存中…" : "儲存事後補填 plan"}
           </button>
         </div>
@@ -608,10 +614,15 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
         if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
         mouseDownOnBackdrop.current = false;
       }}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
-        <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`編輯 ${portfolioDisplayName(item)} 持股與計畫`}
+        className="max-h-[92dvh] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">編輯持股與計畫 · {portfolioDisplayName(item)}</p>
             {lifecyclePlanQuery.data?.source && (
@@ -621,10 +632,18 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
             )}
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
+            aria-label="關閉編輯持股與計畫"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path
                 fillRule="evenodd"
                 d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -829,18 +848,11 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
         </div>
 
         <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
-          >
+          <button type="button" onClick={onClose} className="ui-button-secondary">
             {saved ? "關閉" : "取消"}
           </button>
           {!saved && (
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-            >
+            <button type="button" onClick={handleSave} disabled={saving} className="ui-button-primary">
               {saving ? "儲存中…" : "儲存持股與計畫"}
             </button>
           )}
@@ -943,10 +955,15 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
         if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
         mouseDownOnBackdrop.current = false;
       }}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="w-full max-w-md rounded-2xl bg-card shadow-xl">
-        <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`結案 ${portfolioDisplayName(item)} 批次`}
+        className="max-h-[92dvh] w-full max-w-md overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">結案批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
@@ -954,10 +971,18 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
+            aria-label="關閉結案批次記錄"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path
                 fillRule="evenodd"
                 d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -1035,17 +1060,10 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
         </div>
 
         <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
-          >
+          <button type="button" onClick={onClose} className="ui-button-secondary">
             取消
           </button>
-          <button
-            onClick={handleClosePosition}
-            disabled={closing}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
+          <button type="button" onClick={handleClosePosition} disabled={closing} className="ui-button-primary">
             {closing ? "結案中…" : "確認結案"}
           </button>
         </div>
@@ -1157,10 +1175,15 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
         if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
         mouseDownOnBackdrop.current = false;
       }}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-card shadow-xl">
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`新增 ${portfolioDisplayName(item)} 批次`}
+        className="max-h-[92dvh] w-full max-w-xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">新增批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
@@ -1168,10 +1191,18 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
+            aria-label="關閉新增批次記錄"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path
                 fillRule="evenodd"
                 d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -1322,18 +1353,11 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
           )}
         </div>
 
-        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border-subtle bg-card px-5 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
-          >
+        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border-subtle bg-surface-raised px-5 py-4">
+          <button type="button" onClick={onClose} className="ui-button-secondary">
             取消
           </button>
-          <button
-            onClick={handleAddEntry}
-            disabled={submitting}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
+          <button type="button" onClick={handleAddEntry} disabled={submitting} className="ui-button-primary">
             {submitting ? "記錄中…" : "確認記錄"}
           </button>
         </div>
@@ -1388,9 +1412,14 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
         if (mouseDownOnBackdrop.current && e.target === backdropRef.current) onClose();
         mouseDownOnBackdrop.current = false;
       }}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="w-full max-w-sm rounded-2xl bg-card shadow-xl">
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={`刪除 ${portfolioDisplayName(item)} 持股`}
+        className="w-full max-w-sm rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:rounded-[14px]"
+      >
         <div className="p-5">
           <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-950">
             <svg
@@ -1418,16 +1447,14 @@ function DeleteConfirmModal({ item, onClose, onDeleted }: DeleteConfirmModalProp
           )}
         </div>
         <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted hover:bg-card-hover"
-          >
+          <button type="button" onClick={onClose} className="ui-button-secondary">
             取消
           </button>
           <button
+            type="button"
             onClick={handleDelete}
             disabled={deleting}
-            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-[10px] bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
           >
             {deleting ? "刪除中…" : "確認刪除"}
           </button>
@@ -1987,11 +2014,16 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
       ref={backdropRef}
       onMouseDown={handleBackdropMouseDown}
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
     >
-      <div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl bg-card shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${portfolioDisplayName(item)} 持股診斷`}
+        className="max-h-[92dvh] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
+      >
         {/* Header */}
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-card px-5 py-4">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-surface-raised px-5 py-4">
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 持股診斷</p>
             <p className="text-xs text-text-faint">
@@ -2000,10 +2032,18 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-text-faint hover:bg-card-hover hover:text-text-secondary"
+            className="ui-icon-button shrink-0 border border-border"
+            aria-label="關閉持股診斷"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path
                 fillRule="evenodd"
                 d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
@@ -2018,7 +2058,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
           {loading && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <div
-                className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400"
+                className="h-10 w-10 animate-spin rounded-full border-4 border-accent-soft border-t-accent"
                 style={{ animationDuration: "1s" }}
               />
               <p className="text-sm font-medium text-text-primary">AI 持倉診斷中</p>

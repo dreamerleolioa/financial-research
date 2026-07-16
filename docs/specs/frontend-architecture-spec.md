@@ -38,6 +38,18 @@
 
 主題 token 集中在 `frontend/src/index.css`，以 OKLCH 定義 canvas、shell、surface、文字、邊界、accent、signal、positive 與 negative 等語意角色。既有 route component 在後續頁面重構前，暫時透過相容色階把舊 `indigo-*` utility 映射到新的墨綠 accent；新 App Shell 與新共用樣式不得再新增 indigo 作為產品語意。
 
+## Authentication、空狀態與 Overlay
+
+登入前與登入後使用同一套產品識別、語意色彩和主題切換規則，但保持不同的資訊密度：
+
+- `/login` 與 `/login/callback` 共用 `frontend/src/components/auth/AuthenticationShell.tsx`。桌面以研究流程與登入操作形成雙欄；窄螢幕只保留產品識別、主題切換與當前登入狀態。
+- `AuthenticationShell` 只負責呈現。Google OAuth flow、redirect URI、token 保存、`/auth/me` 驗證與成功後導向仍由既有 auth store 和 route page 管理，不得為了視覺調整改寫登入契約。
+- 尚未有資料時使用 `frontend/src/components/app-shell/WorkspaceEmptyState.tsx`。空狀態必須說明目前狀態、可採取的下一步，並在適用時直接提供主要 action；不得只顯示「沒有資料」。
+- Analyze、Watchlist、Closed Portfolio 與 Daily Radar 的空狀態沿用各自 workflow 語義。空狀態文案不得把沒有候選、沒有持股或沒有結案紀錄解讀為投資結論。
+- Modal 在窄螢幕使用底部 sheet，在桌面置中；drawer 固定從右側進入。兩者使用語意 surface、14px 圓角、低眩光遮罩與一致的 close control。
+- Dialog 必須提供 `role="dialog"` 或 `role="alertdialog"`、`aria-modal`、可讀 label，並支援 Escape 關閉。包含長表單或長內容時，scroll 應限制在 overlay 內並使用 `overscroll-contain`。
+- 非必要動效保持短促，只用於按壓回饋與資料更新提示。`prefers-reduced-motion` 啟用時必須移除 refresh highlight 與非必要 transition，不得讓動效成為理解狀態的唯一方式。
+
 ## 目錄責任
 
 | 路徑 | 責任 |
@@ -45,6 +57,7 @@
 | `frontend/src/pages/` | Route-level screen，負責畫面組合、表單狀態、modal 狀態和局部互動流程 |
 | `frontend/src/components/` | 跨頁可重用 UI component |
 | `frontend/src/components/app-shell/` | 登入後共用導覽、route family 與響應式 App Shell component |
+| `frontend/src/components/brand/` | 登入前後共用的產品識別 component |
 | `frontend/src/stores/` | Client-only app state，目前主要是 auth |
 | `frontend/src/lib/config.ts` | 前端環境變數正規化 |
 | `frontend/src/lib/apiClient.ts` | HTTP request、token attach、query string、錯誤處理 |

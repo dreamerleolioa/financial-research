@@ -1,12 +1,6 @@
 import { Link } from "react-router-dom";
 
-export function ProductBrand({
-  compact = false,
-  to = "/analyze",
-}: {
-  compact?: boolean;
-  to?: string;
-}) {
+export function ProductBrand({ compact = false, to = "/analyze" }: { compact?: boolean; to?: string }) {
   return (
     <Link to={to} className="group flex min-w-0 items-center gap-3 rounded-[10px]">
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-accent/30 bg-accent-soft text-sm font-semibold text-accent shadow-panel">
