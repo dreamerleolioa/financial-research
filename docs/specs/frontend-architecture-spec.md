@@ -1,6 +1,6 @@
 # 前端架構規格
 
-> 最近同步：2026-06-24。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
+> 最近同步：2026-07-16。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
 
 ## 技術棧
 
@@ -24,12 +24,52 @@
 
 這個順序的重點是：API page 和 feature hooks 都能讀到 auth context 與 query client，route 保護邏輯仍集中在入口，不分散到各 page。
 
+## App Shell 與響應式導覽
+
+`frontend/src/App.tsx` 是登入後共用的 App Shell，只負責產品框架、導覽、使用者控制、主題切換與 route outlet，不承接任何 domain data flow。
+
+- `1024px` 以上使用 224px 左側欄，主要流程為個股分析、關注列表、持股管理與盤後觀察雷達。
+- 桌面 App Shell 使用完整 viewport 寬度，側欄固定貼齊左側；主要內容從側欄後方開始，左對齊並限制最大寬度為 1440px，超寬螢幕的剩餘空間保留在右側。
+- `1024px` 以下使用 56px 頂部列與固定四項底部導覽，標籤為分析、關注、持股、雷達。
+- `/portfolio` 與 `/portfolio/closed` 保留既有 URL，但在導覽上屬於同一個持股管理 family；桌面在側欄顯示持有中、已結案子項目，行動版在內容頂部顯示子檢視切換。
+- 共用導覽與 icon 定義集中在 `frontend/src/components/app-shell/AppNavigation.tsx`。Route page 不自行建立另一套全域導覽。
+- App Shell 提供 `跳至主要內容` 連結。每個登入後 route 由 App Shell 產生唯一的 page-level `h1`；頁面內可見區塊從 `h2` 開始，避免產品名稱與 route 標題互相競爭。
+- App Shell 不設定 320px 固定最小寬度。320px viewport 在有傳統垂直捲軸時，可用內容寬度可能小於 320px，外框必須跟隨 `documentElement.clientWidth` 收縮，不能產生水平頁面捲動。
+
+主題 token 集中在 `frontend/src/index.css`，以 OKLCH 定義 canvas、shell、surface、文字、邊界、accent、signal、positive 與 negative 等語意角色。既有 route component 在後續頁面重構前，暫時透過相容色階把舊 `indigo-*` utility 映射到新的墨綠 accent；新 App Shell 與新共用樣式不得再新增 indigo 作為產品語意。
+
+## Authentication、空狀態與 Overlay
+
+登入前與登入後使用同一套產品識別、語意色彩和主題切換規則，但保持不同的資訊密度：
+
+- `/login` 與 `/login/callback` 共用 `frontend/src/components/auth/AuthenticationShell.tsx`。桌面以研究流程與登入操作形成雙欄；窄螢幕只保留產品識別、主題切換與當前登入狀態。
+- `AuthenticationShell` 只負責呈現。Google OAuth flow、redirect URI、token 保存、`/auth/me` 驗證與成功後導向仍由既有 auth store 和 route page 管理，不得為了視覺調整改寫登入契約。
+- 尚未有資料時使用 `frontend/src/components/app-shell/WorkspaceEmptyState.tsx`。空狀態必須說明目前狀態、可採取的下一步，並在適用時直接提供主要 action；不得只顯示「沒有資料」。
+- Analyze、Watchlist、Closed Portfolio 與 Daily Radar 的空狀態沿用各自 workflow 語義。空狀態文案不得把沒有候選、沒有持股或沒有結案紀錄解讀為投資結論。
+- Modal 在窄螢幕使用底部 sheet，在桌面置中；drawer 固定從右側進入。兩者使用語意 surface、14px 圓角、低眩光遮罩與一致的 close control。
+- Dialog 必須提供 `role="dialog"` 或 `role="alertdialog"`、`aria-modal`、可讀 label，並支援 Escape 關閉。包含長表單或長內容時，scroll 應限制在 overlay 內並使用 `overscroll-contain`。
+- 非必要動效保持短促，只用於按壓回饋與資料更新提示。`prefers-reduced-motion` 啟用時必須移除 refresh highlight 與非必要 transition，不得讓動效成為理解狀態的唯一方式。
+
+## Frontend E2E Quality Gate
+
+`frontend/e2e/` 使用 Playwright Chromium 保護已驗收的跨路由使用流程。E2E 是 browser-level contract，不是視覺 snapshot：
+
+- `playwright.config.ts` 自行啟動隔離的 4173 Vite server，不使用開發者正在操作的 5173，也不沿用既有 4173 process。
+- 測試以 browser context localStorage 與 route interception 提供固定 auth user、假 token 和 deterministic API fixtures，不依賴個人 Google session、production data 或真實 backend。
+- Google OAuth script 在 E2E 中明確阻擋；測試只驗證 login/callback UI、protected route 與 recovery path，不嘗試自動化第三方 Google 登入頁。
+- 穩定 selector 優先使用 role、accessible name、label 與 route URL。只有語意 selector 無法唯一描述互動時才可增加 test id；不得以 Tailwind class、DOM 深度或像素位置作主要契約。
+- 核心保護範圍包括 App Shell 導覽、portfolio 子檢視、theme persistence、Analyze/Watchlist copy-to-AI、Portfolio destructive confirmation、Radar drawer keyboard focus，以及 1280px、375px、320px 的無水平溢出。
+- Pull request release gate 必須依序通過 dependency install、Playwright Chromium install、lint、E2E 與 build。
+
 ## 目錄責任
 
 | 路徑 | 責任 |
 | --- | --- |
 | `frontend/src/pages/` | Route-level screen，負責畫面組合、表單狀態、modal 狀態和局部互動流程 |
 | `frontend/src/components/` | 跨頁可重用 UI component |
+| `frontend/src/components/app-shell/` | 登入後共用導覽、route family 與響應式 App Shell component |
+| `frontend/src/components/brand/` | 登入前後共用的產品識別 component |
+| `frontend/e2e/` | Playwright browser-level regression tests 與 deterministic API fixtures |
 | `frontend/src/stores/` | Client-only app state，目前主要是 auth |
 | `frontend/src/lib/config.ts` | 前端環境變數正規化 |
 | `frontend/src/lib/apiClient.ts` | HTTP request、token attach、query string、錯誤處理 |
@@ -89,10 +129,24 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 這些 key 是 cache topology 的正式邊界。新增 portfolio read surface 時，先補 query key，再補 query hook，最後才接 page。
 
+## Portfolio Workspace Presentation
+
+`/portfolio` 與 `/portfolio/closed` 是同一個持股管理 workflow 的兩個狀態。App Shell 對兩個 route 使用同一個 page-level `h1`，並以 `持有中`、`已結案` 子導覽切換；頁面內再以 section heading 說明目前狀態。
+
+- Active risk strip：`PortfolioRiskSummaryPanel` 預設以固定 KPI 順序顯示總市值、未實現損益、防守線前可能回吐與整體防守狀態。防守判讀、data-quality caveat 與持股 AVWAP 觀察收在同一個可展開細節區。
+- Active position rows：桌面欄位順序固定為持股、目前狀態、未實現損益、距防守、資料新鮮度、操作。行動版使用兩欄資料卡，但維持相同閱讀順序，不以橫向表格呈現。
+- Active primary action：`即時分析` 是每筆持股唯一持續可見的主要操作。歷史紀錄、新增批次、結案、編輯、補填操作計畫與刪除收進情境操作選單；這只調整操作層級，不改 mutation、confirmation 或 lifecycle 行為。
+- Caveat hierarchy：缺少 plan、風險資料注意與資料不足仍需在持股列可見，但只作次要狀態，不得以大型警告卡壓過部位狀態與防守距離。
+- Closed position groups：已結案頁先顯示期間已實現損益與部位群組數量，再以部位群組彙整結案規模、總損益、整體部位檢討、事件時間線與每筆結案批次。既有單筆交易檢討與生命週期檢討 API 行為維持不變。
+
 ## Analyze Technical Indicator Surface
 
 `AnalyzePage` 與 Watchlist quick lookup 共用 `frontend/src/components/TechnicalIndicatorsPanel.tsx` 顯示技術指標。`POST /analyze` response 經 `frontend/src/lib/analysisSchemas.ts` 驗證後可包含 `technical_profile` 與 legacy `technical_indicators`：
 
+- Analyze 研究入口需把 `skip_ai: true` 的快速資料與完整 AI 分析呈現為兩個明確選項。快速資料是 deterministic 的技術與風險資料讀取；完整分析才包含 AI 報告與近期新聞。
+- 尚未送出分析時，頁面只顯示研究入口與單一研究流程說明，不預先渲染空的風險、報告與新聞卡片。這能讓第一個 viewport 聚焦在選擇標的與研究深度。
+- 每次送出快速或完整分析前都必須清除前一次結果，並沿用 AbortController 中止舊 request，避免切換標的或研究深度時留下 stale result。
+- 快速資料完成後可在結果區直接補做完整分析，但不得自動觸發 AI。完整報告與近期新聞只在完整分析成功後顯示。
 - `technical_profile` 存在時，面板先顯示完整指標值，再於下方提供預設收合的技術分層摘要；展開後顯示技術分、主要判斷、風險與過熱濾網、輔助證據與 data-quality caveat。
 - 缺少 `technical_profile` 時，面板 fallback 為 legacy raw 技術指標值，不顯示分層結論。
 - 缺少 raw `technical_indicators` 時，面板保留分層摘要可見性，並在完整指標值區顯示資料不足提示。
@@ -135,6 +189,7 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - route：`frontend/src/main.tsx` 以 `ProtectedRoute` 保護 `/watchlist`。
 - page：`frontend/src/pages/WatchlistPage.tsx` 負責列表、刪除、備註編輯、拖拉排序預覽，以及列表內技術指標快查。
 - API client：`frontend/src/lib/watchlistApi.ts` 透過 `requestJson` 呼叫 authenticated `/watchlist` endpoints，包含 `PUT /watchlist/reorder` 的完整清單排序更新。
+- List density：預設列只顯示排序控制、標的、加入時間、觀察條件與主要操作。備註 textarea 只在使用者點擊「編輯備註」後展開，取消時還原 server value，儲存成功後收合；同一時間只開啟一筆備註編輯。
 - Quick technical lookup：Watchlist 內的技術快查呼叫 `POST /analyze` 並帶 `skip_ai: true`，取得 deterministic `technical_profile`、legacy raw 技術指標與 snapshot，不執行完整 AI 分析；面板與 Analyze 共用 `TechnicalIndicatorsPanel`，支援複製完整 raw/context 指標摘要供外部 AI agent 深度分析。頁面可單筆查詢，也可一鍵批次補查尚未載入的關注標的；所有標的已載入後，批次按鈕改為重新快查全部。
 - 試驗版 AVWAP trace：Watchlist quick lookup 會讀取 `AnalyzeResponse.phase1_observation`，並在完整技術指標值下方、技術分層摘要上方顯示可用 AVWAP anchors 或 missing snapshot 狀態。Analyze / Watchlist / copy-to-AI 顯示「現價距離 AVWAP」時必須使用 `current_distance_to_avwap_pct`；`distance_to_avwap_pct` 是 snapshot 資料日 `snapshot_close` 距離，只能作資料日 trace。這是 read-only trace，不新增 watchlist indicator endpoint，不寫入 portfolio，也不改 Daily Radar scoring/ranking。
 - 籌碼穩定性補充：Watchlist quick lookup / Analyze response 可接收 `chip_stability_context`，但它不是技術指標分數的一部分。複製完整指標摘要時，若 response 有此欄位，`buildTechnicalIndicatorsCopyText()` 只輸出 `千張大戶持股比例`、`較上週變化`，以及最多 5 週歷史資料；不輸出 companion 標題、長 caveat 或 score/ranking 說明文字。
@@ -146,8 +201,10 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 
 `DailyRadarPage` 是每日觀察清單，不是交易指令頁。列表使用後端已排序的 candidates；前端不得因試驗版 AVWAP trace 重新排序、重新分類或調整風險標籤。
 
-- Candidate list：顯示 symbol/name、bucket、repeat status、風險標籤、加入關注與單股分析 link。
-- Detail drawer：顯示觀察理由、背景脈絡、`input_snapshot.phase1_avwap_context` 的試驗版 AVWAP 脈絡、技術 trace 與資料日期。
+- Run status：掃描日、執行狀態、候選數與資料新鮮度使用同一個狀態區呈現。各資料源日期預設收合，只有使用者展開時才顯示完整清單；資料落後時仍須顯示明確警示。
+- Bucket filters：候選分類篩選在捲動時保持可用，窄螢幕改為區塊內水平捲動，不得造成整頁水平溢出。
+- Candidate list：以固定比較欄顯示 symbol/name、repeat status、bucket、風險標籤與操作。列表不重複顯示分類研究論述，也不顯示 internal score、bucket score、rule code 或 raw backend identifier；加入關注仍保留在列表，單股完整分析 link 移至 detail drawer 頂部。
+- Detail drawer：顯示觀察理由、隔日觀察點、失效條件、背景脈絡、`input_snapshot.phase1_avwap_context` 的試驗版 AVWAP 脈絡、可讀規則細節與資料日期。技術細節不得顯示分類分數、規則代碼或完整 raw input snapshot。
 - 試驗版 AVWAP trace：只在 detail drawer 顯示 anchors、距離、資料日期、dataset、adjustment mode 與 missing snapshot 狀態；不得寫入 watchlist/portfolio，也不得改 Daily Radar scoring/ranking/bucket/matched rules。
 
 ## API Boundary Validation
@@ -210,7 +267,7 @@ Page 不應做：
 - `PortfolioPage` 仍可再拆成更小的 component，例如 risk panel、position card、modal group。
 - Portfolio history 展開目前仍是 local async state；若歷史列表會被更多流程共用，可改成 `usePortfolioHistoryQuery(id, enabled)`。
 - `POST /analyze/position` 尚未導入 Zod parser；目前本輪只補 `POST /analyze` 與 `GET /portfolio/risk-summary`。
-- Bundle 已超過 Vite 預設 500 kB warning，可在功能穩定後評估 route-level dynamic import。
+- 完整介面視覺驗收後，補上登入狀態、App Shell、核心 route 與 1280px、375px、320px viewport 的 E2E regression coverage。
 
 ## 驗證命令
 

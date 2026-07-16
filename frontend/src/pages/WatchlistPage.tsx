@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
 import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
+import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import { formatPrice } from "../lib/formatters";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -194,7 +195,7 @@ function WatchlistTechnicalPanel({
   const quickSessionLabel = quickResult?.is_final === false ? "盤中" : "收盤";
 
   return (
-    <div className="rounded-lg border border-border bg-card-hover/50 p-4 md:col-span-4">
+    <div className="col-span-2 rounded-lg border border-border bg-card-hover/50 p-4 md:col-span-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-text-primary">技術指標快查</p>
@@ -208,7 +209,7 @@ function WatchlistTechnicalPanel({
             type="button"
             onClick={onRefresh}
             disabled={listBusy || technicalState.loading}
-            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-secondary transition hover:bg-card disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-secondary min-h-10 px-3 text-xs"
           >
             更新
           </button>
@@ -216,7 +217,7 @@ function WatchlistTechnicalPanel({
             type="button"
             onClick={onCopy}
             disabled={!quickResult}
-            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`inline-flex min-h-10 items-center justify-center rounded-[10px] border px-3 text-xs font-medium transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transform-none ${
               technicalState.copyStatus === "success"
                 ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
                 : technicalState.copyStatus === "error"
@@ -273,8 +274,10 @@ function WatchlistTechnicalPanel({
 export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [symbol, setSymbol] = useState("");
+  const symbolInputRef = useRef<HTMLInputElement>(null);
   const [notes, setNotes] = useState("");
   const [noteDrafts, setNoteDrafts] = useState<Record<number, string>>({});
+  const [editingNoteItemId, setEditingNoteItemId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busyItemId, setBusyItemId] = useState<number | null>(null);
@@ -505,11 +508,22 @@ export default function WatchlistPage() {
       });
       setItems((current) => current.map((row) => (row.id === updated.id ? updated : row)));
       setNoteDrafts((current) => ({ ...current, [updated.id]: updated.notes ?? "" }));
+      setEditingNoteItemId((current) => (current === updated.id ? null : current));
     } catch (err) {
       setError(err instanceof Error ? err.message : "更新備註失敗");
     } finally {
       setBusyItemId(null);
     }
+  }
+
+  function handleEditNotes(item: WatchlistItem) {
+    setNoteDrafts((current) => ({ ...current, [item.id]: item.notes ?? "" }));
+    setEditingNoteItemId(item.id);
+  }
+
+  function handleCancelNotes(item: WatchlistItem) {
+    setNoteDrafts((current) => ({ ...current, [item.id]: item.notes ?? "" }));
+    setEditingNoteItemId((current) => (current === item.id ? null : current));
   }
 
   async function persistWatchlistOrder(itemIds: number[]) {
@@ -624,6 +638,7 @@ export default function WatchlistPage() {
     try {
       await deleteWatchlistItem(item.id);
       setItems((current) => current.filter((row) => row.id !== item.id));
+      setEditingNoteItemId((current) => (current === item.id ? null : current));
       setNoteDrafts((current) => {
         const next = { ...current };
         delete next[item.id];
@@ -654,21 +669,24 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-4 shadow-sm md:p-6">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
+        <div className="flex flex-col gap-3 border-b border-border-subtle px-4 py-4 sm:flex-row sm:items-end sm:justify-between md:px-6">
           <div>
-            <h2 className="text-base font-semibold text-text-primary">關注列表</h2>
+            <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-text-faint uppercase">
+              Observation queue
+            </p>
+            <h2 className="mt-2 text-lg font-semibold text-text-primary">建立待研究清單</h2>
             <p className="mt-1 text-xs text-text-muted">
-              儲存還沒進入持股的觀察標的，可在列表內快速查看技術指標並複製摘要。
+              僅保留觀察標的、技術快查與 copy-to-AI 摘要，不會在此執行完整 AI 分析。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            <span className="text-xs text-text-faint">{itemCount} 檔關注中</span>
+            <span className="ui-badge tabular-nums">{itemCount} 檔關注中</span>
             <button
               type="button"
               onClick={() => void handleBulkTechnicalLookup()}
               disabled={loading || itemCount === 0 || listActionBusy}
-              className="rounded-lg border border-indigo-500/70 bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:border-border disabled:bg-card-hover disabled:text-text-faint"
+              className="ui-button-secondary min-h-10 px-3 text-xs"
             >
               {bulkLookupButtonLabel}
             </button>
@@ -677,16 +695,17 @@ export default function WatchlistPage() {
 
         <form
           onSubmit={handleAddItem}
-          className="grid gap-3 md:grid-cols-[minmax(160px,220px)_minmax(0,1fr)_auto] md:items-start"
+          className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(160px,220px)_minmax(0,1fr)_auto] md:items-end md:px-6"
         >
           <label className="space-y-1">
             <span className="text-xs font-medium text-text-muted">股票代碼</span>
             <input
+              ref={symbolInputRef}
               value={symbol}
               onChange={(event) => setSymbol(event.target.value)}
               placeholder="例如 2330.TW"
               disabled={saving}
-              className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 disabled:opacity-60 dark:ring-indigo-500"
+              className="ui-input font-medium tabular-nums"
             />
           </label>
           <label className="space-y-1">
@@ -696,35 +715,40 @@ export default function WatchlistPage() {
               onChange={(event) => setNotes(event.target.value)}
               placeholder="例如：等量縮回測 MA20"
               disabled={saving}
-              className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 disabled:opacity-60 dark:ring-indigo-500"
+              className="ui-input"
             />
           </label>
-          <button
-            type="submit"
-            disabled={saving || !symbol.trim()}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60 md:mt-5"
-          >
+          <button type="submit" disabled={saving || !symbol.trim()} className="ui-button-primary">
             {saving ? "儲存中..." : "加入關注"}
           </button>
         </form>
       </section>
 
-      <section className="rounded-xl border border-border bg-card shadow-sm">
+      <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
         {loading ? (
           <div className="flex items-center justify-center gap-3 px-4 py-12 text-sm text-text-muted">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
             讀取關注列表中
           </div>
         ) : visibleItems.length === 0 ? (
-          <div className="px-4 py-12 text-center">
-            <p className="text-sm font-medium text-text-primary">尚未加入關注股票</p>
-            <p className="mt-1 text-xs text-text-muted">從上方輸入股票代碼，或在個股分析結果中直接加入關注。</p>
+          <div className="px-4 md:px-6">
+            <WorkspaceEmptyState
+              eyebrow="Watchlist ready"
+              title="建立第一筆觀察標的"
+              description="輸入股票代碼與觀察備註，或從個股分析及盤後雷達直接加入。新增後即可批次快查技術資料。"
+              actions={
+                <button type="button" onClick={() => symbolInputRef.current?.focus()} className="ui-button-primary">
+                  輸入股票代碼
+                </button>
+              }
+            />
           </div>
         ) : (
-          <div className="divide-y divide-border">
+          <div className="divide-y divide-border-subtle">
             {visibleItems.map((item) => {
               const noteDraft = noteDrafts[item.id] ?? "";
               const noteChanged = noteDraft !== (item.notes ?? "");
+              const isEditingNote = editingNoteItemId === item.id;
               const itemBusy = busyItemId === item.id;
               const listBusy = listActionBusy;
               const isDragging = draggedItemId === item.id;
@@ -736,45 +760,65 @@ export default function WatchlistPage() {
                 <article
                   key={item.id}
                   data-watchlist-item-id={item.id}
-                  className={`grid gap-4 px-4 py-4 transition md:grid-cols-[auto_minmax(160px,220px)_minmax(0,1fr)_auto] md:items-start md:px-6 ${
+                  className={`grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-3 gap-y-3 px-4 py-3 transition-[background-color,opacity,box-shadow] duration-150 md:grid-cols-[2.5rem_minmax(170px,230px)_minmax(0,1fr)_auto] md:items-center md:px-6 ${
                     isDragging
                       ? "bg-indigo-50/70 opacity-70 ring-2 ring-inset ring-indigo-300 dark:bg-indigo-950/30 dark:ring-indigo-700"
                       : ""
                   } ${isDropTarget ? "bg-card-hover" : ""}`}
                 >
-                  <div className="flex gap-1 md:flex-col" aria-label={`${getDisplayName(item)} 排序控制`}>
+                  <div className="flex" aria-label={`${getDisplayName(item)} 排序控制`}>
                     <button
                       type="button"
                       onPointerDown={(event) => handlePointerDown(event, item)}
                       disabled={listBusy}
                       title="拖拉排序"
                       aria-label={`拖拉排序 ${getDisplayName(item)}`}
-                      className="grid h-8 w-8 touch-none cursor-grab place-items-center rounded-lg border border-border text-sm font-semibold text-text-secondary transition hover:bg-card-hover active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+                      className="grid h-10 w-10 touch-none cursor-grab place-items-center rounded-[10px] text-sm font-semibold text-text-faint transition-[background-color,color,transform] duration-150 hover:bg-card-hover hover:text-text-secondary active:scale-[0.96] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transform-none"
                     >
                       ⋮⋮
                     </button>
                   </div>
 
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-sm font-semibold text-text-primary">{getDisplayName(item)}</p>
-                    <p className="mt-1 text-xs text-text-faint">加入於 {formatDateTime(item.created_at)}</p>
+                    <p className="mt-1 text-xs tabular-nums text-text-faint">
+                      加入於 {formatDateTime(item.created_at)}
+                    </p>
                   </div>
 
-                  <textarea
-                    value={noteDraft}
-                    onChange={(event) => setNoteDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
-                    rows={4}
-                    placeholder="補充觀察條件"
-                    disabled={itemBusy}
-                    className="min-h-32 w-full resize-y rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary outline-none ring-indigo-200 transition focus:ring-2 disabled:opacity-60 dark:ring-indigo-500"
-                  />
+                  <div className="col-span-2 min-w-0 md:col-span-1">
+                    {isEditingNote ? (
+                      <label className="block space-y-1">
+                        <span className="text-xs font-medium text-text-muted">觀察備註</span>
+                        <textarea
+                          value={noteDraft}
+                          onChange={(event) =>
+                            setNoteDrafts((current) => ({ ...current, [item.id]: event.target.value }))
+                          }
+                          rows={3}
+                          placeholder="補充觀察條件"
+                          disabled={itemBusy}
+                          className="min-h-24 w-full resize-y rounded-[10px] border border-input-border bg-input-bg px-3 py-2 text-sm leading-relaxed text-text-primary outline-none transition-[border-color,box-shadow] duration-150 focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-60"
+                        />
+                      </label>
+                    ) : (
+                      <div>
+                        <p className="text-xs font-medium text-text-faint">觀察條件</p>
+                        <p
+                          className={`mt-1 text-sm leading-relaxed ${item.notes ? "text-text-secondary" : "text-text-faint"}`}
+                        >
+                          {item.notes || "尚未設定備註"}
+                        </p>
+                      </div>
+                    )}
+                  </div>
 
-                  <div className="flex flex-wrap justify-end gap-2 md:flex-col md:items-stretch">
+                  <div className="col-span-2 flex flex-wrap gap-2 md:col-span-1 md:justify-end">
                     <button
                       type="button"
                       onClick={() => void handleQuickTechnicalLookup(item)}
                       disabled={listBusy || technicalState.loading}
-                      className="rounded-lg bg-indigo-600 px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="ui-button-primary min-h-10 px-3 text-xs"
                     >
                       {technicalState.loading
                         ? "快查中..."
@@ -782,19 +826,40 @@ export default function WatchlistPage() {
                           ? "收合指標"
                           : "技術快查"}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleSaveNotes(item)}
-                      disabled={listBusy || !noteChanged}
-                      className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-text-secondary transition hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      儲存備註
-                    </button>
+                    {isEditingNote ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveNotes(item)}
+                          disabled={listBusy || !noteChanged}
+                          className="ui-button-secondary min-h-10 px-3 text-xs"
+                        >
+                          儲存
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCancelNotes(item)}
+                          disabled={listBusy}
+                          className="ui-button-secondary min-h-10 px-3 text-xs"
+                        >
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleEditNotes(item)}
+                        disabled={listBusy}
+                        className="ui-button-secondary min-h-10 px-3 text-xs"
+                      >
+                        編輯備註
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void handleDeleteItem(item)}
                       disabled={listBusy}
-                      className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+                      className="inline-flex min-h-10 items-center justify-center rounded-[10px] px-3 text-xs font-medium text-red-600 transition-[background-color,color,transform] duration-150 hover:bg-red-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transform-none dark:text-red-300 dark:hover:bg-red-950/40"
                     >
                       移除
                     </button>
