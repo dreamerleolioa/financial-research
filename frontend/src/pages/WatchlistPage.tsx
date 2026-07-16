@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
 import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
+import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import { formatPrice } from "../lib/formatters";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -273,6 +274,7 @@ function WatchlistTechnicalPanel({
 export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [symbol, setSymbol] = useState("");
+  const symbolInputRef = useRef<HTMLInputElement>(null);
   const [notes, setNotes] = useState("");
   const [noteDrafts, setNoteDrafts] = useState<Record<number, string>>({});
   const [editingNoteItemId, setEditingNoteItemId] = useState<number | null>(null);
@@ -698,6 +700,7 @@ export default function WatchlistPage() {
           <label className="space-y-1">
             <span className="text-xs font-medium text-text-muted">股票代碼</span>
             <input
+              ref={symbolInputRef}
               value={symbol}
               onChange={(event) => setSymbol(event.target.value)}
               placeholder="例如 2330.TW"
@@ -728,12 +731,17 @@ export default function WatchlistPage() {
             讀取關注列表中
           </div>
         ) : visibleItems.length === 0 ? (
-          <div className="grid gap-3 px-4 py-8 text-left sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center md:px-6">
-            <div>
-              <p className="text-sm font-medium text-text-primary">尚未加入關注股票</p>
-              <p className="mt-1 text-xs text-text-muted">從上方輸入股票代碼，或在個股分析結果中直接加入。</p>
-            </div>
-            <span className="text-xs text-text-faint">新增後即可批次快查</span>
+          <div className="px-4 md:px-6">
+            <WorkspaceEmptyState
+              eyebrow="Watchlist ready"
+              title="建立第一筆觀察標的"
+              description="輸入股票代碼與觀察備註，或從個股分析及盤後雷達直接加入。新增後即可批次快查技術資料。"
+              actions={
+                <button type="button" onClick={() => symbolInputRef.current?.focus()} className="ui-button-primary">
+                  輸入股票代碼
+                </button>
+              }
+            />
           </div>
         ) : (
           <div className="divide-y divide-border-subtle">

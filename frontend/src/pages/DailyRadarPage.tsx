@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import {
   fetchLatestDailyRadarRun,
   isNoPublicDailyRadarRunUnavailableError,
@@ -1375,14 +1376,20 @@ function StaleRunDataNotice({ runDate, freshnessSummary }: { runDate: string; fr
   );
 }
 
-function WholeRunEmptyState() {
+function WholeRunEmptyState({ onRefresh }: { onRefresh?: () => void }) {
   return (
-    <section className="rounded-[14px] border border-border bg-surface-raised p-6 text-center shadow-panel">
-      <p className="text-sm font-semibold text-text-primary">今日沒有通過濾網的高品質觀察型態。</p>
-      <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-text-muted">
-        這代表本次規則掃描沒有產生符合觀察門檻的追蹤候選，並非系統失敗；可持續留意後續資料同步與風險脈絡變化。
-      </p>
-    </section>
+    <WorkspaceEmptyState
+      eyebrow="Radar standing by"
+      title="目前沒有可顯示的觀察候選"
+      description="這可能代表本次規則掃描沒有候選通過門檻，或最新公開批次尚未完成。這不是交易結論，可稍後重新讀取資料。"
+      actions={
+        onRefresh ? (
+          <button type="button" onClick={onRefresh} className="ui-button-primary">
+            重新讀取雷達
+          </button>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -1584,7 +1591,7 @@ export default function DailyRadarPage() {
       ) : run ? (
         <RunSummary run={run} />
       ) : latestRunUnavailable ? (
-        <WholeRunEmptyState />
+        <WholeRunEmptyState onRefresh={() => setReloadKey((key) => key + 1)} />
       ) : null}
     </div>
   );

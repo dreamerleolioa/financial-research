@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
+import { Link } from "react-router-dom";
+import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import { setAsyncMapValue } from "../lib/asyncMap";
 import {
   createPositionLifecycleReview,
@@ -2011,13 +2013,17 @@ export default function ClosedPortfolioPage() {
         )}
 
         {filteredItems.length === 0 ? (
-          <section className="grid gap-3 border-y border-border py-8 text-left sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-            <div>
-              <p className="text-sm font-medium text-text-primary">此期間沒有已結案持股</p>
-              <p className="mt-1 text-xs text-text-muted">切換期間可查看其他結案紀錄與檢討資料。</p>
-            </div>
-            <span className="text-xs text-text-faint">目前篩選：{activePeriod.label}</span>
-          </section>
+          <WorkspaceEmptyState
+            eyebrow="Closed positions"
+            title="此期間沒有結案紀錄"
+            description="可切換其他期間查看歷史批次；若目前仍有持股，回到持有中頁面繼續檢查風險與紀律。"
+            meta={`目前篩選：${activePeriod.label}`}
+            actions={
+              <Link to="/portfolio" className="ui-button-secondary">
+                查看持有中部位
+              </Link>
+            }
+          />
         ) : (
           <section className="space-y-3">
             <div className="flex items-center justify-between">

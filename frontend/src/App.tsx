@@ -1,4 +1,4 @@
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import {
   DesktopNavigation,
   MobileBottomNavigation,
@@ -6,6 +6,7 @@ import {
 } from "./components/app-shell/AppNavigation";
 import { useAuth } from "./stores/auth";
 import { useDarkMode } from "./stores/theme";
+import { ProductBrand } from "./components/app-shell/ProductBrand";
 
 const routeTitles = [
   { matches: (pathname: string) => pathname.startsWith("/watchlist"), title: "關注列表" },
@@ -13,25 +14,6 @@ const routeTitles = [
   { matches: (pathname: string) => pathname.startsWith("/daily-radar"), title: "每日盤後觀察雷達" },
   { matches: () => true, title: "個股分析" },
 ];
-
-function ProductBrand({ compact = false }: { compact?: boolean }) {
-  return (
-    <Link to="/analyze" className="group flex min-w-0 items-center gap-3 rounded-[10px]">
-      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-accent/30 bg-accent-soft text-sm font-semibold text-accent shadow-panel">
-        研
-        <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-signal" aria-hidden="true" />
-      </span>
-      <span className="min-w-0 leading-tight">
-        <span className="block truncate text-sm font-semibold text-text-primary">個股研究台</span>
-        {!compact && (
-          <span className="mt-1 block text-[0.625rem] font-medium tracking-[0.16em] text-text-faint uppercase">
-            Taiwan Research Desk
-          </span>
-        )}
-      </span>
-    </Link>
-  );
-}
 
 function ThemeIcon({ theme }: { theme: "light" | "dark" }) {
   if (theme === "dark") {

@@ -4,6 +4,7 @@ import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse } from "../lib/analysisTypes";
 import { InsightText } from "../components/InsightText";
 import { TechnicalIndicatorsPanel } from "../components/TechnicalIndicatorsPanel";
+import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import { createPortfolioItem, fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
 import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
 import {
@@ -209,6 +210,7 @@ export default function AnalyzePage() {
   const [searchParams] = useSearchParams();
   const querySymbol = searchParams.get("symbol") ?? "2330.TW";
   const [symbol, setSymbol] = useState(querySymbol);
+  const symbolInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [isRawOnly, setIsRawOnly] = useState(false);
@@ -521,6 +523,7 @@ export default function AnalyzePage() {
             <span className="block text-xs font-medium text-text-muted">股票代碼</span>
             <input
               id="symbol"
+              ref={symbolInputRef}
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !loading && handleAnalyze(true)}
@@ -574,7 +577,7 @@ export default function AnalyzePage() {
         </div>
 
         {result && (
-          <div className="flex flex-col gap-3 border-t border-border-subtle bg-card-hover/35 px-4 py-3 sm:flex-row sm:items-center sm:justify-between md:px-6">
+          <div className="ui-refresh-highlight flex flex-col gap-3 border-t border-border-subtle bg-card-hover/35 px-4 py-3 sm:flex-row sm:items-center sm:justify-between md:px-6">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-text-primary">{analyzedDisplayName}</p>
               <p className="mt-0.5 text-xs text-text-faint">
@@ -619,30 +622,24 @@ export default function AnalyzePage() {
       </section>
 
       {!result && !loading ? (
-        <section className="border-y border-border py-6">
-          <div className="grid gap-6 md:grid-cols-[minmax(180px,0.7fr)_minmax(0,1.3fr)] md:items-start">
-            <div>
-              <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-text-faint uppercase">研究流程</p>
-              <h2 className="mt-2 text-lg font-semibold text-text-primary">從一個明確問題開始</h2>
-              <p className="mt-2 max-w-sm text-sm leading-relaxed text-text-muted">
-                先確認資料與技術位置，再決定是否需要花費較長時間取得完整 AI 分析。
-              </p>
-            </div>
-            <ol className="grid gap-4 sm:grid-cols-3">
-              {[
-                ["01", "輸入標的", "使用完整的 .TW 或 .TWO 代碼。"],
-                ["02", "選擇深度", "快查資料，或取得完整風險脈絡。"],
-                ["03", "整理下一步", "加入關注、持股，或複製資料供外部研究。"],
-              ].map(([step, title, description]) => (
-                <li key={step} className="border-t border-border pt-3">
-                  <span className="text-xs font-semibold tabular-nums text-accent">{step}</span>
-                  <p className="mt-2 text-sm font-semibold text-text-primary">{title}</p>
-                  <p className="mt-1 text-xs leading-relaxed text-text-muted">{description}</p>
-                </li>
-              ))}
-            </ol>
-          </div>
-        </section>
+        <WorkspaceEmptyState
+          eyebrow="Research ready"
+          title="從一個明確標的開始"
+          description="先用快速資料確認技術位置，再決定是否需要完整 AI 分析。分析完成後可加入關注、持股，或複製資料供外部研究。"
+          meta="上市股票使用 .TW，上櫃股票使用 .TWO。"
+          actions={
+            <button
+              type="button"
+              onClick={() => {
+                setSymbol("2330.TW");
+                symbolInputRef.current?.focus();
+              }}
+              className="ui-button-secondary"
+            >
+              帶入範例代碼
+            </button>
+          }
+        />
       ) : (
         <section className="rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel md:p-6">
           <div className="mb-1 flex items-center gap-2">
