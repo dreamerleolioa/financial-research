@@ -101,7 +101,7 @@ export const LIFECYCLE_SETUP_TYPE_LABEL = {
 } satisfies Record<LifecycleSetupType, string>;
 
 export const OPERATION_PLAN_STATUS_LABEL = {
-  missing: "缺少 operation plan",
+  missing: "缺少操作計畫",
   present: "原始計畫已記錄",
   backfilled: "已事後補填",
 } as const;

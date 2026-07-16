@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   useAddPortfolioEntryMutation,
   useBackfillLifecyclePlanMutation,
@@ -55,7 +55,6 @@ import {
   CONFIDENCE_LEVEL_LABEL,
   DEFAULT_STOP_RULE_OPTIONS,
   LIFECYCLE_SETUP_TYPE_OPTIONS,
-  OPERATION_PLAN_STATUS_CLASS,
   OPERATION_PLAN_STATUS_LABEL,
   PLAN_ADHERENCE_LABEL,
   PLANNED_HOLDING_PERIOD_OPTIONS,
@@ -213,7 +212,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
       <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card shadow-xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-card px-5 py-4">
           <div>
-            <p className="font-semibold text-text-primary">補填 operation plan · {portfolioDisplayName(item)}</p>
+            <p className="font-semibold text-text-primary">補填操作計畫 · {portfolioDisplayName(item)}</p>
             <p className="mt-1 text-xs text-text-faint">
               成本 {formatPrice(item.entry_price, item.symbol)} ｜ 進場日 {item.entry_date}
             </p>
@@ -234,7 +233,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
 
         <div className="space-y-4 p-5">
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            這是事後補填的 operation plan，只用來改善未來 lifecycle review 的脈絡品質；它不是原始進場當下的
+            這是事後補填的操作計畫，只用來改善未來生命週期檢討的脈絡品質；它不是原始進場當下的
             plan，也不會取代既有分析、新增批次、結案批次或結案流程。
           </div>
 
@@ -1489,20 +1488,6 @@ function legacyActionRiskLabel(action: string | null | undefined): string | null
   return action ?? null;
 }
 
-function legacyActionRiskClass(action: string | null | undefined): string {
-  if (action === "Exit") return "bg-red-50 text-red-600 border border-red-200";
-  if (action === "Trim") return "bg-yellow-50 text-yellow-600 border border-yellow-200";
-  if (action === "Hold") return "bg-green-50 text-green-600 border border-green-200";
-  return "bg-badge-neutral-bg text-badge-neutral-text";
-}
-
-function historyRiskClass(riskState: string | null | undefined, action: string | null | undefined): string {
-  if (riskState === "critical") return "bg-red-50 text-red-600 border border-red-200";
-  if (riskState === "elevated" || riskState === "watch") return "bg-yellow-50 text-yellow-600 border border-yellow-200";
-  if (riskState === "stable") return "bg-green-50 text-green-600 border border-green-200";
-  return legacyActionRiskClass(action);
-}
-
 function historyRiskTextClass(riskState: string | null | undefined, action: string | null | undefined): string {
   if (riskState === "critical") return "text-red-600 font-semibold";
   if (riskState === "elevated" || riskState === "watch") return "text-yellow-600 font-semibold";
@@ -1869,72 +1854,97 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
   const riskExplanation = totalRiskExplanation(summary);
   const riskBudget = riskBudgetDisplay(summary);
   const stopCheckReason = stopLossCheckReason(summary);
+  const dataQualityLabel =
+    summary.data_quality.status === "ok"
+      ? "資料完整"
+      : summary.data_quality.status === "caution"
+        ? "資料注意"
+        : "資料不足";
+  const dataQualityClass =
+    summary.data_quality.status === "ok"
+      ? "text-positive"
+      : summary.data_quality.status === "caution"
+        ? "text-signal"
+        : "text-negative";
 
   return (
-    <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
+      <div className="flex flex-col gap-3 border-b border-border-subtle px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-5">
         <div>
-          <h3 className="text-sm font-semibold text-text-primary">防守檢查</h3>
-          <p className="mt-1 text-xs text-text-faint">檢查目前防守設定下，整體可能回吐多少。</p>
+          <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-text-faint uppercase">Portfolio risk</p>
+          <h2 className="mt-2 text-lg font-semibold text-text-primary">持股風險總覽</h2>
+          <p className="mt-1 text-xs text-text-muted">先看整體部位，再展開防守依據與 AVWAP 觀察。</p>
         </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          className="ui-button-secondary min-h-10 self-start px-3 text-xs sm:self-auto"
+        >
+          {expanded ? "收起風險細節" : "展開風險細節"}
+        </button>
       </div>
 
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-        <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4">
+        <div className="px-4 py-4 md:px-5">
           <p className="text-xs text-text-faint">總市值</p>
-          <p className="mt-1 text-sm font-semibold text-text-primary">
+          <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">
             {formatPortfolioMoney(summary.portfolio_value)}
           </p>
         </div>
-        <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
+        <div className="border-l border-border-subtle px-4 py-4 md:px-5">
           <p className="text-xs text-text-faint">未實現損益</p>
           <p
-            className={`mt-1 text-sm font-semibold ${summary.total_unrealized_pnl >= 0 ? "text-green-600" : "text-red-600"}`}
+            className={`mt-2 text-lg font-semibold tabular-nums ${
+              summary.total_unrealized_pnl >= 0 ? "text-positive" : "text-negative"
+            }`}
           >
             {summary.total_unrealized_pnl > 0 ? "+" : ""}
             {formatPortfolioMoney(summary.total_unrealized_pnl)}
           </p>
         </div>
-      </div>
-
-      <div
-        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3 ${
-          riskExplanation ? "justify-between" : "justify-end"
-        }`}
-      >
-        {riskExplanation && <div className="min-w-0 text-xs text-text-faint">{riskExplanation}</div>}
-        <button
-          type="button"
-          onClick={() => setExpanded((current) => !current)}
-          aria-expanded={expanded}
-          className="rounded-lg border border-border-subtle bg-background px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-card-hover hover:text-text-primary"
-        >
-          {expanded ? "收起防守細節" : "展開防守細節"}
-        </button>
+        <div className="border-t border-border-subtle px-4 py-4 sm:border-t-0 sm:border-l md:px-5">
+          <p className="text-xs text-text-faint">防守線前可能回吐</p>
+          <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">
+            {formatPortfolioMoney(summary.total_at_risk)}
+          </p>
+          <p className="mt-1 text-xs tabular-nums text-text-faint">{formatPortfolioPct(summary.total_at_risk_pct)}</p>
+        </div>
+        <div className="border-t border-l border-border-subtle px-4 py-4 sm:border-t-0 md:px-5">
+          <p className="text-xs text-text-faint">整體防守狀態</p>
+          <p className="mt-2 text-sm font-semibold text-text-primary">{riskBudget.label}</p>
+          <p className={`mt-1 text-xs font-medium ${dataQualityClass}`}>{dataQualityLabel}</p>
+        </div>
       </div>
 
       {expanded && (
-        <>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-              <p className="text-xs text-text-faint">若跌到防守價</p>
-              <p className="mt-1 text-sm font-semibold text-text-primary">
-                可能回吐 {formatPortfolioMoney(summary.total_at_risk)}
-                <span className="ml-1 text-xs font-normal text-text-faint">
-                  {formatPortfolioPct(summary.total_at_risk_pct)}
-                </span>
-              </p>
-              <p className="mt-1 text-xs text-text-faint">佔目前持股總市值的比例</p>
+        <div className="border-t border-border-subtle bg-card-hover/25 px-4 py-4 md:px-5">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div>
+              <p className="text-xs font-semibold text-text-muted">防守判讀</p>
+              <p className="mt-2 text-sm leading-relaxed text-text-secondary">{riskBudget.note}</p>
+              <p className="mt-2 text-xs leading-relaxed text-text-faint">{stopCheckReason}</p>
+              {riskExplanation && <p className="mt-2 text-xs leading-relaxed text-text-faint">{riskExplanation}</p>}
             </div>
-            <div className="rounded-lg border border-border-subtle bg-background px-3 py-2">
-              <p className="text-xs text-text-faint">整體防守回吐狀態</p>
-              <p className="mt-1 text-sm font-semibold text-text-primary">{riskBudget.label}</p>
-              <p className="mt-1 text-xs leading-relaxed text-text-faint">{stopCheckReason}</p>
+            <div>
+              <p className="text-xs font-semibold text-text-muted">資料提示</p>
+              {summary.data_quality.caveats.length > 0 ? (
+                <ul className="mt-2 space-y-1.5">
+                  {summary.data_quality.caveats.map((caveat) => (
+                    <li key={caveat.code} className="text-xs leading-relaxed text-text-faint">
+                      {caveat.message ?? caveat.code}
+                      {caveat.count != null ? ` (${caveat.count})` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs text-text-faint">目前沒有額外資料提示。</p>
+              )}
             </div>
           </div>
 
           <PortfolioPhase1CurrentDayPanel summary={summary} />
-        </>
+        </div>
       )}
     </section>
   );
@@ -2162,6 +2172,171 @@ function portfolioCardDisplayName(
   return name ? { primary: name, secondary: item.symbol } : { primary: item.symbol, secondary: null };
 }
 
+function positionRiskLabel(
+  latest: HistoryEntry | null | undefined,
+  stopLossRisk: PortfolioPositionRiskItem | null,
+): string {
+  if (latest?.risk_state_label) return latest.risk_state_label;
+
+  const labels: Record<PortfolioPositionRiskItem["risk_state"], string> = {
+    contained: "防守可控",
+    watch: "留意防守",
+    elevated: "風險偏高",
+    defense_reference_touched: "觸及防守",
+    data_incomplete: "資料不足",
+  };
+  return stopLossRisk ? labels[stopLossRisk.risk_state] : "尚未分析";
+}
+
+function positionRiskClass(
+  latest: HistoryEntry | null | undefined,
+  stopLossRisk: PortfolioPositionRiskItem | null,
+): string {
+  const riskState = latest?.risk_state ?? stopLossRisk?.risk_state;
+  if (riskState === "critical" || riskState === "defense_reference_touched") {
+    return "bg-red-50 text-red-700 dark:bg-red-950/45 dark:text-red-300";
+  }
+  if (riskState === "elevated" || riskState === "watch") {
+    return "bg-amber-50 text-amber-700 dark:bg-amber-950/45 dark:text-amber-300";
+  }
+  if (riskState === "stable" || riskState === "contained") {
+    return "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/45 dark:text-emerald-300";
+  }
+  return "bg-badge-neutral-bg text-badge-neutral-text";
+}
+
+function positionDataQualityLabel(stopLossRisk: PortfolioPositionRiskItem | null): string {
+  if (!stopLossRisk) return "風險資料未載入";
+  if (stopLossRisk.data_quality.status === "ok") return "風險資料完整";
+  if (stopLossRisk.data_quality.status === "caution") return "風險資料注意";
+  return "風險資料不足";
+}
+
+interface PortfolioActionMenuProps {
+  item: PortfolioItem;
+  isOpen: boolean;
+  historyExpanded: boolean;
+  operationPlanMissing: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onToggleHistory: () => void;
+  onAddEntry: () => void;
+  onClosePosition: () => void;
+  onEdit: () => void;
+  onBackfill: () => void;
+  onDelete: () => void;
+}
+
+function PortfolioActionMenu({
+  item,
+  isOpen,
+  historyExpanded,
+  operationPlanMissing,
+  onToggle,
+  onClose,
+  onToggleHistory,
+  onAddEntry,
+  onClosePosition,
+  onEdit,
+  onBackfill,
+  onDelete,
+}: PortfolioActionMenuProps) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [openAbove, setOpenAbove] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !buttonRef.current || !menuRef.current) return;
+    const buttonRect = buttonRef.current.getBoundingClientRect();
+    const menuHeight = menuRef.current.offsetHeight;
+    const spaceBelow = window.innerHeight - buttonRect.bottom;
+    const spaceAbove = buttonRect.top;
+    setOpenAbove(spaceBelow < menuHeight + 8 && spaceAbove > spaceBelow);
+  }, [isOpen, operationPlanMissing]);
+
+  function runAction(action: () => void) {
+    onClose();
+    action();
+  }
+
+  return (
+    <div className="relative" data-portfolio-action-menu={item.id}>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={onToggle}
+        className="ui-icon-button border border-border bg-surface-raised"
+        aria-label={`開啟 ${portfolioDisplayName(item)} 更多操作`}
+        aria-expanded={isOpen}
+        aria-controls={`portfolio-actions-${item.id}`}
+        title="更多操作"
+      >
+        <span className="text-lg leading-none" aria-hidden="true">
+          ⋯
+        </span>
+      </button>
+
+      {isOpen && (
+        <div
+          ref={menuRef}
+          id={`portfolio-actions-${item.id}`}
+          role="group"
+          aria-label={`${portfolioDisplayName(item)} 其他操作`}
+          className={`absolute right-0 z-20 min-w-40 overflow-hidden rounded-[10px] border border-border bg-surface-raised py-1 shadow-panel ${
+            openAbove ? "bottom-11" : "top-11"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => runAction(onToggleHistory)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text-secondary transition-colors duration-150 hover:bg-card-hover hover:text-text-primary"
+          >
+            {historyExpanded ? "收起歷史紀錄" : "查看歷史紀錄"}
+          </button>
+          <button
+            type="button"
+            onClick={() => runAction(onAddEntry)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text-secondary transition-colors duration-150 hover:bg-card-hover hover:text-text-primary"
+          >
+            新增批次
+          </button>
+          <button
+            type="button"
+            onClick={() => runAction(onClosePosition)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text-secondary transition-colors duration-150 hover:bg-card-hover hover:text-text-primary"
+          >
+            結案持股
+          </button>
+          <button
+            type="button"
+            onClick={() => runAction(onEdit)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text-secondary transition-colors duration-150 hover:bg-card-hover hover:text-text-primary"
+          >
+            編輯持股與計畫
+          </button>
+          {operationPlanMissing && (
+            <button
+              type="button"
+              onClick={() => runAction(onBackfill)}
+              className="flex min-h-10 w-full items-center px-3 text-left text-xs text-amber-700 transition-colors duration-150 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/45"
+            >
+              補填操作計畫
+            </button>
+          )}
+          <div className="my-1 border-t border-border-subtle" />
+          <button
+            type="button"
+            onClick={() => runAction(onDelete)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-negative transition-colors duration-150 hover:bg-red-50 dark:hover:bg-red-950/45"
+          >
+            刪除持股
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }: PortfolioPageProps) {
   const queryClient = useQueryClient();
   const portfolioItemsQuery = usePortfolioItemsQuery();
@@ -2212,6 +2387,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [addEntryItem, setAddEntryItem] = useState<PortfolioItem | null>(null);
   const [closeItem, setCloseItem] = useState<PortfolioItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<PortfolioItem | null>(null);
+  const [actionMenuId, setActionMenuId] = useState<number | null>(null);
 
   // Batch analysis state
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2224,6 +2400,27 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (actionMenuId == null) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (target instanceof Element && target.closest(`[data-portfolio-action-menu="${actionMenuId}"]`)) return;
+      setActionMenuId(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setActionMenuId(null);
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [actionMenuId]);
 
   async function toggleHistory(id: number) {
     if (expandedId === id) {
@@ -2343,23 +2540,25 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   if (loading) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="h-4 w-16 animate-pulse rounded bg-border" />
-          <div className="h-3 w-8 animate-pulse rounded bg-border" />
+        <div className="rounded-[14px] border border-border bg-surface-raised p-5 shadow-panel">
+          <div className="h-3 w-28 animate-pulse rounded bg-border" />
+          <div className="mt-3 h-7 w-44 animate-pulse rounded bg-border" />
         </div>
-        {[1, 2].map((i) => (
-          <div key={i} className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="h-5 w-20 animate-pulse rounded bg-border" />
-              <div className="h-5 w-16 animate-pulse rounded bg-border" />
+        <div className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="grid grid-cols-2 gap-4 border-b border-border-subtle p-4 last:border-b-0 md:grid-cols-6"
+            >
+              <div className="col-span-2 h-5 animate-pulse rounded bg-border md:col-span-1" />
+              <div className="h-5 animate-pulse rounded bg-border" />
+              <div className="h-5 animate-pulse rounded bg-border" />
+              <div className="h-5 animate-pulse rounded bg-border" />
+              <div className="h-5 animate-pulse rounded bg-border" />
+              <div className="h-10 animate-pulse rounded bg-border" />
             </div>
-            <div className="h-3 w-32 animate-pulse rounded bg-border" />
-            <div className="flex gap-2 pt-1">
-              <div className="h-8 w-16 animate-pulse rounded-lg bg-border" />
-              <div className="h-8 w-16 animate-pulse rounded-lg bg-border" />
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     );
   }
@@ -2368,26 +2567,38 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     <>
       <div className="space-y-4">
         {items.length === 0 ? (
-          <div className="rounded-xl border border-border bg-card p-6 text-center text-sm text-text-faint shadow-sm">
-            尚無追蹤中的持股。請至「個股分析」頁新增。
-          </div>
+          <section className="grid gap-4 border-y border-border py-8 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <div>
+              <p className="text-lg font-semibold text-text-primary">目前沒有持有中部位</p>
+              <p className="mt-2 text-sm text-text-muted">完成個股研究後，可從分析結果加入持股管理。</p>
+            </div>
+            <span className="text-xs text-text-faint">新增後即可進行風險與紀律檢查</span>
+          </section>
         ) : (
           <>
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-text-primary">我的持股</h2>
-              <span className="text-xs text-text-faint">共 {items.length} 筆</span>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-text-faint uppercase">
+                  Active positions
+                </p>
+                <h2 className="mt-2 text-lg font-semibold text-text-primary">持有中部位</h2>
+                <p className="mt-1 text-xs text-text-muted">依序比較狀態、損益、防守距離與資料新鮮度。</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="ui-badge tabular-nums">{items.length} 筆持股</span>
+                <button
+                  type="button"
+                  onClick={runBatchAnalysis}
+                  disabled={batchStatus !== "idle"}
+                  className="ui-button-secondary min-h-10 px-3 text-xs"
+                >
+                  {batchStatus === "running" ? "批次分析中" : "一鍵全部分析"}
+                </button>
+              </div>
             </div>
 
-            <button
-              onClick={runBatchAnalysis}
-              disabled={batchStatus !== "idle"}
-              className="rounded-lg bg-indigo-500 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {batchStatus === "running" ? "分析中…" : "一鍵全部分析"}
-            </button>
-
             {batchStatus !== "idle" && (
-              <div className={`rounded-xl border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
+              <div className={`rounded-[10px] border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
                 <div className="flex items-center justify-between gap-3">
                   <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
                     {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
@@ -2396,9 +2607,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                       `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
                   </span>
                   {batchStatus === "running" && (
-                    <div className="h-1.5 w-32 overflow-hidden rounded-full bg-indigo-100 dark:bg-indigo-900">
+                    <div className="h-1.5 w-32 overflow-hidden rounded-full bg-accent-soft">
                       <div
-                        className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+                        className="h-full rounded-full bg-accent transition-[width] duration-300"
                         style={{
                           width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%`,
                         }}
@@ -2411,253 +2622,199 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
             <PortfolioRiskSummaryPanel summary={riskSummary} error={riskSummaryError} />
 
-            {items.map((item) => {
-              const itemKey = portfolioIdKey(item.id);
-              const latest = latestMap[itemKey];
-              const decisionStatus = decisionContextStatusMap[itemKey];
-              const history = historyMap[item.id];
-              const isExpanded = expandedId === item.id;
-              const isAnalyzing = analysisLoading[item.id];
-              const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
-              const stopLossRisk = stopLossRiskBySymbol.get(item.symbol) ?? null;
-              const stopLossPullbackPctValue = stopLossRisk ? stopLossPullbackPct(stopLossRisk) : null;
+            <section className="md:rounded-[14px] md:border md:border-border md:bg-surface-raised md:shadow-panel">
+              <div className="hidden grid-cols-[minmax(160px,1.35fr)_minmax(118px,0.95fr)_minmax(88px,0.65fr)_minmax(96px,0.7fr)_minmax(118px,0.85fr)_auto] gap-4 border-b border-border-subtle px-5 py-3 text-xs font-medium text-text-faint md:grid">
+                <span>持股</span>
+                <span>目前狀態</span>
+                <span className="text-right">未實現損益</span>
+                <span className="text-right">距防守</span>
+                <span>資料新鮮度</span>
+                <span className="text-right">操作</span>
+              </div>
 
-              return (
-                <article key={item.id} className="rounded-xl border border-border bg-card shadow-sm">
-                  <div className="p-4">
-                    {/* Info row */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="font-semibold text-text-primary">{displayName.primary}</p>
-                        {displayName.secondary && (
-                          <p className="text-xs font-mono text-text-faint">{displayName.secondary}</p>
-                        )}
+              <div className="space-y-3 md:space-y-0 md:divide-y md:divide-border-subtle">
+                {items.map((item) => {
+                  const itemKey = portfolioIdKey(item.id);
+                  const latest = latestMap[itemKey];
+                  const decisionStatus = decisionContextStatusMap[itemKey];
+                  const history = historyMap[item.id];
+                  const isExpanded = expandedId === item.id;
+                  const isAnalyzing = analysisLoading[item.id];
+                  const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
+                  const stopLossRisk = stopLossRiskBySymbol.get(item.symbol) ?? null;
+                  const stopLossPullbackPctValue = stopLossRisk ? stopLossPullbackPct(stopLossRisk) : null;
+                  const closePrice = latest?.indicators?.close_price;
+                  const plPct = closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
+                  const unrealizedPnl = stopLossRisk?.unrealized_pnl ?? null;
+                  const operationPlanMissing = decisionStatus?.operation_plan_status === "missing";
+                  const caveatCount = stopLossRisk?.data_quality.caveats.length ?? 0;
+
+                  return (
+                    <article
+                      key={item.id}
+                      data-portfolio-position-id={item.id}
+                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel md:grid-cols-[minmax(160px,1.35fr)_minmax(118px,0.95fr)_minmax(88px,0.65fr)_minmax(96px,0.7fr)_minmax(118px,0.85fr)_auto] md:items-center md:rounded-none md:border-0 md:p-5 md:shadow-none"
+                    >
+                      <div className="col-span-2 min-w-0 md:col-span-1">
+                        <p className="truncate text-sm font-semibold text-text-primary">{displayName.primary}</p>
+                        <p className="mt-1 text-xs tabular-nums text-text-faint">
+                          {displayName.secondary ?? item.symbol} · 成本 {formatPrice(item.entry_price, item.symbol)}
+                        </p>
+                        <p className="mt-1 text-xs tabular-nums text-text-faint">
+                          {item.quantity > 0 ? `${item.quantity} 股 · ` : ""}
+                          {item.entry_date}
+                        </p>
                       </div>
-                      {/* P/L badge — top-right, only when available */}
-                      {(() => {
-                        const closePrice = latest?.indicators?.close_price;
-                        const plPct =
-                          closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
-                        return plPct != null ? (
-                          <span
-                            className={`rounded-md px-2 py-0.5 text-xs font-mono font-medium ${
-                              plPct >= 0
-                                ? "bg-green-50 text-green-600 border border-green-200"
-                                : "bg-red-50 text-red-600 border border-red-200"
+
+                      <div className="col-span-2 min-w-0 md:col-span-1">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${positionRiskClass(latest, stopLossRisk)}`}
+                        >
+                          {positionRiskLabel(latest, stopLossRisk)}
+                        </span>
+                        {decisionStatus && (
+                          <p
+                            className={`mt-2 text-xs font-medium ${
+                              operationPlanMissing ? "text-amber-600 dark:text-amber-300" : "text-text-faint"
                             }`}
                           >
-                            {plPct > 0 ? "+" : ""}
-                            {plPct.toFixed(2)}%
-                          </span>
-                        ) : null;
-                      })()}
-                    </div>
-
-                    {/* Meta badges */}
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                        成本{" "}
-                        <span className="font-medium text-text-primary">
-                          {formatPrice(item.entry_price, item.symbol)}
-                        </span>
-                      </span>
-                      {item.quantity > 0 && (
-                        <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                          <span className="font-medium text-text-primary">{item.quantity}</span> 股
-                        </span>
-                      )}
-                      <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                        {item.entry_date}
-                      </span>
-                      {decisionStatus && (
-                        <span
-                          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${OPERATION_PLAN_STATUS_CLASS[decisionStatus.operation_plan_status]}`}
-                        >
-                          {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Last analysis row */}
-                    {latest &&
-                      (() => {
-                        const action = latest.recommended_action;
-                        const actionLabel = latest.risk_state_label ?? legacyActionRiskLabel(action);
-                        const actionBadge = historyRiskClass(latest.risk_state, action);
-                        return (
-                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                            <span className="text-xs text-text-faint">上次分析：{latest.record_date}</span>
-                            {actionLabel && (
-                              <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${actionBadge}`}>
-                                {actionLabel}
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                    {stopLossRisk && (
-                      <div className="mt-3 rounded-lg border border-border-subtle bg-background px-3 py-2">
-                        <p className="text-xs font-semibold text-text-primary">防守檢查</p>
-                        {stopLossRisk.estimated_risk_amount != null ? (
-                          <p className="mt-1 text-sm font-medium text-text-primary">
-                            若跌到防守價，可能回吐 {formatPortfolioMoney(stopLossRisk.estimated_risk_amount)}
-                            {stopLossPullbackPctValue != null && (
-                              <span className="ml-1 text-xs font-normal text-text-faint">
-                                {formatPortfolioPct(stopLossPullbackPctValue)}
-                              </span>
-                            )}
-                          </p>
-                        ) : (
-                          <p className="mt-1 text-sm font-medium text-text-muted">防守線前回吐暫無法估算</p>
-                        )}
-                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-text-faint">
-                          {stopLossRisk.defense_reference.price != null && (
-                            <span>防守價 {formatPrice(stopLossRisk.defense_reference.price, item.symbol)}</span>
-                          )}
-                          {stopLossRisk.current_price != null && (
-                            <span>現價 {formatPrice(stopLossRisk.current_price, item.symbol)}</span>
-                          )}
-                        </div>
-                        {stopLossRisk.data_quality.caveats.length > 0 && (
-                          <p className="mt-1 line-clamp-2 text-xs text-amber-600 dark:text-amber-300">
-                            {stopLossRisk.data_quality.caveats
-                              .map((caveat) => caveat.message ?? caveat.code)
-                              .join("；")}
+                            {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
                           </p>
                         )}
                       </div>
-                    )}
 
-                    {decisionStatus?.operation_plan_status === "missing" && (
-                      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="font-semibold">缺少 operation plan，可選擇補填 plan</p>
-                            <p className="mt-1 text-xs leading-relaxed">
-                              這是非必填提示：補填可改善日後 lifecycle
-                              review，但不要求也不會阻擋即時分析、新增批次、結案批次或結案。
-                            </p>
-                          </div>
-                          <button
-                            onClick={() => setBackfillItem(item)}
-                            className="shrink-0 rounded-lg border border-amber-300 bg-card px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-card-hover dark:border-amber-700 dark:bg-slate-900 dark:text-amber-300"
-                          >
-                            補填 plan
-                          </button>
+                      <div className="min-w-0 md:text-right">
+                        <p className="text-xs text-text-faint md:hidden">未實現損益</p>
+                        <p
+                          className={`mt-1 text-sm font-semibold tabular-nums md:mt-0 ${
+                            plPct == null ? "text-text-faint" : plPct >= 0 ? "text-positive" : "text-negative"
+                          }`}
+                        >
+                          {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
+                        </p>
+                        <p className="mt-1 text-xs tabular-nums text-text-faint">
+                          {unrealizedPnl == null
+                            ? "金額未提供"
+                            : `${unrealizedPnl > 0 ? "+" : ""}${formatPortfolioMoney(unrealizedPnl)}`}
+                        </p>
+                      </div>
+
+                      <div className="min-w-0 md:text-right">
+                        <p className="text-xs text-text-faint md:hidden">距防守</p>
+                        <p
+                          className={`mt-1 text-sm font-semibold tabular-nums md:mt-0 ${
+                            stopLossPullbackPctValue == null
+                              ? "text-text-faint"
+                              : stopLossPullbackPctValue <= 0
+                                ? "text-negative"
+                                : "text-text-primary"
+                          }`}
+                        >
+                          {stopLossPullbackPctValue == null
+                            ? "未設定"
+                            : stopLossPullbackPctValue <= 0
+                              ? "已觸及"
+                              : formatPortfolioPct(stopLossPullbackPctValue)}
+                        </p>
+                        <p className="mt-1 text-xs tabular-nums text-text-faint">
+                          {stopLossRisk?.defense_reference.price == null
+                            ? "無防守價"
+                            : `防守 ${formatPrice(stopLossRisk.defense_reference.price, item.symbol)}`}
+                        </p>
+                      </div>
+
+                      <div className="col-span-2 min-w-0 md:col-span-1">
+                        <p className="text-xs tabular-nums text-text-secondary">
+                          {latest ? `分析 ${latest.record_date}` : "尚未執行分析"}
+                        </p>
+                        <p className="mt-1 text-xs text-text-faint">{positionDataQualityLabel(stopLossRisk)}</p>
+                        {caveatCount > 0 && (
+                          <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">{caveatCount} 項資料提示</p>
+                        )}
+                      </div>
+
+                      <div className="col-span-2 flex items-center justify-end gap-2 md:col-span-1">
+                        <button
+                          type="button"
+                          onClick={() => void openAnalysis(item)}
+                          disabled={isAnalyzing}
+                          className="ui-button-primary min-h-10 px-3 text-xs"
+                        >
+                          {isAnalyzing ? "分析中" : "即時分析"}
+                        </button>
+                        <PortfolioActionMenu
+                          item={item}
+                          isOpen={actionMenuId === item.id}
+                          historyExpanded={isExpanded}
+                          operationPlanMissing={operationPlanMissing}
+                          onToggle={() => setActionMenuId((current) => (current === item.id ? null : item.id))}
+                          onClose={() => setActionMenuId(null)}
+                          onToggleHistory={() => void toggleHistory(item.id)}
+                          onAddEntry={() => setAddEntryItem(item)}
+                          onClosePosition={() => setCloseItem(item)}
+                          onEdit={() => setEditItem(item)}
+                          onBackfill={() => setBackfillItem(item)}
+                          onDelete={() => setDeleteItem(item)}
+                        />
+                      </div>
+
+                      {isExpanded && (
+                        <div className="col-span-full border-t border-border-subtle pt-4">
+                          {historyLoading[item.id] ? (
+                            <p className="text-xs text-text-faint">載入歷史紀錄中</p>
+                          ) : history && history.length > 0 ? (
+                            <div className="overflow-hidden rounded-[10px] border border-border-subtle">
+                              <table className="w-full text-xs">
+                                <thead className="bg-card-hover/50">
+                                  <tr className="text-left text-text-faint">
+                                    <th className="px-3 py-2 font-medium">日期</th>
+                                    <th className="px-3 py-2 font-medium">風險狀態</th>
+                                    <th className="px-3 py-2 text-right font-medium">當時損益</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border-subtle">
+                                  {history.map((row) => {
+                                    const action = row.recommended_action;
+                                    const actionColor = historyRiskTextClass(row.risk_state, action);
+                                    const actionLabel = row.risk_state_label ?? legacyActionRiskLabel(action) ?? "—";
+                                    const historyClosePrice = row.indicators?.close_price;
+                                    const historyPlPct =
+                                      historyClosePrice != null
+                                        ? ((historyClosePrice - item.entry_price) / item.entry_price) * 100
+                                        : null;
+                                    return (
+                                      <tr key={row.record_date} className="text-text-secondary">
+                                        <td className="px-3 py-2 tabular-nums">{row.record_date}</td>
+                                        <td className={`px-3 py-2 ${actionColor}`}>{actionLabel}</td>
+                                        <td
+                                          className={`px-3 py-2 text-right text-xs tabular-nums ${
+                                            historyPlPct == null
+                                              ? "text-text-faint"
+                                              : historyPlPct >= 0
+                                                ? "text-positive"
+                                                : "text-negative"
+                                          }`}
+                                        >
+                                          {historyPlPct == null
+                                            ? "—"
+                                            : `${historyPlPct > 0 ? "+" : ""}${historyPlPct.toFixed(2)}%`}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-text-faint">尚無診斷紀錄。</p>
+                          )}
                         </div>
-                      </div>
-                    )}
-
-                    {/* Action buttons */}
-                    <div className="mt-3 flex items-center gap-2">
-                      <button
-                        onClick={() => openAnalysis(item)}
-                        disabled={isAnalyzing}
-                        className="rounded-lg bg-indigo-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isAnalyzing ? "分析中…" : "即時分析"}
-                      </button>
-                      <button
-                        onClick={() => toggleHistory(item.id)}
-                        className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-card-hover"
-                      >
-                        {isExpanded ? "收起歷史" : "歷史紀錄"}
-                      </button>
-                      <button
-                        onClick={() => setAddEntryItem(item)}
-                        className="rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
-                      >
-                        加碼
-                      </button>
-                      <div className="ml-auto flex items-center gap-1">
-                        <button
-                          onClick={() => setCloseItem(item)}
-                          className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:bg-indigo-900"
-                        >
-                          出場
-                        </button>
-                        <button
-                          onClick={() => setEditItem(item)}
-                          title="編輯持股"
-                          className="rounded-lg p-2 text-text-faint hover:bg-card-hover hover:text-text-secondary"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            className="h-4 w-4"
-                            viewBox="0 0 20 20"
-                            fill="currentColor"
-                          >
-                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                          </svg>
-                        </button>
-                        <button
-                          onClick={() => setDeleteItem(item)}
-                          title="刪除持股"
-                          className="rounded-lg p-2 text-text-faint hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950 dark:hover:text-red-400"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            className="h-4 w-4"
-                            viewBox="0 0 20 20"
-                            fill="currentColor"
-                          >
-                            <path
-                              fillRule="evenodd"
-                              d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
-                              clipRule="evenodd"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {isExpanded && (
-                    <div className="border-t border-border-subtle px-4 pb-4 pt-3">
-                      {historyLoading[item.id] ? (
-                        <p className="text-xs text-text-faint">載入中…</p>
-                      ) : history && history.length > 0 ? (
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="text-left text-text-faint">
-                              <th className="pb-1 font-medium">日期</th>
-                              <th className="pb-1 font-medium">風險狀態</th>
-                              <th className="pb-1 font-medium text-right">當時損益</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-border-subtle">
-                            {history.map((row) => {
-                              const action = row.recommended_action;
-                              const actionColor = historyRiskTextClass(row.risk_state, action);
-                              const actionLabel = row.risk_state_label ?? legacyActionRiskLabel(action) ?? "—";
-                              const closePrice = row.indicators?.close_price;
-                              const plPct =
-                                closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
-                              return (
-                                <tr key={row.record_date} className="text-text-secondary">
-                                  <td className="py-1">{row.record_date}</td>
-                                  <td className={`py-1 ${actionColor}`}>{actionLabel}</td>
-                                  <td
-                                    className={`py-1 text-right font-mono text-xs ${
-                                      plPct == null ? "text-text-faint" : plPct >= 0 ? "text-green-600" : "text-red-600"
-                                    }`}
-                                  >
-                                    {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <p className="text-xs text-text-faint">尚無診斷紀錄。</p>
                       )}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
           </>
         )}
       </div>

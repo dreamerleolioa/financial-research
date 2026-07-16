@@ -1047,9 +1047,7 @@ function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewRe
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-text-primary">整體結果</h3>
-          <p className="mt-1 text-xs text-text-muted">
-            這是整個 position group 的多次進出生命週期檢討，不是單筆結案批次檢討。
-          </p>
+          <p className="mt-1 text-xs text-text-muted">這是整個部位群組的多次進出生命週期檢討，不是單筆結案批次檢討。</p>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {tier && (
@@ -1473,7 +1471,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
               <p className="text-sm font-medium text-text-primary">載入事件時間線中</p>
-              <p className="text-xs text-text-muted">正在讀取這個 position group 的事件紀錄。</p>
+              <p className="text-xs text-text-muted">正在讀取這個部位群組的事件紀錄。</p>
             </div>
           )}
 
@@ -1648,8 +1646,7 @@ function LifecycleReviewModal({
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 整體部位檢討</p>
             <p className="mt-1 text-xs text-text-faint">
-              Whole lifecycle review ｜ Group {group.position_group_id.slice(0, 8)} ｜
-              多次進場/新增批次/分批降低曝險整體檢討
+              整體生命週期檢討 ｜ 群組 {group.position_group_id.slice(0, 8)} ｜ 多次進場/新增批次/分批降低曝險整體檢討
             </p>
           </div>
           <button
@@ -1680,8 +1677,7 @@ function LifecycleReviewModal({
               <div>
                 <p className="text-xs font-medium text-text-muted">整體部位生命週期檢討</p>
                 <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                  此視窗檢討整個 position group
-                  的進場序列、持有路徑、部位管理與結案序列；每一列結案批次的「檢討分析」仍是 Single Trade Review。
+                  此視窗檢討整個部位群組的進場序列、持有路徑、部位管理與結案序列；每一列結案批次的「檢討分析」仍是單筆交易檢討。
                 </p>
               </div>
               <span
@@ -1696,7 +1692,7 @@ function LifecycleReviewModal({
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-100 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
               <p className="text-sm font-medium text-text-primary">載入整體部位檢討中</p>
-              <p className="text-xs text-text-muted">若尚未產生，會建立這個 position group 的 lifecycle review。</p>
+              <p className="text-xs text-text-muted">若尚未產生，會建立這個部位群組的生命週期檢討。</p>
             </div>
           )}
 
@@ -1735,8 +1731,7 @@ function LifecycleReviewModal({
 
               {hasBackfilledCaveat && (
                 <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 shadow-sm dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300">
-                  事後補填 plan caveat：此 lifecycle review 使用了使用者事後補填的 operation
-                  plan。它可改善檢討脈絡，但不代表原始進場當下已存在同一份計畫。
+                  事後補填計畫提示：此生命週期檢討使用了使用者事後補填的操作計畫。它可改善檢討脈絡，但不代表原始進場當下已存在同一份計畫。
                 </div>
               )}
 
@@ -1938,16 +1933,23 @@ export default function ClosedPortfolioPage() {
   if (loading) {
     return (
       <div className="space-y-4">
-        <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+        <div className="rounded-[14px] border border-border bg-surface-raised p-5 shadow-panel">
           <div className="h-3 w-20 animate-pulse rounded bg-border" />
           <div className="mt-3 h-8 w-40 animate-pulse rounded bg-border" />
         </div>
-        {[1, 2].map((item) => (
-          <div key={item} className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-            <div className="h-5 w-24 animate-pulse rounded bg-border" />
-            <div className="mt-2 h-3 w-48 animate-pulse rounded bg-border" />
-          </div>
-        ))}
+        <div className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
+          {[1, 2, 3].map((item) => (
+            <div
+              key={item}
+              className="grid grid-cols-2 gap-4 border-b border-border-subtle p-4 last:border-b-0 md:grid-cols-4"
+            >
+              <div className="col-span-2 h-5 animate-pulse rounded bg-border md:col-span-1" />
+              <div className="h-5 animate-pulse rounded bg-border" />
+              <div className="h-5 animate-pulse rounded bg-border" />
+              <div className="h-10 animate-pulse rounded bg-border" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -1955,14 +1957,14 @@ export default function ClosedPortfolioPage() {
   return (
     <>
       <div className="space-y-4">
-        <section className="rounded-xl border border-border bg-card p-5 shadow-sm">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
+          <div className="flex flex-col gap-4 border-b border-border-subtle px-4 py-4 md:flex-row md:items-end md:justify-between md:px-5">
             <div>
-              <p className="text-xs font-medium text-text-faint">{activePeriod.label} 已實現損益</p>
-              <p className={`mt-1 font-mono text-3xl font-semibold ${totalClass}`}>
-                {getSignedRoundedMoneyText(totalRealizedPnl)}
+              <p className="text-[0.6875rem] font-semibold tracking-[0.14em] text-text-faint uppercase">
+                Closed positions
               </p>
-              <p className="mt-1 text-xs text-text-muted">篩選 {filteredItems.length} 筆已結案紀錄</p>
+              <h2 className="mt-2 text-lg font-semibold text-text-primary">結案回顧</h2>
+              <p className="mt-1 text-xs text-text-muted">依期間檢視已實現損益、持有路徑與檢討紀錄。</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {PERIOD_OPTIONS.map((option) => {
@@ -1973,16 +1975,31 @@ export default function ClosedPortfolioPage() {
                     type="button"
                     aria-pressed={isActive}
                     onClick={() => setSelectedPeriod(option.key)}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    className={`inline-flex min-h-10 items-center justify-center rounded-[10px] px-3 text-xs font-medium transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none ${
                       isActive
-                        ? "bg-indigo-600 text-white"
-                        : "border border-border bg-card text-text-muted hover:bg-card-hover"
+                        ? "bg-accent text-accent-contrast"
+                        : "border border-border bg-surface-raised text-text-muted hover:bg-card-hover hover:text-text-primary"
                     }`}
                   >
                     {option.label}
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          <div className="grid gap-0 sm:grid-cols-[minmax(0,1fr)_minmax(180px,0.4fr)]">
+            <div className="px-4 py-4 md:px-5">
+              <p className="text-xs font-medium text-text-faint">{activePeriod.label} 已實現損益</p>
+              <p className={`mt-2 text-3xl font-semibold tabular-nums ${totalClass}`}>
+                {getSignedRoundedMoneyText(totalRealizedPnl)}
+              </p>
+              <p className="mt-2 text-xs text-text-muted">本期間共 {filteredItems.length} 筆結案批次</p>
+            </div>
+            <div className="border-t border-border-subtle px-4 py-4 sm:border-t-0 sm:border-l md:px-5">
+              <p className="text-xs text-text-faint">結案部位群組</p>
+              <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">{groupedItems.length}</p>
+              <p className="mt-1 text-xs text-text-muted">依部位群組彙整</p>
             </div>
           </div>
         </section>
@@ -1993,139 +2010,134 @@ export default function ClosedPortfolioPage() {
           </div>
         )}
 
-        <section className="rounded-xl border border-border bg-card shadow-sm">
-          <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-            <h2 className="text-sm font-semibold text-text-primary">已結案持股</h2>
-            <span className="text-xs text-text-faint">共 {filteredItems.length} 筆</span>
-          </div>
-
-          {filteredItems.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-text-faint">此期間尚無已結案持股。</div>
-          ) : (
-            <div className="space-y-4 p-4">
-              {groupedItems.map((group) => {
-                const groupResultClass = roundedMoneyClass(group.totalRealizedPnl);
-                const isTimelineLoading = timelineLoading[group.position_group_id] ?? false;
-                const isLifecycleReviewLoading = lifecycleReviewLoading[group.position_group_id] ?? false;
-                return (
-                  <article
-                    key={group.position_group_id}
-                    className="overflow-hidden rounded-xl border border-border bg-card shadow-sm"
-                  >
-                    <div className="border-b border-border bg-surface px-4 py-4 sm:px-5">
-                      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                        <div className="border-l-4 border-l-indigo-500 pl-3 dark:border-l-indigo-400">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-lg font-semibold text-text-primary">{group.name ?? group.symbol}</p>
-                            {group.name && <p className="font-mono text-xs text-text-faint">{group.symbol}</p>}
-                            <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                              進場 {group.entry_date}
-                            </span>
-                            <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                              成本 {formatPrice(group.entry_price, group.symbol)}
-                            </span>
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-2 text-xs text-text-muted">
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">
-                              總結案 {group.totalClosedQuantity} 股
-                            </span>
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1">
-                              結案批次 {group.exitBatchCount} 筆
-                            </span>
-                            <span className="rounded-md border border-border-subtle bg-card px-2 py-1 font-mono text-text-faint">
-                              Group {group.position_group_id.slice(0, 8)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex flex-col gap-2 md:items-end">
-                          <div className="rounded-xl border border-border bg-card px-4 py-3 text-left shadow-sm md:text-right">
-                            <p className="text-xs font-medium text-text-muted">股票總已實現損益</p>
-                            <p className={`mt-1 font-mono text-lg font-semibold ${groupResultClass}`}>
-                              {getSignedRoundedMoneyText(group.totalRealizedPnl)}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2 md:justify-end">
-                            <button
-                              type="button"
-                              onClick={() => void openLifecycleReview(group)}
-                              disabled={isLifecycleReviewLoading}
-                              className="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs font-medium text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-indigo-300 dark:hover:bg-indigo-950"
-                            >
-                              {isLifecycleReviewLoading ? "載入整體檢討…" : "整體部位檢討"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void openTimeline(group)}
-                              disabled={isTimelineLoading}
-                              className="rounded-lg border border-blue-500/40 bg-card px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-300 dark:hover:bg-blue-950"
-                            >
-                              {isTimelineLoading ? "載入時間線…" : "事件時間線"}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="bg-card p-3 sm:p-4">
-                      <div className="space-y-2 border-l border-border-subtle pl-3 sm:pl-4">
-                        {group.items.map((item) => {
-                          const resultClass = roundedMoneyClass(item.realized_pnl);
-                          const isReviewLoading = reviewLoading[item.id] ?? false;
-                          return (
-                            <div
-                              key={item.id}
-                              className="rounded-lg border border-border-subtle bg-surface px-3 py-3 shadow-sm sm:px-4"
-                            >
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <p className="font-semibold text-text-primary">結案批次 #{item.id}</p>
-                                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                                      {item.entry_date} → {item.exit_date}
-                                    </span>
-                                    <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                                      持有 {item.holding_days} 天
-                                    </span>
-                                  </div>
-                                  <div className="mt-1.5 flex flex-wrap gap-1.5 text-xs text-text-muted">
-                                    <span>
-                                      {formatPrice(item.entry_price, item.symbol)} →{" "}
-                                      {formatPrice(item.exit_price, item.symbol)}
-                                    </span>
-                                    <span>結案 {item.exit_quantity} 股</span>
-                                    <span>費稅 {formatRoundedMoney(item.exit_fees + item.exit_taxes)}</span>
-                                  </div>
-                                </div>
-                                <div className="flex items-center justify-between gap-3 sm:justify-end">
-                                  <div className="text-left sm:text-right">
-                                    <p className={`font-mono text-sm font-semibold ${resultClass}`}>
-                                      {getSignedRoundedMoneyText(item.realized_pnl)}
-                                    </p>
-                                    <p className={`font-mono text-xs ${resultClass}`}>
-                                      {getSignedPercentText(item.realized_return_pct)}
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => void openReview(item)}
-                                    disabled={isReviewLoading}
-                                    className="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs font-medium text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-indigo-300 dark:hover:bg-indigo-950"
-                                  >
-                                    {isReviewLoading ? "載入中…" : "檢討分析"}
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
+        {filteredItems.length === 0 ? (
+          <section className="grid gap-3 border-y border-border py-8 text-left sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <div>
+              <p className="text-sm font-medium text-text-primary">此期間沒有已結案持股</p>
+              <p className="mt-1 text-xs text-text-muted">切換期間可查看其他結案紀錄與檢討資料。</p>
             </div>
-          )}
-        </section>
+            <span className="text-xs text-text-faint">目前篩選：{activePeriod.label}</span>
+          </section>
+        ) : (
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-text-primary">已結案部位</h2>
+              <span className="text-xs tabular-nums text-text-faint">{filteredItems.length} 筆批次</span>
+            </div>
+
+            {groupedItems.map((group) => {
+              const groupResultClass = roundedMoneyClass(group.totalRealizedPnl);
+              const isTimelineLoading = timelineLoading[group.position_group_id] ?? false;
+              const isLifecycleReviewLoading = lifecycleReviewLoading[group.position_group_id] ?? false;
+              return (
+                <article
+                  key={group.position_group_id}
+                  data-closed-position-group={group.position_group_id}
+                  className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel"
+                >
+                  <div className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(190px,1.25fr)_minmax(110px,0.7fr)_minmax(130px,0.8fr)_auto] md:items-center md:px-5">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-text-primary">{group.name ?? group.symbol}</p>
+                      <p className="mt-1 text-xs tabular-nums text-text-faint">
+                        {group.name ? `${group.symbol} · ` : ""}進場 {group.entry_date}
+                      </p>
+                      <p className="mt-1 text-xs tabular-nums text-text-faint">
+                        成本 {formatPrice(group.entry_price, group.symbol)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-text-faint">結案規模</p>
+                      <p className="mt-1 text-sm font-medium tabular-nums text-text-primary">
+                        {group.totalClosedQuantity} 股
+                      </p>
+                      <p className="mt-1 text-xs tabular-nums text-text-faint">{group.exitBatchCount} 筆批次</p>
+                    </div>
+                    <div className="md:text-right">
+                      <p className="text-xs text-text-faint">已實現損益</p>
+                      <p className={`mt-1 text-lg font-semibold tabular-nums ${groupResultClass}`}>
+                        {getSignedRoundedMoneyText(group.totalRealizedPnl)}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 md:justify-end">
+                      <button
+                        type="button"
+                        onClick={() => void openLifecycleReview(group)}
+                        disabled={isLifecycleReviewLoading}
+                        className="ui-button-primary min-h-10 px-3 text-xs"
+                      >
+                        {isLifecycleReviewLoading ? "載入檢討中" : "整體部位檢討"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void openTimeline(group)}
+                        disabled={isTimelineLoading}
+                        className="ui-button-secondary min-h-10 px-3 text-xs"
+                      >
+                        {isTimelineLoading ? "載入時間線中" : "事件時間線"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-border-subtle">
+                    <div className="hidden grid-cols-[minmax(170px,1.2fr)_minmax(150px,1fr)_minmax(110px,0.7fr)_auto] gap-4 bg-card-hover/35 px-5 py-2 text-xs font-medium text-text-faint md:grid">
+                      <span>結案批次</span>
+                      <span>價格與數量</span>
+                      <span className="text-right">批次損益</span>
+                      <span className="text-right">檢討</span>
+                    </div>
+                    <div className="divide-y divide-border-subtle">
+                      {group.items.map((item) => {
+                        const resultClass = roundedMoneyClass(item.realized_pnl);
+                        const isReviewLoading = reviewLoading[item.id] ?? false;
+                        return (
+                          <div
+                            key={item.id}
+                            data-closed-batch-id={item.id}
+                            className="grid gap-4 px-4 py-3 md:grid-cols-[minmax(170px,1.2fr)_minmax(150px,1fr)_minmax(110px,0.7fr)_auto] md:items-center md:px-5"
+                          >
+                            <div>
+                              <p className="text-sm font-medium text-text-primary">批次 #{item.id}</p>
+                              <p className="mt-1 text-xs tabular-nums text-text-faint">
+                                {item.entry_date} 至 {item.exit_date} · {item.holding_days} 天
+                              </p>
+                            </div>
+                            <div className="text-xs tabular-nums text-text-muted">
+                              <p>
+                                {formatPrice(item.entry_price, item.symbol)} 至{" "}
+                                {formatPrice(item.exit_price, item.symbol)}
+                              </p>
+                              <p className="mt-1">
+                                {item.exit_quantity} 股 · 費稅 {formatRoundedMoney(item.exit_fees + item.exit_taxes)}
+                              </p>
+                            </div>
+                            <div className="md:text-right">
+                              <p className={`text-sm font-semibold tabular-nums ${resultClass}`}>
+                                {getSignedRoundedMoneyText(item.realized_pnl)}
+                              </p>
+                              <p className={`mt-1 text-xs tabular-nums ${resultClass}`}>
+                                {getSignedPercentText(item.realized_return_pct)}
+                              </p>
+                            </div>
+                            <div className="flex md:justify-end">
+                              <button
+                                type="button"
+                                onClick={() => void openReview(item)}
+                                disabled={isReviewLoading}
+                                className="ui-button-secondary min-h-10 px-3 text-xs"
+                              >
+                                {isReviewLoading ? "載入中" : "檢討分析"}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </section>
+        )}
       </div>
 
       {selectedReviewItem && (

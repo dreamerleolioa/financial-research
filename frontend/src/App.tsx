@@ -1,165 +1,193 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, Outlet, useLocation } from "react-router-dom";
+import {
+  DesktopNavigation,
+  MobileBottomNavigation,
+  PortfolioSubNavigation,
+} from "./components/app-shell/AppNavigation";
 import { useAuth } from "./stores/auth";
 import { useDarkMode } from "./stores/theme";
+
+const routeTitles = [
+  { matches: (pathname: string) => pathname.startsWith("/watchlist"), title: "關注列表" },
+  { matches: (pathname: string) => pathname.startsWith("/portfolio"), title: "持股管理" },
+  { matches: (pathname: string) => pathname.startsWith("/daily-radar"), title: "每日盤後觀察雷達" },
+  { matches: () => true, title: "個股分析" },
+];
+
+function ProductBrand({ compact = false }: { compact?: boolean }) {
+  return (
+    <Link to="/analyze" className="group flex min-w-0 items-center gap-3 rounded-[10px]">
+      <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-accent/30 bg-accent-soft text-sm font-semibold text-accent shadow-panel">
+        研
+        <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-signal" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 leading-tight">
+        <span className="block truncate text-sm font-semibold text-text-primary">個股研究台</span>
+        {!compact && (
+          <span className="mt-1 block text-[0.625rem] font-medium tracking-[0.16em] text-text-faint uppercase">
+            Taiwan Research Desk
+          </span>
+        )}
+      </span>
+    </Link>
+  );
+}
+
+function ThemeIcon({ theme }: { theme: "light" | "dark" }) {
+  if (theme === "dark") {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        className="h-5 w-5"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="4" />
+        <path
+          d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5" aria-hidden="true">
+      <path d="M20.4 15.2A8.5 8.5 0 0 1 8.8 3.6 8.5 8.5 0 1 0 20.4 15.2Z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function LogoutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5" aria-hidden="true">
+      <path
+        d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4M14 8l4 4-4 4m4-4H9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function UserAvatar({
+  avatarUrl,
+  name,
+  size = "md",
+}: {
+  avatarUrl?: string | null;
+  name?: string | null;
+  size?: "sm" | "md";
+}) {
+  const sizeClass = size === "sm" ? "h-8 w-8 text-xs" : "h-9 w-9 text-sm";
+
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={name ? `${name} 的頭像` : "使用者頭像"}
+        referrerPolicy="no-referrer"
+        className={`${sizeClass} rounded-[10px] object-cover ring-1 ring-border`}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={`flex ${sizeClass} items-center justify-center rounded-[10px] bg-accent-soft font-semibold text-accent`}
+      aria-hidden="true"
+    >
+      {name ? name.charAt(0).toUpperCase() : "?"}
+    </span>
+  );
+}
 
 export default function App() {
   const { user, logout } = useAuth();
   const { theme, toggle } = useDarkMode();
+  const { pathname } = useLocation();
+  const routeTitle = routeTitles.find((route) => route.matches(pathname))?.title ?? "個股分析";
+  const isPortfolioRoute = pathname.startsWith("/portfolio");
+  const themeLabel = theme === "dark" ? "切換為亮色模式" : "切換為暗色模式";
 
   return (
-    <main className="min-h-screen bg-surface text-text-primary">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-6">
-        <header className="flex items-start justify-between gap-2">
-          <div>
-            <h1 className="text-2xl font-semibold md:text-3xl">個股分析儀表板</h1>
-            <p className="text-sm text-text-muted">輸入股票代碼，查看 AI 分析信心、雜訊過濾結果與流程路徑。</p>
-          </div>
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
-            {user?.avatar_url ? (
-              <img
-                src={user.avatar_url}
-                alt={user.name ?? "使用者"}
-                referrerPolicy="no-referrer"
-                className="h-8 w-8 rounded-full object-cover ring-2 ring-indigo-100 dark:ring-indigo-900"
-              />
-            ) : (
-              // brand color: no token defined
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-sm font-semibold text-indigo-600 dark:bg-indigo-900 dark:text-indigo-300">
-                {user?.name ? user.name.charAt(0).toUpperCase() : "?"}
+    <div className="min-h-dvh bg-canvas text-text-primary">
+      <a
+        href="#main-content"
+        className="fixed top-3 left-3 z-50 -translate-y-20 rounded-[10px] bg-accent px-4 py-2 text-sm font-semibold text-accent-contrast shadow-panel transition-transform duration-150 focus:translate-y-0 motion-reduce:transition-none"
+      >
+        跳至主要內容
+      </a>
+
+      <div className="min-h-dvh lg:grid lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <aside className="sticky top-0 hidden h-dvh flex-col border-r border-border bg-shell px-4 py-5 lg:flex">
+          <ProductBrand />
+          <DesktopNavigation />
+
+          <div className="border-t border-border pt-4">
+            <div className="flex min-w-0 items-center gap-3 px-1">
+              <UserAvatar avatarUrl={user?.avatar_url} name={user?.name} />
+              <div className="min-w-0 flex-1 leading-tight">
+                <p className="truncate text-sm font-medium text-text-primary">{user?.name ?? "使用者"}</p>
+                {user?.email && <p className="mt-1 truncate text-xs text-text-faint">{user.email}</p>}
               </div>
-            )}
-            {user?.name && (
-              <div className="flex flex-col leading-tight">
-                <span className="text-sm font-medium text-text-primary">{user.name}</span>
-                {user?.email && <span className="text-xs text-text-faint">{user.email}</span>}
-              </div>
-            )}
-            <div className="mx-1 h-5 w-px bg-border" />
-            <button
-              onClick={toggle}
-              className="rounded-lg p-1.5 text-text-muted transition hover:bg-card-hover hover:text-text-secondary"
-              title={theme === "dark" ? "切換為亮色模式" : "切換為暗色模式"}
-            >
-              {theme === "dark" ? (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="12" cy="12" r="4" />
-                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
-                </svg>
-              ) : (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" />
-                </svg>
-              )}
-            </button>
-            <div className="mx-1 h-5 w-px bg-border" />
-            <button
-              onClick={logout}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition hover:bg-card-hover hover:text-text-secondary"
-              title="登出"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={toggle}
+                className="ui-button-secondary min-h-10 px-3 text-xs"
+                aria-label={themeLabel}
+                title={themeLabel}
               >
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                <polyline points="16 17 21 12 16 7" />
-                <line x1="21" y1="12" x2="9" y2="12" />
-              </svg>
-              登出
-            </button>
+                <ThemeIcon theme={theme} />
+                <span>{theme === "dark" ? "亮色" : "暗色"}</span>
+              </button>
+              <button type="button" onClick={logout} className="ui-button-secondary min-h-10 px-3 text-xs" title="登出">
+                <LogoutIcon />
+                <span>登出</span>
+              </button>
+            </div>
           </div>
-        </header>
+        </aside>
 
-        <nav className="flex gap-2">
-          <NavLink
-            to="/analyze"
-            className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
-              }`
-            }
-          >
-            個股分析
-          </NavLink>
-          <NavLink
-            to="/watchlist"
-            className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
-              }`
-            }
-          >
-            關注列表
-          </NavLink>
-          <NavLink
-            to="/portfolio"
-            end
-            className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
-              }`
-            }
-          >
-            我的持股
-          </NavLink>
-          <NavLink
-            to="/portfolio/closed"
-            className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
-              }`
-            }
-          >
-            已結案持股
-          </NavLink>
-          <NavLink
-            to="/daily-radar"
-            className={({ isActive }) =>
-              `rounded-lg px-4 py-2 text-sm font-medium transition ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-card-hover"
-              }`
-            }
-          >
-            盤後觀察雷達
-          </NavLink>
-        </nav>
+        <div className="min-w-0">
+          <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-border bg-shell/95 px-4 backdrop-blur-sm lg:hidden">
+            <ProductBrand compact />
+            <div className="flex shrink-0 items-center gap-1">
+              <UserAvatar avatarUrl={user?.avatar_url} name={user?.name} size="sm" />
+              <button
+                type="button"
+                onClick={toggle}
+                className="ui-icon-button"
+                aria-label={themeLabel}
+                title={themeLabel}
+              >
+                <ThemeIcon theme={theme} />
+              </button>
+              <button type="button" onClick={logout} className="ui-icon-button" aria-label="登出" title="登出">
+                <LogoutIcon />
+              </button>
+            </div>
+          </header>
 
-        <Outlet />
+          <main
+            id="main-content"
+            tabIndex={-1}
+            className="min-w-0 px-4 py-5 pb-28 sm:px-6 sm:py-6 lg:px-8 lg:py-8 lg:pb-10"
+          >
+            <div className="w-full max-w-[1440px]">
+              <h1 className="sr-only">{routeTitle}</h1>
+              {isPortfolioRoute && <PortfolioSubNavigation />}
+              <Outlet />
+            </div>
+          </main>
+        </div>
       </div>
-    </main>
+
+      <MobileBottomNavigation />
+    </div>
   );
 }

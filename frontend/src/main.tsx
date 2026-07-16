@@ -28,7 +28,7 @@ const queryClient = new QueryClient({
 function LoadingSpinner({ minHeightClass = "min-h-screen" }: { minHeightClass?: string }) {
   return (
     <div className={`flex ${minHeightClass} items-center justify-center`}>
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
     </div>
   );
 }
@@ -41,7 +41,9 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 }
 
 function LazyRoute({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<LoadingSpinner minHeightClass="min-h-[40vh]" />}>{children}</Suspense>;
+  return (
+    <Suspense fallback={<LoadingSpinner minHeightClass="min-h-[40vh]" />}>{children}</Suspense>
+  );
 }
 
 createRoot(document.getElementById("root")!).render(
