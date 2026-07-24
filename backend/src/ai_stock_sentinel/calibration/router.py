@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.calibration import (
     ANALYSIS_FORWARD_VALIDATION_VERSION,
+    GENERAL_ANALYSIS_FORWARD_ADAPTER,
     build_general_analysis_monthly_report,
     evaluate_general_analysis_forward_validation,
     general_validation_samples,
@@ -20,16 +21,18 @@ from ai_stock_sentinel.calibration.price_provider import (
     get_forward_price_provider,
 )
 from ai_stock_sentinel.calibration.auth import require_calibration_internal_auth
-from ai_stock_sentinel.daily_radar.forward_validation import (
+from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
     benchmark_requires_forward_price_refresh,
     default_due_start_date,
     due_windows_by_candidate,
-    load_benchmark_prices_from_prepared_market_context,
-    load_price_series_from_raw_data,
     merge_price_series,
     symbols_requiring_forward_price_refresh,
+)
+from ai_stock_sentinel.calibration.repository import (
+    load_benchmark_prices_from_prepared_market_context,
+    load_price_series_from_raw_data,
 )
 from ai_stock_sentinel.db.models import AnalysisForwardValidationResult
 from ai_stock_sentinel.db.session import get_db
@@ -127,6 +130,7 @@ def run_general_analysis_forward_validation(
     if request.mode == "due":
         windows_by_sample = due_windows_by_candidate(
             samples,
+            adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
             as_of_date=as_of_date,
             windows=request.windows,
             price_series_by_symbol={

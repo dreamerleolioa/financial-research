@@ -4,6 +4,7 @@ import json
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import pytest
@@ -264,6 +265,117 @@ def test_monthly_review_does_not_fall_back_to_validated_older_same_day_run() -> 
         )
 
     assert rows == []
+
+
+def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_months() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run_months = [
+            date(2025 + offset // 12, offset % 12 + 1, 1)
+            for offset in range(19)
+        ]
+        for index, run_date in enumerate(run_months, start=1):
+            run = _add_run(session)
+            run.run_date = run_date
+            run.created_at = datetime(
+                run_date.year,
+                run_date.month,
+                1,
+                tzinfo=timezone.utc,
+            )
+            candidate = _add_candidate(session, run)
+            candidate.symbol = f"24{index:02d}.TW"
+            candidate.data_dates = {"ohlcv": run.run_date.isoformat()}
+            for window in (5, 10, 20):
+                session.add(
+                    DailyRadarForwardValidationResult(
+                        candidate_id=candidate.id,
+                        window_days=window,
+                        validation_version="daily-radar-forward-validation-v1",
+                        status="validated",
+                        signal_date=run.run_date,
+                        target_date=date(
+                            run_date.year,
+                            run_date.month,
+                            min(25, 1 + window),
+                        ),
+                        benchmark_symbol="TAIEX",
+                        outcome={
+                            "forward_return_pct": float(index),
+                            "excess_return_vs_benchmark_pct": float(index),
+                            "max_adverse_excursion_pct": -1.0,
+                            "hit_above_threshold": True,
+                        },
+                        skip_reason=None,
+                    )
+                )
+        session.commit()
+
+    statements: list[tuple[str, object]] = []
+
+    def capture_sql(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        started_at = perf_counter()
+        with Session(engine) as session:
+            report = build_monthly_rule_review_report(
+                session,
+                market="TW",
+                year=2026,
+                month=7,
+                min_sample_count=1,
+            )
+        elapsed_seconds = perf_counter() - started_at
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
+
+    payload = report.json_report
+    assert payload["cohort"]["selected_months"] == [
+        "2026-02",
+        "2026-03",
+        "2026-04",
+        "2026-05",
+        "2026-06",
+        "2026-07",
+    ]
+    assert payload["replay_coverage"]["selected_validation_rows"] == 18
+    assert len(payload["completeness_watermarks"]) == 19
+    assert elapsed_seconds < 5.0
+    select_statements = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if statement.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(select_statements) == 3
+    assert any(
+        "GROUP BY" in statement
+        and "daily_radar_forward_validation_results" in statement
+        for statement, _parameters in select_statements
+    )
+    assert all(
+        "2000-01-01" not in str(parameters)
+        for _statement, parameters in select_statements
+    )
+    detail_statements = [
+        statement
+        for statement, _parameters in select_statements
+        if "GROUP BY" not in statement
+    ]
+    assert detail_statements
+    assert all(
+        "daily_radar_runs.run_date >= ?" in statement
+        for statement in detail_statements
+    )
 
 
 def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:

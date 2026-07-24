@@ -7,13 +7,14 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.governance import (
     DEFAULT_MIN_VALIDATED_COVERAGE,
     block_bootstrap_delta,
     metrics_by_window,
+    month_bounds,
     outcome_metrics,
     select_training_and_holdout_months,
     validated_coverage,
@@ -128,18 +129,13 @@ def build_monthly_rule_review_report(
     min_validated_coverage: float = DEFAULT_MIN_VALIDATED_COVERAGE,
 ) -> MonthlyRuleReviewReport:
     month_start, month_end = _month_bounds(year, month)
-    all_rows = validation_rows_from_results(
+    rows = validation_rows_from_results(
         session,
         market=market,
-        start_date=date(2000, 1, 1),
+        start_date=month_start,
         end_date=month_end,
         validation_version=validation_version,
     )
-    rows = [
-        row
-        for row in all_rows
-        if month_start <= (_parse_date(row.get("signal_date")) or date.min) <= month_end
-    ]
     version = validation_version or _dominant_validation_version(rows) or FORWARD_VALIDATION_VERSION
     ablation = build_ablation_report(
         rows,
@@ -155,15 +151,26 @@ def build_monthly_rule_review_report(
         market=market,
         through_date=month_end,
         validation_version=version,
-        rows=all_rows,
     )
     cohort = select_training_and_holdout_months(watermarks)
-    selected_months = set(_as_list(cohort.get("selected_months")))
+    selected_months = [
+        str(value)
+        for value in _as_list(cohort.get("selected_months"))
+    ]
+    selected_month_set = set(selected_months)
+    optimizer_detail_rows = validation_rows_from_results(
+        session,
+        market=market,
+        start_date=None,
+        end_date=None,
+        validation_version=version,
+        selected_months=selected_months,
+    )
     optimizer_rows = [
         row
-        for row in all_rows
+        for row in optimizer_detail_rows
         if row.get("status") == "validated"
-        and str(row.get("signal_date") or "")[:7] in selected_months
+        and str(row.get("signal_date") or "")[:7] in selected_month_set
     ]
     candidate_configs, replay_coverage = _scoring_candidate_reports(
         optimizer_rows,
@@ -226,30 +233,38 @@ def validation_rows_from_results(
     session: Session,
     *,
     market: str,
-    start_date: date,
-    end_date: date,
+    start_date: date | None,
+    end_date: date | None,
     validation_version: str | None = None,
+    selected_months: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    run_query = (
-        select(DailyRadarRun)
+    date_predicate = _date_filter(
+        DailyRadarRun.run_date,
+        start_date=start_date,
+        end_date=end_date,
+        selected_months=selected_months,
+    )
+    ranked_runs = (
+        select(
+            DailyRadarRun.id.label("run_id"),
+            func.row_number().over(
+                partition_by=DailyRadarRun.run_date,
+                order_by=(
+                    DailyRadarRun.created_at.desc(),
+                    DailyRadarRun.id.desc(),
+                ),
+            ).label("row_number"),
+        )
         .where(
             DailyRadarRun.market == market,
             DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
-            DailyRadarRun.run_date >= start_date,
-            DailyRadarRun.run_date <= end_date,
+            date_predicate,
         )
-        .order_by(
-            DailyRadarRun.run_date.asc(),
-            DailyRadarRun.created_at.desc(),
-            DailyRadarRun.id.desc(),
-        )
+        .subquery()
     )
-    latest_run_by_date: dict[date, int] = {}
-    for run in session.scalars(run_query).all():
-        latest_run_by_date.setdefault(run.run_date, run.id)
-    latest_run_ids = set(latest_run_by_date.values())
-    if not latest_run_ids:
-        return []
+    latest_run_ids = select(ranked_runs.c.run_id).where(
+        ranked_runs.c.row_number == 1
+    )
 
     query = (
         select(DailyRadarForwardValidationResult, DailyRadarCandidate, DailyRadarRun)
@@ -257,8 +272,7 @@ def validation_rows_from_results(
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
         .where(
             DailyRadarRun.market == market,
-            DailyRadarRun.run_date >= start_date,
-            DailyRadarRun.run_date <= end_date,
+            date_predicate,
             DailyRadarRun.id.in_(latest_run_ids),
         )
         .order_by(
@@ -515,59 +529,122 @@ def _daily_radar_completeness_watermarks(
     market: str,
     through_date: date,
     validation_version: str,
-    rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    query = (
-        select(DailyRadarCandidate, DailyRadarRun)
-        .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+    ranked_runs = (
+        select(
+            DailyRadarRun.id.label("run_id"),
+            func.row_number().over(
+                partition_by=DailyRadarRun.run_date,
+                order_by=(
+                    DailyRadarRun.created_at.desc(),
+                    DailyRadarRun.id.desc(),
+                ),
+            ).label("row_number"),
+        )
         .where(
             DailyRadarRun.market == market,
             DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
             DailyRadarRun.run_date <= through_date,
         )
-        .order_by(
-            DailyRadarRun.run_date.asc(),
-            DailyRadarRun.created_at.desc(),
-            DailyRadarRun.id.desc(),
-            DailyRadarCandidate.id.asc(),
+        .subquery()
+    )
+    latest_run_ids = select(ranked_runs.c.run_id).where(
+        ranked_runs.c.row_number == 1
+    )
+    year_value = cast(extract("year", DailyRadarRun.run_date), Integer)
+    month_value = cast(extract("month", DailyRadarRun.run_date), Integer)
+    expected_count = func.count(func.distinct(DailyRadarCandidate.id))
+    evaluated_count = func.count(
+        func.distinct(
+            case(
+                (
+                    DailyRadarForwardValidationResult.id.is_not(None),
+                    DailyRadarCandidate.id,
+                )
+            )
         )
     )
-    latest_run_by_date: dict[date, int] = {}
-    expected_by_month: dict[str, set[int]] = defaultdict(set)
-    for candidate, run in session.execute(query).all():
-        selected_run_id = latest_run_by_date.setdefault(run.run_date, run.id)
-        if run.id == selected_run_id:
-            expected_by_month[f"{run.run_date.year:04d}-{run.run_date.month:02d}"].add(candidate.id)
-
-    results_by_month: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in rows:
-        if (
-            int(row.get("window_days") or 0) == 20
-            and str(row.get("validation_version") or validation_version) == validation_version
-        ):
-            signal_date = _parse_date(row.get("signal_date"))
-            if signal_date is not None:
-                results_by_month[f"{signal_date.year:04d}-{signal_date.month:02d}"].append(row)
-
+    validated_count = func.count(
+        func.distinct(
+            case(
+                (
+                    DailyRadarForwardValidationResult.status == "validated",
+                    DailyRadarCandidate.id,
+                )
+            )
+        )
+    )
+    query = (
+        select(
+            year_value,
+            month_value,
+            expected_count,
+            evaluated_count,
+            validated_count,
+        )
+        .select_from(DailyRadarCandidate)
+        .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+        .outerjoin(
+            DailyRadarForwardValidationResult,
+            and_(
+                DailyRadarForwardValidationResult.candidate_id
+                == DailyRadarCandidate.id,
+                DailyRadarForwardValidationResult.window_days == 20,
+                DailyRadarForwardValidationResult.validation_version
+                == validation_version,
+            ),
+        )
+        .where(
+            DailyRadarRun.market == market,
+            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+            DailyRadarRun.run_date <= through_date,
+            DailyRadarRun.id.in_(latest_run_ids),
+        )
+        .group_by(year_value, month_value)
+        .order_by(year_value.asc(), month_value.asc())
+    )
     watermarks: list[dict[str, Any]] = []
-    for month in sorted(expected_by_month):
-        expected_ids = expected_by_month[month]
-        month_rows = results_by_month.get(month, [])
-        evaluated_ids = {int(row["candidate_id"]) for row in month_rows}
-        validated_ids = {
-            int(row["candidate_id"])
-            for row in month_rows
-            if row.get("status") == "validated"
-        }
+    for year, month, expected, evaluated, validated in session.execute(query):
+        expected_value = int(expected or 0)
+        evaluated_value = int(evaluated or 0)
+        validated_value = int(validated or 0)
         watermarks.append({
-            "month": month,
-            "expected_20d_samples": len(expected_ids),
-            "evaluated_20d_samples": len(evaluated_ids),
-            "validated_20d_samples": len(validated_ids),
-            "maturity_complete": bool(expected_ids) and expected_ids <= evaluated_ids,
-            "validated_coverage": validated_coverage(len(validated_ids), len(expected_ids)),
+            "month": f"{int(year):04d}-{int(month):02d}",
+            "expected_20d_samples": expected_value,
+            "evaluated_20d_samples": evaluated_value,
+            "validated_20d_samples": validated_value,
+            "maturity_complete": (
+                expected_value > 0
+                and evaluated_value >= expected_value
+            ),
+            "validated_coverage": validated_coverage(
+                validated_value,
+                expected_value,
+            ),
         })
     return watermarks
+
+
+def _date_filter(
+    column: Any,
+    *,
+    start_date: date | None,
+    end_date: date | None,
+    selected_months: Sequence[str] | None,
+) -> Any:
+    if selected_months is not None:
+        predicates = []
+        for value in selected_months:
+            year_text, month_text = value.split("-", 1)
+            start, end = month_bounds(int(year_text), int(month_text))
+            predicates.append(and_(column >= start, column <= end))
+        return or_(*predicates) if predicates else column.in_([])
+    predicates = []
+    if start_date is not None:
+        predicates.append(column >= start_date)
+    if end_date is not None:
+        predicates.append(column <= end_date)
+    return and_(*predicates) if predicates else column.is_not(None)
 
 
 def _scoring_candidate_reports(

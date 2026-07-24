@@ -500,6 +500,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 9. `.github/workflows/daily-radar.yml` 於 OHLCV 與 market context 後、台灣時間平日 23:50 執行 5 / 10 / 20 交易日 due validation。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
 10. 同一市場與 `run_date` 有多次公開 run 時，forward validation 與月報只採最新 run，避免 rerun 被誤當獨立樣本。
 11. `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日輸出 AES-256 加密的 Actions artifact；月報選最近六個 20 日窗口已完整評估月份，前五個 training、最新一個 holdout，並以 `run_date` 做固定 seed block bootstrap。
+12. 月報 watermark 使用 DB aggregation；cohort 決定後只載入所選六個月份的 candidate / replay / validation detail。Daily Radar 與一般分析透過各自 adapter 共用中立 forward-validation core，不得讓 feature-specific scoring 或 ORM 依賴流入 core。
 
 內部端點需使用 internal token 驗證。token 放在 GitHub Actions secrets 與 Zeabur environment variables，不寫入 repo。
 

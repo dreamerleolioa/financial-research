@@ -348,7 +348,7 @@ make run-api
 - `POST /internal/daily-radar/rule-review/monthly`：產生 Daily Radar 六個成熟月份 training / holdout 調權報表
 - `POST /internal/analysis-calibration/monthly`：產生一般分析 confidence 六個成熟月份 training / holdout 調權報表
 
-Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。月報只上傳 AES-256 加密的 Actions artifact，內含兩軌 JSON、Markdown Actions 與 manifest；不會寫入 public issue 或 main branch，也不會直接修改權重。下載後可用 `gpg --decrypt --output analysis-calibration.tar.gz <artifact>.tar.gz.gpg` 解密，再以 `tar -xzf analysis-calibration.tar.gz` 展開。
+Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。月報只上傳 AES-256 加密的 Actions artifact，內含兩軌 JSON、Markdown Actions 與 manifest；不會寫入 public issue 或 main branch，也不會直接修改權重。下載後可用 `gpg --decrypt --output analysis-calibration.tar.gz <artifact>.tar.gz.gpg` 解密，再以 `tar -xzf analysis-calibration.tar.gz` 展開。
 - `POST /internal/daily-radar/rule-review/monthly`：以 production validation result 產生月度 rule governance 報告
 - `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單
 - `GET /daily-radar/{run_date}`：讀取指定日期 Daily Radar 候選清單

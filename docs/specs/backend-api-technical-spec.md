@@ -1825,6 +1825,7 @@ Daily Radar run status：
 - `POST /internal/daily-radar/rule-review/monthly`：輸出 Daily Radar baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - `POST /internal/analysis-calibration/monthly`：輸出一般分析 confidence baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析樣本會保存並依 `market`、`benchmark_symbol` 分區，避免跨市場校準。
+- 兩軌 forward validation 透過 feature adapter 共用 `ai_stock_sentinel.calibration.forward_validation`；月報以 SQL monthly aggregation 選 cohort，再以明確月份條件載入六個成熟月份的 replay / validation detail。
 - 一般分析校準只收 `/analyze`，不含 `/analyze/position`；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。
 
 #### Internal Daily Radar chip context update

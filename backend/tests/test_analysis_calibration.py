@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import date
 from io import StringIO
 from pathlib import Path
+from time import perf_counter
 from types import ModuleType
 
 from alembic.migration import MigrationContext
@@ -319,6 +320,128 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     assert set(candidate["training"]["before"]) == {"5", "10", "20"}
     assert candidate["training_block_bootstrap"]["seed"] == 20260724
     assert candidate["training_block_bootstrap"]["block_count"] == 5
+
+
+def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_months() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        record_months = [
+            date(2025 + offset // 12, offset % 12 + 1, 5)
+            for offset in range(19)
+        ]
+        for index, record_date in enumerate(record_months, start=1):
+            sample = capture_general_analysis_calibration_sample(
+                session,
+                symbol=f"24{index:02d}.TW",
+                record_date=record_date,
+                result=_analysis_result(),
+                is_final=True,
+            )
+            assert sample is not None
+            session.flush()
+            for window in (5, 10, 20):
+                session.add(
+                    AnalysisForwardValidationResult(
+                        sample_id=sample.id,
+                        window_days=window,
+                        validation_version="general-analysis-forward-validation-v1",
+                        status="validated",
+                        signal_date=sample.record_date,
+                        target_date=date(
+                            record_date.year,
+                            record_date.month,
+                            min(25, 5 + window),
+                        ),
+                        benchmark_symbol="TAIEX",
+                        outcome={
+                            "forward_return_pct": float(index),
+                            "excess_return_vs_benchmark_pct": float(index),
+                            "max_adverse_excursion_pct": -1.0,
+                            "hit_above_threshold": True,
+                        },
+                        skip_reason=None,
+                    )
+                )
+        session.commit()
+
+    statements: list[tuple[str, object]] = []
+
+    def capture_sql(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        started_at = perf_counter()
+        with Session(engine) as session:
+            report, _ = build_general_analysis_monthly_report(
+                session,
+                through_year=2026,
+                through_month=7,
+                min_sample_count=1,
+            )
+        elapsed_seconds = perf_counter() - started_at
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
+
+    assert report["cohort"]["selected_months"] == [
+        "2026-02",
+        "2026-03",
+        "2026-04",
+        "2026-05",
+        "2026-06",
+        "2026-07",
+    ]
+    assert report["coverage"]["selected_validation_rows"] == 18
+    assert len(report["completeness_watermarks"]) == 19
+    assert elapsed_seconds < 5.0
+    select_statements = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if statement.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(select_statements) == 3
+    assert any(
+        "GROUP BY" in statement
+        and "analysis_forward_validation_results" in statement
+        for statement, _parameters in select_statements
+    )
+    assert all(
+        "2000-01-01" not in str(parameters)
+        for _statement, parameters in select_statements
+    )
+    detail_statements = [
+        statement
+        for statement, _parameters in select_statements
+        if "GROUP BY" not in statement
+    ]
+    assert detail_statements
+    assert all(
+        "analysis_calibration_samples.record_date >= ?" in statement
+        for statement in detail_statements
+    )
+
+
+def test_general_calibration_track_does_not_import_daily_radar_evaluator_or_auth() -> None:
+    root = Path(__file__).parents[1] / "src" / "ai_stock_sentinel"
+    calibration_source = (root / "analysis" / "calibration.py").read_text(
+        encoding="utf-8"
+    )
+    router_source = (root / "calibration" / "router.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "daily_radar.forward_validation" not in calibration_source
+    assert "daily_radar.forward_validation" not in router_source
+    assert "daily_radar.auth" not in router_source
+    assert "calibration.forward_validation" in calibration_source
+    assert "calibration.forward_validation" in router_source
 
 
 def test_general_monthly_internal_api_returns_json_and_markdown(monkeypatch) -> None:

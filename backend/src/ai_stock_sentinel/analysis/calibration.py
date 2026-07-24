@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.confidence_scorer import (
@@ -23,17 +23,21 @@ from ai_stock_sentinel.calibration.governance import (
     block_bootstrap_delta,
     confidence_excess_correlation,
     metrics_by_window,
+    month_bounds,
     month_key,
     select_training_and_holdout_months,
     validated_coverage,
 )
-from ai_stock_sentinel.config import STRATEGY_VERSION
-from ai_stock_sentinel.daily_radar.forward_validation import (
+from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
-    build_forward_validation_report,
+    ForwardValidationAdapter,
+    close_on,
     due_windows_by_candidate,
+    evaluate_forward_validation,
+    number as forward_number,
 )
+from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.db.models import (
     AnalysisCalibrationSample,
     AnalysisForwardValidationResult,
@@ -179,17 +183,17 @@ def evaluate_general_analysis_forward_validation(
     if due_only and active_windows_by_sample is None:
         active_windows_by_sample = due_windows_by_candidate(
             samples,
+            adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
             as_of_date=as_of_date,
             windows=windows,
             price_series_by_symbol=price_series_by_symbol,
             benchmark_prices=benchmark_prices,
         )
-    evaluation = build_forward_validation_report(
+    evaluation = evaluate_forward_validation(
         samples,
         price_series_by_symbol=price_series_by_symbol,
         benchmark_prices=benchmark_prices,
-        market=market,
-        sample_source="general_analysis_calibration_samples",
+        adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
         as_of_date=as_of_date,
         windows=windows,
         benchmark_symbol=benchmark_symbol,
@@ -201,7 +205,41 @@ def evaluate_general_analysis_forward_validation(
         dict(outcome) | {"sample_id": _sample_id_from_candidate(outcome)}
         for outcome in evaluation.outcomes
     ]
-    report = dict(evaluation.report)
+    report = {
+        "metadata": {
+            "report_version": "general-analysis-forward-validation-report-v1",
+            "validation_version": ANALYSIS_FORWARD_VALIDATION_VERSION,
+            "market": market,
+            "sample_source": "general_analysis_calibration_samples",
+            "as_of_date": as_of_date.isoformat(),
+            "windows": evaluation.active_windows,
+            "benchmark_symbol": benchmark_symbol,
+            "hit_threshold_pct": 3.0,
+            "positioning": "rule_quality_calibration_diagnostic_not_performance_marketing",
+        },
+        "sample_summary": _forward_sample_summary(
+            candidate_count=evaluation.candidate_count,
+            outcomes=evaluation.outcomes,
+            windows=evaluation.active_windows,
+        ),
+        "bucket_outcomes": {},
+        "secondary_bucket_outcomes": {},
+        "rule_outcomes": {},
+        "risk_label_outcomes": {},
+        "market_regime_outcomes": {},
+        "relative_strength_bucket_outcomes": {},
+        "repeat_status_outcomes": {},
+        "score_decile_outcomes": {},
+        "data_freshness_outcomes": {},
+        "ablation_candidates": [],
+        "skip_reasons": evaluation.skipped_reasons,
+        "version_manifest": {
+            "validation_version": ANALYSIS_FORWARD_VALIDATION_VERSION,
+            "report_version": "general-analysis-forward-validation-report-v1",
+            "live_scoring_changed": False,
+            "diagnostic_only": True,
+        },
+    }
     report["metadata"] = dict(report["metadata"]) | {
         "track": "general_analysis",
         "optimizer_scope": "final_/analyze_only",
@@ -272,6 +310,18 @@ def build_general_analysis_monthly_report(
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
 ) -> tuple[dict[str, Any], str]:
     through_date = _month_end(through_year, through_month)
+    watermarks = _general_completeness_watermarks(
+        session,
+        through_date=through_date,
+        market=market,
+        benchmark_symbol=benchmark_symbol,
+    )
+    cohort = select_training_and_holdout_months(watermarks)
+    selected_months = [str(value) for value in cohort["selected_months"]]
+    selected_month_filter = _month_filter(
+        AnalysisCalibrationSample.record_date,
+        selected_months,
+    )
     samples = session.scalars(
         select(AnalysisCalibrationSample)
         .where(
@@ -279,18 +329,16 @@ def build_general_analysis_monthly_report(
             AnalysisCalibrationSample.analysis_is_final.is_(True),
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
-            AnalysisCalibrationSample.record_date <= through_date,
+            selected_month_filter,
         )
         .order_by(AnalysisCalibrationSample.record_date.asc(), AnalysisCalibrationSample.id.asc())
     ).all()
     rows = _validation_rows(
         session,
-        through_date=through_date,
         market=market,
         benchmark_symbol=benchmark_symbol,
+        selected_months=selected_months,
     )
-    watermarks = _completeness_watermarks(samples, rows)
-    cohort = select_training_and_holdout_months(watermarks)
     selected_months = set(cohort["selected_months"])
     selected_rows = [row for row in rows if row["month"] in selected_months and row["status"] == "validated"]
     sample_by_id = {sample.id: sample for sample in samples}
@@ -558,9 +606,9 @@ def _replay_rows(
 def _validation_rows(
     session: Session,
     *,
-    through_date: date,
     market: str,
     benchmark_symbol: str,
+    selected_months: Sequence[str],
 ) -> list[dict[str, Any]]:
     query = (
         select(AnalysisForwardValidationResult, AnalysisCalibrationSample)
@@ -572,7 +620,10 @@ def _validation_rows(
             AnalysisCalibrationSample.analysis_type == "general",
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
-            AnalysisCalibrationSample.record_date <= through_date,
+            _month_filter(
+                AnalysisCalibrationSample.record_date,
+                selected_months,
+            ),
             AnalysisForwardValidationResult.validation_version == ANALYSIS_FORWARD_VALIDATION_VERSION,
         )
         .order_by(
@@ -596,36 +647,94 @@ def _validation_rows(
     ]
 
 
-def _completeness_watermarks(
-    samples: Sequence[AnalysisCalibrationSample],
-    rows: Sequence[Mapping[str, Any]],
+def _general_completeness_watermarks(
+    session: Session,
+    *,
+    through_date: date,
+    market: str,
+    benchmark_symbol: str,
 ) -> list[dict[str, Any]]:
-    samples_by_month: dict[str, set[int]] = defaultdict(set)
-    for sample in samples:
-        samples_by_month[month_key(sample.record_date)].add(sample.id)
-    twenty_day_by_month: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in rows:
-        if int(row.get("window_days") or 0) == 20:
-            twenty_day_by_month[str(row["month"])].append(row)
+    year_value = cast(extract("year", AnalysisCalibrationSample.record_date), Integer)
+    month_value = cast(extract("month", AnalysisCalibrationSample.record_date), Integer)
+    expected_count = func.count(func.distinct(AnalysisCalibrationSample.id))
+    evaluated_count = func.count(
+        func.distinct(
+            case(
+                (
+                    AnalysisForwardValidationResult.id.is_not(None),
+                    AnalysisCalibrationSample.id,
+                )
+            )
+        )
+    )
+    validated_count = func.count(
+        func.distinct(
+            case(
+                (
+                    AnalysisForwardValidationResult.status == "validated",
+                    AnalysisCalibrationSample.id,
+                )
+            )
+        )
+    )
+    query = (
+        select(
+            year_value,
+            month_value,
+            expected_count,
+            evaluated_count,
+            validated_count,
+        )
+        .select_from(AnalysisCalibrationSample)
+        .outerjoin(
+            AnalysisForwardValidationResult,
+            and_(
+                AnalysisForwardValidationResult.sample_id
+                == AnalysisCalibrationSample.id,
+                AnalysisForwardValidationResult.window_days == 20,
+                AnalysisForwardValidationResult.validation_version
+                == ANALYSIS_FORWARD_VALIDATION_VERSION,
+            ),
+        )
+        .where(
+            AnalysisCalibrationSample.analysis_type == "general",
+            AnalysisCalibrationSample.analysis_is_final.is_(True),
+            AnalysisCalibrationSample.market == market,
+            AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.record_date <= through_date,
+        )
+        .group_by(year_value, month_value)
+        .order_by(year_value.asc(), month_value.asc())
+    )
     watermarks: list[dict[str, Any]] = []
-    for month in sorted(samples_by_month):
-        expected_ids = samples_by_month[month]
-        month_rows = twenty_day_by_month.get(month, [])
-        evaluated_ids = {int(row["sample_id"]) for row in month_rows}
-        validated_ids = {
-            int(row["sample_id"])
-            for row in month_rows
-            if row.get("status") == "validated"
-        }
+    for year, month, expected, evaluated, validated in session.execute(query):
+        expected_value = int(expected or 0)
+        evaluated_value = int(evaluated or 0)
+        validated_value = int(validated or 0)
         watermarks.append({
-            "month": month,
-            "expected_20d_samples": len(expected_ids),
-            "evaluated_20d_samples": len(evaluated_ids),
-            "validated_20d_samples": len(validated_ids),
-            "maturity_complete": bool(expected_ids) and expected_ids <= evaluated_ids,
-            "validated_coverage": validated_coverage(len(validated_ids), len(expected_ids)),
+            "month": f"{int(year):04d}-{int(month):02d}",
+            "expected_20d_samples": expected_value,
+            "evaluated_20d_samples": evaluated_value,
+            "validated_20d_samples": validated_value,
+            "maturity_complete": (
+                expected_value > 0
+                and evaluated_value >= expected_value
+            ),
+            "validated_coverage": validated_coverage(
+                validated_value,
+                expected_value,
+            ),
         })
     return watermarks
+
+
+def _month_filter(column: Any, months: Sequence[str]) -> Any:
+    predicates = []
+    for value in months:
+        year_text, month_text = value.split("-", 1)
+        start, end = month_bounds(int(year_text), int(month_text))
+        predicates.append(and_(column >= start, column <= end))
+    return or_(*predicates) if predicates else column.in_([])
 
 
 def _sample_snapshot(sample: AnalysisCalibrationSample) -> dict[str, Any]:
@@ -741,10 +850,95 @@ def _string_or_none(value: Any) -> str | None:
     return normalized or None
 
 
+def _general_forward_snapshot(candidate: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {
+        "primary_bucket": "unknown",
+        "secondary_buckets": ["none"],
+        "matched_rule_codes": ["none"],
+        "risk_labels": ["none"],
+        "market_regime": "unknown",
+        "relative_strength_bucket": "missing",
+        "repeat_status": "unknown",
+        "score_decile": "00-09",
+        "data_freshness_status": _general_forward_freshness(candidate),
+    }
+
+
+def _general_forward_entry_price(
+    candidate: Mapping[str, Any],
+    prices: Mapping[date, Mapping[str, float]],
+    signal_date: date,
+) -> float | None:
+    snapshot_close = forward_number(
+        _mapping(_mapping(candidate.get("input_snapshot")).get("ohlcv")).get("close")
+    )
+    if snapshot_close is not None and snapshot_close > 0:
+        return snapshot_close
+    return close_on(prices, signal_date)
+
+
+def _general_forward_defense_reference(
+    _candidate: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    return {"source": None, "value": None}
+
+
+def _general_forward_freshness(candidate: Mapping[str, Any]) -> str:
+    signal_date = _parse_date(candidate.get("record_date"))
+    ohlcv_date = _parse_date(_mapping(candidate.get("data_dates")).get("ohlcv"))
+    if signal_date is not None and ohlcv_date is not None and ohlcv_date < signal_date:
+        return "stale"
+    if ohlcv_date is None:
+        return "unknown"
+    return "fresh"
+
+
+def _forward_sample_summary(
+    *,
+    candidate_count: int,
+    outcomes: Sequence[Mapping[str, Any]],
+    windows: Sequence[int],
+) -> dict[str, Any]:
+    validated_by_window = Counter(
+        int(outcome["window_days"])
+        for outcome in outcomes
+        if outcome["status"] == "validated"
+    )
+    skipped_by_window = Counter(
+        int(outcome["window_days"])
+        for outcome in outcomes
+        if outcome["status"] == "skipped"
+    )
+    return {
+        "candidate_count": candidate_count,
+        "window_count": len(windows),
+        "evaluated_sample_count": len(outcomes),
+        "validated_sample_count": sum(validated_by_window.values()),
+        "skipped_sample_count": sum(skipped_by_window.values()),
+        "validated_by_window": {
+            str(window): validated_by_window[window]
+            for window in windows
+        },
+        "skipped_by_window": {
+            str(window): skipped_by_window[window]
+            for window in windows
+        },
+    }
+
+
+GENERAL_ANALYSIS_FORWARD_ADAPTER = ForwardValidationAdapter(
+    candidate_snapshot=_general_forward_snapshot,
+    entry_price=_general_forward_entry_price,
+    defense_reference=_general_forward_defense_reference,
+    freshness_status=_general_forward_freshness,
+)
+
+
 __all__ = [
     "ANALYSIS_CALIBRATION_REPORT_VERSION",
     "ANALYSIS_FORWARD_VALIDATION_VERSION",
     "GENERAL_REPLAY_INPUT_VERSION",
+    "GENERAL_ANALYSIS_FORWARD_ADAPTER",
     "TUNABLE_CONFIDENCE_PARAMETERS",
     "build_general_analysis_monthly_report",
     "build_general_analysis_replay_input",

@@ -90,6 +90,8 @@
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
 
+Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。
+
 ### 0.5 Shared Context 使用邊界
 
 `shared_background_contexts` 是跨功能背景 evidence cache，不是交易決策覆寫層：

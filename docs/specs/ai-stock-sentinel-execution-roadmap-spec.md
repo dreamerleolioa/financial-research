@@ -137,14 +137,14 @@
 - Daily Radar 第一版只測試 ranking component weights 與 secondary threshold；一般分析第一版只測試正向 sentiment / institutional / technical / resonance points。風險扣分、負向 evidence、rule scores、prefilter 與 strategy generator 規則全部鎖定。
 - 每個 candidate config 只改一個參數、一個 step；報表只輸出 `auto_change_eligible`，不直接修改 production、建立 PR、merge 或 deploy。
 
-### 3.10 後續校準可擴充性計劃
+### 3.10 校準可擴充性
 
-狀態：**Planned / 非當前 release blocker**。兩項工作必須分成可獨立合併的 phase；不得趁重構改變 scoring、window maturity、API response、validation version 或自動調權安全邊界。
+狀態：**Completed**。P0-CAL-S1 與 P0-CAL-S2 已提前完成；未改變 scoring、window maturity、API response schema、validation version 或自動調權安全邊界。
 
-| 順序 | 編號 | 工作 | 啟動條件 | 主要範圍 |
-| ---- | ---- | ---- | -------- | -------- |
-| 1 | P0-CAL-S1 | 月報查詢改為 DB aggregation + bounded detail load | 已累積六個成熟月份後，月報 p95 > 30 秒，或掃描 validation rows 超過最後六個 cohort rows 的 10 倍，任一成立 | 先以 DB aggregation 計算 monthly watermark 並選出六個 cohort months，再只載入這六個月的 replay sample 與 validation detail |
-| 2 | P0-CAL-S2 | 建立 feature-neutral shared calibration core | 新增第三條 calibration track、任一 track 需要不同 trading-window policy，或完成 P0-CAL-S1 後進行下一輪 calibration 維護，任一成立 | 將 due-window policy、forward outcome evaluation、price-series normalization、benchmark policy 與共用 internal auth 收斂到 `ai_stock_sentinel.calibration`；Daily Radar 與一般分析只保留 feature adapter |
+| 順序 | 編號 | 狀態 | 落地範圍 |
+| ---- | ---- | ---- | -------- |
+| 1 | P0-CAL-S1 | Completed | Daily Radar 與一般分析月報先以 SQL monthly aggregation 計算 watermark 並選出 cohort，再以明確月份 predicate 只載入最近六個成熟月份的 optimizer replay / validation detail；Daily Radar requested-month diagnostics 使用獨立單月 bounded query |
+| 2 | P0-CAL-S2 | Completed | `ai_stock_sentinel.calibration.forward_validation` 統一 due-window policy、forward outcome evaluation、price-series normalization 與 benchmark completeness policy；`calibration.repository` 統一共用 price source，兩軌各自提供 feature adapter |
 
 #### P0-CAL-S1 驗收條件
 
@@ -163,7 +163,7 @@
 - Provider failure 仍讓 workflow 失敗；既有 `validated` window 保持 terminal，retryable `skipped` window 仍會於後續 due run 重試。
 - 不需要資料搬移；rollback 可逐 track 將 adapter 指回既有 evaluator。
 
-最脆弱假設：月報資料量會先以歷史列數成長，而不是單次 replay CPU 成本先成為瓶頸。若 benchmark 顯示 CPU replay 才是主要耗時，P0-CAL-S1 仍先限制資料載入，但後續應另開 replay cache / vectorization 計劃，不把它混入 shared-core 重構。
+驗證已加入 19 個歷史月份的 production-like fixture：每軌月報固定三個 SELECT（requested month detail、monthly watermark aggregation、selected cohort detail），optimizer detail 維持六個月份；同一價格 fixture 亦驗證兩軌 target date、forward / benchmark excess、MFE / MAE、hit 與 skip behavior 等價。若未來 benchmark 顯示 replay CPU 而非資料載入成為主要耗時，再另開 replay cache / vectorization 計劃。
 
 ---
 

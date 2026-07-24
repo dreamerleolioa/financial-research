@@ -18,6 +18,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.analysis.calibration import GENERAL_ANALYSIS_FORWARD_ADAPTER
+from ai_stock_sentinel.calibration.forward_validation import (
+    evaluate_forward_window as evaluate_shared_forward_window,
+)
 from ai_stock_sentinel.calibration.price_provider import get_forward_price_provider
 from ai_stock_sentinel.daily_radar.forward_validation import (
     build_forward_validation_report,
@@ -129,6 +133,74 @@ def test_forward_window_records_explicit_skip_reasons_for_missing_inputs() -> No
     assert missing_future["skip_reason"] == "missing_future_price"
     assert missing_benchmark["skip_reason"] == "missing_benchmark"
     assert stale_candidate["skip_reason"] == "stale_candidate_price"
+
+
+def test_shared_forward_core_keeps_daily_and_general_outcomes_equivalent() -> None:
+    daily_candidate = _candidate_snapshot()
+    general_candidate = {
+        "candidate_id": daily_candidate["candidate_id"],
+        "symbol": daily_candidate["symbol"],
+        "record_date": daily_candidate["record_date"],
+        "data_dates": daily_candidate["data_dates"],
+        "input_snapshot": {
+            "ohlcv": {
+                "close": daily_candidate["input_snapshot"]["ohlcv"]["close"],
+            },
+        },
+    }
+    prices = [
+        _price("2026-06-01", 100, 101, 99, 100),
+        _price("2026-06-02", 101, 104, 98, 102),
+        _price("2026-06-03", 102, 106, 101, 104),
+        _price("2026-06-04", 104, 108, 103, 106),
+        _price("2026-06-05", 106, 110, 105, 108),
+        _price("2026-06-08", 108, 112, 107, 110),
+    ]
+    benchmark = [
+        _price("2026-06-01", 1000, 1005, 995, 1000),
+        _price("2026-06-02", 1002, 1010, 1000, 1004),
+        _price("2026-06-03", 1004, 1012, 1001, 1008),
+        _price("2026-06-04", 1008, 1016, 1004, 1012),
+        _price("2026-06-05", 1012, 1020, 1008, 1016),
+        _price("2026-06-08", 1016, 1026, 1010, 1020),
+    ]
+    daily = evaluate_forward_window(
+        daily_candidate,
+        price_series=prices,
+        benchmark_prices=benchmark,
+        window_days=5,
+        as_of_date=date(2026, 6, 8),
+        benchmark_symbol="TAIEX",
+        validation_version="parity-v1",
+        hit_threshold_pct=0.0,
+    )
+    general = evaluate_shared_forward_window(
+        general_candidate,
+        price_series=prices,
+        benchmark_prices=benchmark,
+        adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
+        window_days=5,
+        as_of_date=date(2026, 6, 8),
+        benchmark_symbol="TAIEX",
+        validation_version="parity-v1",
+        hit_threshold_pct=0.0,
+    )
+
+    assert daily["status"] == general["status"]
+    assert daily["target_date"] == general["target_date"]
+    assert daily["skip_reason"] == general["skip_reason"]
+    for key in (
+        "forward_return_pct",
+        "benchmark_return_pct",
+        "excess_return_vs_benchmark_pct",
+        "max_favorable_excursion_pct",
+        "max_adverse_excursion_pct",
+        "hit_above_threshold",
+        "entry_price",
+        "target_price",
+        "target_date",
+    ):
+        assert daily["outcome"][key] == general["outcome"][key]
 
 
 def test_forward_validation_fixture_report_is_deterministic_and_grouped() -> None:
