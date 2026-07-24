@@ -18,6 +18,7 @@ from ai_stock_sentinel.analysis.application.analysis_cache import fetch_and_stor
 from ai_stock_sentinel.analysis.router import router as analysis_router
 from ai_stock_sentinel.analysis.schemas import FetchRawDataRequest
 from ai_stock_sentinel.auth.router import router as auth_router
+from ai_stock_sentinel.calibration.router import router as calibration_router
 from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.daily_radar.router import router as daily_radar_router
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
@@ -92,6 +93,7 @@ app.include_router(auth_router)
 app.include_router(portfolio_router)
 app.include_router(history_router)
 app.include_router(daily_radar_router)
+app.include_router(calibration_router)
 app.include_router(watchlist_router)
 
 

@@ -388,7 +388,7 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
       "risk_labels": ["market_weakness"],
       "repeat_status": "new",
       "explanation": "量價轉強觀察...",
-      "scoring_version": "daily-radar-scoring-v2.1c",
+      "scoring_version": "daily-radar-scoring-v2.2",
       "rule_version": "daily-radar-rules-v2.1c",
       "bucket_scores": {},
       "score_breakdown": {
@@ -497,6 +497,9 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 6. `run-scoring` 只讀 DB cache/snapshot；若 lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
 7. 台灣時間週二至週六 07:00 會補跑前一個 intended trading date 的 `refresh-avwap`；成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
 8. 前端 `GET /daily-radar/latest` 顯示最新完成版本。
+9. `.github/workflows/daily-radar.yml` 於 OHLCV 與 market context 後、台灣時間平日 23:50 執行 5 / 10 / 20 交易日 due validation。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
+10. 同一市場與 `run_date` 有多次公開 run 時，forward validation 與月報只採最新 run，避免 rerun 被誤當獨立樣本。
+11. `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日輸出 AES-256 加密的 Actions artifact；月報選最近六個 20 日窗口已完整評估月份，前五個 training、最新一個 holdout，並以 `run_date` 做固定 seed block bootstrap。
 
 內部端點需使用 internal token 驗證。token 放在 GitHub Actions secrets 與 Zeabur environment variables，不寫入 repo。
 
@@ -532,6 +535,8 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 | Workflow context tests | Scheduled Re-run 保留原始 cron-slot `run_date`；開市、休市與 provider 異常都有回歸覆蓋；所有下游 jobs 共用同一 run context guard |
 | Background label tests | API/schema 可表示 labels、freshness、missing reason；移除 background context 後 score/ranking 不變 |
 | Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、ablation snapshot、monthly rule-review API、artifact workflow 基本檢查 |
+| Weight governance tests | baseline config replay 等於 live score、舊 snapshot 標記 `replay_input_incomplete`、一次只移動一個參數與一個 step、risk / data-gap / prefilter 參數不會成為候選 |
+| Forward completeness tests | due mode 只處理成熟 5 / 10 / 20 日窗口、同日 rerun 去重、20 日 maturity watermark 與 validated coverage 分離 |
 
 ### 13.2 前端測試
 

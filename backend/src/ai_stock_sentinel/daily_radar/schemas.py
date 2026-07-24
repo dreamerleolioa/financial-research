@@ -136,6 +136,7 @@ class DailyRadarMonthlyRuleReviewRequest(BaseModel):
     month: int = Field(ge=1, le=12)
     validation_version: str | None = Field(default=None, min_length=1, max_length=80)
     min_sample_count: int = Field(default=DEFAULT_MIN_SAMPLE_COUNT, ge=1, le=10_000)
+    min_validated_coverage: float = Field(default=0.9, ge=0, le=1)
 
 
 class DailyRadarMonthlyRuleReviewResponse(BaseModel):
@@ -188,10 +189,10 @@ class DailyRadarCandidateResponse(BaseModel):
                 "risk_labels": [DAILY_RADAR_RISK_LABELS[3]],
                 "repeat_status": DAILY_RADAR_REPEAT_STATUSES[0],
                 "explanation": "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。",
-                "scoring_version": "daily-radar-scoring-v2.1c",
+                "scoring_version": "daily-radar-scoring-v2.2",
                 "rule_version": "daily-radar-rules-v2.1c",
                 "score_breakdown": {
-                    "scoring_version": "daily-radar-scoring-v2.1c",
+                    "scoring_version": "daily-radar-scoring-v2.2",
                     "rule_version": "daily-radar-rules-v2.1c",
                     "bucket_scores": {
                         DAILY_RADAR_BUCKETS[1]: 82,
@@ -246,7 +247,7 @@ class DailyRadarCandidateResponse(BaseModel):
             "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。"
         ],
     )
-    scoring_version: str | None = Field(default=None, examples=["daily-radar-scoring-v2.1c"])
+    scoring_version: str | None = Field(default=None, examples=["daily-radar-scoring-v2.2"])
     rule_version: str | None = Field(default=None, examples=["daily-radar-rules-v2.1c"])
     bucket_scores: dict[str, Any] = Field(default_factory=dict)
     score_breakdown: dict[str, Any] = Field(default_factory=dict)

@@ -17,6 +17,7 @@ from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION, SCORING_VERSION
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarForwardValidationResult,
+    DailyRadarPreparedRun,
     DailyRadarRun,
     StockRawData,
 )
@@ -27,6 +28,7 @@ FORWARD_VALIDATION_REPORT_VERSION = "daily-radar-forward-validation-report-v1"
 DEFAULT_FORWARD_WINDOWS = (5, 10, 20)
 DEFAULT_BENCHMARK_SYMBOL = "TAIEX"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
+DEFAULT_DUE_LOOKBACK_MULTIPLIER = 10
 
 
 @dataclass(frozen=True)
@@ -209,11 +211,19 @@ def forward_validation_candidates_from_runs(
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
+            DailyRadarRun.created_at.desc(),
+            DailyRadarRun.id.desc(),
             DailyRadarCandidate.observation_score.desc(),
             DailyRadarCandidate.symbol.asc(),
         )
     ).all()
-    return [_candidate_snapshot(candidate, run) for candidate, run in rows]
+    latest_run_by_date: dict[date, int] = {}
+    snapshots: list[dict[str, Any]] = []
+    for candidate, run in rows:
+        selected_run_id = latest_run_by_date.setdefault(run.run_date, run.id)
+        if run.id == selected_run_id:
+            snapshots.append(_candidate_snapshot(candidate, run))
+    return snapshots
 
 
 def load_forward_prices_from_fixture(
@@ -278,6 +288,49 @@ def load_price_series_from_raw_data(
     return dict(by_symbol)
 
 
+def load_benchmark_prices_from_prepared_market_context(
+    session: Session,
+    *,
+    market: str,
+    benchmark_symbol: str,
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    prepared_runs = session.scalars(
+        select(DailyRadarPreparedRun)
+        .where(
+            DailyRadarPreparedRun.market == market,
+            DailyRadarPreparedRun.run_date <= as_of_date,
+        )
+        .order_by(
+            DailyRadarPreparedRun.run_date.desc(),
+            DailyRadarPreparedRun.updated_at.desc(),
+            DailyRadarPreparedRun.id.desc(),
+        )
+        .limit(30)
+    ).all()
+    for prepared in prepared_runs:
+        benchmark = _mapping(_mapping(prepared.market_context).get("benchmark"))
+        if str(benchmark.get("symbol") or "") != benchmark_symbol:
+            continue
+        rows: list[dict[str, Any]] = []
+        for item in _as_list(benchmark.get("price_history")):
+            price = _mapping(item)
+            close = _float_or_none(price.get("close"))
+            row_date = _parse_date(price.get("date"))
+            if close is None or close <= 0 or row_date is None or row_date > as_of_date:
+                continue
+            rows.append({
+                "date": row_date.isoformat(),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+            })
+        if rows:
+            return sorted(rows, key=lambda row: str(row["date"]))
+    return []
+
+
 def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
@@ -329,7 +382,7 @@ def upsert_forward_validation_results(
 
 
 def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWARD_WINDOWS)) -> date:
-    return as_of_date - timedelta(days=max_window * 3)
+    return as_of_date - timedelta(days=max_window * DEFAULT_DUE_LOOKBACK_MULTIPLIER)
 
 
 def due_windows_by_candidate(
@@ -357,12 +410,122 @@ def due_windows_by_candidate(
             len(_future_rows(benchmark_by_date, signal_date, as_of_date)),
         )
         if available_trading_rows == 0 and (not candidate_by_date or not benchmark_by_date):
-            due_by_candidate[key] = active_windows
+            calendar_days_elapsed = (as_of_date - signal_date).days
+            conservatively_due = [
+                window
+                for window in active_windows
+                if calendar_days_elapsed >= window * 2
+            ]
+            if conservatively_due:
+                due_by_candidate[key] = conservatively_due
             continue
         due_windows = [window for window in active_windows if available_trading_rows >= window]
         if due_windows:
             due_by_candidate[key] = due_windows
     return due_by_candidate
+
+
+def exclude_persisted_daily_radar_windows(
+    session: Session,
+    windows_by_candidate: Mapping[str, Sequence[int]],
+    *,
+    validation_version: str = FORWARD_VALIDATION_VERSION,
+) -> dict[str, list[int]]:
+    candidate_ids = [
+        int(key.removeprefix("id:"))
+        for key in windows_by_candidate
+        if key.startswith("id:") and key.removeprefix("id:").isdigit()
+    ]
+    if not candidate_ids:
+        return {
+            key: list(windows)
+            for key, windows in windows_by_candidate.items()
+            if windows
+        }
+    persisted = {
+        (result.candidate_id, result.window_days)
+        for result in session.scalars(
+            select(DailyRadarForwardValidationResult).where(
+                DailyRadarForwardValidationResult.candidate_id.in_(candidate_ids),
+                DailyRadarForwardValidationResult.validation_version == validation_version,
+                DailyRadarForwardValidationResult.status == "validated",
+            )
+        ).all()
+    }
+    pending: dict[str, list[int]] = {}
+    for key, windows in windows_by_candidate.items():
+        if key.startswith("id:") and key.removeprefix("id:").isdigit():
+            candidate_id = int(key.removeprefix("id:"))
+            remaining = [
+                int(window)
+                for window in windows
+                if (candidate_id, int(window)) not in persisted
+            ]
+        else:
+            remaining = [int(window) for window in windows]
+        if remaining:
+            pending[key] = remaining
+    return pending
+
+
+def symbols_requiring_forward_price_refresh(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    windows_by_candidate: Mapping[str, Sequence[int]],
+    price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    as_of_date: date,
+) -> list[str]:
+    required: set[str] = set()
+    for candidate in candidates:
+        pending_windows = windows_by_candidate.get(_candidate_key(candidate), [])
+        signal_date = _parse_date(candidate.get("record_date"))
+        symbol = str(candidate.get("symbol") or "")
+        if not pending_windows or signal_date is None or not symbol:
+            continue
+        candidate_by_date = _price_by_date(price_series_by_symbol.get(symbol, []))
+        available_rows = len(_future_rows(candidate_by_date, signal_date, as_of_date))
+        if available_rows < max(int(window) for window in pending_windows):
+            required.add(symbol)
+    return sorted(required)
+
+
+def benchmark_requires_forward_price_refresh(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    windows_by_candidate: Mapping[str, Sequence[int]],
+    benchmark_prices: Sequence[Mapping[str, Any]],
+    as_of_date: date,
+) -> bool:
+    benchmark_by_date = _price_by_date(benchmark_prices)
+    for candidate in candidates:
+        pending_windows = windows_by_candidate.get(_candidate_key(candidate), [])
+        signal_date = _parse_date(candidate.get("record_date"))
+        if not pending_windows or signal_date is None:
+            continue
+        if _close_on(benchmark_by_date, signal_date) is None:
+            return True
+        available_rows = len(_future_rows(benchmark_by_date, signal_date, as_of_date))
+        if available_rows < max(int(window) for window in pending_windows):
+            return True
+    return False
+
+
+def merge_price_series(
+    existing: Mapping[str, Sequence[Mapping[str, Any]]],
+    fetched: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    symbols = set(existing) | set(fetched)
+    merged: dict[str, list[dict[str, Any]]] = {}
+    for symbol in symbols:
+        rows_by_date: dict[str, dict[str, Any]] = {}
+        for row in [*existing.get(symbol, []), *fetched.get(symbol, [])]:
+            row_date = _parse_date(row.get("date"))
+            close = _float_or_none(row.get("close"))
+            if row_date is None or close is None or close <= 0:
+                continue
+            rows_by_date[row_date.isoformat()] = dict(row)
+        merged[symbol] = [rows_by_date[key] for key in sorted(rows_by_date)]
+    return merged
 
 
 def write_report(report: Mapping[str, Any], path: str | Path) -> None:
@@ -762,11 +925,16 @@ __all__ = [
     "build_forward_validation_report",
     "default_due_start_date",
     "due_windows_by_candidate",
+    "exclude_persisted_daily_radar_windows",
     "evaluate_forward_window",
     "forward_validation_candidates_from_runs",
     "forward_validation_fixture_inputs",
     "load_forward_prices_from_fixture",
+    "load_benchmark_prices_from_prepared_market_context",
     "load_price_series_from_raw_data",
+    "benchmark_requires_forward_price_refresh",
+    "merge_price_series",
+    "symbols_requiring_forward_price_refresh",
     "upsert_forward_validation_results",
     "write_report",
 ]

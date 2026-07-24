@@ -23,6 +23,7 @@ from ai_stock_sentinel.daily_radar.rule_governance import (
     DEFAULT_ABLATION_GROUPS,
     build_ablation_report,
     build_monthly_rule_review_report,
+    validation_rows_from_results,
 )
 from ai_stock_sentinel.daily_radar.rule_registry import (
     SCORING_ACTIVE_TIERS,
@@ -191,18 +192,92 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     assert manifest["rule_version"] == RULE_VERSION
     assert manifest["live_scoring_changed"] is False
     assert manifest["automated_recommendations_only"] is True
+    assert report.json_report["baseline_config"]["primary_bucket_weight"] == 0.8
+    assert report.json_report["auto_change_eligible"] is False
+    candidate_parameters = {
+        candidate["parameter"]
+        for candidate in report.json_report["candidate_configs"]
+    }
+    assert {
+        "primary_bucket_weight",
+        "cross_confirmation_weight",
+        "market_context_weight",
+        "freshness_weight",
+        "relative_strength_weight",
+        "secondary_bucket_threshold",
+    } == candidate_parameters
+    assert not candidate_parameters & {
+        "overextended_penalty",
+        "data_gap_penalty",
+        "rule_scores",
+        "prefilter_rules",
+    }
+    assert all(
+        sum(
+            value != report.json_report["baseline_config"][key]
+            for key, value in candidate["candidate_config"].items()
+        ) == 1
+        for candidate in report.json_report["candidate_configs"]
+    )
+    assert all(
+        candidate["step"] > 0
+        for candidate in report.json_report["candidate_configs"]
+        if candidate["parameter"] in {"market_context_weight", "freshness_weight"}
+    )
+    threshold_candidates = [
+        candidate
+        for candidate in report.json_report["candidate_configs"]
+        if candidate["parameter"] == "secondary_bucket_threshold"
+    ]
+    assert threshold_candidates
+    assert {
+        candidate["holdout_primary_metric"]["metric"]
+        for candidate in threshold_candidates
+    } == {"secondary_bucket_average_excess_return_pct"}
+
+
+def test_monthly_review_does_not_fall_back_to_validated_older_same_day_run() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        old_run = _add_run(session)
+        old_run.created_at = datetime(2026, 6, 1, 10, tzinfo=timezone.utc)
+        old_candidate = _add_candidate(session, old_run)
+        _add_validation_result(session, old_candidate)
+        latest_run = _add_run(session)
+        latest_run.created_at = datetime(2026, 6, 2, 1, tzinfo=timezone.utc)
+        _add_candidate(session, latest_run)
+        session.commit()
+
+        rows = validation_rows_from_results(
+            session,
+            market="TW",
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 30),
+        )
+
+    assert rows == []
 
 
 def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:
-    workflow = (ROOT.parent / ".github" / "workflows" / "daily-radar-rule-review.yml").read_text(
+    workflow = (ROOT.parent / ".github" / "workflows" / "monthly-analysis-calibration.yml").read_text(
         encoding="utf-8"
     )
 
     assert "/internal/daily-radar/rule-review/monthly" in workflow
+    assert "/internal/analysis-calibration/monthly" in workflow
     assert "${{ secrets.DAILY_RADAR_API_BASE_URL }}" in workflow
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in workflow
-    assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in workflow
-    assert "reports/daily-radar/monthly" in workflow
+    assert "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" in workflow
+    assert "reports/calibration/monthly" in workflow
+    assert "manifest.json" in workflow
     assert "actions/upload-artifact@v4" in workflow
 
 

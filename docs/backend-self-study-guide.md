@@ -248,18 +248,21 @@ load records
 
 Daily Radar 不用 LLM 選股，不用 LLM 排名。LLM 未來若加入，只能潤飾文字，不能覆寫 bucket 或 score。
 
-### 7.3 Forward validation 與 monthly rule review
+### 7.3 Forward validation 與 monthly calibration
 
 | 需求 | Endpoint | 實作 |
 | ---- | -------- | ---- |
 | 驗證成熟候選 | `POST /internal/daily-radar/forward-validation/run` | 讀 production DB 中的 candidates 與 raw price series，寫 `daily_radar_forward_validation_results` |
 | 月度 rule review | `POST /internal/daily-radar/rule-review/monthly` | 讀 validation results，產生 JSON + Markdown report |
+| 驗證一般分析 | `POST /internal/analysis-calibration/forward-validation/run` | 讀 append-only final `/analyze` samples，寫 `analysis_forward_validation_results` |
+| 一般分析月報 | `POST /internal/analysis-calibration/monthly` | 比較 confidence baseline 與單參數 candidate configs |
 
 對應 workflow：
 
 - `.github/workflows/daily-radar.yml`
 - `.github/workflows/daily-radar-chip-context.yml`
-- `.github/workflows/daily-radar-rule-review.yml`
+- `.github/workflows/analysis-forward-validation.yml`
+- `.github/workflows/monthly-analysis-calibration.yml`
 
 ---
 

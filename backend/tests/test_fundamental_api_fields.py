@@ -78,6 +78,7 @@ def test_analyze_response_includes_fundamental_data(monkeypatch):
     monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "_check_symbol_exists", lambda *a, **kw: None)
     client = _client_with_graph(_make_graph(_mock_graph_result()))
     resp = client.post("/analyze", json={"symbol": "2330.TW"})
 

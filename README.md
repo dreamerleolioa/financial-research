@@ -163,7 +163,8 @@ frontend/
 		deploy.yml                         # Backend tests + GitHub Pages frontend deploy
 		daily-radar.yml                    # Daily Radar 內部排程
 		daily-radar-chip-context.yml       # Shared background context 更新
-		daily-radar-rule-review.yml        # Monthly rule governance artifact
+		analysis-forward-validation.yml    # general analysis 每日驗證
+		monthly-analysis-calibration.yml   # 雙軌月度 calibration artifact
 		investment-discipline-release-gate.yml
 docs/
 	backend-self-study-guide.md
@@ -241,8 +242,9 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | 類型     | 名稱                         | 用途                                              |
 | -------- | ---------------------------- | ------------------------------------------------- |
 | Secret   | `ZEABUR_BACKEND_URL`         | Daily Radar workflow 呼叫的 Zeabur 後端 URL       |
-| Secret   | `DAILY_RADAR_API_BASE_URL`   | Monthly rule review workflow 呼叫的後端 URL       |
+| Secret   | `DAILY_RADAR_API_BASE_URL`   | 一般分析 forward validation 與月度 calibration workflow 呼叫的後端 URL |
 | Secret   | `DAILY_RADAR_INTERNAL_TOKEN` | Daily Radar workflow 呼叫內部 API 的 Bearer token |
+| Secret   | `CALIBRATION_REPORT_PASSPHRASE` | 月度 production calibration artifact 的 AES-256 對稱加密密碼 |
 | Variable | `VITE_API_URL`               | 前端 build 時注入後端 URL                         |
 | Variable | `VITE_GOOGLE_CLIENT_ID`      | 前端 Google OAuth client ID                       |
 
@@ -342,6 +344,11 @@ make run-api
 - `POST /internal/daily-radar/run`：保留一鍵手動相容入口；正式排程使用上述分段 workflow
 - `POST /internal/daily-radar/chip-context/update`：更新 shared background context cache，背景資料包含 weekly major holders、lending 與 full margin
 - `POST /internal/daily-radar/forward-validation/run`：執行 Daily Radar 成熟候選 forward validation，寫入可回放 validation result
+- `POST /internal/analysis-calibration/forward-validation/run`：執行 final `/analyze` 樣本的成熟 5 / 10 / 20 日驗證
+- `POST /internal/daily-radar/rule-review/monthly`：產生 Daily Radar 六個成熟月份 training / holdout 調權報表
+- `POST /internal/analysis-calibration/monthly`：產生一般分析 confidence 六個成熟月份 training / holdout 調權報表
+
+Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。月報只上傳 AES-256 加密的 Actions artifact，內含兩軌 JSON、Markdown Actions 與 manifest；不會寫入 public issue 或 main branch，也不會直接修改權重。下載後可用 `gpg --decrypt --output analysis-calibration.tar.gz <artifact>.tar.gz.gpg` 解密，再以 `tar -xzf analysis-calibration.tar.gz` 展開。
 - `POST /internal/daily-radar/rule-review/monthly`：以 production validation result 產生月度 rule governance 報告
 - `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單
 - `GET /daily-radar/{run_date}`：讀取指定日期 Daily Radar 候選清單

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any, cast
 
@@ -13,14 +13,32 @@ from ai_stock_sentinel.daily_radar.relative_strength import (
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
 
 
-SCORING_VERSION = "daily-radar-scoring-v2.1c"
+SCORING_VERSION = "daily-radar-scoring-v2.2"
 RULE_VERSION = "daily-radar-rules-v2.1c"
+SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v1"
 
 
 @dataclass(frozen=True)
 class ScoringConfig:
+    primary_bucket_weight: float = 0.8
+    cross_confirmation_weight: float = 1.0
+    market_context_weight: float = 1.0
+    freshness_weight: float = 1.0
+    relative_strength_weight: float = 1.0
     secondary_bucket_threshold: int = 55
     relative_strength_lookback_days: int = DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS
+    overextended_penalty: int = -18
+    flow_conflict_penalty: int = -12
+    margin_crowding_penalty: int = -15
+    market_weakness_penalty: int = -12
+    data_gap_penalty: int = -18
+    weak_market_component: int = -4
+    supportive_market_component: int = 4
+    data_gap_freshness_component: int = -12
+    fresh_freshness_component: int = 4
+
+    def to_dict(self) -> dict[str, int | float]:
+        return asdict(self)
 
 
 def score_daily_radar_records(
@@ -84,11 +102,12 @@ def score_daily_radar_record(
         normalized,
         market_context=market_context,
         prefilter_result=prefilter_result,
+        config=active_config,
     )
     risk_labels = _risk_labels(risk_penalties)
     cross_confirmation = _cross_confirmation(ohlcv, indicators, flow)
-    market_component = _market_context_component(market_context, risk_labels)
-    freshness_component = _freshness_component(risk_labels)
+    market_component = _market_context_component(market_context, risk_labels, config=active_config)
+    freshness_component = _freshness_component(risk_labels, config=active_config)
     relative_strength_component = _relative_strength_component(
         normalized,
         market_context=market_context,
@@ -96,13 +115,17 @@ def score_daily_radar_record(
     )
     risk_adjustment = sum(int(penalty["score_adjustment"]) for penalty in risk_penalties)
     primary_bucket_score = bucket_scores[primary_bucket]
-    weighted_primary_bucket_score = round(primary_bucket_score * 0.8)
+    weighted_primary_bucket_score = primary_bucket_score * active_config.primary_bucket_weight
+    weighted_cross_confirmation_score = float(cross_confirmation["score"]) * active_config.cross_confirmation_weight
+    weighted_market_component_score = float(market_component["score"]) * active_config.market_context_weight
+    weighted_freshness_component_score = float(freshness_component["score"]) * active_config.freshness_weight
+    weighted_relative_strength_score = float(relative_strength_component["score"]) * active_config.relative_strength_weight
     observation_score = _clamp_score(
         weighted_primary_bucket_score
-        + int(cross_confirmation["score"])
-        + int(market_component["score"])
-        + int(freshness_component["score"])
-        + int(relative_strength_component["score"])
+        + weighted_cross_confirmation_score
+        + weighted_market_component_score
+        + weighted_freshness_component_score
+        + weighted_relative_strength_score
         + risk_adjustment
     )
 
@@ -133,20 +156,39 @@ def score_daily_radar_record(
             "bucket_scores": bucket_scores,
             "primary_bucket_score": primary_bucket_score,
             "weighted_primary_bucket_score": weighted_primary_bucket_score,
-            "cross_confirmation": cross_confirmation,
-            "market_context": market_component,
-            "relative_strength": relative_strength_component,
-            "freshness": freshness_component,
+            "cross_confirmation": _weighted_component(
+                cross_confirmation,
+                active_config.cross_confirmation_weight,
+                weighted_cross_confirmation_score,
+            ),
+            "market_context": _weighted_component(
+                market_component,
+                active_config.market_context_weight,
+                weighted_market_component_score,
+            ),
+            "relative_strength": _weighted_component(
+                relative_strength_component,
+                active_config.relative_strength_weight,
+                weighted_relative_strength_score,
+            ),
+            "freshness": _weighted_component(
+                freshness_component,
+                active_config.freshness_weight,
+                weighted_freshness_component_score,
+            ),
             "technical_profile": _technical_profile_breakdown(technical_profile),
             "risk_penalties": risk_penalties,
             "risk_adjustment": risk_adjustment,
             "observation_score": observation_score,
+            "config_version": SCORING_CONFIG_VERSION,
+            "config": active_config.to_dict(),
         },
         "data_dates": _candidate_data_dates(normalized["data_dates"], market_context, relative_strength_component),
         "input_snapshot": {
             "versions": {
                 "scoring_version": SCORING_VERSION,
                 "rule_version": RULE_VERSION,
+                "config_version": SCORING_CONFIG_VERSION,
             },
             "ohlcv": dict(ohlcv),
             "indicators": dict(indicators),
@@ -156,8 +198,30 @@ def score_daily_radar_record(
             "universe": _universe_trace(flow),
             "margin": dict(margin),
             "market_context": dict(_mapping(market_context).get("market", {})),
-            "relative_strength": relative_strength_component,
+            "relative_strength": _weighted_component(
+                relative_strength_component,
+                active_config.relative_strength_weight,
+                weighted_relative_strength_score,
+            ),
             "evidence": [_relative_strength_evidence(normalized["symbol"], relative_strength_component)],
+            "replay_input": {
+                "schema_version": "daily-radar-replay-input-v1",
+                "record": {
+                    "symbol": normalized["symbol"],
+                    "name": normalized["name"],
+                    "record_date": normalized["record_date"],
+                    "ohlcv": dict(ohlcv),
+                    "indicators": dict(indicators),
+                    "technical_profile": dict(technical_profile),
+                    "price_history": list(normalized["price_history"]),
+                    "institutional_flow": dict(flow),
+                    "margin": dict(margin),
+                    "data_dates": dict(normalized["data_dates"]),
+                },
+                "market_context": dict(_mapping(market_context)),
+                "prefilter_result": dict(_mapping(prefilter_result)),
+                "baseline_config": active_config.to_dict(),
+            },
         },
     }
 
@@ -383,6 +447,7 @@ def _risk_penalties(
     *,
     market_context: Mapping[str, Any] | None,
     prefilter_result: Mapping[str, Any] | None,
+    config: ScoringConfig,
 ) -> list[dict[str, Any]]:
     indicators = _mapping(record.get("indicators"))
     flow = _mapping(record.get("institutional_flow"))
@@ -392,16 +457,16 @@ def _risk_penalties(
     prefilter_codes = _prefilter_reason_codes(prefilter_result)
 
     if "overextended" in risk_flags or _is_overextended(indicators):
-        penalties.append(_penalty("overextended", -18, "短期指標過熱", rsi14=_float(indicators.get("rsi14")), bias20=_float(indicators.get("bias20")), mfi14=_float(indicators.get("mfi14"))))
+        penalties.append(_penalty("overextended", config.overextended_penalty, "短期指標過熱", rsi14=_float(indicators.get("rsi14")), bias20=_float(indicators.get("bias20")), mfi14=_float(indicators.get("mfi14"))))
 
     if _has_flow_conflict(flow):
-        penalties.append(_penalty("flow_conflict", -12, "法人方向分歧", flow_state=str(flow.get("flow_state") or ""), three_party_net_shares=_float(flow.get("three_party_net_shares"))))
+        penalties.append(_penalty("flow_conflict", config.flow_conflict_penalty, "法人方向分歧", flow_state=str(flow.get("flow_state") or ""), three_party_net_shares=_float(flow.get("three_party_net_shares"))))
 
     if "margin_crowding" in risk_flags or _float(margin.get("margin_delta_pct")) >= 10 or _float(margin.get("margin_to_volume")) >= 4:
-        penalties.append(_penalty("margin_crowding", -15, "融資籌碼擁擠", margin_delta_pct=_float(margin.get("margin_delta_pct")), margin_to_volume=_float(margin.get("margin_to_volume"))))
+        penalties.append(_penalty("margin_crowding", config.margin_crowding_penalty, "融資籌碼擁擠", margin_delta_pct=_float(margin.get("margin_delta_pct")), margin_to_volume=_float(margin.get("margin_to_volume"))))
 
     if _has_market_weakness(market_context):
-        penalties.append(_penalty("market_weakness", -12, "大盤背景轉弱", market=_mapping(_mapping(market_context).get("market"))))
+        penalties.append(_penalty("market_weakness", config.market_weakness_penalty, "大盤背景轉弱", market=_mapping(_mapping(market_context).get("market"))))
 
     if (
         "data_gap" in risk_flags
@@ -413,7 +478,7 @@ def _risk_penalties(
         or _symbol_context_has_flag(record, market_context, "data_gap")
         or _symbol_context_has_flag(record, market_context, "stale_data")
     ):
-        penalties.append(_penalty("data_gap", -18, "資料完整度或時效不足", missing_trading_days_60=_int(indicators.get("missing_trading_days_60")), data_dates=dict(_mapping(record.get("data_dates")))))
+        penalties.append(_penalty("data_gap", config.data_gap_penalty, "資料完整度或時效不足", missing_trading_days_60=_int(indicators.get("missing_trading_days_60")), data_dates=dict(_mapping(record.get("data_dates")))))
 
     return penalties
 
@@ -440,19 +505,36 @@ def _cross_confirmation(
 def _market_context_component(
     market_context: Mapping[str, Any] | None,
     risk_labels: list[DailyRadarRiskLabel],
+    *,
+    config: ScoringConfig,
 ) -> dict[str, Any]:
     market = _mapping(_mapping(market_context).get("market"))
     if "market_weakness" in risk_labels:
-        return {"score": -4, "label": "weak", "details": dict(market)}
+        return {"score": config.weak_market_component, "label": "weak", "details": dict(market)}
     if market.get("above_ma20") is True and market.get("above_ma60") is True and str(market.get("volatility_state") or "") in {"normal", "stable"}:
-        return {"score": 4, "label": "supportive", "details": dict(market)}
+        return {"score": config.supportive_market_component, "label": "supportive", "details": dict(market)}
     return {"score": 0, "label": "neutral", "details": dict(market)}
 
 
-def _freshness_component(risk_labels: list[DailyRadarRiskLabel]) -> dict[str, Any]:
+def _freshness_component(
+    risk_labels: list[DailyRadarRiskLabel],
+    *,
+    config: ScoringConfig,
+) -> dict[str, Any]:
     if "data_gap" in risk_labels:
-        return {"score": -12, "label": "data_gap"}
-    return {"score": 4, "label": "fresh"}
+        return {"score": config.data_gap_freshness_component, "label": "data_gap"}
+    return {"score": config.fresh_freshness_component, "label": "fresh"}
+
+
+def _weighted_component(
+    component: Mapping[str, Any],
+    weight: float,
+    weighted_score: float,
+) -> dict[str, Any]:
+    return dict(component) | {
+        "weight": weight,
+        "weighted_score": weighted_score,
+    }
 
 
 def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -739,12 +821,13 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
-def _clamp_score(value: int) -> int:
+def _clamp_score(value: float | int) -> int:
     return max(0, min(100, int(round(value))))
 
 
 __all__ = [
     "RULE_VERSION",
+    "SCORING_CONFIG_VERSION",
     "ScoringConfig",
     "SCORING_VERSION",
     "score_daily_radar_record",

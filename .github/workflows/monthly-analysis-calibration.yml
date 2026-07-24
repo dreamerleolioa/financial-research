@@ -1,0 +1,177 @@
+name: Monthly analysis calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: Optional report cutoff year; defaults to previous Taipei month
+        required: false
+        default: ""
+        type: string
+      month:
+        description: Optional report cutoff month; defaults to previous Taipei month
+        required: false
+        default: ""
+        type: string
+      min_sample_count:
+        description: Minimum sample count for automated eligibility
+        required: true
+        default: "20"
+        type: string
+  schedule:
+    # 每月 6 日台灣時間 18:00。後端會選最近六個「20 日窗口已完整評估」月份，
+    # 不會假設上個月已成熟。
+    - cron: "0 10 6 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  calibration-report:
+    runs-on: ubuntu-latest
+    env:
+      CALIBRATION_API_BASE_URL: ${{ secrets.DAILY_RADAR_API_BASE_URL }}
+      CALIBRATION_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+      CALIBRATION_REPORT_PASSPHRASE: ${{ secrets.CALIBRATION_REPORT_PASSPHRASE }}
+      INPUT_YEAR: ${{ inputs.year || '' }}
+      INPUT_MONTH: ${{ inputs.month || '' }}
+      MIN_SAMPLE_COUNT: ${{ inputs.min_sample_count || '20' }}
+    steps:
+      - name: Validate secrets
+        run: |
+          test -n "${CALIBRATION_API_BASE_URL}"
+          test -n "${CALIBRATION_INTERNAL_TOKEN}"
+          test -n "${CALIBRATION_REPORT_PASSPHRASE}"
+
+      - name: Resolve report cutoff month
+        id: context
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          year = os.environ.get("INPUT_YEAR", "").strip()
+          month = os.environ.get("INPUT_MONTH", "").strip()
+          if bool(year) != bool(month):
+              raise SystemExit("year and month must be provided together")
+          if year:
+              report_year = int(year)
+              report_month = int(month)
+          else:
+              now = datetime.now(ZoneInfo("Asia/Taipei"))
+              previous_month = now.replace(day=1) - timedelta(days=1)
+              report_year = previous_month.year
+              report_month = previous_month.month
+          if not 1 <= report_month <= 12:
+              raise SystemExit("month must be between 1 and 12")
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a", encoding="utf-8") as handle:
+              handle.write(f"year={report_year}\n")
+              handle.write(f"month={report_month}\n")
+              handle.write(f"report_month={report_year:04d}-{report_month:02d}\n")
+          PY
+
+      - name: Request both calibration tracks
+        env:
+          REPORT_YEAR: ${{ steps.context.outputs.year }}
+          REPORT_MONTH: ${{ steps.context.outputs.month }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports/calibration/monthly
+          payload="$(jq -n \
+            --argjson year "${REPORT_YEAR}" \
+            --argjson month "${REPORT_MONTH}" \
+            --argjson min_sample_count "${MIN_SAMPLE_COUNT}" \
+            '{
+              year: $year,
+              month: $month,
+              market: "TW",
+              benchmark_symbol: "TAIEX",
+              min_sample_count: $min_sample_count,
+              min_validated_coverage: 0.9
+            }')"
+          curl --fail-with-body --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "${payload}" \
+            "${CALIBRATION_API_BASE_URL%/}/internal/daily-radar/rule-review/monthly" \
+            > /tmp/daily-radar-review.json
+          curl --fail-with-body --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "${payload}" \
+            "${CALIBRATION_API_BASE_URL%/}/internal/analysis-calibration/monthly" \
+            > /tmp/general-analysis-review.json
+
+      - name: Write downloadable bundle
+        env:
+          REPORT_MONTH: ${{ steps.context.outputs.report_month }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          target = Path("reports/calibration/monthly")
+          target.mkdir(parents=True, exist_ok=True)
+          report_month = os.environ["REPORT_MONTH"]
+          sources = {
+              "daily-radar-review": Path("/tmp/daily-radar-review.json"),
+              "general-analysis-review": Path("/tmp/general-analysis-review.json"),
+          }
+          files = []
+          for stem, source in sources.items():
+              response = json.loads(source.read_text(encoding="utf-8"))
+              json_path = target / f"{report_month}-{stem}.json"
+              markdown_path = target / f"{report_month}-{stem}-actions.md"
+              json_path.write_text(
+                  json.dumps(response["report_json"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              markdown_path.write_text(response["report_markdown"], encoding="utf-8")
+              files.extend([json_path, markdown_path])
+          manifest = {
+              "report_month": report_month,
+              "privacy": "encrypted_github_actions_artifact_only",
+              "contains_production_calibration_data": True,
+              "files": [
+                  {
+                      "name": path.name,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  }
+                  for path in sorted(files)
+              ],
+          }
+          (target / "manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Encrypt calibration artifact
+        env:
+          REPORT_MONTH: ${{ steps.context.outputs.report_month }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          tar -C reports/calibration -czf "/tmp/analysis-calibration-${REPORT_MONTH}.tar.gz" monthly
+          printf '%s' "${CALIBRATION_REPORT_PASSPHRASE}" \
+            | gpg --batch --yes --pinentry-mode loopback --symmetric --cipher-algo AES256 \
+            --passphrase-fd 0 \
+            --output "artifacts/analysis-calibration-${REPORT_MONTH}.tar.gz.gpg" \
+            "/tmp/analysis-calibration-${REPORT_MONTH}.tar.gz"
+          rm -f "/tmp/analysis-calibration-${REPORT_MONTH}.tar.gz"
+
+      - name: Upload encrypted calibration artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-calibration-${{ steps.context.outputs.report_month }}
+          path: artifacts/*.tar.gz.gpg
+          if-no-files-found: error
+          retention-days: 30

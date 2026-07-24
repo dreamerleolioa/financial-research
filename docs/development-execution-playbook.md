@@ -195,25 +195,27 @@ cd backend
 uv run pytest -q tests/test_daily_radar_forward_validation.py
 ```
 
-### 7.2 Monthly Rule Review
+### 7.2 Monthly Analysis Calibration
 
 內部 API：
 
 ```text
 POST /internal/daily-radar/rule-review/monthly
+POST /internal/analysis-calibration/monthly
 ```
 
 用途：
 
-- 讀取 production validation results。
-- 產生 `report_json` 與 `report_markdown`。
-- 由 `.github/workflows/daily-radar-rule-review.yml` 上傳 artifact。
+- 分別讀取 Daily Radar 與 final `/analyze` production validation results。
+- 產生兩軌 `report_json` 與 `report_markdown`，並附 SHA-256 manifest。
+- 由 `.github/workflows/monthly-analysis-calibration.yml` 上傳 AES-256 加密 artifact；解密密碼只存在 GitHub Secret `CALIBRATION_REPORT_PASSPHRASE`。
+- Daily Radar 成熟窗口由 `.github/workflows/daily-radar.yml` 的 `run-forward-validation` 累積；一般分析由 `.github/workflows/analysis-forward-validation.yml` 累積。Validation failure 不回滾已發布結果，但對應 workflow 會失敗。
 
 本機測試：
 
 ```bash
 cd backend
-uv run pytest -q tests/test_daily_radar_rule_governance.py
+uv run pytest -q tests/test_daily_radar_rule_governance.py tests/test_analysis_calibration.py
 ```
 
 ### 7.3 調整規則前的限制

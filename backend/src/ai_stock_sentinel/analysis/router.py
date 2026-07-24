@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.adapters.graph_runner import build_graph_singleton, invoke_graph
+from ai_stock_sentinel.analysis.calibration import capture_general_analysis_calibration_sample
 from ai_stock_sentinel.analysis.application.analysis_cache import (
     INTRADAY_DISCLAIMER,
     MARKET_CLOSE,
@@ -539,6 +540,22 @@ def analyze(
             },
         )
         _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
+        if is_final:
+            try:
+                capture_general_analysis_calibration_sample(
+                    db,
+                    symbol=payload.symbol,
+                    record_date=_today_taipei(),
+                    result=result,
+                    is_final=True,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Failed to capture general-analysis calibration sample for %s",
+                    payload.symbol,
+                )
 
     if not raw_cache:
         fetch_and_store_raw_data(

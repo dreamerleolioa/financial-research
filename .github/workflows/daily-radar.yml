@@ -15,6 +15,7 @@ on:
           - refresh-full-margin
           - refresh-ohlcv
           - refresh-market-context
+          - run-forward-validation
           - run-scoring
           - repair-avwap-and-rescore
       run_date:
@@ -37,6 +38,8 @@ on:
     - cron: "30 14 * * 1-5"
     # 台灣時間週一至週五 23:30，刷新 market context。
     - cron: "30 15 * * 1-5"
+    # 台灣時間週一至週五 23:50，評估已成熟的 5 / 10 / 20 交易日窗口。
+    - cron: "50 15 * * 1-5"
     # 台灣時間週二至週六 00:30，對前一個台北交易日 run_date 做 scoring。
     - cron: "30 16 * * 1-5"
     # 台灣時間週二至週六 07:00，補修前一個台股交易日 AVWAP，成功後重跑 scoring。
@@ -413,6 +416,51 @@ jobs:
             cat "$response_file"
             exit 1
           fi
+
+  run-forward-validation:
+    name: Run Daily Radar forward validation
+    runs-on: ubuntu-latest
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '50 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-forward-validation'))
+    steps:
+      - name: Validate mature 5 / 10 / 20-day windows
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/forward-validation/run"
+          response_file="$(mktemp)"
+          payload="$(jq -n \
+            --arg as_of_date "${DAILY_RADAR_RUN_DATE}" \
+            '{
+              mode: "due",
+              market: "TW",
+              as_of_date: $as_of_date,
+              windows: [5, 10, 20],
+              benchmark_symbol: "TAIEX"
+            }')"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}")"
+          echo "Forward-validation HTTP status: ${http_status}"
+          jq '{
+            status,
+            mode,
+            as_of_date,
+            candidate_count,
+            records_written,
+            validated_count,
+            skipped_count
+          }' "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          jq -e '.status == "completed" and .skipped_count == 0' "$response_file" > /dev/null
 
   repair-avwap-and-rescore:
     name: Repair Daily Radar AVWAP and rescore

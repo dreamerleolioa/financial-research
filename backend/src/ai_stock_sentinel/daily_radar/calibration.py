@@ -113,9 +113,21 @@ def calibration_candidates_from_runs(
     if end_date is not None:
         query = query.where(DailyRadarRun.run_date <= end_date)
     rows = session.execute(
-        query.order_by(DailyRadarRun.run_date.asc(), DailyRadarCandidate.observation_score.desc(), DailyRadarCandidate.symbol.asc())
+        query.order_by(
+            DailyRadarRun.run_date.asc(),
+            DailyRadarRun.created_at.desc(),
+            DailyRadarRun.id.desc(),
+            DailyRadarCandidate.observation_score.desc(),
+            DailyRadarCandidate.symbol.asc(),
+        )
     ).all()
-    return [_candidate_snapshot(candidate, run) for candidate, run in rows]
+    latest_run_by_date: dict[date, int] = {}
+    snapshots: list[dict[str, Any]] = []
+    for candidate, run in rows:
+        selected_run_id = latest_run_by_date.setdefault(run.run_date, run.id)
+        if run.id == selected_run_id:
+            snapshots.append(_candidate_snapshot(candidate, run))
+    return snapshots
 
 
 def write_report(report: Mapping[str, Any], path: str | Path) -> None:
