@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.daily_radar.constants import (
     DAILY_RADAR_BACKGROUND_CONTEXT_TYPES,
     DAILY_RADAR_BUCKETS,
@@ -137,6 +138,11 @@ class DailyRadarMonthlyRuleReviewRequest(BaseModel):
     validation_version: str | None = Field(default=None, min_length=1, max_length=80)
     min_sample_count: int = Field(default=DEFAULT_MIN_SAMPLE_COUNT, ge=1, le=10_000)
     min_validated_coverage: float = Field(default=0.9, ge=0, le=1)
+    min_replay_coverage: float = Field(
+        default=DEFAULT_MIN_REPLAY_COVERAGE,
+        ge=0,
+        le=1,
+    )
 
 
 class DailyRadarMonthlyRuleReviewResponse(BaseModel):

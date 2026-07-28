@@ -130,12 +130,15 @@
 ### 3.9 每日驗證與月度雙軌治理
 
 - `.github/workflows/daily-radar.yml` 在 OHLCV／market context 後呼叫 Daily Radar due validation；`.github/workflows/analysis-forward-validation.yml` 每日呼叫一般分析 due validation。任一軌失敗會讓對應 workflow 失敗，但不回滾已發布的 Daily Radar 或已完成的一般分析。
-- 一般分析使用 `analysis_calibration_samples` 與 `analysis_forward_validation_results` 保存去識別化 replay input、5 / 10 / 20 交易日 outcome 與 skip reason；不得保存 user id、使用者筆記、新聞全文或 LLM 長文。
+- 一般分析第一版只將 `.TW` / `.TWO` final `/analyze` 寫入 `analysis_calibration_samples`，並以 `analysis_forward_validation_results` 保存去識別化 replay input、5 / 10 / 20 交易日 outcome 與 skip reason；其他市場不進 TW / TAIEX cohort，也不得保存 user id、使用者筆記、新聞全文或 LLM 長文。
 - `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日產出單一 AES-256 加密 Actions artifact，內含 Daily Radar 與一般分析 JSON、Markdown Actions 及 SHA-256 manifest。
 - 月報使用最近六個 20 日窗口已完整評估月份；前五個為 training，最新一個為 holdout，並以 `run_date` / `record_date` 作固定 seed block bootstrap。成熟度與 validated coverage 分開呈現。
+- `min_sample_count` 逐窗口計算 distinct signal / candidate；training 固定至少 20 個日期 blocks、holdout 至少 5 個日期 blocks，避免同日股票或同一訊號的三個窗口被誤當獨立樣本。
+- Replay coverage 必須整體與每個入選月份均達 90%，否則 candidate eligibility 固定為 `replay_coverage_below_threshold`。
 - 舊資料沒有正式 replay input 時標記 `replay_input_incomplete`，不得根據輸出猜回輸入。
 - Daily Radar 第一版只測試 ranking component weights 與 secondary threshold；一般分析第一版只測試正向 sentiment / institutional / technical / resonance points。風險扣分、負向 evidence、rule scores、prefilter 與 strategy generator 規則全部鎖定。
 - 每個 candidate config 只改一個參數、一個 step；報表只輸出 `auto_change_eligible`，不直接修改 production、建立 PR、merge 或 deploy。
+- 加密 artifact retention 為 30 天；每月需下載保存，權重審查可在累積六個成熟月份後進行。
 
 ### 3.10 校準可擴充性
 

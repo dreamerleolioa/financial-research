@@ -349,6 +349,16 @@ def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_s
         "2026-07",
     ]
     assert payload["replay_coverage"]["selected_validation_rows"] == 18
+    assert payload["replay_coverage"]["selected_samples"] == 6
+    assert payload["replay_coverage"]["coverage"] == 0.0
+    assert payload["replay_coverage"]["meets_threshold"] is False
+    assert payload["replay_coverage"]["exclusion_reasons"] == {
+        "replay_input_incomplete": 6,
+    }
+    assert all(
+        candidate["eligibility_reason"] == "replay_coverage_below_threshold"
+        for candidate in payload["candidate_configs"]
+    )
     assert len(payload["completeness_watermarks"]) == 19
     assert elapsed_seconds < 5.0
     select_statements = [
@@ -391,6 +401,8 @@ def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:
     assert "reports/calibration/monthly" in workflow
     assert "manifest.json" in workflow
     assert "actions/upload-artifact@v4" in workflow
+    assert "min_replay_coverage: 0.9" in workflow
+    assert "retention-days: 30" in workflow
 
 
 def _sqlite_engine():

@@ -32,6 +32,11 @@ from ai_stock_sentinel.analysis.confidence_scorer import (
 from ai_stock_sentinel.calibration.router import (
     _exclude_persisted_general_analysis_windows,
 )
+from ai_stock_sentinel.calibration.governance import (
+    independent_block_count,
+    independent_sample_counts_by_window,
+    required_block_counts,
+)
 from ai_stock_sentinel import api
 from ai_stock_sentinel.db.models import (
     AnalysisCalibrationSample,
@@ -117,6 +122,22 @@ def test_intraday_general_analysis_is_not_captured() -> None:
             result=_analysis_result(),
             is_final=False,
         )
+        assert captured is None
+        assert session.scalar(select(func.count()).select_from(AnalysisCalibrationSample)) == 0
+
+
+def test_non_tw_general_analysis_is_not_added_to_tw_calibration() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine, tables=[AnalysisCalibrationSample.__table__])
+    with Session(engine) as session:
+        captured = capture_general_analysis_calibration_sample(
+            session,
+            symbol="AAPL",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+
         assert captured is None
         assert session.scalar(select(func.count()).select_from(AnalysisCalibrationSample)) == 0
 
@@ -320,6 +341,37 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     assert set(candidate["training"]["before"]) == {"5", "10", "20"}
     assert candidate["training_block_bootstrap"]["seed"] == 20260724
     assert candidate["training_block_bootstrap"]["block_count"] == 5
+    assert candidate["coverage"]["training_independent_samples_by_window"] == {
+        "5": 5,
+        "10": 5,
+        "20": 5,
+    }
+    assert candidate["coverage"]["holdout_independent_samples_by_window"] == {
+        "5": 1,
+        "10": 1,
+        "20": 1,
+    }
+    assert candidate["coverage"]["training_block_count"] == 5
+    assert candidate["coverage"]["holdout_block_count"] == 1
+
+
+def test_governance_counts_signals_and_dates_instead_of_validation_rows() -> None:
+    rows = [
+        {
+            "sample_id": sample_id,
+            "record_date": "2026-06-05",
+            "window_days": window,
+        }
+        for sample_id in range(1, 8)
+        for window in (5, 10, 20)
+    ]
+
+    assert independent_sample_counts_by_window(
+        rows,
+        sample_key="sample_id",
+    ) == {"5": 7, "10": 7, "20": 7}
+    assert independent_block_count(rows, block_key="record_date") == 1
+    assert required_block_counts() == (20, 5)
 
 
 def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_months() -> None:
@@ -345,6 +397,8 @@ def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_m
                 is_final=True,
             )
             assert sample is not None
+            if index == len(record_months):
+                sample.replay_input = {"schema_version": "legacy-incomplete"}
             session.flush()
             for window in (5, 10, 20):
                 session.add(
@@ -399,6 +453,17 @@ def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_m
         "2026-07",
     ]
     assert report["coverage"]["selected_validation_rows"] == 18
+    assert report["coverage"]["selected_samples"] == 6
+    assert report["coverage"]["replay_eligible_samples"] == 5
+    assert report["coverage"]["replay_coverage"] == 0.8333
+    assert report["coverage"]["meets_threshold"] is False
+    assert report["coverage"]["exclusion_reasons"] == {
+        "replay_input_incomplete": 1,
+    }
+    assert all(
+        candidate["eligibility_reason"] == "replay_coverage_below_threshold"
+        for candidate in report["candidate_configs"]
+    )
     assert len(report["completeness_watermarks"]) == 19
     assert elapsed_seconds < 5.0
     select_statements = [

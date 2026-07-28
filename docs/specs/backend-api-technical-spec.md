@@ -1824,9 +1824,45 @@ Daily Radar run status：
 - `POST /internal/analysis-calibration/forward-validation/run`：評估 append-only、final `/analyze` 樣本的 5 / 10 / 20 交易日 outcome。
 - `POST /internal/daily-radar/rule-review/monthly`：輸出 Daily Radar baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - `POST /internal/analysis-calibration/monthly`：輸出一般分析 confidence baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
-- 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析樣本會保存並依 `market`、`benchmark_symbol` 分區，避免跨市場校準。
+- 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析第一版只保存 `.TW` / `.TWO` final `/analyze` 樣本，固定分區為 TW / TAIEX；其他市場不寫入這個 calibration cohort。
 - 兩軌 forward validation 透過 feature adapter 共用 `ai_stock_sentinel.calibration.forward_validation`；月報以 SQL monthly aggregation 選 cohort，再以明確月份條件載入六個成熟月份的 replay / validation detail。
 - 一般分析校準只收 `/analyze`，不含 `/analyze/position`；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。
+
+Forward validation due request：
+
+```json
+{
+  "mode": "due",
+  "market": "TW",
+  "windows": [5, 10, 20],
+  "benchmark_symbol": "TAIEX",
+  "as_of_date": "2026-07-27"
+}
+```
+
+`as_of_date` 可省略。成功回應包含 `status`、`mode`、`as_of_date`、候選或樣本數、`records_written`、`validated_count`、`skipped_count` 與詳細 `report`；正式 workflow 另外要求 `skipped_count == 0`，否則 job 失敗並於下次 due run 重試。
+
+Daily Radar monthly request：
+
+```json
+{
+  "market": "TW",
+  "year": 2026,
+  "month": 6,
+  "min_sample_count": 20,
+  "min_validated_coverage": 0.9,
+  "min_replay_coverage": 0.9
+}
+```
+
+一般分析 monthly request 另帶 `"benchmark_symbol": "TAIEX"`。回應共同包含 `report_json` 與 `report_markdown`；`report_json` 至少包含：
+
+- `cohort`：最近六個成熟月份、五個 training months 與一個 holdout month。
+- `completeness_watermarks`：20 日 expected / evaluated / validated 與 validated coverage。
+- `coverage` 或 `replay_coverage`：distinct samples、整體與逐月 replay coverage、排除原因及 threshold 結果。
+- `candidate_configs[]`：單參數單 step before / after、各窗口 metrics、training block bootstrap、holdout、distinct sample counts、training / holdout block counts、`auto_change_eligible` 與 `eligibility_reason`。
+
+`min_sample_count` 是每個 5 / 10 / 20 日窗口的 distinct sample / candidate 數，不是三個窗口的 validation row 總和。Training 固定至少需要 20 個日期 blocks、holdout 至少 5 個日期 blocks；replay coverage 必須整體與每個入選月份都達 90%。Artifact retention 為 30 天，因此每月需下載保存；報表可累積六個成熟月份後再人工審查，且不會直接修改 production。
 
 #### Internal Daily Radar chip context update
 

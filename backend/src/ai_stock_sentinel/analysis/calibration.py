@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
@@ -19,12 +20,17 @@ from ai_stock_sentinel.analysis.confidence_scorer import (
     compute_confidence,
 )
 from ai_stock_sentinel.calibration.governance import (
+    DEFAULT_MIN_REPLAY_COVERAGE,
     DEFAULT_MIN_VALIDATED_COVERAGE,
     block_bootstrap_delta,
     confidence_excess_correlation,
+    independent_block_count,
+    independent_sample_counts_by_window,
     metrics_by_window,
     month_bounds,
     month_key,
+    replay_coverage_summary,
+    required_block_counts,
     select_training_and_holdout_months,
     validated_coverage,
 )
@@ -45,7 +51,7 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v1"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v1"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v2"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_ANALYSIS_TYPES = ("general",)
 OPTIMIZER_STRATEGY_TYPES = ("short_term", "mid_term")
@@ -55,6 +61,7 @@ TUNABLE_CONFIDENCE_PARAMETERS = (
     "bullish_technical_points",
     "three_resonance_bonus",
 )
+logger = logging.getLogger(__name__)
 
 
 def capture_general_analysis_calibration_sample(
@@ -65,11 +72,17 @@ def capture_general_analysis_calibration_sample(
     result: Mapping[str, Any],
     is_final: bool,
     strategy_version: str = STRATEGY_VERSION,
-    market: str = "TW",
-    benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
 ) -> AnalysisCalibrationSample | None:
     if not is_final:
         return None
+    partition = _general_analysis_calibration_partition(symbol)
+    if partition is None:
+        logger.info(
+            "Skip unsupported general-analysis calibration market for %s",
+            symbol,
+        )
+        return None
+    market, benchmark_symbol = partition
     replay_input = build_general_analysis_replay_input(result)
     input_hash = _canonical_hash(replay_input)
     existing = session.execute(
@@ -306,6 +319,7 @@ def build_general_analysis_monthly_report(
     through_month: int,
     min_sample_count: int = 20,
     min_validated_coverage: float = DEFAULT_MIN_VALIDATED_COVERAGE,
+    min_replay_coverage: float = DEFAULT_MIN_REPLAY_COVERAGE,
     market: str = "TW",
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
 ) -> tuple[dict[str, Any], str]:
@@ -344,19 +358,39 @@ def build_general_analysis_monthly_report(
     sample_by_id = {sample.id: sample for sample in samples}
 
     exclusions: Counter[str] = Counter()
+    excluded_sample_ids: dict[str, set[int]] = {}
     eligible_rows: list[dict[str, Any]] = []
     for row in selected_rows:
-        sample = sample_by_id.get(int(row["sample_id"]))
+        sample_id = int(row["sample_id"])
+        sample = sample_by_id.get(sample_id)
         if sample is None:
-            exclusions["sample_missing"] += 1
+            excluded_sample_ids.setdefault("sample_missing", set()).add(sample_id)
             continue
         if sample.strategy_type not in OPTIMIZER_STRATEGY_TYPES:
-            exclusions[f"strategy_type_excluded:{sample.strategy_type or 'missing'}"] += 1
+            reason = f"strategy_type_excluded:{sample.strategy_type or 'missing'}"
+            excluded_sample_ids.setdefault(reason, set()).add(sample_id)
             continue
         if not _is_complete_replay_input(sample.replay_input):
-            exclusions["replay_input_incomplete"] += 1
+            excluded_sample_ids.setdefault(
+                "replay_input_incomplete",
+                set(),
+            ).add(sample_id)
             continue
         eligible_rows.append(row | {"sample": sample})
+    exclusions.update({
+        reason: len(sample_ids)
+        for reason, sample_ids in excluded_sample_ids.items()
+    })
+
+    replay_coverage = replay_coverage_summary(
+        selected_rows,
+        eligible_rows,
+        sample_key="sample_id",
+        date_key="record_date",
+        selected_months=[str(value) for value in cohort["selected_months"]],
+        minimum_coverage=min_replay_coverage,
+    )
+    min_training_blocks, min_holdout_blocks = required_block_counts()
 
     baseline_config = ConfidenceScoringConfig()
     candidates = [
@@ -369,6 +403,7 @@ def build_general_analysis_monthly_report(
             watermarks=watermarks,
             min_sample_count=min_sample_count,
             min_validated_coverage=min_validated_coverage,
+            replay_coverage_ok=bool(replay_coverage["meets_threshold"]),
         )
         for parameter in TUNABLE_CONFIDENCE_PARAMETERS
         for direction in (-1, 1)
@@ -385,6 +420,9 @@ def build_general_analysis_monthly_report(
             "strategy_version": STRATEGY_VERSION,
             "min_sample_count": min_sample_count,
             "min_validated_coverage": min_validated_coverage,
+            "min_replay_coverage": min_replay_coverage,
+            "min_training_block_count": min_training_blocks,
+            "min_holdout_block_count": min_holdout_blocks,
             "positioning": "confidence_calibration_governance_not_trading_performance_marketing",
         },
         "cohort": cohort,
@@ -401,9 +439,9 @@ def build_general_analysis_monthly_report(
         ],
         "candidate_configs": candidates,
         "coverage": {
-            "selected_validation_rows": len(selected_rows),
+            **replay_coverage,
             "optimizer_eligible_rows": len(eligible_rows),
-            "replay_coverage": validated_coverage(len(eligible_rows), len(selected_rows)),
+            "replay_coverage": replay_coverage["coverage"],
             "exclusion_reasons": dict(sorted(exclusions.items())),
         },
         "auto_change_eligible": any(candidate["auto_change_eligible"] for candidate in candidates),
@@ -430,6 +468,9 @@ def render_general_analysis_monthly_markdown(report: Mapping[str, Any]) -> str:
         f"- Training months: {', '.join(str(value) for value in _as_list(cohort.get('training_months'))) or 'insufficient'}",
         f"- Holdout month: {cohort.get('holdout_month') or 'insufficient'}",
         f"- Replay coverage: {coverage.get('replay_coverage')}",
+        f"- Replay coverage meets threshold: {coverage.get('meets_threshold')}",
+        f"- Minimum training date blocks: {metadata.get('min_training_block_count')}",
+        f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Auto-change eligible: {report.get('auto_change_eligible')}",
         "",
         "## Candidate Actions",
@@ -469,6 +510,7 @@ def _confidence_candidate_report(
     watermarks: Sequence[Mapping[str, Any]],
     min_sample_count: int,
     min_validated_coverage: float,
+    replay_coverage_ok: bool,
 ) -> dict[str, Any]:
     before_value = int(getattr(baseline_config, parameter))
     after_value = max(0, before_value + direction)
@@ -521,11 +563,37 @@ def _confidence_candidate_report(
     )
     lower_ci = _number(_as_list(bootstrap.get("ci_95"))[0]) if _as_list(bootstrap.get("ci_95")) else None
     training_delta = _number(bootstrap.get("delta"))
+    training_sample_counts = independent_sample_counts_by_window(
+        baseline_training,
+        sample_key="sample_id",
+    )
+    holdout_sample_counts = independent_sample_counts_by_window(
+        baseline_holdout,
+        sample_key="sample_id",
+    )
+    enough_samples = (
+        all(count >= min_sample_count for count in training_sample_counts.values())
+        and all(count >= min_sample_count for count in holdout_sample_counts.values())
+    )
+    training_block_count = independent_block_count(
+        baseline_training,
+        block_key="record_date",
+    )
+    holdout_block_count = independent_block_count(
+        baseline_holdout,
+        block_key="record_date",
+    )
+    min_training_blocks, min_holdout_blocks = required_block_counts()
+    enough_blocks = (
+        training_block_count >= min_training_blocks
+        and holdout_block_count >= min_holdout_blocks
+    )
     eligible = (
         cohort.get("cohort_complete") is True
         and coverage_ok
-        and len(baseline_training) >= min_sample_count
-        and len(baseline_holdout) >= min_sample_count
+        and replay_coverage_ok
+        and enough_samples
+        and enough_blocks
         and lower_ci is not None
         and lower_ci >= 0
         and training_delta is not None
@@ -538,8 +606,12 @@ def _confidence_candidate_report(
         reason = "insufficient_mature_months"
     elif not coverage_ok:
         reason = "validated_coverage_below_threshold"
-    elif len(baseline_training) < min_sample_count or len(baseline_holdout) < min_sample_count:
-        reason = "insufficient_samples"
+    elif not replay_coverage_ok:
+        reason = "replay_coverage_below_threshold"
+    elif not enough_samples:
+        reason = "insufficient_independent_samples"
+    elif not enough_blocks:
+        reason = "insufficient_date_blocks"
     elif lower_ci is None or lower_ci < 0 or training_delta is None or training_delta <= 0:
         reason = "training_bootstrap_not_positive"
     elif holdout_delta is None or holdout_delta < -0.01:
@@ -570,7 +642,14 @@ def _confidence_candidate_report(
         "coverage": {
             "training_rows": len(baseline_training),
             "holdout_rows": len(baseline_holdout),
+            "training_independent_samples_by_window": training_sample_counts,
+            "holdout_independent_samples_by_window": holdout_sample_counts,
+            "training_block_count": training_block_count,
+            "holdout_block_count": holdout_block_count,
+            "min_training_block_count": min_training_blocks,
+            "min_holdout_block_count": min_holdout_blocks,
             "selected_months_meet_validated_coverage": coverage_ok,
+            "selected_months_meet_replay_coverage": replay_coverage_ok,
         },
         "auto_change_eligible": eligible,
         "eligibility_reason": reason,
@@ -776,6 +855,15 @@ def _is_complete_replay_input(value: Any) -> bool:
             )
         )
     )
+
+
+def _general_analysis_calibration_partition(
+    symbol: str,
+) -> tuple[str, str] | None:
+    normalized = symbol.strip().upper()
+    if normalized.endswith((".TW", ".TWO")):
+        return "TW", DEFAULT_BENCHMARK_SYMBOL
+    return None
 
 
 def _canonical_hash(payload: Mapping[str, Any]) -> str:

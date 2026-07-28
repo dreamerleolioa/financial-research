@@ -11,11 +11,16 @@ from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.governance import (
+    DEFAULT_MIN_REPLAY_COVERAGE,
     DEFAULT_MIN_VALIDATED_COVERAGE,
     block_bootstrap_delta,
+    independent_block_count,
+    independent_sample_counts_by_window,
     metrics_by_window,
     month_bounds,
     outcome_metrics,
+    replay_coverage_summary,
+    required_block_counts,
     select_training_and_holdout_months,
     validated_coverage,
 )
@@ -43,7 +48,7 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v1"
+RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v2"
 DEFAULT_MIN_SAMPLE_COUNT = 20
 DEFAULT_RANK_CUTOFF = 20
 TUNABLE_SCORING_PARAMETERS = {
@@ -127,6 +132,7 @@ def build_monthly_rule_review_report(
     validation_version: str | None = None,
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
     min_validated_coverage: float = DEFAULT_MIN_VALIDATED_COVERAGE,
+    min_replay_coverage: float = DEFAULT_MIN_REPLAY_COVERAGE,
 ) -> MonthlyRuleReviewReport:
     month_start, month_end = _month_bounds(year, month)
     rows = validation_rows_from_results(
@@ -179,7 +185,9 @@ def build_monthly_rule_review_report(
         watermarks=watermarks,
         min_sample_count=min_sample_count,
         min_validated_coverage=min_validated_coverage,
+        min_replay_coverage=min_replay_coverage,
     )
+    min_training_blocks, min_holdout_blocks = required_block_counts()
     report = {
         "metadata": {
             "report_version": RULE_REVIEW_REPORT_VERSION,
@@ -189,6 +197,9 @@ def build_monthly_rule_review_report(
             "validation_version": version,
             "min_sample_count": min_sample_count,
             "min_validated_coverage": min_validated_coverage,
+            "min_replay_coverage": min_replay_coverage,
+            "min_training_block_count": min_training_blocks,
+            "min_holdout_block_count": min_holdout_blocks,
             "positioning": "automated_rule_quality_recommendations_not_human_approved_strategy_update",
         },
         "sample_summary": ablation["sample_summary"],
@@ -294,6 +305,7 @@ def validation_rows_from_results(
 def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
     metadata = _mapping(report.get("metadata"))
     summary = _mapping(report.get("sample_summary"))
+    replay_coverage = _mapping(report.get("replay_coverage"))
     lines = [
         f"# Daily Radar Rule Review {metadata.get('month')}",
         "",
@@ -304,6 +316,11 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
         f"- Market: {metadata.get('market')}",
         f"- Validation version: {metadata.get('validation_version')}",
         f"- Minimum sample count: {metadata.get('min_sample_count')}",
+        f"- Minimum replay coverage: {metadata.get('min_replay_coverage')}",
+        f"- Replay coverage: {replay_coverage.get('coverage')}",
+        f"- Replay coverage meets threshold: {replay_coverage.get('meets_threshold')}",
+        f"- Minimum training date blocks: {metadata.get('min_training_block_count')}",
+        f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Validated samples: {summary.get('validated_sample_count', 0)}",
         f"- Skipped samples: {summary.get('skipped_sample_count', 0)}",
         "",
@@ -655,16 +672,32 @@ def _scoring_candidate_reports(
     watermarks: Sequence[Mapping[str, Any]],
     min_sample_count: int,
     min_validated_coverage: float,
+    min_replay_coverage: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     eligible_rows: list[dict[str, Any]] = []
-    exclusions: Counter[str] = Counter()
+    excluded_candidate_ids: dict[str, set[int]] = {}
     for row in rows:
         snapshot = _mapping(row.get("candidate_snapshot"))
         replay_input = _mapping(_mapping(snapshot.get("input_snapshot")).get("replay_input"))
         if replay_input.get("schema_version") != "daily-radar-replay-input-v1":
-            exclusions["replay_input_incomplete"] += 1
+            candidate_id = row.get("candidate_id")
+            if candidate_id is not None:
+                excluded_candidate_ids.setdefault(
+                    "replay_input_incomplete",
+                    set(),
+                ).add(int(candidate_id))
             continue
         eligible_rows.append(dict(row))
+    replay_coverage = replay_coverage_summary(
+        rows,
+        eligible_rows,
+        sample_key="candidate_id",
+        date_key="signal_date",
+        selected_months=[
+            str(value) for value in _as_list(cohort.get("selected_months"))
+        ],
+        minimum_coverage=min_replay_coverage,
+    )
     reports = [
         _scoring_candidate_report(
             eligible_rows,
@@ -676,15 +709,17 @@ def _scoring_candidate_reports(
             watermarks=watermarks,
             min_sample_count=min_sample_count,
             min_validated_coverage=min_validated_coverage,
+            replay_coverage_ok=bool(replay_coverage["meets_threshold"]),
         )
         for parameter, step in TUNABLE_SCORING_PARAMETERS.items()
         for direction in ((1,) if parameter in INCREASE_ONLY_SCORING_PARAMETERS else (-1, 1))
     ]
     return reports, {
-        "selected_validation_rows": len(rows),
-        "replay_eligible_rows": len(eligible_rows),
-        "coverage": validated_coverage(len(eligible_rows), len(rows)),
-        "exclusion_reasons": dict(sorted(exclusions.items())),
+        **replay_coverage,
+        "exclusion_reasons": {
+            reason: len(candidate_ids)
+            for reason, candidate_ids in sorted(excluded_candidate_ids.items())
+        },
     }
 
 
@@ -699,6 +734,7 @@ def _scoring_candidate_report(
     watermarks: Sequence[Mapping[str, Any]],
     min_sample_count: int,
     min_validated_coverage: float,
+    replay_coverage_ok: bool,
 ) -> dict[str, Any]:
     before_value = getattr(baseline_config, parameter)
     raw_after = before_value + (direction * step)
@@ -721,7 +757,6 @@ def _scoring_candidate_report(
     selection = lambda row: row.get(selection_key) is True
     primary_metric = _secondary_average_excess if is_secondary_threshold else _selected_average_excess
     downside_metric = _secondary_average_downside if is_secondary_threshold else _selected_average_downside
-    count_metric = _secondary_count if is_secondary_threshold else _selected_count
     objective_name = (
         "secondary_bucket_average_excess_return_pct"
         if is_secondary_threshold
@@ -766,9 +801,64 @@ def _scoring_candidate_report(
     ci_values = _as_list(bootstrap.get("ci_95"))
     lower_ci = _float_or_none(ci_values[0]) if ci_values else None
     training_delta = _float_or_none(bootstrap.get("delta"))
+    training_sample_counts = independent_sample_counts_by_window(
+        before_training,
+        sample_key="candidate_id",
+        selection=selection,
+    )
+    holdout_sample_counts = independent_sample_counts_by_window(
+        before_holdout,
+        sample_key="candidate_id",
+        selection=selection,
+    )
+    after_training_sample_counts = independent_sample_counts_by_window(
+        after_training,
+        sample_key="candidate_id",
+        selection=selection,
+    )
+    after_holdout_sample_counts = independent_sample_counts_by_window(
+        after_holdout,
+        sample_key="candidate_id",
+        selection=selection,
+    )
     enough_samples = (
-        count_metric(before_training) >= min_sample_count
-        and count_metric(before_holdout) >= min_sample_count
+        all(count >= min_sample_count for count in training_sample_counts.values())
+        and all(count >= min_sample_count for count in holdout_sample_counts.values())
+        and all(
+            count >= min_sample_count
+            for count in after_training_sample_counts.values()
+        )
+        and all(
+            count >= min_sample_count
+            for count in after_holdout_sample_counts.values()
+        )
+    )
+    training_block_count = independent_block_count(
+        before_training,
+        block_key="record_date",
+        selection=selection,
+    )
+    holdout_block_count = independent_block_count(
+        before_holdout,
+        block_key="record_date",
+        selection=selection,
+    )
+    after_training_block_count = independent_block_count(
+        after_training,
+        block_key="record_date",
+        selection=selection,
+    )
+    after_holdout_block_count = independent_block_count(
+        after_holdout,
+        block_key="record_date",
+        selection=selection,
+    )
+    min_training_blocks, min_holdout_blocks = required_block_counts()
+    enough_blocks = (
+        training_block_count >= min_training_blocks
+        and holdout_block_count >= min_holdout_blocks
+        and after_training_block_count >= min_training_blocks
+        and after_holdout_block_count >= min_holdout_blocks
     )
     downside_preserved = (
         downside_before is not None
@@ -778,7 +868,9 @@ def _scoring_candidate_report(
     eligible = (
         cohort.get("cohort_complete") is True
         and coverage_ok
+        and replay_coverage_ok
         and enough_samples
+        and enough_blocks
         and lower_ci is not None
         and lower_ci >= 0
         and training_delta is not None
@@ -792,8 +884,12 @@ def _scoring_candidate_report(
         reason = "insufficient_mature_months"
     elif not coverage_ok:
         reason = "validated_coverage_below_threshold"
+    elif not replay_coverage_ok:
+        reason = "replay_coverage_below_threshold"
     elif not enough_samples:
-        reason = "insufficient_samples"
+        reason = "insufficient_independent_samples"
+    elif not enough_blocks:
+        reason = "insufficient_date_blocks"
     elif lower_ci is None or lower_ci < 0 or training_delta is None or training_delta <= 0:
         reason = "training_bootstrap_not_positive"
     elif holdout_delta is None or holdout_delta < -0.05:
@@ -829,9 +925,24 @@ def _scoring_candidate_report(
             "preserved": downside_preserved,
         },
         "coverage": {
-            "training_selected_rows": count_metric(before_training),
-            "holdout_selected_rows": count_metric(before_holdout),
+            "training_selected_rows": sum(
+                1 for row in before_training if selection(row)
+            ),
+            "holdout_selected_rows": sum(
+                1 for row in before_holdout if selection(row)
+            ),
+            "training_independent_samples_by_window": training_sample_counts,
+            "holdout_independent_samples_by_window": holdout_sample_counts,
+            "after_training_independent_samples_by_window": after_training_sample_counts,
+            "after_holdout_independent_samples_by_window": after_holdout_sample_counts,
+            "training_block_count": training_block_count,
+            "holdout_block_count": holdout_block_count,
+            "after_training_block_count": after_training_block_count,
+            "after_holdout_block_count": after_holdout_block_count,
+            "min_training_block_count": min_training_blocks,
+            "min_holdout_block_count": min_holdout_blocks,
             "selected_months_meet_validated_coverage": coverage_ok,
+            "selected_months_meet_replay_coverage": replay_coverage_ok,
         },
         "auto_change_eligible": eligible,
         "eligibility_reason": reason,

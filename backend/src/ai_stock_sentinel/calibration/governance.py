@@ -11,6 +11,9 @@ from typing import Any
 DEFAULT_BOOTSTRAP_SEED = 20260724
 DEFAULT_BOOTSTRAP_ITERATIONS = 500
 DEFAULT_MIN_VALIDATED_COVERAGE = 0.9
+DEFAULT_MIN_REPLAY_COVERAGE = 0.9
+DEFAULT_MIN_TRAINING_BLOCK_COUNT = 20
+DEFAULT_MIN_HOLDOUT_BLOCK_COUNT = 5
 
 
 def month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -164,6 +167,101 @@ def validated_coverage(validated: int, expected: int) -> float | None:
     return _ratio(validated, expected)
 
 
+def independent_sample_counts_by_window(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    sample_key: str,
+    selection: Callable[[Mapping[str, Any]], bool] | None = None,
+    windows: Sequence[int] = (5, 10, 20),
+) -> dict[str, int]:
+    return {
+        str(window): len({
+            str(row.get(sample_key))
+            for row in rows
+            if int(row.get("window_days") or 0) == window
+            and row.get(sample_key) is not None
+            and (selection is None or selection(row))
+        })
+        for window in windows
+    }
+
+
+def independent_block_count(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    block_key: str,
+    selection: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> int:
+    return len({
+        str(row.get(block_key))
+        for row in rows
+        if row.get(block_key) is not None
+        and (selection is None or selection(row))
+    })
+
+
+def replay_coverage_summary(
+    rows: Sequence[Mapping[str, Any]],
+    eligible_rows: Sequence[Mapping[str, Any]],
+    *,
+    sample_key: str,
+    date_key: str,
+    selected_months: Sequence[str],
+    minimum_coverage: float = DEFAULT_MIN_REPLAY_COVERAGE,
+) -> dict[str, Any]:
+    selected_ids = _sample_ids(rows, sample_key)
+    eligible_ids = _sample_ids(eligible_rows, sample_key)
+    coverage = validated_coverage(len(eligible_ids), len(selected_ids))
+    by_month: dict[str, dict[str, Any]] = {}
+    for month in selected_months:
+        month_rows = [
+            row for row in rows
+            if str(row.get(date_key) or "")[:7] == month
+        ]
+        month_eligible_rows = [
+            row for row in eligible_rows
+            if str(row.get(date_key) or "")[:7] == month
+        ]
+        month_selected_ids = _sample_ids(month_rows, sample_key)
+        month_eligible_ids = _sample_ids(month_eligible_rows, sample_key)
+        month_coverage = validated_coverage(
+            len(month_eligible_ids),
+            len(month_selected_ids),
+        )
+        by_month[month] = {
+            "selected_samples": len(month_selected_ids),
+            "replay_eligible_samples": len(month_eligible_ids),
+            "coverage": month_coverage,
+            "meets_threshold": (
+                month_coverage is not None
+                and month_coverage >= minimum_coverage
+            ),
+        }
+    meets_threshold = (
+        coverage is not None
+        and coverage >= minimum_coverage
+        and bool(by_month)
+        and all(row["meets_threshold"] for row in by_month.values())
+    )
+    return {
+        "selected_validation_rows": len(rows),
+        "replay_eligible_rows": len(eligible_rows),
+        "selected_samples": len(selected_ids),
+        "replay_eligible_samples": len(eligible_ids),
+        "coverage": coverage,
+        "minimum_required": minimum_coverage,
+        "coverage_by_month": by_month,
+        "meets_threshold": meets_threshold,
+    }
+
+
+def required_block_counts() -> tuple[int, int]:
+    return (
+        DEFAULT_MIN_TRAINING_BLOCK_COUNT,
+        DEFAULT_MIN_HOLDOUT_BLOCK_COUNT,
+    )
+
+
 def _rows_by_block(
     rows: Iterable[Mapping[str, Any]],
     block_key: str,
@@ -172,6 +270,17 @@ def _rows_by_block(
     for row in rows:
         grouped[str(row.get(block_key) or "unknown")].append(row)
     return grouped
+
+
+def _sample_ids(
+    rows: Sequence[Mapping[str, Any]],
+    sample_key: str,
+) -> set[str]:
+    return {
+        str(row.get(sample_key))
+        for row in rows
+        if row.get(sample_key) is not None
+    }
 
 
 def _outcome(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -238,13 +347,20 @@ def _rounded_delta(left: float | None, right: float | None) -> float | None:
 __all__ = [
     "DEFAULT_BOOTSTRAP_ITERATIONS",
     "DEFAULT_BOOTSTRAP_SEED",
+    "DEFAULT_MIN_HOLDOUT_BLOCK_COUNT",
+    "DEFAULT_MIN_REPLAY_COVERAGE",
+    "DEFAULT_MIN_TRAINING_BLOCK_COUNT",
     "DEFAULT_MIN_VALIDATED_COVERAGE",
     "block_bootstrap_delta",
     "confidence_excess_correlation",
+    "independent_block_count",
+    "independent_sample_counts_by_window",
     "metrics_by_window",
     "month_bounds",
     "month_key",
     "outcome_metrics",
+    "replay_coverage_summary",
+    "required_block_counts",
     "select_training_and_holdout_months",
     "validated_coverage",
 ]

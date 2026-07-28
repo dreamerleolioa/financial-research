@@ -934,6 +934,7 @@ def run_daily_radar_monthly_rule_review_endpoint(
         validation_version=payload.validation_version,
         min_sample_count=payload.min_sample_count,
         min_validated_coverage=payload.min_validated_coverage,
+        min_replay_coverage=payload.min_replay_coverage,
     )
     return DailyRadarMonthlyRuleReviewResponse(
         status="completed",

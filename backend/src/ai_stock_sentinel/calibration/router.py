@@ -30,6 +30,7 @@ from ai_stock_sentinel.calibration.forward_validation import (
     merge_price_series,
     symbols_requiring_forward_price_refresh,
 )
+from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.calibration.repository import (
     load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
@@ -70,6 +71,11 @@ class GeneralAnalysisMonthlyReviewRequest(BaseModel):
     month: int = Field(ge=1, le=12)
     min_sample_count: int = Field(default=20, ge=1, le=10_000)
     min_validated_coverage: float = Field(default=0.9, ge=0, le=1)
+    min_replay_coverage: float = Field(
+        default=DEFAULT_MIN_REPLAY_COVERAGE,
+        ge=0,
+        le=1,
+    )
 
 
 class GeneralAnalysisMonthlyReviewResponse(BaseModel):
@@ -208,6 +214,7 @@ def run_general_analysis_monthly_review(
         through_month=payload.month,
         min_sample_count=payload.min_sample_count,
         min_validated_coverage=payload.min_validated_coverage,
+        min_replay_coverage=payload.min_replay_coverage,
         market=payload.market,
         benchmark_symbol=payload.benchmark_symbol,
     )

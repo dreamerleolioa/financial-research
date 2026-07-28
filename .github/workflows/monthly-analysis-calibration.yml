@@ -90,7 +90,8 @@ jobs:
               market: "TW",
               benchmark_symbol: "TAIEX",
               min_sample_count: $min_sample_count,
-              min_validated_coverage: 0.9
+              min_validated_coverage: 0.9,
+              min_replay_coverage: 0.9
             }')"
           curl --fail-with-body --show-error --silent \
             --request POST \
