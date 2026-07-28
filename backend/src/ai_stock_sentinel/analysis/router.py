@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import date, datetime, time as _time
 from typing import Any
 
@@ -10,7 +11,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.adapters.graph_runner import build_graph_singleton, invoke_graph
-from ai_stock_sentinel.analysis.calibration import capture_general_analysis_calibration_sample
+from ai_stock_sentinel.analysis.calibration import (
+    GENERAL_REPLAY_CACHE_KEY,
+    build_general_analysis_replay_input,
+    capture_general_analysis_calibration_sample,
+)
 from ai_stock_sentinel.analysis.application.analysis_cache import (
     INTRADAY_DISCLAIMER,
     MARKET_CLOSE,
@@ -95,6 +100,35 @@ def _handle_cache_hit(
     now_time: _time,
 ) -> CachedAnalyzeResponse | None:
     return _analysis_handle_cache_hit(cache, now_time)
+
+
+def _retry_general_analysis_calibration_capture_from_cache(
+    db: Session,
+    cache: StockAnalysisCache,
+) -> None:
+    full_result = cache.full_result
+    if not isinstance(full_result, Mapping):
+        return
+    replay_input = full_result.get(GENERAL_REPLAY_CACHE_KEY)
+    if not isinstance(replay_input, Mapping):
+        return
+    try:
+        capture_general_analysis_calibration_sample(
+            db,
+            symbol=cache.symbol,
+            record_date=cache.record_date,
+            result=full_result,
+            is_final=True,
+            strategy_version=cache.strategy_version or STRATEGY_VERSION,
+            replay_input=replay_input,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Failed to retry general-analysis calibration capture from final cache for %s",
+            cache.symbol,
+        )
 
 
 def _build_analysis_response(
@@ -467,6 +501,8 @@ def analyze(
         if cache:
             hit = _handle_cache_hit(cache, now_time)
             if hit:
+                if hit.is_final:
+                    _retry_general_analysis_calibration_capture_from_cache(db, cache)
                 _maybe_upsert_log(db, current_user.id, payload.symbol, cache, hit.is_final)
                 return _with_analyze_response_contexts(
                     _build_response_from_cache(hit, payload.symbol, full_result=cache.full_result),
@@ -525,6 +561,11 @@ def analyze(
     _set_response_finality(_response, is_final=is_final)
 
     if not payload.skip_ai:
+        cache_full_result = _response.model_dump()
+        calibration_replay_input: dict[str, Any] | None = None
+        if is_final:
+            calibration_replay_input = build_general_analysis_replay_input(result)
+            cache_full_result[GENERAL_REPLAY_CACHE_KEY] = calibration_replay_input
         upsert_analysis_cache(
             db,
             {
@@ -536,7 +577,7 @@ def analyze(
                 "indicators": _extract_indicators(result),
                 "final_verdict": result.get("analysis"),
                 "is_final": is_final,
-                "full_result": _response.model_dump(),
+                "full_result": cache_full_result,
             },
         )
         _maybe_upsert_log_from_result(db, current_user.id, payload.symbol, result, is_final)
@@ -548,6 +589,7 @@ def analyze(
                     record_date=_today_taipei(),
                     result=result,
                     is_final=True,
+                    replay_input=calibration_replay_input,
                 )
                 db.commit()
             except Exception:

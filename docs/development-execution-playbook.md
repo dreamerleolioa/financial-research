@@ -212,7 +212,8 @@ POST /internal/analysis-calibration/monthly
 - Daily Radar 成熟窗口由 `.github/workflows/daily-radar.yml` 的 `run-forward-validation` 累積；一般分析由 `.github/workflows/analysis-forward-validation.yml` 累積。Validation failure 不回滾已發布結果，但對應 workflow 會失敗。
 - 一般分析 calibration 第一版只收 `.TW` / `.TWO` 的 final `/analyze` 樣本；其他市場不寫入 TW / TAIEX cohort。
 - `min_sample_count` 以各窗口 distinct signal / candidate 計算；另固定要求 training 至少 20 個 `run_date` / `record_date` blocks、holdout 至少 5 個 blocks。
-- Validated coverage 與 replay coverage 均需整體及逐月達 90%；任一月份 replay input 不完整時，candidate eligibility 回 `replay_coverage_below_threshold`。
+- Validated coverage 與 replay coverage 均需整體及逐月達 90%；一般分析 replay coverage 分母只計 optimizer scope 的 `short_term` / `mid_term`，被策略範圍刻意排除的樣本只列 exclusion diagnostics。任一 scope 內月份 replay input 不完整時，candidate eligibility 回 `replay_coverage_below_threshold`。
+- Final `/analyze` cache 保存精簡 replay payload；首次 calibration capture 失敗後，後續 final cache hit 會冪等重試。舊 cache 沒有正式 payload 時不得反推。
 - GitHub Actions artifact retention 為 30 天；每月 report 需在到期前下載保存，累積六個成熟月份後再進行人工調權審查。
 
 本機測試：

@@ -350,7 +350,9 @@ make run-api
 
 Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
 
-兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；validation rows 不會被當成獨立樣本重複計數。
+兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；validation rows 不會被當成獨立樣本重複計數。一般分析 replay coverage 的分母只包含 optimizer scope 內的 `short_term`／`mid_term`，`defensive_wait` 等刻意排除策略仍列入 exclusion diagnostics，但不會被誤算成 replay 缺漏。
+
+Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次 calibration capture 暫時失敗，後續 final cache hit 會以同一 payload 冪等補寫。舊 cache 沒有正式 replay payload 時維持跳過，不會從輸出猜測輸入。
 
 月報只上傳 AES-256 加密的 Actions artifact，內含兩軌 JSON、Markdown Actions 與 manifest；不會寫入 public issue 或 main branch，也不會直接修改權重。Artifact 只保留 30 天，因此每月產生後需在到期前下載並自行保存；可每六個成熟月份再提交給 Codex 做一次人工調權審查。下載後用 `gpg --decrypt --output analysis-calibration.tar.gz <artifact>.tar.gz.gpg` 解密，再以 `tar -xzf analysis-calibration.tar.gz` 展開。
 - `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單

@@ -51,8 +51,9 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v1"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v2"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v3"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
+GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
 GENERAL_ANALYSIS_TYPES = ("general",)
 OPTIMIZER_STRATEGY_TYPES = ("short_term", "mid_term")
 TUNABLE_CONFIDENCE_PARAMETERS = (
@@ -72,6 +73,7 @@ def capture_general_analysis_calibration_sample(
     result: Mapping[str, Any],
     is_final: bool,
     strategy_version: str = STRATEGY_VERSION,
+    replay_input: Mapping[str, Any] | None = None,
 ) -> AnalysisCalibrationSample | None:
     if not is_final:
         return None
@@ -83,8 +85,19 @@ def capture_general_analysis_calibration_sample(
         )
         return None
     market, benchmark_symbol = partition
-    replay_input = build_general_analysis_replay_input(result)
-    input_hash = _canonical_hash(replay_input)
+    active_replay_input = (
+        dict(replay_input)
+        if replay_input is not None
+        else build_general_analysis_replay_input(result)
+    )
+    if not _is_complete_replay_input(active_replay_input):
+        logger.warning(
+            "Skip incomplete general-analysis calibration replay input for %s on %s",
+            symbol,
+            record_date,
+        )
+        return None
+    input_hash = _canonical_hash(active_replay_input)
     existing = session.execute(
         select(AnalysisCalibrationSample).where(
             AnalysisCalibrationSample.analysis_type == "general",
@@ -108,7 +121,7 @@ def capture_general_analysis_calibration_sample(
         strategy_version=strategy_version,
         confidence_config_version=CONFIDENCE_CONFIG_VERSION,
         input_hash=input_hash,
-        replay_input=replay_input,
+        replay_input=active_replay_input,
         output_snapshot={
             "signal_confidence": result.get("signal_confidence"),
             "strategy_type": result.get("strategy_type"),
@@ -359,6 +372,7 @@ def build_general_analysis_monthly_report(
 
     exclusions: Counter[str] = Counter()
     excluded_sample_ids: dict[str, set[int]] = {}
+    optimizer_scope_rows: list[dict[str, Any]] = []
     eligible_rows: list[dict[str, Any]] = []
     for row in selected_rows:
         sample_id = int(row["sample_id"])
@@ -370,20 +384,22 @@ def build_general_analysis_monthly_report(
             reason = f"strategy_type_excluded:{sample.strategy_type or 'missing'}"
             excluded_sample_ids.setdefault(reason, set()).add(sample_id)
             continue
+        optimizer_row = row | {"sample": sample}
+        optimizer_scope_rows.append(optimizer_row)
         if not _is_complete_replay_input(sample.replay_input):
             excluded_sample_ids.setdefault(
                 "replay_input_incomplete",
                 set(),
             ).add(sample_id)
             continue
-        eligible_rows.append(row | {"sample": sample})
+        eligible_rows.append(optimizer_row)
     exclusions.update({
         reason: len(sample_ids)
         for reason, sample_ids in excluded_sample_ids.items()
     })
 
     replay_coverage = replay_coverage_summary(
-        selected_rows,
+        optimizer_scope_rows,
         eligible_rows,
         sample_key="sample_id",
         date_key="record_date",
@@ -440,6 +456,8 @@ def build_general_analysis_monthly_report(
         "candidate_configs": candidates,
         "coverage": {
             **replay_coverage,
+            "all_selected_validation_rows": len(selected_rows),
+            "optimizer_scope_validation_rows": len(optimizer_scope_rows),
             "optimizer_eligible_rows": len(eligible_rows),
             "replay_coverage": replay_coverage["coverage"],
             "exclusion_reasons": dict(sorted(exclusions.items())),
@@ -1026,6 +1044,7 @@ __all__ = [
     "ANALYSIS_CALIBRATION_REPORT_VERSION",
     "ANALYSIS_FORWARD_VALIDATION_VERSION",
     "GENERAL_REPLAY_INPUT_VERSION",
+    "GENERAL_REPLAY_CACHE_KEY",
     "GENERAL_ANALYSIS_FORWARD_ADAPTER",
     "TUNABLE_CONFIDENCE_PARAMETERS",
     "build_general_analysis_monthly_report",

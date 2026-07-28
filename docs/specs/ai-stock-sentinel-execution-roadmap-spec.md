@@ -134,8 +134,9 @@
 - `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日產出單一 AES-256 加密 Actions artifact，內含 Daily Radar 與一般分析 JSON、Markdown Actions 及 SHA-256 manifest。
 - 月報使用最近六個 20 日窗口已完整評估月份；前五個為 training，最新一個為 holdout，並以 `run_date` / `record_date` 作固定 seed block bootstrap。成熟度與 validated coverage 分開呈現。
 - `min_sample_count` 逐窗口計算 distinct signal / candidate；training 固定至少 20 個日期 blocks、holdout 至少 5 個日期 blocks，避免同日股票或同一訊號的三個窗口被誤當獨立樣本。
-- Replay coverage 必須整體與每個入選月份均達 90%，否則 candidate eligibility 固定為 `replay_coverage_below_threshold`。
+- Replay coverage 必須整體與每個入選月份均達 90%，否則 candidate eligibility 固定為 `replay_coverage_below_threshold`；一般分析分母只涵蓋 optimizer scope 的 `short_term` / `mid_term`，刻意排除的策略不算 replay 缺漏。
 - 舊資料沒有正式 replay input 時標記 `replay_input_incomplete`，不得根據輸出猜回輸入。
+- Final `/analyze` cache 保存去識別化精簡 replay payload，讓 capture 暫時失敗時可由後續 final cache hit 冪等補寫；無 payload 的舊 cache 維持跳過。
 - Daily Radar 第一版只測試 ranking component weights 與 secondary threshold；一般分析第一版只測試正向 sentiment / institutional / technical / resonance points。風險扣分、負向 evidence、rule scores、prefilter 與 strategy generator 規則全部鎖定。
 - 每個 candidate config 只改一個參數、一個 step；報表只輸出 `auto_change_eligible`，不直接修改 production、建立 PR、merge 或 deploy。
 - 加密 artifact retention 為 30 天；每月需下載保存，權重審查可在累積六個成熟月份後進行。

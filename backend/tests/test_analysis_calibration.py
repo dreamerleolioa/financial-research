@@ -355,6 +355,76 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     assert candidate["coverage"]["holdout_block_count"] == 1
 
 
+def test_general_monthly_replay_coverage_uses_only_optimizer_scope_strategies() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        for month in range(1, 7):
+            for strategy_index, strategy_type in enumerate(
+                ("short_term", "defensive_wait"),
+            ):
+                result = deepcopy(_analysis_result())
+                result["strategy_type"] = strategy_type
+                sample = capture_general_analysis_calibration_sample(
+                    session,
+                    symbol=f"{month + 2}{strategy_index}00.TW",
+                    record_date=date(2026, month, 5),
+                    result=result,
+                    is_final=True,
+                )
+                assert sample is not None
+                session.flush()
+                for window in (5, 10, 20):
+                    session.add(
+                        AnalysisForwardValidationResult(
+                            sample_id=sample.id,
+                            window_days=window,
+                            validation_version="general-analysis-forward-validation-v1",
+                            status="validated",
+                            signal_date=sample.record_date,
+                            target_date=date(2026, month, min(25, 5 + window)),
+                            benchmark_symbol="TAIEX",
+                            outcome={
+                                "forward_return_pct": float(month),
+                                "excess_return_vs_benchmark_pct": float(month),
+                                "max_adverse_excursion_pct": -1.0,
+                                "hit_above_threshold": True,
+                            },
+                            skip_reason=None,
+                        )
+                    )
+        session.commit()
+
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=6,
+            min_sample_count=1,
+        )
+
+    coverage = report["coverage"]
+    assert coverage["all_selected_validation_rows"] == 36
+    assert coverage["selected_validation_rows"] == 18
+    assert coverage["optimizer_scope_validation_rows"] == 18
+    assert coverage["selected_samples"] == 6
+    assert coverage["replay_eligible_samples"] == 6
+    assert coverage["replay_coverage"] == 1.0
+    assert coverage["meets_threshold"] is True
+    assert coverage["exclusion_reasons"] == {
+        "strategy_type_excluded:defensive_wait": 6,
+    }
+    assert all(
+        candidate["eligibility_reason"] != "replay_coverage_below_threshold"
+        for candidate in report["candidate_configs"]
+    )
+
+
 def test_governance_counts_signals_and_dates_instead_of_validation_rows() -> None:
     rows = [
         {

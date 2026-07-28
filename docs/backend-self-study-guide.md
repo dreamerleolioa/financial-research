@@ -264,7 +264,7 @@ Daily Radar 不用 LLM 選股，不用 LLM 排名。LLM 未來若加入，只能
 - `.github/workflows/analysis-forward-validation.yml`
 - `.github/workflows/monthly-analysis-calibration.yml`
 
-一般分析 calibration 第一版只接受 `.TW` / `.TWO` 的 final `/analyze` 樣本，避免非台股被固定拿 TAIEX 比較。月報的 `min_sample_count` 不是 validation row 數，而是每個 5 / 10 / 20 日窗口的 distinct sample 數；同一訊號的三個窗口不會算成三個獨立訊號。Training / holdout 另檢查 distinct 日期 blocks，且 replay coverage 必須整體與逐月達標。
+一般分析 calibration 第一版只接受 `.TW` / `.TWO` 的 final `/analyze` 樣本，避免非台股被固定拿 TAIEX 比較。月報的 `min_sample_count` 不是 validation row 數，而是每個 5 / 10 / 20 日窗口的 distinct sample 數；同一訊號的三個窗口不會算成三個獨立訊號。Training / holdout 另檢查 distinct 日期 blocks，且 replay coverage 必須整體與逐月達標；其分母只包含 optimizer scope 的 `short_term` / `mid_term`。Final cache 保存精簡 replay payload，首次 capture 失敗後可由後續 cache hit 冪等重試，但舊 cache 缺少正式 payload 時不會猜測補值。
 
 月報 artifact 在 GitHub Actions 只保留 30 天。每月下載、解密並自行封存；不需要每月改權重，可等六個成熟月份形成完整 training / holdout 證據後再人工審查。
 
