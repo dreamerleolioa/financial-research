@@ -3,6 +3,8 @@ import uuid
 
 from sqlalchemy import CheckConstraint, UniqueConstraint
 from ai_stock_sentinel.db.models import (
+    AnalysisCalibrationSample,
+    AnalysisForwardValidationResult,
     DailyAnalysisLog,
     DailyRadarCandidate,
     DailyRadarPreparedRun,
@@ -35,6 +37,46 @@ from sqlalchemy.dialects.postgresql import JSONB
 def test_user_table_exists_in_base():
     """users 表應在 Base.metadata 中。"""
     assert "users" in Base.metadata.tables
+
+
+def test_analysis_calibration_models_are_append_only_and_window_versioned() -> None:
+    sample_columns = {column.name for column in AnalysisCalibrationSample.__table__.columns}
+    result_columns = {column.name for column in AnalysisForwardValidationResult.__table__.columns}
+    sample_constraints = {
+        constraint.name
+        for constraint in AnalysisCalibrationSample.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    result_constraints = {
+        constraint.name
+        for constraint in AnalysisForwardValidationResult.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert {
+        "symbol",
+        "record_date",
+        "analysis_type",
+        "market",
+        "benchmark_symbol",
+        "strategy_version",
+        "confidence_config_version",
+        "input_hash",
+        "replay_input",
+        "output_snapshot",
+    } <= sample_columns
+    assert {
+        "sample_id",
+        "window_days",
+        "validation_version",
+        "status",
+        "signal_date",
+        "target_date",
+        "outcome",
+        "skip_reason",
+    } <= result_columns
+    assert "uq_analysis_calibration_sample_identity" in sample_constraints
+    assert "uq_analysis_forward_validation_sample_window_version" in result_constraints
 
 
 def test_user_portfolio_model_columns():

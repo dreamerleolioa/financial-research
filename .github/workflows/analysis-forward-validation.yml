@@ -1,0 +1,60 @@
+name: General analysis forward validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      as_of_date:
+        description: Optional YYYY-MM-DD validation cutoff
+        required: false
+        default: ""
+        type: string
+  schedule:
+    # GitHub cron uses UTC. Taiwan time = UTC+8.
+    # 台灣時間週一至週五 23:55；驗證一般分析已成熟窗口。
+    - cron: "55 15 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  general-analysis:
+    name: Validate general analysis 5/10/20-day windows
+    runs-on: ubuntu-latest
+    env:
+      CALIBRATION_API_BASE_URL: ${{ secrets.DAILY_RADAR_API_BASE_URL }}
+      CALIBRATION_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+      VALIDATION_AS_OF_DATE: ${{ inputs.as_of_date || '' }}
+    steps:
+      - name: Validate secrets
+        run: |
+          test -n "${CALIBRATION_API_BASE_URL}"
+          test -n "${CALIBRATION_INTERNAL_TOKEN}"
+
+      - name: Run due general-analysis validation
+        run: |
+          set -euo pipefail
+          payload="$(jq -n \
+            --arg as_of_date "${VALIDATION_AS_OF_DATE}" \
+            '{
+              mode: "due",
+              windows: [5, 10, 20],
+              benchmark_symbol: "TAIEX"
+            } + (if $as_of_date == "" then {} else {as_of_date: $as_of_date} end)')"
+          response_file="$(mktemp)"
+          curl --fail-with-body --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "${payload}" \
+            "${CALIBRATION_API_BASE_URL%/}/internal/analysis-calibration/forward-validation/run" \
+            > "${response_file}"
+          jq '{
+                status,
+                mode,
+                as_of_date,
+                sample_count,
+                records_written,
+                validated_count,
+                skipped_count
+              }' "${response_file}"
+          jq -e '.status == "completed" and .skipped_count == 0' "${response_file}" > /dev/null

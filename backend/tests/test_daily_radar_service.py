@@ -226,7 +226,7 @@ def test_run_daily_radar_persists_relative_strength_version_and_replayable_evide
     relative_strength = candidate.score_breakdown["relative_strength"]
     evidence = candidate.input_snapshot["evidence"][0]
 
-    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.2"
     assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.1c"
     assert relative_strength["benchmark_symbol"] == "TAIEX"
     assert relative_strength["lookback_days"] == 20

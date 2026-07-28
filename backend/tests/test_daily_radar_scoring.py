@@ -341,9 +341,9 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["risk_penalties"] == []
     assert result["data_dates"]["market_index"] == "2026-05-29"
     assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
-    assert result["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert result["scoring_version"] == "daily-radar-scoring-v2.2"
     assert result["rule_version"] == "daily-radar-rules-v2.1c"
-    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
+    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.2"
     assert breakdown["rule_version"] == "daily-radar-rules-v2.1c"
 
 
@@ -420,9 +420,12 @@ def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_
     assert result["data_dates"]["relative_strength"] == "2026-05-29"
     assert result["input_snapshot"]["relative_strength"] == relative_strength
     assert result["input_snapshot"]["versions"] == {
-        "scoring_version": "daily-radar-scoring-v2.1c",
+        "scoring_version": "daily-radar-scoring-v2.2",
         "rule_version": "daily-radar-rules-v2.1c",
+        "config_version": "daily-radar-scoring-config-v1",
     }
+    assert result["input_snapshot"]["replay_input"]["schema_version"] == "daily-radar-replay-input-v1"
+    assert result["input_snapshot"]["replay_input"]["baseline_config"]["primary_bucket_weight"] == 0.8
     assert evidence["evidence_type"] == "relative_strength"
     assert evidence["source"]["domain"] == "daily_trigger_signal"
     assert evidence["source"]["provider"] == "deterministic_relative_strength"

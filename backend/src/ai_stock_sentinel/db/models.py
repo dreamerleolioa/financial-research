@@ -413,6 +413,79 @@ class StockAnalysisCache(Base):
     updated_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class AnalysisCalibrationSample(Base):
+    __tablename__ = "analysis_calibration_samples"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_type",
+            "market",
+            "symbol",
+            "record_date",
+            "strategy_version",
+            "input_hash",
+            name="uq_analysis_calibration_sample_identity",
+        ),
+        Index("idx_analysis_calibration_samples_record_date", "record_date"),
+        Index("idx_analysis_calibration_samples_market", "market"),
+        Index("idx_analysis_calibration_samples_symbol", "symbol"),
+        Index("idx_analysis_calibration_samples_strategy_version", "strategy_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    record_date: Mapped[date] = mapped_column(Date, nullable=False)
+    analysis_type: Mapped[str] = mapped_column(String(20), nullable=False, default="general", server_default="general")
+    market: Mapped[str] = mapped_column(String(20), nullable=False, default="TW", server_default="TW")
+    benchmark_symbol: Mapped[str] = mapped_column(String(40), nullable=False, default="TAIEX", server_default="TAIEX")
+    strategy_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    confidence_config_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    replay_input: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    output_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    signal_confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    strategy_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    conviction_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    action_tag: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    analysis_is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    forward_validation_results: Mapped[list["AnalysisForwardValidationResult"]] = relationship(
+        back_populates="sample",
+        cascade="all, delete-orphan",
+    )
+
+
+class AnalysisForwardValidationResult(Base):
+    __tablename__ = "analysis_forward_validation_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "sample_id",
+            "window_days",
+            "validation_version",
+            name="uq_analysis_forward_validation_sample_window_version",
+        ),
+        Index("idx_analysis_forward_validation_sample_id", "sample_id"),
+        Index("idx_analysis_forward_validation_window_days", "window_days"),
+        Index("idx_analysis_forward_validation_status", "status"),
+        Index("idx_analysis_forward_validation_version", "validation_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sample_id: Mapped[int] = mapped_column(ForeignKey("analysis_calibration_samples.id"), nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    signal_date: Mapped[date] = mapped_column(Date, nullable=False)
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    outcome: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    skip_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    sample: Mapped["AnalysisCalibrationSample"] = relationship(back_populates="forward_validation_results")
+
+
 class Phase1AvwapSnapshot(Base):
     __tablename__ = "phase1_avwap_snapshots"
     __table_args__ = (

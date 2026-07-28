@@ -1331,6 +1331,10 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     """When cache has full_result, /analyze should return all fields."""
     from unittest.mock import MagicMock
     import ai_stock_sentinel.analysis.router as api_module
+    from ai_stock_sentinel.analysis.calibration import (
+        GENERAL_REPLAY_CACHE_KEY,
+        build_general_analysis_replay_input,
+    )
     from ai_stock_sentinel.db.session import get_db
 
     full = {
@@ -1344,6 +1348,15 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
         "intraday_disclaimer": None,
         "errors": [],
     }
+    full[GENERAL_REPLAY_CACHE_KEY] = build_general_analysis_replay_input(
+        {
+            "cleaned_news": {"sentiment_label": "positive", "sentiment_strength": 1.0},
+            "institutional_flow": {"flow_label": "institutional_accumulation"},
+            "technical_signal": "bullish",
+            "cleaned_news_quality": {"quality_flags": []},
+            "snapshot": {"current_price": 1865.0},
+        }
+    )
 
     from ai_stock_sentinel.config import STRATEGY_VERSION
 
@@ -1358,8 +1371,16 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     cache.indicators = {}
     cache.analysis_is_final = True
     cache.strategy_version = STRATEGY_VERSION
+    cache.record_date = api_module._today_taipei()
+
+    captured_calibration: dict[str, object] = {}
+
+    def fake_capture(db, **kwargs):
+        captured_calibration["db"] = db
+        captured_calibration.update(kwargs)
 
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol, analysis_type="general": cache)
+    monkeypatch.setattr(api_module, "capture_general_analysis_calibration_sample", fake_capture)
     monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: "台積電" if symbol == "2330.TW" else None)
@@ -1381,6 +1402,46 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
     assert body["snapshot"]["symbol"] == "2330.TW"
     assert body["symbol_name"] == "台積電"
     assert body["snapshot"]["name"] == "台積電"
+    assert GENERAL_REPLAY_CACHE_KEY not in body
+    assert captured_calibration["symbol"] == "2330.TW"
+    assert captured_calibration["record_date"] == cache.record_date
+    assert captured_calibration["replay_input"] == full[GENERAL_REPLAY_CACHE_KEY]
+    captured_calibration["db"].commit.assert_called()
+
+
+def test_final_cache_calibration_capture_retries_after_transient_failure(monkeypatch) -> None:
+    import ai_stock_sentinel.analysis.router as api_module
+
+    replay_input = {"schema_version": "general-analysis-replay-input-v1"}
+    cache = MagicMock()
+    cache.symbol = "2330.TW"
+    cache.record_date = api_module._today_taipei()
+    cache.strategy_version = "strategy-v1"
+    cache.full_result = {
+        "analysis": "完整分析內容",
+        api_module.GENERAL_REPLAY_CACHE_KEY: replay_input,
+    }
+    fake_db = MagicMock()
+    attempts = 0
+
+    def transient_capture(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary database failure")
+
+    monkeypatch.setattr(
+        api_module,
+        "capture_general_analysis_calibration_sample",
+        transient_capture,
+    )
+
+    api_module._retry_general_analysis_calibration_capture_from_cache(fake_db, cache)
+    api_module._retry_general_analysis_calibration_capture_from_cache(fake_db, cache)
+
+    assert attempts == 2
+    fake_db.rollback.assert_called_once()
+    fake_db.commit.assert_called_once()
 
 
 def test_cache_hit_replaces_symbol_placeholder_name(monkeypatch) -> None:
@@ -1476,6 +1537,12 @@ def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.min)
+    monkeypatch.setattr(
+        api_module,
+        "capture_general_analysis_calibration_sample",
+        lambda *a, **kw: None,
+    )
 
     fake_db = MagicMock()
     api.app.dependency_overrides[get_db] = lambda: fake_db
@@ -1487,6 +1554,9 @@ def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
     full = captured["data"]["full_result"]
     assert full.get("analysis") == "分析結果"
     assert full.get("snapshot", {}).get("symbol") == "2330.TW"
+    assert full[api_module.GENERAL_REPLAY_CACHE_KEY]["schema_version"] == (
+        "general-analysis-replay-input-v1"
+    )
 
 
 def test_analyze_general_endpoint_reads_only_general_cache(monkeypatch) -> None:

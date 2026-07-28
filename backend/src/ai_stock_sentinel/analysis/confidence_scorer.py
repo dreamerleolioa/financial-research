@@ -1,9 +1,29 @@
 """純 rule-based 信心分數計算器。不呼叫 LLM。"""
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+
 from ai_stock_sentinel.analysis.metrics import ma as calc_ma
 
 BASE_CONFIDENCE = 50
+CONFIDENCE_CONFIG_VERSION = "general-analysis-confidence-config-v1"
+
+
+@dataclass(frozen=True)
+class ConfidenceScoringConfig:
+    positive_sentiment_points: int = 5
+    negative_sentiment_points: int = -5
+    institutional_accumulation_points: int = 7
+    distribution_penalty: int = -10
+    retail_chasing_penalty: int = -8
+    bullish_technical_points: int = 5
+    bearish_technical_penalty: int = -5
+    three_resonance_bonus: int = 3
+    bullish_distribution_penalty: int = -7
+    date_unknown_penalty: int = -3
+
+    def to_dict(self) -> dict[str, int]:
+        return asdict(self)
 
 
 def derive_technical_score(
@@ -168,42 +188,13 @@ def _technical_score_from_profile(technical_profile: dict | None) -> int | None:
         return None
 
 
-# Sentiment 分數對照
-_SENTIMENT_SCORES = {
-    "positive": +5,
-    "negative": -5,
-    "neutral": 0,
-}
-
-# Inst flow 分數對照
-_INST_FLOW_SCORES = {
-    "institutional_accumulation": +7,
-    "distribution": -10,
-    "retail_chasing": -8,
-    "neutral": 0,
-    "unknown": 0,  # 資料缺失時不貢獻分數，亦不觸發特殊情境
-}
-
-# Technical signal 分數對照
-_TECH_SIGNAL_SCORES = {
-    "bullish": +5,
-    "bearish": -5,
-    "sideways": 0,
-}
-
-# 三維共振 bonus
-_THREE_RESONANCE_BONUS = +3
-
-# 利多出貨 penalty（positive + distribution 的額外懲罰）
-_BULLISH_DISTRIBUTION_PENALTY = -7
-
-
 def adjust_confidence_by_divergence(
     base_score: int,
     news_sentiment: str,    # "positive" | "negative" | "neutral"
     inst_flow: str,         # "institutional_accumulation" | "distribution" | "retail_chasing" | "neutral"
     technical_signal: str,  # "bullish" | "bearish" | "sideways"
     sentiment_strength: float = 1.0,
+    config: ConfidenceScoringConfig | None = None,
 ) -> tuple[int, str]:
     """多維加權模型。回傳 (adjusted_score, cross_validation_note)。
 
@@ -211,9 +202,27 @@ def adjust_confidence_by_divergence(
     - 三維共振（positive + institutional_accumulation + bullish）→ 額外 +3
     - 利多出貨（positive + distribution）→ 額外 -7
     """
-    s = round(_SENTIMENT_SCORES.get(news_sentiment, 0) * sentiment_strength)
-    i = _INST_FLOW_SCORES.get(inst_flow, 0)
-    t = _TECH_SIGNAL_SCORES.get(technical_signal, 0)
+    active_config = config or ConfidenceScoringConfig()
+    sentiment_scores = {
+        "positive": active_config.positive_sentiment_points,
+        "negative": active_config.negative_sentiment_points,
+        "neutral": 0,
+    }
+    institutional_scores = {
+        "institutional_accumulation": active_config.institutional_accumulation_points,
+        "distribution": active_config.distribution_penalty,
+        "retail_chasing": active_config.retail_chasing_penalty,
+        "neutral": 0,
+        "unknown": 0,
+    }
+    technical_scores = {
+        "bullish": active_config.bullish_technical_points,
+        "bearish": active_config.bearish_technical_penalty,
+        "sideways": 0,
+    }
+    s = round(sentiment_scores.get(news_sentiment, 0) * sentiment_strength)
+    i = institutional_scores.get(inst_flow, 0)
+    t = technical_scores.get(technical_signal, 0)
     adjustment = s + i + t
 
     note = ""
@@ -224,12 +233,12 @@ def adjust_confidence_by_divergence(
         and inst_flow == "institutional_accumulation"
         and technical_signal == "bullish"
     ):
-        adjustment += _THREE_RESONANCE_BONUS
+        adjustment += active_config.three_resonance_bonus
         note = "三維訊號共振（利多 + 法人買超 + 技術多頭），信心度偏高"
 
     # 特殊情境：利多出貨（加額外懲罰）
     elif news_sentiment == "positive" and inst_flow == "distribution":
-        adjustment += _BULLISH_DISTRIBUTION_PENALTY
+        adjustment += active_config.bullish_distribution_penalty
         note = "警示：基本面利多但法人同步出貨，疑似趁消息出貨，建議保守觀察"
 
     # 散戶追高提示
@@ -251,6 +260,7 @@ def compute_confidence(
     technical_signal: str, # "bullish" | "bearish" | "sideways" | "unknown"
     date_unknown: bool = False,  # DATE_UNKNOWN 旗標：日期未知時額外扣 -3 分
     sentiment_strength: float = 1.0,
+    config: ConfidenceScoringConfig | None = None,
 ) -> dict[str, int | str]:
     """計算 data_confidence、signal_confidence 與 cross_validation_note。
 
@@ -282,11 +292,18 @@ def compute_confidence(
         inst_flow=inst_flow,
         technical_signal=technical_signal,
         sentiment_strength=sentiment_strength,
+        config=config,
     )
 
     # DATE_UNKNOWN 懲罰：在各維度加總後、clamp 前扣 -3（僅影響 signal_confidence）
     if date_unknown:
-        signal_confidence = max(0, min(100, signal_confidence - 3))
+        signal_confidence = max(
+            0,
+            min(
+                100,
+                signal_confidence + (config or ConfidenceScoringConfig()).date_unknown_penalty,
+            ),
+        )
 
     return {
         "data_confidence": data_confidence,

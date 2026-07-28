@@ -73,6 +73,7 @@
 | `stock_raw_data` | 以日期保存技術、籌碼、基本面 raw payload；Daily Radar 與 analysis 共用 |
 | `stock_analysis_cache` | `/analyze` 與 `/analyze/position` 的 full result cache，透過 `analysis_type` 隔離情境 |
 | `daily_analysis_log` | 每日分析歷史紀錄與 strategy trace |
+| `analysis_calibration_samples` / `analysis_forward_validation_results` | `.TW` / `.TWO` final `/analyze` 的去識別化 append-only replay sample 與 5 / 10 / 20 日 outcome；其他市場不進入 TW / TAIEX calibration cohort |
 | `daily_radar_runs` / `daily_radar_candidates` | Daily Radar run log、候選清單、score breakdown、input snapshot、matched rules |
 | `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
 | `shared_background_contexts` | weekly major holders、lending、full margin 等 market-only 背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
@@ -85,8 +86,13 @@
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
 | `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時整條 pipeline skip，provider 異常時 fail closed。開市後才分段呼叫 `/internal/daily-radar/prepare-universe`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段約隔一小時且共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期；refresh status 會寫入 prepared run，scoring 只讀已落庫 cache/snapshot，對 lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT AVWAP repair-and-rescore 補修排程，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
-| `daily-radar-rule-review.yml` | 觸發 monthly rule governance report |
+| `daily-radar.yml` / `analysis-forward-validation.yml` | 分別每日累積 Daily Radar 與一般分析已成熟 5 / 10 / 20 日驗證結果 |
+| `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
+
+Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母；final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
+
+Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sample_count`，不以 5 / 10 / 20 日 validation rows 加總；training 與 holdout 另要求最低 distinct date blocks。Validated coverage 與 replay coverage 是兩道獨立 gate，後者必須在整體及每個入選月份都達標，否則只輸出診斷，不得標記為可自動修改。
 
 ### 0.5 Shared Context 使用邊界
 

@@ -37,12 +37,21 @@ from ai_stock_sentinel.daily_radar.background_context import (
 from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
+    benchmark_requires_forward_price_refresh,
     build_forward_validation_report,
     default_due_start_date,
     due_windows_by_candidate,
+    exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs,
+    load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
+    merge_price_series,
+    symbols_requiring_forward_price_refresh,
     upsert_forward_validation_results,
+)
+from ai_stock_sentinel.calibration.price_provider import (
+    ForwardPriceProvider,
+    get_forward_price_provider,
 )
 from ai_stock_sentinel.daily_radar.rule_governance import (
     build_monthly_rule_review_report,
@@ -811,6 +820,7 @@ def update_daily_radar_chip_context_endpoint(
 def run_daily_radar_forward_validation_endpoint(
     payload: DailyRadarForwardValidationRunRequest | None = None,
     db: Session = Depends(get_db),
+    price_provider: ForwardPriceProvider = Depends(get_forward_price_provider),
 ) -> DailyRadarForwardValidationRunResponse:
     request = payload or DailyRadarForwardValidationRunRequest()
     as_of_date = request.as_of_date or _backend_today()
@@ -839,6 +849,14 @@ def run_daily_radar_forward_validation_endpoint(
         start_date=price_start_date,
         end_date=as_of_date,
     )
+    benchmark_prices = price_series.get(request.benchmark_symbol, [])
+    if not benchmark_prices:
+        benchmark_prices = load_benchmark_prices_from_prepared_market_context(
+            db,
+            market=request.market,
+            benchmark_symbol=request.benchmark_symbol,
+            as_of_date=as_of_date,
+        )
     windows_by_candidate = None
     if request.mode == "due":
         windows_by_candidate = due_windows_by_candidate(
@@ -846,12 +864,37 @@ def run_daily_radar_forward_validation_endpoint(
             as_of_date=as_of_date,
             windows=request.windows,
             price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
-            benchmark_prices=price_series.get(request.benchmark_symbol, []),
+            benchmark_prices=benchmark_prices,
         )
+        windows_by_candidate = exclude_persisted_daily_radar_windows(
+            db,
+            windows_by_candidate,
+        )
+        refresh_symbols = symbols_requiring_forward_price_refresh(
+            candidates,
+            windows_by_candidate=windows_by_candidate,
+            price_series_by_symbol=price_series,
+            as_of_date=as_of_date,
+        )
+        if benchmark_requires_forward_price_refresh(
+            candidates,
+            windows_by_candidate=windows_by_candidate,
+            benchmark_prices=benchmark_prices,
+            as_of_date=as_of_date,
+        ):
+            refresh_symbols = sorted({*refresh_symbols, request.benchmark_symbol})
+        if refresh_symbols:
+            fetched_prices = price_provider.fetch(
+                refresh_symbols,
+                start_date=price_start_date,
+                end_date=as_of_date,
+            )
+            price_series = merge_price_series(price_series, fetched_prices)
+            benchmark_prices = price_series.get(request.benchmark_symbol, benchmark_prices)
     evaluation = build_forward_validation_report(
         candidates,
         price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
-        benchmark_prices=price_series.get(request.benchmark_symbol, []),
+        benchmark_prices=benchmark_prices,
         market=request.market,
         sample_source="production_db",
         as_of_date=as_of_date,
@@ -890,6 +933,8 @@ def run_daily_radar_monthly_rule_review_endpoint(
         month=payload.month,
         validation_version=payload.validation_version,
         min_sample_count=payload.min_sample_count,
+        min_validated_coverage=payload.min_validated_coverage,
+        min_replay_coverage=payload.min_replay_coverage,
     )
     return DailyRadarMonthlyRuleReviewResponse(
         status="completed",

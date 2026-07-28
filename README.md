@@ -163,7 +163,8 @@ frontend/
 		deploy.yml                         # Backend tests + GitHub Pages frontend deploy
 		daily-radar.yml                    # Daily Radar 內部排程
 		daily-radar-chip-context.yml       # Shared background context 更新
-		daily-radar-rule-review.yml        # Monthly rule governance artifact
+		analysis-forward-validation.yml    # general analysis 每日驗證
+		monthly-analysis-calibration.yml   # 雙軌月度 calibration artifact
 		investment-discipline-release-gate.yml
 docs/
 	backend-self-study-guide.md
@@ -241,8 +242,9 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | 類型     | 名稱                         | 用途                                              |
 | -------- | ---------------------------- | ------------------------------------------------- |
 | Secret   | `ZEABUR_BACKEND_URL`         | Daily Radar workflow 呼叫的 Zeabur 後端 URL       |
-| Secret   | `DAILY_RADAR_API_BASE_URL`   | Monthly rule review workflow 呼叫的後端 URL       |
+| Secret   | `DAILY_RADAR_API_BASE_URL`   | 一般分析 forward validation 與月度 calibration workflow 呼叫的後端 URL |
 | Secret   | `DAILY_RADAR_INTERNAL_TOKEN` | Daily Radar workflow 呼叫內部 API 的 Bearer token |
+| Secret   | `CALIBRATION_REPORT_PASSPHRASE` | 月度 production calibration artifact 的 AES-256 對稱加密密碼 |
 | Variable | `VITE_API_URL`               | 前端 build 時注入後端 URL                         |
 | Variable | `VITE_GOOGLE_CLIENT_ID`      | 前端 Google OAuth client ID                       |
 
@@ -342,7 +344,17 @@ make run-api
 - `POST /internal/daily-radar/run`：保留一鍵手動相容入口；正式排程使用上述分段 workflow
 - `POST /internal/daily-radar/chip-context/update`：更新 shared background context cache，背景資料包含 weekly major holders、lending 與 full margin
 - `POST /internal/daily-radar/forward-validation/run`：執行 Daily Radar 成熟候選 forward validation，寫入可回放 validation result
-- `POST /internal/daily-radar/rule-review/monthly`：以 production validation result 產生月度 rule governance 報告
+- `POST /internal/analysis-calibration/forward-validation/run`：執行 final `/analyze` 樣本的成熟 5 / 10 / 20 日驗證
+- `POST /internal/daily-radar/rule-review/monthly`：產生 Daily Radar 六個成熟月份 training / holdout 調權報表
+- `POST /internal/analysis-calibration/monthly`：產生一般分析 confidence 六個成熟月份 training / holdout 調權報表
+
+Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
+
+兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；validation rows 不會被當成獨立樣本重複計數。一般分析 replay coverage 的分母只包含 optimizer scope 內的 `short_term`／`mid_term`，`defensive_wait` 等刻意排除策略仍列入 exclusion diagnostics，但不會被誤算成 replay 缺漏。
+
+Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次 calibration capture 暫時失敗，後續 final cache hit 會以同一 payload 冪等補寫。舊 cache 沒有正式 replay payload 時維持跳過，不會從輸出猜測輸入。
+
+月報只上傳 AES-256 加密的 Actions artifact，內含兩軌 JSON、Markdown Actions 與 manifest；不會寫入 public issue 或 main branch，也不會直接修改權重。Artifact 只保留 30 天，因此每月產生後需在到期前下載並自行保存；可每六個成熟月份再提交給 Codex 做一次人工調權審查。下載後用 `gpg --decrypt --output analysis-calibration.tar.gz <artifact>.tar.gz.gpg` 解密，再以 `tar -xzf analysis-calibration.tar.gz` 展開。
 - `GET /daily-radar/latest`：讀取最新 Daily Radar 候選清單
 - `GET /daily-radar/{run_date}`：讀取指定日期 Daily Radar 候選清單
 - `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史

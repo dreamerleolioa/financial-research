@@ -59,7 +59,7 @@
 | 編號  | 需求                                                                                                  |
 | ----- | ----------------------------------------------------------------------------------------------------- |
 | P0-F1 | `config.py` 定義 `STRATEGY_VERSION = "1.0.0"`                                                         |
-| P0-F2 | `DailyAnalysisLog` 與 `StockAnalysisCache` 具 nullable `strategy_version VARCHAR(20)` 欄位            |
+| P0-F2 | `DailyAnalysisLog` 與 `StockAnalysisCache` 具 nullable `strategy_version VARCHAR(20)` 欄位；正式校準樣本另寫入 append-only `analysis_calibration_samples` |
 | P0-F3 | 每次分析寫入 DB 時同步寫入目前 `STRATEGY_VERSION`；舊資料不回填                                       |
 | P0-F4 | Alembic migration 支援 upgrade / downgrade                                                            |
 | P0-F5 | `institutional_flow/router.py`、`yfinance_client.py`、`rss_news_client.py` 成功/失敗路徑輸出 JSON log |
@@ -70,7 +70,7 @@
 
 | 指標     | 定義                                                                                         |
 | -------- | -------------------------------------------------------------------------------------------- |
-| 樣本來源 | `DailyAnalysisLog.strategy_type IN ('short_term', 'mid_term')` 且 `analysis_is_final = TRUE` |
+| 樣本來源 | append-only `analysis_calibration_samples`，僅收錄 `/analyze`、`strategy_type IN ('short_term', 'mid_term')` 且 `analysis_is_final = TRUE` |
 | 排除樣本 | `strategy_type = 'defensive_wait'`                                                           |
 | 持有週期 | 5 / 10 / 20 交易日                                                                           |
 | 勝率     | 訊號日起第 N 個交易日收盤相對訊號日收盤漲幅 > +3%                                            |
@@ -99,7 +99,7 @@
 | P0-C1 | 分析 confidence 分桶 `<60`、`60-70`、`70-80`、`80+` 的 5 / 10 日勝率與平均報酬                                                 |
 | P0-C2 | 若分桶勝率不單調遞增，輸出異常分桶警告                                                                                         |
 | P0-C3 | `scripts/analyze_confidence_breakdown.py` 依 `inst_flow`、`sentiment_label`、`technical_signal` 分組輸出 n、5 日勝率、平均報酬 |
-| P0-C4 | 若需調權，先產出 `docs/research/confidence-calibration-proposals/YYYY-MM-DD.md`，人工審核後才可改 `confidence_scorer.py`       |
+| P0-C4 | 若需調權，月度 workflow 先產出 AES-256 加密的 GitHub Actions artifact，人工下載與審核後才可改 `ConfidenceScoringConfig`；production report 不寫入 public issue 或 main branch |
 | P0-C5 | 調權只改提案列出的常數，並同步 bump `STRATEGY_VERSION` minor version                                                           |
 | P0-C6 | 調權後重跑完整回測；高分桶勝率需 >= baseline 同分桶勝率，否則文件說明原因                                                      |
 | P0-C7 | `docs/development-execution-playbook.md` 保留信心分數調權流程 SOP                                                              |
@@ -126,6 +126,48 @@
 | P0-AC5 | log 可 grep 到 `provider_success` / `provider_failure` JSON 行             |
 | P0-AC6 | 新倉回測輸出 strategy / conviction / evidence 三組分箱與 Pearson 分析      |
 | P0-AC7 | 信心分桶報告已產出；若調權，提案、版本、post-calibration 回測皆存在        |
+
+### 3.9 每日驗證與月度雙軌治理
+
+- `.github/workflows/daily-radar.yml` 在 OHLCV／market context 後呼叫 Daily Radar due validation；`.github/workflows/analysis-forward-validation.yml` 每日呼叫一般分析 due validation。任一軌失敗會讓對應 workflow 失敗，但不回滾已發布的 Daily Radar 或已完成的一般分析。
+- 一般分析第一版只將 `.TW` / `.TWO` final `/analyze` 寫入 `analysis_calibration_samples`，並以 `analysis_forward_validation_results` 保存去識別化 replay input、5 / 10 / 20 交易日 outcome 與 skip reason；其他市場不進 TW / TAIEX cohort，也不得保存 user id、使用者筆記、新聞全文或 LLM 長文。
+- `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日產出單一 AES-256 加密 Actions artifact，內含 Daily Radar 與一般分析 JSON、Markdown Actions 及 SHA-256 manifest。
+- 月報使用最近六個 20 日窗口已完整評估月份；前五個為 training，最新一個為 holdout，並以 `run_date` / `record_date` 作固定 seed block bootstrap。成熟度與 validated coverage 分開呈現。
+- `min_sample_count` 逐窗口計算 distinct signal / candidate；training 固定至少 20 個日期 blocks、holdout 至少 5 個日期 blocks，避免同日股票或同一訊號的三個窗口被誤當獨立樣本。
+- Replay coverage 必須整體與每個入選月份均達 90%，否則 candidate eligibility 固定為 `replay_coverage_below_threshold`；一般分析分母只涵蓋 optimizer scope 的 `short_term` / `mid_term`，刻意排除的策略不算 replay 缺漏。
+- 舊資料沒有正式 replay input 時標記 `replay_input_incomplete`，不得根據輸出猜回輸入。
+- Final `/analyze` cache 保存去識別化精簡 replay payload，讓 capture 暫時失敗時可由後續 final cache hit 冪等補寫；無 payload 的舊 cache 維持跳過。
+- Daily Radar 第一版只測試 ranking component weights 與 secondary threshold；一般分析第一版只測試正向 sentiment / institutional / technical / resonance points。風險扣分、負向 evidence、rule scores、prefilter 與 strategy generator 規則全部鎖定。
+- 每個 candidate config 只改一個參數、一個 step；報表只輸出 `auto_change_eligible`，不直接修改 production、建立 PR、merge 或 deploy。
+- 加密 artifact retention 為 30 天；每月需下載保存，權重審查可在累積六個成熟月份後進行。
+
+### 3.10 校準可擴充性
+
+狀態：**Completed**。P0-CAL-S1 與 P0-CAL-S2 已提前完成；未改變 scoring、window maturity、API response schema、validation version 或自動調權安全邊界。
+
+| 順序 | 編號 | 狀態 | 落地範圍 |
+| ---- | ---- | ---- | -------- |
+| 1 | P0-CAL-S1 | Completed | Daily Radar 與一般分析月報先以 SQL monthly aggregation 計算 watermark 並選出 cohort，再以明確月份 predicate 只載入最近六個成熟月份的 optimizer replay / validation detail；Daily Radar requested-month diagnostics 使用獨立單月 bounded query |
+| 2 | P0-CAL-S2 | Completed | `ai_stock_sentinel.calibration.forward_validation` 統一 due-window policy、forward outcome evaluation、price-series normalization 與 benchmark completeness policy；`calibration.repository` 統一共用 price source，兩軌各自提供 feature adapter |
+
+#### P0-CAL-S1 驗收條件
+
+- 同一份 frozen production-like fixture 的 cohort months、watermark、coverage、candidate eligibility 與目前輸出完全一致。
+- SQL trace 可證明 detailed replay query 具有所選 cohort 的日期上下界，不再從 2000 年起載入所有 sample / validation rows。
+- 空月份、少於六個成熟月份、skipped retry、同日 rerun 與 `replay_input_incomplete` 行為不變。
+- 提供 query-count 與 wall-clock benchmark；新路徑不得比 baseline 增加 query 次數，且大量歷史資料 fixture 的載入 rows 必須受六個 cohort months 限制。
+- 不需要 schema migration；rollback 只需還原 query path。
+
+#### P0-CAL-S2 驗收條件
+
+- `analysis.calibration` 與 general calibration router 不再 import `daily_radar.forward_validation` 或 `daily_radar.auth`。
+- Shared core 不得 import Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer；feature-specific snapshot 與報表維度由 adapter 注入。
+- Daily Radar 與一般分析在相同 fixture 上的 target date、forward return、benchmark excess、MFE / MAE、hit、skip reason 與 due-window 結果保持 byte-for-byte 等價。
+- 既有四個 internal calibration endpoints、request / response schema、validation version、workflow 與 artifact 格式不變。
+- Provider failure 仍讓 workflow 失敗；既有 `validated` window 保持 terminal，retryable `skipped` window 仍會於後續 due run 重試。
+- 不需要資料搬移；rollback 可逐 track 將 adapter 指回既有 evaluator。
+
+驗證已加入 19 個歷史月份的 production-like fixture：每軌月報固定三個 SELECT（requested month detail、monthly watermark aggregation、selected cohort detail），optimizer detail 維持六個月份；同一價格 fixture 亦驗證兩軌 target date、forward / benchmark excess、MFE / MAE、hit 與 skip behavior 等價。若未來 benchmark 顯示 replay CPU 而非資料載入成為主要耗時，再另開 replay cache / vectorization 計劃。
 
 ---
 

@@ -4,6 +4,7 @@ import json
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from ai_stock_sentinel.daily_radar.rule_governance import (
     DEFAULT_ABLATION_GROUPS,
     build_ablation_report,
     build_monthly_rule_review_report,
+    validation_rows_from_results,
 )
 from ai_stock_sentinel.daily_radar.rule_registry import (
     SCORING_ACTIVE_TIERS,
@@ -191,19 +193,216 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     assert manifest["rule_version"] == RULE_VERSION
     assert manifest["live_scoring_changed"] is False
     assert manifest["automated_recommendations_only"] is True
+    assert report.json_report["baseline_config"]["primary_bucket_weight"] == 0.8
+    assert report.json_report["auto_change_eligible"] is False
+    candidate_parameters = {
+        candidate["parameter"]
+        for candidate in report.json_report["candidate_configs"]
+    }
+    assert {
+        "primary_bucket_weight",
+        "cross_confirmation_weight",
+        "market_context_weight",
+        "freshness_weight",
+        "relative_strength_weight",
+        "secondary_bucket_threshold",
+    } == candidate_parameters
+    assert not candidate_parameters & {
+        "overextended_penalty",
+        "data_gap_penalty",
+        "rule_scores",
+        "prefilter_rules",
+    }
+    assert all(
+        sum(
+            value != report.json_report["baseline_config"][key]
+            for key, value in candidate["candidate_config"].items()
+        ) == 1
+        for candidate in report.json_report["candidate_configs"]
+    )
+    assert all(
+        candidate["step"] > 0
+        for candidate in report.json_report["candidate_configs"]
+        if candidate["parameter"] in {"market_context_weight", "freshness_weight"}
+    )
+    threshold_candidates = [
+        candidate
+        for candidate in report.json_report["candidate_configs"]
+        if candidate["parameter"] == "secondary_bucket_threshold"
+    ]
+    assert threshold_candidates
+    assert {
+        candidate["holdout_primary_metric"]["metric"]
+        for candidate in threshold_candidates
+    } == {"secondary_bucket_average_excess_return_pct"}
+
+
+def test_monthly_review_does_not_fall_back_to_validated_older_same_day_run() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        old_run = _add_run(session)
+        old_run.created_at = datetime(2026, 6, 1, 10, tzinfo=timezone.utc)
+        old_candidate = _add_candidate(session, old_run)
+        _add_validation_result(session, old_candidate)
+        latest_run = _add_run(session)
+        latest_run.created_at = datetime(2026, 6, 2, 1, tzinfo=timezone.utc)
+        _add_candidate(session, latest_run)
+        session.commit()
+
+        rows = validation_rows_from_results(
+            session,
+            market="TW",
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 30),
+        )
+
+    assert rows == []
+
+
+def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_months() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run_months = [
+            date(2025 + offset // 12, offset % 12 + 1, 1)
+            for offset in range(19)
+        ]
+        for index, run_date in enumerate(run_months, start=1):
+            run = _add_run(session)
+            run.run_date = run_date
+            run.created_at = datetime(
+                run_date.year,
+                run_date.month,
+                1,
+                tzinfo=timezone.utc,
+            )
+            candidate = _add_candidate(session, run)
+            candidate.symbol = f"24{index:02d}.TW"
+            candidate.data_dates = {"ohlcv": run.run_date.isoformat()}
+            for window in (5, 10, 20):
+                session.add(
+                    DailyRadarForwardValidationResult(
+                        candidate_id=candidate.id,
+                        window_days=window,
+                        validation_version="daily-radar-forward-validation-v1",
+                        status="validated",
+                        signal_date=run.run_date,
+                        target_date=date(
+                            run_date.year,
+                            run_date.month,
+                            min(25, 1 + window),
+                        ),
+                        benchmark_symbol="TAIEX",
+                        outcome={
+                            "forward_return_pct": float(index),
+                            "excess_return_vs_benchmark_pct": float(index),
+                            "max_adverse_excursion_pct": -1.0,
+                            "hit_above_threshold": True,
+                        },
+                        skip_reason=None,
+                    )
+                )
+        session.commit()
+
+    statements: list[tuple[str, object]] = []
+
+    def capture_sql(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        started_at = perf_counter()
+        with Session(engine) as session:
+            report = build_monthly_rule_review_report(
+                session,
+                market="TW",
+                year=2026,
+                month=7,
+                min_sample_count=1,
+            )
+        elapsed_seconds = perf_counter() - started_at
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
+
+    payload = report.json_report
+    assert payload["cohort"]["selected_months"] == [
+        "2026-02",
+        "2026-03",
+        "2026-04",
+        "2026-05",
+        "2026-06",
+        "2026-07",
+    ]
+    assert payload["replay_coverage"]["selected_validation_rows"] == 18
+    assert payload["replay_coverage"]["selected_samples"] == 6
+    assert payload["replay_coverage"]["coverage"] == 0.0
+    assert payload["replay_coverage"]["meets_threshold"] is False
+    assert payload["replay_coverage"]["exclusion_reasons"] == {
+        "replay_input_incomplete": 6,
+    }
+    assert all(
+        candidate["eligibility_reason"] == "replay_coverage_below_threshold"
+        for candidate in payload["candidate_configs"]
+    )
+    assert len(payload["completeness_watermarks"]) == 19
+    assert elapsed_seconds < 5.0
+    select_statements = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if statement.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(select_statements) == 3
+    assert any(
+        "GROUP BY" in statement
+        and "daily_radar_forward_validation_results" in statement
+        for statement, _parameters in select_statements
+    )
+    assert all(
+        "2000-01-01" not in str(parameters)
+        for _statement, parameters in select_statements
+    )
+    detail_statements = [
+        statement
+        for statement, _parameters in select_statements
+        if "GROUP BY" not in statement
+    ]
+    assert detail_statements
+    assert all(
+        "daily_radar_runs.run_date >= ?" in statement
+        for statement in detail_statements
+    )
 
 
 def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:
-    workflow = (ROOT.parent / ".github" / "workflows" / "daily-radar-rule-review.yml").read_text(
+    workflow = (ROOT.parent / ".github" / "workflows" / "monthly-analysis-calibration.yml").read_text(
         encoding="utf-8"
     )
 
     assert "/internal/daily-radar/rule-review/monthly" in workflow
+    assert "/internal/analysis-calibration/monthly" in workflow
     assert "${{ secrets.DAILY_RADAR_API_BASE_URL }}" in workflow
     assert "${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}" in workflow
-    assert "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" in workflow
-    assert "reports/daily-radar/monthly" in workflow
+    assert "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" in workflow
+    assert "reports/calibration/monthly" in workflow
+    assert "manifest.json" in workflow
     assert "actions/upload-artifact@v4" in workflow
+    assert "min_replay_coverage: 0.9" in workflow
+    assert "retention-days: 30" in workflow
 
 
 def _sqlite_engine():

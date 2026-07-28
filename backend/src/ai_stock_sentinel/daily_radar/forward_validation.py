@@ -4,13 +4,23 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.calibration import forward_validation as shared_forward_validation
+from ai_stock_sentinel.calibration.forward_validation import (
+    DEFAULT_BENCHMARK_SYMBOL,
+    DEFAULT_FORWARD_WINDOWS,
+    ForwardValidationAdapter,
+)
+from ai_stock_sentinel.calibration.repository import (
+    load_benchmark_prices_from_prepared_market_context as load_cached_benchmark_prices,
+    load_price_series_from_raw_data as load_shared_price_series,
+)
 from ai_stock_sentinel.daily_radar.calibration import calibration_candidates_from_fixture
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
 from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION, SCORING_VERSION
@@ -18,14 +28,11 @@ from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarForwardValidationResult,
     DailyRadarRun,
-    StockRawData,
 )
 
 
 FORWARD_VALIDATION_VERSION = "daily-radar-forward-validation-v1"
 FORWARD_VALIDATION_REPORT_VERSION = "daily-radar-forward-validation-report-v1"
-DEFAULT_FORWARD_WINDOWS = (5, 10, 20)
-DEFAULT_BENCHMARK_SYMBOL = "TAIEX"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
 
 
@@ -51,27 +58,19 @@ def build_forward_validation_report(
 ) -> ForwardValidationEvaluation:
     active_windows = _ordered_positive_values(windows)
     candidate_list = [dict(candidate) for candidate in candidates]
-    outcomes: list[dict[str, Any]] = []
-    skipped: Counter[str] = Counter()
-
-    for candidate in candidate_list:
-        candidate_windows = active_windows
-        if windows_by_candidate is not None:
-            candidate_windows = _ordered_positive_values(windows_by_candidate.get(_candidate_key(candidate), []))
-        for window_days in candidate_windows:
-            outcome = evaluate_forward_window(
-                candidate,
-                price_series=price_series_by_symbol.get(str(candidate.get("symbol"))) or [],
-                benchmark_prices=benchmark_prices,
-                window_days=window_days,
-                as_of_date=as_of_date,
-                benchmark_symbol=benchmark_symbol,
-                validation_version=validation_version,
-                hit_threshold_pct=hit_threshold_pct,
-            )
-            outcomes.append(outcome)
-            if outcome["status"] == "skipped":
-                skipped[str(outcome["skip_reason"])] += 1
+    evaluation = shared_forward_validation.evaluate_forward_validation(
+        candidate_list,
+        price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices,
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
+        as_of_date=as_of_date,
+        windows=active_windows,
+        benchmark_symbol=benchmark_symbol,
+        validation_version=validation_version,
+        hit_threshold_pct=hit_threshold_pct,
+        windows_by_candidate=windows_by_candidate,
+    )
+    outcomes = evaluation.outcomes
 
     valid_outcomes = [outcome for outcome in outcomes if outcome["status"] == "validated"]
     report = {
@@ -97,7 +96,7 @@ def build_forward_validation_report(
         "score_decile_outcomes": _grouped_outcomes(valid_outcomes, _score_decile),
         "data_freshness_outcomes": _grouped_outcomes(valid_outcomes, _data_freshness_status_from_outcome),
         "ablation_candidates": _ablation_candidates(valid_outcomes),
-        "skip_reasons": dict(sorted(skipped.items())),
+        "skip_reasons": evaluation.skipped_reasons,
         "version_manifest": {
             "scoring_version": SCORING_VERSION,
             "rule_version": RULE_VERSION,
@@ -122,71 +121,17 @@ def evaluate_forward_window(
     validation_version: str,
     hit_threshold_pct: float,
 ) -> dict[str, Any]:
-    signal_date = _parse_date(candidate.get("record_date"))
-    symbol = str(candidate.get("symbol") or "")
-    base = {
-        "candidate_id": candidate.get("candidate_id"),
-        "symbol": symbol,
-        "signal_date": signal_date.isoformat() if signal_date is not None else None,
-        "window_days": int(window_days),
-        "validation_version": validation_version,
-        "benchmark_symbol": benchmark_symbol,
-        "candidate_snapshot": _candidate_dimensions(candidate),
-    }
-    if signal_date is None:
-        return _skip(base, "signal_date_missing")
-    if as_of_date is not None and signal_date > as_of_date:
-        return _skip(base, "future_signal_date")
-    if _data_freshness_status(candidate) == "stale":
-        return _skip(base, "stale_candidate_price")
-
-    candidate_prices = _price_by_date(price_series)
-    benchmark_by_date = _price_by_date(benchmark_prices)
-    entry_price = _entry_price(candidate, candidate_prices, signal_date)
-    if entry_price is None:
-        return _skip(base, "missing_candidate_entry_price")
-
-    future_rows = _future_rows(candidate_prices, signal_date, as_of_date)
-    if len(future_rows) < window_days:
-        return _skip(base, "missing_future_price")
-    window_rows = future_rows[:window_days]
-    target_date, target_price = window_rows[-1][0], window_rows[-1][1]["close"]
-
-    benchmark_entry = _close_on(benchmark_by_date, signal_date)
-    benchmark_future_rows = _future_rows(benchmark_by_date, signal_date, as_of_date)
-    if benchmark_entry is None or len(benchmark_future_rows) < window_days:
-        return _skip(base, "missing_benchmark")
-    benchmark_target = benchmark_future_rows[window_days - 1][1]["close"]
-
-    if entry_price <= 0 or target_price <= 0 or benchmark_entry <= 0 or benchmark_target <= 0:
-        return _skip(base, "invalid_price")
-
-    highs = [row["high"] for _row_date, row in window_rows]
-    lows = [row["low"] for _row_date, row in window_rows]
-    forward_return_pct = _pct_return(entry_price, target_price)
-    benchmark_return_pct = _pct_return(benchmark_entry, benchmark_target)
-    defense_reference = _defense_reference(candidate)
-    outcome = {
-        "forward_return_pct": forward_return_pct,
-        "benchmark_return_pct": benchmark_return_pct,
-        "excess_return_vs_benchmark_pct": _round(forward_return_pct - benchmark_return_pct),
-        "max_favorable_excursion_pct": _pct_return(entry_price, max(highs)),
-        "max_adverse_excursion_pct": _pct_return(entry_price, min(lows)),
-        "close_below_defense_reference": (
-            target_price < defense_reference["value"] if defense_reference["value"] is not None else None
-        ),
-        "defense_reference": defense_reference,
-        "hit_above_threshold": forward_return_pct > hit_threshold_pct,
-        "entry_price": _round(entry_price),
-        "target_price": _round(target_price),
-        "target_date": target_date.isoformat(),
-    }
-    return base | {
-        "status": "validated",
-        "target_date": target_date.isoformat(),
-        "skip_reason": None,
-        "outcome": outcome,
-    }
+    return shared_forward_validation.evaluate_forward_window(
+        candidate,
+        price_series=price_series,
+        benchmark_prices=benchmark_prices,
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
+        window_days=window_days,
+        as_of_date=as_of_date,
+        benchmark_symbol=benchmark_symbol,
+        validation_version=validation_version,
+        hit_threshold_pct=hit_threshold_pct,
+    )
 
 
 def forward_validation_candidates_from_runs(
@@ -209,11 +154,19 @@ def forward_validation_candidates_from_runs(
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
+            DailyRadarRun.created_at.desc(),
+            DailyRadarRun.id.desc(),
             DailyRadarCandidate.observation_score.desc(),
             DailyRadarCandidate.symbol.asc(),
         )
     ).all()
-    return [_candidate_snapshot(candidate, run) for candidate, run in rows]
+    latest_run_by_date: dict[date, int] = {}
+    snapshots: list[dict[str, Any]] = []
+    for candidate, run in rows:
+        selected_run_id = latest_run_by_date.setdefault(run.run_date, run.id)
+        if run.id == selected_run_id:
+            snapshots.append(_candidate_snapshot(candidate, run))
+    return snapshots
 
 
 def load_forward_prices_from_fixture(
@@ -257,25 +210,27 @@ def load_price_series_from_raw_data(
     start_date: date,
     end_date: date,
 ) -> dict[str, list[dict[str, Any]]]:
-    ordered_symbols = sorted({str(symbol) for symbol in symbols if str(symbol)})
-    if not ordered_symbols:
-        return {}
-    rows = session.scalars(
-        select(StockRawData)
-        .where(
-            StockRawData.symbol.in_(ordered_symbols),
-            StockRawData.record_date >= start_date,
-            StockRawData.record_date <= end_date,
-            StockRawData.raw_data_is_final.is_(True),
-        )
-        .order_by(StockRawData.symbol.asc(), StockRawData.record_date.asc())
-    ).all()
-    by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        parsed = _price_row_from_raw_data(row)
-        if parsed is not None:
-            by_symbol[row.symbol].append(parsed)
-    return dict(by_symbol)
+    return load_shared_price_series(
+        session,
+        symbols=list(symbols),
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def load_benchmark_prices_from_prepared_market_context(
+    session: Session,
+    *,
+    market: str,
+    benchmark_symbol: str,
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    return load_cached_benchmark_prices(
+        session,
+        market=market,
+        benchmark_symbol=benchmark_symbol,
+        as_of_date=as_of_date,
+    )
 
 
 def upsert_forward_validation_results(
@@ -329,7 +284,7 @@ def upsert_forward_validation_results(
 
 
 def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWARD_WINDOWS)) -> date:
-    return as_of_date - timedelta(days=max_window * 3)
+    return shared_forward_validation.default_due_start_date(as_of_date, max_window)
 
 
 def due_windows_by_candidate(
@@ -340,40 +295,98 @@ def due_windows_by_candidate(
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, list[int]]:
-    active_windows = _ordered_positive_values(windows)
-    price_series = price_series_by_symbol or {}
-    benchmark_by_date = _price_by_date(benchmark_prices or [])
-    due_by_candidate: dict[str, list[int]] = {}
-    for candidate in candidates:
-        signal_date = _parse_date(candidate.get("record_date"))
-        key = _candidate_key(candidate)
-        if signal_date is None or signal_date > as_of_date or _data_freshness_status(candidate) == "stale":
-            due_by_candidate[key] = active_windows
-            continue
-        symbol = str(candidate.get("symbol") or "")
-        candidate_by_date = _price_by_date(price_series.get(symbol, []))
-        available_trading_rows = max(
-            len(_future_rows(candidate_by_date, signal_date, as_of_date)),
-            len(_future_rows(benchmark_by_date, signal_date, as_of_date)),
-        )
-        if available_trading_rows == 0 and (not candidate_by_date or not benchmark_by_date):
-            due_by_candidate[key] = active_windows
-            continue
-        due_windows = [window for window in active_windows if available_trading_rows >= window]
-        if due_windows:
-            due_by_candidate[key] = due_windows
-    return due_by_candidate
+    return shared_forward_validation.due_windows_by_candidate(
+        candidates,
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
+        as_of_date=as_of_date,
+        windows=windows,
+        price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices,
+    )
+
+
+def exclude_persisted_daily_radar_windows(
+    session: Session,
+    windows_by_candidate: Mapping[str, Sequence[int]],
+    *,
+    validation_version: str = FORWARD_VALIDATION_VERSION,
+) -> dict[str, list[int]]:
+    candidate_ids = [
+        int(key.removeprefix("id:"))
+        for key in windows_by_candidate
+        if key.startswith("id:") and key.removeprefix("id:").isdigit()
+    ]
+    if not candidate_ids:
+        return {
+            key: list(windows)
+            for key, windows in windows_by_candidate.items()
+            if windows
+        }
+    persisted = {
+        (result.candidate_id, result.window_days)
+        for result in session.scalars(
+            select(DailyRadarForwardValidationResult).where(
+                DailyRadarForwardValidationResult.candidate_id.in_(candidate_ids),
+                DailyRadarForwardValidationResult.validation_version == validation_version,
+                DailyRadarForwardValidationResult.status == "validated",
+            )
+        ).all()
+    }
+    pending: dict[str, list[int]] = {}
+    for key, windows in windows_by_candidate.items():
+        if key.startswith("id:") and key.removeprefix("id:").isdigit():
+            candidate_id = int(key.removeprefix("id:"))
+            remaining = [
+                int(window)
+                for window in windows
+                if (candidate_id, int(window)) not in persisted
+            ]
+        else:
+            remaining = [int(window) for window in windows]
+        if remaining:
+            pending[key] = remaining
+    return pending
+
+
+def symbols_requiring_forward_price_refresh(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    windows_by_candidate: Mapping[str, Sequence[int]],
+    price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    as_of_date: date,
+) -> list[str]:
+    return shared_forward_validation.symbols_requiring_forward_price_refresh(
+        candidates,
+        windows_by_candidate=windows_by_candidate,
+        price_series_by_symbol=price_series_by_symbol,
+        as_of_date=as_of_date,
+    )
+
+
+def benchmark_requires_forward_price_refresh(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    windows_by_candidate: Mapping[str, Sequence[int]],
+    benchmark_prices: Sequence[Mapping[str, Any]],
+    as_of_date: date,
+) -> bool:
+    return shared_forward_validation.benchmark_requires_forward_price_refresh(
+        candidates,
+        windows_by_candidate=windows_by_candidate,
+        benchmark_prices=benchmark_prices,
+        as_of_date=as_of_date,
+    )
+
+
+def merge_price_series(
+    existing: Mapping[str, Sequence[Mapping[str, Any]]],
+    fetched: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    return shared_forward_validation.merge_price_series(existing, fetched)
 
 
 def write_report(report: Mapping[str, Any], path: str | Path) -> None:
     Path(path).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _candidate_key(candidate: Mapping[str, Any]) -> str:
-    candidate_id = candidate.get("candidate_id")
-    if candidate_id is not None:
-        return f"id:{candidate_id}"
-    return f"{candidate.get('symbol') or ''}:{candidate.get('record_date') or ''}"
 
 
 def _sample_summary(
@@ -597,21 +610,6 @@ def _candidate_snapshot(candidate: DailyRadarCandidate, run: DailyRadarRun) -> d
     }
 
 
-def _price_row_from_raw_data(row: StockRawData) -> dict[str, Any] | None:
-    technical = _mapping(row.technical)
-    ohlcv = _mapping(technical.get("ohlcv") or technical)
-    close = _float_or_none(ohlcv.get("close"))
-    if close is None or close <= 0:
-        return None
-    return {
-        "date": row.record_date.isoformat(),
-        "open": _float_or_default(ohlcv.get("open"), close),
-        "high": _float_or_default(ohlcv.get("high"), close),
-        "low": _float_or_default(ohlcv.get("low"), close),
-        "close": close,
-    }
-
-
 def _entry_price(candidate: Mapping[str, Any], prices: Mapping[date, Mapping[str, float]], signal_date: date) -> float | None:
     snapshot_close = _float_or_none(_mapping(_mapping(candidate.get("input_snapshot")).get("ohlcv")).get("close"))
     if snapshot_close is not None and snapshot_close > 0:
@@ -626,34 +624,6 @@ def _close_on(prices: Mapping[date, Mapping[str, float]], row_date: date) -> flo
     return row.get("close")
 
 
-def _future_rows(
-    prices: Mapping[date, Mapping[str, float]],
-    signal_date: date,
-    as_of_date: date | None,
-) -> list[tuple[date, Mapping[str, float]]]:
-    return [
-        (row_date, row)
-        for row_date, row in sorted(prices.items())
-        if row_date > signal_date and (as_of_date is None or row_date <= as_of_date)
-    ]
-
-
-def _price_by_date(price_series: Sequence[Mapping[str, Any]]) -> dict[date, dict[str, float]]:
-    prices: dict[date, dict[str, float]] = {}
-    for row in price_series:
-        row_date = _parse_date(row.get("date"))
-        close = _float_or_none(row.get("close"))
-        if row_date is None or close is None or close <= 0:
-            continue
-        prices[row_date] = {
-            "open": _float_or_default(row.get("open"), close),
-            "high": _float_or_default(row.get("high"), close),
-            "low": _float_or_default(row.get("low"), close),
-            "close": close,
-        }
-    return prices
-
-
 def _defense_reference(candidate: Mapping[str, Any]) -> dict[str, Any]:
     indicators = _mapping(_mapping(candidate.get("input_snapshot")).get("indicators"))
     for source in ("support_level", "ma20", "ma60"):
@@ -661,19 +631,6 @@ def _defense_reference(candidate: Mapping[str, Any]) -> dict[str, Any]:
         if value is not None and value > 0:
             return {"source": source, "value": _round(value)}
     return {"source": None, "value": None}
-
-
-def _skip(base: Mapping[str, Any], reason: str) -> dict[str, Any]:
-    return dict(base) | {
-        "status": "skipped",
-        "target_date": None,
-        "skip_reason": reason,
-        "outcome": {},
-    }
-
-
-def _pct_return(start: float, end: float) -> float:
-    return _round(((end / start) - 1) * 100)
 
 
 def _profit_factor_like_ratio(positives: Sequence[float], negatives: Sequence[float]) -> float | None:
@@ -738,11 +695,6 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _float_or_default(value: Any, default: float) -> float:
-    parsed = _float_or_none(value)
-    return parsed if parsed is not None else default
-
-
 def _int(value: Any) -> int:
     if value is None or isinstance(value, bool):
         return 0
@@ -751,6 +703,14 @@ def _int(value: Any) -> int:
 
 def _round(value: float) -> float:
     return round(float(value), 4)
+
+
+DAILY_RADAR_FORWARD_ADAPTER = ForwardValidationAdapter(
+    candidate_snapshot=_candidate_dimensions,
+    entry_price=_entry_price,
+    defense_reference=_defense_reference,
+    freshness_status=_data_freshness_status,
+)
 
 
 __all__ = [
@@ -762,11 +722,16 @@ __all__ = [
     "build_forward_validation_report",
     "default_due_start_date",
     "due_windows_by_candidate",
+    "exclude_persisted_daily_radar_windows",
     "evaluate_forward_window",
     "forward_validation_candidates_from_runs",
     "forward_validation_fixture_inputs",
     "load_forward_prices_from_fixture",
+    "load_benchmark_prices_from_prepared_market_context",
     "load_price_series_from_raw_data",
+    "benchmark_requires_forward_price_refresh",
+    "merge_price_series",
+    "symbols_requiring_forward_price_refresh",
     "upsert_forward_validation_results",
     "write_report",
 ]

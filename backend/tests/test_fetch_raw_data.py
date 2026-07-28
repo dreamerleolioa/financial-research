@@ -42,7 +42,17 @@ def test_fetch_raw_data_rejects_wrong_key():
 
 def test_fetch_raw_data_success():
     """提供正確 API Key 時應回傳 200 含 status=ok。"""
-    with patch("ai_stock_sentinel.api.fetch_and_store_raw_data", return_value=None):
+    with (
+        patch("ai_stock_sentinel.api.fetch_and_store_raw_data", return_value=None),
+        patch("ai_stock_sentinel.api.YFinanceCrawler") as mock_crawler_cls,
+        patch("ai_stock_sentinel.api.fetch_institutional_flow", return_value={}),
+        patch("ai_stock_sentinel.api.fetch_fundamental_data", return_value={}),
+    ):
+        mock_crawler_cls.return_value.fetch_basic_snapshot.return_value = {
+            "symbol": "2330.TW",
+            "current_price": 100.0,
+            "recent_closes": [99.0, 100.0],
+        }
         import ai_stock_sentinel.api as api_module
         original_key = api_module.INTERNAL_API_KEY
         api_module.INTERNAL_API_KEY = "test-key"
