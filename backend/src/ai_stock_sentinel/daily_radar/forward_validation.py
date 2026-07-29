@@ -16,6 +16,8 @@ from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
     ForwardValidationAdapter,
+    TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
+    is_terminal_forward_validation_skip_reason,
 )
 from ai_stock_sentinel.calibration.repository import (
     load_benchmark_prices_from_prepared_market_context as load_cached_benchmark_prices,
@@ -240,6 +242,8 @@ def upsert_forward_validation_results(
     written = 0
     validated = 0
     skipped = 0
+    retryable_skipped = 0
+    terminal_skipped = 0
     for outcome in outcomes:
         candidate_id = outcome.get("candidate_id")
         if candidate_id is None:
@@ -279,8 +283,18 @@ def upsert_forward_validation_results(
             validated += 1
         else:
             skipped += 1
+            if is_terminal_forward_validation_skip_reason(outcome.get("skip_reason")):
+                terminal_skipped += 1
+            else:
+                retryable_skipped += 1
     session.flush()
-    return {"records_written": written, "validated_count": validated, "skipped_count": skipped}
+    return {
+        "records_written": written,
+        "validated_count": validated,
+        "skipped_count": skipped,
+        "retryable_skipped_count": retryable_skipped,
+        "terminal_skipped_count": terminal_skipped,
+    }
 
 
 def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWARD_WINDOWS)) -> date:
@@ -322,15 +336,19 @@ def exclude_persisted_daily_radar_windows(
             for key, windows in windows_by_candidate.items()
             if windows
         }
-    persisted = {
+    terminal = {
         (result.candidate_id, result.window_days)
         for result in session.scalars(
             select(DailyRadarForwardValidationResult).where(
                 DailyRadarForwardValidationResult.candidate_id.in_(candidate_ids),
                 DailyRadarForwardValidationResult.validation_version == validation_version,
-                DailyRadarForwardValidationResult.status == "validated",
             )
         ).all()
+        if result.status == "validated"
+        or (
+            result.status == "skipped"
+            and result.skip_reason in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+        )
     }
     pending: dict[str, list[int]] = {}
     for key, windows in windows_by_candidate.items():
@@ -339,7 +357,7 @@ def exclude_persisted_daily_radar_windows(
             remaining = [
                 int(window)
                 for window in windows
-                if (candidate_id, int(window)) not in persisted
+                if (candidate_id, int(window)) not in terminal
             ]
         else:
             remaining = [int(window) for window in windows]

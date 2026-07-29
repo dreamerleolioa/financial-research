@@ -458,9 +458,12 @@ jobs:
             candidate_count,
             records_written,
             validated_count,
-            skipped_count
+            skipped_count,
+            retryable_skipped_count,
+            terminal_skipped_count,
+            skip_reasons: (.report.skip_reasons // {})
           }' "$response_file"
-          jq -e '.status == "completed" and .skipped_count == 0' "$response_file" > /dev/null
+          jq -e '.status == "completed" and .retryable_skipped_count == 0' "$response_file" > /dev/null
 
   repair-avwap-and-rescore:
     name: Repair Daily Radar AVWAP and rescore

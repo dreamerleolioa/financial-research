@@ -10,6 +10,11 @@ DEFAULT_FORWARD_WINDOWS = (5, 10, 20)
 DEFAULT_BENCHMARK_SYMBOL = "TAIEX"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
 DEFAULT_DUE_LOOKBACK_MULTIPLIER = 10
+TERMINAL_FORWARD_VALIDATION_SKIP_REASONS = frozenset({"stale_candidate_price"})
+
+
+def is_terminal_forward_validation_skip_reason(reason: Any) -> bool:
+    return str(reason or "") in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
 
 
 @dataclass(frozen=True)
@@ -376,6 +381,7 @@ __all__ = [
     "DEFAULT_FORWARD_WINDOWS",
     "ForwardValidationAdapter",
     "ForwardValidationEvaluation",
+    "TERMINAL_FORWARD_VALIDATION_SKIP_REASONS",
     "benchmark_requires_forward_price_refresh",
     "candidate_key",
     "close_on",
@@ -384,6 +390,7 @@ __all__ = [
     "evaluate_forward_validation",
     "evaluate_forward_window",
     "future_price_rows",
+    "is_terminal_forward_validation_skip_reason",
     "merge_price_series",
     "normalize_price_series",
     "number",

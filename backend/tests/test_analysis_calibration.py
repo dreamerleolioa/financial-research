@@ -191,11 +191,13 @@ def test_general_analysis_forward_validation_persists_all_windows_idempotently()
 
         assert report["metadata"]["track"] == "general_analysis"
         assert first["validated_count"] == 1
+        assert first["retryable_skipped_count"] == 0
+        assert first["terminal_skipped_count"] == 0
         assert second["records_written"] == 1
         assert session.scalar(select(func.count()).select_from(AnalysisForwardValidationResult)) == 1
 
 
-def test_general_analysis_skipped_window_is_retryable() -> None:
+def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> None:
     engine = _engine()
     Base.metadata.create_all(
         engine,
@@ -214,31 +216,62 @@ def test_general_analysis_skipped_window_is_retryable() -> None:
         )
         assert sample is not None
         session.flush()
-        result = AnalysisForwardValidationResult(
-            sample_id=sample.id,
-            window_days=5,
-            validation_version="general-analysis-forward-validation-v1",
-            status="skipped",
-            signal_date=date(2026, 1, 5),
-            benchmark_symbol="TAIEX",
-            outcome={"skip_reason": "missing_benchmark"},
-            skip_reason="missing_benchmark",
+        retryable_summary = upsert_general_analysis_validation_results(
+            session,
+            [
+                {
+                    "sample_id": sample.id,
+                    "window_days": 5,
+                    "validation_version": "general-analysis-forward-validation-v1",
+                    "status": "skipped",
+                    "signal_date": "2026-01-05",
+                    "benchmark_symbol": "TAIEX",
+                    "outcome": {},
+                    "skip_reason": "missing_benchmark",
+                }
+            ],
         )
-        session.add(result)
-        session.flush()
 
         pending = _exclude_persisted_general_analysis_windows(
             session,
             {f"id:{sample.id}": [5]},
         )
+        terminal_summary = upsert_general_analysis_validation_results(
+            session,
+            [
+                {
+                    "sample_id": sample.id,
+                    "window_days": 5,
+                    "validation_version": "general-analysis-forward-validation-v1",
+                    "status": "skipped",
+                    "signal_date": "2026-01-05",
+                    "benchmark_symbol": "TAIEX",
+                    "outcome": {},
+                    "skip_reason": "stale_candidate_price",
+                }
+            ],
+        )
+        stale = _exclude_persisted_general_analysis_windows(
+            session,
+            {f"id:{sample.id}": [5]},
+        )
+        result = session.execute(select(AnalysisForwardValidationResult)).scalar_one()
         result.status = "validated"
+        result.skip_reason = None
         session.flush()
         completed = _exclude_persisted_general_analysis_windows(
             session,
             {f"id:{sample.id}": [5]},
         )
 
+    assert retryable_summary["skipped_count"] == 1
+    assert retryable_summary["retryable_skipped_count"] == 1
+    assert retryable_summary["terminal_skipped_count"] == 0
+    assert terminal_summary["skipped_count"] == 1
+    assert terminal_summary["retryable_skipped_count"] == 0
+    assert terminal_summary["terminal_skipped_count"] == 1
     assert pending == {f"id:{sample.id}": [5]}
+    assert stale == {}
     assert completed == {}
 
 
@@ -623,8 +656,16 @@ def test_forward_validation_and_monthly_workflows_fail_on_gaps_and_encrypt_artif
     assert "run-forward-validation" in daily_radar
     assert "/internal/daily-radar/forward-validation/run" in daily_radar
     assert "/internal/analysis-calibration/forward-validation/run" in daily
-    assert '.status == "completed" and .skipped_count == 0' in daily_radar
-    assert '.status == "completed" and .skipped_count == 0' in daily
+    assert '.status == "completed" and .retryable_skipped_count == 0' in daily_radar
+    assert '.status == "completed" and .retryable_skipped_count == 0' in daily
+    assert '.status == "completed" and .skipped_count == 0' not in daily_radar
+    assert '.status == "completed" and .skipped_count == 0' not in daily
+    assert "retryable_skipped_count" in daily_radar
+    assert "terminal_skipped_count" in daily_radar
+    assert "retryable_skipped_count" in daily
+    assert "terminal_skipped_count" in daily
+    assert "skip_reasons: (.report.skip_reasons // {})" in daily_radar
+    assert "skip_reasons: (.report.skip_reasons // {})" in daily
     assert 'cron: "0 10 6 * *"' in monthly
     assert "actions/upload-artifact@v4" in monthly
     assert "CALIBRATION_REPORT_PASSPHRASE" in monthly
