@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any
 
@@ -13,6 +14,7 @@ DEFAULT_ADJUSTMENT_MODE = "unadjusted"
 FINMIND_TAIWAN_STOCK_PRICE_DATASET = "TaiwanStockPrice"
 TWSE_STOCK_DAY_DATASET = "TWSE_STOCK_DAY"
 TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+DEFAULT_TWSE_MONTH_FETCH_WORKERS = 4
 
 RequestGetter = Callable[..., Any]
 
@@ -47,10 +49,12 @@ class TwseDailyPriceProvider:
         request_get: RequestGetter | None = None,
         fallback_provider: FinMindDailyPriceProvider | None = None,
         timeout: int = 15,
+        month_fetch_workers: int = DEFAULT_TWSE_MONTH_FETCH_WORKERS,
     ) -> None:
         self._request_get = request_get
         self._fallback_provider = fallback_provider or FinMindDailyPriceProvider()
         self._timeout = timeout
+        self._month_fetch_workers = max(1, month_fetch_workers)
 
     def source_provider(self, symbol: str) -> str:
         if _is_tpex_symbol(symbol):
@@ -70,33 +74,52 @@ class TwseDailyPriceProvider:
     def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
         if _is_tpex_symbol(symbol):
             return self._fallback_provider.fetch_history(symbol, start_date=start_date, end_date=end_date)
-        rows: list[DailyPriceBar] = []
         request_get = self._request_get or _import_requests_get()
-        for month in _month_starts(start_date, end_date):
-            try:
-                response = request_get(
-                    TWSE_STOCK_DAY_URL,
-                    params={
-                        "response": "json",
-                        "date": f"{month.year:04d}{month.month:02d}01",
-                        "stockNo": _twse_stock_no(symbol),
-                    },
+        months = _month_starts(start_date, end_date)
+        with ThreadPoolExecutor(max_workers=min(self._month_fetch_workers, len(months))) as executor:
+            monthly_rows = executor.map(
+                lambda month: _fetch_twse_month(
+                    request_get,
+                    symbol=symbol,
+                    month=month,
                     timeout=self._timeout,
-                )
-                if hasattr(response, "raise_for_status"):
-                    response.raise_for_status()
-                payload = response.json() if hasattr(response, "json") else response
-            except Exception as exc:
-                raise DailyPriceProviderError("twse_stock_day_request_failed") from exc
-            try:
-                rows.extend(normalize_twse_stock_day_payload(payload))
-            except ValueError as exc:
-                raise DailyPriceProviderError("twse_stock_day_parser_error") from exc
+                ),
+                months,
+            )
+            rows = [bar for month_rows in monthly_rows for bar in month_rows]
         return [
             bar
             for bar in sorted(rows, key=lambda item: item.trade_date)
             if start_date <= bar.trade_date <= end_date
         ]
+
+
+def _fetch_twse_month(
+    request_get: RequestGetter,
+    *,
+    symbol: str,
+    month: date,
+    timeout: int,
+) -> list[DailyPriceBar]:
+    try:
+        response = request_get(
+            TWSE_STOCK_DAY_URL,
+            params={
+                "response": "json",
+                "date": f"{month.year:04d}{month.month:02d}01",
+                "stockNo": _twse_stock_no(symbol),
+            },
+            timeout=timeout,
+        )
+        if hasattr(response, "raise_for_status"):
+            response.raise_for_status()
+        payload = response.json() if hasattr(response, "json") else response
+    except Exception as exc:
+        raise DailyPriceProviderError("twse_stock_day_request_failed") from exc
+    try:
+        return normalize_twse_stock_day_payload(payload)
+    except ValueError as exc:
+        raise DailyPriceProviderError("twse_stock_day_parser_error") from exc
 
 
 def normalize_finmind_daily_price_rows(rows: list[Mapping[str, Any]]) -> list[DailyPriceBar]:

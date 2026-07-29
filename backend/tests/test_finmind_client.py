@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 import pytest
 
 from ai_stock_sentinel.data_sources.finmind_client import (
@@ -8,6 +10,7 @@ from ai_stock_sentinel.data_sources.finmind_client import (
     FinMindHourlyRequestLedger,
     FinMindResponseCache,
 )
+from ai_stock_sentinel.data_sources.finmind_token import FinMindTokenManager
 
 
 class _FakeFinMindResponse:
@@ -26,8 +29,8 @@ class _FakeFinMindResponse:
 def test_finmind_client_reuses_identical_request_cache_without_extra_budget() -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
-        calls.append(dict(params))
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "headers": dict(headers)})
         return _FakeFinMindResponse({"status": 200, "data": [{"date": "2026-06-10", "value": 1}]})
 
     client = FinMindClient(
@@ -53,14 +56,17 @@ def test_finmind_client_reuses_identical_request_cache_without_extra_budget() ->
 
     assert first == second == [{"date": "2026-06-10", "value": 1}]
     assert len(calls) == 1
+    assert calls[0]["headers"] == {"Authorization": "Bearer test-token"}
+    assert "token" not in calls[0]["params"]
 
 
 def test_finmind_client_cache_is_scoped_by_token_identity() -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
-        calls.append(dict(params))
-        return _FakeFinMindResponse({"status": 200, "data": [{"token": params.get("token", "")}]})
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "headers": dict(headers)})
+        token = headers.get("Authorization", "").removeprefix("Bearer ")
+        return _FakeFinMindResponse({"status": 200, "data": [{"token": token}]})
 
     cache = FinMindResponseCache(clock=lambda: 1000.0)
     ledger = FinMindHourlyRequestLedger(clock=lambda: 1000.0)
@@ -95,13 +101,14 @@ def test_finmind_client_cache_is_scoped_by_token_identity() -> None:
     assert first == [{"token": "first-token"}]
     assert second == [{"token": "second-token"}]
     assert len(calls) == 2
+    assert all("token" not in call["params"] for call in calls)
 
 
 def test_finmind_client_with_injected_request_get_does_not_share_default_cache() -> None:
-    def shared_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+    def shared_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
         return _FakeFinMindResponse({"status": 200, "data": [{"value": "shared"}]})
 
-    def isolated_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+    def isolated_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
         return _FakeFinMindResponse({"status": 200, "data": [{"value": "isolated"}]})
 
     shared_client = FinMindClient(api_token="test-token", request_get=shared_get)
@@ -124,11 +131,46 @@ def test_finmind_client_with_injected_request_get_does_not_share_default_cache()
     assert isolated == [{"value": "isolated"}]
 
 
+def test_finmind_client_wraps_token_acquisition_failure() -> None:
+    def failing_token_getter() -> str:
+        raise RuntimeError("simulated login failure")
+
+    client = FinMindClient(
+        request_get=lambda *args, **kwargs: pytest.fail("data endpoint should not be called"),
+        token_getter=failing_token_getter,
+    )
+
+    with pytest.raises(FinMindClientError) as exc_info:
+        client.fetch_data(
+            dataset="TaiwanStockPrice",
+            data_id="6488",
+            start_date="2026-06-01",
+            end_date="2026-06-05",
+        )
+
+    assert exc_info.value.code == "token_error"
+    assert exc_info.value.dataset == "TaiwanStockPrice"
+    assert "simulated login failure" not in exc_info.value.message
+
+
+def test_finmind_token_manager_keeps_static_token_after_invalidation() -> None:
+    manager = FinMindTokenManager(
+        user_id="legacy-user",
+        password="legacy-password",
+        static_token="static-token",
+    )
+    manager._refresh = lambda: pytest.fail("static token must not fall back to legacy login")  # type: ignore[method-assign]
+
+    assert manager.token == "static-token"
+    manager.invalidate()
+    assert manager.token == "static-token"
+
+
 def test_finmind_client_retries_transient_request_error_before_success() -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
-        calls.append({"params": dict(params), "timeout": timeout})
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "headers": dict(headers), "timeout": timeout})
         if len(calls) == 1:
             raise RuntimeError("read timed out")
         return _FakeFinMindResponse({"status": 200, "data": [{"date": "2026-06-10", "value": 1}]})
@@ -158,8 +200,8 @@ def test_finmind_client_retries_transient_request_error_before_success() -> None
 def test_finmind_client_fetch_data_allows_request_timeout_override() -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
-        calls.append({"params": dict(params), "timeout": timeout})
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "headers": dict(headers), "timeout": timeout})
         return _FakeFinMindResponse({"status": 200, "data": []})
 
     client = FinMindClient(
@@ -180,12 +222,14 @@ def test_finmind_client_fetch_data_allows_request_timeout_override() -> None:
     assert calls[0]["timeout"] == 45
 
 
-def test_finmind_client_raises_request_error_after_retry_budget_is_exhausted() -> None:
+def test_finmind_client_raises_request_error_after_retry_budget_is_exhausted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
-        calls.append(dict(params))
-        raise RuntimeError("read timed out")
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        calls.append({"params": dict(params), "headers": dict(headers)})
+        raise RuntimeError(f"request failed with secret {headers['Authorization']}")
 
     client = FinMindClient(
         api_token="test-token",
@@ -206,13 +250,16 @@ def test_finmind_client_raises_request_error_after_retry_budget_is_exhausted() -
         )
 
     assert exc_info.value.code == "request_error"
+    assert "test-token" not in exc_info.value.message
+    assert "test-token" not in caplog.text
+    assert "test-token" not in "".join(traceback.format_exception(exc_info.value))
     assert len(calls) == 3
 
 
 def test_finmind_client_blocks_request_when_hourly_budget_is_exhausted() -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
         calls.append(dict(params))
         return _FakeFinMindResponse({"status": 200, "data": []})
 
@@ -250,7 +297,7 @@ def test_finmind_client_resets_budget_on_new_hour_bucket() -> None:
     def clock() -> float:
         return now
 
-    def fake_get(url: str, *, params: dict, timeout: int) -> _FakeFinMindResponse:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
         calls.append(dict(params))
         return _FakeFinMindResponse({"status": 200, "data": []})
 

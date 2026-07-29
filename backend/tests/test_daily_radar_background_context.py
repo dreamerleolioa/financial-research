@@ -536,7 +536,7 @@ def test_update_background_chip_context_cache_fixture_flow_writes_selected_symbo
 def test_finmind_background_provider_builds_full_margin_and_lending_payloads() -> None:
     calls: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int):
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
         calls.append(dict(params))
         if params["dataset"] == "TaiwanStockMarginPurchaseShortSale":
             return _FakeFinMindResponse(
@@ -625,7 +625,7 @@ def test_finmind_background_provider_builds_full_margin_and_lending_payloads() -
 
 
 def test_finmind_background_provider_marks_dataset_errors_as_missing() -> None:
-    def fake_get(url: str, *, params: dict, timeout: int):
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
         return _FakeFinMindResponse(
             {"status": 400, "msg": "Your level is free. Please update your user level."}
         )
@@ -665,9 +665,10 @@ def test_finmind_background_provider_retries_expired_managed_token(monkeypatch) 
     token_manager = FakeTokenManager()
     requests_seen: list[dict] = []
 
-    def fake_get(url: str, *, params: dict, timeout: int):
-        requests_seen.append(dict(params))
-        if params.get("token") == "expired-token":
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
+        token = headers.get("Authorization", "").removeprefix("Bearer ")
+        requests_seen.append({"params": dict(params), "token": token})
+        if token == "expired-token":
             return _FakeFinMindResponse({"status": 402, "msg": "token expired"}, status_code=402)
         return _FakeFinMindResponse(
             {
@@ -709,7 +710,7 @@ def test_finmind_background_provider_retries_expired_managed_token(monkeypatch) 
 
 
 def test_finmind_background_provider_fatal_request_errors_fail_update(db_session: Session) -> None:
-    def fake_get(url: str, *, params: dict, timeout: int):
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
         raise RuntimeError("network down")
 
     provider = FinMindBackgroundChipContextProvider(api_token="test-token", request_get=fake_get)
@@ -969,3 +970,9 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "DAILY_RADAR_PAYLOAD" not in text
     assert '--data "${daily_radar_payload}"' in text
     assert "DAILY_RADAR_ENDPOINT: /internal/daily-radar/run\n" not in text
+
+    refresh_avwap_job = text.split("  refresh-avwap:", 1)[1].split("  refresh-lending:", 1)[0]
+    assert refresh_avwap_job.index('if [[ ! "$http_status"') < refresh_avwap_job.index("jq -r '")
+
+    repair_job = text.split("  repair-avwap-and-rescore:", 1)[1]
+    assert repair_job.index('if [[ ! "$refresh_http_status"') < repair_job.index("jq -r '")

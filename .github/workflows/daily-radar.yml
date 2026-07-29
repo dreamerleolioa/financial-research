@@ -99,6 +99,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${payload}")"
           echo "Market-session HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "run_date: \(.run_date // "n/a")",
@@ -107,10 +111,6 @@ jobs:
             "dataset: \(.dataset // "n/a")",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           market_status="$(jq -r '.status // "unknown"' "$response_file")"
           case "$market_status" in
             open)
@@ -151,6 +151,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "run_date: \(.run_date // "n/a")",
@@ -159,10 +163,6 @@ jobs:
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "prepared"' "$response_file" >/dev/null; then
             exit 1
           fi
@@ -192,6 +192,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "step: \(.step // "n/a")",
@@ -204,10 +208,6 @@ jobs:
             "skipped_symbol_reasons: \(.skipped_symbol_reasons // {})",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             echo "AVWAP refresh is optional evidence for scoring; leaving job successful for non-completed business status."
           fi
@@ -237,6 +237,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "step: \(.step // "n/a")",
@@ -246,10 +250,6 @@ jobs:
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi
@@ -279,6 +279,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "step: \(.step // "n/a")",
@@ -288,10 +292,6 @@ jobs:
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi
@@ -321,6 +321,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "step: \(.step // "n/a")",
@@ -329,10 +333,6 @@ jobs:
             "records_written: \(.records_written // "n/a")",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi
@@ -362,6 +362,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "step: \(.step // "n/a")",
@@ -369,10 +373,6 @@ jobs:
             "records_written: \(.records_written // "n/a")",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi
@@ -402,6 +402,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq -r '
             "run_id: \(.run_id // "n/a")",
             "status: \(.status // "n/a")",
@@ -412,10 +416,6 @@ jobs:
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
 
   run-forward-validation:
     name: Run Daily Radar forward validation
@@ -447,6 +447,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${payload}")"
           echo "Forward-validation HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
           jq '{
             status,
             mode,
@@ -456,10 +460,6 @@ jobs:
             validated_count,
             skipped_count
           }' "$response_file"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
           jq -e '.status == "completed" and .skipped_count == 0' "$response_file" > /dev/null
 
   repair-avwap-and-rescore:
@@ -488,6 +488,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "Refresh HTTP status: ${refresh_http_status}"
+          if [[ ! "$refresh_http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$refresh_response_file"
+            exit 1
+          fi
           jq -r '
             "status: \(.status // "n/a")",
             "step: \(.step // "n/a")",
@@ -500,10 +504,6 @@ jobs:
             "skipped_symbol_reasons: \(.skipped_symbol_reasons // {})",
             "detail: \(.detail // "n/a")"
           ' "$refresh_response_file"
-          if [[ ! "$refresh_http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$refresh_response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed"' "$refresh_response_file" >/dev/null; then
             echo "AVWAP repair did not complete; continue to rescore so optional evidence does not mask scoring readiness."
             avwap_repair_completed=false
@@ -518,6 +518,10 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${daily_radar_payload}")"
           echo "Scoring HTTP status: ${scoring_http_status}"
+          if [[ ! "$scoring_http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$scoring_response_file"
+            exit 1
+          fi
           jq -r '
             "run_id: \(.run_id // "n/a")",
             "status: \(.status // "n/a")",
@@ -528,10 +532,6 @@ jobs:
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
             "detail: \(.detail // "n/a")"
           ' "$scoring_response_file"
-          if [[ ! "$scoring_http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$scoring_response_file"
-            exit 1
-          fi
           if ! jq -e '.status == "completed" or .status == "stale_data"' "$scoring_response_file" >/dev/null; then
             exit 1
           fi

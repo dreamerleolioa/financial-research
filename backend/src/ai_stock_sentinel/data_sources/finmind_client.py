@@ -106,7 +106,7 @@ _DEFAULT_CACHE = FinMindResponseCache()
 class FinMindClient:
     """Central access point for FinMind data requests.
 
-    The client intentionally owns token injection, response parsing, per-hour
+    The client intentionally owns bearer-token authentication, response parsing, per-hour
     admission control, and short-lived response caching so individual providers
     cannot accidentally multiply FinMind traffic independently.
     """
@@ -163,15 +163,29 @@ class FinMindClient:
         end_date: str,
         timeout: int = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> list[dict[str, Any]]:
-        token = self._token()
+        try:
+            token = self._token()
+        except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "[FinMindClient] token acquisition failed dataset=%s error_type=%s status_code=%s",
+                dataset,
+                exc.__class__.__name__,
+                status_code,
+            )
+            raise FinMindClientError(
+                code="token_error",
+                message=f"FinMind token acquisition failed for dataset={dataset}",
+                dataset=dataset,
+                status_code=status_code,
+            ) from None
         params: dict[str, Any] = {
             "dataset": dataset,
             "data_id": data_id,
             "start_date": start_date,
             "end_date": end_date,
         }
-        if token:
-            params["token"] = token
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         identity = _token_identity(token)
         cache_key = _cache_key(params, identity=identity)
@@ -203,7 +217,12 @@ class FinMindClient:
 
             attempt_started = time.perf_counter()
             try:
-                response = request_get(FINMIND_DATA_API, params=params, timeout=timeout)
+                response = request_get(
+                    FINMIND_DATA_API,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
+                )
                 request_elapsed_seconds = time.perf_counter() - attempt_started
                 completed_attempt = attempt + 1
                 break
@@ -211,29 +230,29 @@ class FinMindClient:
                 request_elapsed_seconds = time.perf_counter() - attempt_started
                 if attempt >= self._request_retries:
                     logger.warning(
-                        "[FinMindClient] request failed dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error=%s",
+                        "[FinMindClient] request failed dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error_type=%s",
                         dataset,
                         data_id,
                         attempt + 1,
                         self._request_retries + 1,
                         request_elapsed_seconds,
                         timeout,
-                        exc,
+                        exc.__class__.__name__,
                     )
                     raise FinMindClientError(
                         code="request_error",
-                        message=f"FinMind request failed for dataset={dataset}: {exc}",
+                        message=f"FinMind request failed for dataset={dataset}",
                         dataset=dataset,
-                    ) from exc
+                    ) from None
                 logger.warning(
-                    "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error=%s",
+                    "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error_type=%s",
                     dataset,
                     data_id,
                     attempt + 1,
                     self._request_retries + 1,
                     request_elapsed_seconds,
                     timeout,
-                    exc,
+                    exc.__class__.__name__,
                 )
                 if self._retry_backoff_seconds > 0:
                     self._sleep(self._retry_backoff_seconds * (attempt + 1))
@@ -258,12 +277,19 @@ class FinMindClient:
             response.raise_for_status()
             body = response.json()
         except Exception as exc:
+            logger.warning(
+                "[FinMindClient] response error dataset=%s data_id=%s status_code=%s error_type=%s",
+                dataset,
+                data_id,
+                status_code,
+                exc.__class__.__name__,
+            )
             raise FinMindClientError(
                 code="response_error",
-                message=f"FinMind response could not be parsed for dataset={dataset}: {exc}",
+                message=f"FinMind response could not be parsed for dataset={dataset}",
                 dataset=dataset,
                 status_code=status_code,
-            ) from exc
+            ) from None
 
         if body.get("status") != 200:
             message = str(body.get("msg") or "unknown error")

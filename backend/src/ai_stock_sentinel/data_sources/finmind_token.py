@@ -1,9 +1,9 @@
 """FinMind token 自動刷新管理器。
 
-優先使用帳密（FINMIND_USER_ID + FINMIND_PASSWORD）自動登入取得當日有效 token；
-若無帳密則 fallback 至 FINMIND_API_TOKEN（向後相容）。
+優先使用 FINMIND_API_TOKEN；只有未設定 API token 時，才保留帳密登入的
+legacy fallback。
 
-Token 在記憶體中快取，遇到 402 時自動重新登入一次。
+固定 API token 即使遇到 402 也不得切回帳密登入，需由維運人員更新 token。
 """
 from __future__ import annotations
 
@@ -34,18 +34,20 @@ class FinMindTokenManager:
 
     @property
     def token(self) -> str:
-        """取得有效的 token（若無帳密則回傳靜態 token）。"""
-        if not self._user_id or not self._password:
+        """取得有效 token，固定 API token 永遠優先於 legacy 帳密登入。"""
+        if self._static_token:
             return self._static_token
+        if not self._user_id or not self._password:
+            return ""
         with self._lock:
             if not self._token:
                 self._refresh()
             return self._token
 
     def invalidate(self) -> None:
-        """強制下次使用時重新登入（遇到 402 時呼叫）。"""
+        """清除 legacy login token；固定 API token 維持不變。"""
         with self._lock:
-            self._token = ""
+            self._token = self._static_token
             self._fetched_at = 0.0
 
     def _refresh(self) -> None:

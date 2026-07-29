@@ -4,6 +4,7 @@ import importlib.util
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
+from threading import Barrier
 from types import ModuleType
 from typing import Any
 
@@ -15,6 +16,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarRun,
@@ -29,6 +31,7 @@ from ai_stock_sentinel.phase1_avwap.provider import (
     DEFAULT_PHASE1_DATASET,
     FINMIND_TAIWAN_STOCK_PRICE_DATASET,
     TWSE_STOCK_DAY_DATASET,
+    FinMindDailyPriceProvider,
     TwseDailyPriceProvider,
     normalize_finmind_daily_price_rows,
     normalize_twse_stock_day_payload,
@@ -176,12 +179,33 @@ def test_twse_daily_price_provider_fetches_months_and_filters_requested_window()
 
     assert provider.source_provider("2330.TW") == "twse"
     assert provider.source_dataset("2330.TW") == TWSE_STOCK_DAY_DATASET
-    assert [call["params"] for call in calls] == [
+    assert sorted((call["params"] for call in calls), key=lambda params: params["date"]) == [
         {"response": "json", "date": "20260501", "stockNo": "2330"},
         {"response": "json", "date": "20260601", "stockNo": "2330"},
     ]
     assert [row.trade_date for row in rows] == [date(2026, 6, 1)]
     assert rows[0].amount == 2400
+
+
+def test_twse_daily_price_provider_fetches_months_concurrently() -> None:
+    barrier = Barrier(4, timeout=5)
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: int):
+        barrier.wait()
+        return _FakeResponse({"stat": "OK", "fields": [], "data": []})
+
+    provider = TwseDailyPriceProvider(
+        request_get=fake_get,
+        month_fetch_workers=4,
+    )
+
+    rows = provider.fetch_history(
+        "2330.TW",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 4, 30),
+    )
+
+    assert rows == []
 
 
 def test_twse_daily_price_provider_reports_parser_error_reason() -> None:
@@ -359,6 +383,32 @@ def test_refresh_phase1_avwap_snapshots_for_symbols_refreshes_daily_radar_select
     rows = db_session.scalars(select(Phase1AvwapSnapshot).order_by(Phase1AvwapSnapshot.symbol)).all()
     assert [row.symbol for row in rows] == ["2317.TW", "2454.TW"]
     assert all(row.freshness == "fresh" for row in rows)
+
+
+def test_refresh_phase1_avwap_snapshots_marks_tpex_login_failure_missing(
+    db_session: Session,
+) -> None:
+    def failing_token_getter() -> str:
+        raise RuntimeError("simulated FinMind login failure")
+
+    finmind_client = FinMindClient(
+        request_get=lambda *args, **kwargs: pytest.fail("data endpoint should not be called"),
+        token_getter=failing_token_getter,
+    )
+    provider = TwseDailyPriceProvider(
+        fallback_provider=FinMindDailyPriceProvider(client=finmind_client),
+    )
+
+    result = refresh_phase1_avwap_snapshots_for_symbols(
+        db_session,
+        symbols=["6488.TWO"],
+        data_date=date(2026, 6, 5),
+        provider=provider,
+    )
+
+    assert result.missing_symbols == ["6488.TWO"]
+    assert result.missing_symbol_reasons == {"6488.TWO": "token_error"}
+    assert result.snapshots[0].freshness == "missing"
 
 
 def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_managed_symbol(
