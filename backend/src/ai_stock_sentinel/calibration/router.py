@@ -25,11 +25,11 @@ from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
     TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
-    benchmark_requires_forward_price_refresh,
     default_due_start_date,
-    due_windows_by_candidate,
-    merge_price_series,
-    symbols_requiring_forward_price_refresh,
+    discover_due_windows_by_candidate,
+)
+from ai_stock_sentinel.calibration.forward_validation_planning import (
+    prepare_due_forward_validation,
 )
 from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.calibration.repository import (
@@ -137,7 +137,7 @@ def run_general_analysis_forward_validation(
         )
     windows_by_sample = None
     if request.mode == "due":
-        windows_by_sample = due_windows_by_candidate(
+        windows_by_sample = discover_due_windows_by_candidate(
             samples,
             adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
             as_of_date=as_of_date,
@@ -152,45 +152,20 @@ def run_general_analysis_forward_validation(
             db,
             windows_by_sample,
         )
-        refresh_symbols = symbols_requiring_forward_price_refresh(
-            samples,
-            windows_by_candidate=windows_by_sample,
-            price_series_by_symbol=price_series,
-            benchmark_prices=benchmark_prices,
-            as_of_date=as_of_date,
-        )
-        if benchmark_requires_forward_price_refresh(
-            samples,
-            windows_by_candidate=windows_by_sample,
-            benchmark_prices=benchmark_prices,
-            as_of_date=as_of_date,
-        ):
-            refresh_symbols = sorted({*refresh_symbols, request.benchmark_symbol})
-        if refresh_symbols:
-            fetched_prices = price_provider.fetch(
-                refresh_symbols,
-                start_date=price_start_date,
-                end_date=as_of_date,
-            )
-            price_series = merge_price_series(price_series, fetched_prices)
-            benchmark_prices = price_series.get(request.benchmark_symbol, benchmark_prices)
-        complete_windows = due_windows_by_candidate(
+        preparation = prepare_due_forward_validation(
             samples,
             adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
-            as_of_date=as_of_date,
-            windows=request.windows,
-            price_series_by_symbol={
-                symbol: price_series.get(symbol, [])
-                for symbol in symbols
-            },
+            pending_windows_by_candidate=windows_by_sample,
+            price_series_by_symbol=price_series,
             benchmark_prices=benchmark_prices,
-            require_complete_price_series=True,
+            benchmark_symbol=request.benchmark_symbol,
+            as_of_date=as_of_date,
+            price_start_date=price_start_date,
+            fetch_prices=price_provider.fetch,
         )
-        windows_by_sample = {
-            key: [window for window in windows if window in set(complete_windows.get(key, []))]
-            for key, windows in windows_by_sample.items()
-            if any(window in set(complete_windows.get(key, [])) for window in windows)
-        }
+        price_series = preparation.price_series_by_symbol
+        benchmark_prices = preparation.benchmark_prices
+        windows_by_sample = preparation.evaluation_windows_by_candidate
     report, outcomes = evaluate_general_analysis_forward_validation(
         samples,
         price_series_by_symbol={

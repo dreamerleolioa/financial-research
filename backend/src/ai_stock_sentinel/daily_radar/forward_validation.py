@@ -33,7 +33,7 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-FORWARD_VALIDATION_VERSION = "daily-radar-forward-validation-v1"
+FORWARD_VALIDATION_VERSION = "daily-radar-forward-validation-v2"
 FORWARD_VALIDATION_REPORT_VERSION = "daily-radar-forward-validation-report-v1"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
 
@@ -308,7 +308,6 @@ def due_windows_by_candidate(
     windows: Sequence[int],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
-    require_complete_price_series: bool = False,
 ) -> dict[str, list[int]]:
     return shared_forward_validation.due_windows_by_candidate(
         candidates,
@@ -317,7 +316,6 @@ def due_windows_by_candidate(
         windows=windows,
         price_series_by_symbol=price_series_by_symbol,
         benchmark_prices=benchmark_prices,
-        require_complete_price_series=require_complete_price_series,
     )
 
 
@@ -736,6 +734,7 @@ DAILY_RADAR_FORWARD_ADAPTER = ForwardValidationAdapter(
 
 
 __all__ = [
+    "DAILY_RADAR_FORWARD_ADAPTER",
     "DEFAULT_BENCHMARK_SYMBOL",
     "DEFAULT_FORWARD_WINDOWS",
     "FORWARD_VALIDATION_REPORT_VERSION",

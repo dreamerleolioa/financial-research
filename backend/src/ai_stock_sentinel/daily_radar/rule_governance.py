@@ -135,14 +135,14 @@ def build_monthly_rule_review_report(
     min_replay_coverage: float = DEFAULT_MIN_REPLAY_COVERAGE,
 ) -> MonthlyRuleReviewReport:
     month_start, month_end = _month_bounds(year, month)
+    version = validation_version or FORWARD_VALIDATION_VERSION
     rows = validation_rows_from_results(
         session,
         market=market,
         start_date=month_start,
         end_date=month_end,
-        validation_version=validation_version,
+        validation_version=version,
     )
-    version = validation_version or _dominant_validation_version(rows) or FORWARD_VALIDATION_VERSION
     ablation = build_ablation_report(
         rows,
         market=market,
@@ -1136,13 +1136,6 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
         end_exclusive = date(year, month + 1, 1)
 
     return start, end_exclusive - timedelta(days=1)
-
-
-def _dominant_validation_version(rows: Sequence[Mapping[str, Any]]) -> str | None:
-    versions = Counter(str(row.get("validation_version")) for row in rows if row.get("validation_version"))
-    if not versions:
-        return None
-    return versions.most_common(1)[0][0]
 
 
 def _market_regime(candidate: DailyRadarCandidate) -> str:

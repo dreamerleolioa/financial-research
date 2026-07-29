@@ -22,8 +22,13 @@ from ai_stock_sentinel.analysis.calibration import GENERAL_ANALYSIS_FORWARD_ADAP
 from ai_stock_sentinel.calibration.forward_validation import (
     evaluate_forward_window as evaluate_shared_forward_window,
 )
+from ai_stock_sentinel.calibration.forward_validation_planning import (
+    evaluation_ready_windows_by_candidate,
+)
 from ai_stock_sentinel.calibration.price_provider import get_forward_price_provider
 from ai_stock_sentinel.daily_radar.forward_validation import (
+    DAILY_RADAR_FORWARD_ADAPTER,
+    FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
     evaluate_forward_window,
     exclude_persisted_daily_radar_windows,
@@ -570,21 +575,21 @@ def test_complete_due_windows_require_both_candidate_and_benchmark_rows() -> Non
         price_series_by_symbol={"2330.TW": candidate_prices},
         benchmark_prices=benchmark_prices,
     )
-    complete = due_windows_by_candidate(
+    complete = evaluation_ready_windows_by_candidate(
         [candidate],
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
         as_of_date=date(2026, 6, 21),
-        windows=[20],
+        pending_windows_by_candidate={"id:1": [20]},
         price_series_by_symbol={"2330.TW": candidate_prices},
         benchmark_prices=benchmark_prices,
-        require_complete_price_series=True,
     )
-    overdue = due_windows_by_candidate(
+    overdue = evaluation_ready_windows_by_candidate(
         [candidate],
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
         as_of_date=date(2026, 7, 11),
-        windows=[20],
+        pending_windows_by_candidate={"id:1": [20]},
         price_series_by_symbol={"2330.TW": candidate_prices},
         benchmark_prices=benchmark_prices,
-        require_complete_price_series=True,
     )
 
     assert discovery == {"id:1": [20]}
@@ -593,8 +598,6 @@ def test_complete_due_windows_require_both_candidate_and_benchmark_rows() -> Non
 
 
 def test_complete_due_windows_require_candidate_rows_on_benchmark_dates() -> None:
-    from ai_stock_sentinel.daily_radar.forward_validation import due_windows_by_candidate
-
     candidate = _candidate_snapshot()
     candidate_prices = [
         _price("2026-06-01", 100, 100, 100, 100),
@@ -609,18 +612,19 @@ def test_complete_due_windows_require_candidate_rows_on_benchmark_dates() -> Non
         _price("2026-06-05", 1003, 1003, 1003, 1003),
     ]
 
-    incomplete = due_windows_by_candidate(
+    incomplete = evaluation_ready_windows_by_candidate(
         [candidate],
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
         as_of_date=date(2026, 6, 5),
-        windows=[3],
+        pending_windows_by_candidate={"id:1": [3]},
         price_series_by_symbol={"2330.TW": candidate_prices},
         benchmark_prices=benchmark_prices,
-        require_complete_price_series=True,
     )
-    complete = due_windows_by_candidate(
+    complete = evaluation_ready_windows_by_candidate(
         [candidate],
+        adapter=DAILY_RADAR_FORWARD_ADAPTER,
         as_of_date=date(2026, 6, 5),
-        windows=[3],
+        pending_windows_by_candidate={"id:1": [3]},
         price_series_by_symbol={
             "2330.TW": [
                 *candidate_prices,
@@ -628,7 +632,6 @@ def test_complete_due_windows_require_candidate_rows_on_benchmark_dates() -> Non
             ],
         },
         benchmark_prices=benchmark_prices,
-        require_complete_price_series=True,
     )
 
     assert incomplete == {}
@@ -735,7 +738,7 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
                 {
                     "candidate_id": candidate.id,
                     "window_days": 5,
-                    "validation_version": "daily-radar-forward-validation-v1",
+                    "validation_version": FORWARD_VALIDATION_VERSION,
                     "status": "skipped",
                     "signal_date": "2026-06-01",
                     "benchmark_symbol": "TAIEX",
@@ -755,7 +758,7 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
                 {
                     "candidate_id": candidate.id,
                     "window_days": 5,
-                    "validation_version": "daily-radar-forward-validation-v1",
+                    "validation_version": FORWARD_VALIDATION_VERSION,
                     "status": "skipped",
                     "signal_date": "2026-06-01",
                     "benchmark_symbol": "TAIEX",
@@ -786,6 +789,44 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
     assert pending == {f"id:{candidate.id}": [5]}
     assert stale == {}
     assert completed == {}
+
+
+def test_legacy_v1_result_does_not_block_current_validation_version() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        session.flush()
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=5,
+                validation_version="daily-radar-forward-validation-v1",
+                status="validated",
+                signal_date=date(2026, 6, 1),
+                target_date=date(2026, 6, 8),
+                benchmark_symbol="TAIEX",
+                outcome={"forward_return_pct": 1.0},
+                skip_reason=None,
+            )
+        )
+        session.flush()
+
+        pending = exclude_persisted_daily_radar_windows(
+            session,
+            {f"id:{candidate.id}": [5]},
+        )
+
+    assert FORWARD_VALIDATION_VERSION == "daily-radar-forward-validation-v2"
+    assert pending == {f"id:{candidate.id}": [5]}
 
 
 def test_forward_price_refresh_only_targets_incomplete_due_symbols_and_merges_rows() -> None:
@@ -995,6 +1036,91 @@ def test_forward_validation_due_mode_waits_for_incomplete_benchmark_window(monke
 
     with Session(engine) as session:
         assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 0
+
+
+def test_due_mode_recomputes_candidate_refresh_after_benchmark_expands(monkeypatch) -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+            StockRawData.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session, run_date=date(2026, 6, 1))
+        _add_candidate(session, run, symbol="2330.TW", close=100)
+        for symbol, rows in {
+            "2330.TW": [
+                (date(2026, 6, 1), 100),
+                (date(2026, 6, 2), 101),
+                (date(2026, 6, 3), 102),
+                (date(2026, 6, 4), 999),
+            ],
+            "TAIEX": [
+                (date(2026, 6, 1), 1000),
+                (date(2026, 6, 2), 1001),
+                (date(2026, 6, 3), 1002),
+            ],
+        }.items():
+            for row_date, close in rows:
+                _add_raw(session, symbol, row_date, close)
+        session.commit()
+
+    class ExpandingBenchmarkProvider:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def fetch(self, symbols, *, start_date, end_date):
+            ordered = list(symbols)
+            self.calls.append(ordered)
+            rows = {
+                "TAIEX": [
+                    _price("2026-06-01", 1000, 1000, 1000, 1000),
+                    _price("2026-06-02", 1001, 1001, 1001, 1001),
+                    _price("2026-06-03", 1002, 1002, 1002, 1002),
+                    _price("2026-06-05", 1003, 1003, 1003, 1003),
+                ],
+                "2330.TW": [
+                    _price("2026-06-01", 100, 100, 100, 100),
+                    _price("2026-06-02", 101, 101, 101, 101),
+                    _price("2026-06-03", 102, 102, 102, 102),
+                    _price("2026-06-04", 999, 999, 999, 999),
+                    _price("2026-06-05", 103, 103, 103, 103),
+                ],
+            }
+            return {symbol: rows[symbol] for symbol in ordered}
+
+    provider = ExpandingBenchmarkProvider()
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    api.app.dependency_overrides[get_forward_price_provider] = lambda: provider
+    try:
+        response = TestClient(api.app).post(
+            "/internal/daily-radar/forward-validation/run",
+            json={
+                "mode": "due",
+                "market": "TW",
+                "as_of_date": "2026-06-05",
+                "windows": [3],
+                "benchmark_symbol": "TAIEX",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+        api.app.dependency_overrides.pop(get_forward_price_provider, None)
+
+    assert response.status_code == 200
+    assert response.json()["validated_count"] == 1
+    assert provider.calls == [["TAIEX"], ["2330.TW"]]
+
+    with Session(engine) as session:
+        result = session.execute(select(DailyRadarForwardValidationResult)).scalar_one()
+
+    assert result.target_date == date(2026, 6, 5)
 
 
 def test_forward_validation_migration_creates_idempotency_key_and_indexes() -> None:

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.analysis.calibration import (
+    ANALYSIS_FORWARD_VALIDATION_VERSION,
     build_general_analysis_monthly_report,
     capture_general_analysis_calibration_sample,
     evaluate_general_analysis_forward_validation,
@@ -32,6 +33,7 @@ from ai_stock_sentinel.analysis.confidence_scorer import (
 from ai_stock_sentinel.calibration.router import (
     _exclude_persisted_general_analysis_windows,
 )
+from ai_stock_sentinel.calibration.price_provider import get_forward_price_provider
 from ai_stock_sentinel.calibration.governance import (
     independent_block_count,
     independent_sample_counts_by_window,
@@ -41,6 +43,7 @@ from ai_stock_sentinel import api
 from ai_stock_sentinel.db.models import (
     AnalysisCalibrationSample,
     AnalysisForwardValidationResult,
+    StockRawData,
 )
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.db.session import get_db
@@ -197,6 +200,95 @@ def test_general_analysis_forward_validation_persists_all_windows_idempotently()
         assert session.scalar(select(func.count()).select_from(AnalysisForwardValidationResult)) == 1
 
 
+def test_general_due_mode_recomputes_candidate_refresh_after_benchmark_expands(monkeypatch) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+            StockRawData.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 6, 1),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        for symbol, rows in {
+            "2330.TW": [
+                (date(2026, 6, 1), 100),
+                (date(2026, 6, 2), 101),
+                (date(2026, 6, 3), 102),
+                (date(2026, 6, 4), 999),
+            ],
+            "TAIEX": [
+                (date(2026, 6, 1), 1000),
+                (date(2026, 6, 2), 1001),
+                (date(2026, 6, 3), 1002),
+            ],
+        }.items():
+            for row_date, close in rows:
+                _add_raw(session, symbol, row_date, close)
+        session.commit()
+
+    class ExpandingBenchmarkProvider:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def fetch(self, symbols, *, start_date, end_date):
+            ordered = list(symbols)
+            self.calls.append(ordered)
+            rows = {
+                "TAIEX": [
+                    _price("2026-06-01", 1000),
+                    _price("2026-06-02", 1001),
+                    _price("2026-06-03", 1002),
+                    _price("2026-06-05", 1003),
+                ],
+                "2330.TW": [
+                    _price("2026-06-01", 100),
+                    _price("2026-06-02", 101),
+                    _price("2026-06-03", 102),
+                    _price("2026-06-04", 999),
+                    _price("2026-06-05", 103),
+                ],
+            }
+            return {symbol: rows[symbol] for symbol in ordered}
+
+    provider = ExpandingBenchmarkProvider()
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    api.app.dependency_overrides[get_forward_price_provider] = lambda: provider
+    try:
+        response = TestClient(api.app).post(
+            "/internal/analysis-calibration/forward-validation/run",
+            json={
+                "mode": "due",
+                "market": "TW",
+                "as_of_date": "2026-06-05",
+                "windows": [3],
+                "benchmark_symbol": "TAIEX",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+        api.app.dependency_overrides.pop(get_forward_price_provider, None)
+
+    assert response.status_code == 200
+    assert response.json()["validated_count"] == 1
+    assert provider.calls == [["TAIEX"], ["2330.TW"]]
+
+    with Session(engine) as session:
+        result = session.execute(select(AnalysisForwardValidationResult)).scalar_one()
+
+    assert result.target_date == date(2026, 6, 5)
+
+
 def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> None:
     engine = _engine()
     Base.metadata.create_all(
@@ -222,7 +314,7 @@ def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> N
                 {
                     "sample_id": sample.id,
                     "window_days": 5,
-                    "validation_version": "general-analysis-forward-validation-v1",
+                    "validation_version": ANALYSIS_FORWARD_VALIDATION_VERSION,
                     "status": "skipped",
                     "signal_date": "2026-01-05",
                     "benchmark_symbol": "TAIEX",
@@ -242,7 +334,7 @@ def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> N
                 {
                     "sample_id": sample.id,
                     "window_days": 5,
-                    "validation_version": "general-analysis-forward-validation-v1",
+                    "validation_version": ANALYSIS_FORWARD_VALIDATION_VERSION,
                     "status": "skipped",
                     "signal_date": "2026-01-05",
                     "benchmark_symbol": "TAIEX",
@@ -273,6 +365,49 @@ def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> N
     assert pending == {f"id:{sample.id}": [5]}
     assert stale == {}
     assert completed == {}
+
+
+def test_general_legacy_v1_result_does_not_block_current_validation_version() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        session.add(
+            AnalysisForwardValidationResult(
+                sample_id=sample.id,
+                window_days=5,
+                validation_version="general-analysis-forward-validation-v1",
+                status="validated",
+                signal_date=date(2026, 1, 5),
+                target_date=date(2026, 1, 12),
+                benchmark_symbol="TAIEX",
+                outcome={"forward_return_pct": 1.0},
+                skip_reason=None,
+            )
+        )
+        session.flush()
+
+        pending = _exclude_persisted_general_analysis_windows(
+            session,
+            {f"id:{sample.id}": [5]},
+        )
+
+    assert ANALYSIS_FORWARD_VALIDATION_VERSION == "general-analysis-forward-validation-v2"
+    assert pending == {f"id:{sample.id}": [5]}
 
 
 def test_general_monthly_report_runs_with_insufficient_mature_samples() -> None:
@@ -338,7 +473,7 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
                     AnalysisForwardValidationResult(
                         sample_id=sample.id,
                         window_days=window,
-                        validation_version="general-analysis-forward-validation-v1",
+                        validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
                         status="validated",
                         signal_date=sample.record_date,
                         target_date=date(2026, month, min(25, 5 + window)),
@@ -418,7 +553,7 @@ def test_general_monthly_replay_coverage_uses_only_optimizer_scope_strategies() 
                         AnalysisForwardValidationResult(
                             sample_id=sample.id,
                             window_days=window,
-                            validation_version="general-analysis-forward-validation-v1",
+                            validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
                             status="validated",
                             signal_date=sample.record_date,
                             target_date=date(2026, month, min(25, 5 + window)),
@@ -508,7 +643,7 @@ def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_m
                     AnalysisForwardValidationResult(
                         sample_id=sample.id,
                         window_days=window,
-                        validation_version="general-analysis-forward-validation-v1",
+                        validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
                         status="validated",
                         signal_date=sample.record_date,
                         target_date=date(
@@ -720,6 +855,26 @@ def _price(row_date: str, close: float) -> dict:
         "low": close,
         "close": close,
     }
+
+
+def _add_raw(session: Session, symbol: str, row_date: date, close: float) -> None:
+    session.add(
+        StockRawData(
+            symbol=symbol,
+            record_date=row_date,
+            technical={
+                "ohlcv": {
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                },
+            },
+            institutional={},
+            fundamental={},
+            raw_data_is_final=True,
+        )
+    )
 
 
 def _engine():

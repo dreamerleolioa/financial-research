@@ -176,7 +176,7 @@ def default_due_start_date(
     )
 
 
-def due_windows_by_candidate(
+def discover_due_windows_by_candidate(
     candidates: Iterable[Mapping[str, Any]],
     *,
     adapter: ForwardValidationAdapter,
@@ -184,7 +184,6 @@ def due_windows_by_candidate(
     windows: Sequence[int],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
-    require_complete_price_series: bool = False,
 ) -> dict[str, list[int]]:
     active_windows = ordered_positive_values(windows)
     price_series = price_series_by_symbol or {}
@@ -202,42 +201,9 @@ def due_windows_by_candidate(
             continue
         symbol = str(candidate.get("symbol") or "")
         candidate_by_date = normalize_price_series(price_series.get(symbol, []))
-        candidate_trading_rows = len(
-            future_price_rows(candidate_by_date, signal_date, as_of_date)
-        )
-        benchmark_trading_rows = len(
-            future_price_rows(benchmark_by_date, signal_date, as_of_date)
-        )
-        if require_complete_price_series:
-            calendar_days_elapsed = (as_of_date - signal_date).days
-            benchmark_future_rows = future_price_rows(
-                benchmark_by_date,
-                signal_date,
-                as_of_date,
-            )
-            benchmark_entry_available = close_on(benchmark_by_date, signal_date) is not None
-            due_windows: list[int] = []
-            for window in active_windows:
-                benchmark_window_dates = [
-                    row_date
-                    for row_date, _row in benchmark_future_rows[:window]
-                ]
-                complete_on_benchmark_calendar = (
-                    benchmark_entry_available
-                    and len(benchmark_window_dates) == window
-                    and all(
-                        row_date in candidate_by_date
-                        for row_date in benchmark_window_dates
-                    )
-                )
-                if complete_on_benchmark_calendar or calendar_days_elapsed >= window * 2:
-                    due_windows.append(window)
-            if due_windows:
-                due_by_candidate[key] = due_windows
-            continue
         available_trading_rows = max(
-            candidate_trading_rows,
-            benchmark_trading_rows,
+            len(future_price_rows(candidate_by_date, signal_date, as_of_date)),
+            len(future_price_rows(benchmark_by_date, signal_date, as_of_date)),
         )
         if available_trading_rows == 0 and (not candidate_by_date or not benchmark_by_date):
             calendar_days_elapsed = (as_of_date - signal_date).days
@@ -257,6 +223,25 @@ def due_windows_by_candidate(
         if due_windows:
             due_by_candidate[key] = due_windows
     return due_by_candidate
+
+
+def due_windows_by_candidate(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    adapter: ForwardValidationAdapter,
+    as_of_date: date,
+    windows: Sequence[int],
+    price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, list[int]]:
+    return discover_due_windows_by_candidate(
+        candidates,
+        adapter=adapter,
+        as_of_date=as_of_date,
+        windows=windows,
+        price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices,
+    )
 
 
 def symbols_requiring_forward_price_refresh(
@@ -441,6 +426,7 @@ __all__ = [
     "candidate_key",
     "close_on",
     "default_due_start_date",
+    "discover_due_windows_by_candidate",
     "due_windows_by_candidate",
     "evaluate_forward_validation",
     "evaluate_forward_window",

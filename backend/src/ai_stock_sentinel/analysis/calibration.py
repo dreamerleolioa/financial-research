@@ -51,7 +51,7 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v1"
+ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v2"
 ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v3"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
