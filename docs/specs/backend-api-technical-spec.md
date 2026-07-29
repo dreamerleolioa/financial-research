@@ -1840,7 +1840,7 @@ Forward validation due request：
 }
 ```
 
-`as_of_date` 可省略。成功回應包含 `status`、`mode`、`as_of_date`、候選或樣本數、`records_written`、`validated_count`、`skipped_count` 與詳細 `report`；正式 workflow 另外要求 `skipped_count == 0`，否則 job 失敗並於下次 due run 重試。
+`as_of_date` 可省略。成功回應包含 `status`、`mode`、`as_of_date`、候選或樣本數、`records_written`、`validated_count`、相容總數 `skipped_count`、`retryable_skipped_count`、`terminal_skipped_count` 與詳細 `report`。`stale_candidate_price` 屬於 terminal skip；它會保留診斷紀錄，但不應阻擋 workflow。`missing_benchmark` 等暫時性缺口屬於 retryable skip，後續 due run 仍會重新評估。兩條正式 forward-validation workflows 都會輸出三種 count 與 `report.skip_reasons`，並只要求 `retryable_skipped_count == 0`；因此第一次遇到 terminal skip 不會讓 CI 失敗。Daily Radar 與一般分析的 Re-run 都會排除已 `validated` 的窗口及既有 terminal skip。GitHub job 的 `skipped` conclusion 不等同任何 response skip count。
 
 Daily Radar monthly request：
 

@@ -913,6 +913,8 @@ def run_daily_radar_forward_validation_endpoint(
         records_written=write_summary["records_written"],
         validated_count=write_summary["validated_count"],
         skipped_count=write_summary["skipped_count"],
+        retryable_skipped_count=write_summary["retryable_skipped_count"],
+        terminal_skipped_count=write_summary["terminal_skipped_count"],
         report=evaluation.report,
     )
 

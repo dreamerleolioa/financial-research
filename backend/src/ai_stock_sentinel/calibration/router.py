@@ -24,6 +24,7 @@ from ai_stock_sentinel.calibration.auth import require_calibration_internal_auth
 from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
+    TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
     benchmark_requires_forward_price_refresh,
     default_due_start_date,
     due_windows_by_candidate,
@@ -61,6 +62,8 @@ class GeneralAnalysisForwardValidationResponse(BaseModel):
     records_written: int
     validated_count: int
     skipped_count: int
+    retryable_skipped_count: int
+    terminal_skipped_count: int
     report: dict[str, Any]
 
 
@@ -195,6 +198,8 @@ def run_general_analysis_forward_validation(
         records_written=summary["records_written"],
         validated_count=summary["validated_count"],
         skipped_count=summary["skipped_count"],
+        retryable_skipped_count=summary["retryable_skipped_count"],
+        terminal_skipped_count=summary["terminal_skipped_count"],
         report=report,
     )
 
@@ -247,16 +252,20 @@ def _exclude_persisted_general_analysis_windows(
         for key in windows_by_sample
         if key.startswith("id:") and key.removeprefix("id:").isdigit()
     ]
-    persisted = {
+    terminal = {
         (result.sample_id, result.window_days)
         for result in session.scalars(
             select(AnalysisForwardValidationResult).where(
                 AnalysisForwardValidationResult.sample_id.in_(sample_ids),
                 AnalysisForwardValidationResult.validation_version
                 == ANALYSIS_FORWARD_VALIDATION_VERSION,
-                AnalysisForwardValidationResult.status == "validated",
             )
         ).all()
+        if result.status == "validated"
+        or (
+            result.status == "skipped"
+            and result.skip_reason in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+        )
     } if sample_ids else set()
     pending: dict[str, list[int]] = {}
     for key, windows in windows_by_sample.items():
@@ -268,7 +277,7 @@ def _exclude_persisted_general_analysis_windows(
         remaining = [
             int(window)
             for window in windows
-            if sample_id is None or (sample_id, int(window)) not in persisted
+            if sample_id is None or (sample_id, int(window)) not in terminal
         ]
         if remaining:
             pending[key] = remaining

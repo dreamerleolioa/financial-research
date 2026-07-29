@@ -32,6 +32,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     load_benchmark_prices_from_prepared_market_context,
     merge_price_series,
     symbols_requiring_forward_price_refresh,
+    upsert_forward_validation_results,
 )
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
@@ -402,6 +403,8 @@ def test_forward_validation_due_mode_only_writes_matured_windows(monkeypatch) ->
     assert data["records_written"] == 1
     assert data["validated_count"] == 1
     assert data["skipped_count"] == 0
+    assert data["retryable_skipped_count"] == 0
+    assert data["terminal_skipped_count"] == 0
     assert data["report"]["skip_reasons"] == {}
 
     with Session(engine) as session:
@@ -469,6 +472,8 @@ def test_forward_validation_due_mode_uses_price_rows_not_weekdays(monkeypatch) -
     assert data["records_written"] == 0
     assert data["validated_count"] == 0
     assert data["skipped_count"] == 0
+    assert data["retryable_skipped_count"] == 0
+    assert data["terminal_skipped_count"] == 0
     assert data["report"]["skip_reasons"] == {}
 
     with Session(engine) as session:
@@ -569,7 +574,7 @@ def test_benchmark_prices_fall_back_to_latest_prepared_market_context() -> None:
     ]
 
 
-def test_skipped_due_window_is_retried_but_validated_window_is_terminal() -> None:
+def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
         engine,
@@ -583,32 +588,62 @@ def test_skipped_due_window_is_retried_but_validated_window_is_terminal() -> Non
         run = _add_run(session)
         candidate = _add_candidate(session, run)
         session.flush()
-        result = DailyRadarForwardValidationResult(
-            candidate_id=candidate.id,
-            window_days=5,
-            validation_version="daily-radar-forward-validation-v1",
-            status="skipped",
-            signal_date=date(2026, 6, 1),
-            target_date=None,
-            benchmark_symbol="TAIEX",
-            outcome={"skip_reason": "missing_benchmark"},
-            skip_reason="missing_benchmark",
+        retryable_summary = upsert_forward_validation_results(
+            session,
+            [
+                {
+                    "candidate_id": candidate.id,
+                    "window_days": 5,
+                    "validation_version": "daily-radar-forward-validation-v1",
+                    "status": "skipped",
+                    "signal_date": "2026-06-01",
+                    "benchmark_symbol": "TAIEX",
+                    "outcome": {},
+                    "skip_reason": "missing_benchmark",
+                }
+            ],
         )
-        session.add(result)
-        session.flush()
 
         pending = exclude_persisted_daily_radar_windows(
             session,
             {f"id:{candidate.id}": [5]},
         )
+        terminal_summary = upsert_forward_validation_results(
+            session,
+            [
+                {
+                    "candidate_id": candidate.id,
+                    "window_days": 5,
+                    "validation_version": "daily-radar-forward-validation-v1",
+                    "status": "skipped",
+                    "signal_date": "2026-06-01",
+                    "benchmark_symbol": "TAIEX",
+                    "outcome": {},
+                    "skip_reason": "stale_candidate_price",
+                }
+            ],
+        )
+        stale = exclude_persisted_daily_radar_windows(
+            session,
+            {f"id:{candidate.id}": [5]},
+        )
+        result = session.execute(select(DailyRadarForwardValidationResult)).scalar_one()
         result.status = "validated"
+        result.skip_reason = None
         session.flush()
         completed = exclude_persisted_daily_radar_windows(
             session,
             {f"id:{candidate.id}": [5]},
         )
 
+    assert retryable_summary["skipped_count"] == 1
+    assert retryable_summary["retryable_skipped_count"] == 1
+    assert retryable_summary["terminal_skipped_count"] == 0
+    assert terminal_summary["skipped_count"] == 1
+    assert terminal_summary["retryable_skipped_count"] == 0
+    assert terminal_summary["terminal_skipped_count"] == 1
     assert pending == {f"id:{candidate.id}": [5]}
+    assert stale == {}
     assert completed == {}
 
 
@@ -788,6 +823,8 @@ def test_forward_validation_due_mode_keeps_missing_benchmark_skip_reason(monkeyp
     assert data["records_written"] == 1
     assert data["validated_count"] == 0
     assert data["skipped_count"] == 1
+    assert data["retryable_skipped_count"] == 1
+    assert data["terminal_skipped_count"] == 0
     assert data["report"]["skip_reasons"] == {"missing_benchmark": 1}
 
     with Session(engine) as session:

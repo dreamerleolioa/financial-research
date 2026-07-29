@@ -128,6 +128,8 @@ class DailyRadarForwardValidationRunResponse(BaseModel):
     records_written: int
     validated_count: int
     skipped_count: int
+    retryable_skipped_count: int
+    terminal_skipped_count: int
     report: dict[str, Any]
 
 

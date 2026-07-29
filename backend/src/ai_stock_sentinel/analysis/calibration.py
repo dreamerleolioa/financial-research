@@ -41,6 +41,7 @@ from ai_stock_sentinel.calibration.forward_validation import (
     close_on,
     due_windows_by_candidate,
     evaluate_forward_validation,
+    is_terminal_forward_validation_skip_reason,
     number as forward_number,
 )
 from ai_stock_sentinel.config import STRATEGY_VERSION
@@ -278,6 +279,7 @@ def upsert_general_analysis_validation_results(
     outcomes: Iterable[Mapping[str, Any]],
 ) -> dict[str, int]:
     written = validated = skipped = 0
+    retryable_skipped = terminal_skipped = 0
     for outcome in outcomes:
         sample_id = outcome.get("sample_id")
         if sample_id is None:
@@ -317,11 +319,17 @@ def upsert_general_analysis_validation_results(
             validated += 1
         else:
             skipped += 1
+            if is_terminal_forward_validation_skip_reason(outcome.get("skip_reason")):
+                terminal_skipped += 1
+            else:
+                retryable_skipped += 1
     session.flush()
     return {
         "records_written": written,
         "validated_count": validated,
         "skipped_count": skipped,
+        "retryable_skipped_count": retryable_skipped,
+        "terminal_skipped_count": terminal_skipped,
     }
 
 
