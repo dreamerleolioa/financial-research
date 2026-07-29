@@ -173,6 +173,23 @@ def run_general_analysis_forward_validation(
             )
             price_series = merge_price_series(price_series, fetched_prices)
             benchmark_prices = price_series.get(request.benchmark_symbol, benchmark_prices)
+        complete_windows = due_windows_by_candidate(
+            samples,
+            adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
+            as_of_date=as_of_date,
+            windows=request.windows,
+            price_series_by_symbol={
+                symbol: price_series.get(symbol, [])
+                for symbol in symbols
+            },
+            benchmark_prices=benchmark_prices,
+            require_complete_price_series=True,
+        )
+        windows_by_sample = {
+            key: [window for window in windows if window in set(complete_windows.get(key, []))]
+            for key, windows in windows_by_sample.items()
+            if any(window in set(complete_windows.get(key, [])) for window in windows)
+        }
     report, outcomes = evaluate_general_analysis_forward_validation(
         samples,
         price_series_by_symbol={

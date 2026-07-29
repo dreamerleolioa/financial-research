@@ -177,6 +177,7 @@ def due_windows_by_candidate(
     windows: Sequence[int],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
+    require_complete_price_series: bool = False,
 ) -> dict[str, list[int]]:
     active_windows = ordered_positive_values(windows)
     price_series = price_series_by_symbol or {}
@@ -194,9 +195,29 @@ def due_windows_by_candidate(
             continue
         symbol = str(candidate.get("symbol") or "")
         candidate_by_date = normalize_price_series(price_series.get(symbol, []))
+        candidate_trading_rows = len(
+            future_price_rows(candidate_by_date, signal_date, as_of_date)
+        )
+        benchmark_trading_rows = len(
+            future_price_rows(benchmark_by_date, signal_date, as_of_date)
+        )
+        if require_complete_price_series:
+            calendar_days_elapsed = (as_of_date - signal_date).days
+            due_windows = [
+                window
+                for window in active_windows
+                if (
+                    candidate_trading_rows >= window
+                    and benchmark_trading_rows >= window
+                )
+                or calendar_days_elapsed >= window * 2
+            ]
+            if due_windows:
+                due_by_candidate[key] = due_windows
+            continue
         available_trading_rows = max(
-            len(future_price_rows(candidate_by_date, signal_date, as_of_date)),
-            len(future_price_rows(benchmark_by_date, signal_date, as_of_date)),
+            candidate_trading_rows,
+            benchmark_trading_rows,
         )
         if available_trading_rows == 0 and (not candidate_by_date or not benchmark_by_date):
             calendar_days_elapsed = (as_of_date - signal_date).days

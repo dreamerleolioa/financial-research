@@ -494,6 +494,48 @@ def test_due_windows_do_not_mark_recent_missing_price_series_as_mature() -> None
     assert due == {}
 
 
+def test_complete_due_windows_require_both_candidate_and_benchmark_rows() -> None:
+    from ai_stock_sentinel.daily_radar.forward_validation import due_windows_by_candidate
+
+    candidate = _candidate_snapshot()
+    candidate_prices = [
+        _price(f"2026-06-{day:02d}", 100 + day, 100 + day, 100 + day, 100 + day)
+        for day in range(1, 22)
+    ]
+    benchmark_prices = [
+        _price(f"2026-06-{day:02d}", 1000 + day, 1000 + day, 1000 + day, 1000 + day)
+        for day in range(1, 21)
+    ]
+
+    discovery = due_windows_by_candidate(
+        [candidate],
+        as_of_date=date(2026, 6, 21),
+        windows=[20],
+        price_series_by_symbol={"2330.TW": candidate_prices},
+        benchmark_prices=benchmark_prices,
+    )
+    complete = due_windows_by_candidate(
+        [candidate],
+        as_of_date=date(2026, 6, 21),
+        windows=[20],
+        price_series_by_symbol={"2330.TW": candidate_prices},
+        benchmark_prices=benchmark_prices,
+        require_complete_price_series=True,
+    )
+    overdue = due_windows_by_candidate(
+        [candidate],
+        as_of_date=date(2026, 7, 11),
+        windows=[20],
+        price_series_by_symbol={"2330.TW": candidate_prices},
+        benchmark_prices=benchmark_prices,
+        require_complete_price_series=True,
+    )
+
+    assert discovery == {"id:1": [20]}
+    assert complete == {}
+    assert overdue == {"id:1": [20]}
+
+
 def test_forward_validation_uses_latest_public_rerun_for_each_run_date() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
@@ -762,7 +804,7 @@ def test_due_endpoint_fetches_missing_candidate_prices_from_provider(monkeypatch
     assert provider.calls == [["2330.TW"]]
 
 
-def test_forward_validation_due_mode_keeps_missing_benchmark_skip_reason(monkeypatch) -> None:
+def test_forward_validation_due_mode_waits_for_incomplete_benchmark_window(monkeypatch) -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
         engine,
@@ -820,18 +862,15 @@ def test_forward_validation_due_mode_keeps_missing_benchmark_skip_reason(monkeyp
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["records_written"] == 1
+    assert data["records_written"] == 0
     assert data["validated_count"] == 0
-    assert data["skipped_count"] == 1
-    assert data["retryable_skipped_count"] == 1
+    assert data["skipped_count"] == 0
+    assert data["retryable_skipped_count"] == 0
     assert data["terminal_skipped_count"] == 0
-    assert data["report"]["skip_reasons"] == {"missing_benchmark": 1}
+    assert data["report"]["skip_reasons"] == {}
 
     with Session(engine) as session:
-        row = session.execute(select(DailyRadarForwardValidationResult)).scalar_one()
-
-    assert row.status == "skipped"
-    assert row.skip_reason == "missing_benchmark"
+        assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 0
 
 
 def test_forward_validation_migration_creates_idempotency_key_and_indexes() -> None:

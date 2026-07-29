@@ -891,6 +891,19 @@ def run_daily_radar_forward_validation_endpoint(
             )
             price_series = merge_price_series(price_series, fetched_prices)
             benchmark_prices = price_series.get(request.benchmark_symbol, benchmark_prices)
+        complete_windows = due_windows_by_candidate(
+            candidates,
+            as_of_date=as_of_date,
+            windows=request.windows,
+            price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+            benchmark_prices=benchmark_prices,
+            require_complete_price_series=True,
+        )
+        windows_by_candidate = {
+            key: [window for window in windows if window in set(complete_windows.get(key, []))]
+            for key, windows in windows_by_candidate.items()
+            if any(window in set(complete_windows.get(key, [])) for window in windows)
+        }
     evaluation = build_forward_validation_report(
         candidates,
         price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},

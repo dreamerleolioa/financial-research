@@ -308,6 +308,7 @@ def due_windows_by_candidate(
     windows: Sequence[int],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
+    require_complete_price_series: bool = False,
 ) -> dict[str, list[int]]:
     return shared_forward_validation.due_windows_by_candidate(
         candidates,
@@ -316,6 +317,7 @@ def due_windows_by_candidate(
         windows=windows,
         price_series_by_symbol=price_series_by_symbol,
         benchmark_prices=benchmark_prices,
+        require_complete_price_series=require_complete_price_series,
     )
 
 
