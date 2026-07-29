@@ -17,6 +17,7 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.forward_validation import (
+    FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
     forward_validation_fixture_inputs,
 )
@@ -299,7 +300,7 @@ def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_s
                     DailyRadarForwardValidationResult(
                         candidate_id=candidate.id,
                         window_days=window,
-                        validation_version="daily-radar-forward-validation-v1",
+                        validation_version=FORWARD_VALIDATION_VERSION,
                         status="validated",
                         signal_date=run.run_date,
                         target_date=date(
@@ -388,6 +389,52 @@ def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_s
     )
 
 
+def test_daily_radar_monthly_report_defaults_to_current_validation_version() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        _add_validation_result(session, candidate)
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=5,
+                validation_version="daily-radar-forward-validation-v1",
+                status="validated",
+                signal_date=run.run_date,
+                target_date=date(2026, 6, 8),
+                benchmark_symbol="TAIEX",
+                outcome={
+                    "forward_return_pct": 999.0,
+                    "excess_return_vs_benchmark_pct": 999.0,
+                    "hit_above_threshold": True,
+                },
+                skip_reason=None,
+            )
+        )
+        session.commit()
+
+        report = build_monthly_rule_review_report(
+            session,
+            market="TW",
+            year=2026,
+            month=6,
+            min_sample_count=1,
+        ).json_report
+
+    assert report["metadata"]["validation_version"] == FORWARD_VALIDATION_VERSION
+    assert report["sample_summary"]["evaluated_sample_count"] == 1
+    assert report["sample_summary"]["validated_sample_count"] == 1
+
+
 def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:
     workflow = (ROOT.parent / ".github" / "workflows" / "monthly-analysis-calibration.yml").read_text(
         encoding="utf-8"
@@ -470,7 +517,7 @@ def _add_validation_result(session: Session, candidate: DailyRadarCandidate) -> 
         DailyRadarForwardValidationResult(
             candidate_id=candidate.id,
             window_days=5,
-            validation_version="daily-radar-forward-validation-v1",
+            validation_version=FORWARD_VALIDATION_VERSION,
             status="validated",
             signal_date=date(2026, 6, 1),
             target_date=date(2026, 6, 8),

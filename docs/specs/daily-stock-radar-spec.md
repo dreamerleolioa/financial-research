@@ -500,7 +500,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 9. `.github/workflows/daily-radar.yml` 於 OHLCV 與 market context 後、台灣時間平日 23:50 執行 5 / 10 / 20 交易日 due validation。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
 10. 同一市場與 `run_date` 有多次公開 run 時，forward validation 與月報只採最新 run，避免 rerun 被誤當獨立樣本。
 11. `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日輸出 AES-256 加密的 Actions artifact；月報選最近六個 20 日窗口已完整評估月份，前五個 training、最新一個 holdout，並以 `run_date` 做固定 seed block bootstrap。
-12. 月報 watermark 使用 DB aggregation；cohort 決定後只載入所選六個月份的 candidate / replay / validation detail。Daily Radar 與一般分析透過各自 adapter 共用中立 forward-validation core，不得讓 feature-specific scoring 或 ORM 依賴流入 core。
+12. 月報 watermark 使用 DB aggregation；cohort 決定後只載入所選六個月份的 candidate / replay / validation detail。Daily Radar 與一般分析透過各自 adapter 共用中立 forward-validation core，並由共用 planning service 統一 benchmark-first refresh 與 evaluation-readiness 排序；不得讓 feature-specific scoring 或 ORM 依賴流入 core。Forward-validation outcome 語意變更時必須升級 `validation_version`；月報預設只讀目前版本，舊版本僅供歷史稽核，不得混合聚合。
 13. `min_sample_count` 以各 5 / 10 / 20 日窗口的 distinct candidate 計算；training 固定至少 20 個 `run_date` blocks、holdout 至少 5 個 blocks。同日多檔股票仍屬同一 bootstrap block。
 14. Replay coverage 必須整體與逐月達 90%；`replay_input_incomplete` 可留在診斷報告，但 coverage 未達標時不得輸出可自動修改資格。
 15. Actions artifact retention 為 30 天，必須每月下載並自行保存；報表本身不直接建立 PR 或修改 production scoring。

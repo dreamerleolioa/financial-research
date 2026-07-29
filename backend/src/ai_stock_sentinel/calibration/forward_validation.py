@@ -116,17 +116,24 @@ def evaluate_forward_window(
     if entry_price is None:
         return _skip(base, "missing_candidate_entry_price")
 
-    future_rows = future_price_rows(candidate_prices, signal_date, as_of_date)
-    if len(future_rows) < window_days:
+    candidate_future_rows = future_price_rows(candidate_prices, signal_date, as_of_date)
+    if len(candidate_future_rows) < window_days:
         return _skip(base, "missing_future_price")
-    window_rows = future_rows[:window_days]
-    target_date, target_price = window_rows[-1][0], window_rows[-1][1]["close"]
 
     benchmark_entry = close_on(benchmark_by_date, signal_date)
     benchmark_future_rows = future_price_rows(benchmark_by_date, signal_date, as_of_date)
     if benchmark_entry is None or len(benchmark_future_rows) < window_days:
         return _skip(base, "missing_benchmark")
-    benchmark_target = benchmark_future_rows[window_days - 1][1]["close"]
+    benchmark_window_rows = benchmark_future_rows[:window_days]
+    window_rows = [
+        (row_date, candidate_prices[row_date])
+        for row_date, _benchmark_row in benchmark_window_rows
+        if row_date in candidate_prices
+    ]
+    if len(window_rows) < window_days:
+        return _skip(base, "missing_future_price")
+    target_date, target_price = window_rows[-1][0], window_rows[-1][1]["close"]
+    benchmark_target = benchmark_window_rows[-1][1]["close"]
 
     if entry_price <= 0 or target_price <= 0 or benchmark_entry <= 0 or benchmark_target <= 0:
         return _skip(base, "invalid_price")
@@ -169,7 +176,7 @@ def default_due_start_date(
     )
 
 
-def due_windows_by_candidate(
+def discover_due_windows_by_candidate(
     candidates: Iterable[Mapping[str, Any]],
     *,
     adapter: ForwardValidationAdapter,
@@ -218,14 +225,35 @@ def due_windows_by_candidate(
     return due_by_candidate
 
 
+def due_windows_by_candidate(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    adapter: ForwardValidationAdapter,
+    as_of_date: date,
+    windows: Sequence[int],
+    price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, list[int]]:
+    return discover_due_windows_by_candidate(
+        candidates,
+        adapter=adapter,
+        as_of_date=as_of_date,
+        windows=windows,
+        price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices,
+    )
+
+
 def symbols_requiring_forward_price_refresh(
     candidates: Iterable[Mapping[str, Any]],
     *,
     windows_by_candidate: Mapping[str, Sequence[int]],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
     as_of_date: date,
 ) -> list[str]:
     required: set[str] = set()
+    benchmark_by_date = normalize_price_series(benchmark_prices or [])
     for candidate in candidates:
         pending_windows = windows_by_candidate.get(candidate_key(candidate), [])
         signal_date = parse_date(candidate.get("record_date"))
@@ -238,7 +266,19 @@ def symbols_requiring_forward_price_refresh(
         available_rows = len(
             future_price_rows(candidate_by_date, signal_date, as_of_date)
         )
-        if available_rows < max(int(window) for window in pending_windows):
+        max_window = max(int(window) for window in pending_windows)
+        benchmark_dates = [
+            row_date
+            for row_date, _row in future_price_rows(
+                benchmark_by_date,
+                signal_date,
+                as_of_date,
+            )[:max_window]
+        ]
+        if available_rows < max_window or any(
+            row_date not in candidate_by_date
+            for row_date in benchmark_dates
+        ):
             required.add(symbol)
     return sorted(required)
 
@@ -386,6 +426,7 @@ __all__ = [
     "candidate_key",
     "close_on",
     "default_due_start_date",
+    "discover_due_windows_by_candidate",
     "due_windows_by_candidate",
     "evaluate_forward_validation",
     "evaluate_forward_window",
