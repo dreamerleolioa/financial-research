@@ -90,6 +90,62 @@ def test_forward_window_calculates_return_mfe_mae_and_benchmark_excess() -> None
     assert outcome["outcome"]["hit_above_threshold"] is True
 
 
+def test_forward_window_uses_benchmark_trading_dates_for_both_series() -> None:
+    daily_candidate = _candidate_snapshot()
+    general_candidate = {
+        "candidate_id": daily_candidate["candidate_id"],
+        "symbol": daily_candidate["symbol"],
+        "record_date": daily_candidate["record_date"],
+        "data_dates": daily_candidate["data_dates"],
+        "input_snapshot": {
+            "ohlcv": {
+                "close": daily_candidate["input_snapshot"]["ohlcv"]["close"],
+            },
+        },
+    }
+    candidate_prices = [
+        _price("2026-06-01", 100, 101, 99, 100),
+        _price("2026-06-02", 101, 102, 100, 101),
+        _price("2026-06-03", 102, 103, 101, 102),
+        _price("2026-06-04", 999, 999, 999, 999),  # provider-only row on a market closure
+        _price("2026-06-05", 103, 104, 102, 103),
+    ]
+    benchmark_prices = [
+        _price("2026-06-01", 1000, 1001, 999, 1000),
+        _price("2026-06-02", 1001, 1002, 1000, 1001),
+        _price("2026-06-03", 1002, 1003, 1001, 1002),
+        _price("2026-06-05", 1003, 1004, 1002, 1003),
+    ]
+
+    daily = evaluate_forward_window(
+        daily_candidate,
+        price_series=candidate_prices,
+        benchmark_prices=benchmark_prices,
+        window_days=3,
+        as_of_date=date(2026, 6, 5),
+        benchmark_symbol="TAIEX",
+        validation_version="aligned-calendar-v1",
+        hit_threshold_pct=0.0,
+    )
+    general = evaluate_shared_forward_window(
+        general_candidate,
+        price_series=candidate_prices,
+        benchmark_prices=benchmark_prices,
+        adapter=GENERAL_ANALYSIS_FORWARD_ADAPTER,
+        window_days=3,
+        as_of_date=date(2026, 6, 5),
+        benchmark_symbol="TAIEX",
+        validation_version="aligned-calendar-v1",
+        hit_threshold_pct=0.0,
+    )
+
+    assert daily["status"] == general["status"] == "validated"
+    assert daily["target_date"] == general["target_date"] == "2026-06-05"
+    assert daily["outcome"]["target_price"] == general["outcome"]["target_price"] == 103.0
+    assert daily["outcome"]["max_favorable_excursion_pct"] == 4.0
+    assert daily["outcome"]["max_adverse_excursion_pct"] == 0.0
+
+
 def test_forward_window_records_explicit_skip_reasons_for_missing_inputs() -> None:
     candidate = _candidate_snapshot()
 
@@ -536,6 +592,49 @@ def test_complete_due_windows_require_both_candidate_and_benchmark_rows() -> Non
     assert overdue == {"id:1": [20]}
 
 
+def test_complete_due_windows_require_candidate_rows_on_benchmark_dates() -> None:
+    from ai_stock_sentinel.daily_radar.forward_validation import due_windows_by_candidate
+
+    candidate = _candidate_snapshot()
+    candidate_prices = [
+        _price("2026-06-01", 100, 100, 100, 100),
+        _price("2026-06-02", 101, 101, 101, 101),
+        _price("2026-06-03", 102, 102, 102, 102),
+        _price("2026-06-04", 999, 999, 999, 999),  # not a benchmark trading date
+    ]
+    benchmark_prices = [
+        _price("2026-06-01", 1000, 1000, 1000, 1000),
+        _price("2026-06-02", 1001, 1001, 1001, 1001),
+        _price("2026-06-03", 1002, 1002, 1002, 1002),
+        _price("2026-06-05", 1003, 1003, 1003, 1003),
+    ]
+
+    incomplete = due_windows_by_candidate(
+        [candidate],
+        as_of_date=date(2026, 6, 5),
+        windows=[3],
+        price_series_by_symbol={"2330.TW": candidate_prices},
+        benchmark_prices=benchmark_prices,
+        require_complete_price_series=True,
+    )
+    complete = due_windows_by_candidate(
+        [candidate],
+        as_of_date=date(2026, 6, 5),
+        windows=[3],
+        price_series_by_symbol={
+            "2330.TW": [
+                *candidate_prices,
+                _price("2026-06-05", 103, 103, 103, 103),
+            ],
+        },
+        benchmark_prices=benchmark_prices,
+        require_complete_price_series=True,
+    )
+
+    assert incomplete == {}
+    assert complete == {"id:1": [3]}
+
+
 def test_forward_validation_uses_latest_public_rerun_for_each_run_date() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
@@ -719,6 +818,31 @@ def test_forward_price_refresh_only_targets_incomplete_due_symbols_and_merges_ro
 
     assert required == ["2317.TW"]
     assert [row["date"] for row in merged["2317.TW"]] == ["2026-06-01", "2026-06-02"]
+
+
+def test_forward_price_refresh_targets_symbol_missing_a_benchmark_trading_date() -> None:
+    candidate = _candidate_snapshot()
+    required = symbols_requiring_forward_price_refresh(
+        [candidate],
+        windows_by_candidate={"id:1": [3]},
+        price_series_by_symbol={
+            "2330.TW": [
+                _price("2026-06-01", 100, 100, 100, 100),
+                _price("2026-06-02", 101, 101, 101, 101),
+                _price("2026-06-03", 102, 102, 102, 102),
+                _price("2026-06-04", 999, 999, 999, 999),
+            ],
+        },
+        benchmark_prices=[
+            _price("2026-06-01", 1000, 1000, 1000, 1000),
+            _price("2026-06-02", 1001, 1001, 1001, 1001),
+            _price("2026-06-03", 1002, 1002, 1002, 1002),
+            _price("2026-06-05", 1003, 1003, 1003, 1003),
+        ],
+        as_of_date=date(2026, 6, 5),
+    )
+
+    assert required == ["2330.TW"]
 
 
 def test_due_endpoint_fetches_missing_candidate_prices_from_provider(monkeypatch) -> None:

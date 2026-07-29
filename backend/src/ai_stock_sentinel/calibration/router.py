@@ -156,6 +156,7 @@ def run_general_analysis_forward_validation(
             samples,
             windows_by_candidate=windows_by_sample,
             price_series_by_symbol=price_series,
+            benchmark_prices=benchmark_prices,
             as_of_date=as_of_date,
         )
         if benchmark_requires_forward_price_refresh(

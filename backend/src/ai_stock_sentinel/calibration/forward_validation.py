@@ -116,17 +116,24 @@ def evaluate_forward_window(
     if entry_price is None:
         return _skip(base, "missing_candidate_entry_price")
 
-    future_rows = future_price_rows(candidate_prices, signal_date, as_of_date)
-    if len(future_rows) < window_days:
+    candidate_future_rows = future_price_rows(candidate_prices, signal_date, as_of_date)
+    if len(candidate_future_rows) < window_days:
         return _skip(base, "missing_future_price")
-    window_rows = future_rows[:window_days]
-    target_date, target_price = window_rows[-1][0], window_rows[-1][1]["close"]
 
     benchmark_entry = close_on(benchmark_by_date, signal_date)
     benchmark_future_rows = future_price_rows(benchmark_by_date, signal_date, as_of_date)
     if benchmark_entry is None or len(benchmark_future_rows) < window_days:
         return _skip(base, "missing_benchmark")
-    benchmark_target = benchmark_future_rows[window_days - 1][1]["close"]
+    benchmark_window_rows = benchmark_future_rows[:window_days]
+    window_rows = [
+        (row_date, candidate_prices[row_date])
+        for row_date, _benchmark_row in benchmark_window_rows
+        if row_date in candidate_prices
+    ]
+    if len(window_rows) < window_days:
+        return _skip(base, "missing_future_price")
+    target_date, target_price = window_rows[-1][0], window_rows[-1][1]["close"]
+    benchmark_target = benchmark_window_rows[-1][1]["close"]
 
     if entry_price <= 0 or target_price <= 0 or benchmark_entry <= 0 or benchmark_target <= 0:
         return _skip(base, "invalid_price")
@@ -203,15 +210,28 @@ def due_windows_by_candidate(
         )
         if require_complete_price_series:
             calendar_days_elapsed = (as_of_date - signal_date).days
-            due_windows = [
-                window
-                for window in active_windows
-                if (
-                    candidate_trading_rows >= window
-                    and benchmark_trading_rows >= window
+            benchmark_future_rows = future_price_rows(
+                benchmark_by_date,
+                signal_date,
+                as_of_date,
+            )
+            benchmark_entry_available = close_on(benchmark_by_date, signal_date) is not None
+            due_windows: list[int] = []
+            for window in active_windows:
+                benchmark_window_dates = [
+                    row_date
+                    for row_date, _row in benchmark_future_rows[:window]
+                ]
+                complete_on_benchmark_calendar = (
+                    benchmark_entry_available
+                    and len(benchmark_window_dates) == window
+                    and all(
+                        row_date in candidate_by_date
+                        for row_date in benchmark_window_dates
+                    )
                 )
-                or calendar_days_elapsed >= window * 2
-            ]
+                if complete_on_benchmark_calendar or calendar_days_elapsed >= window * 2:
+                    due_windows.append(window)
             if due_windows:
                 due_by_candidate[key] = due_windows
             continue
@@ -244,9 +264,11 @@ def symbols_requiring_forward_price_refresh(
     *,
     windows_by_candidate: Mapping[str, Sequence[int]],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
     as_of_date: date,
 ) -> list[str]:
     required: set[str] = set()
+    benchmark_by_date = normalize_price_series(benchmark_prices or [])
     for candidate in candidates:
         pending_windows = windows_by_candidate.get(candidate_key(candidate), [])
         signal_date = parse_date(candidate.get("record_date"))
@@ -259,7 +281,19 @@ def symbols_requiring_forward_price_refresh(
         available_rows = len(
             future_price_rows(candidate_by_date, signal_date, as_of_date)
         )
-        if available_rows < max(int(window) for window in pending_windows):
+        max_window = max(int(window) for window in pending_windows)
+        benchmark_dates = [
+            row_date
+            for row_date, _row in future_price_rows(
+                benchmark_by_date,
+                signal_date,
+                as_of_date,
+            )[:max_window]
+        ]
+        if available_rows < max_window or any(
+            row_date not in candidate_by_date
+            for row_date in benchmark_dates
+        ):
             required.add(symbol)
     return sorted(required)
 

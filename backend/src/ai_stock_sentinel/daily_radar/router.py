@@ -874,6 +874,7 @@ def run_daily_radar_forward_validation_endpoint(
             candidates,
             windows_by_candidate=windows_by_candidate,
             price_series_by_symbol=price_series,
+            benchmark_prices=benchmark_prices,
             as_of_date=as_of_date,
         )
         if benchmark_requires_forward_price_refresh(

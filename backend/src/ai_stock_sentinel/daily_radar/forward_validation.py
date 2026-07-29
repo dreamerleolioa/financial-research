@@ -373,12 +373,14 @@ def symbols_requiring_forward_price_refresh(
     *,
     windows_by_candidate: Mapping[str, Sequence[int]],
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
     as_of_date: date,
 ) -> list[str]:
     return shared_forward_validation.symbols_requiring_forward_price_refresh(
         candidates,
         windows_by_candidate=windows_by_candidate,
         price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices,
         as_of_date=as_of_date,
     )
 
