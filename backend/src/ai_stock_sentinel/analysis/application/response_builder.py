@@ -43,7 +43,7 @@ def compute_technical_profile(snapshot: dict, *, is_final: bool = True) -> dict[
     return profile if isinstance(profile, dict) else None
 
 
-def extract_indicators(result: dict) -> dict:
+def extract_indicators(result: dict, *, is_final: bool) -> dict:
     snapshot = result.get("snapshot") or {}
     inst = result.get("institutional_flow") or {}
     action_plan = result.get("action_plan") or {}
@@ -56,7 +56,7 @@ def extract_indicators(result: dict) -> dict:
     volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
     technical_payload = build_technical_profile_from_snapshot(
         snapshot,
-        is_final=bool(result.get("is_final", True)),
+        is_final=is_final,
     )
     canonical_indicators = technical_payload.get("technical_indicators", {}) if technical_payload else {}
     bb = _bollinger_bands(closes) if closes else None

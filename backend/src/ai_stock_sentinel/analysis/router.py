@@ -195,8 +195,8 @@ def _compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
     return _response_compute_technical_indicators(snapshot)
 
 
-def _extract_indicators(result: dict) -> dict:
-    return _response_extract_indicators(result)
+def _extract_indicators(result: dict, *, is_final: bool) -> dict:
+    return _response_extract_indicators(result, is_final=is_final)
 
 
 def _position_risk_language_snapshot_from_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -349,7 +349,7 @@ def _maybe_upsert_log_from_result(
             "signal_confidence": result.get("signal_confidence"),
             "action_tag": result.get("action_plan_tag"),
             "recommended_action": result.get("recommended_action"),
-            "indicators": _extract_indicators(result),
+            "indicators": _extract_indicators(result, is_final=is_final),
             "final_verdict": result.get("analysis"),
             "is_final": is_final,
         },
@@ -574,7 +574,7 @@ def analyze(
                 "signal_confidence": result.get("signal_confidence"),
                 "action_tag": result.get("action_plan_tag"),
                 "recommended_action": result.get("recommended_action"),
-                "indicators": _extract_indicators(result),
+                "indicators": _extract_indicators(result, is_final=is_final),
                 "final_verdict": result.get("analysis"),
                 "is_final": is_final,
                 "full_result": cache_full_result,
@@ -702,7 +702,7 @@ def analyze_position(
             "analysis_type": "position",
             "signal_confidence": result.get("signal_confidence"),
             "action_tag": result.get("action_plan_tag"),
-            "indicators": _extract_indicators(result),
+            "indicators": _extract_indicators(result, is_final=is_final),
             "final_verdict": result.get("analysis"),
             "is_final": is_final,
             "full_result": full_result,

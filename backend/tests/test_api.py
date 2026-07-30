@@ -581,13 +581,54 @@ def test_extract_indicators_persists_canonical_volume_ratio() -> None:
             "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
             "fetched_at": "2026-07-30T05:00:00+00:00",
         },
-        "is_final": False,
     }
 
-    indicators = api_module._extract_indicators(result)
+    indicators = api_module._extract_indicators(result, is_final=False)
 
     assert indicators["volume_ratio"] == pytest.approx(volumes[-1] / (sum(volumes[-20:]) / 20))
     assert indicators["avg_volume_20"] == pytest.approx(sum(volumes[:-1]) / 20)
+
+
+def test_analyze_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
+    """General cache and daily log must exclude the unfinished current-day volume."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx for idx in range(21)]
+    volumes = [1_000.0 + idx * 10 for idx in range(20)] + [9_999.0]
+    snapshot = {
+        "symbol": "2330.TW",
+        "current_price": closes[-1],
+        "recent_closes": closes,
+        "recent_highs": [price + 1.0 for price in closes],
+        "recent_lows": [price - 1.0 for price in closes],
+        "recent_volumes": volumes,
+        "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
+        "fetched_at": "2026-07-30T05:00:00+00:00",
+    }
+    graph = _make_graph({
+        "snapshot": snapshot,
+        "analysis": "盤中分析",
+        "signal_confidence": 55,
+        "action_plan_tag": "neutral",
+        "errors": [],
+    })
+    captured: dict[str, dict] = {}
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.max)
+    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: True)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda db, data: captured.setdefault("cache", data))
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda db, data: captured.setdefault("log", data))
+
+    response = _client_with_graph(graph).post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    expected_average = pytest.approx(sum(volumes[:-1]) / 20)
+    assert captured["cache"]["is_final"] is False
+    assert captured["cache"]["indicators"]["avg_volume_20"] == expected_average
+    assert captured["log"]["is_final"] is False
+    assert captured["log"]["indicators"]["avg_volume_20"] == expected_average
 
 
 # ---------------------------------------------------------------------------
@@ -968,6 +1009,41 @@ def test_analyze_position_returns_position_analysis_block() -> None:
     assert pa["risk_state_label"] == "風險狀態穩定"
     assert pa["risk_control_reference"]["reference_type"] == "dynamic_defense_reference"
     assert "recommended_action" in pa["command_language_deprecated"]
+
+
+def test_analyze_position_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
+    """Position cache must exclude the unfinished current-day volume during market hours."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx for idx in range(21)]
+    volumes = [1_000.0 + idx * 10 for idx in range(20)] + [9_999.0]
+    snapshot = {
+        **asdict(_POSITION_SNAPSHOT),
+        "recent_closes": closes,
+        "recent_highs": [price + 1.0 for price in closes],
+        "recent_lows": [price - 1.0 for price in closes],
+        "recent_volumes": volumes,
+        "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
+        "fetched_at": "2026-07-30T05:00:00+00:00",
+    }
+    graph = _make_graph({**_POSITION_FINAL_STATE, "snapshot": snapshot})
+    captured: dict[str, dict] = {}
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.max)
+    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda db, data: captured.setdefault("cache", data))
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+
+    response = _client_with_graph(graph).post(
+        "/analyze/position",
+        json={"symbol": "2330.TW", "entry_price": 980.0},
+    )
+
+    assert response.status_code == 200
+    assert captured["cache"]["is_final"] is False
+    assert captured["cache"]["indicators"]["avg_volume_20"] == pytest.approx(sum(volumes[:-1]) / 20)
 
 
 def test_position_cache_full_result_can_seed_history_risk_language_snapshot() -> None:
