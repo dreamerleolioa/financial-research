@@ -140,6 +140,23 @@ export function formatMovingAverages(indicators: TechnicalIndicators, snapshotSy
     : "—";
 }
 
+export function formatDailyOhlc(snapshot: Record<string, unknown>, snapshotSymbol?: string): string {
+  const prices = ["day_open", "day_high", "day_low"].map((key) => {
+    const value = snapshot[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  });
+
+  return prices.some((value) => value != null)
+    ? prices.map((value) => formatPrice(value, snapshotSymbol)).join(" / ")
+    : "—";
+}
+
+export function formatAverageVolumes(indicators: TechnicalIndicators): string {
+  const volumes = [indicators.avg_volume_20, indicators.avg_volume_60];
+  const hasVolume = volumes.some((value) => typeof value === "number" && Number.isFinite(value));
+  return hasVolume ? volumes.map((value) => formatVolume(value)).join(" / ") : "資料不足";
+}
+
 function formatPhase1Distance(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -252,7 +269,9 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
     ["股票代碼", displaySymbol],
     ["資料狀態", marketSessionLabel],
     ["現價", price(currentPrice)],
+    ["今日開／高／低", formatDailyOhlc(snapshot, snapshotSymbol)],
     ["成交量", formatVolume(snapshot.volume)],
+    ["20／60 日均成交量", formatAverageVolumes(indicators)],
     ["均線 MA5/20/60", formatMovingAverages(indicators, snapshotSymbol)],
     ["20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
     ["60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],

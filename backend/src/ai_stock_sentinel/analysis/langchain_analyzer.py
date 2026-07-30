@@ -150,6 +150,13 @@ def build_position_history_section(prev_context: dict | None) -> str:
     )
 
 
+def _snapshot_payload_for_prompt(snapshot: StockSnapshot) -> dict[str, Any]:
+    """Keep backend-only alignment metadata out of the LLM prompt."""
+    payload = asdict(snapshot)
+    payload.pop("recent_volume_dates", None)
+    return payload
+
+
 class LangChainStockAnalyzer:
     _COST_PER_MILLION_INPUT_TOKENS = 3.0  # USD, claude-sonnet-4
     _COST_THRESHOLD_USD = 1.0
@@ -301,7 +308,7 @@ class LangChainStockAnalyzer:
             "fundamental_context": fundamental_context or "（本次無基本面資料）",
             "history_section": build_position_history_section(prev_context),
             "raw_data_snapshot": json.dumps({
-                "snapshot": asdict(snapshot),
+                "snapshot": _snapshot_payload_for_prompt(snapshot),
                 "technical_summary": technical_context,
                 "institutional_summary": institutional_context,
                 "fundamental_summary": fundamental_context,

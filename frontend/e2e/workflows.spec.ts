@@ -22,9 +22,19 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await page.getByRole("button", { name: "快速資料" }).click();
 
   await expect(page.getByText("世芯-KY 3661.TW", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("今日開／高／低", { exact: true })).toBeVisible();
+  await expect(page.getByText("3075 / 3155 / 3050", { exact: true })).toBeVisible();
+  await expect(page.getByText("20／60 日均成交量", { exact: true })).toBeVisible();
+  await expect(page.getByText("2,100 / 1,800", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "複製技術指標摘要" }).click();
   await expect(page.getByRole("button", { name: "複製技術指標摘要" })).toContainText("已複製");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("3661.TW");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("今日開／高／低：3075 / 3155 / 3050");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("20／60 日均成交量：2,100 / 1,800");
 
   const openDialogButton = page.getByRole("button", { name: "加入持股" });
   await openDialogButton.click();
@@ -57,6 +67,12 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await copyButton.click();
   await expect(copyButton).toContainText("已複製");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("3661.TW");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("今日開／高／低：3075 / 3155 / 3050");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("20／60 日均成交量：2,100 / 1,800");
 });
 
 test("Portfolio destructive action requires confirmation before DELETE", async ({ page }) => {

@@ -34,6 +34,8 @@ export interface TechnicalIndicators {
   ma5: number | null;
   ma20: number | null;
   ma60: number | null;
+  avg_volume_20: number | null;
+  avg_volume_60: number | null;
   high_20d: number | null;
   low_20d: number | null;
   high_60d: number | null;

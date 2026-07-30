@@ -49,6 +49,8 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
     assert raw["rsi14"] == canonical_metrics.calc_rsi(closes, period=14)
     assert raw["bias20"] is not None
     assert raw["volume_ratio"] is not None
+    assert raw["avg_volume_20"] == pytest.approx(sum(volumes[-20:]) / 20)
+    assert raw["avg_volume_60"] == pytest.approx(sum(volumes[-60:]) / 60)
     assert raw["macd_hist"] is not None
     assert profile["version"] == TECHNICAL_LAYER_VERSION
     assert profile["formula_versions"] == {
@@ -70,6 +72,180 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
         "atr_state",
     }
     assert set(profile["secondary_evidence"]) == {"adx", "donchian", "mfi", "kd"}
+
+
+def test_profile_intraday_average_volumes_exclude_current_dated_bar() -> None:
+    closes, highs, lows, volumes = _series(length=61)
+    volume_dates = ["2026-07-29"] * 60 + ["2026-07-30"]
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        volume_dates=volume_dates,
+        data_date="2026-07-30",
+        is_final=False,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] == pytest.approx(sum(volumes[-21:-1]) / 20)
+    assert raw["avg_volume_60"] == pytest.approx(sum(volumes[:-1]) / 60)
+    assert raw["volume_ratio"] == pytest.approx(volumes[-1] / (sum(volumes[-20:]) / 20))
+
+
+def test_profile_intraday_average_volumes_keep_latest_completed_bar() -> None:
+    closes, highs, lows, volumes = _series(length=60)
+    volume_dates = ["2026-07-29"] * 60
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        volume_dates=volume_dates,
+        data_date="2026-07-30",
+        is_final=False,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] == pytest.approx(sum(volumes[-20:]) / 20)
+    assert raw["avg_volume_60"] == pytest.approx(sum(volumes) / 60)
+
+
+def test_profile_intraday_legacy_volume_series_reports_unknown_average() -> None:
+    closes, highs, lows, volumes = _series(length=61)
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        data_date="2026-07-30",
+        is_final=False,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] is None
+    assert raw["avg_volume_60"] is None
+    assert raw["volume_ratio"] == pytest.approx(volumes[-1] / (sum(volumes[-20:]) / 20))
+
+
+def test_intraday_average_volume_fields_do_not_change_volume_ratio_scoring() -> None:
+    closes, highs, lows, volumes = _series(length=61)
+    volume_dates = ["2026-07-29"] * 60 + ["2026-07-30"]
+
+    with_average_volumes = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        volume_dates=volume_dates,
+        data_date="2026-07-30",
+        is_final=False,
+    )
+    legacy_without_dates = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        data_date="2026-07-30",
+        is_final=False,
+    )
+
+    assert with_average_volumes is not None
+    assert legacy_without_dates is not None
+    assert with_average_volumes["technical_indicators"]["avg_volume_20"] is not None
+    assert legacy_without_dates["technical_indicators"]["avg_volume_20"] is None
+    assert (
+        with_average_volumes["technical_indicators"]["volume_ratio"]
+        == legacy_without_dates["technical_indicators"]["volume_ratio"]
+    )
+    assert (
+        with_average_volumes["technical_profile"]["primary_score_inputs"]["volume_ratio"]
+        == legacy_without_dates["technical_profile"]["primary_score_inputs"]["volume_ratio"]
+    )
+    assert (
+        with_average_volumes["technical_profile"]["score_summary"]
+        == legacy_without_dates["technical_profile"]["score_summary"]
+    )
+
+
+def test_profile_average_volumes_use_valid_volume_lookback_when_ohlcv_is_misaligned() -> None:
+    closes, highs, lows, volumes = _series(length=100)
+    valid_volumes = volumes[1:]
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=valid_volumes,
+        is_final=True,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] == pytest.approx(sum(valid_volumes[-20:]) / 20)
+    assert raw["avg_volume_60"] == pytest.approx(sum(valid_volumes[-60:]) / 60)
+    assert payload["technical_profile"]["data_quality"]["volume_aligned"] is False
+
+
+def test_profile_from_snapshot_uses_taipei_date_for_intraday_volume_alignment() -> None:
+    closes, highs, lows, volumes = _series(length=60)
+    snapshot = {
+        "current_price": closes[-1],
+        "recent_closes": closes,
+        "recent_highs": highs,
+        "recent_lows": lows,
+        "recent_volumes": volumes,
+        "recent_volume_dates": ["2026-07-29"] * 60,
+        "fetched_at": "2026-07-29T23:00:00+00:00",
+    }
+
+    payload = build_technical_profile_from_snapshot(snapshot, is_final=False)
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] == pytest.approx(sum(volumes[-20:]) / 20)
+    assert raw["avg_volume_60"] == pytest.approx(sum(volumes) / 60)
+    assert payload["technical_profile"]["data_quality"]["data_date"] == "2026-07-30"
+
+
+def test_profile_average_volume_reports_insufficient_60_day_lookback() -> None:
+    closes, highs, lows, volumes = _series(length=40)
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] == pytest.approx(sum(volumes[-20:]) / 20)
+    assert raw["avg_volume_60"] is None
+    assert "avg_volume_60" in payload["technical_profile"]["data_quality"]["missing_fields"]
+
+
+def test_profile_average_volume_rejects_non_finite_aggregate() -> None:
+    closes = [100.0] * 61
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        volumes=[1e308] * 60,
+        is_final=True,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["avg_volume_20"] is None
+    assert raw["avg_volume_60"] is None
+    assert "avg_volume_20" in payload["technical_profile"]["data_quality"]["missing_fields"]
+    assert "avg_volume_60" in payload["technical_profile"]["data_quality"]["missing_fields"]
 
 
 def test_profile_score_summary_uses_bucket_caps_and_excludes_display_only() -> None:

@@ -179,6 +179,37 @@ def test_analyze_returns_analysis_detail_when_llm_returns_json():
     assert result.technical_signal == "bullish"
 
 
+def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None:
+    """Prompt payload should omit date-alignment metadata that the LLM does not use."""
+    from unittest.mock import patch
+
+    analyzer = LangChainStockAnalyzer(llm=MagicMock())
+    snapshot = _make_snapshot(
+        recent_volumes=[1_000.0, 1_100.0],
+        recent_volume_dates=["2026-03-03", "2026-03-04"],
+    )
+    mock_chain = MagicMock()
+    mock_chain.invoke.return_value = {
+        "summary": "台積電穩健。",
+        "risks": [],
+        "technical_signal": "sideways",
+    }
+
+    with patch("langchain_core.prompts.ChatPromptTemplate") as mock_template:
+        mock_prompt = MagicMock()
+        mock_template.from_messages.return_value = mock_prompt
+        mock_prompt.__or__ = MagicMock(return_value=MagicMock(
+            __or__=MagicMock(return_value=mock_chain)
+        ))
+        analyzer.analyze(snapshot)
+
+    invoke_kwargs = mock_chain.invoke.call_args.args[0]
+    raw_data_snapshot = json.loads(invoke_kwargs["raw_data_snapshot"])
+    prompt_snapshot = raw_data_snapshot["snapshot"]
+    assert "recent_volume_dates" not in prompt_snapshot
+    assert prompt_snapshot["recent_volumes"] == [1_000.0, 1_100.0]
+
+
 # ---------------------------------------------------------------------------
 # Session 3: AnalysisDetail new fields + _parse_analysis None-safe
 # ---------------------------------------------------------------------------
