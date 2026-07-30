@@ -10,12 +10,15 @@ from ai_stock_sentinel.models import StockSnapshot
 
 
 def _make_history(close_values: list[float], volume_values: list[int]) -> pd.DataFrame:
-    return pd.DataFrame({
-        "Close": close_values,
-        "High": [value + 1 for value in close_values],
-        "Low": [value - 1 for value in close_values],
-        "Volume": volume_values,
-    })
+    return pd.DataFrame(
+        {
+            "Close": close_values,
+            "High": [value + 1 for value in close_values],
+            "Low": [value - 1 for value in close_values],
+            "Volume": volume_values,
+        },
+        index=pd.date_range("2026-07-27", periods=len(close_values), freq="D"),
+    )
 
 
 def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
@@ -97,6 +100,7 @@ def test_fetch_basic_snapshot_includes_recent_high_low_volume_series() -> None:
     assert snapshot.recent_highs == [96.0, 99.0, 101.0]
     assert snapshot.recent_lows == [94.0, 97.0, 99.0]
     assert snapshot.recent_volumes == [111.0, 222.0, 333.0]
+    assert snapshot.recent_volume_dates == ["2026-07-27", "2026-07-28", "2026-07-29"]
 
 
 # ─── StockSnapshot 位階欄位測試 ───────────────────────────────────────────────

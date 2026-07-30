@@ -6,7 +6,13 @@ import type {
   TechnicalProfileSignal,
 } from "../lib/analysisTypes";
 import { formatPrice, formatVolume } from "../lib/formatters";
-import { formatIndicatorNumber, formatMovingAverages, getTechnicalIndicatorLabel } from "../lib/technicalIndicators";
+import {
+  formatAverageVolumes,
+  formatDailyOhlc,
+  formatIndicatorNumber,
+  formatMovingAverages,
+  getTechnicalIndicatorLabel,
+} from "../lib/technicalIndicators";
 
 const PRIMARY_LABELS: Record<string, string> = {
   ma_structure: "均線結構",
@@ -242,7 +248,9 @@ function rawIndicatorRows(indicators: TechnicalIndicators, snapshot: Record<stri
 
   return [
     ["現價", price(numberFromSnapshot(snapshot, "current_price"))],
+    ["今日開／高／低", formatDailyOhlc(snapshot, symbol)],
     ["成交量", formatVolume(snapshot.volume)],
+    ["20／60 日均成交量", formatAverageVolumes(indicators)],
     ["均線 MA5/20/60", formatMovingAverages(indicators, symbol)],
     ["20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
     ["60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],

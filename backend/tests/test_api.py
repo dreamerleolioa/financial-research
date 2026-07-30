@@ -528,6 +528,8 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
     assert indicators["ma20"] is not None
     assert indicators["ma60"] is None
     assert indicators["high_20d"] is not None
+    assert indicators["avg_volume_20"] == pytest.approx(sum(snapshot["recent_volumes"][-20:]) / 20)
+    assert indicators["avg_volume_60"] is None
     assert indicators["low_20d"] is not None
     assert indicators["high_60d"] is None
     assert indicators["low_60d"] is None
@@ -562,6 +564,71 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
     )
     assert profile["data_quality"]["lookback_days_available"] == 40
     assert "lookback_60d" in profile["data_quality"]["missing_fields"]
+
+
+def test_extract_indicators_persists_canonical_volume_ratio() -> None:
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx for idx in range(21)]
+    volumes = [100.0] * 20 + [150.0]
+    result = {
+        "snapshot": {
+            "current_price": closes[-1],
+            "recent_closes": closes,
+            "recent_highs": [price + 1.0 for price in closes],
+            "recent_lows": [price - 1.0 for price in closes],
+            "recent_volumes": volumes,
+            "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
+            "fetched_at": "2026-07-30T05:00:00+00:00",
+        },
+    }
+
+    indicators = api_module._extract_indicators(result, is_final=False)
+
+    assert indicators["volume_ratio"] == pytest.approx(volumes[-1] / (sum(volumes[-20:]) / 20))
+    assert indicators["avg_volume_20"] == pytest.approx(sum(volumes[:-1]) / 20)
+
+
+def test_analyze_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
+    """General cache and daily log must exclude the unfinished current-day volume."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx for idx in range(21)]
+    volumes = [1_000.0 + idx * 10 for idx in range(20)] + [9_999.0]
+    snapshot = {
+        "symbol": "2330.TW",
+        "current_price": closes[-1],
+        "recent_closes": closes,
+        "recent_highs": [price + 1.0 for price in closes],
+        "recent_lows": [price - 1.0 for price in closes],
+        "recent_volumes": volumes,
+        "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
+        "fetched_at": "2026-07-30T05:00:00+00:00",
+    }
+    graph = _make_graph({
+        "snapshot": snapshot,
+        "analysis": "盤中分析",
+        "signal_confidence": 55,
+        "action_plan_tag": "neutral",
+        "errors": [],
+    })
+    captured: dict[str, dict] = {}
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.max)
+    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: True)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda db, data: captured.setdefault("cache", data))
+    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda db, data: captured.setdefault("log", data))
+
+    response = _client_with_graph(graph).post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    expected_average = pytest.approx(sum(volumes[:-1]) / 20)
+    assert captured["cache"]["is_final"] is False
+    assert captured["cache"]["indicators"]["avg_volume_20"] == expected_average
+    assert captured["log"]["is_final"] is False
+    assert captured["log"]["indicators"]["avg_volume_20"] == expected_average
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +1009,41 @@ def test_analyze_position_returns_position_analysis_block() -> None:
     assert pa["risk_state_label"] == "風險狀態穩定"
     assert pa["risk_control_reference"]["reference_type"] == "dynamic_defense_reference"
     assert "recommended_action" in pa["command_language_deprecated"]
+
+
+def test_analyze_position_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
+    """Position cache must exclude the unfinished current-day volume during market hours."""
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx for idx in range(21)]
+    volumes = [1_000.0 + idx * 10 for idx in range(20)] + [9_999.0]
+    snapshot = {
+        **asdict(_POSITION_SNAPSHOT),
+        "recent_closes": closes,
+        "recent_highs": [price + 1.0 for price in closes],
+        "recent_lows": [price - 1.0 for price in closes],
+        "recent_volumes": volumes,
+        "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
+        "fetched_at": "2026-07-30T05:00:00+00:00",
+    }
+    graph = _make_graph({**_POSITION_FINAL_STATE, "snapshot": snapshot})
+    captured: dict[str, dict] = {}
+
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.max)
+    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: None)
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda db, data: captured.setdefault("cache", data))
+    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
+    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
+
+    response = _client_with_graph(graph).post(
+        "/analyze/position",
+        json={"symbol": "2330.TW", "entry_price": 980.0},
+    )
+
+    assert response.status_code == 200
+    assert captured["cache"]["is_final"] is False
+    assert captured["cache"]["indicators"]["avg_volume_20"] == pytest.approx(sum(volumes[:-1]) / 20)
 
 
 def test_position_cache_full_result_can_seed_history_risk_language_snapshot() -> None:
@@ -1491,6 +1593,7 @@ def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
             "fetched_at": "2026-06-23T06:30:00+00:00",
         },
         "analysis": "舊快取分析內容",
+        "technical_indicators": {"ma5": 132.0},
         "technical_profile": None,
         "is_final": False,
         "intraday_disclaimer": None,
@@ -1507,10 +1610,87 @@ def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
     response = api_module._build_response_from_cache(cache, "2330.TW", full_result=full)
 
     assert response.technical_indicators is not None
+    assert response.technical_indicators.avg_volume_20 == pytest.approx(
+        sum(full["snapshot"]["recent_volumes"][-20:]) / 20
+    )
+    assert response.technical_indicators.avg_volume_60 == pytest.approx(
+        sum(full["snapshot"]["recent_volumes"][-60:]) / 60
+    )
     assert response.technical_profile is not None
     assert response.technical_profile["version"] == "technical-layer-v1"
     assert response.technical_profile["data_quality"]["data_date"] == "2026-06-23"
     assert response.technical_profile["data_quality"]["is_final"] is True
+
+
+def test_cache_hit_syncs_average_volumes_into_existing_technical_profile() -> None:
+    """Old profiles and raw indicators should expose the same hydrated average volumes."""
+    from unittest.mock import MagicMock
+    import ai_stock_sentinel.analysis.router as api_module
+
+    closes = [100.0 + idx * 0.5 for idx in range(70)]
+    volumes = [1000 + idx * 10 for idx in range(70)]
+    full = {
+        "snapshot": {
+            "symbol": "2330.TW",
+            "current_price": closes[-1],
+            "recent_closes": closes,
+            "recent_highs": [price + 1.0 for price in closes],
+            "recent_lows": [price - 1.0 for price in closes],
+            "recent_volumes": volumes,
+            "fetched_at": "2026-06-23T06:30:00+00:00",
+        },
+        "analysis": "舊快取分析內容",
+        "technical_indicators": {"ma5": 132.0},
+        "technical_profile": {
+            "version": "cached-technical-version",
+            "primary_score_inputs": {
+                "ma_alignment": "cached-ma-alignment",
+                "rsi14": 999.0,
+            },
+            "score_summary": {
+                "primary_score": 91,
+                "secondary_score": 82,
+                "risk_filter_score": -73,
+            },
+            "display_only": {},
+            "data_quality": {
+                "is_final": False,
+                "missing_fields": ["avg_volume_20", "avg_volume_60", "legacy_field"],
+            },
+        },
+        "is_final": False,
+        "intraday_disclaimer": None,
+        "errors": [],
+    }
+    cache = MagicMock()
+    cache.is_final = True
+    cache.intraday_disclaimer = None
+    cache.strategy_version = "strategy-v1"
+    cache.final_verdict = "舊快取分析內容"
+    cache.signal_confidence = None
+    cache.action_tag = None
+
+    response = api_module._build_response_from_cache(cache, "2330.TW", full_result=full)
+
+    assert response.technical_indicators is not None
+    assert response.technical_profile is not None
+    display_only = response.technical_profile["display_only"]
+    assert display_only["avg_volume_20"] == pytest.approx(sum(volumes[-20:]) / 20)
+    assert display_only["avg_volume_60"] == pytest.approx(sum(volumes[-60:]) / 60)
+    assert response.technical_indicators.avg_volume_20 == display_only["avg_volume_20"]
+    assert response.technical_indicators.avg_volume_60 == display_only["avg_volume_60"]
+    assert response.technical_profile["data_quality"]["missing_fields"] == ["legacy_field"]
+    assert response.technical_profile["data_quality"]["is_final"] is True
+    assert response.technical_profile["version"] == "cached-technical-version"
+    assert response.technical_profile["primary_score_inputs"] == {
+        "ma_alignment": "cached-ma-alignment",
+        "rsi14": 999.0,
+    }
+    assert response.technical_profile["score_summary"] == {
+        "primary_score": 91,
+        "secondary_score": 82,
+        "risk_filter_score": -73,
+    }
 
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:

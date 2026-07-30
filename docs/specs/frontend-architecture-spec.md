@@ -148,6 +148,8 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - 每次送出快速或完整分析前都必須清除前一次結果，並沿用 AbortController 中止舊 request，避免切換標的或研究深度時留下 stale result。
 - 快速資料完成後可在結果區直接補做完整分析，但不得自動觸發 AI。完整報告與近期新聞只在完整分析成功後顯示。
 - `technical_profile` 存在時，面板先顯示完整指標值，再於下方提供預設收合的技術分層摘要；展開後顯示技術分、主要判斷、風險與過熱濾網、輔助證據與 data-quality caveat。
+- 完整指標值需在現價旁顯示 snapshot 的今日開盤／最高／最低價；`buildTechnicalIndicatorsCopyText()` 使用相同的「今日開／高／低」標籤、順序與價格格式輸出，欄位缺漏時顯示 `—`，不得由前端自行推算。
+- 完整指標值需在成交量附近顯示後端 `technical_indicators.avg_volume_20` / `avg_volume_60`，以「20／60 日均成交量」合併呈現並同步輸出到 copy-to-AI；盤中排除未完成當日、收盤包含當日的計算口徑由後端負責，前端不得從 snapshot 自行重算；兩欄位只供顯示與複製，不改變 `technical_profile` 評分。
 - 缺少 `technical_profile` 時，面板 fallback 為 legacy raw 技術指標值，不顯示分層結論。
 - 缺少 raw `technical_indicators` 時，面板保留分層摘要可見性，並在完整指標值區顯示資料不足提示。
 - 分層 signal row 只顯示中文狀態與 impact，不顯示 backend reason 原文；完整推理仍保留在 API trace，不作預設 UI 噪音。

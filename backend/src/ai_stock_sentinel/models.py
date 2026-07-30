@@ -34,6 +34,7 @@ class StockSnapshot:
     recent_highs: List[float] = field(default_factory=list)
     recent_lows: List[float] = field(default_factory=list)
     recent_volumes: List[float] = field(default_factory=list)
+    recent_volume_dates: List[str] = field(default_factory=list)
     high_20d: float | None = None       # 近 20 日最高收盤價
     low_20d: float | None = None        # 近 20 日最低收盤價
     support_20d: float | None = None    # 近 20 日支撐位（low_20d × 0.99）

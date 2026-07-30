@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ai_stock_sentinel.technical.metrics import (
     adx,
@@ -26,6 +28,7 @@ from ai_stock_sentinel.technical.metrics import (
 TECHNICAL_METRICS_VERSION = "technical-metrics-v1"
 TECHNICAL_LAYER_VERSION = "technical-layer-v1"
 REQUIRED_LOOKBACK_DAYS = 60
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
 def build_technical_profile_from_snapshot(
@@ -46,6 +49,7 @@ def build_technical_profile_from_snapshot(
         highs=_numbers(snapshot.get("recent_highs")),
         lows=_numbers(snapshot.get("recent_lows")),
         volumes=_numbers(snapshot.get("recent_volumes")),
+        volume_dates=_strings(snapshot.get("recent_volume_dates")),
         current_price=current_price,
         data_date=snapshot_data_date,
         is_final=is_final,
@@ -58,6 +62,7 @@ def build_technical_profile_payload(
     highs: Sequence[float] | None = None,
     lows: Sequence[float] | None = None,
     volumes: Sequence[float] | None = None,
+    volume_dates: Sequence[str] | None = None,
     current_price: float | None = None,
     data_date: str | None = None,
     is_final: bool = True,
@@ -70,6 +75,7 @@ def build_technical_profile_payload(
     high_values = _aligned_values(highs, close_values)
     low_values = _aligned_values(lows, close_values)
     volume_values = _aligned_values(volumes, close_values)
+    average_volume_values = _valid_volume_values(volumes)
     aligned_hilo = high_values is not None and low_values is not None
     aligned_volume = volume_values is not None
 
@@ -92,6 +98,14 @@ def build_technical_profile_payload(
     low_20d = min(low_source[-20:]) if len(low_source) >= 20 else None
     high_60d = max(high_source[-60:]) if len(high_source) >= 60 else None
     low_60d = min(low_source[-60:]) if len(low_source) >= 60 else None
+    completed_volume_values = _completed_volume_values(
+        average_volume_values,
+        volume_dates=volume_dates,
+        data_date=data_date,
+        is_final=is_final,
+    )
+    avg_volume_20 = _average_volume(completed_volume_values, 20)
+    avg_volume_60 = _average_volume(completed_volume_values, 60)
     primary_high_20d = _prior_window_max(high_values, 20) if aligned_hilo else None
     primary_low_20d = _prior_window_min(low_values, 20) if aligned_hilo else None
     volume_ratio = _volume_ratio(volume_values)
@@ -105,6 +119,8 @@ def build_technical_profile_payload(
         "rsi14": rsi14,
         "bias20": bias20,
         "volume_ratio": volume_ratio,
+        "avg_volume_20": avg_volume_20,
+        "avg_volume_60": avg_volume_60,
         "high_20d": high_20d,
         "low_20d": low_20d,
         "high_60d": high_60d,
@@ -184,6 +200,8 @@ def build_technical_profile_payload(
             "secondary_evidence": secondary,
             "display_only": {
                 "obv_absolute_value": raw_indicators["obv"],
+                "avg_volume_20": raw_indicators["avg_volume_20"],
+                "avg_volume_60": raw_indicators["avg_volume_60"],
                 "donchian_upper": raw_indicators["donchian_upper"],
                 "donchian_lower": raw_indicators["donchian_lower"],
                 "donchian_mid": raw_indicators["donchian_mid"],
@@ -443,7 +461,17 @@ def _missing_fields(
         missing.extend(["highs", "lows"])
     if not aligned_volume:
         missing.append("volumes")
-    for field in ("ma20", "macd_hist", "atr", "mfi", "kd_k", "donchian_upper", "obv_trend_20d"):
+    for field in (
+        "ma20",
+        "macd_hist",
+        "atr",
+        "mfi",
+        "kd_k",
+        "donchian_upper",
+        "obv_trend_20d",
+        "avg_volume_20",
+        "avg_volume_60",
+    ):
         if indicators.get(field) is None:
             missing.append(field)
     if indicators.get("obv_trend_mid_long") is None:
@@ -477,6 +505,34 @@ def _volume_ratio(volumes: Sequence[float] | None) -> float | None:
     if avg_volume_20 == 0:
         return None
     return volumes[-1] / avg_volume_20
+
+
+def _completed_volume_values(
+    volumes: Sequence[float] | None,
+    *,
+    volume_dates: Sequence[str] | None,
+    data_date: str | None,
+    is_final: bool,
+) -> list[float] | None:
+    if volumes is None:
+        return None
+    values = [float(value) for value in volumes]
+    if is_final or not values:
+        return values
+
+    dates_aligned = volume_dates is not None and len(volume_dates) == len(values)
+    if not dates_aligned:
+        return None
+    if data_date is not None and volume_dates[-1] == data_date:
+        return values[:-1]
+    return values
+
+
+def _average_volume(volumes: Sequence[float] | None, window: int) -> float | None:
+    if volumes is None or len(volumes) < window:
+        return None
+    average = sum(volumes[-window:]) / window
+    return average if math.isfinite(average) else None
 
 
 def _prior_window_max(values: Sequence[float] | None, window: int) -> float | None:
@@ -523,11 +579,28 @@ def _numbers(value: Any) -> list[float]:
     return numbers
 
 
+def _strings(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [text for item in value if (text := _string_or_none(item)) is not None]
+
+
 def _aligned_values(values: Sequence[float] | None, closes: Sequence[float]) -> list[float] | None:
     if values is None:
         return None
     numbers = [float(value) for value in values if value is not None]
     return numbers if len(numbers) == len(closes) else None
+
+
+def _valid_volume_values(values: Sequence[float] | None) -> list[float] | None:
+    if values is None:
+        return None
+    volumes: list[float] = []
+    for value in values:
+        number = _number_or_none(value)
+        if number is not None and math.isfinite(number) and number >= 0:
+            volumes.append(number)
+    return volumes
 
 
 def _number_or_none(value: Any) -> float | None:
@@ -555,4 +628,10 @@ def _date_string_or_none(value: Any) -> str | None:
     text = _string_or_none(value)
     if not text:
         return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.tzinfo is not None:
+        return parsed.astimezone(TAIPEI_TZ).date().isoformat()
     return text[:10] if len(text) >= 10 else text

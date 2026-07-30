@@ -43,6 +43,8 @@ class TechnicalIndicators(BaseModel):
     ma5: float | None = None
     ma20: float | None = None
     ma60: float | None = None
+    avg_volume_20: float | None = None
+    avg_volume_60: float | None = None
     high_20d: float | None = None
     low_20d: float | None = None
     high_60d: float | None = None

@@ -329,6 +329,7 @@ make run-api
 >
 > | 欄位                                                    | 類型           | 說明                                                                                                   |
 > | ------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+> | `avg_volume_20` / `avg_volume_60`                       | number \| null | 近 20／60 個交易日平均成交量；收盤資料包含當日，盤中資料排除尚未完成的當日，lookback、成交量日期或 finite 檢查不足時回傳 `null`；兩欄位屬於 display-only，不改變既有 `volume_ratio` 與技術評分公式 |
 > | `bollinger_upper` / `bollinger_mid` / `bollinger_lower` | number \| null | 布林通道上中下軌                                                                                       |
 > | `bollinger_bandwidth`                                   | number \| null | 布林通道寬度                                                                                           |
 > | `bollinger_position`                                    | string \| null | `near_upper` / `above_mid` / `below_mid` / `near_lower` / `flat`                                       |

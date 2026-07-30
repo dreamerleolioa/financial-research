@@ -43,7 +43,7 @@ def compute_technical_profile(snapshot: dict, *, is_final: bool = True) -> dict[
     return profile if isinstance(profile, dict) else None
 
 
-def extract_indicators(result: dict) -> dict:
+def extract_indicators(result: dict, *, is_final: bool) -> dict:
     snapshot = result.get("snapshot") or {}
     inst = result.get("institutional_flow") or {}
     action_plan = result.get("action_plan") or {}
@@ -54,6 +54,11 @@ def extract_indicators(result: dict) -> dict:
     highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
     lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
     volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
+    technical_payload = build_technical_profile_from_snapshot(
+        snapshot,
+        is_final=is_final,
+    )
+    canonical_indicators = technical_payload.get("technical_indicators", {}) if technical_payload else {}
     bb = _bollinger_bands(closes) if closes else None
     macd_data = _macd(closes) if closes else None
     aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
@@ -78,7 +83,9 @@ def extract_indicators(result: dict) -> dict:
         "low_60d": min(low_source[-60:]) if len(low_source) >= 60 else None,
         "rsi_14": result.get("rsi14"),
         "close_price": snapshot.get("current_price"),
-        "volume_ratio": snapshot.get("volume_ratio"),
+        "volume_ratio": canonical_indicators.get("volume_ratio"),
+        "avg_volume_20": canonical_indicators.get("avg_volume_20"),
+        "avg_volume_60": canonical_indicators.get("avg_volume_60"),
         "strategy_type": result.get("strategy_type"),
         "conviction_level": action_plan.get("conviction_level"),
         "sentiment_label": cleaned_news.get("sentiment_label"),
@@ -188,10 +195,38 @@ def _hydrate_cached_technical_payload(
 ) -> None:
     payload = build_technical_profile_from_snapshot(snapshot, is_final=is_final)
     if payload:
+        computed_indicators = TechnicalIndicators.model_validate(payload["technical_indicators"])
         if response.technical_indicators is None:
-            response.technical_indicators = TechnicalIndicators.model_validate(payload["technical_indicators"])
-        if response.technical_profile is None and isinstance(payload.get("technical_profile"), dict):
-            response.technical_profile = payload["technical_profile"]
+            response.technical_indicators = computed_indicators
+        else:
+            response.technical_indicators.avg_volume_20 = computed_indicators.avg_volume_20
+            response.technical_indicators.avg_volume_60 = computed_indicators.avg_volume_60
+        computed_profile = payload.get("technical_profile")
+        if response.technical_profile is None and isinstance(computed_profile, dict):
+            response.technical_profile = computed_profile
+        elif isinstance(response.technical_profile, dict) and isinstance(computed_profile, dict):
+            display_only = response.technical_profile.setdefault("display_only", {})
+            computed_display_only = computed_profile.get("display_only")
+            if isinstance(display_only, dict) and isinstance(computed_display_only, dict):
+                display_only["avg_volume_20"] = computed_display_only.get("avg_volume_20")
+                display_only["avg_volume_60"] = computed_display_only.get("avg_volume_60")
+            data_quality = response.technical_profile.get("data_quality")
+            computed_data_quality = computed_profile.get("data_quality")
+            if isinstance(data_quality, dict) and isinstance(computed_data_quality, dict):
+                missing_fields = data_quality.get("missing_fields")
+                computed_missing_fields = computed_data_quality.get("missing_fields")
+                if isinstance(missing_fields, list) and isinstance(computed_missing_fields, list):
+                    updated_missing_fields = [
+                        field
+                        for field in missing_fields
+                        if field not in {"avg_volume_20", "avg_volume_60"}
+                    ]
+                    updated_missing_fields.extend(
+                        field
+                        for field in ("avg_volume_20", "avg_volume_60")
+                        if field in computed_missing_fields
+                    )
+                    data_quality["missing_fields"] = sorted(set(updated_missing_fields))
     _set_profile_finality(response.technical_profile, is_final=is_final)
 
 

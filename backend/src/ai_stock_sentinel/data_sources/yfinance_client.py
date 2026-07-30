@@ -37,6 +37,7 @@ class YFinanceCrawler:
         recent_highs = []
         recent_lows = []
         recent_volumes = []
+        recent_volume_dates = []
         if not history.empty and "Close" in history.columns:
             recent_closes = [float(value) for value in history["Close"].dropna().tolist()]
         if not history.empty and "High" in history.columns:
@@ -44,7 +45,9 @@ class YFinanceCrawler:
         if not history.empty and "Low" in history.columns:
             recent_lows = [float(value) for value in history["Low"].dropna().tolist()]
         if not history.empty and "Volume" in history.columns:
-            recent_volumes = [float(value) for value in history["Volume"].dropna().tolist()]
+            volume_series = history["Volume"].dropna()
+            recent_volumes = [float(value) for value in volume_series.tolist()]
+            recent_volume_dates = _history_dates(volume_series.index)
 
         volume = int(getattr(info, "last_volume", 0) or 0)
         volume_source = "realtime"
@@ -72,6 +75,7 @@ class YFinanceCrawler:
             recent_highs=recent_highs,
             recent_lows=recent_lows,
             recent_volumes=recent_volumes,
+            recent_volume_dates=recent_volume_dates,
         )
         logger.info(json.dumps({
             "event": "provider_success",
@@ -80,3 +84,17 @@ class YFinanceCrawler:
             "is_fallback": False,
         }))
         return snapshot
+
+
+def _history_dates(index: object) -> list[str]:
+    dates: list[str] = []
+    try:
+        values = list(index)  # type: ignore[arg-type]
+    except TypeError:
+        return dates
+    for value in values:
+        date_method = getattr(value, "date", None)
+        if not callable(date_method):
+            return []
+        dates.append(date_method().isoformat())
+    return dates

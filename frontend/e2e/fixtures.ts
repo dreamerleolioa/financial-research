@@ -59,6 +59,9 @@ export const quickAnalyzeResult = {
   snapshot: {
     symbol: "3661.TW",
     current_price: 3120,
+    day_open: 3075,
+    day_high: 3155,
+    day_low: 3050,
     change_percent: 1.6,
     volume: 2380,
     data_date: "2026-07-16",
@@ -80,6 +83,8 @@ export const quickAnalyzeResult = {
     ma5: 3080,
     ma20: 3010,
     ma60: 2860,
+    avg_volume_20: 2100,
+    avg_volume_60: 1800,
     high_20d: 3180,
     low_20d: 2920,
     high_60d: 3240,
