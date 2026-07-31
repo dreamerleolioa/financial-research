@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from threading import Event
+from time import sleep
 
 import pytest
 
@@ -15,6 +16,7 @@ from ai_stock_sentinel.data_sources.taiwan_price_limits import (
 class _FakeResponse:
     def __init__(self, payload: dict) -> None:
         self._body = json.dumps(payload).encode("utf-8")
+        self._offset = 0
 
     def __enter__(self) -> _FakeResponse:
         return self
@@ -23,7 +25,16 @@ class _FakeResponse:
         return None
 
     def read(self, size: int = -1) -> bytes:
-        return self._body if size < 0 else self._body[:size]
+        if size < 0:
+            chunk = self._body[self._offset:]
+            self._offset = len(self._body)
+            return chunk
+        chunk = self._body[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+    def read1(self, size: int = -1) -> bytes:
+        return self.read(size)
 
 
 @pytest.mark.parametrize(
@@ -49,20 +60,25 @@ def test_fetch_taiwan_price_limits_uses_official_bounds(
         stock_code = symbol.split(".", maxsplit=1)[0]
         return _FakeResponse({
             "rtcode": "0000",
-            "msgArray": [{"c": stock_code, "u": limit_up, "w": limit_down}],
+            "msgArray": [{
+                "c": stock_code,
+                "z": str(current_price),
+                "u": limit_up,
+                "w": limit_down,
+            }],
         })
 
     result = fetch_taiwan_price_limits(
         symbol,
-        current_price=current_price,
         opener=opener,
     )
 
     assert result.status == expected_status
+    assert result.current_price == current_price
     assert result.limit_up_price == float(limit_up)
     assert result.limit_down_price == float(limit_down)
     assert expected_channel in requests[0][0]
-    assert requests[0][1] == 3.0
+    assert requests[0][1] == 0.5
 
 
 def test_fetch_taiwan_price_limits_returns_unknown_for_unsupported_exchange() -> None:
@@ -71,30 +87,30 @@ def test_fetch_taiwan_price_limits_returns_unknown_for_unsupported_exchange() ->
 
     result = fetch_taiwan_price_limits(
         "AAPL",
-        current_price=220.0,
         opener=unexpected_opener,
     )
 
     assert result.status == "unknown"
+    assert result.current_price is None
     assert result.limit_up_price is None
     assert result.limit_down_price is None
 
 
 def test_fetch_taiwan_price_limits_does_not_infer_missing_bounds() -> None:
     def opener(_request, *, timeout: float):
-        assert timeout == 3.0
+        assert timeout == 0.5
         return _FakeResponse({
             "rtcode": "0000",
-            "msgArray": [{"c": "00646", "u": "-", "w": "-"}],
+            "msgArray": [{"c": "00646", "z": "52.0000", "u": "-", "w": "-"}],
         })
 
     result = fetch_taiwan_price_limits(
         "00646.TW",
-        current_price=52.0,
         opener=opener,
     )
 
     assert result.status == "unknown"
+    assert result.current_price == 52.0
     assert result.limit_up_price is None
     assert result.limit_down_price is None
 
@@ -105,24 +121,43 @@ def test_fetch_taiwan_price_limits_rejects_oversized_provider_response() -> None
             return b"x" * size
 
     def opener(_request, *, timeout: float):
-        assert timeout == 3.0
+        assert timeout == 0.5
         return OversizedResponse({})
 
     with pytest.raises(ValueError, match="exceeds the allowed size"):
         fetch_taiwan_price_limits(
             "2330.TW",
-            current_price=100.0,
+            opener=opener,
+        )
+
+
+def test_fetch_taiwan_price_limits_enforces_total_response_deadline() -> None:
+    class SlowResponse(_FakeResponse):
+        def read(self, size: int = -1) -> bytes:
+            sleep(0.02)
+            return super().read(1)
+
+    def opener(_request, *, timeout: float):
+        assert timeout == 0.01
+        return SlowResponse({
+            "rtcode": "0000",
+            "msgArray": [{"c": "2330", "z": "100", "u": "110", "w": "90"}],
+        })
+
+    with pytest.raises(TimeoutError, match="total deadline"):
+        fetch_taiwan_price_limits(
+            "2330.TW",
+            timeout=0.01,
             opener=opener,
         )
 
 
 def test_price_limit_deadline_degrades_provider_failure_to_unknown() -> None:
-    def raise_provider_error(_symbol: str, *, current_price: float) -> TaiwanPriceLimitSnapshot:
-        raise TimeoutError(f"price limit timeout at {current_price}")
+    def raise_provider_error(_symbol: str) -> TaiwanPriceLimitSnapshot:
+        raise TimeoutError("price limit timeout")
 
     result = fetch_taiwan_price_limits_with_deadline(
         "2330.TW",
-        current_price=100.0,
         fetcher=raise_provider_error,
     )
 
@@ -132,18 +167,18 @@ def test_price_limit_deadline_degrades_provider_failure_to_unknown() -> None:
 def test_price_limit_deadline_does_not_wait_for_slow_optional_provider() -> None:
     release_provider = Event()
 
-    def slow_provider(_symbol: str, *, current_price: float) -> TaiwanPriceLimitSnapshot:
+    def slow_provider(_symbol: str) -> TaiwanPriceLimitSnapshot:
         release_provider.wait(timeout=1)
         return TaiwanPriceLimitSnapshot(
             status="normal",
-            limit_up_price=current_price * 1.1,
-            limit_down_price=current_price * 0.9,
+            current_price=100.0,
+            limit_up_price=110.0,
+            limit_down_price=90.0,
         )
 
     try:
         result = fetch_taiwan_price_limits_with_deadline(
             "2330.TW",
-            current_price=100.0,
             resolve_timeout=0,
             fetcher=slow_provider,
         )

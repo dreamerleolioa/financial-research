@@ -67,6 +67,15 @@ def test_create_and_list_watchlist_item(
     assert listed.json() == [created.json()]
 
 
+def test_create_watchlist_item_rejects_non_taiwan_symbol(
+    watchlist_client: TestClient,
+):
+    created = watchlist_client.post("/watchlist", json={"symbol": "AAPL"})
+
+    assert created.status_code == 422
+    assert "目前僅支援台灣上市" in created.json()["detail"][0]["msg"]
+
+
 def test_create_watchlist_item_is_idempotent_and_updates_notes(
     watchlist_client: TestClient,
     watchlist_db_session: Session,

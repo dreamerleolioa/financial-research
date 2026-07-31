@@ -76,7 +76,7 @@ def _disable_external_symbol_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         analysis_router,
         "fetch_taiwan_price_limits_with_deadline",
-        lambda symbol, *, current_price: TaiwanPriceLimitSnapshot.unknown(),
+        lambda symbol: TaiwanPriceLimitSnapshot.unknown(),
     )
 
 
@@ -180,6 +180,24 @@ def test_analyze_validation_error_when_symbol_empty() -> None:
     response = client.post("/analyze", json={"symbol": ""})
 
     assert response.status_code == 422
+
+
+def test_analyze_rejects_non_taiwan_symbol() -> None:
+    client = TestClient(api.app)
+
+    response = client.post("/analyze", json={"symbol": "AAPL"})
+
+    assert response.status_code == 422
+    assert "目前僅支援台灣上市" in response.json()["detail"][0]["msg"]
+
+
+def test_analyze_rejects_oversized_symbol() -> None:
+    client = TestClient(api.app)
+
+    response = client.post("/analyze", json={"symbol": f"{'1' * 10000}.TW"})
+
+    assert response.status_code == 422
+    assert "目前僅支援台灣上市" in response.json()["detail"][0]["msg"]
 
 
 # ---------------------------------------------------------------------------
@@ -1804,9 +1822,10 @@ def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(m
     monkeypatch.setattr(
         api_module,
         "fetch_taiwan_price_limits_with_deadline",
-        lambda symbol, *, current_price: TaiwanPriceLimitSnapshot(
+        lambda symbol: TaiwanPriceLimitSnapshot(
             status="limit_up",
-            limit_up_price=current_price,
+            current_price=110.0,
+            limit_up_price=110.0,
             limit_down_price=90.0,
         ),
     )
@@ -1831,8 +1850,12 @@ def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(m
     assert graph_input["fundamental_data"] == cached_fundamental
     assert "price_limit_status" not in graph_input["snapshot"]
     assert response.json()["snapshot"]["name"] == "台積電"
+    assert response.json()["snapshot"]["current_price"] == cached_snapshot["current_price"]
+    assert response.json()["snapshot"]["market_current_price"] == 110.0
+    assert response.json()["snapshot"]["market_current_price_source"] == "twse_mis"
+    assert response.json()["snapshot"]["price_limit_quote_price"] == 110.0
     assert response.json()["snapshot"]["price_limit_status"] == "limit_up"
-    assert response.json()["snapshot"]["limit_up_price"] == 100.0
+    assert response.json()["snapshot"]["limit_up_price"] == 110.0
     assert response.json()["snapshot"]["limit_down_price"] == 90.0
     assert response.json()["fundamental_data"] == cached_fundamental
 

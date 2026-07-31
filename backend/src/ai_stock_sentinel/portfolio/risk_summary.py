@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ai_stock_sentinel.chip_stability_context import chip_stability_context_from_weekly_major_holders
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 
 
 PORTFOLIO_RISK_SUMMARY_VERSION = "portfolio-risk-summary-v1"
@@ -31,6 +32,12 @@ SYMBOL_CONCENTRATION_WATCH_PCT = 25.0
 SYMBOL_CONCENTRATION_ELEVATED_PCT = 35.0
 TOTAL_RISK_WATCH_PCT = 5.0
 TOTAL_RISK_CONSTRAINED_PCT = 10.0
+BLOCKING_DATA_GAP_CODES = frozenset({
+    "zero_quantity",
+    "missing_price",
+    "missing_defense_reference",
+    "unsupported_market",
+})
 
 
 def build_portfolio_risk_summary(
@@ -60,6 +67,7 @@ def build_portfolio_risk_summary(
 
     for position in positions:
         symbol = str(getattr(position, "symbol", ""))
+        supported_market = is_supported_taiwan_symbol(symbol)
         quantity = _to_decimal(getattr(position, "quantity", None))
         entry_price = _to_decimal(getattr(position, "entry_price", None))
         plan = plans.get(str(getattr(position, "position_group_id", "")))
@@ -69,6 +77,11 @@ def build_portfolio_risk_summary(
         defense_reference, defense_source = _extract_defense_reference(plan)
         caveats: list[dict[str, str]] = []
 
+        if not supported_market:
+            caveats.append(_caveat(
+                "unsupported_market",
+                "此既有部位不是台灣上市或上櫃股票，已排除於台幣投資組合總額與風險估算。",
+            ))
         if quantity is None or quantity <= 0:
             caveats.append(_caveat("zero_quantity", "持股數量為 0 或缺漏，暫不估計此部位風險。"))
         if current_price is None:
@@ -83,7 +96,7 @@ def build_portfolio_risk_summary(
         market_value = None
         unrealized_pnl = None
         estimated_risk_amount = None
-        if quantity is not None and quantity > 0 and current_price is not None:
+        if supported_market and quantity is not None and quantity > 0 and current_price is not None:
             market_value = current_price * quantity
             portfolio_value += market_value
             if entry_price is not None:
@@ -122,7 +135,7 @@ def build_portfolio_risk_summary(
                 "defense_reference": defense_reference,
                 "plan": plan,
                 "has_incomplete_caveat": any(
-                    caveat["code"] in {"zero_quantity", "missing_price", "missing_defense_reference"}
+                    caveat["code"] in BLOCKING_DATA_GAP_CODES
                     for caveat in caveats
                 ),
                 "has_stale_caveat": any(caveat["code"] == "stale_price" for caveat in caveats),
@@ -348,7 +361,7 @@ def _caveat(code: str, message: str) -> dict[str, str]:
 
 
 def _position_data_quality(caveats: list[dict[str, str]]) -> dict[str, Any]:
-    if any(caveat["code"] in {"zero_quantity", "missing_price", "missing_defense_reference"} for caveat in caveats):
+    if any(caveat["code"] in BLOCKING_DATA_GAP_CODES for caveat in caveats):
         status = "insufficient"
     elif caveats:
         status = "caution"
@@ -358,7 +371,7 @@ def _position_data_quality(caveats: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def _portfolio_data_quality(caveat_counts: dict[str, int]) -> dict[str, Any]:
-    if any(caveat_counts.get(code, 0) for code in {"zero_quantity", "missing_price", "missing_defense_reference"}):
+    if any(caveat_counts.get(code, 0) for code in BLOCKING_DATA_GAP_CODES):
         status = "insufficient"
     elif any(caveat_counts.values()):
         status = "caution"
@@ -547,7 +560,7 @@ def _phase1_observation_sort_key(item: dict[str, Any]) -> tuple[int, str]:
 
 
 def _risk_budget_status(total_risk_pct: float | None, caveat_counts: dict[str, int]) -> dict[str, Any]:
-    blocking_data_gap = any(caveat_counts.get(code, 0) for code in {"zero_quantity", "missing_price", "missing_defense_reference"})
+    blocking_data_gap = any(caveat_counts.get(code, 0) for code in BLOCKING_DATA_GAP_CODES)
     if total_risk_pct is None:
         status = "unknown"
     elif total_risk_pct >= TOTAL_RISK_CONSTRAINED_PCT:

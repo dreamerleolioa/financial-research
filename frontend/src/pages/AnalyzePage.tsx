@@ -5,7 +5,8 @@ import type { AnalyzeResponse } from "../lib/analysisTypes";
 import { InsightText } from "../components/InsightText";
 import { TechnicalIndicatorsPanel } from "../components/TechnicalIndicatorsPanel";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
-import { createPortfolioItem, fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
+import { useCreatePortfolioItemMutation } from "../features/portfolio/mutations";
+import { fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
 import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -207,6 +208,7 @@ function buildEntryRecord(
 }
 
 export default function AnalyzePage() {
+  const createPortfolioItemMutation = useCreatePortfolioItemMutation();
   const addPortfolioTitleId = useId();
   const [searchParams] = useSearchParams();
   const querySymbol = searchParams.get("symbol") ?? "2330.TW";
@@ -357,7 +359,7 @@ export default function AnalyzePage() {
 
       if (entryRecord) payload.entry_record = entryRecord;
 
-      await createPortfolioItem(payload);
+      await createPortfolioItemMutation.mutateAsync(payload);
       await fetchPortfolio();
       setShowAddModal(false);
       setAddForm(createInitialAddPortfolioForm());

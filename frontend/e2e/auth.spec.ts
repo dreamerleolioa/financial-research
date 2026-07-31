@@ -26,3 +26,36 @@ test("callback without an authorization code explains recovery", async ({ page }
   await page.getByRole("link", { name: "返回登入頁" }).click();
   await expect(page).toHaveURL(/\/login$/);
 });
+
+test("auth state and query cache follow token changes from another tab", async ({ context, page }) => {
+  const alice = {
+    id: 1,
+    email: "alice@example.com",
+    name: "Alice",
+    avatar_url: null,
+  };
+  const bob = {
+    id: 2,
+    email: "bob@example.com",
+    name: "Bob",
+    avatar_url: null,
+  };
+  const usersByToken = {
+    "alice-token": alice,
+    "bob-token": bob,
+  };
+
+  await page.addInitScript(() => localStorage.setItem("auth_token", "alice-token"));
+  await installApiMocks(page, { usersByToken });
+  await page.goto("/analyze");
+  await expect(page.getByText("alice@example.com", { exact: true })).toBeVisible();
+
+  const accountSwitcher = await context.newPage();
+  await installApiMocks(accountSwitcher, { usersByToken });
+  await accountSwitcher.goto("/login");
+  await accountSwitcher.evaluate(() => localStorage.setItem("auth_token", "bob-token"));
+
+  await expect(page.getByText("bob@example.com", { exact: true })).toBeVisible();
+  await expect(page.getByText("alice@example.com", { exact: true })).toHaveCount(0);
+  await accountSwitcher.close();
+});

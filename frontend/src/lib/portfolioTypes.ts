@@ -138,6 +138,7 @@ export interface PortfolioPhase1CurrentDayLists {
 
 export interface PortfolioRiskSummary {
   version: string;
+  portfolio_revision?: string;
   as_of_date: string;
   portfolio_value: number;
   total_unrealized_pnl: number;

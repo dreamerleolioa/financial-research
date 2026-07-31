@@ -52,7 +52,7 @@ POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v1"
 
 
 def get_portfolio_quote_fetcher():
-    return YFinanceCrawler().fetch_basic_snapshot
+    return YFinanceCrawler().fetch_portfolio_snapshot
 
 
 def _serialize_portfolio(item: UserPortfolio) -> dict:

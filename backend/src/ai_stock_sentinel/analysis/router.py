@@ -458,13 +458,17 @@ def _with_price_limit_context(response: AnalyzeResponse, *, symbol: str) -> Anal
     current_price = snapshot.get("current_price") if isinstance(snapshot, dict) else None
     if not isinstance(current_price, int | float) or isinstance(current_price, bool):
         return response
-    price_limits = fetch_taiwan_price_limits_with_deadline(
-        symbol,
-        current_price=float(current_price),
-    )
+    price_limits = fetch_taiwan_price_limits_with_deadline(symbol)
     response.snapshot = {
         **snapshot,
+        "market_current_price": price_limits.current_price,
+        "market_current_price_source": (
+            "twse_mis"
+            if price_limits.current_price is not None
+            else None
+        ),
         "price_limit_status": price_limits.status,
+        "price_limit_quote_price": price_limits.current_price,
         "limit_up_price": price_limits.limit_up_price,
         "limit_down_price": price_limits.limit_down_price,
     }

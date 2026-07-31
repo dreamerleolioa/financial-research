@@ -101,6 +101,37 @@ def test_portfolio_risk_summary_calculates_position_risk_and_totals():
     assert first["defense_reference"] == {"price": 95.0, "source": "planned_stop_price"}
 
 
+def test_portfolio_risk_summary_excludes_legacy_non_taiwan_position_from_twd_totals():
+    summary = build_portfolio_risk_summary(
+        [
+            _position(symbol="2330.TW", group="g1", entry_price="100", quantity=10),
+            _position(symbol="AAPL", group="g2", entry_price="190", quantity=10),
+        ],
+        plans_by_group={
+            "g1": _plan(group="g1", stop="95"),
+            "g2": _plan(group="g2", stop="180"),
+        },
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 120),
+            "AAPL": _raw("AAPL", 210),
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    assert summary["portfolio_value"] == 1200
+    assert summary["total_unrealized_pnl"] == 200
+    legacy_position = summary["position_risks"][1]
+    assert legacy_position["symbol"] == "AAPL"
+    assert legacy_position["current_price"] == 210
+    assert legacy_position["market_value"] is None
+    assert legacy_position["unrealized_pnl"] is None
+    assert legacy_position["data_quality"]["status"] == "insufficient"
+    assert "unsupported_market" in {
+        caveat["code"] for caveat in legacy_position["data_quality"]["caveats"]
+    }
+    assert {"code": "unsupported_market", "count": 1} in summary["data_quality"]["caveats"]
+
+
 def test_portfolio_risk_summary_uses_refreshed_quote_for_all_price_math():
     summary = build_portfolio_risk_summary(
         [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
@@ -429,7 +460,8 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
         symbol_name_resolver=lambda _symbol: None,
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
+    assert len(result["portfolio_revision"]) == 64
     assert captured["phase1_data_date"] == date(2026, 6, 19)
     assert captured["summary_as_of_date"] == date(2026, 6, 19)
     assert captured["phase1_current_day_observations"] is None
@@ -469,5 +501,28 @@ def test_build_user_portfolio_risk_summary_degrades_when_weekly_major_holders_re
         as_of_date=date(2026, 6, 19),
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
+    assert len(result["portfolio_revision"]) == 64
     assert captured["weekly_major_holders_by_symbol"] == {}
+
+
+def test_portfolio_revision_changes_with_non_price_lifecycle_structure():
+    import ai_stock_sentinel.portfolio.application.get_risk_summary as risk_summary_module
+
+    position = _position(symbol="2330.TW", group="g1")
+    baseline = risk_summary_module._portfolio_revision(
+        rows=[position],
+        plans=[_plan(group="g1", setup_type="breakout", default_stop_rule="fixed_price")],
+        raw_data_by_symbol={},
+        phase1_position_states_by_symbol={},
+        weekly_major_holders_by_symbol={},
+    )
+    changed = risk_summary_module._portfolio_revision(
+        rows=[position],
+        plans=[_plan(group="g1", setup_type="pullback", default_stop_rule="break_ma20")],
+        raw_data_by_symbol={},
+        phase1_position_states_by_symbol={},
+        weekly_major_holders_by_symbol={},
+    )
+
+    assert baseline != changed

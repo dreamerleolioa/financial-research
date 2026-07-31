@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 import math
+from threading import BoundedSemaphore
+from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -13,9 +16,16 @@ from ai_stock_sentinel.clock import TAIPEI_TZ
 from ai_stock_sentinel.models import StockSnapshot
 from ai_stock_sentinel.portfolio.application.get_risk_summary import build_user_portfolio_risk_summary
 from ai_stock_sentinel.portfolio.repository import list_active_portfolios
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 
 
 MAX_PRICE_REFRESH_WORKERS = 4
+PRICE_REFRESH_RESPONSE_DEADLINE_SECONDS = 5.0
+_PRICE_REFRESH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_PRICE_REFRESH_WORKERS,
+    thread_name_prefix="portfolio-price",
+)
+_PRICE_REFRESH_CAPACITY = BoundedSemaphore(MAX_PRICE_REFRESH_WORKERS)
 
 
 class PortfolioPriceRefreshTargetNotFound(Exception):
@@ -51,7 +61,6 @@ def refresh_user_portfolio_prices(
     price_quotes_by_symbol = _fetch_quotes(
         symbols,
         quote_fetcher=quote_fetcher,
-        now=request_time,
     )
 
     summary = build_user_portfolio_risk_summary(
@@ -90,37 +99,117 @@ def _fetch_quotes(
     symbols: list[str],
     *,
     quote_fetcher: Callable[[str], StockSnapshot],
-    now: datetime,
+    response_deadline: float = PRICE_REFRESH_RESPONSE_DEADLINE_SECONDS,
 ) -> dict[str, dict[str, Any]]:
     if not symbols:
         return {}
 
     quotes: dict[str, dict[str, Any]] = {}
-    worker_count = min(MAX_PRICE_REFRESH_WORKERS, len(symbols))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_by_symbol = {
-            executor.submit(quote_fetcher, symbol): symbol
-            for symbol in symbols
-        }
-        for future in as_completed(future_by_symbol):
-            symbol = future_by_symbol[future]
+    future_by_symbol: dict[Future[StockSnapshot], str] = {}
+    pending_symbols: deque[str] = deque()
+    for symbol in symbols:
+        if not is_supported_taiwan_symbol(symbol):
+            quotes[symbol] = _failed_quote("UnsupportedMarket")
+            continue
+        pending_symbols.append(symbol)
+
+    deadline_at = monotonic() + max(0.0, response_deadline)
+    while pending_symbols or future_by_symbol:
+        while pending_symbols:
+            if monotonic() >= deadline_at:
+                for pending_symbol in pending_symbols:
+                    quotes[pending_symbol] = _failed_quote("TimeoutError")
+                pending_symbols.clear()
+                break
+            symbol = pending_symbols[0]
+            try:
+                future = _submit_quote_fetch(symbol, quote_fetcher=quote_fetcher)
+            except Exception as exc:
+                quotes[symbol] = _failed_quote(exc.__class__.__name__)
+                pending_symbols.popleft()
+                continue
+            if future is None:
+                break
+            pending_symbols.popleft()
+            future_by_symbol[future] = symbol
+
+        if not future_by_symbol:
+            for symbol in pending_symbols:
+                quotes[symbol] = _failed_quote("ProviderCapacityExhausted")
+            break
+
+        remaining_time = max(0.0, deadline_at - monotonic())
+        done, _not_done = wait(
+            set(future_by_symbol),
+            timeout=remaining_time,
+            return_when=FIRST_COMPLETED,
+        )
+        if not done:
+            for future, symbol in future_by_symbol.items():
+                future.cancel()
+                quotes[symbol] = _failed_quote("TimeoutError")
+            for symbol in pending_symbols:
+                quotes[symbol] = _failed_quote("TimeoutError")
+            break
+
+        for future in done:
+            symbol = future_by_symbol.pop(future)
             try:
                 snapshot = future.result()
                 current_price = float(snapshot.current_price)
                 if not math.isfinite(current_price) or current_price <= 0:
                     raise ValueError("latest quote is unavailable")
-                quotes[symbol] = _quote_payload(snapshot, now=now)
+                quotes[symbol] = _quote_payload(snapshot)
             except Exception as exc:
-                quotes[symbol] = {
-                    "status": "failed",
-                    "error_code": exc.__class__.__name__,
-                }
+                quotes[symbol] = _failed_quote(exc.__class__.__name__)
     return quotes
 
 
-def _quote_payload(snapshot: StockSnapshot, *, now: datetime) -> dict[str, Any]:
+def _submit_quote_fetch(
+    symbol: str,
+    *,
+    quote_fetcher: Callable[[str], StockSnapshot],
+) -> Future[StockSnapshot] | None:
+    capacity = _PRICE_REFRESH_CAPACITY
+    if not capacity.acquire(blocking=False):
+        return None
+    try:
+        future = _PRICE_REFRESH_EXECUTOR.submit(
+            _run_quote_fetch,
+            symbol=symbol,
+            quote_fetcher=quote_fetcher,
+            capacity=capacity,
+        )
+    except Exception:
+        capacity.release()
+        raise
+    future.add_done_callback(lambda completed: capacity.release() if completed.cancelled() else None)
+    return future
+
+
+def _run_quote_fetch(
+    *,
+    symbol: str,
+    quote_fetcher: Callable[[str], StockSnapshot],
+    capacity: BoundedSemaphore,
+) -> StockSnapshot:
+    try:
+        return quote_fetcher(symbol)
+    finally:
+        capacity.release()
+
+
+def _failed_quote(error_code: str) -> dict[str, str]:
+    return {
+        "status": "failed",
+        "error_code": error_code,
+    }
+
+
+def _quote_payload(snapshot: StockSnapshot) -> dict[str, Any]:
     data_date = snapshot.recent_volume_dates[-1] if snapshot.recent_volume_dates else None
-    market_session, is_final = _market_session(snapshot, data_date=data_date, now=now)
+    observed_at = _snapshot_observation_time(snapshot)
+    market_session, is_final = _market_session(snapshot, now=observed_at)
     return {
         "status": "refreshed",
         "current_price": float(snapshot.current_price),
@@ -132,11 +221,20 @@ def _quote_payload(snapshot: StockSnapshot, *, now: datetime) -> dict[str, Any]:
     }
 
 
+def _snapshot_observation_time(snapshot: StockSnapshot) -> datetime | None:
+    try:
+        observed_at = datetime.fromisoformat(snapshot.fetched_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if observed_at.tzinfo is None:
+        return None
+    return observed_at
+
+
 def _market_session(
     snapshot: StockSnapshot,
     *,
-    data_date: str | None,
-    now: datetime,
+    now: datetime | None,
 ) -> tuple[str, bool | None]:
     timezone_name = (snapshot.exchange_timezone or "").strip()
     if (
@@ -144,7 +242,7 @@ def _market_session(
         or not timezone_name
         or not snapshot.regular_market_open
         or not snapshot.regular_market_close
-        or data_date is None
+        or now is None
         or now.tzinfo is None
     ):
         return "unknown", None
@@ -152,19 +250,16 @@ def _market_session(
     try:
         exchange_timezone = ZoneInfo(timezone_name)
         exchange_now = now.astimezone(exchange_timezone)
-        quote_date = date.fromisoformat(data_date)
         market_open = _parse_market_boundary(snapshot.regular_market_open, exchange_timezone)
         market_close = _parse_market_boundary(snapshot.regular_market_close, exchange_timezone)
     except (TypeError, ValueError, ZoneInfoNotFoundError):
         return "unknown", None
 
     exchange_date = exchange_now.date()
-    if quote_date < exchange_date:
-        return "closed", True
-    if quote_date != exchange_date or exchange_now.weekday() >= 5:
+    if exchange_now.weekday() >= 5:
         return "unknown", None
 
-    if market_open.date() != quote_date or market_close.date() != quote_date:
+    if market_open.date() != exchange_date or market_close.date() != exchange_date:
         return "unknown", None
     if market_open <= exchange_now < market_close:
         return "intraday", False

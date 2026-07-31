@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
+from ai_stock_sentinel.data_sources.yfinance_client import (
+    PORTFOLIO_YFINANCE_TIMEOUT_SECONDS,
+    YFinanceCrawler,
+    _DeadlineSession,
+    curl_requests,
+)
 from ai_stock_sentinel.models import StockSnapshot
 
 
@@ -61,7 +66,11 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
     assert snapshot.regular_market_close == "2026-07-31T05:30:00+00:00"
     assert snapshot.volume == 123456
     assert snapshot.volume_source == "realtime"
-    mock_ticker.history.assert_called_once_with(period="1y", interval="1d")
+    mock_ticker.history.assert_called_once_with(
+        period="1y",
+        interval="1d",
+        timeout=10.0,
+    )
 
 
 def test_fetch_basic_snapshot_falls_back_to_history_volume_when_last_volume_missing() -> None:
@@ -88,6 +97,138 @@ def test_fetch_basic_snapshot_falls_back_to_history_volume_when_last_volume_miss
 
     assert snapshot.volume == 333
     assert snapshot.volume_source == "history_fallback"
+
+
+def test_fetch_basic_snapshot_keeps_quote_when_optional_market_metadata_raises() -> None:
+    crawler = YFinanceCrawler()
+
+    class FastInfo:
+        currency = "TWD"
+        last_price = 100.0
+        previous_close = 99.0
+        open = 98.5
+        day_high = 101.0
+        day_low = 98.0
+        last_volume = 123456
+
+        @property
+        def exchange(self):
+            raise KeyError("exchangeName")
+
+        @property
+        def timezone(self):
+            raise KeyError("exchangeTimezoneName")
+
+    mock_ticker = MagicMock()
+    mock_ticker.fast_info = FastInfo()
+    mock_ticker.history.return_value = _make_history([95.0, 98.0, 100.0], [111, 222, 333])
+    mock_ticker.history_metadata = {}
+
+    with (
+        patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker),
+        patch("ai_stock_sentinel.data_sources.yfinance_client.resolve_symbol_name", return_value="台積電"),
+    ):
+        snapshot = crawler.fetch_basic_snapshot("2330.TW")
+
+    assert snapshot.current_price == 100.0
+    assert snapshot.exchange is None
+    assert snapshot.exchange_timezone is None
+
+
+def test_fetch_basic_snapshot_captures_observation_time_before_history_fetch() -> None:
+    crawler = YFinanceCrawler()
+    events: list[str] = []
+    observed_at = datetime(2026, 7, 31, 5, 29, 59, tzinfo=timezone.utc)
+
+    class RecordingDateTime:
+        @classmethod
+        def now(cls, tz):
+            assert tz is timezone.utc
+            events.append("observed")
+            return observed_at
+
+    class FastInfo:
+        currency = "TWD"
+        open = 98.5
+        day_high = 101.0
+        day_low = 98.0
+        last_volume = 123456
+
+        @property
+        def last_price(self):
+            events.append("price")
+            return 100.0
+
+        @property
+        def previous_close(self):
+            events.append("previous_close")
+            return 99.0
+
+    mock_ticker = MagicMock()
+    mock_ticker.fast_info = FastInfo()
+    mock_ticker.history_metadata = {}
+
+    def delayed_history(**_kwargs):
+        events.append("history")
+        return _make_history([95.0, 98.0, 100.0], [111, 222, 333])
+
+    mock_ticker.history.side_effect = delayed_history
+
+    with (
+        patch("ai_stock_sentinel.data_sources.yfinance_client.datetime", RecordingDateTime),
+        patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker),
+        patch("ai_stock_sentinel.data_sources.yfinance_client.resolve_symbol_name", return_value="台積電"),
+    ):
+        snapshot = crawler.fetch_basic_snapshot("2330.TW")
+
+    assert events.index("price") < events.index("observed") < events.index("previous_close")
+    assert events.index("observed") < events.index("history")
+    assert snapshot.fetched_at == observed_at.isoformat()
+
+
+def test_deadline_session_clamps_each_http_hop_to_remaining_deadline() -> None:
+    session = _DeadlineSession()
+    response = object()
+
+    with patch.object(curl_requests.Session, "request", return_value=response) as request:
+        with session.deadline(0.25):
+            assert session.request("GET", "https://query.example.test", timeout=30) is response
+
+    timeout = request.call_args.kwargs["timeout"]
+    assert 0 < timeout <= 0.25
+
+
+def test_deadline_session_rejects_requests_after_deadline() -> None:
+    session = _DeadlineSession()
+
+    with session.deadline(0):
+        with pytest.raises(TimeoutError, match="provider deadline"):
+            session.request("GET", "https://query.example.test")
+
+
+def test_fetch_portfolio_snapshot_uses_bounded_provider_and_skips_name_lookup() -> None:
+    crawler = YFinanceCrawler()
+    snapshot = StockSnapshot(
+        symbol="2330.TW",
+        currency="TWD",
+        current_price=100,
+        previous_close=99,
+        day_open=99,
+        day_high=101,
+        day_low=98,
+        volume=100,
+        recent_closes=[99, 100],
+        fetched_at="2026-07-31T02:00:00+00:00",
+    )
+
+    with patch.object(crawler, "fetch_basic_snapshot", return_value=snapshot) as fetch:
+        assert crawler.fetch_portfolio_snapshot("2330.TW") is snapshot
+
+    fetch.assert_called_once_with(
+        "2330.TW",
+        provider_timeout=PORTFOLIO_YFINANCE_TIMEOUT_SECONDS,
+        resolve_name=False,
+    )
 
 
 def test_fetch_basic_snapshot_includes_recent_high_low_volume_series() -> None:

@@ -11,6 +11,7 @@ import {
   formatDailyOhlc,
   formatIndicatorNumber,
   formatMovingAverages,
+  getMarketCurrentPrice,
   getPriceLimitLabel,
   getTechnicalIndicatorLabel,
 } from "../lib/technicalIndicators";
@@ -96,11 +97,6 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   weakening: "結構轉弱",
   wide_stop_distance: "停損距離偏寬",
 };
-
-function numberFromSnapshot(snapshot: Record<string, unknown>, key: string): number | null {
-  const value = snapshot[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
 
 function snapshotSymbol(snapshot: Record<string, unknown>): string | undefined {
   return typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
@@ -251,18 +247,20 @@ function rawIndicatorRows(
       : emptyLabel;
 
   return [
-    ["current_price", "現價", price(numberFromSnapshot(snapshot, "current_price"))],
+    [
+      "current_price",
+      "現價",
+      `${price(getMarketCurrentPrice(snapshot))}${
+        snapshot.market_current_price_source === "twse_mis" ? "（TWSE MIS 即時）" : ""
+      }`,
+    ],
     ["day_ohlc", "今日開／高／低", formatDailyOhlc(snapshot, symbol)],
     ["volume", "成交量", formatVolume(snapshot.volume)],
     ["average_volume", "20／60 日均成交量", formatAverageVolumes(indicators)],
     ["moving_averages", "均線 MA5/20/60", formatMovingAverages(indicators, symbol)],
     ["range_20d", "20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
     ["range_60d", "60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
-    [
-      "bollinger_position",
-      "布林通道",
-      getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position),
-    ],
+    ["bollinger_position", "布林通道", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
     ["macd_bias", "MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
     [
       "kd",

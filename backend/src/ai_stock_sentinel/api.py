@@ -60,6 +60,8 @@ app = FastAPI(title="AI Stock Sentinel API", version="v1", lifespan=lifespan)
 
 
 def _sanitize_validation_error_value(value: Any) -> Any:
+    if isinstance(value, BaseException):
+        return str(value)
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, dict):

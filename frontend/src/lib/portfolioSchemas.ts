@@ -173,6 +173,7 @@ const phase1CurrentDayListsSchema = z
 export const portfolioRiskSummarySchema = z
   .object({
     version: z.string(),
+    portfolio_revision: z.string().optional(),
     as_of_date: z.string(),
     portfolio_value: z.number(),
     total_unrealized_pnl: z.number(),

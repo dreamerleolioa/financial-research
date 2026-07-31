@@ -23,6 +23,7 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
 
   await expect(page.getByText("世芯-KY 3661.TW", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("漲停", { exact: true })).toBeVisible();
+  await expect(page.getByText("3120（TWSE MIS 即時）", { exact: true })).toBeVisible();
   await expect(page.getByText("今日開／高／低", { exact: true })).toBeVisible();
   await expect(page.getByText("3075 / 3155 / 3050", { exact: true })).toBeVisible();
   await expect(page.getByText("20／60 日均成交量", { exact: true })).toBeVisible();
@@ -36,7 +37,9 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("20／60 日均成交量：2,100 / 1,800");
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("現價：3120（漲停）");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("現價：3120（TWSE MIS 即時）（漲停）");
 
   const openDialogButton = page.getByRole("button", { name: "加入持股" });
   await openDialogButton.click();
@@ -63,7 +66,9 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
       ...quickAnalyzeResult,
       snapshot: {
         ...quickAnalyzeResult.snapshot,
-        current_price: 2555,
+        current_price: 2580,
+        market_current_price: 2555,
+        price_limit_quote_price: 2555,
         price_limit_status: "limit_down",
       },
     },
@@ -72,6 +77,7 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await page.goto("/watchlist");
   await page.getByRole("button", { name: "技術快查" }).click();
   await expect(page.getByText("跌停", { exact: true })).toBeVisible();
+  await expect(page.getByText("2555（TWSE MIS 即時）", { exact: true })).toBeVisible();
   const copyButton = page.getByRole("button", { name: "複製 世芯-KY 3661.TW 技術指標" });
   await expect(copyButton).toBeVisible();
   await copyButton.click();
@@ -83,7 +89,9 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("20／60 日均成交量：2,100 / 1,800");
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("現價：2555（跌停）");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("現價：2555（TWSE MIS 即時）（跌停）");
 });
 
 test("Portfolio destructive action requires confirmation before DELETE", async ({ page }) => {
@@ -173,34 +181,92 @@ test("Portfolio refreshes prices without triggering AI analysis", async ({ page 
   expect(requestLog).not.toContain("POST /analyze/position");
 });
 
+test("Portfolio refetches persisted summary after a write fails", async ({ page }) => {
+  const requestLog: string[] = [];
+  const refreshedRiskSummary = {
+    ...populatedRiskSummary,
+    portfolio_value: 1_100_000,
+    total_unrealized_pnl: 82_000,
+    price_refresh: {
+      status: "complete",
+      requested_count: 1,
+      refreshed_count: 1,
+      failed_count: 0,
+      refreshed_symbols: ["2330.TW"],
+      failed_symbols: [],
+      refreshed_at: "2026-07-31T10:30:00+08:00",
+    },
+    position_risks: [
+      {
+        ...populatedRiskSummary.position_risks[0],
+        current_price: 1100,
+        market_value: 1_100_000,
+        unrealized_pnl: 82_000,
+        price_context: {
+          refresh_status: "refreshed",
+          source: "yfinance_fast_info",
+          as_of: "2026-07-31T10:30:00+08:00",
+          data_date: "2026-07-31",
+          market_session: "intraday",
+          is_final: false,
+        },
+      },
+    ],
+  };
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    priceRefreshSummary: refreshedRiskSummary,
+    requestLog,
+  });
+
+  await page.goto("/portfolio");
+  const position = page.locator('[data-portfolio-position-id="11"]');
+  await position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
+  await expect(position).toContainText("現價 1100");
+
+  await position.getByRole("button", { name: "開啟 台積電 2330.TW 更多操作" }).click();
+  await page.getByRole("button", { name: "編輯持股與計畫" }).click();
+  const dialog = page.getByRole("dialog", { name: "編輯 台積電 2330.TW 持股與計畫" });
+  await dialog.getByRole("button", { name: "儲存持股與計畫" }).click();
+
+  await expect(dialog).toContainText("Unhandled E2E route: PUT /portfolio/11");
+  await expect(position).toContainText("現價 1085");
+  await expect
+    .poll(() => requestLog.filter((entry) => entry === "GET /portfolio/risk-summary").length)
+    .toBeGreaterThanOrEqual(2);
+});
+
 test("Portfolio preserves earlier row refreshes when another row is refreshed", async ({ page }) => {
-  const appleItem = {
+  const otcItem = {
     ...portfolioItem,
     id: 12,
-    symbol: "AAPL",
-    name: "Apple",
-    entry_price: 190,
+    symbol: "6488.TWO",
+    name: "環球晶",
+    entry_price: 690,
     quantity: 10,
   };
-  const appleRisk = {
+  const otcRisk = {
     ...populatedRiskSummary.position_risks[0],
-    symbol: "AAPL",
-    name: "Apple",
+    symbol: "6488.TWO",
+    name: "環球晶",
     quantity: 10,
-    current_price: 200,
-    entry_price: 190,
-    market_value: 2000,
+    current_price: 700,
+    entry_price: 690,
+    market_value: 7000,
     unrealized_pnl: 100,
-    defense_reference: { price: 180, source: "planned_stop_price" },
+    defense_reference: { price: 650, source: "planned_stop_price" },
     estimated_risk_amount: 200,
     estimated_risk_pct_of_portfolio: 0.0184,
     portfolio_weight_pct: 0.184,
   };
   const initialSummary = {
     ...populatedRiskSummary,
-    portfolio_value: 1_087_000,
+    portfolio_value: 1_092_000,
     total_unrealized_pnl: 67_100,
-    position_risks: [...populatedRiskSummary.position_risks, appleRisk],
+    position_risks: [...populatedRiskSummary.position_risks, otcRisk],
   };
   const firstRefreshSummary = {
     ...initialSummary,
@@ -229,7 +295,7 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
           is_final: false,
         },
       },
-      appleRisk,
+      otcRisk,
     ],
   };
   const secondRefreshSummary = {
@@ -240,7 +306,7 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
       requested_count: 2,
       refreshed_count: 2,
       failed_count: 0,
-      refreshed_symbols: ["2330.TW", "AAPL"],
+      refreshed_symbols: ["2330.TW", "6488.TWO"],
       failed_symbols: [],
       refreshed_at: "2026-07-31T10:31:00+08:00",
     },
@@ -256,9 +322,9 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
         },
       },
       {
-        ...appleRisk,
-        current_price: 210,
-        market_value: 2100,
+        ...otcRisk,
+        current_price: 710,
+        market_value: 7100,
         unrealized_pnl: 200,
         price_context: {
           refresh_status: "refreshed",
@@ -271,27 +337,106 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
       },
     ],
   };
+  const failedPreservedRefreshSummary = {
+    ...secondRefreshSummary,
+    price_refresh: {
+      status: "partial",
+      requested_count: 2,
+      refreshed_count: 1,
+      failed_count: 1,
+      refreshed_symbols: ["2330.TW"],
+      failed_symbols: ["6488.TWO"],
+      refreshed_at: "2026-07-31T10:32:00+08:00",
+    },
+    position_risks: [
+      {
+        ...secondRefreshSummary.position_risks[0],
+        current_price: 1110,
+        market_value: 1_110_000,
+      },
+      otcRisk,
+    ],
+  };
   const requestBodies: unknown[] = [];
 
   await authenticate(page);
   await installApiMocks(page, {
-    portfolio: [portfolioItem, appleItem],
+    portfolio: [portfolioItem, otcItem],
     riskSummary: initialSummary,
-    priceRefreshSummaries: [firstRefreshSummary, secondRefreshSummary],
+    priceRefreshSummaries: [firstRefreshSummary, secondRefreshSummary, failedPreservedRefreshSummary],
     requestBodies,
   });
 
   await page.goto("/portfolio");
   const tsmcPosition = page.locator('[data-portfolio-position-id="11"]');
-  const applePosition = page.locator('[data-portfolio-position-id="12"]');
+  const otcPosition = page.locator('[data-portfolio-position-id="12"]');
 
   await tsmcPosition.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
   await expect(tsmcPosition).toContainText("現價 1100");
 
-  await applePosition.getByRole("button", { name: "更新 Apple AAPL 最新價格" }).click();
-  await expect(applePosition).toContainText("現價 210");
+  await page.getByRole("link", { name: "個股分析" }).first().click();
+  await page.getByRole("link", { name: "持股管理" }).first().click();
+  await expect(tsmcPosition).toContainText("現價 1100");
+
+  await otcPosition.getByRole("button", { name: "更新 環球晶 6488.TWO 最新價格" }).click();
+  await expect(otcPosition).toContainText("現價 710");
   await expect(tsmcPosition).toContainText("現價 1105");
-  expect(requestBodies).toEqual([{ portfolio_ids: [11] }, { portfolio_ids: [11, 12] }]);
+
+  await tsmcPosition.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
+  await expect(page.getByRole("status")).toContainText("為保留先前更新價格");
+  await expect(tsmcPosition).toContainText("現價 1105");
+  await expect(otcPosition).toContainText("現價 710");
+  expect(requestBodies).toEqual([{ portfolio_ids: [11] }, { portfolio_ids: [11, 12] }, { portfolio_ids: [11, 12] }]);
+});
+
+test("Portfolio ignores a late price response after portfolio state changes", async ({ page }) => {
+  const requestLog: string[] = [];
+  const refreshedRiskSummary = {
+    ...populatedRiskSummary,
+    price_refresh: {
+      status: "complete",
+      requested_count: 1,
+      refreshed_count: 1,
+      failed_count: 0,
+      refreshed_symbols: ["2330.TW"],
+      failed_symbols: [],
+      refreshed_at: "2026-07-31T10:30:00+08:00",
+    },
+    position_risks: [
+      {
+        ...populatedRiskSummary.position_risks[0],
+        current_price: 1100,
+        price_context: {
+          refresh_status: "refreshed",
+          source: "yfinance_fast_info",
+          as_of: "2026-07-31T10:30:00+08:00",
+          data_date: "2026-07-31",
+          market_session: "intraday",
+          is_final: false,
+        },
+      },
+    ],
+  };
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    priceRefreshSummary: refreshedRiskSummary,
+    priceRefreshDelayMs: 150,
+    requestLog,
+  });
+
+  await page.goto("/portfolio");
+  const position = page.locator('[data-portfolio-position-id="11"]');
+  await position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
+  await expect.poll(() => requestLog).toContain("POST /portfolio/risk-summary/refresh-prices");
+  await page.evaluate(() => {
+    localStorage.setItem("portfolio_mutation_revision", "changed-in-another-tab");
+  });
+
+  await expect(page.getByRole("status")).toContainText("持股資料已變更，本次價格刷新未套用");
+  await expect(position).not.toContainText("現價 1100");
 });
 
 test("Closed Portfolio presents a populated realized-PnL group", async ({ page }) => {
