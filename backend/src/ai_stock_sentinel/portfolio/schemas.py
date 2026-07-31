@@ -108,3 +108,7 @@ class UpdatePortfolioRequest(BaseModel):
     quantity: int
     entry_date: date
     notes: str | None = None
+
+
+class PortfolioPriceRefreshRequest(BaseModel):
+    portfolio_ids: list[int] | None = Field(default=None, min_length=1)

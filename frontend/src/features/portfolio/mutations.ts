@@ -4,6 +4,7 @@ import {
   backfillLifecyclePlan,
   closePortfolioItem,
   deletePortfolioItem,
+  refreshPortfolioPrices,
   updateLifecyclePlan,
   updatePortfolioItem,
   type AddEntryRequest,
@@ -88,6 +89,16 @@ export function useDeletePortfolioItemMutation() {
     onSuccess: (_data, id) => {
       removePortfolioItemData(queryClient, id);
       invalidatePortfolioReadData(queryClient);
+    },
+  });
+}
+
+export function useRefreshPortfolioPricesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (portfolioIds?: number[]) => refreshPortfolioPrices(portfolioIds),
+    onSuccess: (summary) => {
+      queryClient.setQueryData(portfolioKeys.riskSummary(), summary);
     },
   });
 }

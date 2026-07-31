@@ -27,6 +27,7 @@ def build_user_portfolio_risk_summary(
     user_id: int,
     symbol_name_resolver: Callable[[str], str | None],
     as_of_date: date | None = None,
+    price_quotes_by_symbol: dict[str, dict] | None = None,
 ) -> dict:
     rows = list_active_portfolios(db, user_id=user_id)
     group_ids = [row.position_group_id for row in rows]
@@ -66,5 +67,6 @@ def build_user_portfolio_risk_summary(
         symbol_names_by_symbol={symbol: symbol_name_resolver(symbol) for symbol in symbols},
         phase1_position_states_by_symbol=phase1_position_states_by_symbol,
         weekly_major_holders_by_symbol=weekly_major_holders_by_symbol,
+        price_quotes_by_symbol=price_quotes_by_symbol,
         as_of_date=summary_date,
     )

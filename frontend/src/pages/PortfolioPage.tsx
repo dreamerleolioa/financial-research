@@ -5,6 +5,7 @@ import {
   useBackfillLifecyclePlanMutation,
   useClosePortfolioItemMutation,
   useDeletePortfolioItemMutation,
+  useRefreshPortfolioPricesMutation,
   useUpdateLifecyclePlanMutation,
   useUpdatePortfolioItemMutation,
 } from "../features/portfolio/mutations";
@@ -63,6 +64,10 @@ import {
 type HistoryEntry = PortfolioHistoryEntry;
 type PortfolioPositionRiskItem = PortfolioRiskSummary["position_risks"][number];
 type AutoDefensePrices = NonNullable<PortfolioRiskSummary["position_risks"][number]["auto_defense_prices"]>;
+type PriceRefreshNotice = {
+  tone: "success" | "warning" | "error";
+  text: string;
+};
 
 interface PortfolioPageProps {
   onNavigateAnalyze: (symbol: string) => void;
@@ -1584,6 +1589,36 @@ function formatPortfolioPct(value: number | null | undefined): string {
   return `${value.toFixed(2)}%`;
 }
 
+function priceFreshnessLabel(risk: PortfolioPositionRiskItem | null): string {
+  if (!risk || risk.current_price == null) return "價格資料不足";
+  const context = risk.price_context;
+  if (!context) return "價格日期未提供";
+
+  if (context.refresh_status === "refreshed") {
+    const timeLabel = formatTaipeiTime(context.as_of);
+    const sessionLabel = context.market_session === "intraday" ? "盤中價格" : "最新價格";
+    return timeLabel ? `${sessionLabel} ${timeLabel}` : `${sessionLabel}已更新`;
+  }
+
+  if (context.refresh_status === "failed") {
+    return context.data_date ? `更新失敗，沿用 ${context.data_date}` : "價格更新失敗";
+  }
+
+  return context.data_date ? `價格 ${context.data_date}` : "價格日期未提供";
+}
+
+function formatTaipeiTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return new Intl.DateTimeFormat("zh-TW", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Taipei",
+  }).format(parsed);
+}
+
 function formatPhase1AnchorType(type: string | null | undefined): string {
   if (!type) return "觀察錨點";
   const labels: Record<string, string> = {
@@ -2383,6 +2418,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const portfolioRiskSummaryQuery = usePortfolioRiskSummaryQuery();
   const latestPortfolioHistoryQuery = useLatestPortfolioHistoryQuery();
   const decisionContextStatusQuery = useDecisionContextStatusQuery();
+  const refreshPortfolioPricesMutation = useRefreshPortfolioPricesMutation();
   const items = portfolioItemsQuery.data ?? [];
   const loading = portfolioItemsQuery.isLoading;
   const latestMap = (latestPortfolioHistoryQuery.data ?? {}) as Record<PortfolioIdKey, HistoryEntry | null>;
@@ -2434,10 +2470,14 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
+  const priceRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [priceRefreshTarget, setPriceRefreshTarget] = useState<"all" | number | null>(null);
+  const [priceRefreshNotice, setPriceRefreshNotice] = useState<PriceRefreshNotice | null>(null);
 
   useEffect(() => {
     return () => {
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
+      if (priceRefreshTimerRef.current) clearTimeout(priceRefreshTimerRef.current);
     };
   }, []);
 
@@ -2512,6 +2552,43 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
       throw err; // re-throw so batch runner knows it failed
     } finally {
       setAsyncMapValue(setAnalysisLoading, item.id, false);
+    }
+  }
+
+  async function refreshPrices(portfolioIds?: number[]): Promise<void> {
+    if (refreshPortfolioPricesMutation.isPending) return;
+    const target = portfolioIds?.[0] ?? "all";
+    setPriceRefreshTarget(target);
+    setPriceRefreshNotice(null);
+    if (priceRefreshTimerRef.current) clearTimeout(priceRefreshTimerRef.current);
+
+    try {
+      const summary = await refreshPortfolioPricesMutation.mutateAsync(portfolioIds);
+      const refresh = summary.price_refresh;
+      if (!refresh || refresh.status === "complete") {
+        setPriceRefreshNotice({
+          tone: "success",
+          text: `已更新 ${refresh?.refreshed_count ?? portfolioIds?.length ?? items.length} 筆價格`,
+        });
+      } else if (refresh.status === "partial") {
+        setPriceRefreshNotice({
+          tone: "warning",
+          text: `已更新 ${refresh.refreshed_count}/${refresh.requested_count} 筆，失敗：${refresh.failed_symbols.join("、")}`,
+        });
+      } else {
+        setPriceRefreshNotice({
+          tone: "error",
+          text: `價格更新失敗：${refresh.failed_symbols.join("、")}`,
+        });
+      }
+      priceRefreshTimerRef.current = setTimeout(() => setPriceRefreshNotice(null), 4000);
+    } catch (err) {
+      setPriceRefreshNotice({
+        tone: "error",
+        text: err instanceof Error ? err.message : "價格更新失敗",
+      });
+    } finally {
+      setPriceRefreshTarget(null);
     }
   }
 
@@ -2628,21 +2705,44 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 <span className="ui-badge tabular-nums">{items.length} 筆持股</span>
                 <button
                   type="button"
+                  onClick={() => void refreshPrices()}
+                  disabled={refreshPortfolioPricesMutation.isPending || batchStatus === "running"}
+                  className="ui-button-secondary min-h-10 px-3 text-xs"
+                >
+                  {priceRefreshTarget === "all" ? "價格更新中" : "更新全部價格"}
+                </button>
+                <button
+                  type="button"
                   onClick={runBatchAnalysis}
                   disabled={batchStatus !== "idle"}
                   className="ui-button-secondary min-h-10 px-3 text-xs"
                 >
-                  {batchStatus === "running" ? "批次分析中" : "一鍵全部分析"}
+                  {batchStatus === "running" ? "AI 分析中" : "一鍵全部分析"}
                 </button>
               </div>
             </div>
+
+            {priceRefreshNotice && (
+              <div
+                className={`rounded-[10px] border px-4 py-3 text-sm ${
+                  priceRefreshNotice.tone === "success"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300"
+                    : priceRefreshNotice.tone === "warning"
+                      ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300"
+                      : "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/45 dark:text-red-300"
+                }`}
+                role="status"
+              >
+                {priceRefreshNotice.text}
+              </div>
+            )}
 
             {batchStatus !== "idle" && (
               <div className={`rounded-[10px] border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
                 <div className="flex items-center justify-between gap-3">
                   <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
-                    {batchStatus === "running" && `分析中 ${batchProgress.done}/${batchProgress.total}…`}
-                    {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆分析結果`}
+                    {batchStatus === "running" && `AI 分析中 ${batchProgress.done}/${batchProgress.total}…`}
+                    {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆 AI 分析`}
                     {batchStatus === "partialError" &&
                       `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
                   </span>
@@ -2668,7 +2768,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 <span>目前狀態</span>
                 <span className="text-right">未實現損益</span>
                 <span className="text-right">距防守</span>
-                <span>資料新鮮度</span>
+                <span>價格／分析新鮮度</span>
                 <span className="text-right">操作</span>
               </div>
 
@@ -2683,11 +2783,14 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   const displayName = portfolioCardDisplayName(item, riskSummaryNamesBySymbol);
                   const stopLossRisk = stopLossRiskBySymbol.get(item.symbol) ?? null;
                   const stopLossPullbackPctValue = stopLossRisk ? stopLossPullbackPct(stopLossRisk) : null;
-                  const closePrice = latest?.indicators?.close_price;
-                  const plPct = closePrice != null ? ((closePrice - item.entry_price) / item.entry_price) * 100 : null;
+                  const currentPrice = stopLossRisk?.current_price ?? null;
+                  const plPct =
+                    currentPrice != null ? ((currentPrice - item.entry_price) / item.entry_price) * 100 : null;
                   const unrealizedPnl = stopLossRisk?.unrealized_pnl ?? null;
                   const operationPlanMissing = decisionStatus?.operation_plan_status === "missing";
                   const caveatCount = stopLossRisk?.data_quality.caveats.length ?? 0;
+                  const isRefreshingPrice = priceRefreshTarget === "all" || priceRefreshTarget === item.id;
+                  const riskQualityLabel = positionDataQualityLabel(stopLossRisk);
 
                   return (
                     <article
@@ -2733,6 +2836,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
                         </p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
+                          {currentPrice == null ? "現價未提供" : `現價 ${formatPrice(currentPrice, item.symbol)}`}
+                        </p>
+                        <p className="mt-1 text-xs tabular-nums text-text-faint">
                           {unrealizedPnl == null
                             ? "金額未提供"
                             : `${unrealizedPnl > 0 ? "+" : ""}${formatPortfolioMoney(unrealizedPnl)}`}
@@ -2764,10 +2870,13 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                       </div>
 
                       <div className="col-span-2 min-w-0 md:col-span-1">
-                        <p className="text-xs tabular-nums text-text-secondary">
-                          {latest ? `分析 ${latest.record_date}` : "尚未執行分析"}
+                        <p className="text-xs tabular-nums text-text-secondary">{priceFreshnessLabel(stopLossRisk)}</p>
+                        <p className="mt-1 text-xs tabular-nums text-text-faint">
+                          {latest ? `AI 分析 ${latest.record_date}` : "尚無 AI 分析"}
                         </p>
-                        <p className="mt-1 text-xs text-text-faint">{positionDataQualityLabel(stopLossRisk)}</p>
+                        {riskQualityLabel !== "風險資料完整" && (
+                          <p className="mt-1 text-xs text-text-faint">{riskQualityLabel}</p>
+                        )}
                         {caveatCount > 0 && (
                           <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">{caveatCount} 項資料提示</p>
                         )}
@@ -2776,11 +2885,20 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                       <div className="col-span-2 flex items-center justify-end gap-2 md:col-span-1">
                         <button
                           type="button"
+                          onClick={() => void refreshPrices([item.id])}
+                          disabled={refreshPortfolioPricesMutation.isPending || isAnalyzing}
+                          aria-label={`更新 ${portfolioDisplayName(item)} 最新價格`}
+                          className="ui-button-secondary min-h-10 px-3 text-xs"
+                        >
+                          {isRefreshingPrice ? "更新中" : "更新價格"}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => void openAnalysis(item)}
-                          disabled={isAnalyzing}
+                          disabled={isAnalyzing || isRefreshingPrice}
                           className="ui-button-primary min-h-10 px-3 text-xs"
                         >
-                          {isAnalyzing ? "分析中" : "即時分析"}
+                          {isAnalyzing ? "分析中" : "AI 分析"}
                         </button>
                         <PortfolioActionMenu
                           item={item}

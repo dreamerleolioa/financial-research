@@ -498,8 +498,9 @@ def test_analyze_response_includes_strategy_fields() -> None:
     assert body["command_language_deprecated"]["action_plan_action"] == "分批佈局（首筆 20-30%）"
 
 
-def test_analyze_response_includes_extended_technical_indicators() -> None:
+def test_analyze_response_includes_extended_technical_indicators(monkeypatch: pytest.MonkeyPatch) -> None:
     """AnalyzeResponse keeps raw indicators and adds canonical technical_profile."""
+    monkeypatch.setattr(analysis_router, "MARKET_CLOSE", analysis_router._time.min)
     closes = [100.0 + idx * 0.5 for idx in range(40)]
     snapshot = asdict(_SNAPSHOT)
     snapshot.update({
@@ -523,6 +524,7 @@ def test_analyze_response_includes_extended_technical_indicators() -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert body["is_final"] is True
     indicators = body["technical_indicators"]
     assert indicators["ma5"] is not None
     assert indicators["ma20"] is not None

@@ -38,6 +38,7 @@ def build_portfolio_risk_summary(
     *,
     plans_by_group: dict[str, Any] | None = None,
     raw_data_by_symbol: dict[str, Any] | None = None,
+    price_quotes_by_symbol: dict[str, dict[str, Any]] | None = None,
     symbol_names_by_symbol: dict[str, str | None] | None = None,
     phase1_position_states_by_symbol: dict[str, dict[str, Any]] | None = None,
     weekly_major_holders_by_symbol: dict[str, dict[str, Any]] | None = None,
@@ -46,6 +47,7 @@ def build_portfolio_risk_summary(
     as_of = as_of_date or date.today()
     plans = plans_by_group or {}
     raw_rows = raw_data_by_symbol or {}
+    price_quotes = price_quotes_by_symbol or {}
     symbol_names = symbol_names_by_symbol or {}
     phase1_states = phase1_position_states_by_symbol
     weekly_major_holders = weekly_major_holders_by_symbol or {}
@@ -62,7 +64,8 @@ def build_portfolio_risk_summary(
         entry_price = _to_decimal(getattr(position, "entry_price", None))
         plan = plans.get(str(getattr(position, "position_group_id", "")))
         raw_row = raw_rows.get(symbol)
-        current_price = _extract_current_price(raw_row)
+        price_quote = price_quotes.get(symbol)
+        current_price = _current_price_with_quote(raw_row, price_quote)
         defense_reference, defense_source = _extract_defense_reference(plan)
         caveats: list[dict[str, str]] = []
 
@@ -70,8 +73,10 @@ def build_portfolio_risk_summary(
             caveats.append(_caveat("zero_quantity", "持股數量為 0 或缺漏，暫不估計此部位風險。"))
         if current_price is None:
             caveats.append(_caveat("missing_price", "缺少可用的近期價格，暫不估計此部位風險。"))
-        elif _is_stale(raw_row, as_of):
+        elif not _quote_was_refreshed(price_quote) and _is_stale(raw_row, as_of):
             caveats.append(_caveat("stale_price", f"最新價格日期超過 {STALE_PRICE_MAX_AGE_DAYS} 天，估算需附帶資料時效限制。"))
+        if price_quote is not None and price_quote.get("status") == "failed":
+            caveats.append(_caveat("price_refresh_failed", "最新報價更新失敗，暫時沿用既有價格。"))
         if defense_reference is None:
             caveats.append(_caveat("missing_defense_reference", "缺少風險控制參考價，暫不估計此部位風險。"))
 
@@ -96,6 +101,7 @@ def build_portfolio_risk_summary(
             "name": symbol_names.get(symbol),
             "quantity": _float_or_none(quantity),
             "current_price": _float_or_none(current_price),
+            "price_context": _price_context(raw_row, price_quote),
             "entry_price": _float_or_none(entry_price),
             "market_value": _float_or_none(market_value),
             "unrealized_pnl": _float_or_none(unrealized_pnl),
@@ -236,6 +242,55 @@ def _extract_current_price(raw_row: Any) -> Decimal | None:
         if value is not None and value > 0:
             return value
     return None
+
+
+def _current_price_with_quote(
+    raw_row: Any,
+    price_quote: dict[str, Any] | None,
+) -> Decimal | None:
+    if _quote_was_refreshed(price_quote):
+        refreshed_price = _to_decimal(price_quote.get("current_price"))
+        if refreshed_price is not None and refreshed_price > 0:
+            return refreshed_price
+    return _extract_current_price(raw_row)
+
+
+def _quote_was_refreshed(price_quote: dict[str, Any] | None) -> bool:
+    return bool(price_quote and price_quote.get("status") == "refreshed")
+
+
+def _price_context(
+    raw_row: Any,
+    price_quote: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if _quote_was_refreshed(price_quote):
+        return {
+            "refresh_status": "refreshed",
+            "source": price_quote.get("source"),
+            "as_of": price_quote.get("fetched_at"),
+            "data_date": price_quote.get("data_date"),
+            "market_session": price_quote.get("market_session", "unknown"),
+            "is_final": price_quote.get("is_final"),
+        }
+
+    record_date = getattr(raw_row, "record_date", None) if raw_row is not None else None
+    fetched_at = getattr(raw_row, "fetched_at", None) if raw_row is not None else None
+    refresh_failed = price_quote is not None and price_quote.get("status") == "failed"
+    return {
+        "refresh_status": "failed" if refresh_failed else "not_requested",
+        "source": "stock_raw_data_fallback" if refresh_failed else "stock_raw_data",
+        "as_of": _iso_string(fetched_at) or _iso_string(record_date),
+        "data_date": _iso_string(record_date),
+        "market_session": "closed" if raw_row is not None else "unknown",
+        "is_final": bool(getattr(raw_row, "raw_data_is_final", False)) if raw_row is not None else None,
+    }
+
+
+def _iso_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
 
 
 def _extract_defense_reference(plan: Any) -> tuple[Decimal | None, str | None]:

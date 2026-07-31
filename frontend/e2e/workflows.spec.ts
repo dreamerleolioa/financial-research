@@ -101,6 +101,67 @@ test("Portfolio destructive action requires confirmation before DELETE", async (
   await expect.poll(() => requestLog).toContain("DELETE /portfolio/11");
 });
 
+test("Portfolio refreshes prices without triggering AI analysis", async ({ page }) => {
+  const requestLog: string[] = [];
+  const refreshedRiskSummary = {
+    ...populatedRiskSummary,
+    portfolio_value: 1_100_000,
+    total_unrealized_pnl: 82_000,
+    total_at_risk: 52_000,
+    total_at_risk_pct: 4.7273,
+    price_refresh: {
+      status: "complete",
+      requested_count: 1,
+      refreshed_count: 1,
+      failed_count: 0,
+      refreshed_symbols: ["2330.TW"],
+      failed_symbols: [],
+      refreshed_at: "2026-07-31T10:30:00+08:00",
+    },
+    position_risks: [
+      {
+        ...populatedRiskSummary.position_risks[0],
+        current_price: 1100,
+        market_value: 1_100_000,
+        unrealized_pnl: 82_000,
+        estimated_risk_amount: 52_000,
+        estimated_risk_pct_of_portfolio: 4.7273,
+        price_context: {
+          refresh_status: "refreshed",
+          source: "yfinance_fast_info",
+          as_of: "2026-07-31T10:30:00+08:00",
+          data_date: "2026-07-31",
+          market_session: "intraday",
+          is_final: false,
+        },
+      },
+    ],
+  };
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    priceRefreshSummary: refreshedRiskSummary,
+    requestLog,
+  });
+
+  await page.goto("/portfolio");
+  const position = page.locator('[data-portfolio-position-id="11"]');
+  await expect(position.getByRole("button", { name: "AI 分析" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "更新全部價格" })).toBeVisible();
+
+  await position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
+
+  await expect.poll(() => requestLog).toContain("POST /portfolio/risk-summary/refresh-prices");
+  await expect(position).toContainText("+8.06%");
+  await expect(position).toContainText("現價 1100");
+  await expect(position).toContainText("盤中價格 10:30");
+  await expect(page.getByRole("status")).toContainText("已更新 1 筆價格");
+  expect(requestLog).not.toContain("POST /analyze/position");
+});
+
 test("Closed Portfolio presents a populated realized-PnL group", async ({ page }) => {
   await authenticate(page);
   await installApiMocks(page, { closedPortfolio: [closedPortfolioItem] });

@@ -134,8 +134,9 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 `/portfolio` 與 `/portfolio/closed` 是同一個持股管理 workflow 的兩個狀態。App Shell 對兩個 route 使用同一個 page-level `h1`，並以 `持有中`、`已結案` 子導覽切換；頁面內再以 section heading 說明目前狀態。
 
 - Active risk strip：`PortfolioRiskSummaryPanel` 預設以固定 KPI 順序顯示總市值、未實現損益、防守線前可能回吐與整體防守狀態。防守判讀、data-quality caveat 與持股 AVWAP 觀察收在同一個可展開細節區。
-- Active position rows：桌面欄位順序固定為持股、目前狀態、未實現損益、距防守、資料新鮮度、操作。行動版使用兩欄資料卡，但維持相同閱讀順序，不以橫向表格呈現。
-- Active primary action：`即時分析` 是每筆持股唯一持續可見的主要操作。歷史紀錄、新增批次、結案、編輯、補填操作計畫與刪除收進情境操作選單；這只調整操作層級，不改 mutation、confirmation 或 lifecycle 行為。
+- Active position rows：桌面欄位順序固定為持股、目前狀態、未實現損益、距防守、價格／分析新鮮度、操作。未實現損益百分比、金額、現價與距防守必須使用同一份 `position_risks[].current_price`，不得再混用 latest AI history 的舊 close。行動版使用兩欄資料卡，但維持相同閱讀順序，不以橫向表格呈現。
+- Active price action：每筆持股持續顯示次要 `更新價格` 與主要 `AI 分析`，頁首另提供 `更新全部價格` 與 `一鍵全部分析`。價格刷新只呼叫 `POST /portfolio/risk-summary/refresh-prices`，成功後以 `queryClient.setQueryData(portfolioKeys.riskSummary(), response)` 原子替換同一份 summary cache，不得自動觸發 `/analyze/position`。歷史紀錄、新增批次、結案、編輯、補填操作計畫與刪除仍收進情境操作選單。
+- Active freshness：持股列分開顯示 `price_context` 的價格時間／盤中狀態與 latest history 的 AI 分析日期。價格刷新 partial failure 時保留後端 fallback 值並明示失敗，不把舊價偽裝成剛更新成功。
 - Caveat hierarchy：缺少 plan、風險資料注意與資料不足仍需在持股列可見，但只作次要狀態，不得以大型警告卡壓過部位狀態與防守距離。
 - Closed position groups：已結案頁先顯示期間已實現損益與部位群組數量，再以部位群組彙整結案規模、總損益、整體部位檢討、事件時間線與每筆結案批次。既有單筆交易檢討與生命週期檢討 API 行為維持不變。
 

@@ -33,6 +33,7 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.phase1_avwap.provider import DEFAULT_PHASE1_DATASET, TWSE_STOCK_DAY_DATASET
+from ai_stock_sentinel.models import StockSnapshot
 from ai_stock_sentinel.user_models.user import User
 
 
@@ -654,6 +655,7 @@ def portfolio_db_client(portfolio_db_session: Session, monkeypatch: pytest.Monke
     finally:
         api.app.dependency_overrides.pop(get_current_user, None)
         api.app.dependency_overrides.pop(get_db, None)
+        api.app.dependency_overrides.pop(portfolio_router_module.get_portfolio_quote_fetcher, None)
 
 
 def test_list_portfolio_includes_display_name(
@@ -1201,6 +1203,122 @@ def test_portfolio_risk_summary_ignores_newer_non_final_raw_data(
     assert data["position_risks"][0]["current_price"] == 120
     assert data["position_risks"][0]["market_value"] == 1200
     assert data["total_unrealized_pnl"] == 200
+
+
+def test_refresh_portfolio_prices_updates_selected_quotes_without_persisting_raw_data(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-refresh-success",
+            symbol="2330.TW",
+            entry_price=100,
+            quantity=10,
+            entry_date=date(2026, 6, 1),
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-refresh-fallback",
+            symbol="2317.TW",
+            entry_price=50,
+            quantity=20,
+            entry_date=date(2026, 6, 1),
+        ),
+        PositionLifecyclePlan(
+            user_id=1,
+            position_group_id="group-refresh-success",
+            symbol="2330.TW",
+            source_portfolio_id=42,
+            planned_stop_price=95,
+            source="user_recorded_at_event_time",
+            created_after_entry=False,
+        ),
+        PositionLifecyclePlan(
+            user_id=1,
+            position_group_id="group-refresh-fallback",
+            symbol="2317.TW",
+            source_portfolio_id=43,
+            planned_stop_price=45,
+            source="user_recorded_at_event_time",
+            created_after_entry=False,
+        ),
+        StockRawData(
+            symbol="2330.TW",
+            record_date=date.today(),
+            technical={"close_price": 120},
+            raw_data_is_final=True,
+        ),
+        StockRawData(
+            symbol="2317.TW",
+            record_date=date.today(),
+            technical={"close_price": 60},
+            raw_data_is_final=True,
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    def fetch_quote(symbol: str) -> StockSnapshot:
+        if symbol == "2317.TW":
+            raise TimeoutError("provider timeout")
+        return StockSnapshot(
+            symbol=symbol,
+            currency="TWD",
+            current_price=130,
+            previous_close=120,
+            day_open=121,
+            day_high=132,
+            day_low=119,
+            volume=1000,
+            recent_closes=[120, 130],
+            recent_volume_dates=[date.today().isoformat()],
+            fetched_at="2026-07-31T10:30:00+08:00",
+        )
+
+    api.app.dependency_overrides[portfolio_router_module.get_portfolio_quote_fetcher] = lambda: fetch_quote
+    resp = portfolio_db_client.post(
+        "/portfolio/risk-summary/refresh-prices",
+        json={"portfolio_ids": None},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["price_refresh"]["status"] == "partial"
+    assert data["price_refresh"]["refreshed_symbols"] == ["2330.TW"]
+    assert data["price_refresh"]["failed_symbols"] == ["2317.TW"]
+    risks = {item["symbol"]: item for item in data["position_risks"]}
+    assert risks["2330.TW"]["current_price"] == 130
+    assert risks["2330.TW"]["price_context"]["refresh_status"] == "refreshed"
+    assert risks["2317.TW"]["current_price"] == 60
+    assert risks["2317.TW"]["price_context"]["refresh_status"] == "failed"
+
+    persisted = {
+        row.symbol: row
+        for row in portfolio_db_session.execute(select(StockRawData)).scalars().all()
+    }
+    assert persisted["2330.TW"].technical["close_price"] == 120
+    assert persisted["2317.TW"].technical["close_price"] == 60
+    assert len(persisted) == 2
+
+
+def test_refresh_portfolio_prices_rejects_unowned_or_closed_target(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post(
+        "/portfolio/risk-summary/refresh-prices",
+        json={"portfolio_ids": [999]},
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "持股不存在或已結案"
 
 
 def test_portfolio_risk_summary_reports_data_gap_caveats(

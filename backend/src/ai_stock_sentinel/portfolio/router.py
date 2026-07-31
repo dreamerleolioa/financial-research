@@ -12,7 +12,7 @@ from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecyc
 from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
-from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
+from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
 from ai_stock_sentinel.db.models import (
     PositionEvent,
     PositionLifecyclePlan,
@@ -25,6 +25,10 @@ from ai_stock_sentinel.portfolio.application.add_entry import add_entry_to_posit
 from ai_stock_sentinel.portfolio.application.add_position import create_portfolio
 from ai_stock_sentinel.portfolio.application.close_position import close_position as close_position_use_case
 from ai_stock_sentinel.portfolio.application.get_risk_summary import build_user_portfolio_risk_summary
+from ai_stock_sentinel.portfolio.application.refresh_prices import (
+    PortfolioPriceRefreshTargetNotFound,
+    refresh_user_portfolio_prices,
+)
 from ai_stock_sentinel.portfolio.application.update_position import update_portfolio_record
 from ai_stock_sentinel.portfolio.repository import list_active_portfolios, list_closed_portfolios
 from ai_stock_sentinel.portfolio.schemas import (
@@ -32,6 +36,7 @@ from ai_stock_sentinel.portfolio.schemas import (
     BackfillLifecyclePlanRequest,
     ClosePortfolioRequest,
     PortfolioCreateRequest,
+    PortfolioPriceRefreshRequest,
     UpdatePortfolioRequest,
 )
 from ai_stock_sentinel.shared_context import (
@@ -44,6 +49,10 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 TRADE_REVIEW_VERSION = "trade-review-v1"
 POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v1"
+
+
+def get_portfolio_quote_fetcher():
+    return YFinanceCrawler().fetch_basic_snapshot
 
 
 def _serialize_portfolio(item: UserPortfolio) -> dict:
@@ -354,6 +363,28 @@ def get_portfolio_risk_summary(
         user_id=current_user.id,
         symbol_name_resolver=resolve_symbol_name,
     )
+
+
+@router.post("/risk-summary/refresh-prices")
+def refresh_portfolio_prices(
+    payload: PortfolioPriceRefreshRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    quote_fetcher=Depends(get_portfolio_quote_fetcher),
+):
+    try:
+        return refresh_user_portfolio_prices(
+            db,
+            user_id=current_user.id,
+            portfolio_ids=payload.portfolio_ids,
+            quote_fetcher=quote_fetcher,
+            symbol_name_resolver=resolve_symbol_name,
+        )
+    except PortfolioPriceRefreshTargetNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="持股不存在或已結案",
+        ) from exc
 
 
 @router.get("/groups/{position_group_id}/events")

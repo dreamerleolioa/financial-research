@@ -101,6 +101,69 @@ def test_portfolio_risk_summary_calculates_position_risk_and_totals():
     assert first["defense_reference"] == {"price": 95.0, "source": "planned_stop_price"}
 
 
+def test_portfolio_risk_summary_uses_refreshed_quote_for_all_price_math():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95")},
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 120, record_date=date(2026, 6, 1)),
+        },
+        price_quotes_by_symbol={
+            "2330.TW": {
+                "status": "refreshed",
+                "current_price": 130,
+                "source": "yfinance_fast_info",
+                "fetched_at": "2026-06-12T10:30:00+08:00",
+                "data_date": "2026-06-12",
+                "market_session": "intraday",
+                "is_final": False,
+            },
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    position = summary["position_risks"][0]
+    assert position["current_price"] == 130
+    assert position["market_value"] == 1300
+    assert position["unrealized_pnl"] == 300
+    assert position["estimated_risk_amount"] == 350
+    assert position["price_context"] == {
+        "refresh_status": "refreshed",
+        "source": "yfinance_fast_info",
+        "as_of": "2026-06-12T10:30:00+08:00",
+        "data_date": "2026-06-12",
+        "market_session": "intraday",
+        "is_final": False,
+    }
+    assert "stale_price" not in {caveat["code"] for caveat in position["data_quality"]["caveats"]}
+
+
+def test_portfolio_risk_summary_falls_back_when_quote_refresh_fails():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95")},
+        raw_data_by_symbol={"2330.TW": _raw("2330.TW", 120)},
+        price_quotes_by_symbol={
+            "2330.TW": {
+                "status": "failed",
+                "error_code": "TimeoutError",
+            },
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    position = summary["position_risks"][0]
+    assert position["current_price"] == 120
+    assert position["price_context"]["refresh_status"] == "failed"
+    assert position["price_context"]["source"] == "stock_raw_data_fallback"
+    assert {caveat["code"] for caveat in position["data_quality"]["caveats"]} == {
+        "price_refresh_failed",
+    }
+    assert summary["data_quality"]["caveats"] == [
+        {"code": "price_refresh_failed", "count": 1},
+    ]
+
+
 def test_portfolio_risk_summary_exposes_auto_defense_prices_for_plan_editing():
     summary = build_portfolio_risk_summary(
         [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],

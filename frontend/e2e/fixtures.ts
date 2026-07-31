@@ -225,6 +225,7 @@ interface ApiMockOptions {
   portfolio?: unknown[];
   closedPortfolio?: unknown[];
   riskSummary?: unknown;
+  priceRefreshSummary?: unknown;
   dailyRadar?: unknown | null;
   analyzeResult?: unknown;
   requestLog?: string[];
@@ -243,6 +244,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   const portfolio = options.portfolio ?? [];
   const closedPortfolio = options.closedPortfolio ?? [];
   const riskSummary = options.riskSummary ?? emptyRiskSummary;
+  const priceRefreshSummary = options.priceRefreshSummary ?? riskSummary;
   const dailyRadar = options.dailyRadar === undefined ? null : options.dailyRadar;
   const analyzeResult = options.analyzeResult ?? quickAnalyzeResult;
 
@@ -259,6 +261,9 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
     if (method === "GET" && pathname === "/portfolio") return json(route, portfolio);
     if (method === "GET" && pathname === "/portfolio/closed") return json(route, closedPortfolio);
     if (method === "GET" && pathname === "/portfolio/risk-summary") return json(route, riskSummary);
+    if (method === "POST" && pathname === "/portfolio/risk-summary/refresh-prices") {
+      return json(route, priceRefreshSummary);
+    }
     if (method === "GET" && pathname === "/portfolio/latest-history") return json(route, {});
     if (method === "GET" && pathname === "/portfolio/decision-context-status") return json(route, {});
     if (method === "GET" && /^\/portfolio\/\d+\/lifecycle-plan$/.test(pathname)) {
