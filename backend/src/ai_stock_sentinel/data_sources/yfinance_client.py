@@ -23,6 +23,7 @@ class YFinanceCrawler:
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.fast_info
+            current_price = float(getattr(info, "last_price", 0.0) or 0.0)
             history = ticker.history(period="1y", interval="1d")
         except Exception as exc:
             logger.warning(json.dumps({
@@ -59,11 +60,13 @@ class YFinanceCrawler:
         if volume <= 0:
             volume_source = "unavailable"
 
+        history_metadata = _history_metadata(ticker, symbol=symbol)
+        regular_market_period = _regular_market_period(history_metadata)
         snapshot = StockSnapshot(
             symbol=symbol,
             name=resolve_symbol_name(symbol),
             currency=str(getattr(info, "currency", "TWD") or "TWD"),
-            current_price=float(getattr(info, "last_price", 0.0) or 0.0),
+            current_price=current_price,
             previous_close=float(getattr(info, "previous_close", 0.0) or 0.0),
             day_open=float(getattr(info, "open", 0.0) or 0.0),
             day_high=float(getattr(info, "day_high", 0.0) or 0.0),
@@ -76,6 +79,10 @@ class YFinanceCrawler:
             recent_lows=recent_lows,
             recent_volumes=recent_volumes,
             recent_volume_dates=recent_volume_dates,
+            exchange=_optional_text(getattr(info, "exchange", None)),
+            exchange_timezone=_optional_text(getattr(info, "timezone", None)),
+            regular_market_open=_market_boundary_iso(regular_market_period.get("start")),
+            regular_market_close=_market_boundary_iso(regular_market_period.get("end")),
         )
         logger.info(json.dumps({
             "event": "provider_success",
@@ -84,6 +91,45 @@ class YFinanceCrawler:
             "is_fallback": False,
         }))
         return snapshot
+
+
+def _history_metadata(ticker: yf.Ticker, *, symbol: str) -> dict:
+    try:
+        metadata = ticker.history_metadata
+    except Exception as exc:
+        logger.warning(json.dumps({
+            "event": "provider_market_metadata_failure",
+            "provider": "yfinance",
+            "symbol": symbol,
+            "error_code": type(exc).__name__,
+        }))
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _regular_market_period(metadata: dict) -> dict:
+    current_period = metadata.get("currentTradingPeriod")
+    if not isinstance(current_period, dict):
+        return {}
+    regular_period = current_period.get("regular")
+    return regular_period if isinstance(regular_period, dict) else {}
+
+
+def _market_boundary_iso(value: object) -> str | None:
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    isoformat = getattr(value, "isoformat", None)
+    if not callable(isoformat):
+        return None
+    normalized = isoformat()
+    return normalized if isinstance(normalized, str) and normalized else None
+
+
+def _optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def _history_dates(index: object) -> list[str]:

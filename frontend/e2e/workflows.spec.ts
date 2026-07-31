@@ -22,6 +22,7 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await page.getByRole("button", { name: "快速資料" }).click();
 
   await expect(page.getByText("世芯-KY 3661.TW", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("漲停", { exact: true })).toBeVisible();
   await expect(page.getByText("今日開／高／低", { exact: true })).toBeVisible();
   await expect(page.getByText("3075 / 3155 / 3050", { exact: true })).toBeVisible();
   await expect(page.getByText("20／60 日均成交量", { exact: true })).toBeVisible();
@@ -35,6 +36,7 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("20／60 日均成交量：2,100 / 1,800");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("現價：3120（漲停）");
 
   const openDialogButton = page.getByRole("button", { name: "加入持股" });
   await openDialogButton.click();
@@ -57,11 +59,19 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await authenticate(page);
   await installApiMocks(page, {
     watchlist: [watchlistItem],
-    analyzeResult: quickAnalyzeResult,
+    analyzeResult: {
+      ...quickAnalyzeResult,
+      snapshot: {
+        ...quickAnalyzeResult.snapshot,
+        current_price: 2555,
+        price_limit_status: "limit_down",
+      },
+    },
   });
 
   await page.goto("/watchlist");
   await page.getByRole("button", { name: "技術快查" }).click();
+  await expect(page.getByText("跌停", { exact: true })).toBeVisible();
   const copyButton = page.getByRole("button", { name: "複製 世芯-KY 3661.TW 技術指標" });
   await expect(copyButton).toBeVisible();
   await copyButton.click();
@@ -73,6 +83,7 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("20／60 日均成交量：2,100 / 1,800");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("現價：2555（跌停）");
 });
 
 test("Portfolio destructive action requires confirmation before DELETE", async ({ page }) => {
@@ -160,6 +171,127 @@ test("Portfolio refreshes prices without triggering AI analysis", async ({ page 
   await expect(position).toContainText("盤中價格 10:30");
   await expect(page.getByRole("status")).toContainText("已更新 1 筆價格");
   expect(requestLog).not.toContain("POST /analyze/position");
+});
+
+test("Portfolio preserves earlier row refreshes when another row is refreshed", async ({ page }) => {
+  const appleItem = {
+    ...portfolioItem,
+    id: 12,
+    symbol: "AAPL",
+    name: "Apple",
+    entry_price: 190,
+    quantity: 10,
+  };
+  const appleRisk = {
+    ...populatedRiskSummary.position_risks[0],
+    symbol: "AAPL",
+    name: "Apple",
+    quantity: 10,
+    current_price: 200,
+    entry_price: 190,
+    market_value: 2000,
+    unrealized_pnl: 100,
+    defense_reference: { price: 180, source: "planned_stop_price" },
+    estimated_risk_amount: 200,
+    estimated_risk_pct_of_portfolio: 0.0184,
+    portfolio_weight_pct: 0.184,
+  };
+  const initialSummary = {
+    ...populatedRiskSummary,
+    portfolio_value: 1_087_000,
+    total_unrealized_pnl: 67_100,
+    position_risks: [...populatedRiskSummary.position_risks, appleRisk],
+  };
+  const firstRefreshSummary = {
+    ...initialSummary,
+    portfolio_value: 1_102_000,
+    price_refresh: {
+      status: "complete",
+      requested_count: 1,
+      refreshed_count: 1,
+      failed_count: 0,
+      refreshed_symbols: ["2330.TW"],
+      failed_symbols: [],
+      refreshed_at: "2026-07-31T10:30:00+08:00",
+    },
+    position_risks: [
+      {
+        ...populatedRiskSummary.position_risks[0],
+        current_price: 1100,
+        market_value: 1_100_000,
+        unrealized_pnl: 82_000,
+        price_context: {
+          refresh_status: "refreshed",
+          source: "yfinance_fast_info",
+          as_of: "2026-07-31T10:30:00+08:00",
+          data_date: "2026-07-31",
+          market_session: "intraday",
+          is_final: false,
+        },
+      },
+      appleRisk,
+    ],
+  };
+  const secondRefreshSummary = {
+    ...firstRefreshSummary,
+    portfolio_value: 1_107_100,
+    price_refresh: {
+      status: "complete",
+      requested_count: 2,
+      refreshed_count: 2,
+      failed_count: 0,
+      refreshed_symbols: ["2330.TW", "AAPL"],
+      failed_symbols: [],
+      refreshed_at: "2026-07-31T10:31:00+08:00",
+    },
+    position_risks: [
+      {
+        ...firstRefreshSummary.position_risks[0],
+        current_price: 1105,
+        market_value: 1_105_000,
+        unrealized_pnl: 87_000,
+        price_context: {
+          ...firstRefreshSummary.position_risks[0].price_context,
+          as_of: "2026-07-31T10:31:00+08:00",
+        },
+      },
+      {
+        ...appleRisk,
+        current_price: 210,
+        market_value: 2100,
+        unrealized_pnl: 200,
+        price_context: {
+          refresh_status: "refreshed",
+          source: "yfinance_fast_info",
+          as_of: "2026-07-31T10:31:00+08:00",
+          data_date: "2026-07-31",
+          market_session: "intraday",
+          is_final: false,
+        },
+      },
+    ],
+  };
+  const requestBodies: unknown[] = [];
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem, appleItem],
+    riskSummary: initialSummary,
+    priceRefreshSummaries: [firstRefreshSummary, secondRefreshSummary],
+    requestBodies,
+  });
+
+  await page.goto("/portfolio");
+  const tsmcPosition = page.locator('[data-portfolio-position-id="11"]');
+  const applePosition = page.locator('[data-portfolio-position-id="12"]');
+
+  await tsmcPosition.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
+  await expect(tsmcPosition).toContainText("現價 1100");
+
+  await applePosition.getByRole("button", { name: "更新 Apple AAPL 最新價格" }).click();
+  await expect(applePosition).toContainText("現價 210");
+  await expect(tsmcPosition).toContainText("現價 1105");
+  expect(requestBodies).toEqual([{ portfolio_ids: [11] }, { portfolio_ids: [11, 12] }]);
 });
 
 test("Closed Portfolio presents a populated realized-PnL group", async ({ page }) => {

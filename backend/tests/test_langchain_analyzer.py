@@ -187,6 +187,10 @@ def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None
     snapshot = _make_snapshot(
         recent_volumes=[1_000.0, 1_100.0],
         recent_volume_dates=["2026-03-03", "2026-03-04"],
+        exchange="TAI",
+        exchange_timezone="Asia/Taipei",
+        regular_market_open="2026-07-31T01:00:00+00:00",
+        regular_market_close="2026-07-31T05:30:00+00:00",
     )
     mock_chain = MagicMock()
     mock_chain.invoke.return_value = {
@@ -207,6 +211,10 @@ def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None
     raw_data_snapshot = json.loads(invoke_kwargs["raw_data_snapshot"])
     prompt_snapshot = raw_data_snapshot["snapshot"]
     assert "recent_volume_dates" not in prompt_snapshot
+    assert "exchange" not in prompt_snapshot
+    assert "exchange_timezone" not in prompt_snapshot
+    assert "regular_market_open" not in prompt_snapshot
+    assert "regular_market_close" not in prompt_snapshot
     assert prompt_snapshot["recent_volumes"] == [1_000.0, 1_100.0]
 
 

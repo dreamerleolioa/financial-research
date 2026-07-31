@@ -17,6 +17,7 @@ from ai_stock_sentinel.analysis.application.analysis_cache import (
 from ai_stock_sentinel.analysis.application.response_builder import indicators_with_position_risk_from_full_result
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.db.session import get_db
+from ai_stock_sentinel.data_sources.taiwan_price_limits import TaiwanPriceLimitSnapshot
 from ai_stock_sentinel.models import StockSnapshot
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,11 @@ def _fake_db():
 @pytest.fixture(autouse=True)
 def _disable_external_symbol_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(analysis_router, "_check_symbol_exists", lambda symbol: None)
+    monkeypatch.setattr(
+        analysis_router,
+        "fetch_taiwan_price_limits_with_deadline",
+        lambda symbol, *, current_price: TaiwanPriceLimitSnapshot.unknown(),
+    )
 
 
 def _client_with_graph(graph) -> TestClient:
@@ -1795,6 +1801,15 @@ def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(m
     monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        api_module,
+        "fetch_taiwan_price_limits_with_deadline",
+        lambda symbol, *, current_price: TaiwanPriceLimitSnapshot(
+            status="limit_up",
+            limit_up_price=current_price,
+            limit_down_price=90.0,
+        ),
+    )
 
     graph = _make_graph(
         {
@@ -1814,7 +1829,11 @@ def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(m
     assert graph_input["snapshot"] == cached_snapshot
     assert graph_input["institutional_flow"] == cached_institutional
     assert graph_input["fundamental_data"] == cached_fundamental
+    assert "price_limit_status" not in graph_input["snapshot"]
     assert response.json()["snapshot"]["name"] == "台積電"
+    assert response.json()["snapshot"]["price_limit_status"] == "limit_up"
+    assert response.json()["snapshot"]["limit_up_price"] == 100.0
+    assert response.json()["snapshot"]["limit_down_price"] == 90.0
     assert response.json()["fundamental_data"] == cached_fundamental
 
 

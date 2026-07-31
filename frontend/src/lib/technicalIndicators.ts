@@ -157,6 +157,12 @@ export function formatAverageVolumes(indicators: TechnicalIndicators): string {
   return hasVolume ? volumes.map((value) => formatVolume(value)).join(" / ") : "資料不足";
 }
 
+export function getPriceLimitLabel(snapshot: Record<string, unknown>): "漲停" | "跌停" | null {
+  if (snapshot.price_limit_status === "limit_up") return "漲停";
+  if (snapshot.price_limit_status === "limit_down") return "跌停";
+  return null;
+}
+
 function formatPhase1Distance(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -235,6 +241,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
   const symbolName = getAnalyzeSymbolName(result, snapshot);
   const marketSessionLabel = result.is_final === false ? "盤中" : "收盤";
   const currentPrice = typeof snapshot.current_price === "number" ? snapshot.current_price : null;
+  const priceLimitLabel = getPriceLimitLabel(snapshot);
   const price = (value: number | null | undefined) => formatPrice(value, snapshotSymbol);
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") =>
     first != null || second != null ? `${price(first)} / ${price(second)}` : emptyLabel;
@@ -268,7 +275,7 @@ export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapsh
     ["股票名稱", symbolName ?? "—"],
     ["股票代碼", displaySymbol],
     ["資料狀態", marketSessionLabel],
-    ["現價", price(currentPrice)],
+    ["現價", `${price(currentPrice)}${priceLimitLabel ? `（${priceLimitLabel}）` : ""}`],
     ["今日開／高／低", formatDailyOhlc(snapshot, snapshotSymbol)],
     ["成交量", formatVolume(snapshot.volume)],
     ["20／60 日均成交量", formatAverageVolumes(indicators)],

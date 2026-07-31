@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, time
+from datetime import date, datetime, timezone
 import math
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.orm import Session
 
@@ -15,8 +16,6 @@ from ai_stock_sentinel.portfolio.repository import list_active_portfolios
 
 
 MAX_PRICE_REFRESH_WORKERS = 4
-MARKET_OPEN = time(9, 0)
-MARKET_CLOSE = time(13, 30)
 
 
 class PortfolioPriceRefreshTargetNotFound(Exception):
@@ -45,11 +44,14 @@ def refresh_user_portfolio_prices(
         selected_positions = [active_by_id[portfolio_id] for portfolio_id in requested_ids]
 
     symbols = sorted({str(position.symbol) for position in selected_positions})
-    refreshed_at = (now or datetime.now(TAIPEI_TZ)).astimezone(TAIPEI_TZ)
+    request_time = now or datetime.now(timezone.utc)
+    if request_time.tzinfo is None:
+        request_time = request_time.replace(tzinfo=TAIPEI_TZ)
+    refreshed_at = request_time.astimezone(TAIPEI_TZ)
     price_quotes_by_symbol = _fetch_quotes(
         symbols,
         quote_fetcher=quote_fetcher,
-        now=refreshed_at,
+        now=request_time,
     )
 
     summary = build_user_portfolio_risk_summary(
@@ -118,17 +120,7 @@ def _fetch_quotes(
 
 def _quote_payload(snapshot: StockSnapshot, *, now: datetime) -> dict[str, Any]:
     data_date = snapshot.recent_volume_dates[-1] if snapshot.recent_volume_dates else None
-    if data_date is None:
-        market_session = "unknown"
-        is_final = None
-    else:
-        is_intraday = (
-            data_date == now.date().isoformat()
-            and now.weekday() < 5
-            and MARKET_OPEN <= now.time().replace(tzinfo=None) < MARKET_CLOSE
-        )
-        market_session = "intraday" if is_intraday else "closed"
-        is_final = not is_intraday
+    market_session, is_final = _market_session(snapshot, data_date=data_date, now=now)
     return {
         "status": "refreshed",
         "current_price": float(snapshot.current_price),
@@ -138,3 +130,51 @@ def _quote_payload(snapshot: StockSnapshot, *, now: datetime) -> dict[str, Any]:
         "market_session": market_session,
         "is_final": is_final,
     }
+
+
+def _market_session(
+    snapshot: StockSnapshot,
+    *,
+    data_date: str | None,
+    now: datetime,
+) -> tuple[str, bool | None]:
+    timezone_name = (snapshot.exchange_timezone or "").strip()
+    if (
+        not snapshot.exchange
+        or not timezone_name
+        or not snapshot.regular_market_open
+        or not snapshot.regular_market_close
+        or data_date is None
+        or now.tzinfo is None
+    ):
+        return "unknown", None
+
+    try:
+        exchange_timezone = ZoneInfo(timezone_name)
+        exchange_now = now.astimezone(exchange_timezone)
+        quote_date = date.fromisoformat(data_date)
+        market_open = _parse_market_boundary(snapshot.regular_market_open, exchange_timezone)
+        market_close = _parse_market_boundary(snapshot.regular_market_close, exchange_timezone)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        return "unknown", None
+
+    exchange_date = exchange_now.date()
+    if quote_date < exchange_date:
+        return "closed", True
+    if quote_date != exchange_date or exchange_now.weekday() >= 5:
+        return "unknown", None
+
+    if market_open.date() != quote_date or market_close.date() != quote_date:
+        return "unknown", None
+    if market_open <= exchange_now < market_close:
+        return "intraday", False
+    if exchange_now >= market_close:
+        return "closed", True
+    return "unknown", None
+
+
+def _parse_market_boundary(value: str, exchange_timezone: ZoneInfo) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=exchange_timezone)
+    return parsed.astimezone(exchange_timezone)

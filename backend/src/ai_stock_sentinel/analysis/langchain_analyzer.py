@@ -151,9 +151,16 @@ def build_position_history_section(prev_context: dict | None) -> str:
 
 
 def _snapshot_payload_for_prompt(snapshot: StockSnapshot) -> dict[str, Any]:
-    """Keep backend-only alignment metadata out of the LLM prompt."""
+    """Keep provider/display-only metadata out of the LLM prompt."""
     payload = asdict(snapshot)
-    payload.pop("recent_volume_dates", None)
+    for key in (
+        "recent_volume_dates",
+        "exchange",
+        "exchange_timezone",
+        "regular_market_open",
+        "regular_market_close",
+    ):
+        payload.pop(key, None)
     return payload
 
 

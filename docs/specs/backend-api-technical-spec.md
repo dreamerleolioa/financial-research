@@ -76,6 +76,9 @@ make run-api
     "day_open": 921.0,
     "day_high": 928.0,
     "day_low": 918.5,
+    "price_limit_status": "normal",
+    "limit_up_price": 1010.0,
+    "limit_down_price": 828.0,
     "volume": 28450000,
     "recent_closes": [910.0, 915.0, 920.0, 925.0],
     "fetched_at": "2026-03-03T00:00:00+00:00",
@@ -265,6 +268,8 @@ make run-api
   "errors": []
 }
 ```
+
+`price_limit_status` 為 `limit_up`、`limit_down`、`normal` 或 `unknown`。Analyze／Watchlist 個股查詢會在 response projection 統一補上漲跌停 context，因此新抓 snapshot、10 分鐘 raw cache 與完整分析 cache 命中都使用相同契約：台灣上市／上櫃標的由後端讀取 TWSE MIS 回傳的當日官方 `u`／`w` 上下限價格後，才與 response `current_price` 比對；不得以前一交易日收盤價直接乘上 110%／90% 推算。此 optional provider 使用 bounded worker，response 最多等待 250ms；非台灣標的、官方端未提供上下限、容量已滿或查詢失敗時回傳 `unknown`，且不得中斷個股分析主流程。Provider/display-only 欄位不進 graph、LLM prompt、Portfolio 純價格刷新或內部 raw-data 持久化。
 
 - **欄位說明**
 
@@ -833,6 +838,7 @@ make run-api
 - **Request**：`{"portfolio_ids": [42, 43]}` 只更新指定 active positions；`{"portfolio_ids": null}` 更新目前登入使用者的全部 active positions。指定不存在、非本人或已結案 id 時回 `404 持股不存在或已結案`。
 - **Provider 邊界**：直接呼叫 quote crawler 的 basic snapshot，最多 4 路 bounded concurrency。不得進 LangGraph、新聞、法人、基本面、`/analyze`、`/analyze/position`、analysis cache、history 或 calibration 流程。
 - **持久化邊界**：response 只作本次 request 與前端 query cache 使用，不新增或更新 `stock_raw_data`、analysis log、portfolio/event/lifecycle state。盤中報價不得覆寫正式收盤資料。
+- **市場時段**：以 yfinance snapshot 的 exchange、exchange timezone 與 `currentTradingPeriod.regular.start/end` 實際 session 邊界判定，包含各市場時區、DST 與 provider 回傳的特殊收盤時間。交易所、時區、session 邊界或資料日期不足時，必須回 `market_session = "unknown"` / `is_final = null`，不得套用台北時段或靜態交易所時刻猜測。
 - **部分失敗**：每檔獨立成功或失敗。失敗檔沿用最新 final `stock_raw_data` 價格，`position_risks[].price_context.refresh_status = "failed"` 並加入 `price_refresh_failed` caveat；其他檔照常更新。Top-level `price_refresh.status` 為 `complete` / `partial` / `failed`，並列出 refreshed/failed symbols。
 - **Response**：沿用 `GET /portfolio/risk-summary` shape，另包含：
 

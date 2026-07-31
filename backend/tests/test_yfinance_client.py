@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +27,8 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
 
     mock_info = MagicMock()
     mock_info.currency = "TWD"
+    mock_info.exchange = "TAI"
+    mock_info.timezone = "Asia/Taipei"
     mock_info.last_price = 100.0
     mock_info.previous_close = 99.0
     mock_info.open = 98.5
@@ -36,6 +39,14 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
     mock_ticker = MagicMock()
     mock_ticker.fast_info = mock_info
     mock_ticker.history.return_value = _make_history([95.0, 98.0, 100.0], [111, 222, 333])
+    mock_ticker.history_metadata = {
+        "currentTradingPeriod": {
+            "regular": {
+                "start": int(datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc).timestamp()),
+                "end": int(datetime(2026, 7, 31, 5, 30, tzinfo=timezone.utc).timestamp()),
+            },
+        },
+    }
 
     with (
         patch("ai_stock_sentinel.data_sources.yfinance_client.yf.Ticker", return_value=mock_ticker),
@@ -44,6 +55,10 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
         snapshot = crawler.fetch_basic_snapshot("2330.TW")
 
     assert snapshot.name == "台積電"
+    assert snapshot.exchange == "TAI"
+    assert snapshot.exchange_timezone == "Asia/Taipei"
+    assert snapshot.regular_market_open == "2026-07-31T01:00:00+00:00"
+    assert snapshot.regular_market_close == "2026-07-31T05:30:00+00:00"
     assert snapshot.volume == 123456
     assert snapshot.volume_source == "realtime"
     mock_ticker.history.assert_called_once_with(period="1y", interval="1d")

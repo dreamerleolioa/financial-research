@@ -88,6 +88,7 @@ TanStack Query 管理 server state：
 - Cache identity：透過 query key 明確定義資料面。
 - Mutations：write action 成功後統一 invalidation。
 - Cache update：必要時可用 `queryClient.setQueryData` 更新局部 cache，例如持股即時分析完成後更新 latest history。
+- Portfolio 單筆價格刷新回應會重建完整 risk summary；若 cache 內已有其他 `refresh_status = "refreshed"` 持股，下一次單筆刷新必須把那些持股 ID 一併送出重抓，再替換 summary cache，避免先前報價與 portfolio totals 回退到 persisted final price。
 
 頁面本地 state 只保留 UI state：
 
@@ -150,6 +151,7 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - 快速資料完成後可在結果區直接補做完整分析，但不得自動觸發 AI。完整報告與近期新聞只在完整分析成功後顯示。
 - `technical_profile` 存在時，面板先顯示完整指標值，再於下方提供預設收合的技術分層摘要；展開後顯示技術分、主要判斷、風險與過熱濾網、輔助證據與 data-quality caveat。
 - 完整指標值需在現價旁顯示 snapshot 的今日開盤／最高／最低價；`buildTechnicalIndicatorsCopyText()` 使用相同的「今日開／高／低」標籤、順序與價格格式輸出，欄位缺漏時顯示 `—`，不得由前端自行推算。
+- snapshot `price_limit_status` 為 `limit_up` 或 `limit_down` 時，完整指標值需在現價旁以條件式標籤顯示「漲停」或「跌停」，並同步附註於 copy-to-AI 的現價；`normal` 與 `unknown` 不顯示標籤。漲跌停狀態與上下限價格由後端官方市場資料判斷，前端不得以昨收或固定百分比自行推算。
 - 完整指標值需在成交量附近顯示後端 `technical_indicators.avg_volume_20` / `avg_volume_60`，以「20／60 日均成交量」合併呈現並同步輸出到 copy-to-AI；盤中排除未完成當日、收盤包含當日的計算口徑由後端負責，前端不得從 snapshot 自行重算；兩欄位只供顯示與複製，不改變 `technical_profile` 評分。
 - 缺少 `technical_profile` 時，面板 fallback 為 legacy raw 技術指標值，不顯示分層結論。
 - 缺少 raw `technical_indicators` 時，面板保留分層摘要可見性，並在完整指標值區顯示資料不足提示。

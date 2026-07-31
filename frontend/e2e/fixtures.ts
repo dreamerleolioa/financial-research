@@ -59,6 +59,9 @@ export const quickAnalyzeResult = {
   snapshot: {
     symbol: "3661.TW",
     current_price: 3120,
+    price_limit_status: "limit_up",
+    limit_up_price: 3120,
+    limit_down_price: 2555,
     day_open: 3075,
     day_high: 3155,
     day_low: 3050,
@@ -226,9 +229,11 @@ interface ApiMockOptions {
   closedPortfolio?: unknown[];
   riskSummary?: unknown;
   priceRefreshSummary?: unknown;
+  priceRefreshSummaries?: unknown[];
   dailyRadar?: unknown | null;
   analyzeResult?: unknown;
   requestLog?: string[];
+  requestBodies?: unknown[];
 }
 
 function json(route: Route, body: unknown, status = 200) {
@@ -245,6 +250,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   const closedPortfolio = options.closedPortfolio ?? [];
   const riskSummary = options.riskSummary ?? emptyRiskSummary;
   const priceRefreshSummary = options.priceRefreshSummary ?? riskSummary;
+  let priceRefreshResponseIndex = 0;
   const dailyRadar = options.dailyRadar === undefined ? null : options.dailyRadar;
   const analyzeResult = options.analyzeResult ?? quickAnalyzeResult;
 
@@ -255,6 +261,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
     const method = request.method();
     const pathname = url.pathname;
     options.requestLog?.push(`${method} ${pathname}`);
+    if (request.postData()) options.requestBodies?.push(request.postDataJSON());
 
     if (method === "GET" && pathname === "/auth/me") return json(route, testUser);
     if (method === "GET" && pathname === "/watchlist") return json(route, watchlist);
@@ -262,7 +269,9 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
     if (method === "GET" && pathname === "/portfolio/closed") return json(route, closedPortfolio);
     if (method === "GET" && pathname === "/portfolio/risk-summary") return json(route, riskSummary);
     if (method === "POST" && pathname === "/portfolio/risk-summary/refresh-prices") {
-      return json(route, priceRefreshSummary);
+      const queuedSummary = options.priceRefreshSummaries?.[priceRefreshResponseIndex];
+      priceRefreshResponseIndex += 1;
+      return json(route, queuedSummary ?? priceRefreshSummary);
     }
     if (method === "GET" && pathname === "/portfolio/latest-history") return json(route, {});
     if (method === "GET" && pathname === "/portfolio/decision-context-status") return json(route, {});

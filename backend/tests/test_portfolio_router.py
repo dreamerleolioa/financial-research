@@ -1,5 +1,5 @@
 # backend/tests/test_portfolio_router.py
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.portfolio.application import get_risk_summary as portfolio_risk_summary_app
+from ai_stock_sentinel.portfolio.application.refresh_prices import _quote_payload
 from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -1319,6 +1320,69 @@ def test_refresh_portfolio_prices_rejects_unowned_or_closed_target(
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "持股不存在或已結案"
+
+
+def test_price_refresh_uses_us_exchange_session_for_aapl():
+    snapshot = StockSnapshot(
+        symbol="AAPL",
+        currency="USD",
+        current_price=215,
+        previous_close=212,
+        day_open=213,
+        day_high=216,
+        day_low=211,
+        volume=1000,
+        recent_closes=[212, 215],
+        recent_volume_dates=["2026-07-31"],
+        fetched_at="2026-07-31T15:00:00+00:00",
+        exchange="NMS",
+        exchange_timezone="America/New_York",
+        regular_market_open="2026-07-31T09:30:00-04:00",
+        regular_market_close="2026-07-31T16:00:00-04:00",
+    )
+
+    quote = _quote_payload(
+        snapshot,
+        now=datetime(2026, 7, 31, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert quote["market_session"] == "intraday"
+    assert quote["is_final"] is False
+
+    snapshot.regular_market_close = "2026-07-31T13:00:00-04:00"
+    early_close_quote = _quote_payload(
+        snapshot,
+        now=datetime(2026, 7, 31, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert early_close_quote["market_session"] == "closed"
+    assert early_close_quote["is_final"] is True
+
+
+def test_price_refresh_reports_unknown_for_unmapped_exchange():
+    snapshot = StockSnapshot(
+        symbol="UNKNOWN",
+        currency="USD",
+        current_price=10,
+        previous_close=9,
+        day_open=9,
+        day_high=10,
+        day_low=9,
+        volume=100,
+        recent_closes=[9, 10],
+        recent_volume_dates=["2026-07-31"],
+        fetched_at="2026-07-31T15:00:00+00:00",
+        exchange="UNKNOWN",
+        exchange_timezone="America/New_York",
+    )
+
+    quote = _quote_payload(
+        snapshot,
+        now=datetime(2026, 7, 31, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert quote["market_session"] == "unknown"
+    assert quote["is_final"] is None
 
 
 def test_portfolio_risk_summary_reports_data_gap_caveats(

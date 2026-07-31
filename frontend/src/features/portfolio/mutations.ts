@@ -11,7 +11,7 @@ import {
   type ClosePortfolioRequest,
   type UpdatePortfolioRequest,
 } from "../../lib/portfolioApi";
-import type { BackfillLifecyclePlanRequest } from "../../lib/portfolioTypes";
+import type { BackfillLifecyclePlanRequest, PortfolioItem, PortfolioRiskSummary } from "../../lib/portfolioTypes";
 import { portfolioKeys } from "./queryKeys";
 
 function invalidatePortfolioReadData(queryClient: QueryClient): void {
@@ -96,9 +96,33 @@ export function useDeletePortfolioItemMutation() {
 export function useRefreshPortfolioPricesMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (portfolioIds?: number[]) => refreshPortfolioPrices(portfolioIds),
+    mutationFn: (portfolioIds?: number[]) => {
+      const effectivePortfolioIds = portfolioIds
+        ? priceRefreshTargetsWithPreservedQuotes(
+            portfolioIds,
+            queryClient.getQueryData<PortfolioItem[]>(portfolioKeys.items()),
+            queryClient.getQueryData<PortfolioRiskSummary>(portfolioKeys.riskSummary()),
+          )
+        : undefined;
+      return refreshPortfolioPrices(effectivePortfolioIds);
+    },
     onSuccess: (summary) => {
       queryClient.setQueryData(portfolioKeys.riskSummary(), summary);
     },
   });
+}
+
+function priceRefreshTargetsWithPreservedQuotes(
+  requestedIds: number[],
+  items: PortfolioItem[] | undefined,
+  summary: PortfolioRiskSummary | undefined,
+): number[] {
+  const refreshedSymbols = new Set(
+    summary?.position_risks
+      .filter((position) => position.price_context?.refresh_status === "refreshed")
+      .map((position) => position.symbol) ?? [],
+  );
+  const preservedIds = items?.filter((item) => refreshedSymbols.has(item.symbol)).map((item) => item.id) ?? [];
+
+  return [...new Set([...requestedIds, ...preservedIds])].sort((left, right) => left - right);
 }
