@@ -16,6 +16,29 @@ const dataQualitySchema = z
   })
   .passthrough();
 
+const portfolioPriceContextSchema = z
+  .object({
+    refresh_status: z.enum(["not_requested", "refreshed", "failed"]),
+    source: z.string().nullable(),
+    as_of: z.string().nullable(),
+    data_date: z.string().nullable(),
+    market_session: z.enum(["intraday", "closed", "unknown"]),
+    is_final: z.boolean().nullable(),
+  })
+  .passthrough();
+
+const portfolioPriceRefreshSchema = z
+  .object({
+    status: z.enum(["complete", "partial", "failed"]),
+    requested_count: z.number(),
+    refreshed_count: z.number(),
+    failed_count: z.number(),
+    refreshed_symbols: z.array(z.string()),
+    failed_symbols: z.array(z.string()),
+    refreshed_at: z.string(),
+  })
+  .passthrough();
+
 const phase1PositionStateSchema = z
   .object({
     symbol: z.string(),
@@ -81,6 +104,7 @@ const portfolioPositionRiskSchema = z
     name: z.string().nullable().optional(),
     quantity: z.number().nullable(),
     current_price: z.number().nullable(),
+    price_context: portfolioPriceContextSchema.optional(),
     entry_price: z.number().nullable(),
     market_value: z.number().nullable(),
     unrealized_pnl: z.number().nullable(),
@@ -149,12 +173,14 @@ const phase1CurrentDayListsSchema = z
 export const portfolioRiskSummarySchema = z
   .object({
     version: z.string(),
+    portfolio_revision: z.string().optional(),
     as_of_date: z.string(),
     portfolio_value: z.number(),
     total_unrealized_pnl: z.number(),
     total_at_risk: z.number(),
     total_at_risk_pct: z.number().nullable(),
     position_risks: z.array(portfolioPositionRiskSchema),
+    price_refresh: portfolioPriceRefreshSchema.optional(),
     phase1_current_day_lists: phase1CurrentDayListsSchema.optional(),
     concentration: z
       .object({

@@ -60,7 +60,7 @@ make run-api
 ```
 
 - **欄位說明**
-  - `symbol`：股票代碼，必填，最小長度 1
+  - `symbol`：股票代碼，必填；目前只接受台灣上市 `.TW` 與上櫃 `.TWO`，輸入會去除前後空白並轉大寫，其他市場回 422。
   - `news_text`：新聞文字，選填
   - `skip_ai`：是否跳過 AI 分析，選填，預設為 false。若為 true，僅撈取並計算 raw data (技術指標/籌碼)，不執行 LLM 推理，以節省成本。
 
@@ -72,10 +72,16 @@ make run-api
     "symbol": "2330.TW",
     "currency": "TWD",
     "current_price": 925.0,
+    "market_current_price": 925.0,
+    "market_current_price_source": "twse_mis",
+    "price_limit_quote_price": 925.0,
     "previous_close": 920.0,
     "day_open": 921.0,
     "day_high": 928.0,
     "day_low": 918.5,
+    "price_limit_status": "normal",
+    "limit_up_price": 1010.0,
+    "limit_down_price": 828.0,
     "volume": 28450000,
     "recent_closes": [910.0, 915.0, 920.0, 925.0],
     "fetched_at": "2026-03-03T00:00:00+00:00",
@@ -265,6 +271,8 @@ make run-api
   "errors": []
 }
 ```
+
+`price_limit_status` 為 `limit_up`、`limit_down`、`normal` 或 `unknown`。Analyze／Watchlist 個股查詢會在 response projection 統一補上漲跌停 context，因此新抓 snapshot、10 分鐘 raw cache 與完整分析 cache 命中都使用相同契約：後端必須使用同一筆 TWSE MIS 回傳的成交價 `z` 與官方上下限 `u`／`w` 判斷，並以獨立的 `market_current_price`、`market_current_price_source = "twse_mis"` 與 `price_limit_quote_price` 揭露即時市場報價。Canonical `snapshot.current_price` 不覆寫，因 technical indicators、technical profile 與 AI text 仍以該次 yfinance/raw/analysis snapshot 計算；前端需把 MIS 價明示為即時顯示值，不得暗示既有技術指標已隨之重算。不得以前一交易日收盤價直接乘上 110%／90% 推算。此 optional provider 使用 bounded worker，response 最多等待 250ms；provider socket／total reader deadline 為 500ms，reader 使用 available-byte `read1`（fallback 單 byte read）定期重查 wall clock，response body 上限 64 KiB，避免單次填滿 buffer 的 blocking read 讓慢速串流長期占滿 worker。官方端未提供即時成交價／上下限、容量已滿或查詢失敗時回傳 `unknown`，且保留原 snapshot 現價，不得中斷個股分析主流程。Provider/display-only 欄位不進 graph、LLM prompt、Portfolio 純價格刷新或內部 raw-data 持久化。
 
 - **欄位說明**
 
@@ -827,12 +835,55 @@ make run-api
   - `planned_invalidation_present`：目前 plan 是否有 `planned_invalidation` 文字。
   - `shared_context`：Phase 2D portfolio diagnosis shared context reference。只讀 `shared_background_contexts` cache，作為 evidence/caveat 與資料品質說明；不得轉成 portfolio action、加減碼指令或交易建議。Active portfolio 不再有 8 筆硬上限；此 read path 仍須維持 bounded cache read，不觸發 weekly major holders、lending、full margin 即時逐檔 provider。
 
+### `POST /portfolio/risk-summary/refresh-prices`
+
+- **用途**：只更新 active holdings 的最新報價並以同一份價格快照重算 portfolio risk summary，不執行 AI 持股診斷。
+- **Request**：`{"portfolio_ids": [42, 43]}` 只更新指定 active positions，最多 500 個 id；`{"portfolio_ids": null}` 更新目前登入使用者的全部 active positions。指定不存在、非本人或已結案 id 時回 `404 持股不存在或已結案`。持股建立、個股分析與 watchlist 寫入都只接受 `.TW`／`.TWO`，因此此路徑不得產生外幣混算。
+- **Provider 邊界**：直接呼叫 quote crawler 的 portfolio snapshot，使用 process-wide shared executor，全服務最多 4 路 in-flight 行情請求；單次行情收集階段最多等待 5 秒。Portfolio crawler 以 thread-local total deadline 將每個 yfinance HTTP hop 限制在剩餘 4 秒內，且不呼叫額外的股票名稱 provider，確保 response timeout 後 running worker 仍會在 provider deadline 內回收；逾時或容量已滿以 per-symbol failure 降級。不得進 LangGraph、新聞、法人、基本面、`/analyze`、`/analyze/position`、analysis cache、history 或 calibration 流程。
+- **持久化邊界**：response 只作本次 request 與前端 query cache 使用，不新增或更新 `stock_raw_data`、analysis log、portfolio/event/lifecycle state。盤中報價不得覆寫正式收盤資料。
+- **市場時段**：僅處理台股上市／上櫃 snapshot，並在 fast-info 即時成交價 materialize 後立即記錄 `fetched_at`，早於 previous-close、歷史資料與 optional metadata 查詢，以該時間搭配 exchange、exchange timezone 與 `currentTradingPeriod.regular.start/end` 實際 session 邊界判定。不得用 request 結束時間回頭改寫較早取得的報價 finality，也不得因 daily volume bar 尚停在前一交易日而把盤中 fast-info quote 標成收盤；`data_date` 獨立揭露該 daily bar 日期。交易所、時區、session 邊界或觀測時間缺漏、格式錯誤或不含 timezone 時，必須回 `market_session = "unknown"` / `is_final = null`，不得回退使用 request 時間。
+- **部分失敗**：每檔獨立成功或失敗。失敗檔沿用最新 final `stock_raw_data` 價格，`position_risks[].price_context.refresh_status = "failed"` 並加入 `price_refresh_failed` caveat；其他檔照常更新。Top-level `price_refresh.status` 為 `complete` / `partial` / `failed`，並列出 refreshed/failed symbols。
+- **既有非台股資料**：schema 限制上線前若資料庫已存在非 `.TW`／`.TWO` active holding，summary 仍保留該列供使用者辨識，但加上 `unsupported_market` insufficient caveat，且 `market_value`、未實現損益與風險金額不納入 TWD portfolio totals，避免外幣直接混算。
+- **前端 cache 合併約束**：因 response 是完整 summary replacement，刷新單一持股時前端必須一併送出目前 cache 中已成功刷新過的持股；若其中任何既有 refreshed symbol 在本次失敗，整份 response 不得套用，以免先前即時價與總計 silently regression。所有 portfolio writes 與價格刷新使用同一 mutation scope；跨分頁 revision 若在 request 期間改變，晚到的價格 response 必須丟棄並重新 invalidation。
+- **Response**：沿用 `GET /portfolio/risk-summary` shape，另包含：
+
+```json
+{
+  "price_refresh": {
+    "status": "complete",
+    "requested_count": 1,
+    "refreshed_count": 1,
+    "failed_count": 0,
+    "refreshed_symbols": ["2330.TW"],
+    "failed_symbols": [],
+    "refreshed_at": "2026-07-31T10:30:00+08:00"
+  },
+  "position_risks": [
+    {
+      "symbol": "2330.TW",
+      "current_price": 1100.0,
+      "price_context": {
+        "refresh_status": "refreshed",
+        "source": "yfinance_fast_info",
+        "as_of": "2026-07-31T10:30:00+08:00",
+        "data_date": "2026-07-31",
+        "market_session": "intraday",
+        "is_final": false
+      }
+    }
+  ]
+}
+```
+
+`portfolio_revision` 是後端以 active position、lifecycle plan、正式 raw data、Phase 1 與 weekly context inputs 產生的 opaque SHA-256 revision；價格 override 不參與 revision。前端只可用於判斷 request-scoped price overlay 是否仍屬於同一份 portfolio 結構，不得解析其內容。
+
 ### `GET /portfolio/risk-summary`
 
 - **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
 - **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data` 與 active holdings 對應的 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 provider backfill、snapshot refresh、watchlist lookup 或 latest Daily Radar candidate lookup。
 - **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
+- **價格來源說明**：每筆 `position_risks[].price_context` 明示 stored final price 的 `data_date`、`as_of`、`is_final` 與 `refresh_status = "not_requested"`。此 GET 仍不得觸發 provider；只有上述 POST 可建立 request-scoped 最新報價 override。
 - **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Portfolio UI 的持股 AVWAP observation projection。Backend 只由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`；`pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates` 可為相容 response shape 保留空陣列，但 `/portfolio/risk-summary` read path 與 summary builder 不接受 watchlist 或 latest Daily Radar candidate observation map，也不產生非持股清單。非持股 AVWAP 候選應在 Daily Radar 或 watchlist 語境顯示。Portfolio read path 會使用 requested date 當日或以前最新 fresh snapshot，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；最多回看 7 個 calendar days，超過時回 `freshness = "missing"` / `missing_reason = "phase1_snapshot_stale"`；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。Holding-specific entry anchor 與 avg cost 只在 Portfolio read projection 時由目前使用者的 portfolio rows 套用到 shared market snapshot，不寫回 `phase1_avwap_snapshots`。此 projection 只讀 cache，不觸發 provider backfill，不改 Daily Radar ranking/scoring。
 - **TDCC 週頻籌碼行為**：`position_risks[].weekly_major_holders` 是 active holding 的 market-only shared context projection，來源為 `shared_background_contexts.context_type = "weekly_major_holders"`；缺資料時可省略，不讓 risk summary 失敗。Projection 可包含 `status`、`as_of_date`、`previous_as_of_date`、`thousand_lot_holder_ratio`、`thousand_lot_holder_ratio_delta_pp`、`large_holder_400_lot_plus_ratio`、`large_holder_400_lot_plus_ratio_delta_pp`、`retail_100_lot_or_less_ratio`、`retail_100_lot_or_less_ratio_delta_pp` 等欄位。`position_risks[].chip_stability_context` 只作籌碼穩定性摘要；千張大戶增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定，下降代表籌碼穩定性轉弱或集中度下降但不能單獨判定看空。此 projection 不改 `estimated_risk_amount`、`estimated_risk_pct_of_portfolio`、portfolio-level risk state、排序或任何交易建議。
 
@@ -852,6 +903,14 @@ make run-api
       "name": "台積電",
       "quantity": 1000.0,
       "current_price": 120.0,
+      "price_context": {
+        "refresh_status": "not_requested",
+        "source": "stock_raw_data",
+        "as_of": "2026-06-12",
+        "data_date": "2026-06-12",
+        "market_session": "closed",
+        "is_final": true
+      },
       "entry_price": 100.0,
       "market_value": 120000.0,
       "unrealized_pnl": 20000.0,

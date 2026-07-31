@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import {
   fetchDecisionContextStatus,
   fetchLatestPortfolioHistory,
@@ -7,6 +8,8 @@ import {
   fetchPortfolioRiskSummary,
 } from "../../lib/portfolioApi";
 import { portfolioKeys } from "./queryKeys";
+import { clearPriceRefreshOverlay, readPriceRefreshOverlay } from "./priceRefreshOverlay";
+import { PORTFOLIO_MUTATION_REVISION_KEY } from "./mutationCoordinator";
 
 export function usePortfolioItemsQuery() {
   return useQuery({
@@ -16,10 +19,25 @@ export function usePortfolioItemsQuery() {
 }
 
 export function usePortfolioRiskSummaryQuery() {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== PORTFOLIO_MUTATION_REVISION_KEY) return;
+      clearPriceRefreshOverlay(queryClient);
+      void queryClient.invalidateQueries({ queryKey: portfolioKeys.riskSummary() });
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [queryClient]);
+
   return useQuery({
     queryKey: portfolioKeys.riskSummary(),
-    queryFn: fetchPortfolioRiskSummary,
+    queryFn: async () => {
+      const serverSummary = await fetchPortfolioRiskSummary();
+      return readPriceRefreshOverlay(queryClient, serverSummary) ?? serverSummary;
+    },
     retry: 1,
+    staleTime: 0,
   });
 }
 

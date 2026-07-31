@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable
 from datetime import date
@@ -27,6 +29,7 @@ def build_user_portfolio_risk_summary(
     user_id: int,
     symbol_name_resolver: Callable[[str], str | None],
     as_of_date: date | None = None,
+    price_quotes_by_symbol: dict[str, dict] | None = None,
 ) -> dict:
     rows = list_active_portfolios(db, user_id=user_id)
     group_ids = [row.position_group_id for row in rows]
@@ -59,12 +62,65 @@ def build_user_portfolio_risk_summary(
             },
         )
         weekly_major_holders_by_symbol = {}
-    return build_portfolio_risk_summary(
+    summary = build_portfolio_risk_summary(
         rows,
         plans_by_group=plans_by_group,
         raw_data_by_symbol=raw_data_by_symbol,
         symbol_names_by_symbol={symbol: symbol_name_resolver(symbol) for symbol in symbols},
         phase1_position_states_by_symbol=phase1_position_states_by_symbol,
         weekly_major_holders_by_symbol=weekly_major_holders_by_symbol,
+        price_quotes_by_symbol=price_quotes_by_symbol,
         as_of_date=summary_date,
     )
+    summary["portfolio_revision"] = _portfolio_revision(
+        rows=rows,
+        plans=plans,
+        raw_data_by_symbol=raw_data_by_symbol,
+        phase1_position_states_by_symbol=phase1_position_states_by_symbol,
+        weekly_major_holders_by_symbol=weekly_major_holders_by_symbol,
+    )
+    return summary
+
+
+def _portfolio_revision(
+    *,
+    rows: list[object],
+    plans: list[object],
+    raw_data_by_symbol: dict[str, object],
+    phase1_position_states_by_symbol: dict[str, dict] | None,
+    weekly_major_holders_by_symbol: dict[str, dict],
+) -> str:
+    payload = {
+        "positions": sorted(
+            (_model_contract(row) for row in rows),
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        ),
+        "plans": sorted(
+            (_model_contract(plan) for plan in plans),
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        ),
+        "raw_data": {
+            symbol: _model_contract(raw_data_by_symbol[symbol])
+            for symbol in sorted(raw_data_by_symbol)
+        },
+        "phase1": phase1_position_states_by_symbol or {},
+        "weekly_major_holders": weekly_major_holders_by_symbol,
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _model_contract(value: object) -> dict[str, object]:
+    table = getattr(type(value), "__table__", None)
+    columns = getattr(table, "columns", None)
+    if columns is not None:
+        return {
+            column.name: getattr(value, column.name, None)
+            for column in columns
+        }
+    values = getattr(value, "__dict__", {})
+    return {
+        str(key): item
+        for key, item in values.items()
+        if not str(key).startswith("_")
+    }

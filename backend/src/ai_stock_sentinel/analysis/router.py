@@ -61,6 +61,7 @@ from ai_stock_sentinel.chip_stability_context import (
 from ai_stock_sentinel.clock import TAIPEI_TZ, today_taipei
 from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
+from ai_stock_sentinel.data_sources.taiwan_price_limits import fetch_taiwan_price_limits_with_deadline
 from ai_stock_sentinel.data_sources.yfinance_client import check_symbol_exists
 from ai_stock_sentinel.db.models import StockAnalysisCache, StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import get_db
@@ -437,6 +438,7 @@ def _with_analyze_response_contexts(
     user_id: int,
     symbol: str,
 ) -> AnalyzeResponse:
+    response = _with_price_limit_context(response, symbol=symbol)
     response = _with_shared_and_chip_context(
         response,
         db,
@@ -449,6 +451,28 @@ def _with_analyze_response_contexts(
         user_id=user_id,
         symbol=symbol,
     )
+
+
+def _with_price_limit_context(response: AnalyzeResponse, *, symbol: str) -> AnalyzeResponse:
+    snapshot = response.snapshot
+    current_price = snapshot.get("current_price") if isinstance(snapshot, dict) else None
+    if not isinstance(current_price, int | float) or isinstance(current_price, bool):
+        return response
+    price_limits = fetch_taiwan_price_limits_with_deadline(symbol)
+    response.snapshot = {
+        **snapshot,
+        "market_current_price": price_limits.current_price,
+        "market_current_price_source": (
+            "twse_mis"
+            if price_limits.current_price is not None
+            else None
+        ),
+        "price_limit_status": price_limits.status,
+        "price_limit_quote_price": price_limits.current_price,
+        "limit_up_price": price_limits.limit_up_price,
+        "limit_down_price": price_limits.limit_down_price,
+    }
+    return response
 
 
 def _today_taipei() -> date:

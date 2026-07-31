@@ -39,6 +39,10 @@ class StockSnapshot:
     low_20d: float | None = None        # 近 20 日最低收盤價
     support_20d: float | None = None    # 近 20 日支撐位（low_20d × 0.99）
     resistance_20d: float | None = None  # 近 20 日壓力位（high_20d × 1.01）
+    exchange: str | None = None
+    exchange_timezone: str | None = None
+    regular_market_open: str | None = None
+    regular_market_close: str | None = None
 
     def __post_init__(self) -> None:
         closes = self.recent_closes

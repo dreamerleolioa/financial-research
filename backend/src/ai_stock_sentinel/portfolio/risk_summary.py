@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ai_stock_sentinel.chip_stability_context import chip_stability_context_from_weekly_major_holders
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 
 
 PORTFOLIO_RISK_SUMMARY_VERSION = "portfolio-risk-summary-v1"
@@ -31,6 +32,12 @@ SYMBOL_CONCENTRATION_WATCH_PCT = 25.0
 SYMBOL_CONCENTRATION_ELEVATED_PCT = 35.0
 TOTAL_RISK_WATCH_PCT = 5.0
 TOTAL_RISK_CONSTRAINED_PCT = 10.0
+BLOCKING_DATA_GAP_CODES = frozenset({
+    "zero_quantity",
+    "missing_price",
+    "missing_defense_reference",
+    "unsupported_market",
+})
 
 
 def build_portfolio_risk_summary(
@@ -38,6 +45,7 @@ def build_portfolio_risk_summary(
     *,
     plans_by_group: dict[str, Any] | None = None,
     raw_data_by_symbol: dict[str, Any] | None = None,
+    price_quotes_by_symbol: dict[str, dict[str, Any]] | None = None,
     symbol_names_by_symbol: dict[str, str | None] | None = None,
     phase1_position_states_by_symbol: dict[str, dict[str, Any]] | None = None,
     weekly_major_holders_by_symbol: dict[str, dict[str, Any]] | None = None,
@@ -46,6 +54,7 @@ def build_portfolio_risk_summary(
     as_of = as_of_date or date.today()
     plans = plans_by_group or {}
     raw_rows = raw_data_by_symbol or {}
+    price_quotes = price_quotes_by_symbol or {}
     symbol_names = symbol_names_by_symbol or {}
     phase1_states = phase1_position_states_by_symbol
     weekly_major_holders = weekly_major_holders_by_symbol or {}
@@ -58,27 +67,36 @@ def build_portfolio_risk_summary(
 
     for position in positions:
         symbol = str(getattr(position, "symbol", ""))
+        supported_market = is_supported_taiwan_symbol(symbol)
         quantity = _to_decimal(getattr(position, "quantity", None))
         entry_price = _to_decimal(getattr(position, "entry_price", None))
         plan = plans.get(str(getattr(position, "position_group_id", "")))
         raw_row = raw_rows.get(symbol)
-        current_price = _extract_current_price(raw_row)
+        price_quote = price_quotes.get(symbol)
+        current_price = _current_price_with_quote(raw_row, price_quote)
         defense_reference, defense_source = _extract_defense_reference(plan)
         caveats: list[dict[str, str]] = []
 
+        if not supported_market:
+            caveats.append(_caveat(
+                "unsupported_market",
+                "此既有部位不是台灣上市或上櫃股票，已排除於台幣投資組合總額與風險估算。",
+            ))
         if quantity is None or quantity <= 0:
             caveats.append(_caveat("zero_quantity", "持股數量為 0 或缺漏，暫不估計此部位風險。"))
         if current_price is None:
             caveats.append(_caveat("missing_price", "缺少可用的近期價格，暫不估計此部位風險。"))
-        elif _is_stale(raw_row, as_of):
+        elif not _quote_was_refreshed(price_quote) and _is_stale(raw_row, as_of):
             caveats.append(_caveat("stale_price", f"最新價格日期超過 {STALE_PRICE_MAX_AGE_DAYS} 天，估算需附帶資料時效限制。"))
+        if price_quote is not None and price_quote.get("status") == "failed":
+            caveats.append(_caveat("price_refresh_failed", "最新報價更新失敗，暫時沿用既有價格。"))
         if defense_reference is None:
             caveats.append(_caveat("missing_defense_reference", "缺少風險控制參考價，暫不估計此部位風險。"))
 
         market_value = None
         unrealized_pnl = None
         estimated_risk_amount = None
-        if quantity is not None and quantity > 0 and current_price is not None:
+        if supported_market and quantity is not None and quantity > 0 and current_price is not None:
             market_value = current_price * quantity
             portfolio_value += market_value
             if entry_price is not None:
@@ -96,6 +114,7 @@ def build_portfolio_risk_summary(
             "name": symbol_names.get(symbol),
             "quantity": _float_or_none(quantity),
             "current_price": _float_or_none(current_price),
+            "price_context": _price_context(raw_row, price_quote),
             "entry_price": _float_or_none(entry_price),
             "market_value": _float_or_none(market_value),
             "unrealized_pnl": _float_or_none(unrealized_pnl),
@@ -116,7 +135,7 @@ def build_portfolio_risk_summary(
                 "defense_reference": defense_reference,
                 "plan": plan,
                 "has_incomplete_caveat": any(
-                    caveat["code"] in {"zero_quantity", "missing_price", "missing_defense_reference"}
+                    caveat["code"] in BLOCKING_DATA_GAP_CODES
                     for caveat in caveats
                 ),
                 "has_stale_caveat": any(caveat["code"] == "stale_price" for caveat in caveats),
@@ -238,6 +257,55 @@ def _extract_current_price(raw_row: Any) -> Decimal | None:
     return None
 
 
+def _current_price_with_quote(
+    raw_row: Any,
+    price_quote: dict[str, Any] | None,
+) -> Decimal | None:
+    if _quote_was_refreshed(price_quote):
+        refreshed_price = _to_decimal(price_quote.get("current_price"))
+        if refreshed_price is not None and refreshed_price > 0:
+            return refreshed_price
+    return _extract_current_price(raw_row)
+
+
+def _quote_was_refreshed(price_quote: dict[str, Any] | None) -> bool:
+    return bool(price_quote and price_quote.get("status") == "refreshed")
+
+
+def _price_context(
+    raw_row: Any,
+    price_quote: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if _quote_was_refreshed(price_quote):
+        return {
+            "refresh_status": "refreshed",
+            "source": price_quote.get("source"),
+            "as_of": price_quote.get("fetched_at"),
+            "data_date": price_quote.get("data_date"),
+            "market_session": price_quote.get("market_session", "unknown"),
+            "is_final": price_quote.get("is_final"),
+        }
+
+    record_date = getattr(raw_row, "record_date", None) if raw_row is not None else None
+    fetched_at = getattr(raw_row, "fetched_at", None) if raw_row is not None else None
+    refresh_failed = price_quote is not None and price_quote.get("status") == "failed"
+    return {
+        "refresh_status": "failed" if refresh_failed else "not_requested",
+        "source": "stock_raw_data_fallback" if refresh_failed else "stock_raw_data",
+        "as_of": _iso_string(fetched_at) or _iso_string(record_date),
+        "data_date": _iso_string(record_date),
+        "market_session": "closed" if raw_row is not None else "unknown",
+        "is_final": bool(getattr(raw_row, "raw_data_is_final", False)) if raw_row is not None else None,
+    }
+
+
+def _iso_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
 def _extract_defense_reference(plan: Any) -> tuple[Decimal | None, str | None]:
     if plan is None:
         return None, None
@@ -293,7 +361,7 @@ def _caveat(code: str, message: str) -> dict[str, str]:
 
 
 def _position_data_quality(caveats: list[dict[str, str]]) -> dict[str, Any]:
-    if any(caveat["code"] in {"zero_quantity", "missing_price", "missing_defense_reference"} for caveat in caveats):
+    if any(caveat["code"] in BLOCKING_DATA_GAP_CODES for caveat in caveats):
         status = "insufficient"
     elif caveats:
         status = "caution"
@@ -303,7 +371,7 @@ def _position_data_quality(caveats: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def _portfolio_data_quality(caveat_counts: dict[str, int]) -> dict[str, Any]:
-    if any(caveat_counts.get(code, 0) for code in {"zero_quantity", "missing_price", "missing_defense_reference"}):
+    if any(caveat_counts.get(code, 0) for code in BLOCKING_DATA_GAP_CODES):
         status = "insufficient"
     elif any(caveat_counts.values()):
         status = "caution"
@@ -492,7 +560,7 @@ def _phase1_observation_sort_key(item: dict[str, Any]) -> tuple[int, str]:
 
 
 def _risk_budget_status(total_risk_pct: float | None, caveat_counts: dict[str, int]) -> dict[str, Any]:
-    blocking_data_gap = any(caveat_counts.get(code, 0) for code in {"zero_quantity", "missing_price", "missing_defense_reference"})
+    blocking_data_gap = any(caveat_counts.get(code, 0) for code in BLOCKING_DATA_GAP_CODES)
     if total_risk_pct is None:
         status = "unknown"
     elif total_risk_pct >= TOTAL_RISK_CONSTRAINED_PCT:

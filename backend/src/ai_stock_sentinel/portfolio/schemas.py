@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ai_stock_sentinel.portfolio.entry_record_contract import EntryRecordContext
+from ai_stock_sentinel.taiwan_symbols import validate_taiwan_symbol
 
 
 class PortfolioCreateRequest(BaseModel):
@@ -15,6 +16,8 @@ class PortfolioCreateRequest(BaseModel):
     quantity: int = 0
     notes: str | None = None
     entry_record: EntryRecordContext | None = None
+
+    _validate_symbol = field_validator("symbol", mode="before")(validate_taiwan_symbol)
 
 
 class ClosePortfolioRequest(BaseModel):
@@ -108,3 +111,7 @@ class UpdatePortfolioRequest(BaseModel):
     quantity: int
     entry_date: date
     notes: str | None = None
+
+
+class PortfolioPriceRefreshRequest(BaseModel):
+    portfolio_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)

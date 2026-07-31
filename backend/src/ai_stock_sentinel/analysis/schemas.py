@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from ai_stock_sentinel.taiwan_symbols import validate_taiwan_symbol
 
 
 class AnalyzeRequest(BaseModel):
@@ -10,12 +12,16 @@ class AnalyzeRequest(BaseModel):
     news_text: str | None = None
     skip_ai: bool = False
 
+    _validate_symbol = field_validator("symbol", mode="before")(validate_taiwan_symbol)
+
 
 class PositionAnalyzeRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     entry_price: float = Field(gt=0)
     entry_date: str | None = None
     quantity: int | None = None
+
+    _validate_symbol = field_validator("symbol", mode="before")(validate_taiwan_symbol)
 
 
 class PositionAnalysis(BaseModel):

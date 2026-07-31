@@ -17,6 +17,25 @@ export interface PortfolioRiskCaveat {
   count?: number;
 }
 
+export interface PortfolioPriceContext {
+  refresh_status: "not_requested" | "refreshed" | "failed";
+  source: string | null;
+  as_of: string | null;
+  data_date: string | null;
+  market_session: "intraday" | "closed" | "unknown";
+  is_final: boolean | null;
+}
+
+export interface PortfolioPriceRefresh {
+  status: "complete" | "partial" | "failed";
+  requested_count: number;
+  refreshed_count: number;
+  failed_count: number;
+  refreshed_symbols: string[];
+  failed_symbols: string[];
+  refreshed_at: string;
+}
+
 export interface PortfolioPhase1PositionState {
   symbol: string;
   data_date: string;
@@ -59,6 +78,7 @@ export interface PortfolioPositionRisk {
   name?: string | null;
   quantity: number | null;
   current_price: number | null;
+  price_context?: PortfolioPriceContext;
   entry_price: number | null;
   market_value: number | null;
   unrealized_pnl: number | null;
@@ -118,12 +138,14 @@ export interface PortfolioPhase1CurrentDayLists {
 
 export interface PortfolioRiskSummary {
   version: string;
+  portfolio_revision?: string;
   as_of_date: string;
   portfolio_value: number;
   total_unrealized_pnl: number;
   total_at_risk: number;
   total_at_risk_pct: number | null;
   position_risks: PortfolioPositionRisk[];
+  price_refresh?: PortfolioPriceRefresh;
   phase1_current_day_lists?: PortfolioPhase1CurrentDayLists;
   concentration: {
     by_symbol: Array<{

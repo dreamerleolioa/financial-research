@@ -1,5 +1,5 @@
 # backend/tests/test_portfolio_router.py
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
@@ -15,6 +15,8 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
 from ai_stock_sentinel.portfolio.application import get_risk_summary as portfolio_risk_summary_app
+from ai_stock_sentinel.portfolio.application import refresh_prices as refresh_prices_module
+from ai_stock_sentinel.portfolio.application.refresh_prices import _fetch_quotes, _quote_payload
 from ai_stock_sentinel.portfolio import router as portfolio_router_module
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -33,6 +35,7 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.phase1_avwap.provider import DEFAULT_PHASE1_DATASET, TWSE_STOCK_DAY_DATASET
+from ai_stock_sentinel.models import StockSnapshot
 from ai_stock_sentinel.user_models.user import User
 
 
@@ -110,6 +113,25 @@ def test_add_portfolio_rejects_invalid_symbol(monkeypatch: pytest.MonkeyPatch):
 
     assert resp.status_code == 404
     assert "查詢目標不存在" in resp.json()["detail"]
+
+
+def test_add_portfolio_rejects_non_taiwan_symbol(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        portfolio_router_module,
+        "check_symbol_exists",
+        lambda _symbol: pytest.fail("unsupported market must fail before provider validation"),
+    )
+    client = _make_client()
+
+    resp = client.post("/portfolio", json={
+        "symbol": "AAPL",
+        "entry_price": 200.0,
+        "entry_date": "2026-01-01",
+        "quantity": 10,
+    })
+
+    assert resp.status_code == 422
+    assert "目前僅支援台灣上市" in resp.json()["detail"][0]["msg"]
 
 
 @pytest.mark.parametrize("entry_price", [0, -1])
@@ -654,6 +676,7 @@ def portfolio_db_client(portfolio_db_session: Session, monkeypatch: pytest.Monke
     finally:
         api.app.dependency_overrides.pop(get_current_user, None)
         api.app.dependency_overrides.pop(get_db, None)
+        api.app.dependency_overrides.pop(portfolio_router_module.get_portfolio_quote_fetcher, None)
 
 
 def test_list_portfolio_includes_display_name(
@@ -1201,6 +1224,319 @@ def test_portfolio_risk_summary_ignores_newer_non_final_raw_data(
     assert data["position_risks"][0]["current_price"] == 120
     assert data["position_risks"][0]["market_value"] == 1200
     assert data["total_unrealized_pnl"] == 200
+
+
+def test_refresh_portfolio_prices_updates_selected_quotes_without_persisting_raw_data(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-refresh-success",
+            symbol="2330.TW",
+            entry_price=100,
+            quantity=10,
+            entry_date=date(2026, 6, 1),
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-refresh-fallback",
+            symbol="2317.TW",
+            entry_price=50,
+            quantity=20,
+            entry_date=date(2026, 6, 1),
+        ),
+        PositionLifecyclePlan(
+            user_id=1,
+            position_group_id="group-refresh-success",
+            symbol="2330.TW",
+            source_portfolio_id=42,
+            planned_stop_price=95,
+            source="user_recorded_at_event_time",
+            created_after_entry=False,
+        ),
+        PositionLifecyclePlan(
+            user_id=1,
+            position_group_id="group-refresh-fallback",
+            symbol="2317.TW",
+            source_portfolio_id=43,
+            planned_stop_price=45,
+            source="user_recorded_at_event_time",
+            created_after_entry=False,
+        ),
+        StockRawData(
+            symbol="2330.TW",
+            record_date=date.today(),
+            technical={"close_price": 120},
+            raw_data_is_final=True,
+        ),
+        StockRawData(
+            symbol="2317.TW",
+            record_date=date.today(),
+            technical={"close_price": 60},
+            raw_data_is_final=True,
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    def fetch_quote(symbol: str) -> StockSnapshot:
+        if symbol == "2317.TW":
+            raise TimeoutError("provider timeout")
+        return StockSnapshot(
+            symbol=symbol,
+            currency="TWD",
+            current_price=130,
+            previous_close=120,
+            day_open=121,
+            day_high=132,
+            day_low=119,
+            volume=1000,
+            recent_closes=[120, 130],
+            recent_volume_dates=[date.today().isoformat()],
+            fetched_at="2026-07-31T10:30:00+08:00",
+        )
+
+    api.app.dependency_overrides[portfolio_router_module.get_portfolio_quote_fetcher] = lambda: fetch_quote
+    resp = portfolio_db_client.post(
+        "/portfolio/risk-summary/refresh-prices",
+        json={"portfolio_ids": None},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["price_refresh"]["status"] == "partial"
+    assert data["price_refresh"]["refreshed_symbols"] == ["2330.TW"]
+    assert data["price_refresh"]["failed_symbols"] == ["2317.TW"]
+    risks = {item["symbol"]: item for item in data["position_risks"]}
+    assert risks["2330.TW"]["current_price"] == 130
+    assert risks["2330.TW"]["price_context"]["refresh_status"] == "refreshed"
+    assert risks["2317.TW"]["current_price"] == 60
+    assert risks["2317.TW"]["price_context"]["refresh_status"] == "failed"
+
+    persisted = {
+        row.symbol: row
+        for row in portfolio_db_session.execute(select(StockRawData)).scalars().all()
+    }
+    assert persisted["2330.TW"].technical["close_price"] == 120
+    assert persisted["2317.TW"].technical["close_price"] == 60
+    assert len(persisted) == 2
+
+
+def test_refresh_portfolio_prices_rejects_unowned_or_closed_target(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post(
+        "/portfolio/risk-summary/refresh-prices",
+        json={"portfolio_ids": [999]},
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "持股不存在或已結案"
+
+
+def test_refresh_portfolio_prices_rejects_more_than_500_targets(
+    portfolio_db_client: TestClient,
+):
+    resp = portfolio_db_client.post(
+        "/portfolio/risk-summary/refresh-prices",
+        json={"portfolio_ids": list(range(501))},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_price_refresh_deadline_returns_without_waiting_for_provider():
+    from threading import Event
+    import time
+
+    provider_release = Event()
+
+    def slow_fetcher(symbol: str) -> StockSnapshot:
+        provider_release.wait(timeout=1)
+        return StockSnapshot(
+            symbol=symbol,
+            currency="TWD",
+            current_price=100,
+            previous_close=99,
+            day_open=99,
+            day_high=101,
+            day_low=98,
+            volume=100,
+            recent_closes=[99, 100],
+            fetched_at="2026-07-31T10:00:00+08:00",
+        )
+
+    started_at = time.monotonic()
+    try:
+        quotes = _fetch_quotes(
+            ["2330.TW"],
+            quote_fetcher=slow_fetcher,
+            response_deadline=0,
+        )
+    finally:
+        provider_release.set()
+
+    assert time.monotonic() - started_at < 0.5
+    assert quotes["2330.TW"]["error_code"] == "TimeoutError"
+
+
+def test_price_refresh_reports_capacity_exhaustion_without_calling_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from threading import BoundedSemaphore
+
+    exhausted_capacity = BoundedSemaphore(1)
+    exhausted_capacity.acquire()
+    monkeypatch.setattr(refresh_prices_module, "_PRICE_REFRESH_CAPACITY", exhausted_capacity)
+
+    quotes = _fetch_quotes(
+        ["2330.TW"],
+        quote_fetcher=lambda _symbol: pytest.fail("provider must not run without capacity"),
+        response_deadline=0.1,
+    )
+
+    assert quotes["2330.TW"]["error_code"] == "ProviderCapacityExhausted"
+
+
+def test_price_refresh_processes_more_symbols_than_the_worker_count():
+    symbols = ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "6488.TWO"]
+
+    def fetcher(symbol: str) -> StockSnapshot:
+        return StockSnapshot(
+            symbol=symbol,
+            currency="TWD",
+            current_price=100,
+            previous_close=99,
+            day_open=99,
+            day_high=101,
+            day_low=98,
+            volume=100,
+            recent_closes=[99, 100],
+            fetched_at="2026-07-31T10:00:00+08:00",
+        )
+
+    quotes = _fetch_quotes(
+        symbols,
+        quote_fetcher=fetcher,
+    )
+
+    assert set(quotes) == set(symbols)
+    assert all(quote["status"] == "refreshed" for quote in quotes.values())
+
+
+def test_price_refresh_uses_taiwan_exchange_session_at_quote_observation_time():
+    snapshot = StockSnapshot(
+        symbol="6488.TWO",
+        currency="TWD",
+        current_price=701,
+        previous_close=695,
+        day_open=698,
+        day_high=703,
+        day_low=696,
+        volume=1000,
+        recent_closes=[695, 701],
+        recent_volume_dates=["2026-07-31"],
+        fetched_at="2026-07-31T02:00:00+00:00",
+        exchange="TWO",
+        exchange_timezone="Asia/Taipei",
+        regular_market_open="2026-07-31T09:00:00+08:00",
+        regular_market_close="2026-07-31T13:30:00+08:00",
+    )
+
+    quote = _quote_payload(snapshot)
+
+    assert quote["market_session"] == "intraday"
+    assert quote["is_final"] is False
+
+    snapshot.fetched_at = "2026-07-31T06:00:00+00:00"
+    closed_quote = _quote_payload(snapshot)
+
+    assert closed_quote["market_session"] == "closed"
+    assert closed_quote["is_final"] is True
+
+
+def test_price_refresh_keeps_live_session_when_daily_volume_date_is_previous_day():
+    snapshot = StockSnapshot(
+        symbol="2330.TW",
+        currency="TWD",
+        current_price=1200,
+        previous_close=1180,
+        day_open=1190,
+        day_high=1210,
+        day_low=1185,
+        volume=1000,
+        recent_closes=[1180],
+        recent_volume_dates=["2026-07-30"],
+        fetched_at="2026-07-31T02:00:00+00:00",
+        exchange="TAI",
+        exchange_timezone="Asia/Taipei",
+        regular_market_open="2026-07-31T09:00:00+08:00",
+        regular_market_close="2026-07-31T13:30:00+08:00",
+    )
+
+    quote = _quote_payload(snapshot)
+
+    assert quote["data_date"] == "2026-07-30"
+    assert quote["market_session"] == "intraday"
+    assert quote["is_final"] is False
+
+
+@pytest.mark.parametrize("fetched_at", ["invalid", "2026-07-31T10:00:00"])
+def test_price_refresh_reports_unknown_when_quote_observation_time_is_unusable(
+    fetched_at: str,
+):
+    snapshot = StockSnapshot(
+        symbol="2330.TW",
+        currency="TWD",
+        current_price=1200,
+        previous_close=1180,
+        day_open=1190,
+        day_high=1210,
+        day_low=1185,
+        volume=1000,
+        recent_closes=[1180, 1200],
+        fetched_at=fetched_at,
+        exchange="TAI",
+        exchange_timezone="Asia/Taipei",
+        regular_market_open="2026-07-31T09:00:00+08:00",
+        regular_market_close="2026-07-31T13:30:00+08:00",
+    )
+
+    quote = _quote_payload(snapshot)
+
+    assert quote["market_session"] == "unknown"
+    assert quote["is_final"] is None
+
+
+def test_price_refresh_reports_unknown_for_unmapped_exchange():
+    snapshot = StockSnapshot(
+        symbol="UNKNOWN",
+        currency="USD",
+        current_price=10,
+        previous_close=9,
+        day_open=9,
+        day_high=10,
+        day_low=9,
+        volume=100,
+        recent_closes=[9, 10],
+        recent_volume_dates=["2026-07-31"],
+        fetched_at="2026-07-31T15:00:00+00:00",
+        exchange="UNKNOWN",
+        exchange_timezone="America/New_York",
+    )
+
+    quote = _quote_payload(snapshot)
+
+    assert quote["market_session"] == "unknown"
+    assert quote["is_final"] is None
 
 
 def test_portfolio_risk_summary_reports_data_gap_caveats(

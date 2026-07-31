@@ -58,7 +58,13 @@ export const closedPortfolioItem = {
 export const quickAnalyzeResult = {
   snapshot: {
     symbol: "3661.TW",
-    current_price: 3120,
+    current_price: 3100,
+    market_current_price: 3120,
+    market_current_price_source: "twse_mis",
+    price_limit_quote_price: 3120,
+    price_limit_status: "limit_up",
+    limit_up_price: 3120,
+    limit_down_price: 2555,
     day_open: 3075,
     day_high: 3155,
     day_low: 3050,
@@ -160,6 +166,7 @@ export const radarRun = {
 
 const emptyRiskSummary = {
   version: "1.0",
+  portfolio_revision: "e2e-portfolio-revision",
   as_of_date: "2026-07-16",
   portfolio_value: 0,
   total_unrealized_pnl: 0,
@@ -221,13 +228,18 @@ export const populatedRiskSummary = {
 };
 
 interface ApiMockOptions {
+  usersByToken?: Record<string, unknown>;
   watchlist?: unknown[];
   portfolio?: unknown[];
   closedPortfolio?: unknown[];
   riskSummary?: unknown;
+  priceRefreshSummary?: unknown;
+  priceRefreshSummaries?: unknown[];
+  priceRefreshDelayMs?: number;
   dailyRadar?: unknown | null;
   analyzeResult?: unknown;
   requestLog?: string[];
+  requestBodies?: unknown[];
 }
 
 function json(route: Route, body: unknown, status = 200) {
@@ -243,6 +255,8 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   const portfolio = options.portfolio ?? [];
   const closedPortfolio = options.closedPortfolio ?? [];
   const riskSummary = options.riskSummary ?? emptyRiskSummary;
+  const priceRefreshSummary = options.priceRefreshSummary ?? riskSummary;
+  let priceRefreshResponseIndex = 0;
   const dailyRadar = options.dailyRadar === undefined ? null : options.dailyRadar;
   const analyzeResult = options.analyzeResult ?? quickAnalyzeResult;
 
@@ -253,12 +267,25 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
     const method = request.method();
     const pathname = url.pathname;
     options.requestLog?.push(`${method} ${pathname}`);
+    if (request.postData()) options.requestBodies?.push(request.postDataJSON());
 
-    if (method === "GET" && pathname === "/auth/me") return json(route, testUser);
+    if (method === "GET" && pathname === "/auth/me") {
+      const authorization = request.headers().authorization ?? "";
+      const token = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
+      return json(route, options.usersByToken?.[token] ?? testUser);
+    }
     if (method === "GET" && pathname === "/watchlist") return json(route, watchlist);
     if (method === "GET" && pathname === "/portfolio") return json(route, portfolio);
     if (method === "GET" && pathname === "/portfolio/closed") return json(route, closedPortfolio);
     if (method === "GET" && pathname === "/portfolio/risk-summary") return json(route, riskSummary);
+    if (method === "POST" && pathname === "/portfolio/risk-summary/refresh-prices") {
+      const queuedSummary = options.priceRefreshSummaries?.[priceRefreshResponseIndex];
+      priceRefreshResponseIndex += 1;
+      if (options.priceRefreshDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.priceRefreshDelayMs));
+      }
+      return json(route, queuedSummary ?? priceRefreshSummary);
+    }
     if (method === "GET" && pathname === "/portfolio/latest-history") return json(route, {});
     if (method === "GET" && pathname === "/portfolio/decision-context-status") return json(route, {});
     if (method === "GET" && /^\/portfolio\/\d+\/lifecycle-plan$/.test(pathname)) {

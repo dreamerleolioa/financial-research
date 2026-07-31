@@ -120,6 +120,16 @@ export async function fetchPortfolioRiskSummary(): Promise<PortfolioRiskSummary>
   return parsePortfolioRiskSummary(data);
 }
 
+export async function refreshPortfolioPrices(portfolioIds?: number[]): Promise<PortfolioRiskSummary> {
+  const data = await requestJson<unknown>("/portfolio/risk-summary/refresh-prices", {
+    method: "POST",
+    body: {
+      portfolio_ids: portfolioIds ?? null,
+    },
+  });
+  return parsePortfolioRiskSummary(data);
+}
+
 export function fetchLatestPortfolioHistory(): Promise<Record<string, PortfolioHistoryEntry | null>> {
   return requestJson<Record<string, PortfolioHistoryEntry | null>>("/portfolio/latest-history");
 }

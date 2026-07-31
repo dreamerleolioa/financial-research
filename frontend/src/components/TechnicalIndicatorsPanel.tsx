@@ -11,6 +11,8 @@ import {
   formatDailyOhlc,
   formatIndicatorNumber,
   formatMovingAverages,
+  getMarketCurrentPrice,
+  getPriceLimitLabel,
   getTechnicalIndicatorLabel,
 } from "../lib/technicalIndicators";
 
@@ -95,11 +97,6 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   weakening: "結構轉弱",
   wide_stop_distance: "停損距離偏寬",
 };
-
-function numberFromSnapshot(snapshot: Record<string, unknown>, key: string): number | null {
-  const value = snapshot[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
 
 function snapshotSymbol(snapshot: Record<string, unknown>): string | undefined {
   return typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
@@ -229,7 +226,10 @@ function ProfileSummary({
   );
 }
 
-function rawIndicatorRows(indicators: TechnicalIndicators, snapshot: Record<string, unknown>): Array<[string, string]> {
+function rawIndicatorRows(
+  indicators: TechnicalIndicators,
+  snapshot: Record<string, unknown>,
+): Array<[key: string, label: string, value: string]> {
   const symbol = snapshotSymbol(snapshot);
   const price = (value: number | null | undefined) => formatPrice(value, symbol);
   const pricePair = (first: number | null | undefined, second: number | null | undefined, emptyLabel = "—") =>
@@ -247,45 +247,59 @@ function rawIndicatorRows(indicators: TechnicalIndicators, snapshot: Record<stri
       : emptyLabel;
 
   return [
-    ["現價", price(numberFromSnapshot(snapshot, "current_price"))],
-    ["今日開／高／低", formatDailyOhlc(snapshot, symbol)],
-    ["成交量", formatVolume(snapshot.volume)],
-    ["20／60 日均成交量", formatAverageVolumes(indicators)],
-    ["均線 MA5/20/60", formatMovingAverages(indicators, symbol)],
-    ["20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
-    ["60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
-    ["布林通道", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
-    ["MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
     [
+      "current_price",
+      "現價",
+      `${price(getMarketCurrentPrice(snapshot))}${
+        snapshot.market_current_price_source === "twse_mis" ? "（TWSE MIS 即時）" : ""
+      }`,
+    ],
+    ["day_ohlc", "今日開／高／低", formatDailyOhlc(snapshot, symbol)],
+    ["volume", "成交量", formatVolume(snapshot.volume)],
+    ["average_volume", "20／60 日均成交量", formatAverageVolumes(indicators)],
+    ["moving_averages", "均線 MA5/20/60", formatMovingAverages(indicators, symbol)],
+    ["range_20d", "20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
+    ["range_60d", "60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
+    ["bollinger_position", "布林通道", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
+    ["macd_bias", "MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
+    [
+      "kd",
       "KD",
       `${getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)} / ${getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)}（K/D ${formatIndicatorNumber(indicators.kd_k, 1)} / ${formatIndicatorNumber(indicators.kd_d, 1)}）`,
     ],
     [
+      "adx",
       "ADX",
       `${getTechnicalIndicatorLabel("adx_trend_strength", indicators.adx_trend_strength)} / ${getTechnicalIndicatorLabel("adx_trend_direction", indicators.adx_trend_direction)}（${formatIndicatorNumber(indicators.adx, 1)}）`,
     ],
     [
+      "obv",
       "OBV",
       `${getTechnicalIndicatorLabel("obv_signal", indicators.obv_signal)} / ${getTechnicalIndicatorLabel("obv_trend", indicators.obv_trend_20d)}`,
     ],
     [
+      "obv_mid_long",
       "OBV 中長期",
       `${getTechnicalIndicatorLabel("obv_trend", indicators.obv_trend_mid_long, "資料不足")}${indicators.obv_trend_mid_long_window ? `（${indicators.obv_trend_mid_long_window}）` : ""}`,
     ],
-    ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
+    ["atr", "ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
     [
+      "mfi",
       "MFI",
       `${formatIndicatorNumber(indicators.mfi, 1)} / ${getTechnicalIndicatorLabel("mfi_signal", indicators.mfi_signal)}`,
     ],
     [
+      "donchian",
       "唐奇安通道",
       `${getTechnicalIndicatorLabel("donchian_position", indicators.donchian_position)}（${formatIndicatorNumber(indicators.donchian_upper, 2)} / ${formatIndicatorNumber(indicators.donchian_lower, 2)}）`,
     ],
     [
+      "bollinger_values",
       "布林上/中/下軌",
       `${formatIndicatorNumber(indicators.bollinger_upper, 2)} / ${formatIndicatorNumber(indicators.bollinger_mid, 2)} / ${formatIndicatorNumber(indicators.bollinger_lower, 2)}`,
     ],
     [
+      "macd_values",
       "MACD 線/訊號/柱",
       `${formatIndicatorNumber(indicators.macd_line, 3)} / ${formatIndicatorNumber(indicators.macd_signal, 3)} / ${formatIndicatorNumber(indicators.macd_hist, 3)}`,
     ],
@@ -302,14 +316,30 @@ function RawIndicatorsGrid({
   title?: string;
 }) {
   const rows = rawIndicatorRows(indicators, snapshot);
+  const priceLimitLabel = getPriceLimitLabel(snapshot);
   return (
     <section className="border-t border-border-subtle pt-4">
       <h4 className="mb-3 text-xs font-semibold text-text-muted">{title}</h4>
       <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-        {rows.map(([label, value]) => (
-          <div key={label} className="min-w-0">
+        {rows.map(([key, label, value]) => (
+          <div key={key} className="min-w-0">
             <p className="mb-1 text-xs text-text-muted">{label}</p>
-            <p className="break-words text-sm font-medium text-text-primary">{value}</p>
+            {key === "current_price" && priceLimitLabel ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="break-words text-sm font-medium text-text-primary">{value}</p>
+                <span
+                  className={`inline-flex rounded-md px-2 py-0.5 text-xs font-semibold ${
+                    priceLimitLabel === "漲停"
+                      ? "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+                      : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  }`}
+                >
+                  {priceLimitLabel}
+                </span>
+              </div>
+            ) : (
+              <p className="break-words text-sm font-medium text-text-primary">{value}</p>
+            )}
           </div>
         ))}
       </div>

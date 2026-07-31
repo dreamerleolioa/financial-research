@@ -47,6 +47,8 @@ ALLOWED_COPY_FUNCTION_CALLS = {
     "formatPrice",
     "formatVolume",
     "getAnalyzeSymbolName",
+    "getMarketCurrentPrice",
+    "getPriceLimitLabel",
     "getTechnicalIndicatorLabel",
     "indicatorPair",
     "price",
