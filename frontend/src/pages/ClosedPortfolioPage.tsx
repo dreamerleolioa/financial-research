@@ -129,6 +129,7 @@ const CLASSIFICATION_LABEL: Record<string, string> = {
   late_stop_exit: "風險控制偏晚",
   early_profit_exit: "獲利保護偏早",
   technical_break_exit: "技術破位後結案",
+  unclassified_exit: "證據不足，暫不分類",
   panic_exit: "情緒性風險處理",
   weak_exit: "結案品質偏弱",
   rule_based_trade_review: "規則化檢討",

@@ -409,6 +409,58 @@ def test_exit_review_classifies_profit_protection_after_giveback(db_session: Ses
     assert any("回吐" in item for item in conclusion["evidence"])
 
 
+def test_exit_review_does_not_default_to_reasonable_without_supporting_evidence(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    exit_date = date(2026, 3, 5)
+    portfolio = _portfolio(
+        entry_date=entry_date,
+        exit_date=exit_date,
+        entry_price=100,
+        exit_price=100,
+        realized_return_pct=0,
+        holding_days=4,
+    )
+    db_session.add(portfolio)
+    pre_entry = [80 + offset * 0.3 for offset in range(59)]
+    holding = [100, 102, 101, 101, 100]
+    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    exit_review = review_result["exit_review"]
+    conclusion = review_result["user_readable_conclusion"]
+    assert exit_review["classification"] == "unclassified_exit"
+    assert not any("均線或支撐轉弱" in item for item in exit_review["supporting_signals"])
+    assert conclusion["overall_verdict"] == "unclassified"
+    assert conclusion["overall_verdict_label"] == "證據不足以判斷結案節奏"
+    assert "不足以判斷" in conclusion["one_sentence_reason"]
+
+
+def test_exit_review_keeps_reasonable_when_technical_break_has_evidence(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    exit_date = date(2026, 3, 5)
+    portfolio = _portfolio(
+        entry_date=entry_date,
+        exit_date=exit_date,
+        entry_price=100,
+        exit_price=100,
+        realized_return_pct=0,
+        holding_days=4,
+    )
+    db_session.add(portfolio)
+    pre_entry = [120.0] * 59
+    holding = [110, 108, 105, 102, 100]
+    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    assert review_result["exit_review"]["classification"] == "technical_break_exit"
+    assert review_result["exit_review"]["supporting_signals"]
+    assert review_result["user_readable_conclusion"]["overall_verdict"] == "reasonable"
+
+
 def test_user_readable_conclusion_marks_small_profit_above_mas_as_early(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)

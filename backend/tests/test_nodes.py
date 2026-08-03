@@ -72,6 +72,37 @@ def test_score_node_with_real_bullish_data():
     assert result["confidence_score"] == result["signal_confidence"]  # 向後相容
 
 
+def test_score_node_missing_sources_reports_zero_data_confidence():
+    """Fallback labels must not be mistaken for successfully loaded source data."""
+    from ai_stock_sentinel.graph.nodes import score_node
+
+    result = score_node({
+        "cleaned_news": None,
+        "institutional_flow": None,
+        "snapshot": None,
+        "cleaned_news_quality": None,
+        "errors": [],
+    })
+
+    assert result["technical_signal"] == "sideways"
+    assert result["data_confidence"] == 0
+
+
+def test_score_node_neutral_sources_with_real_data_reports_full_data_confidence():
+    """Neutral direction remains fully available when the underlying sources exist."""
+    from ai_stock_sentinel.graph.nodes import score_node
+
+    result = score_node({
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": {"flow_label": "neutral"},
+        "snapshot": {"recent_closes": [100.0] * 60},
+        "cleaned_news_quality": {"quality_flags": []},
+        "errors": [],
+    })
+
+    assert result["data_confidence"] == 100
+
+
 def test_score_node_uses_existing_technical_profile_for_signal():
     """score_node should not recalculate scattered raw signals when a profile is already present."""
     from ai_stock_sentinel.graph.nodes import score_node

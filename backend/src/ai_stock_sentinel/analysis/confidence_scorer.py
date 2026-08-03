@@ -261,15 +261,16 @@ def compute_confidence(
     date_unknown: bool = False,  # DATE_UNKNOWN 旗標：日期未知時額外扣 -3 分
     sentiment_strength: float = 1.0,
     config: ConfidenceScoringConfig | None = None,
+    news_available: bool | None = None,
+    institutional_available: bool | None = None,
+    technical_available: bool | None = None,
 ) -> dict[str, int | str]:
     """計算 data_confidence、signal_confidence 與 cross_validation_note。
 
     data_confidence 代表資料成功取得的維度比例（0 / 33 / 67 / 100）。
-    只有 unknown 才視為未取得資料；neutral（新聞/籌碼）與 sideways（技術）均算有取得。
-
-    注意：架構規格（v2.4）定義 technical_signal 不輸出 "unknown"（不足時降級為 "sideways"），
-    因此 technical_signal != "unknown" 在現行架構永遠為 True，
-    但保留此判斷作為防禦性設計，避免未來若新增 unknown 值時靜默影響計算。
+    availability 與方向標籤分開：neutral／sideways 可以是有效資料的中性結論，
+    也可能只是上游缺資料時的顯示 fallback，呼叫端應明確傳入 availability。
+    未傳入時才以 ``unknown`` label 維持舊呼叫端的相容行為。
 
     Returns:
         {
@@ -278,11 +279,15 @@ def compute_confidence(
             "cross_validation_note": str,
         }
     """
-    # 資料完整度：只判斷「資料是否成功取得」，neutral/sideways 均算有取得
+    resolved_news_available = news_sentiment != "unknown" if news_available is None else news_available
+    resolved_institutional_available = inst_flow != "unknown" if institutional_available is None else institutional_available
+    resolved_technical_available = technical_signal != "unknown" if technical_available is None else technical_available
+
+    # 資料完整度只看來源是否成功，不從 collapsed direction label 反推。
     data_available = sum([
-        news_sentiment != "unknown",           # neutral 也算有取得
-        inst_flow != "unknown",               # neutral 也算有取得
-        technical_signal != "unknown",        # sideways 也算有取得；現行架構不會出現 unknown
+        resolved_news_available,
+        resolved_institutional_available,
+        resolved_technical_available,
     ])
     data_confidence = round(data_available / 3 * 100)
 

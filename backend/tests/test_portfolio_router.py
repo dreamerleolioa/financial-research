@@ -212,7 +212,7 @@ def test_update_portfolio_success():
     assert resp.status_code == 200
 
 
-def test_update_portfolio_does_not_write_add_entry_event(
+def test_update_portfolio_backfills_and_updates_initial_entry_event(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
@@ -236,7 +236,105 @@ def test_update_portfolio_does_not_write_add_entry_event(
     })
 
     assert resp.status_code == 200
-    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+    ).scalar_one()
+    assert event.event_type == "initial_entry"
+    assert event.source == "user_backfilled"
+    assert event.event_date == date(2026, 2, 1)
+    assert float(event.price) == 950.0
+    assert event.quantity == 200
+
+
+def test_update_portfolio_rejects_closed_row_economic_mutation(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-update-closed",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 10),
+        exit_price=950,
+        exit_quantity=100,
+        realized_pnl=5000,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42", json={
+        "entry_price": 950.0,
+        "quantity": 200,
+        "entry_date": "2026-02-01",
+        "notes": "must use explicit correction flow",
+    })
+
+    assert resp.status_code == 409
+    row = portfolio_db_session.get(UserPortfolio, 42)
+    assert float(row.entry_price) == 900.0
+    assert row.quantity == 100
+    assert float(row.realized_pnl) == 5000.0
+
+
+def test_update_portfolio_rejects_economic_mutation_after_lifecycle_started(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-update-started",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=150,
+        entry_date=date(2026, 1, 1),
+    )
+    portfolio_db_session.add(item)
+    portfolio_db_session.flush()
+    portfolio_db_session.add_all([
+        PositionEvent(
+            user_id=1,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=100,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            user_id=1,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            event_type="add_entry",
+            event_date=date(2026, 1, 5),
+            price=950,
+            quantity=50,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42", json={
+        "entry_price": 920.0,
+        "quantity": 160,
+        "entry_date": "2026-01-02",
+        "notes": "unsafe rewrite",
+    })
+
+    assert resp.status_code == 409
 
 
 def test_add_entry_endpoint_creates_add_entry_event_and_updates_active_row(
@@ -277,7 +375,9 @@ def test_add_entry_endpoint_creates_add_entry_event_and_updates_active_row(
     assert data["portfolio"]["quantity"] == 150
     assert data["portfolio"]["entry_date"] == "2026-01-01"
     assert data["portfolio"]["notes"] is None
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "add_entry")
+    ).scalar_one()
     assert event.event_type == "add_entry"
     assert event.source == "user_recorded_at_event_time"
     assert event.source_portfolio_id == 42
@@ -322,7 +422,9 @@ def test_add_entry_endpoint_can_save_plan_adherence_no_for_condition_violation(
     })
 
     assert resp.status_code == 201
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "add_entry")
+    ).scalar_one()
     assert event.event_type == "add_entry"
     assert event.reason_code == "averaging_down"
     assert event.plan_adherence == "no"
@@ -387,6 +489,112 @@ def test_add_entry_endpoint_rejects_closed_position_without_event(
     })
 
     assert resp.status_code == 409
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+
+
+def test_add_entry_endpoint_rejects_event_before_latest_ledger_event(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-entry-order",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=150,
+        entry_date=date(2026, 1, 1),
+    )
+    portfolio_db_session.add(item)
+    portfolio_db_session.flush()
+    portfolio_db_session.add_all([
+        PositionEvent(
+            user_id=1,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=100,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            user_id=1,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            event_type="add_entry",
+            event_date=date(2026, 1, 10),
+            price=950,
+            quantity=50,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-05",
+        "price": 920.0,
+        "quantity": 10,
+        "reason_code": "planned_scale_in",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
+    })
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "事件日期不可早於目前帳本的最新事件"
+    assert len(portfolio_db_session.execute(select(PositionEvent)).scalars().all()) == 2
+
+
+def test_add_entry_endpoint_rejects_unsafe_legacy_group_backfill(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-legacy-split",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=60,
+            entry_date=date(2026, 1, 1),
+            is_active=True,
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-legacy-split",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=40,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 5),
+            exit_price=950,
+            exit_quantity=40,
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-10",
+        "price": 920.0,
+        "quantity": 10,
+        "reason_code": "planned_scale_in",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
+    })
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "舊部位群組缺少事件帳本且已有分批紀錄，無法安全自動補帳"
     assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
 
 
@@ -598,6 +806,63 @@ def test_close_portfolio_rejects_exit_date_before_entry_date():
     assert resp.status_code == 422
 
 
+def test_close_portfolio_rejects_exit_before_latest_ledger_event(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-close-order",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=150,
+        entry_date=date(2026, 1, 1),
+    )
+    portfolio_db_session.add(item)
+    portfolio_db_session.flush()
+    portfolio_db_session.add_all([
+        PositionEvent(
+            user_id=1,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=100,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            user_id=1,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            event_type="add_entry",
+            event_date=date(2026, 1, 10),
+            price=950,
+            quantity=50,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-05",
+        "exit_price": 940.0,
+        "exit_quantity": 150,
+    })
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "事件日期不可早於目前帳本的最新事件"
+    assert portfolio_db_session.get(UserPortfolio, 42).is_active is True
+
+
 def test_close_portfolio_rejects_legacy_zero_entry_price_without_commit():
     item = _make_portfolio_item(user_id=1)
     item.entry_price = 0
@@ -750,13 +1015,14 @@ def test_close_portfolio_partial_close_persists_active_and_closed_rows(
     assert active.position_group_id == closed.position_group_id
 
     events = portfolio_db_session.execute(select(PositionEvent).order_by(PositionEvent.id)).scalars().all()
-    assert len(events) == 1
-    assert events[0].event_type == "partial_exit"
-    assert events[0].source == "user_recorded_at_event_time"
-    assert events[0].source_portfolio_id == closed.id
-    assert events[0].quantity == 40
-    assert float(events[0].fees) == 10.0
-    assert float(events[0].taxes) == 5.0
+    assert [event.event_type for event in events] == ["initial_entry", "partial_exit"]
+    assert events[0].source == "user_backfilled"
+    assert events[0].quantity == 100
+    assert events[1].source == "user_recorded_at_event_time"
+    assert events[1].source_portfolio_id == closed.id
+    assert events[1].quantity == 40
+    assert float(events[1].fees) == 10.0
+    assert float(events[1].taxes) == 5.0
 
 
 def test_close_portfolio_full_close_preserves_position_group_id(
@@ -786,9 +1052,9 @@ def test_close_portfolio_full_close_preserves_position_group_id(
     row = portfolio_db_session.get(UserPortfolio, 42)
     assert row.position_group_id == "group-full-close"
     events = portfolio_db_session.execute(select(PositionEvent)).scalars().all()
-    assert len(events) == 1
-    assert events[0].event_type == "full_exit"
-    assert events[0].source_portfolio_id == 42
+    assert [event.event_type for event in events] == ["initial_entry", "full_exit"]
+    assert events[0].source == "user_backfilled"
+    assert events[1].source_portfolio_id == 42
 
 
 def test_decision_context_status_reports_missing_plan_without_changing_portfolio_response(
@@ -2175,7 +2441,9 @@ def test_add_portfolio_persists_initial_entry_event_and_response_shape(
     assert resp.json()["symbol"] == "2330.TW"
     assert resp.json()["name"] == "台積電"
     assert resp.json()["entry_price"] == 900.0
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+    ).scalar_one()
     assert event.event_type == "initial_entry"
     assert event.source == "user_recorded_at_event_time"
     assert event.symbol == "2330.TW"
@@ -2247,7 +2515,9 @@ def test_add_portfolio_with_entry_record_persists_event_time_context(
     assert resp.status_code == 201
     assert resp.json()["symbol"] == "2330.TW"
     assert resp.json()["name"] == "台積電"
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+    ).scalar_one()
     assert event.event_type == "initial_entry"
     assert event.reason_code == "breakout_confirmation"
     assert event.reason_category == "technical"
@@ -2420,7 +2690,9 @@ def test_close_without_manual_costs_calculates_row_event_costs_and_pnl(
     assert data["exit_fees"] == 135.38
     assert data["exit_taxes"] == 285.0
     assert data["realized_pnl"] == 4579.62
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "full_exit")
+    ).scalar_one()
     assert event.event_type == "full_exit"
     assert float(event.fees) == 135.38
     assert float(event.taxes) == 285.0
@@ -3021,7 +3293,7 @@ def test_position_lifecycle_review_does_not_change_single_trade_review_behavior(
     assert lifecycle_resp.status_code == 200
     assert trade_resp.status_code == 200
     assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v1"
-    assert trade_resp.json()["review_version"] == "trade-review-v1"
+    assert trade_resp.json()["review_version"] == "trade-review-v2"
     assert trade_resp.json()["portfolio_id"] == 42
     assert trade_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
     assert len(portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()) == 1
@@ -3044,7 +3316,7 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
     assert data["user_id"] == 1
     assert data["position_group_id"] == "group-review"
     assert data["symbol"] == "2330.TW"
-    assert data["review_version"] == "trade-review-v1"
+    assert data["review_version"] == "trade-review-v2"
     assert data["llm_summary"] is None
     assert set(data["review_result"]) == {
         "data_quality", "trade_result", "entry_review", "holding_review", "exit_review", "operation_review", "user_readable_conclusion",
@@ -3062,7 +3334,7 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
         "overall_verdict", "overall_verdict_label", "one_sentence_reason", "evidence", "next_time_rules",
     }
     assert data["review_result"]["user_readable_conclusion"]["overall_verdict"] in {
-        "early", "reasonable", "late", "insufficient",
+        "early", "reasonable", "late", "unclassified", "insufficient",
     }
     assert data["review_result"]["trade_result"]["realized_return_pct"] == pytest.approx(5.5556)
     assert data["review_result"]["trade_result"]["entry_date"] == "2026-01-01"
@@ -3099,7 +3371,7 @@ def test_create_trade_review_accepts_snapshot_raw_data_without_ohlcv_and_persist
     assert second.status_code == 200
     data = first.json()
     assert second.json() == data
-    assert data["review_version"] == "trade-review-v1"
+    assert data["review_version"] == "trade-review-v2"
     assert data["review_result"]["trade_result"]["entry_indicators"]["ma20"] is not None
     assert data["review_result"]["trade_result"]["exit_indicators"]["ma20"] is not None
     assert data["review_result"]["data_quality"]["status"] == "ok"
@@ -3144,7 +3416,7 @@ def test_create_trade_review_existing_review_skips_market_data_ensure(
         user_id=item.user_id,
         position_group_id=item.position_group_id,
         symbol=item.symbol,
-        review_version="trade-review-v1",
+        review_version="trade-review-v2",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary=None,
@@ -3155,6 +3427,36 @@ def test_create_trade_review_existing_review_skips_market_data_ensure(
 
     assert resp.status_code == 200
     assert resp.json()["review_result"] == {"existing": True}
+
+
+def test_create_trade_review_rebuilds_legacy_review_version_in_place(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = _add_closed_portfolio(portfolio_db_session)
+    portfolio_db_session.add(TradeReview(
+        portfolio_id=item.id,
+        user_id=item.user_id,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        review_version="trade-review-v1",
+        review_result={"legacy": True},
+        evidence_payload={"legacy": True},
+        llm_summary="legacy summary",
+    ))
+    portfolio_db_session.commit()
+    _add_raw_rows(portfolio_db_session)
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert resp.json()["review_version"] == "trade-review-v2"
+    assert resp.json()["review_result"] != {"legacy": True}
+    assert resp.json()["llm_summary"] is None
+    reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
+    assert len(reviews) == 1
+    assert reviews[0].review_version == "trade-review-v2"
 
 
 def test_create_trade_review_second_post_returns_existing_without_duplicate(
@@ -3265,9 +3567,11 @@ def test_partial_close_group_timeline_and_single_trade_review_remain_usable(
 
     assert timeline_resp.status_code == 200
     events = timeline_resp.json()["events"]
-    assert [event["event_type"] for event in events] == ["partial_exit"]
-    assert events[0]["source_portfolio_id"] == closed_id
-    assert events[0]["quantity"] == 40
+    assert [event["event_type"] for event in events] == ["initial_entry", "partial_exit"]
+    assert events[0]["source_portfolio_id"] == 42
+    assert events[0]["quantity"] == 100
+    assert events[1]["source_portfolio_id"] == closed_id
+    assert events[1]["quantity"] == 40
     assert review_resp.status_code == 200
     assert review_resp.json()["portfolio_id"] == closed_id
     assert review_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"

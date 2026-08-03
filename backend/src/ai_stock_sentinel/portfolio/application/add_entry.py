@@ -11,6 +11,8 @@ from ai_stock_sentinel.portfolio.application.events import (
     add_entry_reason_category,
     add_entry_reason_code,
     add_position_event,
+    ensure_position_event_ledger,
+    ledger_open_quantity,
 )
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
@@ -31,6 +33,15 @@ def add_entry_to_position(
         raise HTTPException(status_code=409, detail="持倉已關閉")
     if payload.event_date < item.entry_date:
         raise HTTPException(status_code=422, detail="加碼日期不可早於初始進場日期")
+    if Decimal(str(item.entry_price)) <= 0:
+        raise HTTPException(status_code=422, detail="成本價必須大於 0")
+
+    events = ensure_position_event_ledger(db, item)
+    latest_event_date = max(event.event_date for event in events)
+    if payload.event_date < latest_event_date:
+        raise HTTPException(status_code=422, detail="事件日期不可早於目前帳本的最新事件")
+    if ledger_open_quantity(events) != item.quantity:
+        raise HTTPException(status_code=409, detail="事件帳本持有股數與持倉資料不一致，請先更正帳本")
 
     add_price = Decimal(str(payload.price))
     add_quantity = Decimal(payload.quantity)

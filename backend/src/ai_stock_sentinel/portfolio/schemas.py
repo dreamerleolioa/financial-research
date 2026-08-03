@@ -108,7 +108,7 @@ class BackfillLifecyclePlanRequest(BaseModel):
 
 class UpdatePortfolioRequest(BaseModel):
     entry_price: float = Field(gt=0)
-    quantity: int
+    quantity: int = Field(gt=0)
     entry_date: date
     notes: str | None = None
 

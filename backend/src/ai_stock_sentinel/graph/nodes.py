@@ -493,14 +493,23 @@ def score_node(state: GraphState) -> dict[str, Any]:
     # sentiment_label
     cleaned_news = state.get("cleaned_news")
     news_sentiment: str = "neutral"
-    if cleaned_news:
-        news_sentiment = cleaned_news.get("sentiment_label") or "neutral"
+    news_available = bool(
+        isinstance(cleaned_news, dict)
+        and cleaned_news.get("sentiment_label") in {"positive", "negative", "neutral"}
+    )
+    if news_available:
+        news_sentiment = str(cleaned_news["sentiment_label"])
 
     # flow_label — 無 API key 時 inst_flow_data 含 'error' 鍵，視為 unknown
     inst_flow_data = state.get("institutional_flow")
     inst_flow: str = "unknown"
-    if inst_flow_data and not inst_flow_data.get("error"):
-        inst_flow = inst_flow_data.get("flow_label") or "unknown"
+    institutional_available = bool(
+        isinstance(inst_flow_data, dict)
+        and not inst_flow_data.get("error")
+        and inst_flow_data.get("flow_label")
+    )
+    if institutional_available:
+        inst_flow = str(inst_flow_data["flow_label"])
 
     # technical_signal
     snapshot = state.get("snapshot")
@@ -514,13 +523,19 @@ def score_node(state: GraphState) -> dict[str, Any]:
         highs = [float(v) for v in snapshot.get("recent_highs", []) if v is not None]
         lows = [float(v) for v in snapshot.get("recent_lows", []) if v is not None]
         volumes = [float(v) for v in snapshot.get("recent_volumes", []) if v is not None]
+    technical_profile = state.get("technical_profile") if isinstance(state.get("technical_profile"), dict) else None
+    technical_available = len(closes) >= 20 or bool(
+        technical_profile
+        and isinstance(technical_profile.get("score_summary"), dict)
+        and technical_profile["score_summary"].get("technical_score") is not None
+    )
     technical_signal = _derive_technical_signal(
         closes,
         rsi=state.get("rsi14"),
         highs=highs,
         lows=lows,
         volumes=volumes,
-        technical_profile=state.get("technical_profile") if isinstance(state.get("technical_profile"), dict) else None,
+        technical_profile=technical_profile,
     )
 
     # DATE_UNKNOWN 旗標
@@ -535,6 +550,9 @@ def score_node(state: GraphState) -> dict[str, Any]:
         technical_signal=technical_signal,
         date_unknown=date_unknown,
         sentiment_strength=float(cleaned_news.get("sentiment_strength", 1.0)) if cleaned_news else 1.0,
+        news_available=news_available,
+        institutional_available=institutional_available,
+        technical_available=technical_available,
     )
 
     note = result_dict["cross_validation_note"]

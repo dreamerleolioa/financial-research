@@ -388,8 +388,8 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
       "risk_labels": ["market_weakness"],
       "repeat_status": "new",
       "explanation": "量價轉強觀察...",
-      "scoring_version": "daily-radar-scoring-v2.2",
-      "rule_version": "daily-radar-rules-v2.1c",
+      "scoring_version": "daily-radar-scoring-v2.3",
+      "rule_version": "daily-radar-rules-v2.2",
       "bucket_scores": {},
       "score_breakdown": {
         "relative_strength": {

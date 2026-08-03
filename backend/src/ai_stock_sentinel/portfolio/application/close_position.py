@@ -7,7 +7,11 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import UserPortfolio
-from ai_stock_sentinel.portfolio.application.events import add_position_event
+from ai_stock_sentinel.portfolio.application.events import (
+    add_position_event,
+    ensure_position_event_ledger,
+    ledger_open_quantity,
+)
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee, calculate_sell_transaction_tax
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
 from ai_stock_sentinel.portfolio.schemas import ClosePortfolioRequest
@@ -33,10 +37,18 @@ def close_position(
     if payload.exit_date < item.entry_date:
         raise HTTPException(status_code=422, detail="出場日期不可早於進場日期")
 
-    exit_price = Decimal(str(payload.exit_price))
     entry_price = Decimal(str(item.entry_price))
     if entry_price <= 0:
         raise HTTPException(status_code=422, detail="成本價必須大於 0")
+
+    events = ensure_position_event_ledger(db, item)
+    latest_event_date = max(event.event_date for event in events)
+    if payload.exit_date < latest_event_date:
+        raise HTTPException(status_code=422, detail="事件日期不可早於目前帳本的最新事件")
+    if ledger_open_quantity(events) != item.quantity:
+        raise HTTPException(status_code=409, detail="事件帳本持有股數與持倉資料不一致，請先更正帳本")
+
+    exit_price = Decimal(str(payload.exit_price))
     exit_quantity = Decimal(payload.exit_quantity)
     gross_exit_amount = exit_price * exit_quantity
     explicit_fee = Decimal(str(payload.fees)) if payload.fees is not None else None

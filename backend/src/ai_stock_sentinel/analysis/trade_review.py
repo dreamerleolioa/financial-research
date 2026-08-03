@@ -271,9 +271,12 @@ def _build_exit_review(
     elif realized_return_pct is not None and realized_return_pct < 0 and _near_holding_low(exit_price, path_metrics):
         supporting.append("虧損後在接近持有期間低點的位置出場。")
         classification = "panic_exit"
-    else:
-        supporting.append("出場時已可看到均線或支撐轉弱跡象。")
+    elif has_break_event or _is_negative(exit_vs_ma20, -1) or _is_negative(exit_vs_ma60, -1):
+        supporting.append("出場時已有可核對的均線或支撐轉弱跡象。")
         classification = "technical_break_exit"
+    else:
+        caveats.append("目前沒有足夠的獲利保護、風險控制或技術破位證據可穩定分類。")
+        classification = "unclassified_exit"
 
     if has_break_event:
         supporting.append("持有期間檢討曾偵測到均線或支撐破位。")
@@ -375,7 +378,7 @@ def _overall_verdict(
     )
     if exit_classification in {"profit_protection_exit", "stop_loss_exit"} or supported_technical_break:
         return "reasonable"
-    return "reasonable"
+    return "unclassified"
 
 
 def _overall_verdict_label(verdict: str) -> str:
@@ -383,6 +386,7 @@ def _overall_verdict_label(verdict: str) -> str:
         "early": "這次出場偏早",
         "reasonable": "這次出場合理",
         "late": "這次出場偏晚",
+        "unclassified": "證據不足以判斷出場節奏",
         "insufficient": "資料不足",
     }
     return labels[verdict]
@@ -402,6 +406,8 @@ def _one_sentence_reason(
         return f"{return_text}，出場與獲利保護、停損或技術轉弱訊號相符。"
     if verdict == "late":
         return f"{return_text}，出場發生在較大回撤或接近低點之後，執行節奏偏晚。"
+    if verdict == "unclassified":
+        return f"{return_text}，目前沒有足夠的獲利保護、風險控制或技術破位證據，不足以判斷出場節奏。"
     if exit_review.get("market_regime") == "insufficient_data":
         return "出場日前資料不足，無法穩定判斷這次出場早晚。"
     exit_vs_ma20 = _number(exit_indicators.get("exit_vs_ma20_pct"))
@@ -476,6 +482,11 @@ def _next_time_rules(verdict: str) -> list[str]:
             "若虧損擴大且價格接近持有期間低點，不要等情緒修復才處理，先降低部位風險。",
             "每次移動停損只往有利方向調整，避免把原本的防守線越放越寬。",
         ],
+        "unclassified": [
+            "下次結案時記錄實際觸發條件，例如跌破哪一條均線、回吐多少或達到哪個風險門檻。",
+            "沒有明確破位或回吐證據時，不要事後把結案解釋成技術轉弱；保留為待檢討案例。",
+            "預先設定可核對的結案規則，讓後續回顧能區分紀律執行與臨時決策。",
+        ],
         "insufficient": [
             "下次建立交易紀錄時，同步保存進場日前至少 60 筆與出場日前至少 60 筆價格資料。",
             "出場後先確認 MA20、MA60、RSI14 與持有期間高低點都有資料，再解讀檢討結論。",
@@ -517,6 +528,7 @@ def _summary_for(classification: str) -> str:
         "early_profit_exit": "在趨勢尚未明確轉弱前先小幅獲利了結。",
         "panic_exit": "出場接近短期低點，缺少較強確認訊號。",
         "technical_break_exit": "出場與當時可見的技術轉弱訊號一致。",
+        "unclassified_exit": "目前沒有足夠的規則證據可穩定分類這次出場。",
         "insufficient_data": "可用的 point-in-time 資料不足，無法穩定分類。",
     }
     return summaries.get(classification, "已完成規則化交易檢討。")

@@ -284,7 +284,7 @@ make run-api
   | `symbol_name`              | string \| null | 股票名稱，僅供前端顯示；新鮮分析由 `snapshot.name` 浮出，舊快取可由 symbol metadata resolver 補齊，查不到時為 `null`                                                                                                                                                                                |
   | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                                                                                                      |
   | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）；前端預設應轉成資料品質提示                                                                                                                                                                                                                   |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的新聞、法人籌碼與技術資料維度數量）；availability 與方向標籤分離，缺資料時的 `neutral` / `sideways` fallback 不得算成已取得；前端預設應轉成資料品質提示                                                                                                                        |
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度（CS-4 新增；`confidence_score` 為向後相容別名），用於 guardrail、校準與 trace                                                                                                                                                                                                 |
   | `confidence_score`         | int \| null    | 0–100，內部三維訊號一致性（= `signal_confidence`，向後相容）；不應作為預設前台 headline                                                                                                                                                                                                          |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                                                                                                     |
@@ -1113,8 +1113,8 @@ make run-api
 
 ### `PUT /portfolio/{portfolio_id}`
 
-- **用途**：更新既有持股的成本價、數量、購入日期與備註。
-- **權限邊界**：只能更新目前登入使用者自己的持股；非擁有者回傳 `403`。
+- **用途**：更正尚未發生後續 lifecycle event 的 active 持股成本價、數量、購入日期與備註；經濟欄位更正會同步 initial-entry event。已有後續事件時，一般 PUT 只能在經濟欄位不變的前提下更新備註。
+- **權限與一致性邊界**：只能更新目前登入使用者自己的持股；非擁有者回傳 `403`。已結案紀錄回傳 `409`，已有 add-entry／partial-exit／full-exit 後再改寫成本、股數或日期也回傳 `409`，不得造成 portfolio row 與 event ledger 分裂。
 
 - **Request Body**
 
@@ -1144,6 +1144,7 @@ make run-api
 
 - **用途**：為 active 持股建立明確加碼事件；此端點是記錄 add-entry intent 的唯一入口之一，不從一般 `PUT /portfolio/{portfolio_id}` 數量變更推論加碼。
 - **權限與狀態邊界**：只能加碼目前登入使用者自己的 active 持股；非擁有者回傳 `403`，已結案持股回傳 `409`。
+- **Legacy ledger 邊界**：單一舊持倉若完全沒有 event ledger，第一次 lifecycle mutation 會以目前 row 補建 `user_backfilled` initial-entry；同群組已存在其他分批 row 時無法安全還原歷史順序，必須回傳 `409`，不得猜測補帳。
 - **Request Body**
 
 ```json
@@ -1161,7 +1162,7 @@ make run-api
 ```
 
 - **欄位說明**
-  - `event_date`：加碼日期，必填，不可早於初始進場日期；違反時回傳 `422`，訊息為 `加碼日期不可早於初始進場日期`。
+  - `event_date`：加碼日期，必填，不可早於初始進場日期，也不可早於目前帳本的最新事件；違反時回傳 `422`。
   - `price`：加碼價格，必填，需大於 0。
   - `quantity`：加碼股數，必填，需大於 0。
   - `fees`：手續費，選填，未提供時依 broker fee rule 計算 event ledger fee。
@@ -1295,7 +1296,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "trade-review-v1",
+  "review_version": "trade-review-v2",
   "review_result": {
     "data_quality": {
       "status": "ok",
@@ -1460,14 +1461,14 @@ make run-api
 - **主要欄位說明**
   - `review_result.data_quality.status`：`ok` 或 `insufficient`。
   - `review_result.user_readable_conclusion`：前端「交易檢討結論」的資料來源，包含 `overall_verdict`、`overall_verdict_label`、`one_sentence_reason`、`evidence`、`next_time_rules`。
-  - `review_result.user_readable_conclusion.overall_verdict`：`early` / `reasonable` / `late` / `insufficient`。
+  - `review_result.user_readable_conclusion.overall_verdict`：`early` / `reasonable` / `late` / `unclassified` / `insufficient`。
   - `entry_review.classification`：`breakout_entry` / `pullback_entry` / `chase_entry` / `weak_entry` / `range_entry` / `insufficient_data`。
-  - `exit_review.classification`：`profit_protection_exit` / `stop_loss_exit` / `late_stop_exit` / `early_profit_exit` / `panic_exit` / `technical_break_exit` / `insufficient_data`。
+  - `exit_review.classification`：`profit_protection_exit` / `stop_loss_exit` / `late_stop_exit` / `early_profit_exit` / `panic_exit` / `technical_break_exit` / `unclassified_exit` / `insufficient_data`。
   - `confidence`：`high` / `medium` / `low`。
   - `market_regime`：`uptrend` / `downtrend` / `range_bound` / `strong_momentum` / `high_volatility` / `insufficient_data`。
   - `holding_review.detected_events`：最多保留重要 holding events，event item 不包含完整 K 線序列。
 
-> **Single Trade Review 結論邊界**：`review_result.user_readable_conclusion` 是 `review_result` JSONB 內的 additive 欄位，不需資料庫 migration。它由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，不新增 `llm_summary`，也不需要將 `review_version` 從 `trade-review-v1` 升版。若資料不足，`overall_verdict` 回傳 `insufficient`，並在 `evidence` 與 `next_time_rules` 說明限制。
+> **Single Trade Review 結論邊界**：`trade-review-v2` 由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，也不新增 `llm_summary`。只有存在可核對的獲利保護、風險控制或技術破位證據時才可回傳 `reasonable`；資料完整但證據不足時回傳 `unclassified`，市場資料不足時回傳 `insufficient`。對既有 v1 紀錄再次 POST 時會以 v2 規則重建。
 
 ### Closed portfolio grouping behavior
 
@@ -1871,7 +1872,7 @@ Daily Radar run status：
   - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
   - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。舊候選缺少此欄位時，月報必須標記 `replay_input_incomplete`，不得猜測。
-  - Current version trace：`daily-radar-scoring-v2.2` / `daily-radar-rules-v2.1c` / `daily-radar-scoring-config-v1`。
+  - Current version trace：`daily-radar-scoring-v2.3` / `daily-radar-rules-v2.2` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則。
 
 - **Calibration workflow**
   - Daily Radar calibration report 可由 `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` 重跑。

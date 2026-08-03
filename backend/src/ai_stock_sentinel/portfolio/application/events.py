@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import PositionEvent, UserPortfolio
@@ -58,6 +60,60 @@ def add_position_event(
     )
     db.add(event)
     return event
+
+
+def ensure_position_event_ledger(db: Session, item: UserPortfolio) -> list[PositionEvent]:
+    events = list(db.execute(
+        select(PositionEvent)
+        .where(
+            PositionEvent.user_id == item.user_id,
+            PositionEvent.position_group_id == item.position_group_id,
+        )
+        .order_by(PositionEvent.event_date.asc(), PositionEvent.created_at.asc(), PositionEvent.id.asc())
+        .with_for_update()
+    ).scalars().all())
+    if events:
+        return events
+
+    sibling_portfolio_ids = list(db.execute(
+        select(UserPortfolio.id).where(
+            UserPortfolio.user_id == item.user_id,
+            UserPortfolio.position_group_id == item.position_group_id,
+            UserPortfolio.id != item.id,
+        )
+    ).scalars().all())
+    if sibling_portfolio_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="舊部位群組缺少事件帳本且已有分批紀錄，無法安全自動補帳",
+        )
+
+    initial_event = add_position_event(
+        db,
+        item=item,
+        event_type="initial_entry",
+        event_date=item.entry_date,
+        price=Decimal(str(item.entry_price)),
+        quantity=item.quantity,
+        source_portfolio_id=item.id,
+        source="user_backfilled",
+        data_quality_note="legacy portfolio row backfilled before lifecycle mutation",
+    )
+    return [initial_event]
+
+
+def ledger_open_quantity(events: list[PositionEvent]) -> int:
+    entry_quantity = sum(
+        int(event.quantity)
+        for event in events
+        if event.event_type in {"initial_entry", "add_entry"}
+    )
+    exit_quantity = sum(
+        int(event.quantity)
+        for event in events
+        if event.event_type in {"partial_exit", "full_exit"}
+    )
+    return entry_quantity - exit_quantity
 
 
 def entry_reason_category(entry_reason: str | None) -> str | None:

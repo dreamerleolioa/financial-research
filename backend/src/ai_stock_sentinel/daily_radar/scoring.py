@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any, cast
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS, DAILY_RADAR_RISK_LABELS
+from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
 from ai_stock_sentinel.daily_radar.relative_strength import (
     DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS,
     calculate_relative_strength,
@@ -13,8 +14,8 @@ from ai_stock_sentinel.daily_radar.relative_strength import (
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
 
 
-SCORING_VERSION = "daily-radar-scoring-v2.2"
-RULE_VERSION = "daily-radar-rules-v2.1c"
+SCORING_VERSION = "daily-radar-scoring-v2.3"
+RULE_VERSION = "daily-radar-rules-v2.2"
 SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v1"
 
 
@@ -277,10 +278,10 @@ def _score_institutional_accumulation(
         score += 4
         rules.append(_rule("institutional_flow_ratio_positive", "法人淨流量為正", net_flow_to_avg_volume=net_flow_ratio))
 
-    if not _is_overextended(indicators):
+    if _has_numbers(indicators, "rsi14", "bias20", "mfi14", "volume_ratio") and not _is_overextended(indicators):
         score += 12
         rules.append(_rule("institutional_not_overextended", "價格未大幅脫離均線", rsi14=_float(indicators.get("rsi14")), bias20=_float(indicators.get("bias20"))))
-    if _float(margin.get("margin_delta_pct")) <= 2 and _float(margin.get("margin_to_volume")) < 2:
+    if _has_numbers(margin, "margin_delta_pct", "margin_to_volume") and _float(margin.get("margin_delta_pct")) <= 2 and _float(margin.get("margin_to_volume")) < 2:
         score += 6
         rules.append(_rule("institutional_margin_contained", "融資變化維持溫和", margin_delta_pct=_float(margin.get("margin_delta_pct"))))
 
@@ -364,7 +365,7 @@ def _score_bottoming_reversal(
     if close > previous_close:
         score += 10
         rules.append(_rule("bottoming_close_recovers", "收盤較前一交易日回穩", close=close, previous_close=previous_close))
-    if -0.25 <= macd_histogram <= 0.5:
+    if _has_numbers(indicators, "macd_histogram") and -0.25 <= macd_histogram <= 0.5:
         score += 18
         rules.append(_rule("bottoming_macd_improving", "MACD 柱狀體跌勢收斂", macd_histogram=macd_histogram))
     elif macd_histogram > 0:
@@ -373,7 +374,7 @@ def _score_bottoming_reversal(
     if kd_k > kd_d and kd_k <= 35:
         score += 18
         rules.append(_rule("bottoming_kd_low_turn", "KD 低位翻正", kd_k=kd_k, kd_d=kd_d))
-    if _float(indicators.get("bias20")) <= 1:
+    if _has_numbers(indicators, "bias20") and _float(indicators.get("bias20")) <= 1:
         score += 12
         rules.append(_rule("bottoming_bias_near_midline", "二十日乖離收斂", bias20=_float(indicators.get("bias20"))))
     if str(indicators.get("obv_trend") or "") in {"turning_up", "flat_to_up"}:
@@ -382,10 +383,10 @@ def _score_bottoming_reversal(
     if 35 <= _float(indicators.get("rsi14")) <= 55:
         score += 10
         rules.append(_rule("bottoming_rsi_mid_recovery", "RSI 回到中性修復區", rsi14=_float(indicators.get("rsi14"))))
-    if _float(margin.get("margin_delta_pct")) <= 0:
+    if _has_numbers(margin, "margin_delta_pct") and _float(margin.get("margin_delta_pct")) <= 0:
         score += 8
         rules.append(_rule("bottoming_margin_easing", "融資餘額未同步升高", margin_delta_pct=_float(margin.get("margin_delta_pct"))))
-    if _float(indicators.get("volume_ratio")) < 0.95:
+    if _has_numbers(indicators, "volume_ratio") and _float(indicators.get("volume_ratio")) < 0.95:
         score -= 12
         rules.append(_rule("bottoming_participation_insufficient", "量能參與仍不足", volume_ratio=_float(indicators.get("volume_ratio"))))
 
@@ -423,16 +424,16 @@ def _score_support_retest(
     if 0.95 <= volume_ratio <= 1.4:
         score += 12
         rules.append(_rule("support_retest_orderly_participation", "量能維持溫和", volume_ratio=volume_ratio))
-    if close and atr14 / close <= 0.04:
+    if close and _has_numbers(indicators, "atr14") and atr14 / close <= 0.04:
         score += 10
         rules.append(_rule("support_retest_atr_contained", "ATR 波動可控", atr14=atr14, close=close))
     if str(indicators.get("obv_trend") or "") in {"flat_to_up", "turning_up", "rising"}:
         score += 12
         rules.append(_rule("support_retest_participation_stable", "OBV 未再轉弱", obv_trend=str(indicators.get("obv_trend"))))
-    if _float(margin.get("margin_delta_pct")) <= 0:
+    if _has_numbers(margin, "margin_delta_pct") and _float(margin.get("margin_delta_pct")) <= 0:
         score += 8
         rules.append(_rule("support_retest_margin_not_expanding", "融資未同步擴張", margin_delta_pct=_float(margin.get("margin_delta_pct"))))
-    if _float(indicators.get("macd_histogram")) >= -0.15:
+    if _has_numbers(indicators, "macd_histogram") and _float(indicators.get("macd_histogram")) >= -0.15:
         score += 7
         rules.append(_rule("support_retest_macd_stable", "MACD 柱狀體未明顯轉弱", macd_histogram=_float(indicators.get("macd_histogram"))))
     if support and close < support:
@@ -455,6 +456,12 @@ def _risk_penalties(
     penalties: list[dict[str, Any]] = []
     risk_flags = _risk_flags(flow, margin)
     prefilter_codes = _prefilter_reason_codes(prefilter_result)
+    missing_fields = missing_scoring_fields(
+        ohlcv=_mapping(record.get("ohlcv")),
+        indicators=indicators,
+        institutional_flow=flow,
+        margin=margin,
+    )
 
     if "overextended" in risk_flags or _is_overextended(indicators):
         penalties.append(_penalty("overextended", config.overextended_penalty, "短期指標過熱", rsi14=_float(indicators.get("rsi14")), bias20=_float(indicators.get("bias20")), mfi14=_float(indicators.get("mfi14"))))
@@ -477,8 +484,16 @@ def _risk_penalties(
         or _has_stale_core_dates(record)
         or _symbol_context_has_flag(record, market_context, "data_gap")
         or _symbol_context_has_flag(record, market_context, "stale_data")
+        or bool(missing_fields)
     ):
-        penalties.append(_penalty("data_gap", config.data_gap_penalty, "資料完整度或時效不足", missing_trading_days_60=_int(indicators.get("missing_trading_days_60")), data_dates=dict(_mapping(record.get("data_dates")))))
+        penalties.append(_penalty(
+            "data_gap",
+            config.data_gap_penalty,
+            "資料完整度或時效不足",
+            missing_trading_days_60=_int(indicators.get("missing_trading_days_60")),
+            missing_fields=missing_fields,
+            data_dates=dict(_mapping(record.get("data_dates"))),
+        ))
 
     return penalties
 
@@ -496,7 +511,16 @@ def _cross_confirmation(
     if _float(indicators.get("volume_ratio")) >= 1.05 and str(indicators.get("obv_trend") or "") in {"rising", "rising_fast", "turning_up", "flat_to_up"}:
         score += 3
         components.append("price_volume")
-    if _float(indicators.get("macd_histogram")) >= 0 or _float(indicators.get("kd_k")) > _float(indicators.get("kd_d")) or _float(ohlcv.get("close")) > _float(indicators.get("ma20")):
+    technical_confirmed = (
+        (_has_numbers(indicators, "macd_histogram") and _float(indicators.get("macd_histogram")) >= 0)
+        or (_has_numbers(indicators, "kd_k", "kd_d") and _float(indicators.get("kd_k")) > _float(indicators.get("kd_d")))
+        or (
+            _has_numbers(ohlcv, "close")
+            and _has_numbers(indicators, "ma20")
+            and _float(ohlcv.get("close")) > _float(indicators.get("ma20"))
+        )
+    )
+    if technical_confirmed:
         score += 2
         components.append("technical")
     return {"score": min(8, score), "components": components}
@@ -806,6 +830,14 @@ def _float(value: Any) -> float:
     if isinstance(value, bool) or value is None:
         return 0.0
     return float(value)
+
+
+def _has_numbers(payload: Mapping[str, Any], *keys: str) -> bool:
+    return all(
+        not isinstance(payload.get(key), bool)
+        and payload.get(key) is not None
+        for key in keys
+    )
 
 
 def _int(value: Any) -> int:
