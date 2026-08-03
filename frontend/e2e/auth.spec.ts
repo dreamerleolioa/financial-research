@@ -27,6 +27,27 @@ test("callback without an authorization code explains recovery", async ({ page }
   await expect(page).toHaveURL(/\/login$/);
 });
 
+test("callback completes Google code login without treating mount initialization as a conflict", async ({ page }) => {
+  const requestLog: string[] = [];
+  const requestBodies: unknown[] = [];
+  await installApiMocks(page, {
+    googleCodeDelayMs: 50,
+    requestLog,
+    requestBodies,
+  });
+
+  await page.goto("/login/callback?code=fresh-e2e-code");
+
+  await expect(page).toHaveURL(/\/analyze$/);
+  await expect(page.getByText("e2e@example.com", { exact: true })).toBeVisible();
+  await expect.poll(() => requestLog.filter((request) => request === "POST /auth/google/code").length).toBe(1);
+  await expect(page.evaluate(() => localStorage.getItem("auth_token"))).resolves.toBe("e2e-google-code-token");
+  expect(requestBodies).toContainEqual({
+    code: "fresh-e2e-code",
+    redirect_uri: "http://127.0.0.1:4173/login/callback",
+  });
+});
+
 test("auth state and query cache follow token changes from another tab", async ({ context, page }) => {
   const alice = {
     id: 1,

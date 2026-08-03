@@ -229,6 +229,7 @@ export const populatedRiskSummary = {
 
 interface ApiMockOptions {
   usersByToken?: Record<string, unknown>;
+  googleCodeDelayMs?: number;
   watchlist?: unknown[];
   portfolio?: unknown[];
   closedPortfolio?: unknown[];
@@ -273,6 +274,12 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
       const authorization = request.headers().authorization ?? "";
       const token = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
       return json(route, options.usersByToken?.[token] ?? testUser);
+    }
+    if (method === "POST" && pathname === "/auth/google/code") {
+      if (options.googleCodeDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.googleCodeDelayMs));
+      }
+      return json(route, { access_token: "e2e-google-code-token", user: testUser });
     }
     if (method === "GET" && pathname === "/watchlist") return json(route, watchlist);
     if (method === "GET" && pathname === "/portfolio") return json(route, portfolio);
