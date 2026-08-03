@@ -17,6 +17,13 @@ down_revision: Union[str, Sequence[str], None] = "0a1b2c3d4e5f"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+POSTGRES_INTEGER_MAX = 2_147_483_647
+
+
+def _is_valid_position_event_quantity(quantity: int) -> bool:
+    """Keep repaired values within the PostgreSQL INTEGER storage contract."""
+    return 0 < quantity <= POSTGRES_INTEGER_MAX
+
 
 def _has_exact_exit_coverage(events: Sequence[Any], expected_rows: Sequence[Any]) -> bool:
     """Require one matching exit event for every row without quantity ambiguity."""
@@ -149,7 +156,10 @@ def _repair_synthetic_group_quantities() -> None:
             if is_safe_fully_closed_shape:
                 expected_initial_quantity = sum(int(event.quantity) for event in exit_events)
 
-        if expected_initial_quantity is None:
+        if (
+            expected_initial_quantity is None
+            or not _is_valid_position_event_quantity(expected_initial_quantity)
+        ):
             continue
         if int(initial_events[0].quantity) == expected_initial_quantity:
             continue

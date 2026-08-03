@@ -695,3 +695,151 @@ def test_repair_migration_rejects_invalid_active_source_facts(
             )
         ).scalar_one()
         assert initial_event.quantity == 60
+
+
+def test_repair_migration_skips_postgresql_integer_overflow_totals() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+    postgres_integer_max = 2_147_483_647
+    assert migration.POSTGRES_INTEGER_MAX == postgres_integer_max
+
+    with Session(engine) as session:
+        session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+        session.add_all([
+            UserPortfolio(
+                id=1,
+                user_id=1,
+                position_group_id="group-active-overflow",
+                symbol="2330.TW",
+                entry_price=900,
+                quantity=postgres_integer_max,
+                entry_date=date(2026, 5, 1),
+                is_active=True,
+            ),
+            UserPortfolio(
+                id=2,
+                user_id=1,
+                position_group_id="group-active-overflow",
+                symbol="2330.TW",
+                entry_price=900,
+                quantity=40,
+                entry_date=date(2026, 5, 1),
+                is_active=False,
+                exit_date=date(2026, 5, 5),
+                exit_price=950,
+                exit_quantity=40,
+            ),
+            UserPortfolio(
+                id=3,
+                user_id=1,
+                position_group_id="group-closed-overflow",
+                symbol="2454.TW",
+                entry_price=800,
+                quantity=40,
+                entry_date=date(2026, 6, 1),
+                is_active=False,
+                exit_date=date(2026, 6, 5),
+                exit_price=850,
+                exit_quantity=40,
+            ),
+            UserPortfolio(
+                id=4,
+                user_id=1,
+                position_group_id="group-closed-overflow",
+                symbol="2454.TW",
+                entry_price=800,
+                quantity=postgres_integer_max - 7,
+                entry_date=date(2026, 6, 1),
+                is_active=False,
+                exit_date=date(2026, 6, 10),
+                exit_price=880,
+                exit_quantity=postgres_integer_max - 7,
+            ),
+        ])
+        session.flush()
+        session.add_all([
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-active-overflow",
+                symbol="2330.TW",
+                event_type="initial_entry",
+                event_date=date(2026, 5, 1),
+                price=900,
+                quantity=postgres_integer_max,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=1,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-active-overflow",
+                symbol="2330.TW",
+                event_type="partial_exit",
+                event_date=date(2026, 5, 5),
+                price=950,
+                quantity=40,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=2,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-closed-overflow",
+                symbol="2454.TW",
+                event_type="initial_entry",
+                event_date=date(2026, 6, 1),
+                price=800,
+                quantity=postgres_integer_max - 7,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=4,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-closed-overflow",
+                symbol="2454.TW",
+                event_type="partial_exit",
+                event_date=date(2026, 6, 5),
+                price=850,
+                quantity=40,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=3,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-closed-overflow",
+                symbol="2454.TW",
+                event_type="full_exit",
+                event_date=date(2026, 6, 10),
+                price=880,
+                quantity=postgres_integer_max - 7,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=4,
+                source="synthetic_from_portfolio_row",
+            ),
+        ])
+        session.commit()
+
+        migration.op = SimpleNamespace(get_bind=lambda: session.connection())
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
+
+        initial_events = {
+            event.position_group_id: event
+            for event in session.execute(
+                select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+            ).scalars()
+        }
+        assert initial_events["group-active-overflow"].quantity == postgres_integer_max
+        assert initial_events["group-closed-overflow"].quantity == postgres_integer_max - 7
