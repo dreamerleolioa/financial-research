@@ -4,11 +4,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.db.models import PositionEvent, UserPortfolio
-from ai_stock_sentinel.portfolio.application.events import add_position_event
+from ai_stock_sentinel.db.models import UserPortfolio
+from ai_stock_sentinel.portfolio.application.events import ensure_position_event_ledger
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
 from ai_stock_sentinel.portfolio.schemas import UpdatePortfolioRequest
 
@@ -32,41 +31,18 @@ def update_portfolio_record(
         or item.quantity != payload.quantity
         or item.entry_date != payload.entry_date
     )
-    events = list(db.execute(
-        select(PositionEvent)
-        .where(
-            PositionEvent.user_id == user_id,
-            PositionEvent.position_group_id == item.position_group_id,
-        )
-        .order_by(PositionEvent.event_date.asc(), PositionEvent.created_at.asc(), PositionEvent.id.asc())
-        .with_for_update()
-    ).scalars().all())
-
-    if economic_fields_changed and any(event.event_type != "initial_entry" for event in events):
-        raise HTTPException(status_code=409, detail="部位已有後續事件，成本、股數與日期不可直接改寫")
-    if economic_fields_changed and len(events) > 1:
-        raise HTTPException(status_code=409, detail="部位事件帳本不唯一，請使用明確的更正流程")
-
     if economic_fields_changed:
-        if events:
-            initial_event = events[0]
-            initial_event.event_date = payload.entry_date
-            initial_event.price = Decimal(str(payload.entry_price))
-            initial_event.quantity = payload.quantity
-            initial_event.updated_at = datetime.now(timezone.utc)
-        else:
-            add_position_event(
-                db,
-                item=item,
-                event_type="initial_entry",
-                event_date=payload.entry_date,
-                price=Decimal(str(payload.entry_price)),
-                quantity=payload.quantity,
-                source_portfolio_id=item.id,
-                note=payload.notes,
-                source="user_backfilled",
-                data_quality_note="legacy portfolio row corrected before lifecycle events",
-            )
+        events = ensure_position_event_ledger(db, item)
+        if any(event.event_type != "initial_entry" for event in events):
+            raise HTTPException(status_code=409, detail="部位已有後續事件，成本、股數與日期不可直接改寫")
+        if len(events) != 1:
+            raise HTTPException(status_code=409, detail="部位事件帳本不唯一，請使用明確的更正流程")
+
+        initial_event = events[0]
+        initial_event.event_date = payload.entry_date
+        initial_event.price = Decimal(str(payload.entry_price))
+        initial_event.quantity = payload.quantity
+        initial_event.updated_at = datetime.now(timezone.utc)
 
     item.entry_price = payload.entry_price
     item.quantity = payload.quantity

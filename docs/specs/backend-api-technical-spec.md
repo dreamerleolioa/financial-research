@@ -284,7 +284,7 @@ make run-api
   | `symbol_name`              | string \| null | 股票名稱，僅供前端顯示；新鮮分析由 `snapshot.name` 浮出，舊快取可由 symbol metadata resolver 補齊，查不到時為 `null`                                                                                                                                                                                |
   | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                                                                                                      |
   | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的新聞、法人籌碼與技術資料維度數量）；availability 與方向標籤分離，缺資料時的 `neutral` / `sideways` fallback 不得算成已取得；前端預設應轉成資料品質提示                                                                                                                        |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的新聞、法人籌碼與技術資料維度數量）；availability 與方向標籤分離，缺資料時的 `neutral` / `sideways` fallback 不得算成已取得。技術維度至少需要 20 筆有效收盤資料；僅產出 `technical_profile.score_summary`、但 `data_quality.lookback_days_available < 20` 時仍視為不可用，且該 profile 不得影響 `signal_confidence`。前端預設應轉成資料品質提示 |
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度（CS-4 新增；`confidence_score` 為向後相容別名），用於 guardrail、校準與 trace                                                                                                                                                                                                 |
   | `confidence_score`         | int \| null    | 0–100，內部三維訊號一致性（= `signal_confidence`，向後相容）；不應作為預設前台 headline                                                                                                                                                                                                          |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                                                                                                     |
@@ -507,7 +507,7 @@ make run-api
   | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
   | `snapshot`                 | object         | yfinance 即時快照（與 `/analyze` 相同）                                                          |
   | `position_analysis`        | object         | **持股診斷專屬**——見下方欄位細節                                                                 |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度；前端預設應轉成資料品質提示                                                     |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度；技術維度至少需要 20 筆有效收盤資料，不能以不足 lookback 所產生的 fallback score 充當可用資料；前端預設應轉成資料品質提示 |
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度，用於 guardrail、校準與 trace                                                  |
   | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容；不應作為預設前台 headline                                        |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                                          |
@@ -1115,6 +1115,7 @@ make run-api
 
 - **用途**：更正尚未發生後續 lifecycle event 的 active 持股成本價、數量、購入日期與備註；經濟欄位更正會同步 initial-entry event。已有後續事件時，一般 PUT 只能在經濟欄位不變的前提下更新備註。
 - **權限與一致性邊界**：只能更新目前登入使用者自己的持股；非擁有者回傳 `403`。已結案紀錄回傳 `409`，已有 add-entry／partial-exit／full-exit 後再改寫成本、股數或日期也回傳 `409`，不得造成 portfolio row 與 event ledger 分裂。
+- **Legacy ledger 邊界**：經濟欄位更正與 add-entry／close 共用同一補帳防線。單一舊持倉且完全沒有 event ledger 時，可先以目前 row 補建 `user_backfilled` initial-entry 再套用更正；同群組已有其他分批 portfolio row 時回傳 `409`，不得從目前剩餘股數猜測原始進場數量或歷史事件順序。只修改備註且經濟欄位不變時不觸發補帳。
 
 - **Request Body**
 
@@ -1244,6 +1245,7 @@ make run-api
   - `holding_days = exit_date - entry_date` 的天數
   - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
   - `exit_quantity < quantity` 時為部分平倉：原 active 持股保留並扣減 `quantity`，另建立一筆 `is_active = FALSE` 的 closed portfolio 紀錄，該 inactive 紀錄代表本次出場股數，response 回傳新建立的 closed portfolio。
+  - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只在「單一 active row + 單一 synthetic initial-entry + 全部出場皆為 synthetic partial-exit」時，將 initial-entry 修正為 `active quantity + partial-exit quantity sum`；含人工、補填或其他事件形狀的群組不自動改寫。
 
 - **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
 
@@ -1281,9 +1283,9 @@ make run-api
 
 ### `POST /portfolio/{portfolio_id}/review`
 
-- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在 saved review，直接回傳既有 review，不重新產生。
+- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在且 `review_version = trade-review-v2`，直接回傳既有 review。只有已知的 `trade-review-v1` 會由 POST 依目前 deterministic 規則原地重建為 v2；未知或較新版本原樣回傳，不得降級覆寫。
 - **Request Body**：無必填欄位；目前 frontend 送出空 POST body。
-- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`，第二次以後 POST 回傳既有資料；沒有 refresh 或重新分析行為。
+- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`；目前 v2 再次 POST 維持 idempotent 並回傳既有資料；已知 v1 review 再次 POST 則更新同一筆紀錄的 `review_version`、`review_result` 與 `evidence_payload`，並清除舊 `llm_summary`。GET 保持只讀；frontend 只在讀到 v1 時再送 POST 完成升級，對未知或較新版本不得自動 POST，確保版本單調性與 rollback 相容性。
 - **LLM 邊界**：目前不呼叫 LLM，`llm_summary` 固定為 `null`。
 - **Evidence 邊界**：`evidence_payload` 只存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、source summary；不存完整 OHLCV/K-line arrays、raw news、raw LLM prompts 或 unrelated portfolio history。
 

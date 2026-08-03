@@ -48,6 +48,7 @@ from ai_stock_sentinel.user_models.user import User
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 TRADE_REVIEW_VERSION = "trade-review-v2"
+LEGACY_TRADE_REVIEW_VERSION = "trade-review-v1"
 POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v1"
 
 
@@ -608,7 +609,7 @@ def create_trade_review(
             TradeReview.user_id == current_user.id,
         )
     ).scalar_one_or_none()
-    if existing_review and existing_review.review_version == TRADE_REVIEW_VERSION:
+    if existing_review and existing_review.review_version != LEGACY_TRADE_REVIEW_VERSION:
         return _serialize_trade_review(existing_review)
 
     ensure_trade_review_market_data(db, item)

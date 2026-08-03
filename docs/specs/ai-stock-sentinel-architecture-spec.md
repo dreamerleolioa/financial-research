@@ -372,7 +372,7 @@ crawl → fetch_external_data（institutional + fundamental 並行）→ judge �
   > **有效值定義**（Session 6 定案）：
   >
   > - 新聞維度：`news_sentiment` 有任何值（含 `neutral`）→ 視為有新聞資料；`neutral` 表示情緒中性，不代表資料未取得
-  > - 技術維度：`technical_signal` 有任何值（含 `sideways`）→ 視為有技術資料；`sideways` 是合法計算結果
+  > - 技術維度：至少有 20 筆有效收盤資料時，`technical_signal` 有任何值（含 `sideways`）才視為有技術資料；`sideways` 是合法計算結果，但不足 lookback 產生的 fallback score 或 `technical_profile.score_summary` 不得單獨算成已取得，也不得影響 `signal_confidence`
   > - 籌碼維度：`inst_flow != "unknown"` → 視為有籌碼資料（`unknown` 代表所有 Provider 失敗）
   >   簡言之：`data_confidence` 量的是「資料取得完整度」，不是「訊號偏向廣度」。
 - `signal_confidence`：訊號強度（即舊 `confidence_score`），由 `adjust_confidence_by_divergence()` 計算
@@ -883,6 +883,8 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 `decision_context.status = insufficient` 是正式語意，不是錯誤狀態。當 lifecycle plan 缺失、只有 optional note、或資料 provenance 不足以代表原始意圖時，review 仍可輸出價格路徑與 event facts，但必須以 caveats 說明限制，且不得判斷使用者是否遵循未記錄計畫。
 
 Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
+
+Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能在單一 active row、單一 synthetic initial-entry、且其餘事件全為 synthetic partial-exit 的可證明形狀下修正；修正後 initial-entry 為 active 剩餘股數加上歷史 partial-exit 總和。只要含有 user-recorded、backfilled、manual 或其他 event shape，就不得自動重寫。
 
 **Deterministic lifecycle review 邊界：**
 

@@ -337,6 +337,54 @@ def test_update_portfolio_rejects_economic_mutation_after_lifecycle_started(
     assert resp.status_code == 409
 
 
+def test_update_portfolio_rejects_unsafe_legacy_group_backfill(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-update-legacy-split",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=60,
+            entry_date=date(2026, 1, 1),
+            is_active=True,
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-update-legacy-split",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=40,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 5),
+            exit_price=950,
+            exit_quantity=40,
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42", json={
+        "entry_price": 920.0,
+        "quantity": 70,
+        "entry_date": "2026-01-02",
+        "notes": "unsafe correction",
+    })
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "舊部位群組缺少事件帳本且已有分批紀錄，無法安全自動補帳"
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+    row = portfolio_db_session.get(UserPortfolio, 42)
+    assert float(row.entry_price) == 900.0
+    assert row.quantity == 60
+    assert row.entry_date == date(2026, 1, 1)
+
+
 def test_add_entry_endpoint_creates_add_entry_event_and_updates_active_row(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -3457,6 +3505,40 @@ def test_create_trade_review_rebuilds_legacy_review_version_in_place(
     reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
     assert len(reviews) == 1
     assert reviews[0].review_version == "trade-review-v2"
+
+
+def test_create_trade_review_preserves_unknown_newer_review_version(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_ensure(_db: Session, _item: UserPortfolio) -> None:
+        raise AssertionError("unknown newer review must not trigger a destructive rebuild")
+
+    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", fail_ensure)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = _add_closed_portfolio(portfolio_db_session)
+    portfolio_db_session.add(TradeReview(
+        portfolio_id=item.id,
+        user_id=item.user_id,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        review_version="trade-review-v3",
+        review_result={"future": True},
+        evidence_payload={"future": True},
+        llm_summary="future summary",
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert resp.json()["review_version"] == "trade-review-v3"
+    assert resp.json()["review_result"] == {"future": True}
+    assert resp.json()["llm_summary"] == "future summary"
+    review = portfolio_db_session.execute(select(TradeReview)).scalar_one()
+    assert review.review_version == "trade-review-v3"
+    assert review.evidence_payload == {"future": True}
 
 
 def test_create_trade_review_second_post_returns_existing_without_duplicate(

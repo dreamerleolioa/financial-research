@@ -2,7 +2,10 @@ import { expect, test } from "@playwright/test";
 import {
   authenticate,
   closedPortfolioItem,
+  currentTradeReview,
+  futureTradeReview,
   installApiMocks,
+  legacyTradeReview,
   populatedRiskSummary,
   portfolioItem,
   quickAnalyzeResult,
@@ -452,6 +455,45 @@ test("Closed Portfolio presents a populated realized-PnL group", async ({ page }
   await expect(closedPosition).toContainText("+41,634");
   await expect(closedPosition.getByRole("button", { name: "整體部位檢討" })).toBeVisible();
   await expect(closedPosition.getByRole("button", { name: "事件時間線" })).toBeVisible();
+});
+
+test("Closed Portfolio upgrades a saved v1 trade review before presenting it", async ({ page }) => {
+  const requestLog: string[] = [];
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedPortfolio: [closedPortfolioItem],
+    tradeReviewGet: legacyTradeReview,
+    tradeReviewPost: currentTradeReview,
+    requestLog,
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
+  await expect(dialog).toContainText("trade-review-v2");
+  await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
+  await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
+});
+
+test("Closed Portfolio does not downgrade an unknown newer trade review", async ({ page }) => {
+  const requestLog: string[] = [];
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedPortfolio: [closedPortfolioItem],
+    tradeReviewGet: futureTradeReview,
+    requestLog,
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
+  await expect(dialog).toContainText("trade-review-v3");
+  await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
+  expect(requestLog.filter((entry) => entry === "POST /portfolio/201/review")).toHaveLength(0);
 });
 
 test("Daily Radar detail drawer traps focus and restores it on Escape", async ({ page }) => {

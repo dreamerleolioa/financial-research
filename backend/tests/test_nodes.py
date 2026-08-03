@@ -103,6 +103,31 @@ def test_score_node_neutral_sources_with_real_data_reports_full_data_confidence(
     assert result["data_confidence"] == 100
 
 
+def test_score_node_does_not_count_insufficient_technical_profile_as_available():
+    """A derived score alone must not make a one-day technical profile complete."""
+    from ai_stock_sentinel.graph.nodes import score_node
+    from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
+
+    snapshot = {"recent_closes": [100.0]}
+    profile_payload = build_technical_profile_from_snapshot(snapshot)
+    assert profile_payload is not None
+    assert profile_payload["technical_profile"]["score_summary"]["technical_score"] is not None
+    assert profile_payload["technical_profile"]["data_quality"]["lookback_days_available"] == 1
+    profile_payload["technical_profile"]["score_summary"]["technical_score"] = 36
+
+    result = score_node({
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": snapshot,
+        "technical_profile": profile_payload["technical_profile"],
+        "cleaned_news_quality": {"quality_flags": []},
+        "errors": [],
+    })
+
+    assert result["technical_signal"] == "sideways"
+    assert result["data_confidence"] == 33
+
+
 def test_score_node_uses_existing_technical_profile_for_signal():
     """score_node should not recalculate scattered raw signals when a profile is already present."""
     from ai_stock_sentinel.graph.nodes import score_node

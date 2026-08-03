@@ -524,10 +524,14 @@ def score_node(state: GraphState) -> dict[str, Any]:
         lows = [float(v) for v in snapshot.get("recent_lows", []) if v is not None]
         volumes = [float(v) for v in snapshot.get("recent_volumes", []) if v is not None]
     technical_profile = state.get("technical_profile") if isinstance(state.get("technical_profile"), dict) else None
+    profile_data_quality = technical_profile.get("data_quality") if technical_profile else None
+    profile_lookback = (
+        profile_data_quality.get("lookback_days_available")
+        if isinstance(profile_data_quality, dict)
+        else None
+    )
     technical_available = len(closes) >= 20 or bool(
-        technical_profile
-        and isinstance(technical_profile.get("score_summary"), dict)
-        and technical_profile["score_summary"].get("technical_score") is not None
+        isinstance(profile_lookback, int) and not isinstance(profile_lookback, bool) and profile_lookback >= 20
     )
     technical_signal = _derive_technical_signal(
         closes,
@@ -535,7 +539,7 @@ def score_node(state: GraphState) -> dict[str, Any]:
         highs=highs,
         lows=lows,
         volumes=volumes,
-        technical_profile=technical_profile,
+        technical_profile=technical_profile if technical_available else None,
     )
 
     # DATE_UNKNOWN 旗標
