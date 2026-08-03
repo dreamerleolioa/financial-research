@@ -240,10 +240,65 @@ def test_update_portfolio_backfills_and_updates_initial_entry_event(
         select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
     ).scalar_one()
     assert event.event_type == "initial_entry"
-    assert event.source == "user_backfilled"
+    assert event.source == "manual_record_correction"
+    assert event.data_quality_note == (
+        "Entry price, quantity, or date was manually corrected after initial recording."
+    )
     assert event.event_date == date(2026, 2, 1)
     assert float(event.price) == 950.0
     assert event.quantity == 200
+
+
+def test_update_portfolio_marks_event_time_entry_as_manual_correction(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-update-recorded-event",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    )
+    portfolio_db_session.add(item)
+    portfolio_db_session.flush()
+    portfolio_db_session.add(PositionEvent(
+        user_id=1,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        event_type="initial_entry",
+        event_date=item.entry_date,
+        price=item.entry_price,
+        quantity=item.quantity,
+        fees=0,
+        taxes=0,
+        reason_category="fundamental",
+        reason_code="value_revaluation",
+        source_portfolio_id=item.id,
+        source="user_recorded_at_event_time",
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42", json={
+        "entry_price": 950.0,
+        "quantity": 120,
+        "entry_date": "2026-01-02",
+        "notes": "corrected facts",
+    })
+
+    assert resp.status_code == 200
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+    ).scalar_one()
+    assert event.source == "manual_record_correction"
+    assert event.data_quality_note == (
+        "Entry price, quantity, or date was manually corrected after initial recording."
+    )
+    assert event.reason_category == "fundamental"
+    assert event.reason_code == "value_revaluation"
 
 
 def test_update_portfolio_rejects_closed_row_economic_mutation(

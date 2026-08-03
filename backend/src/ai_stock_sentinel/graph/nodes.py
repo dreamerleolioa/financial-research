@@ -530,16 +530,18 @@ def score_node(state: GraphState) -> dict[str, Any]:
         if isinstance(profile_data_quality, dict)
         else None
     )
-    technical_available = len(closes) >= 20 or bool(
+    raw_technical_available = len(closes) >= 20
+    profile_technical_available = bool(
         isinstance(profile_lookback, int) and not isinstance(profile_lookback, bool) and profile_lookback >= 20
     )
+    technical_available = raw_technical_available or profile_technical_available
     technical_signal = _derive_technical_signal(
         closes,
         rsi=state.get("rsi14"),
         highs=highs,
         lows=lows,
         volumes=volumes,
-        technical_profile=technical_profile if technical_available else None,
+        technical_profile=technical_profile if profile_technical_available else None,
     )
 
     # DATE_UNKNOWN 旗標

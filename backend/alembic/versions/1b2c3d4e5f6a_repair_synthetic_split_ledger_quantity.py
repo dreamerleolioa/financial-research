@@ -17,11 +17,26 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _has_exact_source_coverage(events: Sequence[Any], expected_row_ids: set[int]) -> bool:
-    source_portfolio_ids = [event.source_portfolio_id for event in events]
-    return (
-        len(source_portfolio_ids) == len(expected_row_ids)
-        and set(source_portfolio_ids) == expected_row_ids
+def _has_exact_exit_coverage(events: Sequence[Any], expected_rows: Sequence[Any]) -> bool:
+    """Require one matching exit event for every row without quantity ambiguity."""
+    expected_quantities: dict[int, int] = {}
+    for row in expected_rows:
+        row_quantity = int(row.quantity)
+        exit_quantity = int(row.exit_quantity) if row.exit_quantity is not None else row_quantity
+        if exit_quantity != row_quantity:
+            return False
+        expected_quantities[int(row.id)] = exit_quantity
+
+    observed_sources = [event.source_portfolio_id for event in events]
+    if (
+        len(observed_sources) != len(expected_quantities)
+        or len(set(observed_sources)) != len(observed_sources)
+    ):
+        return False
+    return all(
+        event.source_portfolio_id in expected_quantities
+        and int(event.quantity) == expected_quantities[event.source_portfolio_id]
+        for event in events
     )
 
 
@@ -30,7 +45,7 @@ def _repair_synthetic_group_quantities() -> None:
     bind = op.get_bind()
     portfolio_rows = bind.execute(sa.text(
         """
-        SELECT id, user_id, position_group_id, quantity, is_active
+        SELECT id, user_id, position_group_id, quantity, exit_quantity, is_active
         FROM user_portfolio
         WHERE position_group_id IS NOT NULL
         ORDER BY id
@@ -64,12 +79,10 @@ def _repair_synthetic_group_quantities() -> None:
         initial_events = [event for event in events if event.event_type == "initial_entry"]
         partial_exits = [event for event in events if event.event_type == "partial_exit"]
         full_exits = [event for event in events if event.event_type == "full_exit"]
-        group_row_ids = {row.id for row in group_rows}
-
         expected_initial_quantity: int | None = None
         if len(active_rows) == 1:
             active_row = active_rows[0]
-            inactive_row_ids = {row.id for row in group_rows if not row.is_active}
+            inactive_rows = [row for row in group_rows if not row.is_active]
             is_safe_active_shape = (
                 len(initial_events) == 1
                 and bool(partial_exits)
@@ -81,7 +94,7 @@ def _repair_synthetic_group_quantities() -> None:
                     event.source == "synthetic_from_portfolio_row"
                     for event in partial_exits
                 )
-                and _has_exact_source_coverage(partial_exits, inactive_row_ids)
+                and _has_exact_exit_coverage(partial_exits, inactive_rows)
             )
             if is_safe_active_shape:
                 expected_initial_quantity = int(active_row.quantity) + sum(
@@ -101,7 +114,7 @@ def _repair_synthetic_group_quantities() -> None:
                     event.source == "synthetic_from_portfolio_row"
                     for event in exit_events
                 )
-                and _has_exact_source_coverage(exit_events, group_row_ids)
+                and _has_exact_exit_coverage(exit_events, group_rows)
             )
             if is_safe_fully_closed_shape:
                 expected_initial_quantity = sum(int(event.quantity) for event in exit_events)

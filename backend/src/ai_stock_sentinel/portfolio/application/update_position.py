@@ -12,6 +12,11 @@ from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
 from ai_stock_sentinel.portfolio.schemas import UpdatePortfolioRequest
 
 
+ENTRY_FACT_CORRECTION_NOTE = (
+    "Entry price, quantity, or date was manually corrected after initial recording."
+)
+
+
 def update_portfolio_record(
     db: Session,
     *,
@@ -42,6 +47,8 @@ def update_portfolio_record(
         initial_event.event_date = payload.entry_date
         initial_event.price = Decimal(str(payload.entry_price))
         initial_event.quantity = payload.quantity
+        initial_event.source = "manual_record_correction"
+        initial_event.data_quality_note = ENTRY_FACT_CORRECTION_NOTE
         initial_event.updated_at = datetime.now(timezone.utc)
 
     item.entry_price = payload.entry_price

@@ -349,6 +349,7 @@ def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
         quantity: int,
         is_active: bool,
         exit_day: int | None = None,
+        exit_quantity: int | None = None,
     ) -> UserPortfolio:
         return UserPortfolio(
             id=row_id,
@@ -361,7 +362,9 @@ def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
             is_active=is_active,
             exit_date=date(2026, 3, exit_day) if exit_day is not None else None,
             exit_price=950 if exit_day is not None else None,
-            exit_quantity=quantity if exit_day is not None else None,
+            exit_quantity=(quantity if exit_quantity is None else exit_quantity)
+            if exit_day is not None
+            else None,
         )
 
     def synthetic_event(
@@ -437,6 +440,37 @@ def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
                 is_active=False,
                 exit_day=10,
             ),
+            portfolio_row(
+                row_id=30,
+                group_id="group-active-row-quantity-mismatch",
+                symbol="2317.TW",
+                quantity=60,
+                is_active=True,
+            ),
+            portfolio_row(
+                row_id=31,
+                group_id="group-active-row-quantity-mismatch",
+                symbol="2317.TW",
+                quantity=40,
+                is_active=False,
+                exit_day=5,
+                exit_quantity=30,
+            ),
+            portfolio_row(
+                row_id=40,
+                group_id="group-active-event-quantity-mismatch",
+                symbol="2308.TW",
+                quantity=60,
+                is_active=True,
+            ),
+            portfolio_row(
+                row_id=41,
+                group_id="group-active-event-quantity-mismatch",
+                symbol="2308.TW",
+                quantity=40,
+                is_active=False,
+                exit_day=5,
+            ),
         ])
         session.flush()
         session.add_all([
@@ -463,6 +497,38 @@ def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
                 event_day=1,
                 quantity=60,
                 source_portfolio_id=22,
+            ),
+            synthetic_event(
+                group_id="group-active-row-quantity-mismatch",
+                symbol="2317.TW",
+                event_type="initial_entry",
+                event_day=1,
+                quantity=60,
+                source_portfolio_id=30,
+            ),
+            synthetic_event(
+                group_id="group-active-row-quantity-mismatch",
+                symbol="2317.TW",
+                event_type="partial_exit",
+                event_day=5,
+                quantity=30,
+                source_portfolio_id=31,
+            ),
+            synthetic_event(
+                group_id="group-active-event-quantity-mismatch",
+                symbol="2308.TW",
+                event_type="initial_entry",
+                event_day=1,
+                quantity=60,
+                source_portfolio_id=40,
+            ),
+            synthetic_event(
+                group_id="group-active-event-quantity-mismatch",
+                symbol="2308.TW",
+                event_type="partial_exit",
+                event_day=5,
+                quantity=30,
+                source_portfolio_id=41,
             ),
             synthetic_event(
                 group_id="group-closed-duplicate-source",
@@ -505,8 +571,22 @@ def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
             .where(PositionEvent.position_group_id == "group-closed-duplicate-source")
             .order_by(PositionEvent.event_date, PositionEvent.id)
         ).scalars().all())
+        row_mismatch_events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == "group-active-row-quantity-mismatch")
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars().all())
+        event_mismatch_events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == "group-active-event-quantity-mismatch")
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars().all())
 
         assert omitted_events[0].quantity == 60
         assert ledger_open_quantity(omitted_events) == 20
         assert duplicate_events[0].quantity == 60
         assert ledger_open_quantity(duplicate_events) == -40
+        assert row_mismatch_events[0].quantity == 60
+        assert ledger_open_quantity(row_mismatch_events) == 30
+        assert event_mismatch_events[0].quantity == 60
+        assert ledger_open_quantity(event_mismatch_events) == 30
