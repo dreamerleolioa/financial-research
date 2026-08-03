@@ -5,6 +5,7 @@ Revises: 0a1b2c3d4e5f
 Create Date: 2026-08-03 00:00:00.000000
 
 """
+from decimal import Decimal, InvalidOperation
 from typing import Any, Sequence, Union
 
 from alembic import op
@@ -23,7 +24,7 @@ def _has_exact_exit_coverage(events: Sequence[Any], expected_rows: Sequence[Any]
     for row in expected_rows:
         row_quantity = int(row.quantity)
         exit_quantity = int(row.exit_quantity) if row.exit_quantity is not None else row_quantity
-        if exit_quantity != row_quantity:
+        if row_quantity <= 0 or exit_quantity <= 0 or exit_quantity != row_quantity:
             return False
         expected_quantities[int(row.id)] = exit_quantity
 
@@ -35,9 +36,33 @@ def _has_exact_exit_coverage(events: Sequence[Any], expected_rows: Sequence[Any]
         return False
     return all(
         event.source_portfolio_id in expected_quantities
+        and int(event.quantity) > 0
         and int(event.quantity) == expected_quantities[event.source_portfolio_id]
         for event in events
     )
+
+
+def _has_consistent_initial_facts(initial_event: Any, expected_rows: Sequence[Any]) -> bool:
+    """Reject legacy groups whose entry facts cannot be proven from the synthetic event."""
+    try:
+        initial_price = Decimal(str(initial_event.price))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    if not initial_price.is_finite() or initial_price <= 0 or int(initial_event.quantity) <= 0:
+        return False
+
+    for row in expected_rows:
+        try:
+            row_price = Decimal(str(row.entry_price))
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+        if (
+            not row_price.is_finite()
+            or row_price != initial_price
+            or row.entry_date != initial_event.event_date
+        ):
+            return False
+    return True
 
 
 def _repair_synthetic_group_quantities() -> None:
@@ -45,7 +70,8 @@ def _repair_synthetic_group_quantities() -> None:
     bind = op.get_bind()
     portfolio_rows = bind.execute(sa.text(
         """
-        SELECT id, user_id, position_group_id, quantity, exit_quantity, is_active
+        SELECT id, user_id, position_group_id, entry_price, quantity, entry_date,
+               exit_quantity, is_active
         FROM user_portfolio
         WHERE position_group_id IS NOT NULL
         ORDER BY id
@@ -59,7 +85,8 @@ def _repair_synthetic_group_quantities() -> None:
 
     event_rows = bind.execute(sa.text(
         """
-        SELECT id, user_id, position_group_id, event_type, quantity, source, source_portfolio_id
+        SELECT id, user_id, position_group_id, event_type, event_date, price, quantity,
+               source, source_portfolio_id
         FROM position_event
         WHERE position_group_id IS NOT NULL
         ORDER BY user_id, position_group_id, event_date, created_at, id
@@ -90,11 +117,13 @@ def _repair_synthetic_group_quantities() -> None:
                 and len(events) == len(partial_exits) + 1
                 and initial_events[0].source == "synthetic_from_portfolio_row"
                 and initial_events[0].source_portfolio_id == active_row.id
+                and int(active_row.quantity) > 0
                 and all(
                     event.source == "synthetic_from_portfolio_row"
                     for event in partial_exits
                 )
                 and _has_exact_exit_coverage(partial_exits, inactive_rows)
+                and _has_consistent_initial_facts(initial_events[0], group_rows)
             )
             if is_safe_active_shape:
                 expected_initial_quantity = int(active_row.quantity) + sum(
@@ -115,6 +144,7 @@ def _repair_synthetic_group_quantities() -> None:
                     for event in exit_events
                 )
                 and _has_exact_exit_coverage(exit_events, group_rows)
+                and _has_consistent_initial_facts(initial_events[0], group_rows)
             )
             if is_safe_fully_closed_shape:
                 expected_initial_quantity = sum(int(event.quantity) for event in exit_events)

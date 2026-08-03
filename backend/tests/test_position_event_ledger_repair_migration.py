@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -590,3 +591,107 @@ def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
         assert ledger_open_quantity(row_mismatch_events) == 30
         assert event_mismatch_events[0].quantity == 60
         assert ledger_open_quantity(event_mismatch_events) == 30
+
+
+@pytest.mark.parametrize(
+    (
+        "case_name",
+        "active_quantity",
+        "active_entry_price",
+        "active_entry_date",
+        "initial_event_price",
+        "initial_event_date",
+    ),
+    [
+        ("negative-active-quantity", -10, 900, date(2026, 4, 1), 900, date(2026, 4, 1)),
+        ("zero-active-quantity", 0, 900, date(2026, 4, 1), 900, date(2026, 4, 1)),
+        ("entry-price-mismatch", 60, 950, date(2026, 4, 1), 900, date(2026, 4, 1)),
+        ("entry-date-mismatch", 60, 900, date(2026, 4, 2), 900, date(2026, 4, 1)),
+    ],
+)
+def test_repair_migration_rejects_invalid_active_source_facts(
+    case_name: str,
+    active_quantity: int,
+    active_entry_price: int,
+    active_entry_date: date,
+    initial_event_price: int,
+    initial_event_date: date,
+) -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+    group_id = f"group-{case_name}"
+
+    with Session(engine) as session:
+        session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+        session.add_all([
+            UserPortfolio(
+                id=1,
+                user_id=1,
+                position_group_id=group_id,
+                symbol="2330.TW",
+                entry_price=active_entry_price,
+                quantity=active_quantity,
+                entry_date=active_entry_date,
+                is_active=True,
+            ),
+            UserPortfolio(
+                id=2,
+                user_id=1,
+                position_group_id=group_id,
+                symbol="2330.TW",
+                entry_price=initial_event_price,
+                quantity=40,
+                entry_date=initial_event_date,
+                is_active=False,
+                exit_date=date(2026, 4, 5),
+                exit_price=950,
+                exit_quantity=40,
+            ),
+        ])
+        session.flush()
+        session.add_all([
+            PositionEvent(
+                user_id=1,
+                position_group_id=group_id,
+                symbol="2330.TW",
+                event_type="initial_entry",
+                event_date=initial_event_date,
+                price=initial_event_price,
+                quantity=60,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=1,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id=group_id,
+                symbol="2330.TW",
+                event_type="partial_exit",
+                event_date=date(2026, 4, 5),
+                price=950,
+                quantity=40,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=2,
+                source="synthetic_from_portfolio_row",
+            ),
+        ])
+        session.commit()
+
+        migration.op = SimpleNamespace(get_bind=lambda: session.connection())
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
+
+        initial_event = session.execute(
+            select(PositionEvent).where(
+                PositionEvent.position_group_id == group_id,
+                PositionEvent.event_type == "initial_entry",
+            )
+        ).scalar_one()
+        assert initial_event.quantity == 60
