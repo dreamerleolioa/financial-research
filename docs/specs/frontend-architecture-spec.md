@@ -44,6 +44,7 @@
 
 - `/login` 與 `/login/callback` 共用 `frontend/src/components/auth/AuthenticationShell.tsx`。桌面以研究流程與登入操作形成雙欄；窄螢幕只保留產品識別、主題切換與當前登入狀態。
 - `AuthenticationShell` 只負責呈現。Google OAuth flow、redirect URI、token 保存、`/auth/me` 驗證與成功後導向仍由既有 auth store 和 route page 管理，不得為了視覺調整改寫登入契約。
+- Google OAuth redirect flow 必須在 `/login` 產生密碼學安全的一次性 `state`，點擊登入時寫入 `sessionStorage` 並送往 Google；`/login/callback` 在呼叫 `/auth/google/code` 前必須比對且立即消耗。缺少、不相符或已使用的 state 都只能顯示 recovery path，不得交換 authorization code。
 - 尚未有資料時使用 `frontend/src/components/app-shell/WorkspaceEmptyState.tsx`。空狀態必須說明目前狀態、可採取的下一步，並在適用時直接提供主要 action；不得只顯示「沒有資料」。
 - Analyze、Watchlist、Closed Portfolio 與 Daily Radar 的空狀態沿用各自 workflow 語義。空狀態文案不得把沒有候選、沒有持股或沒有結案紀錄解讀為投資結論。
 - Modal 在窄螢幕使用底部 sheet，在桌面置中；drawer 固定從右側進入。兩者使用語意 surface、14px 圓角、低眩光遮罩與一致的 close control。
@@ -56,7 +57,7 @@
 
 - `playwright.config.ts` 自行啟動隔離的 4173 Vite server，不使用開發者正在操作的 5173，也不沿用既有 4173 process。
 - 測試以 browser context localStorage 與 route interception 提供固定 auth user、假 token 和 deterministic API fixtures，不依賴個人 Google session、production data 或真實 backend。
-- Google OAuth script 在 E2E 中明確阻擋；測試只驗證 login/callback UI、protected route 與 recovery path，不嘗試自動化第三方 Google 登入頁。
+- Google OAuth script 在 E2E 中明確阻擋；測試只驗證 login/callback UI、一次性 state 成功／拒絕路徑、protected route 與 recovery path，不嘗試自動化第三方 Google 登入頁。
 - 穩定 selector 優先使用 role、accessible name、label 與 route URL。只有語意 selector 無法唯一描述互動時才可增加 test id；不得以 Tailwind class、DOM 深度或像素位置作主要契約。
 - 核心保護範圍包括 App Shell 導覽、portfolio 子檢視、theme persistence、Analyze/Watchlist copy-to-AI、Portfolio destructive confirmation、Radar drawer keyboard focus，以及 1280px、375px、320px 的無水平溢出。
 - Pull request release gate 必須依序通過 dependency install、Playwright Chromium install、lint、E2E 與 build。

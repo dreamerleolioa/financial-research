@@ -352,6 +352,31 @@ def test_daily_radar_missing_scoring_inputs_are_rejected_and_never_add_positive_
     assert result["observation_score"] == 0
 
 
+@pytest.mark.parametrize(
+    ("symbol", "section", "field", "forbidden_rule"),
+    [
+        ("2454.TW", "indicators", "ma20", "price_volume_ma20_reclaim"),
+        ("2454.TW", "ohlcv", "previous_close", "price_volume_close_above_previous"),
+        ("3034.TW", "ohlcv", "previous_close", "bottoming_close_recovers"),
+        ("3034.TW", "indicators", "kd_d", "bottoming_kd_low_turn"),
+        ("2303.TW", "indicators", "atr14", "support_retest_near_key_level"),
+        ("2303.TW", "ohlcv", "previous_close", "support_retest_reclaimed_area"),
+    ],
+)
+def test_daily_radar_missing_rule_operand_never_emits_positive_rule(
+    symbol: str,
+    section: str,
+    field: str,
+    forbidden_rule: str,
+) -> None:
+    record = deepcopy(_joined_records_by_symbol()[symbol])
+    record[section][field] = None
+
+    result = score_daily_radar_record(record, market_context=_market_context())
+
+    assert forbidden_rule not in {rule["rule_id"] for rule in result["matched_rules"]}
+
+
 def test_daily_radar_scoring_keeps_secondary_buckets_for_other_matched_setups() -> None:
     records = _joined_records_by_symbol()
 

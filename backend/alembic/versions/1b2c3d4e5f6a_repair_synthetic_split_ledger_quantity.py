@@ -5,7 +5,7 @@ Revises: 0a1b2c3d4e5f
 Create Date: 2026-08-03 00:00:00.000000
 
 """
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
@@ -17,58 +17,88 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _repair_synthetic_active_group_quantities() -> None:
-    """Repair only the deterministic shape emitted by the original ledger migration."""
+def _repair_synthetic_group_quantities() -> None:
+    """Repair only deterministic active and fully-closed shapes from the original migration."""
     bind = op.get_bind()
-    active_rows = bind.execute(sa.text(
+    portfolio_rows = bind.execute(sa.text(
         """
-        SELECT id, user_id, position_group_id, quantity
+        SELECT id, user_id, position_group_id, quantity, is_active
         FROM user_portfolio
-        WHERE is_active = true
-          AND position_group_id IS NOT NULL
+        WHERE position_group_id IS NOT NULL
         ORDER BY id
         """
     )).fetchall()
 
-    active_group_counts: dict[tuple[int | None, str], int] = {}
-    for row in active_rows:
+    rows_by_group: dict[tuple[int | None, str], list[Any]] = {}
+    for row in portfolio_rows:
         key = (row.user_id, row.position_group_id)
-        active_group_counts[key] = active_group_counts.get(key, 0) + 1
+        rows_by_group.setdefault(key, []).append(row)
 
-    for active_row in active_rows:
-        key = (active_row.user_id, active_row.position_group_id)
-        if active_group_counts[key] != 1:
+    event_rows = bind.execute(sa.text(
+        """
+        SELECT id, user_id, position_group_id, event_type, quantity, source, source_portfolio_id
+        FROM position_event
+        WHERE position_group_id IS NOT NULL
+        ORDER BY user_id, position_group_id, event_date, created_at, id
+        """
+    )).fetchall()
+    events_by_group: dict[tuple[int | None, str], list[Any]] = {}
+    for event in event_rows:
+        key = (event.user_id, event.position_group_id)
+        events_by_group.setdefault(key, []).append(event)
+
+    for (user_id, position_group_id), group_rows in rows_by_group.items():
+        active_rows = [row for row in group_rows if row.is_active]
+        if len(active_rows) > 1:
             continue
 
-        events = bind.execute(
-            sa.text(
-                """
-                SELECT id, event_type, quantity, source, source_portfolio_id
-                FROM position_event
-                WHERE user_id = :user_id
-                  AND position_group_id = :position_group_id
-                ORDER BY event_date, created_at, id
-                """
-            ),
-            {
-                "user_id": active_row.user_id,
-                "position_group_id": active_row.position_group_id,
-            },
-        ).fetchall()
+        events = events_by_group.get((user_id, position_group_id), [])
         initial_events = [event for event in events if event.event_type == "initial_entry"]
-        exit_events = [event for event in events if event.event_type == "partial_exit"]
-        is_safe_synthetic_shape = (
-            len(initial_events) == 1
-            and bool(exit_events)
-            and len(events) == len(exit_events) + 1
-            and initial_events[0].source == "synthetic_from_portfolio_row"
-            and initial_events[0].source_portfolio_id == active_row.id
-            and all(event.source == "synthetic_from_portfolio_row" for event in exit_events)
-        )
-        if not is_safe_synthetic_shape:
-            continue
+        partial_exits = [event for event in events if event.event_type == "partial_exit"]
+        full_exits = [event for event in events if event.event_type == "full_exit"]
+        group_row_ids = {row.id for row in group_rows}
 
-        expected_initial_quantity = int(active_row.quantity) + sum(int(event.quantity) for event in exit_events)
+        expected_initial_quantity: int | None = None
+        if len(active_rows) == 1:
+            active_row = active_rows[0]
+            is_safe_active_shape = (
+                len(initial_events) == 1
+                and bool(partial_exits)
+                and not full_exits
+                and len(events) == len(partial_exits) + 1
+                and initial_events[0].source == "synthetic_from_portfolio_row"
+                and initial_events[0].source_portfolio_id == active_row.id
+                and all(
+                    event.source == "synthetic_from_portfolio_row"
+                    and event.source_portfolio_id in group_row_ids
+                    for event in partial_exits
+                )
+            )
+            if is_safe_active_shape:
+                expected_initial_quantity = int(active_row.quantity) + sum(
+                    int(event.quantity) for event in partial_exits
+                )
+        else:
+            exit_events = partial_exits + full_exits
+            is_safe_fully_closed_shape = (
+                len(initial_events) == 1
+                and bool(partial_exits)
+                and len(full_exits) == 1
+                and len(events) == len(exit_events) + 1
+                and events[-1].id == full_exits[0].id
+                and initial_events[0].source == "synthetic_from_portfolio_row"
+                and initial_events[0].source_portfolio_id == full_exits[0].source_portfolio_id
+                and all(
+                    event.source == "synthetic_from_portfolio_row"
+                    and event.source_portfolio_id in group_row_ids
+                    for event in exit_events
+                )
+            )
+            if is_safe_fully_closed_shape:
+                expected_initial_quantity = sum(int(event.quantity) for event in exit_events)
+
+        if expected_initial_quantity is None:
+            continue
         if int(initial_events[0].quantity) == expected_initial_quantity:
             continue
 
@@ -89,7 +119,7 @@ def _repair_synthetic_active_group_quantities() -> None:
 
 
 def upgrade() -> None:
-    _repair_synthetic_active_group_quantities()
+    _repair_synthetic_group_quantities()
 
 
 def downgrade() -> None:

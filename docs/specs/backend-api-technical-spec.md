@@ -1,7 +1,7 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-24
+> 更新日期：2026-08-03
 > 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；新增 canonical `technical_profile` 分層 contract，作為後端 scoring、LLM input summary、Daily Radar trace 與前端分層摘要的主要技術語意來源，並保留 raw `technical_indicators` 作相容與 copy/export；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股不再有 8 筆硬上限；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；新增 authenticated `/watchlist` read/write API contract，定義關注列表為尚未進入持股的觀察標的，不代表進場或交易紀錄；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier；Phase 1 Daily AVWAP 已完成 managed-universe snapshot、Daily Radar optional evidence refresh、`/analyze` `phase1_observation`、Portfolio risk summary `phase1_position_state` / `phase1_current_day_lists`、Daily Radar `input_snapshot.phase1_avwap_context` projection；TDCC `weekly_major_holders` 已升級為 holder-level v2，補出千張大戶、400 張以上大戶與 100 張以下散戶比例，並提供獨立 `chip_stability_context` 作為週頻籌碼穩定性補充；不新增公開 endpoint。
 
 ## 1) 目的
@@ -33,6 +33,13 @@ make run-api
   "status": "ok"
 }
 ```
+
+### `POST /auth/google/code`
+
+- **用途**：以 Google OAuth authorization code 完成登入並換取應用程式 JWT。
+- **前端 CSRF 邊界**：redirect request 必須包含密碼學安全的一次性 `state`；callback 在呼叫本端點前需從同一分頁 `sessionStorage` 取出預期值，比對後立即消耗。缺少、不相符或重放的 state 不得送出 code exchange。
+- **Redirect URI 邊界**：後端在向 Google token endpoint 送出請求前，先驗證 `redirect_uri`。若設定 `GOOGLE_OAUTH_REDIRECT_URIS`，只接受逗號分隔清單中的精確 URI；未設定時只接受 `CORS_ORIGINS` 的可信 origin，且 path 必須以 `/login/callback` 結尾，不可包含 query、fragment、credentials 或 `..` path segment。
+- **錯誤行為**：無效 code、未允許的 redirect URI 或 Google token exchange 失敗均回傳 `401`，不建立應用程式 JWT。
 
 ### Phase 1 Daily AVWAP backend foundation（internal service，無公開 endpoint）
 
@@ -1245,7 +1252,7 @@ make run-api
   - `holding_days = exit_date - entry_date` 的天數
   - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
   - `exit_quantity < quantity` 時為部分平倉：原 active 持股保留並扣減 `quantity`，另建立一筆 `is_active = FALSE` 的 closed portfolio 紀錄，該 inactive 紀錄代表本次出場股數，response 回傳新建立的 closed portfolio。
-  - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只在「單一 active row + 單一 synthetic initial-entry + 全部出場皆為 synthetic partial-exit」時，將 initial-entry 修正為 `active quantity + partial-exit quantity sum`；含人工、補填或其他事件形狀的群組不自動改寫。
+  - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只處理可證明形狀：仍持有群組以「單一 active row + 單一 synthetic initial-entry + 全部出場皆為 synthetic partial-exit」修正為 `active quantity + partial-exit quantity sum`；完全結案群組以「無 active row + 單一 synthetic initial-entry + 至少一筆 synthetic partial-exit + 最後單一 synthetic full-exit，且 initial/full exit 來自同一最後結案 row」修正為全部 exit quantity 總和。含人工、補填、混合來源、多 active rows 或其他事件形狀的群組不自動改寫，且修補可安全重跑。
 
 - **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
 

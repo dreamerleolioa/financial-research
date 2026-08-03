@@ -285,7 +285,7 @@ def _score_institutional_accumulation(
         score += 6
         rules.append(_rule("institutional_margin_contained", "融資變化維持溫和", margin_delta_pct=_float(margin.get("margin_delta_pct"))))
 
-    if _float(ohlcv.get("close")) < _float(ohlcv.get("open")):
+    if _has_numbers(ohlcv, "close", "open") and _float(ohlcv.get("close")) < _float(ohlcv.get("open")):
         score -= 8
         rules.append(_rule("institutional_close_below_open", "法人累積但收盤轉弱", close=_float(ohlcv.get("close")), open=_float(ohlcv.get("open"))))
 
@@ -312,10 +312,15 @@ def _score_price_volume_strengthening(
         score += 10
         rules.append(_rule("price_volume_constructive_participation", "成交量溫和放大", volume_ratio=volume_ratio))
 
-    if resistance and close >= resistance * 0.995:
+    if (
+        _has_numbers(ohlcv, "close")
+        and _has_numbers(indicators, "resistance_level")
+        and resistance
+        and close >= resistance * 0.995
+    ):
         score += 18
         rules.append(_rule("price_volume_near_range_high", "收盤接近整理區上緣", close=close, resistance_level=resistance))
-    if close > ma20 and ma5 > ma20:
+    if _has_numbers(ohlcv, "close") and _has_numbers(indicators, "ma5", "ma20") and close > ma20 and ma5 > ma20:
         score += 15
         rules.append(_rule("price_volume_ma20_reclaim", "收盤站上 MA20 且短均線轉強", close=close, ma20=ma20, ma5=ma5))
 
@@ -333,10 +338,15 @@ def _score_price_volume_strengthening(
     if _float(indicators.get("macd_histogram")) > 0:
         score += 10
         rules.append(_rule("price_volume_macd_positive", "MACD 柱狀體為正", macd_histogram=_float(indicators.get("macd_histogram"))))
-    if close > previous_close:
+    if _has_numbers(ohlcv, "close", "previous_close") and close > previous_close:
         score += 6
         rules.append(_rule("price_volume_close_above_previous", "收盤高於前一交易日", close=close, previous_close=previous_close))
-    if close < resistance * 0.98 and volume_ratio >= 2.2:
+    if (
+        _has_numbers(ohlcv, "close")
+        and _has_numbers(indicators, "resistance_level", "volume_ratio")
+        and close < resistance * 0.98
+        and volume_ratio >= 2.2
+    ):
         score -= 10
         rules.append(_rule("price_volume_volume_without_range_reclaim", "量能放大但仍未接近區間上緣", close=close, resistance_level=resistance))
 
@@ -359,10 +369,10 @@ def _score_bottoming_reversal(
     kd_d = _float(indicators.get("kd_d"))
     macd_histogram = _float(indicators.get("macd_histogram"))
 
-    if support and low <= support + atr14:
+    if _has_numbers(ohlcv, "low") and _has_numbers(indicators, "support_level", "atr14") and support and low <= support + atr14:
         score += 20
         rules.append(_rule("bottoming_low_holds_support_zone", "低點守住支撐區", low=low, support_level=support, atr14=atr14))
-    if close > previous_close:
+    if _has_numbers(ohlcv, "close", "previous_close") and close > previous_close:
         score += 10
         rules.append(_rule("bottoming_close_recovers", "收盤較前一交易日回穩", close=close, previous_close=previous_close))
     if _has_numbers(indicators, "macd_histogram") and -0.25 <= macd_histogram <= 0.5:
@@ -371,7 +381,7 @@ def _score_bottoming_reversal(
     elif macd_histogram > 0:
         score += 8
         rules.append(_rule("bottoming_macd_positive", "MACD 柱狀體轉正", macd_histogram=macd_histogram))
-    if kd_k > kd_d and kd_k <= 35:
+    if _has_numbers(indicators, "kd_k", "kd_d") and kd_k > kd_d and kd_k <= 35:
         score += 18
         rules.append(_rule("bottoming_kd_low_turn", "KD 低位翻正", kd_k=kd_k, kd_d=kd_d))
     if _has_numbers(indicators, "bias20") and _float(indicators.get("bias20")) <= 1:
@@ -409,22 +419,28 @@ def _score_support_retest(
     ma60 = _float(indicators.get("ma60"))
     volume_ratio = _float(indicators.get("volume_ratio"))
 
-    if support and low <= support + atr14:
+    if _has_numbers(ohlcv, "low") and _has_numbers(indicators, "support_level", "atr14") and support and low <= support + atr14:
         score += 22
         rules.append(_rule("support_retest_near_key_level", "盤中回測支撐區", low=low, support_level=support, atr14=atr14))
-    if support and close >= support and close > previous_close:
+    if (
+        _has_numbers(ohlcv, "close", "previous_close")
+        and _has_numbers(indicators, "support_level")
+        and support
+        and close >= support
+        and close > previous_close
+    ):
         score += 18
         rules.append(_rule("support_retest_reclaimed_area", "收盤收復支撐區", close=close, support_level=support, previous_close=previous_close))
-    if ma20 and abs(close - ma20) / ma20 <= 0.02:
+    if _has_numbers(ohlcv, "close") and _has_numbers(indicators, "ma20") and ma20 and abs(close - ma20) / ma20 <= 0.02:
         score += 16
         rules.append(_rule("support_retest_ma20_area", "收盤貼近 MA20", close=close, ma20=ma20))
-    if ma60 and abs(close - ma60) / ma60 <= 0.03:
+    if _has_numbers(ohlcv, "close") and _has_numbers(indicators, "ma60") and ma60 and abs(close - ma60) / ma60 <= 0.03:
         score += 10
         rules.append(_rule("support_retest_ma60_area", "收盤貼近 MA60", close=close, ma60=ma60))
     if 0.95 <= volume_ratio <= 1.4:
         score += 12
         rules.append(_rule("support_retest_orderly_participation", "量能維持溫和", volume_ratio=volume_ratio))
-    if close and _has_numbers(indicators, "atr14") and atr14 / close <= 0.04:
+    if _has_numbers(ohlcv, "close") and close and _has_numbers(indicators, "atr14") and atr14 / close <= 0.04:
         score += 10
         rules.append(_rule("support_retest_atr_contained", "ATR 波動可控", atr14=atr14, close=close))
     if str(indicators.get("obv_trend") or "") in {"flat_to_up", "turning_up", "rising"}:
@@ -436,7 +452,7 @@ def _score_support_retest(
     if _has_numbers(indicators, "macd_histogram") and _float(indicators.get("macd_histogram")) >= -0.15:
         score += 7
         rules.append(_rule("support_retest_macd_stable", "MACD 柱狀體未明顯轉弱", macd_histogram=_float(indicators.get("macd_histogram"))))
-    if support and close < support:
+    if _has_numbers(ohlcv, "close") and _has_numbers(indicators, "support_level") and support and close < support:
         score -= 20
         rules.append(_rule("support_retest_close_below_support", "收盤跌破支撐區", close=close, support_level=support))
 

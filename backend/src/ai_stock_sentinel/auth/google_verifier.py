@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import os
+from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import google.auth.transport.requests
 from google.oauth2 import id_token as google_id_token
 import httpx
+
+
+DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://localhost:5174"
 
 
 @dataclass
@@ -42,6 +45,7 @@ def exchange_google_auth_code(code: str, redirect_uri: str) -> GoogleUserInfo:
 
     Raises ValueError if the exchange fails.
     """
+    validate_google_redirect_uri(redirect_uri)
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
     if not client_id or not client_secret:
@@ -68,3 +72,42 @@ def exchange_google_auth_code(code: str, redirect_uri: str) -> GoogleUserInfo:
 
     # Verify the id_token we received
     return verify_google_id_token(id_token_str)
+
+
+def validate_google_redirect_uri(redirect_uri: str) -> None:
+    """Allow only the app callback on an explicitly trusted URI or CORS origin."""
+    if not redirect_uri or len(redirect_uri) > 2048:
+        raise ValueError("Invalid Google redirect_uri")
+
+    explicit_uris = {
+        uri.strip()
+        for uri in os.environ.get("GOOGLE_OAUTH_REDIRECT_URIS", "").split(",")
+        if uri.strip()
+    }
+    if explicit_uris:
+        if redirect_uri not in explicit_uris:
+            raise ValueError("Google redirect_uri is not allowed")
+        return
+
+    parsed = urlsplit(redirect_uri)
+    path_segments = parsed.path.split("/")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or ".." in path_segments
+        or not parsed.path.endswith("/login/callback")
+    ):
+        raise ValueError("Invalid Google redirect_uri")
+
+    origin = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    allowed_origins = {
+        configured_origin.strip().rstrip("/").lower()
+        for configured_origin in os.environ.get("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",")
+        if configured_origin.strip()
+    }
+    if origin not in allowed_origins:
+        raise ValueError("Google redirect_uri is not allowed")

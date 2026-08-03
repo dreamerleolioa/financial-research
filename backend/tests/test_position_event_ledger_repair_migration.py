@@ -144,8 +144,8 @@ def test_repair_migration_restores_only_safe_synthetic_active_group_quantity() -
         session.commit()
 
         migration.op = SimpleNamespace(get_bind=lambda: session.connection())
-        migration._repair_synthetic_active_group_quantities()
-        migration._repair_synthetic_active_group_quantities()
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
 
         safe_events = list(session.execute(
             select(PositionEvent)
@@ -162,3 +162,171 @@ def test_repair_migration_restores_only_safe_synthetic_active_group_quantity() -
         assert safe_events[0].quantity == 100
         assert ledger_open_quantity(safe_events) == 60
         assert mixed_initial.quantity == 60
+
+
+def test_repair_migration_restores_safe_synthetic_fully_closed_group_quantity() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    with Session(engine) as session:
+        session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+        session.add_all([
+            UserPortfolio(
+                id=1,
+                user_id=1,
+                position_group_id="group-fully-closed",
+                symbol="2330.TW",
+                entry_price=900,
+                quantity=40,
+                entry_date=date(2026, 1, 1),
+                is_active=False,
+                exit_date=date(2026, 1, 5),
+                exit_price=950,
+                exit_quantity=40,
+            ),
+            UserPortfolio(
+                id=2,
+                user_id=1,
+                position_group_id="group-fully-closed",
+                symbol="2330.TW",
+                entry_price=900,
+                quantity=60,
+                entry_date=date(2026, 1, 1),
+                is_active=False,
+                exit_date=date(2026, 1, 10),
+                exit_price=980,
+                exit_quantity=60,
+            ),
+            UserPortfolio(
+                id=3,
+                user_id=1,
+                position_group_id="group-fully-closed-mixed",
+                symbol="2454.TW",
+                entry_price=800,
+                quantity=40,
+                entry_date=date(2026, 2, 1),
+                is_active=False,
+                exit_date=date(2026, 2, 5),
+                exit_price=850,
+                exit_quantity=40,
+            ),
+            UserPortfolio(
+                id=4,
+                user_id=1,
+                position_group_id="group-fully-closed-mixed",
+                symbol="2454.TW",
+                entry_price=800,
+                quantity=60,
+                entry_date=date(2026, 2, 1),
+                is_active=False,
+                exit_date=date(2026, 2, 10),
+                exit_price=880,
+                exit_quantity=60,
+            ),
+        ])
+        session.flush()
+        session.add_all([
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-fully-closed",
+                symbol="2330.TW",
+                event_type="initial_entry",
+                event_date=date(2026, 1, 1),
+                price=900,
+                quantity=60,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=2,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-fully-closed",
+                symbol="2330.TW",
+                event_type="partial_exit",
+                event_date=date(2026, 1, 5),
+                price=950,
+                quantity=40,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=1,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-fully-closed",
+                symbol="2330.TW",
+                event_type="full_exit",
+                event_date=date(2026, 1, 10),
+                price=980,
+                quantity=60,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=2,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-fully-closed-mixed",
+                symbol="2454.TW",
+                event_type="initial_entry",
+                event_date=date(2026, 2, 1),
+                price=800,
+                quantity=60,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=4,
+                source="synthetic_from_portfolio_row",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-fully-closed-mixed",
+                symbol="2454.TW",
+                event_type="partial_exit",
+                event_date=date(2026, 2, 5),
+                price=850,
+                quantity=40,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=3,
+                source="user_recorded_at_event_time",
+            ),
+            PositionEvent(
+                user_id=1,
+                position_group_id="group-fully-closed-mixed",
+                symbol="2454.TW",
+                event_type="full_exit",
+                event_date=date(2026, 2, 10),
+                price=880,
+                quantity=60,
+                fees=0,
+                taxes=0,
+                source_portfolio_id=4,
+                source="synthetic_from_portfolio_row",
+            ),
+        ])
+        session.commit()
+
+        migration.op = SimpleNamespace(get_bind=lambda: session.connection())
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
+
+        safe_events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == "group-fully-closed")
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars().all())
+        mixed_events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == "group-fully-closed-mixed")
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars().all())
+
+        assert safe_events[0].quantity == 100
+        assert ledger_open_quantity(safe_events) == 0
+        assert mixed_events[0].quantity == 60

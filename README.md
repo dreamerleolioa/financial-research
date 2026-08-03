@@ -224,6 +224,7 @@ FINMIND_API_TOKEN="your-finmind-api-token"
 CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 GOOGLE_CLIENT_ID="your_google_client_id"    # Google OAuth 登入用
 GOOGLE_CLIENT_SECRET="your_google_client_secret"
+GOOGLE_OAUTH_REDIRECT_URIS="http://localhost:5173/login/callback,https://<username>.github.io/<repo>/login/callback"
 JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
@@ -257,6 +258,7 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | `CORS_ORIGINS`      | `http://localhost:5173,https://<username>.github.io` |
 | `GOOGLE_CLIENT_ID`  | Google OAuth client ID                               |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth code flow client secret              |
+| `GOOGLE_OAUTH_REDIRECT_URIS` | 逗號分隔的 Google OAuth callback 精確 allowlist；應包含 GitHub Pages base path |
 | `JWT_SECRET`        | JWT 簽名密鑰                                         |
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
@@ -322,7 +324,8 @@ pnpm dev
 
 **登入（`/login`）**
 
-- Google OAuth 登入流程
+- Google OAuth authorization-code 登入流程；redirect 前會保存一次性 `state`，callback 必須比對並消耗後才可交換 code
+- Backend 只接受 `GOOGLE_OAUTH_REDIRECT_URIS` 的精確 callback；未設定時才 fallback 到 `CORS_ORIGINS` 中可信 origin 的 `/login/callback` 路徑
 
 ### FastAPI 服務
 
