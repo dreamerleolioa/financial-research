@@ -330,3 +330,183 @@ def test_repair_migration_restores_safe_synthetic_fully_closed_group_quantity() 
         assert safe_events[0].quantity == 100
         assert ledger_open_quantity(safe_events) == 0
         assert mixed_events[0].quantity == 60
+
+
+def test_repair_migration_requires_exact_portfolio_source_coverage() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    def portfolio_row(
+        *,
+        row_id: int,
+        group_id: str,
+        symbol: str,
+        quantity: int,
+        is_active: bool,
+        exit_day: int | None = None,
+    ) -> UserPortfolio:
+        return UserPortfolio(
+            id=row_id,
+            user_id=1,
+            position_group_id=group_id,
+            symbol=symbol,
+            entry_price=900,
+            quantity=quantity,
+            entry_date=date(2026, 3, 1),
+            is_active=is_active,
+            exit_date=date(2026, 3, exit_day) if exit_day is not None else None,
+            exit_price=950 if exit_day is not None else None,
+            exit_quantity=quantity if exit_day is not None else None,
+        )
+
+    def synthetic_event(
+        *,
+        group_id: str,
+        symbol: str,
+        event_type: str,
+        event_day: int,
+        quantity: int,
+        source_portfolio_id: int,
+    ) -> PositionEvent:
+        return PositionEvent(
+            user_id=1,
+            position_group_id=group_id,
+            symbol=symbol,
+            event_type=event_type,
+            event_date=date(2026, 3, event_day),
+            price=900,
+            quantity=quantity,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=source_portfolio_id,
+            source="synthetic_from_portfolio_row",
+        )
+
+    with Session(engine) as session:
+        session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+        session.add_all([
+            portfolio_row(
+                row_id=10,
+                group_id="group-active-omitted-source",
+                symbol="2330.TW",
+                quantity=60,
+                is_active=True,
+            ),
+            portfolio_row(
+                row_id=11,
+                group_id="group-active-omitted-source",
+                symbol="2330.TW",
+                quantity=40,
+                is_active=False,
+                exit_day=5,
+            ),
+            portfolio_row(
+                row_id=12,
+                group_id="group-active-omitted-source",
+                symbol="2330.TW",
+                quantity=20,
+                is_active=False,
+                exit_day=6,
+            ),
+            portfolio_row(
+                row_id=20,
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                quantity=20,
+                is_active=False,
+                exit_day=7,
+            ),
+            portfolio_row(
+                row_id=21,
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                quantity=20,
+                is_active=False,
+                exit_day=8,
+            ),
+            portfolio_row(
+                row_id=22,
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                quantity=60,
+                is_active=False,
+                exit_day=10,
+            ),
+        ])
+        session.flush()
+        session.add_all([
+            synthetic_event(
+                group_id="group-active-omitted-source",
+                symbol="2330.TW",
+                event_type="initial_entry",
+                event_day=1,
+                quantity=60,
+                source_portfolio_id=10,
+            ),
+            synthetic_event(
+                group_id="group-active-omitted-source",
+                symbol="2330.TW",
+                event_type="partial_exit",
+                event_day=5,
+                quantity=40,
+                source_portfolio_id=11,
+            ),
+            synthetic_event(
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                event_type="initial_entry",
+                event_day=1,
+                quantity=60,
+                source_portfolio_id=22,
+            ),
+            synthetic_event(
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                event_type="partial_exit",
+                event_day=7,
+                quantity=20,
+                source_portfolio_id=20,
+            ),
+            synthetic_event(
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                event_type="partial_exit",
+                event_day=8,
+                quantity=20,
+                source_portfolio_id=20,
+            ),
+            synthetic_event(
+                group_id="group-closed-duplicate-source",
+                symbol="2454.TW",
+                event_type="full_exit",
+                event_day=10,
+                quantity=60,
+                source_portfolio_id=22,
+            ),
+        ])
+        session.commit()
+
+        migration.op = SimpleNamespace(get_bind=lambda: session.connection())
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
+
+        omitted_events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == "group-active-omitted-source")
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars().all())
+        duplicate_events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == "group-closed-duplicate-source")
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars().all())
+
+        assert omitted_events[0].quantity == 60
+        assert ledger_open_quantity(omitted_events) == 20
+        assert duplicate_events[0].quantity == 60
+        assert ledger_open_quantity(duplicate_events) == -40

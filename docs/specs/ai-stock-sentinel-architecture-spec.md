@@ -884,7 +884,7 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 
 Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
 
-Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能修正可證明的純 synthetic 形狀：仍持有時必須是單一 active row、單一 synthetic initial-entry、其餘全為 synthetic partial-exit，修正量為 active 剩餘股數加上歷史 partial-exit 總和；完全結案時必須是單一 synthetic initial-entry、至少一筆 synthetic partial-exit、單一且最後一筆 synthetic full-exit，initial-entry 與 full-exit 必須源自同一個最後結案 portfolio row，修正量為所有 exit 總和。只要含有 user-recorded、backfilled、manual、多 active rows 或其他 event shape，就不得自動重寫；migration 必須可重跑。
+Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能修正可證明的純 synthetic 形狀：仍持有時必須是單一 active row、單一 synthetic initial-entry，且每一個 inactive portfolio row 都恰好對應一筆 synthetic partial-exit，不得遺漏或重複引用 source row；修正量為 active 剩餘股數加上歷史 partial-exit 總和。完全結案時必須是單一 synthetic initial-entry、至少一筆 synthetic partial-exit、單一且最後一筆 synthetic full-exit，initial-entry 與 full-exit 必須源自同一個最後結案 portfolio row，且所有 exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage；修正量為所有 exit 總和。只要含有 user-recorded、backfilled、manual、多 active rows、source coverage 不完整或其他 event shape，就不得自動重寫；migration 必須可重跑。
 
 **Deterministic lifecycle review 邊界：**
 

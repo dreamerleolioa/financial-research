@@ -17,6 +17,14 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_exact_source_coverage(events: Sequence[Any], expected_row_ids: set[int]) -> bool:
+    source_portfolio_ids = [event.source_portfolio_id for event in events]
+    return (
+        len(source_portfolio_ids) == len(expected_row_ids)
+        and set(source_portfolio_ids) == expected_row_ids
+    )
+
+
 def _repair_synthetic_group_quantities() -> None:
     """Repair only deterministic active and fully-closed shapes from the original migration."""
     bind = op.get_bind()
@@ -61,6 +69,7 @@ def _repair_synthetic_group_quantities() -> None:
         expected_initial_quantity: int | None = None
         if len(active_rows) == 1:
             active_row = active_rows[0]
+            inactive_row_ids = {row.id for row in group_rows if not row.is_active}
             is_safe_active_shape = (
                 len(initial_events) == 1
                 and bool(partial_exits)
@@ -70,9 +79,9 @@ def _repair_synthetic_group_quantities() -> None:
                 and initial_events[0].source_portfolio_id == active_row.id
                 and all(
                     event.source == "synthetic_from_portfolio_row"
-                    and event.source_portfolio_id in group_row_ids
                     for event in partial_exits
                 )
+                and _has_exact_source_coverage(partial_exits, inactive_row_ids)
             )
             if is_safe_active_shape:
                 expected_initial_quantity = int(active_row.quantity) + sum(
@@ -90,9 +99,9 @@ def _repair_synthetic_group_quantities() -> None:
                 and initial_events[0].source_portfolio_id == full_exits[0].source_portfolio_id
                 and all(
                     event.source == "synthetic_from_portfolio_row"
-                    and event.source_portfolio_id in group_row_ids
                     for event in exit_events
                 )
+                and _has_exact_source_coverage(exit_events, group_row_ids)
             )
             if is_safe_fully_closed_shape:
                 expected_initial_quantity = sum(int(event.quantity) for event in exit_events)
