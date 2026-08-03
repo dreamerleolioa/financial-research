@@ -164,6 +164,34 @@ def test_price_limit_deadline_degrades_provider_failure_to_unknown() -> None:
     assert result == TaiwanPriceLimitSnapshot.unknown()
 
 
+def test_price_limit_deadline_waits_for_the_full_provider_timeout(monkeypatch) -> None:
+    import ai_stock_sentinel.data_sources.taiwan_price_limits as price_limit_module
+
+    expected = TaiwanPriceLimitSnapshot(
+        status="normal",
+        current_price=100.0,
+        limit_up_price=110.0,
+        limit_down_price=90.0,
+    )
+    observed_timeouts: list[float] = []
+
+    class _CompletedFuture:
+        def result(self, *, timeout: float) -> TaiwanPriceLimitSnapshot:
+            observed_timeouts.append(timeout)
+            return expected
+
+    monkeypatch.setattr(
+        price_limit_module,
+        "_submit_price_limit_fetch",
+        lambda **_kwargs: _CompletedFuture(),
+    )
+
+    result = fetch_taiwan_price_limits_with_deadline("2330.TW")
+
+    assert result == expected
+    assert observed_timeouts == [0.5]
+
+
 def test_price_limit_deadline_does_not_wait_for_slow_optional_provider() -> None:
     release_provider = Event()
 
