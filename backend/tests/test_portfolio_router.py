@@ -148,6 +148,35 @@ def test_add_portfolio_rejects_non_positive_entry_price(entry_price):
     assert resp.status_code == 422
 
 
+def test_add_portfolio_rejects_non_finite_entry_price(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(portfolio_router_module, "check_symbol_exists", lambda _symbol: True)
+    client = _make_client()
+
+    resp = client.post(
+        "/portfolio",
+        content=(
+            '{"symbol":"2330.TW","entry_price":1e309,'
+            '"entry_date":"2026-01-01","quantity":100}'
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_add_portfolio_rejects_quantity_above_postgresql_integer_max():
+    client = _make_client()
+
+    resp = client.post("/portfolio", json={
+        "symbol": "2330.TW",
+        "entry_price": 900.0,
+        "entry_date": "2026-01-01",
+        "quantity": 2_147_483_648,
+    })
+
+    assert resp.status_code == 422
+
+
 def _make_client_with_item(item: MagicMock, user_id: int = 1) -> TestClient:
     mock_user = MagicMock()
     mock_user.id = user_id
@@ -499,6 +528,52 @@ def test_add_entry_endpoint_creates_add_entry_event_and_updates_active_row(
     assert float(item.entry_price) == 933.33
 
 
+def test_add_entry_endpoint_rejects_aggregate_quantity_over_postgresql_integer_max(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-add-entry-overflow",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=1,
+        entry_date=date(2026, 1, 1),
+    )
+    portfolio_db_session.add(item)
+    portfolio_db_session.flush()
+    portfolio_db_session.add(PositionEvent(
+        user_id=1,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        event_type="initial_entry",
+        event_date=item.entry_date,
+        price=item.entry_price,
+        quantity=item.quantity,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=item.id,
+        source="user_recorded_at_event_time",
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-01-10",
+        "price": 1000.0,
+        "quantity": 2_147_483_647,
+        "reason_code": "planned_scale_in",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
+    })
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "加碼後持有股數超過系統上限"
+    assert portfolio_db_session.get(UserPortfolio, 42).quantity == 1
+    assert len(portfolio_db_session.execute(select(PositionEvent)).scalars().all()) == 1
+
+
 def test_add_entry_endpoint_can_save_plan_adherence_no_for_condition_violation(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -723,6 +798,65 @@ def test_update_portfolio_rejects_non_positive_entry_price(entry_price):
         "quantity": 200,
         "entry_date": "2026-02-01",
         "notes": "加碼",
+    })
+
+    assert resp.status_code == 422
+
+
+def test_update_portfolio_rejects_non_finite_entry_price():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.put(
+        "/portfolio/42",
+        content=(
+            '{"entry_price":1e309,"quantity":200,'
+            '"entry_date":"2026-02-01","notes":"invalid"}'
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_update_portfolio_rejects_quantity_above_postgresql_integer_max():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.put("/portfolio/42", json={
+        "entry_price": 950.0,
+        "quantity": 2_147_483_648,
+        "entry_date": "2026-02-01",
+    })
+
+    assert resp.status_code == 422
+
+
+def test_close_portfolio_rejects_quantity_above_postgresql_integer_max():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/close", json={
+        "exit_date": "2026-02-01",
+        "exit_price": 950.0,
+        "exit_quantity": 2_147_483_648,
+    })
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["type"] == "less_than_equal"
+
+
+def test_add_entry_endpoint_rejects_quantity_above_postgresql_integer_max():
+    item = _make_portfolio_item(user_id=1)
+    client = _make_client_with_item(item, user_id=1)
+
+    resp = client.post("/portfolio/42/add-entry", json={
+        "event_date": "2026-02-01",
+        "price": 950.0,
+        "quantity": 2_147_483_648,
+        "reason_code": "planned_scale_in",
+        "plan_adherence": "yes",
+        "confidence_level": "high",
     })
 
     assert resp.status_code == 422

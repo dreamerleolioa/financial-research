@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -843,3 +843,188 @@ def test_repair_migration_skips_postgresql_integer_overflow_totals() -> None:
         }
         assert initial_events["group-active-overflow"].quantity == postgres_integer_max
         assert initial_events["group-closed-overflow"].quantity == postgres_integer_max - 7
+
+
+def _add_active_split_group(
+    session: Session,
+    *,
+    group_id: str,
+    active_symbol: str = "2330.TW",
+    closed_symbol: str = "2330.TW",
+    initial_symbol: str = "2330.TW",
+    exit_symbol: str = "2330.TW",
+    active_quantity: int = 60,
+    active_updated_at: datetime = datetime(2026, 7, 1, tzinfo=timezone.utc),
+    initial_created_at: datetime = datetime(2026, 7, 2, tzinfo=timezone.utc),
+) -> None:
+    session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    session.add_all([
+        UserPortfolio(
+            id=1,
+            user_id=1,
+            position_group_id=group_id,
+            symbol=active_symbol,
+            entry_price=900,
+            quantity=active_quantity,
+            entry_date=date(2026, 7, 1),
+            is_active=True,
+            created_at=active_updated_at,
+            updated_at=active_updated_at,
+        ),
+        UserPortfolio(
+            id=2,
+            user_id=1,
+            position_group_id=group_id,
+            symbol=closed_symbol,
+            entry_price=900,
+            quantity=40,
+            entry_date=date(2026, 7, 1),
+            is_active=False,
+            exit_date=date(2026, 7, 5),
+            exit_price=950,
+            exit_quantity=40,
+            created_at=active_updated_at,
+            updated_at=active_updated_at,
+        ),
+    ])
+    session.flush()
+    session.add_all([
+        PositionEvent(
+            user_id=1,
+            position_group_id=group_id,
+            symbol=initial_symbol,
+            event_type="initial_entry",
+            event_date=date(2026, 7, 1),
+            price=900,
+            quantity=60,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=1,
+            source="synthetic_from_portfolio_row",
+            created_at=initial_created_at,
+            updated_at=initial_created_at,
+        ),
+        PositionEvent(
+            user_id=1,
+            position_group_id=group_id,
+            symbol=exit_symbol,
+            event_type="partial_exit",
+            event_date=date(2026, 7, 5),
+            price=950,
+            quantity=40,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=2,
+            source="synthetic_from_portfolio_row",
+            created_at=initial_created_at,
+            updated_at=initial_created_at,
+        ),
+    ])
+    session.commit()
+
+
+def _initial_event(session: Session, group_id: str) -> PositionEvent:
+    return session.execute(
+        select(PositionEvent).where(
+            PositionEvent.position_group_id == group_id,
+            PositionEvent.event_type == "initial_entry",
+        )
+    ).scalar_one()
+
+
+def test_repair_migration_skips_active_group_updated_after_synthetic_backfill() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    with Session(engine) as session:
+        _add_active_split_group(
+            session,
+            group_id="group-post-backfill-put",
+            active_quantity=80,
+            active_updated_at=datetime(2026, 7, 3, tzinfo=timezone.utc),
+            initial_created_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+        )
+
+        migration.op = SimpleNamespace(get_bind=lambda: session.connection())
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
+
+        assert _initial_event(session, "group-post-backfill-put").quantity == 60
+
+
+def test_repair_migration_skips_groups_with_mixed_symbols() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    with Session(engine) as session:
+        _add_active_split_group(
+            session,
+            group_id="group-mixed-symbols",
+            closed_symbol="2454.TW",
+            exit_symbol="2454.TW",
+        )
+
+        migration.op = SimpleNamespace(get_bind=lambda: session.connection())
+        migration._repair_synthetic_group_quantities()
+        migration._repair_synthetic_group_quantities()
+
+        assert _initial_event(session, "group-mixed-symbols").quantity == 60
+
+
+def test_repair_migration_does_not_overwrite_concurrent_manual_correction() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    with Session(engine) as session:
+        _add_active_split_group(session, group_id="group-concurrent-correction")
+        connection = session.connection()
+
+        class ConcurrentCorrectionBind:
+            injected = False
+
+            def execute(self, statement, parameters=None):
+                sql = str(statement)
+                if not self.injected and "UPDATE position_event" in sql and "SET quantity" in sql:
+                    connection.execute(
+                        text(
+                            """
+                            UPDATE position_event
+                            SET quantity = 80,
+                                source = 'manual_record_correction',
+                                updated_at = :updated_at
+                            WHERE position_group_id = :position_group_id
+                              AND event_type = 'initial_entry'
+                            """
+                        ),
+                        {
+                            "updated_at": datetime(2026, 7, 3, tzinfo=timezone.utc),
+                            "position_group_id": "group-concurrent-correction",
+                        },
+                    )
+                    self.injected = True
+                if parameters is None:
+                    return connection.execute(statement)
+                return connection.execute(statement, parameters)
+
+        migration.op = SimpleNamespace(get_bind=ConcurrentCorrectionBind)
+        migration._repair_synthetic_group_quantities()
+
+        session.expire_all()
+        initial_event = _initial_event(session, "group-concurrent-correction")
+        assert initial_event.quantity == 80
+        assert initial_event.source == "manual_record_correction"

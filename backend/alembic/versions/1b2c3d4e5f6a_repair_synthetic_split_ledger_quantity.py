@@ -5,6 +5,7 @@ Revises: 0a1b2c3d4e5f
 Create Date: 2026-08-03 00:00:00.000000
 
 """
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Sequence, Union
 
@@ -72,13 +73,52 @@ def _has_consistent_initial_facts(initial_event: Any, expected_rows: Sequence[An
     return True
 
 
+def _as_utc_datetime(value: Any) -> datetime | None:
+    """Normalize raw SQLite strings and PostgreSQL datetimes for safety checks."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _active_row_predates_initial_event(active_row: Any, initial_event: Any) -> bool:
+    """Reject active rows that may have been edited after synthetic backfill."""
+    row_updated_at = _as_utc_datetime(active_row.updated_at)
+    event_created_at = _as_utc_datetime(initial_event.created_at)
+    return (
+        row_updated_at is not None
+        and event_created_at is not None
+        and row_updated_at <= event_created_at
+    )
+
+
+def _has_single_symbol(group_rows: Sequence[Any], events: Sequence[Any]) -> bool:
+    """Require every persisted fact in a legacy group to identify one symbol."""
+    items = [*group_rows, *events]
+    symbols = [
+        str(item.symbol).strip()
+        for item in items
+        if item.symbol is not None and str(item.symbol).strip()
+    ]
+    return len(symbols) == len(items) and len(set(symbols)) == 1
+
+
 def _repair_synthetic_group_quantities() -> None:
     """Repair only deterministic active and fully-closed shapes from the original migration."""
     bind = op.get_bind()
     portfolio_rows = bind.execute(sa.text(
         """
-        SELECT id, user_id, position_group_id, entry_price, quantity, entry_date,
-               exit_quantity, is_active
+        SELECT id, user_id, position_group_id, symbol, entry_price, quantity, entry_date,
+               exit_quantity, is_active, updated_at
         FROM user_portfolio
         WHERE position_group_id IS NOT NULL
         ORDER BY id
@@ -92,8 +132,8 @@ def _repair_synthetic_group_quantities() -> None:
 
     event_rows = bind.execute(sa.text(
         """
-        SELECT id, user_id, position_group_id, event_type, event_date, price, quantity,
-               source, source_portfolio_id
+        SELECT id, user_id, position_group_id, symbol, event_type, event_date, price, quantity,
+               source, source_portfolio_id, created_at, updated_at
         FROM position_event
         WHERE position_group_id IS NOT NULL
         ORDER BY user_id, position_group_id, event_date, created_at, id
@@ -110,6 +150,8 @@ def _repair_synthetic_group_quantities() -> None:
             continue
 
         events = events_by_group.get((user_id, position_group_id), [])
+        if not _has_single_symbol(group_rows, events):
+            continue
         initial_events = [event for event in events if event.event_type == "initial_entry"]
         partial_exits = [event for event in events if event.event_type == "partial_exit"]
         full_exits = [event for event in events if event.event_type == "full_exit"]
@@ -125,6 +167,7 @@ def _repair_synthetic_group_quantities() -> None:
                 and initial_events[0].source == "synthetic_from_portfolio_row"
                 and initial_events[0].source_portfolio_id == active_row.id
                 and int(active_row.quantity) > 0
+                and _active_row_predates_initial_event(active_row, initial_events[0])
                 and all(
                     event.source == "synthetic_from_portfolio_row"
                     for event in partial_exits
@@ -164,20 +207,41 @@ def _repair_synthetic_group_quantities() -> None:
         if int(initial_events[0].quantity) == expected_initial_quantity:
             continue
 
-        bind.execute(
+        initial_event = initial_events[0]
+        result = bind.execute(
             sa.text(
                 """
                 UPDATE position_event
                 SET quantity = :quantity,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = :event_id
+                  AND (user_id = :user_id OR (user_id IS NULL AND :user_id IS NULL))
+                  AND position_group_id = :position_group_id
+                  AND source = :observed_source
+                  AND source_portfolio_id = :source_portfolio_id
+                  AND quantity = :observed_quantity
+                  AND price = :observed_price
+                  AND event_date = :observed_event_date
+                  AND created_at = :observed_created_at
+                  AND updated_at = :observed_updated_at
                 """
             ),
             {
                 "quantity": expected_initial_quantity,
-                "event_id": initial_events[0].id,
+                "event_id": initial_event.id,
+                "user_id": initial_event.user_id,
+                "position_group_id": initial_event.position_group_id,
+                "observed_source": initial_event.source,
+                "source_portfolio_id": initial_event.source_portfolio_id,
+                "observed_quantity": initial_event.quantity,
+                "observed_price": initial_event.price,
+                "observed_event_date": initial_event.event_date,
+                "observed_created_at": initial_event.created_at,
+                "observed_updated_at": initial_event.updated_at,
             },
         )
+        if result.rowcount == 0:
+            continue
 
 
 def upgrade() -> None:

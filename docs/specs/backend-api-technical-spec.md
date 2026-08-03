@@ -777,9 +777,9 @@ make run-api
 - **欄位說明**
   - `symbol`：股票代碼，必填；新增前會以 yfinance 輕量驗證代號是否存在
   - `name`：股票名稱，僅供顯示；由 symbol metadata resolver 補齊，查不到時可為 `null`
-  - `entry_price`：購入成本價，必填
+  - `entry_price`：購入成本價，必填，需為大於 0 的有限數值；`NaN`、正負無限大與溢位成無限大的輸入回傳 `422`
   - `entry_date`：購入日期，必填，ISO 8601 日期字串
-  - `quantity`：持有數量，選填，未提供時預設 0
+  - `quantity`：持有數量，選填，未提供時預設 0；允許範圍為 0–`2,147,483,647`，對齊 PostgreSQL `INTEGER`
   - `notes`：備註，選填
   - `entry_record`：選填的進場決策脈絡，若提供則必須符合 `EntryRecordContext` schema；固定選項是未來 lifecycle review 的主要決策資料來源，`note` 僅為補充，不取代固定選項。
 
@@ -1124,6 +1124,7 @@ make run-api
 - **權限與一致性邊界**：只能更新目前登入使用者自己的持股；非擁有者回傳 `403`。已結案紀錄回傳 `409`，已有 add-entry／partial-exit／full-exit 後再改寫成本、股數或日期也回傳 `409`，不得造成 portfolio row 與 event ledger 分裂。
 - **Legacy ledger 邊界**：經濟欄位更正與 add-entry／close 共用同一補帳防線。單一舊持倉且完全沒有 event ledger 時，可先以目前 row 補建 `user_backfilled` initial-entry 再套用更正；同群組已有其他分批 portfolio row 時回傳 `409`，不得從目前剩餘股數猜測原始進場數量或歷史事件順序。只修改備註且經濟欄位不變時不觸發補帳。
 - **更正 provenance**：成本、股數或購入日期任一變更時，同步後的 initial-entry event 必須標記 `source = manual_record_correction` 並寫入事後更正 `data_quality_note`；原有固定選項 reason metadata 保留，但不得再把更正後 facts 視為 event-time 或 backfilled 原始紀錄。只修改備註時不改變 event provenance。
+- **數值邊界**：`entry_price` 必須是大於 0 的有限數值；`quantity` 必須介於 1–`2,147,483,647`，不符合時於 request validation 回傳 `422`。
 
 - **Request Body**
 
@@ -1173,7 +1174,7 @@ make run-api
 - **欄位說明**
   - `event_date`：加碼日期，必填，不可早於初始進場日期，也不可早於目前帳本的最新事件；違反時回傳 `422`。
   - `price`：加碼價格，必填，需大於 0。
-  - `quantity`：加碼股數，必填，需大於 0。
+  - `quantity`：加碼股數，必填，需介於 1–`2,147,483,647`。
   - `fees`：手續費，選填，未提供時依 broker fee rule 計算 event ledger fee。
   - `taxes`：交易稅，選填，未提供時 add-entry event 稅額為 0。
   - `reason_code`：`breakout_confirmation` / `pullback_held_support` / `pullback_held_ma20` / `institutional_flow_strengthened` / `fundamental_thesis_improved` / `event_or_news_catalyst` / `long_term_accumulation` / `value_revaluation` / `other` / `planned_scale_in` / `averaging_down` / `chasing_momentum` / `not_recorded`。
@@ -1183,6 +1184,7 @@ make run-api
 
 - **行為與計算邊界**
   - 會以平均成本法更新 active portfolio 的 `entry_price` 與 `quantity`。
+  - 加碼後 active portfolio 的總股數不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`；即使單次 quantity 合法，只要加總溢位即回傳 `422`，且 portfolio 與 event ledger 均不得寫入。
   - 會寫入 `position_event`，`event_type = add_entry`，`source = user_recorded_at_event_time`，並保存 `reason_code`、`plan_adherence`、`confidence_level`、`fees`、`taxes`。
   - `not_recorded` reason 會保留為未記錄脈絡，不推論使用者加碼意圖。
 
@@ -1243,7 +1245,7 @@ make run-api
 - **欄位說明**
   - `exit_date`：出場日期，必填，ISO 8601 日期字串。
   - `exit_price`：出場價格，必填，需大於 0。
-  - `exit_quantity`：出場股數，必填，需大於 0，且不可大於目前 active 持有股數。
+  - `exit_quantity`：出場股數，必填，需介於 1–`2,147,483,647`，且不可大於目前 active 持有股數。
   - `fees`：手續費，選填，需大於或等於 0；未提供時依 broker fee rule 自動估算，若提供則視為使用者覆寫值。
   - `taxes`：交易稅，選填，需大於或等於 0；未提供時依 sell transaction tax rule 自動估算，若提供則視為使用者覆寫值。
 
@@ -1253,7 +1255,7 @@ make run-api
   - `holding_days = exit_date - entry_date` 的天數
   - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
   - `exit_quantity < quantity` 時為部分平倉：原 active 持股保留並扣減 `quantity`，另建立一筆 `is_active = FALSE` 的 closed portfolio 紀錄，該 inactive 紀錄代表本次出場股數，response 回傳新建立的 closed portfolio。
-  - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只處理可證明形狀：仍持有群組以「單一 active row + 單一 synthetic initial-entry + 每個 inactive portfolio row 恰好各有一筆 synthetic partial-exit」修正為 `active quantity + partial-exit quantity sum`；完全結案群組以「無 active row + 單一 synthetic initial-entry + 至少一筆 synthetic partial-exit + 最後單一 synthetic full-exit，且 initial/full exit 來自同一最後結案 row」修正為全部 exit quantity 總和。所有 active/source row、synthetic initial/exit event 與計算後 initial quantity 都必須嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`；超出時跳過該群組，不執行可能中止 migration 的溢位更新。exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage，每筆來源 row 的 `quantity`、`exit_quantity`（null 時回退 `quantity`）與對應 exit event quantity 必須一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。含人工、補填、混合來源、多 active rows、source coverage 不完整、非正數、數量不一致、entry price/date 分裂或其他事件形狀的群組不自動改寫，且修補可安全重跑。
+  - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只處理可證明形狀：仍持有群組以「單一 active row + 單一 synthetic initial-entry + 每個 inactive portfolio row 恰好各有一筆 synthetic partial-exit」修正為 `active quantity + partial-exit quantity sum`；完全結案群組以「無 active row + 單一 synthetic initial-entry + 至少一筆 synthetic partial-exit + 最後單一 synthetic full-exit，且 initial/full exit 來自同一最後結案 row」修正為全部 exit quantity 總和。所有 active/source row、synthetic initial/exit event 與計算後 initial quantity 都必須嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`；超出時跳過該群組，不執行可能中止 migration 的溢位更新。exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage，每筆來源 row 的 `quantity`、`exit_quantity`（null 時回退 `quantity`）與對應 exit event quantity 必須一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。所有 portfolio rows 與 events 必須具有同一個非空 symbol；active row 若在 synthetic initial event 建立後又被更新，視為可能含有舊版 PUT 的人工修正而跳過。實際 UPDATE 需對 snapshot 中的 user/group/source/source row/quantity/price/date/timestamps 做 compare-and-set，若部署期間有並行更正則不覆寫。含人工、補填、混合來源、多 active rows、source coverage 不完整、非正數、數量不一致、symbol 分裂、post-backfill mutation、entry price/date 分裂或其他事件形狀的群組不自動改寫，且修補可安全重跑。
 
 - **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
 

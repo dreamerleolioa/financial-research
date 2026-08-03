@@ -377,7 +377,7 @@ crawl → fetch_external_data（institutional + fundamental 並行）→ judge �
   >   簡言之：`data_confidence` 量的是「資料取得完整度」，不是「訊號偏向廣度」。
 - `signal_confidence`：訊號強度（即舊 `confidence_score`），由 `adjust_confidence_by_divergence()` 計算
 - `confidence_score`：保留為 `signal_confidence` 的別名，向後相容
-- 整合入口：`compute_confidence(base_score, news_sentiment, inst_flow, technical_signal, sentiment_strength=1.0) -> dict`
+- 整合入口：`compute_confidence(base_score, news_sentiment, inst_flow, technical_signal, date_unknown=False, sentiment_strength=1.0, config=None, news_available=None, institutional_available=None, technical_available=None) -> dict`；三個 availability 參數用來區分「方向標籤的 fallback」與「資料維度真的可用」，未傳入時才以 `unknown` label 維持舊呼叫端相容。
 
 **技術面加權分數（CS-1）**：
 
@@ -828,7 +828,7 @@ class InstitutionalFlowProvider(Protocol):
 > - `bullish`（多）：`derive_technical_score()` 回傳 `score >= 60`（RSI / BIAS / MA 排列 / MACD / 布林通道五因子加權總分偏多）
 > - `bearish`（空）：`score <= 40`（五因子加權總分偏空）
 > - `sideways`（盤整）：`40 < score < 60`（訊號不明確）
-> - **`unknown` 不存在**：資料不足時 `derive_technical_score()` 回傳 50，降級為 `sideways`；`technical_signal` 不輸出 `unknown`，`data_confidence` 計算亦不需判斷此值
+> - **方向標籤維持三值**：資料不足時 `derive_technical_score()` 回傳 50，方向標籤可降級為 `sideways`，不需要額外輸出 `unknown`；但 `technical_available` 必須獨立判斷是否至少有 20 筆有效收盤資料／足夠 profile lookback，fallback `sideways` 不得因此提高 `data_confidence`。
 >
 > `derive_technical_score()` 詳見 `analysis/confidence_scorer.py`：RSI、BIAS、MA 排列為既有基礎分數；MACD 偏多且位於零軸上方時額外加分、偏空且位於零軸下方時扣分；布林通道靠近上軌且 RSI 過熱時扣分、靠近下軌且 RSI 超賣時小幅加分。總分經映射後仍維持 `bullish` / `bearish` / `sideways` 三值輸出。
 
@@ -886,7 +886,7 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 
 Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
 
-Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能修正可證明的純 synthetic 形狀：仍持有時必須是單一 active row、單一 synthetic initial-entry，且每一個 inactive portfolio row 都恰好對應一筆 synthetic partial-exit，不得遺漏或重複引用 source row；修正量為 active 剩餘股數加上歷史 partial-exit 總和。完全結案時必須是單一 synthetic initial-entry、至少一筆 synthetic partial-exit、單一且最後一筆 synthetic full-exit，initial-entry 與 full-exit 必須源自同一個最後結案 portfolio row，且所有 exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage；修正量為所有 exit 總和。兩種形狀都必須確認 active、來源 row、synthetic initial/exit event 與計算後 initial quantity 全部嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`，超出時必須跳過該群組，避免 migration 因欄位溢位中止；每筆來源 row 的 `quantity`、`exit_quantity`（若為 null 則回退 `quantity`）與對應 exit event quantity 完全一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致；任一數量或初始經濟事實不一致即視為不可證明。只要含有 user-recorded、backfilled、manual、多 active rows、source coverage 不完整、非正數、數量不一致、entry price/date 分裂或其他 event shape，就不得自動重寫；migration 必須可重跑。
+Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能修正可證明的純 synthetic 形狀：仍持有時必須是單一 active row、單一 synthetic initial-entry，且每一個 inactive portfolio row 都恰好對應一筆 synthetic partial-exit，不得遺漏或重複引用 source row；修正量為 active 剩餘股數加上歷史 partial-exit 總和。完全結案時必須是單一 synthetic initial-entry、至少一筆 synthetic partial-exit、單一且最後一筆 synthetic full-exit，initial-entry 與 full-exit 必須源自同一個最後結案 portfolio row，且所有 exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage；修正量為所有 exit 總和。兩種形狀都必須確認 active、來源 row、synthetic initial/exit event 與計算後 initial quantity 全部嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`，超出時必須跳過該群組，避免 migration 因欄位溢位中止；每筆來源 row 的 `quantity`、`exit_quantity`（若為 null 則回退 `quantity`）與對應 exit event quantity 完全一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。群組內所有 portfolio rows 與 events 還必須具有同一個非空 symbol；active row 的 `updated_at` 不得晚於 synthetic initial event 的 `created_at`，否則可能是 backfill 後的舊版 PUT 修正，不能再折回原始進場事實。真正寫入時必須以 initial event 的 user/group/source/source row/quantity/price/date/timestamps 做 compare-and-set；部署期間若舊服務並行完成人工更正，migration 應跳過 stale snapshot，不得覆寫。任一數量、symbol、時間或初始經濟事實不一致即視為不可證明。只要含有 user-recorded、backfilled、manual、多 active rows、source coverage 不完整、非正數、數量不一致、entry price/date 分裂或其他 event shape，就不得自動重寫；migration 必須可重跑。
 
 **Deterministic lifecycle review 邊界：**
 

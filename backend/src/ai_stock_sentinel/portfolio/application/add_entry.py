@@ -16,7 +16,7 @@ from ai_stock_sentinel.portfolio.application.events import (
 )
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
-from ai_stock_sentinel.portfolio.schemas import AddEntryRequest
+from ai_stock_sentinel.portfolio.schemas import AddEntryRequest, POSTGRES_INTEGER_MAX
 
 
 def add_entry_to_position(
@@ -47,6 +47,8 @@ def add_entry_to_position(
     add_quantity = Decimal(payload.quantity)
     existing_quantity = Decimal(item.quantity)
     new_quantity = existing_quantity + add_quantity
+    if new_quantity > POSTGRES_INTEGER_MAX:
+        raise HTTPException(status_code=422, detail="加碼後持有股數超過系統上限")
     gross_amount = add_price * add_quantity
     event_fees = calculate_broker_fee(
         gross_amount,
