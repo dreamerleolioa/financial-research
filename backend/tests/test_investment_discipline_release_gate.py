@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -9,6 +10,7 @@ BACKEND_API_SPEC = REPO_ROOT / "docs/specs/backend-api-technical-spec.md"
 DAILY_RADAR_SPEC = REPO_ROOT / "docs/specs/daily-stock-radar-spec.md"
 POSITION_SPEC = REPO_ROOT / "docs/specs/ai-stock-sentinel-position-diagnosis-spec.md"
 WORKFLOW = REPO_ROOT / ".github/workflows/investment-discipline-release-gate.yml"
+ZBPACK_CONFIG = REPO_ROOT / "backend/zbpack.json"
 
 
 def test_release_gate_checklist_covers_required_boundaries() -> None:
@@ -69,6 +71,16 @@ def test_release_gate_workflow_runs_backend_and_frontend_gates() -> None:
     assert "tests/test_compatibility_deprecation_audit.py" in workflow
     assert "pnpm build" in workflow
     assert "/internal/daily-radar" not in workflow
+
+
+def test_production_startup_migrates_and_verifies_database_before_serving() -> None:
+    start_command = json.loads(ZBPACK_CONFIG.read_text(encoding="utf-8"))["start_command"]
+
+    assert start_command.split(" && ") == [
+        "uv run alembic upgrade head",
+        "uv run alembic current --check-heads",
+        "PYTHONPATH=src uv run uvicorn ai_stock_sentinel.api:app --host 0.0.0.0 --port $PORT",
+    ]
 
 
 def test_release_gate_tracks_compatibility_deprecation_audit() -> None:
