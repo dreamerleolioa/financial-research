@@ -269,9 +269,9 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 
 部署時必須依序執行：
 
-1. 進入 maintenance mode並停止所有舊版 backend instances；只封鎖 portfolio writes 不足以保護 calibration migration。
+1. 進入 maintenance mode 並停止所有舊版 backend instances；只封鎖 portfolio writes 不足以保護 calibration migration。
 2. 建立可還原的 migration 前資料庫備份，確認後暫時設定 `CALIBRATION_MIGRATION_BACKUP_CONFIRMED=2c3d4e5f6a7b`。`2c3d4e5f6a7b` 會刪除非 canonical 的歷史 calibration duplicates，缺少此精確確認值時 migration 會中止；它也刻意禁止 Alembic downgrade，需要回退時必須還原備份。
-3. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `2c3d4e5f6a7b (head)`。確認 migration 完成後即可移除一次性 confirmation variable，後續啟動不會再次執行已套用的 revision。
+3. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。Calibration migration 的 exclusive lock 最多等待 10 秒，逾時會 fail closed；應先找出並結束阻塞 transaction，再重新部署，不得移除 timeout 或繞過 migration。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `2c3d4e5f6a7b (head)`。確認 migration 完成後即可移除一次性 confirmation variable，後續啟動不會再次執行已套用的 revision。
 4. 啟動新版 backend，確認所有舊版 instances 已退出後，再重新開放 API traffic 與背景 calibration workflows。
 
 Portfolio migration 的 compare-and-lock 與 calibration migration 的 exclusive table lock 只保護各自 DB transaction 內的競態，不能取代上述跨版本 write quiescence。

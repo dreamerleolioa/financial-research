@@ -39,6 +39,7 @@ from ai_stock_sentinel.daily_radar.scoring import (
     RULE_VERSION,
     SCORING_VERSION,
     ScoringConfig,
+    score_daily_radar_record,
 )
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
@@ -452,6 +453,45 @@ def test_partial_v1_replay_payload_is_not_ranking_eligible() -> None:
     assert context.ranking_pool_status == "incomplete"
     assert context.exclusion_reasons == {"replay_input_incomplete": 1}
     assert [row["candidate_id"] for row in context.eligible_rows] == [1]
+
+
+@pytest.mark.parametrize(
+    ("field", "mismatched_value"),
+    [
+        ("observation_score", -1),
+        ("primary_bucket", "mismatched_bucket"),
+        ("secondary_buckets", ["mismatched_bucket"]),
+        ("bucket_scores", {"mismatched_bucket": -1}),
+        ("risk_labels", ["mismatched_risk"]),
+        ("matched_rule_codes", ["mismatched_rule"]),
+    ],
+)
+def test_baseline_replay_mismatch_invalidates_ranking_pool(
+    field: str,
+    mismatched_value: Any,
+) -> None:
+    row = _governance_replay_row(1, with_replay_input=True)
+    row["candidate_snapshot"][field] = mismatched_value
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        [row],
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+
+    assert context.ranking_pool_status == "incomplete"
+    assert context.ranking_pool_complete is False
+    assert context.eligible_rows == []
+    assert context.baseline_rows == []
+    assert context.replay_coverage["coverage"] == 0.0
+    assert context.exclusion_reasons == {"baseline_replay_mismatch": 1}
 
 
 def test_replay_governance_rejects_candidate_groups_over_capacity(
@@ -921,18 +961,26 @@ def _governance_replay_row(
     *,
     with_replay_input: bool,
 ) -> dict[str, Any]:
+    record = _replay_record(
+        f"{candidate_id:04d}.TW",
+        positive_days=max(0, 5 - candidate_id // 20),
+    )
+    market_context = {"market": {}, "data_dates": {}}
+    prefilter_result = {
+        "prefilter_status": "accepted",
+        "prefilter_reasons": [],
+    }
+    baseline = score_daily_radar_record(
+        record,
+        market_context=market_context,
+        prefilter_result=prefilter_result,
+    )
     replay_input = (
         {
             "schema_version": "daily-radar-replay-input-v1",
-            "record": _replay_record(
-                f"{candidate_id:04d}.TW",
-                positive_days=max(0, 5 - candidate_id // 20),
-            ),
-            "market_context": {"market": {}, "data_dates": {}},
-            "prefilter_result": {
-                "prefilter_status": "accepted",
-                "prefilter_reasons": [],
-            },
+            "record": record,
+            "market_context": market_context,
+            "prefilter_result": prefilter_result,
             "baseline_config": ScoringConfig().to_dict(),
         }
         if with_replay_input
@@ -950,6 +998,14 @@ def _governance_replay_row(
         },
         "candidate_snapshot": {
             "record_date": "2026-06-01",
+            "observation_score": baseline["observation_score"],
+            "primary_bucket": baseline["primary_bucket"],
+            "secondary_buckets": baseline["secondary_buckets"],
+            "bucket_scores": baseline["bucket_scores"],
+            "risk_labels": baseline["risk_labels"],
+            "matched_rule_codes": [
+                rule["rule_id"] for rule in baseline["matched_rules"]
+            ],
             "input_snapshot": {
                 "versions": {
                     "scoring_version": rule_governance_module.SCORING_VERSION,

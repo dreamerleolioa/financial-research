@@ -1052,6 +1052,36 @@ def _prepare_daily_radar_replay_context(
                 ).add(int(candidate_id))
             continue
         eligible_rows.append(dict(row))
+    ranking_pool_status, incomplete_ranking_groups = (
+        _daily_radar_ranking_pool_completeness(rows, eligible_rows)
+    )
+    baseline_rows: list[dict[str, Any]] = []
+    if ranking_pool_status not in {"not_applicable", "capacity_exceeded"}:
+        baseline_rows = _replay_daily_radar_rows(
+            eligible_rows,
+            baseline_config,
+        )
+        mismatch_candidate_ids = _baseline_replay_mismatch_candidate_ids(
+            baseline_rows
+        )
+        if mismatch_candidate_ids:
+            excluded_candidate_ids.setdefault(
+                "baseline_replay_mismatch",
+                set(),
+            ).update(mismatch_candidate_ids)
+            eligible_rows = [
+                row
+                for row in eligible_rows
+                if row.get("candidate_id") not in mismatch_candidate_ids
+            ]
+            baseline_rows = [
+                row
+                for row in baseline_rows
+                if row.get("candidate_id") not in mismatch_candidate_ids
+            ]
+            ranking_pool_status, incomplete_ranking_groups = (
+                _daily_radar_ranking_pool_completeness(rows, eligible_rows)
+            )
     replay_coverage = replay_coverage_summary(
         rows,
         eligible_rows,
@@ -1062,19 +1092,9 @@ def _prepare_daily_radar_replay_context(
         ],
         minimum_coverage=min_replay_coverage,
     )
-    ranking_pool_status, incomplete_ranking_groups = (
-        _daily_radar_ranking_pool_completeness(rows, eligible_rows)
-    )
     return _DailyRadarReplayContext(
         eligible_rows=eligible_rows,
-        baseline_rows=(
-            []
-            if ranking_pool_status == "capacity_exceeded"
-            else _replay_daily_radar_rows(
-                eligible_rows,
-                baseline_config,
-            )
-        ),
+        baseline_rows=baseline_rows,
         replay_coverage=replay_coverage,
         ranking_pool_complete=ranking_pool_status == "complete",
         ranking_pool_status=ranking_pool_status,
@@ -1264,6 +1284,43 @@ def _is_complete_daily_radar_replay_input(
     if not isinstance(prefilter_result.get("prefilter_reasons"), list):
         return False
     return True
+
+
+def _baseline_replay_mismatch_candidate_ids(
+    baseline_rows: Sequence[Mapping[str, Any]],
+) -> set[int]:
+    mismatches: set[int] = set()
+    checked: set[int] = set()
+    for row in baseline_rows:
+        candidate_id = row.get("candidate_id")
+        if candidate_id is None:
+            continue
+        candidate_id_value = int(candidate_id)
+        if candidate_id_value in checked:
+            continue
+        checked.add(candidate_id_value)
+        snapshot = _mapping(row.get("candidate_snapshot"))
+        if _baseline_replay_signature(snapshot) != row.get(
+            "_baseline_replay_signature"
+        ):
+            mismatches.add(candidate_id_value)
+    return mismatches
+
+
+def _baseline_replay_signature(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "observation_score": payload.get("observation_score"),
+        "primary_bucket": payload.get("primary_bucket"),
+        "secondary_buckets": list(_as_list(payload.get("secondary_buckets"))),
+        "bucket_scores": dict(_mapping(payload.get("bucket_scores"))),
+        "risk_labels": list(_as_list(payload.get("risk_labels"))),
+        "matched_rule_codes": [
+            str(value)
+            for value in _as_list(payload.get("matched_rule_codes"))
+        ],
+    }
 
 
 def _is_finite_replay_number(value: Any) -> bool:
@@ -1589,6 +1646,18 @@ def _replay_daily_radar_rows(
             | {
                 "record_date": snapshot.get("record_date") or row.get("signal_date"),
                 "replayed_score": int(scored["observation_score"]),
+                "_baseline_replay_signature": _baseline_replay_signature({
+                    "observation_score": scored["observation_score"],
+                    "primary_bucket": scored["primary_bucket"],
+                    "secondary_buckets": scored["secondary_buckets"],
+                    "bucket_scores": scored["bucket_scores"],
+                    "risk_labels": scored["risk_labels"],
+                    "matched_rule_codes": [
+                        rule["rule_id"]
+                        for rule in _as_list(scored.get("matched_rules"))
+                        if isinstance(rule, Mapping) and rule.get("rule_id")
+                    ],
+                }),
                 "selected_for_secondary": bool(scored["secondary_buckets"]),
                 "selected_for_rank": False,
             }

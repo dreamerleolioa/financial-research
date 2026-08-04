@@ -947,6 +947,10 @@ def test_calibration_identity_migration_deduplicates_and_aligns_unique_key(
         migration.op = original_op
 
     upgrade_sql = buffer.getvalue()
+    assert "SET LOCAL lock_timeout = '10s'" in upgrade_sql
+    assert upgrade_sql.index("SET LOCAL lock_timeout") < upgrade_sql.index(
+        "LOCK TABLE analysis_calibration_samples"
+    )
     assert "LOCK TABLE analysis_calibration_samples" in upgrade_sql
     assert "CREATE TEMPORARY TABLE calibration_sample_identity_canonical" in upgrade_sql
     assert "FIRST_VALUE(samples.id) OVER" in upgrade_sql
