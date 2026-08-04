@@ -106,12 +106,12 @@ TanStack Query 管理 server state：
 `PortfolioPage` 的核心 read data 已改由 `frontend/src/features/portfolio/queries.ts` 提供：
 
 - `usePortfolioItemsQuery()` -> `GET /portfolio`
-- `usePortfolioRiskSummaryQuery()` -> `GET /portfolio/risk-summary`
+- `usePortfolioRiskSummaryQuery()` -> 首次與 stale refetch 使用 `POST /portfolio/risk-summary/refresh-prices`（`portfolio_ids: null`）
 - `useLatestPortfolioHistoryQuery()` -> `GET /portfolio/latest-history`
 - `useDecisionContextStatusQuery()` -> `GET /portfolio/decision-context-status`
 - `useLifecyclePlanQuery(id)` -> `GET /portfolio/{id}/lifecycle-plan`
 
-`GET /portfolio/risk-summary` 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。Phase 1C `phase1_current_day_lists` 在 Portfolio UI 只顯示目前 active holdings 對應的 AVWAP 觀察：
+Portfolio risk-summary response 已導入 Zod parser，`PortfolioPage` 直接消費 parsed response。頁面首次載入不得先顯示 `GET /portfolio/risk-summary` 的 persisted final price 再等待使用者手動刷新；query 必須直接走純價格刷新 endpoint，且不觸發 AI 分析。Phase 1C `phase1_current_day_lists` 在 Portfolio UI 只顯示目前 active holdings 對應的 AVWAP 觀察：
 
 - `holding_management_candidates`
 - `holding_risk_alerts`
@@ -137,8 +137,8 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 - Active risk strip：`PortfolioRiskSummaryPanel` 預設以固定 KPI 順序顯示總市值、未實現損益、防守線前可能回吐與整體防守狀態。防守判讀、data-quality caveat 與持股 AVWAP 觀察收在同一個可展開細節區。
 - Active position rows：桌面欄位順序固定為持股、目前狀態、未實現損益、距防守、價格／分析新鮮度、操作。未實現損益百分比、金額、現價與距防守必須使用同一份 `position_risks[].current_price`，不得再混用 latest AI history 的舊 close。行動版使用兩欄資料卡，但維持相同閱讀順序，不以橫向表格呈現。
-- Active price action：每筆持股持續顯示次要 `更新價格` 與主要 `AI 分析`，頁首另提供 `更新全部價格` 與 `一鍵全部分析`。價格刷新只呼叫 `POST /portfolio/risk-summary/refresh-prices`，不得自動觸發 `/analyze/position`。單列刷新時需把目前 summary cache 中已成功刷新過的持股 id 一併送出；只有這些 symbols 本次都成功時，才以 `queryClient.setQueryData(portfolioKeys.riskSummary(), response)` 原子替換 cache，否則保留前一次 summary，避免早先更新的即時價與總計倒退。超過 request 500-id 上限時改送 `portfolio_ids: null` 刷新全部。歷史紀錄、新增批次、結案、編輯、補填操作計畫與刪除仍收進情境操作選單。
-- Portfolio mutation ordering：價格刷新與所有持股 writes（包含 Analyze 頁新增持股）共用同一 TanStack Query mutation scope 以序列化同分頁操作；每次 write 開始同步更新 localStorage revision、清除價格 overlay，成功後 invalidation 所有 portfolio read keys。若 write 失敗，也必須 invalidation portfolio read keys，因 overlay timer 已於 request 開始時移除，且網路錯誤可能無法確定 server 是否完成寫入；不得讓舊的 request-scoped 即時價無限期停留在 risk-summary cache。價格 request 完成時若 revision 已改變（包含其他分頁寫入或登入身分切換），不得套用晚到的完整 summary response，需 invalidation 並提示使用者重新刷新；套用 cache 前必須以 request-start revision 再檢查一次。成功的完整 refresh summary 另存最長 10 分鐘的 session overlay；一般 GET risk-summary refetch 只有在 revision 與持股結構 fingerprint 都未改變時保留 overlay，避免背景重新抓取把 request-scoped 即時價倒回 persisted price，也不遮蔽其他裝置完成的新增、結案或成本／防守資料變更。Overlay 到期 timer 或其他分頁的 storage revision event 必須清除 overlay 並 invalidation risk-summary。
+- Active price action：頁面首次載入與 stale refetch 會自動以 `portfolio_ids: null` 更新全部價格；每筆持股仍顯示次要 `更新價格` 與主要 `AI 分析`，頁首另提供 `更新全部價格` 與 `一鍵全部分析`。價格刷新只呼叫 `POST /portfolio/risk-summary/refresh-prices`，不得自動觸發 `/analyze/position`。單列刷新時需把目前 summary cache 中已成功刷新過的持股 id 一併送出；只有這些 symbols 本次都成功時，才以 `queryClient.setQueryData(portfolioKeys.riskSummary(), response)` 原子替換 cache，否則保留前一次 summary，避免早先更新的即時價與總計倒退。超過 request 500-id 上限時改送 `portfolio_ids: null` 刷新全部。歷史紀錄、新增批次、結案、編輯、補填操作計畫與刪除仍收進情境操作選單。
+- Portfolio mutation ordering：手動價格刷新與所有持股 writes（包含 Analyze 頁新增持股）共用同一 TanStack Query mutation scope 以序列化同分頁操作；首次／stale query refresh 會記錄 request-start portfolio revision，若 request 期間 revision 改變便拒絕套用 response。每次 write 開始同步更新 localStorage revision、清除價格 overlay，成功後 invalidation 所有 portfolio read keys。若 write 失敗，也必須 invalidation portfolio read keys，因 overlay timer 已於 request 開始時移除，且網路錯誤可能無法確定 server 是否完成寫入；不得讓舊的 request-scoped 即時價無限期停留在 risk-summary cache。價格 request 完成時若 revision 已改變（包含其他分頁寫入或登入身分切換），不得套用晚到的完整 summary response，需 invalidation 並提示使用者重新刷新；套用 cache 前必須以 request-start revision 再檢查一次。成功的完整 manual refresh summary 另存最長 10 分鐘的 session overlay；後續 risk-summary refetch 若完整成功，必須清除 overlay 並採用新 response；只有 partial／failed refetch 且 revision 與持股結構 fingerprint 都未改變時才保留 overlay，避免失敗 symbol 把先前成功報價與總計倒回 persisted price，也不遮蔽其他裝置完成的新增、結案或成本／防守資料變更。Overlay 到期 timer 或其他分頁的 storage revision event 必須清除 overlay 並 invalidation risk-summary。
 - Auth cache isolation：登入、登出、token 驗證失敗或其他分頁的 `auth_token` storage event 都必須先 cancel／clear 共用 QueryClient 與價格 overlay。其他分頁換帳號時，本分頁需用新 token 重新執行 `/auth/me`，並以 verification sequence 丟棄晚到的舊身分 response；不得保留前一位使用者的 user state 或 portfolio query cache。
 - Active freshness：持股列分開顯示 `price_context` 的價格時間／盤中狀態與 latest history 的 AI 分析日期。價格刷新 partial failure 時保留後端 fallback 值並明示失敗，不把舊價偽裝成剛更新成功。
 - Caveat hierarchy：缺少 plan、風險資料注意與資料不足仍需在持股列可見，但只作次要狀態，不得以大型警告卡壓過部位狀態與防守距離。

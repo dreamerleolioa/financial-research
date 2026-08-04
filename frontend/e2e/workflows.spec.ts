@@ -184,7 +184,48 @@ test("Portfolio refreshes prices without triggering AI analysis", async ({ page 
   expect(requestLog).not.toContain("POST /analyze/position");
 });
 
-test("Portfolio refetches persisted summary after a write fails", async ({ page }) => {
+test("Portfolio loads fresh prices on first visit without a manual refresh", async ({ page }) => {
+  const requestLog: string[] = [];
+  const refreshedRiskSummary = {
+    ...populatedRiskSummary,
+    portfolio_value: 1_100_000,
+    total_unrealized_pnl: 82_000,
+    position_risks: [
+      {
+        ...populatedRiskSummary.position_risks[0],
+        current_price: 1100,
+        market_value: 1_100_000,
+        unrealized_pnl: 82_000,
+        price_context: {
+          refresh_status: "refreshed",
+          source: "yfinance_fast_info",
+          as_of: "2026-07-31T10:30:00+08:00",
+          data_date: "2026-07-31",
+          market_session: "intraday",
+          is_final: false,
+        },
+      },
+    ],
+  };
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    priceRefreshSummary: refreshedRiskSummary,
+    requestLog,
+  });
+
+  await page.goto("/portfolio");
+
+  const position = page.locator('[data-portfolio-position-id="11"]');
+  await expect.poll(() => requestLog).toContain("POST /portfolio/risk-summary/refresh-prices");
+  await expect(position).toContainText("現價 1100");
+  await expect(position).toContainText("盤中價格 10:30");
+  expect(requestLog).not.toContain("POST /analyze/position");
+});
+
+test("Portfolio refetches fresh prices after a write fails", async ({ page }) => {
   const requestLog: string[] = [];
   const refreshedRiskSummary = {
     ...populatedRiskSummary,
@@ -236,9 +277,9 @@ test("Portfolio refetches persisted summary after a write fails", async ({ page 
   await dialog.getByRole("button", { name: "儲存持股與計畫" }).click();
 
   await expect(dialog).toContainText("Unhandled E2E route: PUT /portfolio/11");
-  await expect(position).toContainText("現價 1085");
+  await expect(position).toContainText("現價 1100");
   await expect
-    .poll(() => requestLog.filter((entry) => entry === "GET /portfolio/risk-summary").length)
+    .poll(() => requestLog.filter((entry) => entry === "POST /portfolio/risk-summary/refresh-prices").length)
     .toBeGreaterThanOrEqual(2);
 });
 
@@ -366,7 +407,12 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
   await installApiMocks(page, {
     portfolio: [portfolioItem, otcItem],
     riskSummary: initialSummary,
-    priceRefreshSummaries: [firstRefreshSummary, secondRefreshSummary, failedPreservedRefreshSummary],
+    priceRefreshSummaries: [
+      firstRefreshSummary,
+      firstRefreshSummary,
+      secondRefreshSummary,
+      failedPreservedRefreshSummary,
+    ],
     requestBodies,
   });
 
@@ -374,7 +420,6 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
   const tsmcPosition = page.locator('[data-portfolio-position-id="11"]');
   const otcPosition = page.locator('[data-portfolio-position-id="12"]');
 
-  await tsmcPosition.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
   await expect(tsmcPosition).toContainText("現價 1100");
 
   await page.getByRole("link", { name: "個股分析" }).first().click();
@@ -389,12 +434,17 @@ test("Portfolio preserves earlier row refreshes when another row is refreshed", 
   await expect(page.getByRole("status")).toContainText("為保留先前更新價格");
   await expect(tsmcPosition).toContainText("現價 1105");
   await expect(otcPosition).toContainText("現價 710");
-  expect(requestBodies).toEqual([{ portfolio_ids: [11] }, { portfolio_ids: [11, 12] }, { portfolio_ids: [11, 12] }]);
+  expect(requestBodies).toEqual([
+    { portfolio_ids: null },
+    { portfolio_ids: null },
+    { portfolio_ids: [11, 12] },
+    { portfolio_ids: [11, 12] },
+  ]);
 });
 
 test("Portfolio ignores a late price response after portfolio state changes", async ({ page }) => {
   const requestLog: string[] = [];
-  const refreshedRiskSummary = {
+  const summaryAt1090 = {
     ...populatedRiskSummary,
     price_refresh: {
       status: "complete",
@@ -408,7 +458,7 @@ test("Portfolio ignores a late price response after portfolio state changes", as
     position_risks: [
       {
         ...populatedRiskSummary.position_risks[0],
-        current_price: 1100,
+        current_price: 1090,
         price_context: {
           refresh_status: "refreshed",
           source: "yfinance_fast_info",
@@ -420,12 +470,34 @@ test("Portfolio ignores a late price response after portfolio state changes", as
       },
     ],
   };
+  const lateSummaryAt1100 = {
+    ...summaryAt1090,
+    position_risks: [
+      {
+        ...summaryAt1090.position_risks[0],
+        current_price: 1100,
+      },
+    ],
+  };
+  const latestSummaryAt1110 = {
+    ...summaryAt1090,
+    position_risks: [
+      {
+        ...summaryAt1090.position_risks[0],
+        current_price: 1110,
+        price_context: {
+          ...summaryAt1090.position_risks[0].price_context,
+          as_of: "2026-07-31T10:31:00+08:00",
+        },
+      },
+    ],
+  };
 
   await authenticate(page);
   await installApiMocks(page, {
     portfolio: [portfolioItem],
     riskSummary: populatedRiskSummary,
-    priceRefreshSummary: refreshedRiskSummary,
+    priceRefreshSummaries: [summaryAt1090, lateSummaryAt1100, latestSummaryAt1110],
     priceRefreshDelayMs: 150,
     requestLog,
   });
@@ -439,6 +511,7 @@ test("Portfolio ignores a late price response after portfolio state changes", as
   });
 
   await expect(page.getByRole("status")).toContainText("持股資料已變更，本次價格刷新未套用");
+  await expect(position).toContainText("現價 1110");
   await expect(position).not.toContainText("現價 1100");
 });
 

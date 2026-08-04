@@ -2706,10 +2706,16 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 <button
                   type="button"
                   onClick={() => void refreshPrices()}
-                  disabled={refreshPortfolioPricesMutation.isPending || batchStatus === "running"}
+                  disabled={
+                    portfolioRiskSummaryQuery.isFetching ||
+                    refreshPortfolioPricesMutation.isPending ||
+                    batchStatus === "running"
+                  }
                   className="ui-button-secondary min-h-10 px-3 text-xs"
                 >
-                  {priceRefreshTarget === "all" ? "價格更新中" : "更新全部價格"}
+                  {portfolioRiskSummaryQuery.isLoading || priceRefreshTarget === "all"
+                    ? "價格更新中"
+                    : "更新全部價格"}
                 </button>
                 <button
                   type="button"
@@ -2886,11 +2892,15 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         <button
                           type="button"
                           onClick={() => void refreshPrices([item.id])}
-                          disabled={refreshPortfolioPricesMutation.isPending || isAnalyzing}
+                          disabled={
+                            portfolioRiskSummaryQuery.isFetching ||
+                            refreshPortfolioPricesMutation.isPending ||
+                            isAnalyzing
+                          }
                           aria-label={`更新 ${portfolioDisplayName(item)} 最新價格`}
                           className="ui-button-secondary min-h-10 px-3 text-xs"
                         >
-                          {isRefreshingPrice ? "更新中" : "更新價格"}
+                          {portfolioRiskSummaryQuery.isLoading || isRefreshingPrice ? "更新中" : "更新價格"}
                         </button>
                         <button
                           type="button"
