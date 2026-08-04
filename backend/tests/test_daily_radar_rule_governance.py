@@ -22,6 +22,10 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     build_forward_validation_report,
     forward_validation_fixture_inputs,
 )
+from ai_stock_sentinel.calibration.governance import (
+    block_bootstrap_delta,
+    block_bootstrap_mean_delta,
+)
 from ai_stock_sentinel.daily_radar.rule_governance import (
     DEFAULT_ABLATION_GROUPS,
     _replay_daily_radar_rows,
@@ -200,6 +204,10 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
         )
 
     manifest = report.json_report["version_manifest"]
+    assert (
+        report.json_report["metadata"]["report_version"]
+        == "daily-radar-rule-review-v5"
+    )
     assert manifest["scoring_version"] == SCORING_VERSION
     assert manifest["rule_version"] == RULE_VERSION
     assert manifest["live_scoring_changed"] is False
@@ -225,7 +233,12 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
         row["eligible_for_live_change"] is False
         for row in report.json_report["counterfactual_ablation_summary"]
     )
-    assert report.json_report["counterfactual_ablation_scope"] == {
+    counterfactual_scope = report.json_report["counterfactual_ablation_scope"]
+    assert {
+        key: value
+        for key, value in counterfactual_scope.items()
+        if key != "replay_workload"
+    } == {
         "selected_months": [],
         "ranking_pool": "all_latest_run_candidates_for_each_forward_window",
         "ranking_pool_complete": False,
@@ -233,6 +246,11 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
         "outcome_join": "validated_results_only_after_selection",
         "live_change_eligible": False,
     }
+    assert counterfactual_scope["replay_workload"]["candidate_count"] == 0
+    assert (
+        counterfactual_scope["replay_workload"]["capacity_exceeded"]
+        is False
+    )
     assert {
         row["recommendation"]
         for row in report.json_report["counterfactual_ablation_summary"]
@@ -545,6 +563,230 @@ def test_replay_governance_rejects_candidate_groups_over_capacity(
     assert {
         candidate["eligibility_reason"] for candidate in candidates
     } == {"replay_workload_limit_exceeded"}
+
+
+def test_replay_governance_rejects_aggregate_workload_before_scoring(
+    monkeypatch,
+) -> None:
+    rows = [
+        _governance_replay_row(candidate_id, with_replay_input=True)
+        for candidate_id in range(1, 3)
+    ]
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+
+    def unexpected_scoring(*args, **kwargs):
+        raise AssertionError("aggregate workload guard must run before scoring")
+
+    monkeypatch.setattr(
+        rule_governance_module,
+        "MAX_GOVERNANCE_BOOTSTRAP_ROW_ITERATIONS",
+        1,
+    )
+    monkeypatch.setattr(
+        rule_governance_module,
+        "score_daily_radar_record",
+        unexpected_scoring,
+    )
+
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        rows,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+    candidates, coverage = rule_governance_module._scoring_candidate_reports(
+        context,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        watermarks=[],
+        min_sample_count=1,
+        min_validated_coverage=0.9,
+    )
+
+    workload = coverage["replay_workload"]
+    assert context.ranking_pool_status == "capacity_exceeded"
+    assert context.baseline_rows == []
+    assert workload["candidate_count"] == 2
+    assert workload["candidate_window_row_count"] == 2
+    assert workload["estimated_bootstrap_row_iterations"] == 10_000
+    assert workload["maximum_bootstrap_row_iterations"] == 1
+    assert workload["capacity_exceeded"] is True
+    assert workload["exceeded_limits"] == ["bootstrap_row_iterations"]
+    assert {
+        candidate["eligibility_reason"] for candidate in candidates
+    } == {"replay_workload_limit_exceeded"}
+
+
+@pytest.mark.parametrize(
+    "parameter",
+    ["primary_bucket_weight", "secondary_bucket_threshold"],
+)
+def test_candidate_bootstrap_uses_selected_rows_and_preserves_date_blocks(
+    monkeypatch,
+    parameter: str,
+) -> None:
+    baseline_rows = [
+        {
+            "candidate_id": 1,
+            "record_date": "2026-01-05",
+            "window_days": 5,
+            "status": "validated",
+            "selected_for_rank": True,
+            "selected_for_secondary": True,
+            "outcome": {
+                "excess_return_vs_benchmark_pct": 1.0,
+                "max_adverse_excursion_pct": -1.0,
+            },
+        },
+        {
+            "candidate_id": 2,
+            "record_date": "2026-01-05",
+            "window_days": 5,
+            "status": "validated",
+            "selected_for_rank": False,
+            "selected_for_secondary": False,
+            "outcome": {
+                "excess_return_vs_benchmark_pct": 0.0,
+                "max_adverse_excursion_pct": -1.0,
+            },
+        },
+        {
+            "candidate_id": 3,
+            "record_date": "2026-01-06",
+            "window_days": 5,
+            "status": "missing",
+            "selected_for_rank": True,
+            "selected_for_secondary": True,
+            "outcome": {},
+        },
+    ]
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        rule_governance_module,
+        "_replay_daily_radar_rows",
+        lambda rows, config, **kwargs: list(baseline_rows),
+    )
+
+    def bootstrap_spy(
+        before_rows,
+        after_rows,
+        *,
+        value,
+        block_key,
+        block_values=None,
+        **kwargs,
+    ):
+        captured["before_candidate_ids"] = [
+            row["candidate_id"] for row in before_rows
+        ]
+        captured["after_candidate_ids"] = [
+            row["candidate_id"] for row in after_rows
+        ]
+        captured["block_values"] = list(block_values or [])
+        return {
+            "seed": 20260724,
+            "iterations": 500,
+            "block_count": len(captured["block_values"]),
+            "delta": 0.0,
+            "ci_95": [0.0, 0.0],
+        }
+
+    monkeypatch.setattr(
+        rule_governance_module,
+        "block_bootstrap_mean_delta",
+        bootstrap_spy,
+    )
+    rule_governance_module._scoring_candidate_report(
+        [],
+        baseline_rows=baseline_rows,
+        baseline_config=ScoringConfig(),
+        parameter=parameter,
+        direction=1,
+        step=rule_governance_module.TUNABLE_SCORING_PARAMETERS[parameter],
+        cohort={
+            "selected_months": ["2026-01", "2026-02"],
+            "training_months": ["2026-01"],
+            "holdout_month": "2026-02",
+            "cohort_complete": True,
+        },
+        watermarks=[{
+            "month": "2026-01",
+            "validated_coverage_by_window": {
+                "5": 1.0,
+                "10": 1.0,
+                "20": 1.0,
+            },
+        }],
+        min_sample_count=1,
+        min_validated_coverage=0.9,
+        replay_coverage_ok=True,
+        replay_ranking_pool_complete=True,
+        replay_ranking_pool_status="complete",
+    )
+
+    assert captured["before_candidate_ids"] == [1]
+    assert captured["after_candidate_ids"] == [1]
+    assert captured["block_values"] == ["2026-01-05", "2026-01-06"]
+
+
+def test_block_bootstrap_preserves_explicit_blocks_without_selected_rows() -> None:
+    rows = [{"record_date": "2026-01-05", "value": 1.0}]
+
+    result = block_bootstrap_delta(
+        rows,
+        rows,
+        metric=lambda sample: (
+            sum(float(row["value"]) for row in sample) / len(sample)
+            if sample
+            else None
+        ),
+        block_key="record_date",
+        block_values=["2026-01-05", "2026-01-06"],
+        iterations=20,
+    )
+
+    assert result["block_count"] == 2
+    assert result["delta"] == 0.0
+
+
+def test_mean_bootstrap_matches_generic_bootstrap_without_row_rebuilds() -> None:
+    before = [
+        {"record_date": "2026-01-05", "value": 1.0},
+        {"record_date": "2026-01-05", "value": 3.0},
+        {"record_date": "2026-01-06", "value": 2.0},
+    ]
+    after = [row | {"value": float(row["value"]) + 0.5} for row in before]
+    blocks = ["2026-01-05", "2026-01-06", "2026-01-07"]
+    metric = lambda rows: (
+        sum(float(row["value"]) for row in rows) / len(rows)
+        if rows
+        else None
+    )
+
+    generic = block_bootstrap_delta(
+        before,
+        after,
+        metric=metric,
+        block_key="record_date",
+        block_values=blocks,
+        iterations=50,
+    )
+    optimized = block_bootstrap_mean_delta(
+        before,
+        after,
+        value=lambda row: float(row["value"]),
+        block_key="record_date",
+        block_values=blocks,
+        iterations=50,
+    )
+
+    assert optimized == generic
 
 
 def test_monthly_governance_reuses_one_baseline_replay(monkeypatch) -> None:

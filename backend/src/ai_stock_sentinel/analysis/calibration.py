@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
@@ -64,7 +65,7 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v2"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v5"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v6"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
 GENERAL_ANALYSIS_TYPES = ("general",)
@@ -76,6 +77,7 @@ TUNABLE_CONFIDENCE_PARAMETERS = (
     "three_resonance_bonus",
 )
 HOLDOUT_HORIZON_CORRELATION_FLOOR = -0.01
+MAX_REPLAY_SENTIMENT_STRENGTH = 1.6
 logger = logging.getLogger(__name__)
 
 
@@ -401,6 +403,7 @@ def build_general_analysis_monthly_report(
     selected_rows = [row for row in rows if row["month"] in selected_months and row["status"] == "validated"]
     sample_by_id = {sample.id: sample for sample in samples}
 
+    baseline_config = ConfidenceScoringConfig()
     exclusions: Counter[str] = Counter()
     excluded_sample_ids: dict[str, set[int]] = {}
     optimizer_scope_rows: list[dict[str, Any]] = []
@@ -417,13 +420,36 @@ def build_general_analysis_monthly_report(
             continue
         optimizer_row = row | {"sample": sample}
         optimizer_scope_rows.append(optimizer_row)
-        if not _is_complete_replay_input(sample.replay_input):
+        if not _is_complete_replay_input(
+            sample.replay_input,
+            baseline_config=baseline_config,
+        ):
             excluded_sample_ids.setdefault(
                 "replay_input_incomplete",
                 set(),
             ).add(sample_id)
             continue
         eligible_rows.append(optimizer_row)
+    baseline_rows = _replay_rows(eligible_rows, baseline_config)
+    mismatch_sample_ids = _baseline_replay_mismatch_sample_ids(
+        baseline_rows,
+        sample_by_id=sample_by_id,
+    )
+    if mismatch_sample_ids:
+        excluded_sample_ids.setdefault(
+            "baseline_replay_mismatch",
+            set(),
+        ).update(mismatch_sample_ids)
+        eligible_rows = [
+            row
+            for row in eligible_rows
+            if int(row["sample_id"]) not in mismatch_sample_ids
+        ]
+        baseline_rows = [
+            row
+            for row in baseline_rows
+            if int(row["sample_id"]) not in mismatch_sample_ids
+        ]
     exclusions.update({
         reason: len(sample_ids)
         for reason, sample_ids in excluded_sample_ids.items()
@@ -439,10 +465,10 @@ def build_general_analysis_monthly_report(
     )
     min_training_blocks, min_holdout_blocks = required_block_counts()
 
-    baseline_config = ConfidenceScoringConfig()
     candidates = [
         _confidence_candidate_report(
             eligible_rows,
+            baseline_rows=baseline_rows,
             baseline_config=baseline_config,
             parameter=parameter,
             direction=direction,
@@ -451,6 +477,7 @@ def build_general_analysis_monthly_report(
             min_sample_count=min_sample_count,
             min_validated_coverage=min_validated_coverage,
             replay_coverage_ok=bool(replay_coverage["meets_threshold"]),
+            baseline_replay_complete=not mismatch_sample_ids,
         )
         for parameter in TUNABLE_CONFIDENCE_PARAMETERS
         for direction in (-1, 1)
@@ -490,6 +517,7 @@ def build_general_analysis_monthly_report(
             "all_selected_validation_rows": len(selected_rows),
             "optimizer_scope_validation_rows": len(optimizer_scope_rows),
             "optimizer_eligible_rows": len(eligible_rows),
+            "baseline_replay_complete": not mismatch_sample_ids,
             "replay_coverage": replay_coverage["coverage"],
             "exclusion_reasons": dict(sorted(exclusions.items())),
         },
@@ -552,6 +580,7 @@ def render_general_analysis_monthly_markdown(report: Mapping[str, Any]) -> str:
 def _confidence_candidate_report(
     rows: Sequence[Mapping[str, Any]],
     *,
+    baseline_rows: Sequence[Mapping[str, Any]],
     baseline_config: ConfidenceScoringConfig,
     parameter: str,
     direction: int,
@@ -560,11 +589,11 @@ def _confidence_candidate_report(
     min_sample_count: int,
     min_validated_coverage: float,
     replay_coverage_ok: bool,
+    baseline_replay_complete: bool,
 ) -> dict[str, Any]:
     before_value = int(getattr(baseline_config, parameter))
     after_value = max(0, before_value + direction)
     candidate_config = replace(baseline_config, **{parameter: after_value})
-    baseline_rows = _replay_rows(rows, baseline_config)
     candidate_rows = _replay_rows(rows, candidate_config)
     training_months = set(str(value) for value in _as_list(cohort.get("training_months")))
     holdout_month = str(cohort.get("holdout_month") or "")
@@ -675,6 +704,7 @@ def _confidence_candidate_report(
         cohort.get("cohort_complete") is True
         and coverage_ok
         and replay_coverage_ok
+        and baseline_replay_complete
         and enough_samples
         and enough_blocks
         and lower_ci is not None
@@ -686,6 +716,8 @@ def _confidence_candidate_report(
     )
     if cohort.get("cohort_complete") is not True:
         reason = "insufficient_mature_months"
+    elif not baseline_replay_complete:
+        reason = "baseline_replay_mismatch"
     elif not coverage_ok:
         reason = "validated_coverage_below_threshold"
     elif not replay_coverage_ok:
@@ -733,6 +765,7 @@ def _confidence_candidate_report(
             "min_holdout_block_count": min_holdout_blocks,
             "selected_months_meet_validated_coverage": coverage_ok,
             "selected_months_meet_replay_coverage": replay_coverage_ok,
+            "baseline_replay_complete": baseline_replay_complete,
         },
         "auto_change_eligible": eligible,
         "eligibility_reason": reason,
@@ -744,23 +777,28 @@ def _replay_rows(
     config: ConfidenceScoringConfig,
 ) -> list[dict[str, Any]]:
     replayed: list[dict[str, Any]] = []
+    scored_by_sample: dict[int, int] = {}
     for row in rows:
         sample = row.get("sample")
         if not isinstance(sample, AnalysisCalibrationSample):
             continue
-        replay = _mapping(sample.replay_input)
-        result = compute_confidence(
-            int(replay.get("base_score") or BASE_CONFIDENCE),
-            news_sentiment=str(replay.get("news_sentiment") or "neutral"),
-            inst_flow=str(replay.get("institutional_flow") or "unknown"),
-            technical_signal=str(replay.get("technical_signal") or "sideways"),
-            date_unknown=bool(replay.get("date_unknown")),
-            sentiment_strength=_number(replay.get("sentiment_strength")) or 1.0,
-            config=config,
-        )
+        replayed_score = scored_by_sample.get(sample.id)
+        if replayed_score is None:
+            replay = _mapping(sample.replay_input)
+            result = compute_confidence(
+                int(replay["base_score"]),
+                news_sentiment=str(replay["news_sentiment"]),
+                inst_flow=str(replay["institutional_flow"]),
+                technical_signal=str(replay["technical_signal"]),
+                date_unknown=replay["date_unknown"] is True,
+                sentiment_strength=float(replay["sentiment_strength"]),
+                config=config,
+            )
+            replayed_score = int(result["signal_confidence"])
+            scored_by_sample[sample.id] = replayed_score
         replayed.append(
             {key: value for key, value in row.items() if key != "sample"}
-            | {"replayed_score": int(result["signal_confidence"])}
+            | {"replayed_score": replayed_score}
         )
     return replayed
 
@@ -1012,23 +1050,68 @@ def _sample_id_from_candidate(outcome: Mapping[str, Any]) -> int | None:
     return int(candidate_id) if candidate_id is not None else None
 
 
-def _is_complete_replay_input(value: Any) -> bool:
+def _is_complete_replay_input(
+    value: Any,
+    *,
+    baseline_config: ConfidenceScoringConfig | None = None,
+) -> bool:
     replay = _mapping(value)
-    return (
+    expected_config = (baseline_config or ConfidenceScoringConfig()).to_dict()
+    base_score = replay.get("base_score")
+    sentiment_strength = replay.get("sentiment_strength")
+    return bool(
         replay.get("schema_version") == GENERAL_REPLAY_INPUT_VERSION
-        and all(
-            key in replay
-            for key in (
-                "base_score",
-                "news_sentiment",
-                "sentiment_strength",
-                "institutional_flow",
-                "technical_signal",
-                "date_unknown",
-                "baseline_config",
-            )
-        )
+        and type(base_score) is int
+        and 0 <= base_score <= 100
+        and replay.get("news_sentiment")
+        in {"positive", "negative", "neutral", "unknown"}
+        and _is_finite_number(sentiment_strength)
+        and 0 <= float(sentiment_strength) <= MAX_REPLAY_SENTIMENT_STRENGTH
+        and replay.get("institutional_flow")
+        in {
+            "institutional_accumulation",
+            "distribution",
+            "retail_chasing",
+            "neutral",
+            "unknown",
+        }
+        and replay.get("technical_signal")
+        in {"bullish", "bearish", "sideways", "unknown"}
+        and type(replay.get("date_unknown")) is bool
+        and replay.get("baseline_config") == expected_config
     )
+
+
+def _baseline_replay_mismatch_sample_ids(
+    baseline_rows: Sequence[Mapping[str, Any]],
+    *,
+    sample_by_id: Mapping[int, AnalysisCalibrationSample],
+) -> set[int]:
+    mismatches: set[int] = set()
+    checked: set[int] = set()
+    for row in baseline_rows:
+        sample_id = int(row["sample_id"])
+        if sample_id in checked:
+            continue
+        checked.add(sample_id)
+        sample = sample_by_id.get(sample_id)
+        stored_score = _number(sample.signal_confidence) if sample is not None else None
+        replayed_score = _number(row.get("replayed_score"))
+        if (
+            stored_score is None
+            or replayed_score is None
+            or not stored_score.is_integer()
+            or not replayed_score.is_integer()
+            or not 0 <= stored_score <= 100
+            or int(stored_score) != int(replayed_score)
+        ):
+            mismatches.add(sample_id)
+    return mismatches
+
+
+def _is_finite_number(value: Any) -> bool:
+    number = _number(value)
+    return number is not None and math.isfinite(number)
 
 
 def _general_analysis_calibration_partition(

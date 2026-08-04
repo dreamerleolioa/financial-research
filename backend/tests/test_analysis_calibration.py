@@ -27,6 +27,7 @@ from ai_stock_sentinel.analysis.calibration import (
     general_validation_samples,
     upsert_general_analysis_validation_results,
 )
+from ai_stock_sentinel.analysis import calibration as calibration_module
 from ai_stock_sentinel.analysis.confidence_scorer import (
     CONFIDENCE_CONFIG_VERSION,
     ConfidenceScoringConfig,
@@ -75,6 +76,34 @@ def test_confidence_config_preserves_baseline_and_can_replay_one_parameter_step(
     assert baseline == 70
     assert candidate == 71
     assert ConfidenceScoringConfig().distribution_penalty == -10
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("base_score", True),
+        ("base_score", 101),
+        ("news_sentiment", "unexpected"),
+        ("sentiment_strength", float("inf")),
+        ("sentiment_strength", 1.61),
+        ("institutional_flow", "unexpected"),
+        ("technical_signal", "unexpected"),
+        ("date_unknown", "false"),
+        ("baseline_config", {"positive_sentiment_points": 999}),
+    ],
+)
+def test_general_replay_input_requires_current_typed_baseline_contract(
+    field: str,
+    invalid_value: object,
+) -> None:
+    replay_input = calibration_module.build_general_analysis_replay_input(
+        _analysis_result()
+    )
+    assert calibration_module._is_complete_replay_input(replay_input) is True
+
+    replay_input[field] = invalid_value
+
+    assert calibration_module._is_complete_replay_input(replay_input) is False
 
 
 def test_final_general_analysis_capture_is_append_only_deduplicated_and_private() -> None:
@@ -568,6 +597,8 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
             result["cleaned_news"]["sentiment_label"] = (
                 "positive" if month % 2 else "neutral"
             )
+            if month % 2 == 0:
+                result["signal_confidence"] = 62
             sample = capture_general_analysis_calibration_sample(
                 session,
                 symbol=f"23{month:02d}.TW",
@@ -612,6 +643,10 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
         "2026-04",
         "2026-05",
     ]
+    assert (
+        report["metadata"]["report_version"]
+        == "general-analysis-confidence-review-v6"
+    )
     assert report["cohort"]["holdout_month"] == "2026-06"
     assert all(row["maturity_complete"] is True for row in report["completeness_watermarks"])
     candidate = report["candidate_configs"][0]
@@ -630,6 +665,91 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     }
     assert candidate["coverage"]["training_block_count"] == 5
     assert candidate["coverage"]["holdout_block_count"] == 1
+
+
+def test_general_monthly_baseline_mismatch_fails_closed_after_one_replay(
+    monkeypatch,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        for month in range(1, 7):
+            for sample_index in range(10):
+                sample = capture_general_analysis_calibration_sample(
+                    session,
+                    symbol=f"{month}{sample_index:03d}.TW",
+                    record_date=date(2026, month, 5),
+                    result=_analysis_result(),
+                    is_final=True,
+                )
+                assert sample is not None
+                if month == 1 and sample_index == 0:
+                    sample.signal_confidence = 0
+                session.flush()
+                for window in (5, 10, 20):
+                    session.add(
+                        AnalysisForwardValidationResult(
+                            sample_id=sample.id,
+                            window_days=window,
+                            validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                            status="validated",
+                            signal_date=sample.record_date,
+                            target_date=date(
+                                2026,
+                                month,
+                                min(25, 5 + window),
+                            ),
+                            benchmark_symbol="TAIEX",
+                            outcome={
+                                "forward_return_pct": float(month + window),
+                                "excess_return_vs_benchmark_pct": float(month),
+                                "max_adverse_excursion_pct": -float(month) / 10,
+                                "hit_above_threshold": True,
+                            },
+                            skip_reason=None,
+                        )
+                    )
+        session.commit()
+
+        replay_calls = 0
+        original_compute_confidence = calibration_module.compute_confidence
+
+        def compute_confidence_spy(*args, **kwargs):
+            nonlocal replay_calls
+            replay_calls += 1
+            return original_compute_confidence(*args, **kwargs)
+
+        monkeypatch.setattr(
+            calibration_module,
+            "compute_confidence",
+            compute_confidence_spy,
+        )
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=6,
+            min_sample_count=1,
+            min_replay_coverage=0.8,
+        )
+
+    assert report["coverage"]["replay_coverage"] == 0.9833
+    assert report["coverage"]["meets_threshold"] is True
+    assert report["coverage"]["baseline_replay_complete"] is False
+    assert report["coverage"]["exclusion_reasons"] == {
+        "baseline_replay_mismatch": 1,
+    }
+    assert report["auto_change_eligible"] is False
+    assert {
+        candidate["eligibility_reason"]
+        for candidate in report["candidate_configs"]
+    } == {"baseline_replay_mismatch"}
+    assert replay_calls == 60 + 59 * len(report["candidate_configs"])
 
 
 def test_general_monthly_replay_coverage_uses_only_optimizer_scope_strategies() -> None:

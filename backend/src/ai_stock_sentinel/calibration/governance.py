@@ -109,12 +109,17 @@ def block_bootstrap_delta(
     *,
     metric: Callable[[Sequence[Mapping[str, Any]]], float | None],
     block_key: str,
+    block_values: Sequence[Any] | None = None,
     seed: int = DEFAULT_BOOTSTRAP_SEED,
     iterations: int = DEFAULT_BOOTSTRAP_ITERATIONS,
 ) -> dict[str, Any]:
     before_by_block = _rows_by_block(before_rows, block_key)
     after_by_block = _rows_by_block(after_rows, block_key)
-    blocks = sorted(set(before_by_block) & set(after_by_block))
+    blocks = sorted(
+        {str(value or "unknown") for value in block_values}
+        if block_values is not None
+        else set(before_by_block) & set(after_by_block)
+    )
     if not blocks:
         return {
             "seed": seed,
@@ -130,12 +135,12 @@ def block_bootstrap_delta(
         before_sample = [
             row
             for block in sampled
-            for row in before_by_block[block]
+            for row in before_by_block.get(block, ())
         ]
         after_sample = [
             row
             for block in sampled
-            for row in after_by_block[block]
+            for row in after_by_block.get(block, ())
         ]
         before_value = metric(before_sample)
         after_value = metric(after_sample)
@@ -143,6 +148,70 @@ def block_bootstrap_delta(
             deltas.append(after_value - before_value)
     before_value = metric(before_rows)
     after_value = metric(after_rows)
+    return {
+        "seed": seed,
+        "iterations": iterations,
+        "block_count": len(blocks),
+        "delta": _rounded_delta(after_value, before_value),
+        "ci_95": [
+            _percentile(deltas, 0.025),
+            _percentile(deltas, 0.975),
+        ],
+    }
+
+
+def block_bootstrap_mean_delta(
+    before_rows: Sequence[Mapping[str, Any]],
+    after_rows: Sequence[Mapping[str, Any]],
+    *,
+    value: Callable[[Mapping[str, Any]], float | None],
+    block_key: str,
+    block_values: Sequence[Any] | None = None,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    iterations: int = DEFAULT_BOOTSTRAP_ITERATIONS,
+) -> dict[str, Any]:
+    before_by_block = _mean_stats_by_block(before_rows, block_key, value)
+    after_by_block = _mean_stats_by_block(after_rows, block_key, value)
+    blocks = sorted(
+        {str(value or "unknown") for value in block_values}
+        if block_values is not None
+        else set(before_by_block) & set(after_by_block)
+    )
+    if not blocks:
+        return {
+            "seed": seed,
+            "iterations": iterations,
+            "block_count": 0,
+            "delta": None,
+            "ci_95": [None, None],
+        }
+    rng = random.Random(seed)
+    deltas: list[float] = []
+    for _ in range(iterations):
+        before_sum = 0.0
+        before_count = 0
+        after_sum = 0.0
+        after_count = 0
+        for _block in blocks:
+            sampled_block = rng.choice(blocks)
+            block_sum, block_count = before_by_block.get(
+                sampled_block,
+                (0.0, 0),
+            )
+            before_sum += block_sum
+            before_count += block_count
+            block_sum, block_count = after_by_block.get(
+                sampled_block,
+                (0.0, 0),
+            )
+            after_sum += block_sum
+            after_count += block_count
+        if before_count and after_count:
+            deltas.append(
+                (after_sum / after_count) - (before_sum / before_count)
+            )
+    before_value = _mean_from_stats(before_by_block.values())
+    after_value = _mean_from_stats(after_by_block.values())
     return {
         "seed": seed,
         "iterations": iterations,
@@ -272,6 +341,33 @@ def _rows_by_block(
     return grouped
 
 
+def _mean_stats_by_block(
+    rows: Iterable[Mapping[str, Any]],
+    block_key: str,
+    value: Callable[[Mapping[str, Any]], float | None],
+) -> dict[str, tuple[float, int]]:
+    grouped: dict[str, tuple[float, int]] = {}
+    for row in rows:
+        number = value(row)
+        if number is None or not math.isfinite(number):
+            continue
+        key = str(row.get(block_key) or "unknown")
+        total, count = grouped.get(key, (0.0, 0))
+        grouped[key] = (total + number, count + 1)
+    return grouped
+
+
+def _mean_from_stats(
+    values: Iterable[tuple[float, int]],
+) -> float | None:
+    total = 0.0
+    count = 0
+    for block_sum, block_count in values:
+        total += block_sum
+        count += block_count
+    return total / count if count else None
+
+
 def _sample_ids(
     rows: Sequence[Mapping[str, Any]],
     sample_key: str,
@@ -352,6 +448,7 @@ __all__ = [
     "DEFAULT_MIN_TRAINING_BLOCK_COUNT",
     "DEFAULT_MIN_VALIDATED_COVERAGE",
     "block_bootstrap_delta",
+    "block_bootstrap_mean_delta",
     "confidence_excess_correlation",
     "independent_block_count",
     "independent_sample_counts_by_window",

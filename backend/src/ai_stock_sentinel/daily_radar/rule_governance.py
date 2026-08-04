@@ -12,9 +12,10 @@ from sqlalchemy import Integer, and_, case, cast, extract, func, literal, or_, s
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.governance import (
+    DEFAULT_BOOTSTRAP_ITERATIONS,
     DEFAULT_MIN_REPLAY_COVERAGE,
     DEFAULT_MIN_VALIDATED_COVERAGE,
-    block_bootstrap_delta,
+    block_bootstrap_mean_delta,
     independent_block_count,
     independent_sample_counts_by_window,
     metrics_by_window,
@@ -51,10 +52,12 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v4"
+RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v5"
 DEFAULT_MIN_SAMPLE_COUNT = 20
 DEFAULT_RANK_CUTOFF = 20
 MAX_GOVERNANCE_CANDIDATES_PER_GROUP = 250
+MAX_GOVERNANCE_REPLAY_SCORING_CALLS = 300_000
+MAX_GOVERNANCE_BOOTSTRAP_ROW_ITERATIONS = 220_000_000
 TUNABLE_SCORING_PARAMETERS = {
     "primary_bucket_weight": 0.05,
     "cross_confirmation_weight": 0.10,
@@ -67,6 +70,10 @@ INCREASE_ONLY_SCORING_PARAMETERS = {
     "market_context_weight",
     "freshness_weight",
 }
+SCORING_CANDIDATE_CONFIG_COUNT = sum(
+    1 if parameter in INCREASE_ONLY_SCORING_PARAMETERS else 2
+    for parameter in TUNABLE_SCORING_PARAMETERS
+)
 DEFAULT_ABLATION_GROUPS = (
     "news_sentiment",
     "fundamental_valuation",
@@ -96,6 +103,7 @@ class _DailyRadarReplayContext:
     ranking_pool_status: str
     incomplete_ranking_groups: list[dict[str, Any]]
     exclusion_reasons: dict[str, int]
+    replay_workload: dict[str, Any]
 
 
 def build_ablation_report(
@@ -237,6 +245,7 @@ def build_monthly_rule_review_report(
             "ranking_pool_status": replay_context.ranking_pool_status,
             "outcome_join": "validated_results_only_after_selection",
             "live_change_eligible": False,
+            "replay_workload": replay_context.replay_workload,
         },
         "co_occurrence_summary": ablation["ablation_groups"],
         "rule_recommendations": rule_recommendations,
@@ -362,6 +371,7 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
     metadata = _mapping(report.get("metadata"))
     summary = _mapping(report.get("sample_summary"))
     replay_coverage = _mapping(report.get("replay_coverage"))
+    replay_workload = _mapping(replay_coverage.get("replay_workload"))
     counterfactual_scope = _mapping(
         report.get("counterfactual_ablation_scope")
     )
@@ -380,6 +390,9 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
         f"- Replay coverage meets threshold: {replay_coverage.get('meets_threshold')}",
         f"- Replay ranking pool complete: {replay_coverage.get('ranking_pool_complete')}",
         f"- Replay ranking pool status: {replay_coverage.get('ranking_pool_status')}",
+        f"- Estimated replay scoring calls: {replay_workload.get('estimated_scoring_calls')}",
+        f"- Estimated bootstrap row-iterations: {replay_workload.get('estimated_bootstrap_row_iterations')}",
+        f"- Replay workload within budget: {not bool(replay_workload.get('capacity_exceeded'))}",
         f"- Minimum training date blocks: {metadata.get('min_training_block_count')}",
         f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Validated samples: {summary.get('validated_sample_count', 0)}",
@@ -1030,6 +1043,7 @@ def _scoring_candidate_reports(
         "ranking_pool_status": replay_context.ranking_pool_status,
         "incomplete_ranking_groups": replay_context.incomplete_ranking_groups,
         "exclusion_reasons": replay_context.exclusion_reasons,
+        "replay_workload": replay_context.replay_workload,
     }
 
 
@@ -1040,6 +1054,7 @@ def _prepare_daily_radar_replay_context(
     cohort: Mapping[str, Any],
     min_replay_coverage: float,
 ) -> _DailyRadarReplayContext:
+    replay_workload = _daily_radar_replay_workload(rows)
     eligible_rows: list[dict[str, Any]] = []
     excluded_candidate_ids: dict[str, set[int]] = {}
     for row in rows:
@@ -1053,7 +1068,13 @@ def _prepare_daily_radar_replay_context(
             continue
         eligible_rows.append(dict(row))
     ranking_pool_status, incomplete_ranking_groups = (
-        _daily_radar_ranking_pool_completeness(rows, eligible_rows)
+        _daily_radar_ranking_pool_completeness(
+            rows,
+            eligible_rows,
+            workload_capacity_exceeded=bool(
+                replay_workload["capacity_exceeded"]
+            ),
+        )
     )
     baseline_rows: list[dict[str, Any]] = []
     if ranking_pool_status not in {"not_applicable", "capacity_exceeded"}:
@@ -1103,12 +1124,15 @@ def _prepare_daily_radar_replay_context(
             reason: len(candidate_ids)
             for reason, candidate_ids in sorted(excluded_candidate_ids.items())
         },
+        replay_workload=replay_workload,
     )
 
 
 def _daily_radar_ranking_pool_completeness(
     rows: Sequence[Mapping[str, Any]],
     eligible_rows: Sequence[Mapping[str, Any]],
+    *,
+    workload_capacity_exceeded: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     selected_by_group: dict[tuple[str, int], set[int]] = defaultdict(set)
     eligible_by_group: dict[tuple[str, int], set[int]] = defaultdict(set)
@@ -1131,7 +1155,7 @@ def _daily_radar_ranking_pool_completeness(
         )
         eligible_by_group[key].add(int(candidate_id))
     incomplete = []
-    capacity_exceeded = False
+    capacity_exceeded = workload_capacity_exceeded
     for (signal_date, window_days), candidate_ids in sorted(
         selected_by_group.items()
     ):
@@ -1159,6 +1183,60 @@ def _daily_radar_ranking_pool_completeness(
     if incomplete:
         return "incomplete", incomplete
     return "complete", []
+
+
+def _daily_radar_replay_workload(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    candidate_ids = {
+        int(row["candidate_id"])
+        for row in rows
+        if row.get("candidate_id") is not None
+    }
+    registry = get_rule_registry()
+    active_ablation_groups = {
+        entry.ablation_group
+        for entry in registry.values()
+        if entry.tier in SCORING_ACTIVE_TIERS
+        and entry.ablation_group in DEFAULT_ABLATION_GROUPS
+    }
+    scoring_pass_count = (
+        1
+        + SCORING_CANDIDATE_CONFIG_COUNT
+        + len(active_ablation_groups)
+    )
+    estimated_scoring_calls = len(candidate_ids) * scoring_pass_count
+    estimated_bootstrap_row_iterations = (
+        len(rows)
+        * SCORING_CANDIDATE_CONFIG_COUNT
+        * DEFAULT_BOOTSTRAP_ITERATIONS
+    )
+    exceeded_limits = []
+    if estimated_scoring_calls > MAX_GOVERNANCE_REPLAY_SCORING_CALLS:
+        exceeded_limits.append("replay_scoring_calls")
+    if (
+        estimated_bootstrap_row_iterations
+        > MAX_GOVERNANCE_BOOTSTRAP_ROW_ITERATIONS
+    ):
+        exceeded_limits.append("bootstrap_row_iterations")
+    return {
+        "candidate_count": len(candidate_ids),
+        "candidate_window_row_count": len(rows),
+        "candidate_config_count": SCORING_CANDIDATE_CONFIG_COUNT,
+        "active_ablation_group_count": len(active_ablation_groups),
+        "scoring_pass_count": scoring_pass_count,
+        "estimated_scoring_calls": estimated_scoring_calls,
+        "maximum_scoring_calls": MAX_GOVERNANCE_REPLAY_SCORING_CALLS,
+        "bootstrap_iterations": DEFAULT_BOOTSTRAP_ITERATIONS,
+        "estimated_bootstrap_row_iterations": (
+            estimated_bootstrap_row_iterations
+        ),
+        "maximum_bootstrap_row_iterations": (
+            MAX_GOVERNANCE_BOOTSTRAP_ROW_ITERATIONS
+        ),
+        "capacity_exceeded": bool(exceeded_limits),
+        "exceeded_limits": exceeded_limits,
+    }
 
 
 def _is_complete_daily_radar_replay_input(
@@ -1392,11 +1470,27 @@ def _scoring_candidate_report(
         after_holdout,
         selection=selection,
     )
-    bootstrap = block_bootstrap_delta(
-        before_training,
-        after_training,
-        metric=primary_metric,
+    bootstrap = block_bootstrap_mean_delta(
+        [row for row in before_training if selection(row)],
+        [row for row in after_training if selection(row)],
+        value=lambda row: _float_or_none(
+            _mapping(row.get("outcome")).get(
+                "excess_return_vs_benchmark_pct"
+            )
+        ),
         block_key="record_date",
+        block_values=sorted(
+            {
+                row.get("record_date")
+                for row in before_training
+                if row.get("record_date") is not None
+            }
+            & {
+                row.get("record_date")
+                for row in after_training
+                if row.get("record_date") is not None
+            }
+        ),
     )
     holdout_before = primary_metric(before_holdout)
     holdout_after = primary_metric(after_holdout)
