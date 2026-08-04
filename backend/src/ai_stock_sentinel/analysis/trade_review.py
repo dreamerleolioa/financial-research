@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from threading import BoundedSemaphore
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,12 +14,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
-from ai_stock_sentinel.analysis.review_sources import market_snapshot_payload
+from ai_stock_sentinel.analysis.review_sources import completed_trailing_series, market_snapshot_payload
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 
 
 MAX_DETECTED_EVENTS = 8
 TRADE_REVIEW_LOOKBACK_DAYS = 120
+TRADE_REVIEW_PROVIDER_CAPACITY = 4
+TRADE_REVIEW_PROVIDER_TIMEOUT_SECONDS = 10
+_TRADE_REVIEW_PROVIDER_SEMAPHORE = BoundedSemaphore(TRADE_REVIEW_PROVIDER_CAPACITY)
 logger = logging.getLogger(__name__)
 
 
@@ -42,27 +46,35 @@ def ensure_trade_review_market_data(
     start_date = portfolio.entry_date - timedelta(days=TRADE_REVIEW_LOOKBACK_DAYS)
     end_date = portfolio.exit_date
     fetched_at = datetime.now(timezone.utc)
-    try:
-        history = fetcher(portfolio.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
-            portfolio.symbol,
-            start_date,
-            end_date,
-        )
-        rows = _review_rows_from_history(portfolio, start_date, history)
-        if rows:
-            return ReviewMarketSnapshot(
-                rows=rows,
-                evidence=market_snapshot_payload(rows, provider="yfinance", fetched_at=fetched_at),
+    missing_reason = "provider_fetch_failed_or_empty"
+    if _TRADE_REVIEW_PROVIDER_SEMAPHORE.acquire(blocking=False):
+        try:
+            history = fetcher(portfolio.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
+                portfolio.symbol,
+                start_date,
+                end_date,
             )
-    except Exception as exc:
-        # A review may still be built from already persisted canonical rows, but
-        # the request must never mutate that canonical dataset.
-        logger.warning("Trade review market fetch failed for %s: %s", portfolio.symbol, exc)
+            rows = _review_rows_from_history(portfolio, start_date, history)
+            if rows:
+                return ReviewMarketSnapshot(
+                    rows=rows,
+                    evidence=market_snapshot_payload(rows, provider="yfinance", fetched_at=fetched_at),
+                )
+        except Exception as exc:
+            # A review may still be built from already persisted canonical rows,
+            # but the request must never mutate that canonical dataset.
+            logger.warning("Trade review market fetch failed for %s: %s", portfolio.symbol, exc)
+        finally:
+            _TRADE_REVIEW_PROVIDER_SEMAPHORE.release()
+    else:
+        missing_reason = "provider_capacity_exhausted"
+        logger.warning("Trade review provider capacity exhausted for %s", portfolio.symbol)
 
     rows = db.execute(
         select(StockRawData)
         .where(
             StockRawData.symbol == portfolio.symbol,
+            StockRawData.record_date >= start_date,
             StockRawData.record_date < portfolio.exit_date,
         )
         .order_by(StockRawData.record_date.asc())
@@ -72,7 +84,8 @@ def ensure_trade_review_market_data(
         evidence=market_snapshot_payload(
             rows,
             provider="stock_raw_data_read_only_fallback",
-            missing_reason="provider_fetch_failed_or_empty",
+            fetched_at=fetched_at,
+            missing_reason=missing_reason,
         ),
     )
 
@@ -152,7 +165,7 @@ def build_trade_review_payload(
         "user_readable_conclusion": user_readable_conclusion,
     }
     evidence_payload = {
-        "trade": _serialize_trade(portfolio),
+        "trade": trade_review_source_payload(portfolio),
         "position_group_id": portfolio.position_group_id,
         "path_metrics": path_metrics,
         "entry_indicators": entry_indicators,
@@ -625,7 +638,7 @@ def _event_label(event_type: str) -> str:
     return labels.get(event_type, event_type)
 
 
-def _serialize_trade(portfolio: UserPortfolio) -> dict[str, Any]:
+def trade_review_source_payload(portfolio: UserPortfolio) -> dict[str, Any]:
     realized_return_pct = _number(portfolio.realized_return_pct)
     return {
         "id": portfolio.id,
@@ -816,6 +829,8 @@ def _download_trade_review_history(symbol: str, start_date: date, end_date: date
         interval="1d",
         progress=False,
         threads=False,
+        timeout=TRADE_REVIEW_PROVIDER_TIMEOUT_SECONDS,
+        multi_level_index=False,
     )
 
 
@@ -867,7 +882,7 @@ def _iter_history_bars(history: Any) -> list[dict[str, Any]]:
             bar = _normalize_history_bar(item.get("date"), item)
             if bar is not None:
                 bars.append(bar)
-        return bars
+        return _sorted_unique_bars(bars)
     if not hasattr(history, "iterrows") or getattr(history, "empty", True):
         return []
     bars = []
@@ -875,7 +890,12 @@ def _iter_history_bars(history: Any) -> list[dict[str, Any]]:
         bar = _normalize_history_bar(index, row)
         if bar is not None:
             bars.append(bar)
-    return bars
+    return _sorted_unique_bars(bars)
+
+
+def _sorted_unique_bars(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_date = {bar["date"]: bar for bar in bars}
+    return [by_date[bar_date] for bar_date in sorted(by_date)]
 
 
 def _normalize_history_bar(raw_date: Any, row: Any) -> dict[str, Any] | None:
@@ -917,6 +937,11 @@ def _bar_date(value: Any) -> date | None:
 
 
 def _finite_number(value: Any) -> float | None:
+    if hasattr(value, "iloc"):
+        try:
+            value = value.iloc[0] if len(value) == 1 else value
+        except TypeError:
+            pass
     number = _number(value)
     if number is None or not math.isfinite(number):
         return None
@@ -1050,13 +1075,16 @@ def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[
     same_day_row = next((row for row in reversed(rows) if row.record_date == as_of), None)
     same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
     if same_day_closes:
-        return {
-            "closes": same_day_closes[:-1],
-            "highs": _technical_values(same_day_row, "recent_highs")[:-1],
-            "lows": _technical_values(same_day_row, "recent_lows")[:-1],
-            "volumes": _technical_values(same_day_row, "recent_volumes")[:-1],
-            "from_snapshot": True,
-        }
+        completed = completed_trailing_series(
+            same_day_row.technical,
+            as_of,
+            closes=same_day_closes,
+            highs=_technical_values(same_day_row, "recent_highs"),
+            lows=_technical_values(same_day_row, "recent_lows"),
+            volumes=_technical_values(same_day_row, "recent_volumes"),
+        )
+        if completed is not None:
+            return {**completed, "from_snapshot": True}
     latest_row = _latest_row_at_or_before(rows, as_of)
     if latest_row is not None:
         closes = _technical_values(latest_row, "recent_closes")

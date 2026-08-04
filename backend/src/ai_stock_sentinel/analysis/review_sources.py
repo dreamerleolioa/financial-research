@@ -8,6 +8,64 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 
+def completed_trailing_series(
+    technical: Any,
+    as_of: date,
+    *,
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    volumes: list[float],
+) -> dict[str, list[float]] | None:
+    """Return only bars known to be complete before ``as_of``.
+
+    A cache row's ``record_date`` is its observation date, not necessarily the
+    date of the final OHLC bar.  The embedded data date is therefore the source
+    of truth for deciding whether the trailing series needs its final bar
+    removed.
+    """
+    if not isinstance(technical, dict):
+        return None
+    data_dates = technical.get("data_dates")
+    data_date = _parse_date(data_dates.get("ohlcv")) if isinstance(data_dates, dict) else None
+    if data_date is None or data_date > as_of:
+        return None
+    if data_date < as_of:
+        return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
+
+    close_count = len(closes)
+    volume_dates = technical.get("recent_volume_dates")
+    parsed_volume_dates = (
+        [_parse_date(value) for value in volume_dates]
+        if isinstance(volume_dates, list) and len(volume_dates) == len(volumes)
+        else []
+    )
+    latest_volume_date = parsed_volume_dates[-1] if parsed_volume_dates else None
+    if latest_volume_date is not None:
+        volume_includes_as_of = latest_volume_date == as_of
+    else:
+        volume_includes_as_of = len(volumes) == close_count
+    return {
+        "closes": closes[:-1],
+        "highs": highs[:-1] if len(highs) == close_count else highs,
+        "lows": lows[:-1] if len(lows) == close_count else lows,
+        "volumes": volumes[:-1] if volume_includes_as_of else volumes,
+    }
+
+
+def _parse_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
 def attach_source_fingerprint(
     evidence_payload: dict[str, Any],
     *,

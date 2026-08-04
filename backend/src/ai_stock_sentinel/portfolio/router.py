@@ -1,7 +1,7 @@
 # backend/src/ai_stock_sentinel/portfolio/router.py
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecycle_analysis
 from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint
-from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
+from ai_stock_sentinel.analysis.trade_review import (
+    build_trade_review_payload,
+    ensure_trade_review_market_data,
+    trade_review_source_payload,
+)
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
@@ -52,6 +56,12 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 TRADE_REVIEW_VERSION = "trade-review-v3"
 KNOWN_TRADE_REVIEW_VERSIONS = {"trade-review-v1", "trade-review-v2", TRADE_REVIEW_VERSION}
 POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v2"
+KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
+    "position-lifecycle-review-v1",
+    POSITION_LIFECYCLE_REVIEW_VERSION,
+}
+TRADE_REVIEW_SUCCESS_REFRESH_TTL = timedelta(hours=6)
+TRADE_REVIEW_FAILURE_RETRY_TTL = timedelta(minutes=5)
 
 
 def get_portfolio_quote_fetcher():
@@ -196,13 +206,20 @@ def _serialize_decision_context_status(
     }
 
 
-def _get_reviewable_portfolio(db: Session, portfolio_id: int, user_id: int) -> UserPortfolio:
-    item = db.execute(
-        select(UserPortfolio).where(
-            UserPortfolio.id == portfolio_id,
-            UserPortfolio.user_id == user_id,
-        )
-    ).scalar_one_or_none()
+def _get_reviewable_portfolio(
+    db: Session,
+    portfolio_id: int,
+    user_id: int,
+    *,
+    lock: bool = False,
+) -> UserPortfolio:
+    statement = select(UserPortfolio).where(
+        UserPortfolio.id == portfolio_id,
+        UserPortfolio.user_id == user_id,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    item = db.execute(statement).scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=403, detail="無權限")
     if item.is_active or item.exit_date is None:
@@ -238,13 +255,20 @@ def _get_owned_position_group(db: Session, position_group_id: str, user_id: int)
     return group
 
 
-def _get_owned_closed_position_group(db: Session, position_group_id: str, user_id: int) -> UserPortfolio:
-    rows = db.execute(
-        select(UserPortfolio).where(
-            UserPortfolio.user_id == user_id,
-            UserPortfolio.position_group_id == position_group_id,
-        )
-    ).scalars().all()
+def _get_owned_closed_position_group(
+    db: Session,
+    position_group_id: str,
+    user_id: int,
+    *,
+    lock: bool = False,
+) -> UserPortfolio:
+    statement = select(UserPortfolio).where(
+        UserPortfolio.user_id == user_id,
+        UserPortfolio.position_group_id == position_group_id,
+    ).order_by(UserPortfolio.id.asc())
+    if lock:
+        statement = statement.with_for_update()
+    rows = db.execute(statement).scalars().all()
     if not rows:
         raise HTTPException(status_code=403, detail="無權限")
     events = db.execute(
@@ -285,39 +309,69 @@ def _get_latest_saved_position_lifecycle_review(
     position_group_id: str,
     user_id: int,
 ) -> PositionLifecycleReview | None:
-    current = _get_position_lifecycle_review(db, position_group_id, user_id)
-    if current is not None:
-        return current
-    return db.execute(
+    reviews = db.execute(
         select(PositionLifecycleReview)
         .where(
             PositionLifecycleReview.user_id == user_id,
             PositionLifecycleReview.position_group_id == position_group_id,
         )
         .order_by(PositionLifecycleReview.created_at.desc(), PositionLifecycleReview.id.desc())
-    ).scalars().first()
+    ).scalars().all()
+    unknown = next(
+        (review for review in reviews if review.review_version not in KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS),
+        None,
+    )
+    if unknown is not None:
+        return unknown
+    current = next((review for review in reviews if review.review_version == POSITION_LIFECYCLE_REVIEW_VERSION), None)
+    return current or (reviews[0] if reviews else None)
+
+
+def _get_unknown_position_lifecycle_review(
+    db: Session,
+    position_group_id: str,
+    user_id: int,
+) -> PositionLifecycleReview | None:
+    return next(
+        (
+            review
+            for review in db.execute(
+                select(PositionLifecycleReview)
+                .where(
+                    PositionLifecycleReview.user_id == user_id,
+                    PositionLifecycleReview.position_group_id == position_group_id,
+                )
+                .order_by(PositionLifecycleReview.created_at.desc(), PositionLifecycleReview.id.desc())
+            ).scalars()
+            if review.review_version not in KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS
+        ),
+        None,
+    )
+
+
+def _market_snapshot_regressed(existing_market: object, new_market: object) -> bool:
+    if not isinstance(existing_market, dict) or not isinstance(new_market, dict):
+        return False
+    existing_quality = existing_market.get("quality") if isinstance(existing_market.get("quality"), dict) else {}
+    new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
+    existing_missing = bool(existing_quality.get("missing_reason"))
+    new_missing = bool(new_quality.get("missing_reason"))
+    if not existing_missing and new_missing:
+        return True
+    if existing_missing and not new_missing:
+        return False
+    existing_count = existing_quality.get("row_count")
+    new_count = new_quality.get("row_count")
+    return isinstance(existing_count, int) and isinstance(new_count, int) and existing_count > new_count
 
 
 def _trade_review_snapshot_regressed(existing_review: TradeReview, evidence_payload: dict) -> bool:
     existing_evidence = existing_review.evidence_payload if isinstance(existing_review.evidence_payload, dict) else {}
     if existing_evidence.get("trade") != evidence_payload.get("trade"):
         return False
-    existing_market = existing_evidence.get("market_snapshot")
-    new_market = evidence_payload.get("market_snapshot")
-    if not isinstance(existing_market, dict) or not isinstance(new_market, dict):
-        return False
-    existing_quality = existing_market.get("quality") if isinstance(existing_market.get("quality"), dict) else {}
-    new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
-    existing_count = existing_quality.get("row_count")
-    new_count = new_quality.get("row_count")
-    if not isinstance(existing_count, int) or not isinstance(new_count, int):
-        return False
-    if existing_count > new_count:
-        return True
-    return (
-        existing_count >= new_count
-        and not existing_quality.get("missing_reason")
-        and bool(new_quality.get("missing_reason"))
+    return _market_snapshot_regressed(
+        existing_evidence.get("market_snapshot"),
+        evidence_payload.get("market_snapshot"),
     )
 
 
@@ -329,19 +383,45 @@ def _lifecycle_review_snapshot_regressed(
     for key in ("events", "plan_snapshot", "shared_context"):
         if existing_evidence.get(key) != evidence_payload.get(key):
             return False
-    existing_market = existing_evidence.get("market_snapshot")
-    new_market = evidence_payload.get("market_snapshot")
-    if not isinstance(existing_market, dict) or not isinstance(new_market, dict):
-        return False
-    existing_quality = existing_market.get("quality") if isinstance(existing_market.get("quality"), dict) else {}
-    new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
-    existing_count = existing_quality.get("row_count")
-    new_count = new_quality.get("row_count")
-    return (
-        isinstance(existing_count, int)
-        and isinstance(new_count, int)
-        and existing_count > new_count
+    return _market_snapshot_regressed(
+        existing_evidence.get("market_snapshot"),
+        evidence_payload.get("market_snapshot"),
     )
+
+
+def _parse_utc_datetime(value: object) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    return value.astimezone(timezone.utc)
+
+
+def _trade_review_cache_reusable(
+    review: TradeReview,
+    item: UserPortfolio,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if review.review_version != TRADE_REVIEW_VERSION:
+        return False
+    evidence = review.evidence_payload if isinstance(review.evidence_payload, dict) else {}
+    if evidence.get("trade") != trade_review_source_payload(item):
+        return False
+    market = evidence.get("market_snapshot")
+    if not isinstance(market, dict):
+        return False
+    fetched_at = _parse_utc_datetime(market.get("fetched_at"))
+    if fetched_at is None:
+        return False
+    quality = market.get("quality") if isinstance(market.get("quality"), dict) else {}
+    ttl = TRADE_REVIEW_FAILURE_RETRY_TTL if quality.get("missing_reason") else TRADE_REVIEW_SUCCESS_REFRESH_TTL
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    age = current_time - fetched_at
+    return timedelta(0) <= age < ttl
 
 
 @router.get("")
@@ -532,9 +612,13 @@ def update_portfolio_lifecycle_plan(
         )
         db.add(plan)
     else:
+        plan_changed = any(getattr(plan, key) != value for key, value in plan_values.items())
         for key, value in plan_values.items():
             setattr(plan, key, value)
         plan.source_portfolio_id = item.id
+        if plan_changed:
+            plan.source = "user_backfilled"
+            plan.created_after_entry = True
         plan.updated_at = datetime.now(timezone.utc)
 
     db.commit()
@@ -605,7 +689,10 @@ def create_position_lifecycle_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    group = _get_owned_closed_position_group(db, position_group_id, current_user.id)
+    group = _get_owned_closed_position_group(db, position_group_id, current_user.id, lock=True)
+    unknown_review = _get_unknown_position_lifecycle_review(db, position_group_id, current_user.id)
+    if unknown_review is not None:
+        return _serialize_position_lifecycle_review(unknown_review)
     existing_review = _get_position_lifecycle_review(db, position_group_id, current_user.id)
 
     try:
@@ -622,6 +709,7 @@ def create_position_lifecycle_review(
         )
         if (
             existing_review
+            and isinstance(existing_review.evidence_payload, dict)
             and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
         ):
             return _serialize_position_lifecycle_review(existing_review)
@@ -675,7 +763,7 @@ def create_trade_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id)
+    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id, lock=True)
     existing_review = db.execute(
         select(TradeReview).where(
             TradeReview.portfolio_id == portfolio_id,
@@ -683,6 +771,8 @@ def create_trade_review(
         )
     ).scalar_one_or_none()
     if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
+        return _serialize_trade_review(existing_review)
+    if existing_review and _trade_review_cache_reusable(existing_review, item):
         return _serialize_trade_review(existing_review)
 
     market_snapshot = ensure_trade_review_market_data(db, item)
@@ -700,6 +790,7 @@ def create_trade_review(
     if (
         existing_review
         and existing_review.review_version == TRADE_REVIEW_VERSION
+        and isinstance(existing_review.evidence_payload, dict)
         and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
     ):
         return _serialize_trade_review(existing_review)

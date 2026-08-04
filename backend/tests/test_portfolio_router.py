@@ -2371,7 +2371,7 @@ def test_backfill_lifecycle_plan_saves_user_backfilled_provenance(
     assert plan.source_portfolio_id == 42
 
 
-def test_update_lifecycle_plan_preserves_event_time_provenance(
+def test_update_lifecycle_plan_marks_changed_event_time_plan_as_retrospective(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
@@ -2407,15 +2407,53 @@ def test_update_lifecycle_plan_preserves_event_time_provenance(
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["source"] == "user_recorded_at_event_time"
-    assert data["created_after_entry"] is False
+    assert data["source"] == "user_backfilled"
+    assert data["created_after_entry"] is True
     assert data["planned_holding_period"] == "medium_term"
     assert data["default_stop_rule"] == "fixed_price"
     assert data["planned_stop_price"] == 860.0
     plan = portfolio_db_session.execute(select(PositionLifecyclePlan)).scalar_one()
-    assert plan.source == "user_recorded_at_event_time"
-    assert plan.created_after_entry is False
+    assert plan.source == "user_backfilled"
+    assert plan.created_after_entry is True
     assert float(plan.planned_stop_price) == 860.0
+
+
+def test_update_lifecycle_plan_preserves_event_time_provenance_when_values_are_unchanged(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-unchanged-plan",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.add(PositionLifecyclePlan(
+        user_id=1,
+        position_group_id="group-unchanged-plan",
+        symbol="2330.TW",
+        source_portfolio_id=42,
+        planned_holding_period="swing",
+        default_stop_rule="break_ma20",
+        planned_stop_price=880,
+        source="user_recorded_at_event_time",
+        created_after_entry=False,
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.put("/portfolio/42/lifecycle-plan", json={
+        "planned_holding_period": "swing",
+        "default_stop_rule": "break_ma20",
+        "planned_stop_price": 880.0,
+    })
+
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "user_recorded_at_event_time"
+    assert resp.json()["created_after_entry"] is False
 
 
 def test_update_lifecycle_plan_creates_backfilled_plan_when_missing(
@@ -3161,6 +3199,7 @@ def _add_snapshot_raw_rows(
                 "recent_highs": [close + 5 for close in closes],
                 "recent_lows": [close - 5 for close in closes],
                 "recent_volumes": [1000 + offset for offset, _ in enumerate(closes)],
+                "data_dates": {"ohlcv": record_date.isoformat()},
             },
             raw_data_is_final=True,
         ))
@@ -3365,6 +3404,112 @@ def test_position_lifecycle_review_keeps_better_snapshot_when_market_rows_regres
     assert second.status_code == 200
     assert second.json() == first.json()
     assert second.json()["evidence_payload"]["market_snapshot"]["quality"]["row_count"] == 1
+
+
+def test_position_lifecycle_review_preserves_unknown_newer_version(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_builder(*_args, **_kwargs):
+        raise AssertionError("unknown newer lifecycle review must remain read-only")
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v2",
+        review_result={"current": True},
+        evidence_payload={"current": True},
+        llm_summary=None,
+    ))
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v3",
+        review_result={"future": True},
+        evidence_payload={"future": True},
+        llm_summary="future summary",
+    ))
+    portfolio_db_session.commit()
+
+    post_resp = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+    get_resp = portfolio_db_client.get("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert post_resp.status_code == 200
+    assert get_resp.status_code == 200
+    assert post_resp.json()["review_version"] == "position-lifecycle-review-v3"
+    assert get_resp.json()["review_version"] == "position-lifecycle-review-v3"
+    assert len(portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()) == 2
+
+
+def test_trade_review_regression_guard_prefers_normal_provider_over_larger_fallback():
+    existing = SimpleNamespace(evidence_payload={
+        "trade": {"id": 42},
+        "market_snapshot": {
+            "provider": "yfinance",
+            "quality": {"row_count": 80, "missing_reason": None},
+        },
+    })
+    fallback = {
+        "trade": {"id": 42},
+        "market_snapshot": {
+            "provider": "stock_raw_data_read_only_fallback",
+            "quality": {"row_count": 200, "missing_reason": "provider_fetch_failed_or_empty"},
+        },
+    }
+
+    assert portfolio_router_module._trade_review_snapshot_regressed(existing, fallback) is True
+
+
+@pytest.mark.parametrize(
+    ("missing_reason", "age", "expected"),
+    [
+        (None, timedelta(hours=5), True),
+        (None, timedelta(hours=7), False),
+        (None, timedelta(minutes=-1), False),
+        ("provider_fetch_failed_or_empty", timedelta(minutes=4), True),
+        ("provider_fetch_failed_or_empty", timedelta(minutes=6), False),
+    ],
+)
+def test_trade_review_cache_uses_distinct_success_and_failure_ttls(
+    missing_reason: str | None,
+    age: timedelta,
+    expected: bool,
+):
+    now = datetime(2026, 8, 4, 8, tzinfo=timezone.utc)
+    item = UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-review",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 11),
+        exit_price=950,
+        exit_quantity=100,
+        realized_pnl=5000,
+        realized_return_pct=5.5556,
+        holding_days=10,
+    )
+    review = SimpleNamespace(
+        review_version="trade-review-v3",
+        evidence_payload={
+            "trade": portfolio_router_module.trade_review_source_payload(item),
+            "market_snapshot": {
+                "fetched_at": (now - age).isoformat(),
+                "quality": {"row_count": 80, "missing_reason": missing_reason},
+            },
+        },
+    )
+
+    assert portfolio_router_module._trade_review_cache_reusable(review, item, now=now) is expected
 
 
 def test_position_lifecycle_review_excludes_future_shared_context(

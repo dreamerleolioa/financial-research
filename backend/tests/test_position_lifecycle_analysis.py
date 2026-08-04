@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.analysis.position_lifecycle import (
+    _point_in_time_values,
     build_position_lifecycle_analysis,
     build_position_lifecycle_analysis_from_rows,
 )
@@ -105,6 +106,7 @@ def _snapshot_row(record_date: date, closes: list[float], symbol: str = "2330.TW
             "recent_highs": [close + 1 for close in closes],
             "recent_lows": [close - 1 for close in closes],
             "recent_volumes": [1000 + index for index, _close in enumerate(closes)],
+            "data_dates": {"ohlcv": record_date.isoformat()},
         },
     )
 
@@ -333,6 +335,26 @@ def test_point_in_time_indicators_do_not_use_future_market_data():
     assert snapshot["ma60"] == pytest.approx(33.5)
     assert snapshot["rsi14"] == pytest.approx(100)
     assert snapshot["event_price_vs_ma20_pct"] == pytest.approx(19.6262)
+
+
+def test_lifecycle_same_day_stale_snapshot_keeps_last_completed_bar():
+    row = _snapshot_row(date(2026, 3, 2), [10, 11, 12])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-01"}
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11, 12]
+
+
+def test_lifecycle_same_day_snapshot_keeps_prior_volume_when_current_volume_is_missing():
+    row = _snapshot_row(date(2026, 3, 2), [10, 11, 12])
+    row.technical["recent_volumes"] = [100, 200]
+    row.technical["data_dates"] = {"ohlcv": "2026-03-02"}
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["volumes"] == [100, 200]
 
 
 def test_evidence_payload_is_compact_and_excludes_forbidden_raw_context():

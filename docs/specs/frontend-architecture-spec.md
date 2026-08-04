@@ -142,7 +142,7 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - Auth cache isolation：登入、登出、token 驗證失敗或其他分頁的 `auth_token` storage event 都必須先 cancel／clear 共用 QueryClient 與價格 overlay。其他分頁換帳號時，本分頁需用新 token 重新執行 `/auth/me`，並以 verification sequence 丟棄晚到的舊身分 response；不得保留前一位使用者的 user state 或 portfolio query cache。
 - Active freshness：持股列分開顯示 `price_context` 的價格時間／盤中狀態與 latest history 的 AI 分析日期。價格刷新 partial failure 時保留後端 fallback 值並明示失敗，不把舊價偽裝成剛更新成功。
 - Caveat hierarchy：缺少 plan、風險資料注意與資料不足仍需在持股列可見，但只作次要狀態，不得以大型警告卡壓過部位狀態與防守距離。
-- Closed position groups：已結案頁先顯示期間已實現損益與部位群組數量，再以部位群組彙整結案規模、總損益、整體部位檢討、事件時間線與每筆結案批次。單筆檢討讀到 v1 / v2 / v3 時會 POST 進行 v3 升級或 fingerprint freshness 檢查，未知較新版本只讀不降級；生命週期檢討採 closed-only，事後補填 plan 需顯示 `retrospective_only` 提示，不得呈現為歷史違規或客觀分數。
+- Closed position groups：已結案頁先顯示期間已實現損益與部位群組數量，再以部位群組彙整結案規模、總損益、整體部位檢討、事件時間線與每筆結案批次。單筆檢討讀到 v1 / v2 / v3 時會 POST 進行 v3 升級或 freshness 檢查；後端可在 closed facts 未變且 provider snapshot 仍在成功／失敗 TTL 內直接重用。Single Trade Review 與 Lifecycle Review 的未知較新版本都只讀不降級；生命週期檢討採 closed-only，事後補填或進場後已修改的 plan 需顯示 `retrospective_only` 提示，不得呈現為歷史違規或客觀分數。
 
 ## Analyze Technical Indicator Surface
 

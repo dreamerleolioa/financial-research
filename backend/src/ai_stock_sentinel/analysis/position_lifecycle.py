@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
-from ai_stock_sentinel.analysis.review_sources import market_snapshot_payload
+from ai_stock_sentinel.analysis.review_sources import completed_trailing_series, market_snapshot_payload
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData
 from ai_stock_sentinel.shared_context import (
     SHARED_CONTEXT_CONSUMER_LIFECYCLE,
@@ -1174,12 +1174,16 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
     )
     same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
     if same_day_closes:
-        return {
-            "closes": same_day_closes[:-1],
-            "highs": _technical_values(same_day_row, "recent_highs")[:-1],
-            "lows": _technical_values(same_day_row, "recent_lows")[:-1],
-            "volumes": _technical_values(same_day_row, "recent_volumes")[:-1],
-        }
+        completed = completed_trailing_series(
+            _event_value(same_day_row, "technical"),
+            as_of,
+            closes=same_day_closes,
+            highs=_technical_values(same_day_row, "recent_highs"),
+            lows=_technical_values(same_day_row, "recent_lows"),
+            volumes=_technical_values(same_day_row, "recent_volumes"),
+        )
+        if completed is not None:
+            return completed
     latest_row = None
     for row in rows:
         row_date = _event_value(row, "record_date")
