@@ -17,8 +17,12 @@ from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
 from ai_stock_sentinel.portfolio.schemas import ClosePortfolioRequest
 from ai_stock_sentinel.portfolio.storage_limits import (
     POSITION_EVENT_MONEY_MAX,
+    POSITION_EVENT_MONEY_QUANTUM,
     REALIZED_PNL_MAX,
+    REALIZED_PNL_QUANTUM,
     REALIZED_RETURN_PCT_MAX,
+    REALIZED_RETURN_PCT_QUANTUM,
+    quantize_for_storage,
 )
 
 
@@ -58,16 +62,20 @@ def close_position(
     gross_exit_amount = exit_price * exit_quantity
     explicit_fee = Decimal(str(payload.fees)) if payload.fees is not None else None
     explicit_tax = Decimal(str(payload.taxes)) if payload.taxes is not None else None
-    row_fees = calculate_broker_fee(
-        gross_exit_amount,
-        actual_fee=explicit_fee,
+    row_fees = quantize_for_storage(
+        calculate_broker_fee(gross_exit_amount, actual_fee=explicit_fee),
+        POSITION_EVENT_MONEY_QUANTUM,
     )
-    row_taxes = calculate_sell_transaction_tax(
-        gross_exit_amount,
-        explicit_tax=explicit_tax,
+    row_taxes = quantize_for_storage(
+        calculate_sell_transaction_tax(gross_exit_amount, explicit_tax=explicit_tax),
+        POSITION_EVENT_MONEY_QUANTUM,
     )
-    realized_pnl = (exit_price - entry_price) * exit_quantity - row_fees - row_taxes
-    realized_return_pct = realized_pnl / (entry_price * exit_quantity) * Decimal("100")
+    raw_realized_pnl = (exit_price - entry_price) * exit_quantity - row_fees - row_taxes
+    realized_pnl = quantize_for_storage(raw_realized_pnl, REALIZED_PNL_QUANTUM)
+    realized_return_pct = quantize_for_storage(
+        raw_realized_pnl / (entry_price * exit_quantity) * Decimal("100"),
+        REALIZED_RETURN_PCT_QUANTUM,
+    )
     if (
         row_fees > POSITION_EVENT_MONEY_MAX
         or row_taxes > POSITION_EVENT_MONEY_MAX

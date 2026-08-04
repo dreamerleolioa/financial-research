@@ -90,7 +90,7 @@ def test_entry_record_context_rejects_invalid_planned_stop_price(value: float):
         EntryRecordContext(planned_stop_price=value)
 
 
-@pytest.mark.parametrize("value", [0.00001, 100_000_000])
+@pytest.mark.parametrize("value", [0.00001, 95.00001, 100_000_000])
 def test_entry_record_context_rejects_planned_stop_price_outside_postgresql_numeric_range(value: float):
     with pytest.raises(ValidationError):
         EntryRecordContext(planned_stop_price=value)

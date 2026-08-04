@@ -1,5 +1,8 @@
 """repair synthetic split ledger quantity
 
+Operational gate: run this data migration with legacy portfolio writers
+quiesced. Row locks protect this transaction, not post-commit rolling traffic.
+
 Revision ID: 1b2c3d4e5f6a
 Revises: 0a1b2c3d4e5f
 Create Date: 2026-08-03 00:00:00.000000
@@ -150,6 +153,51 @@ def _lock_portfolio_rows_if_unchanged(bind: Any, group_rows: Sequence[Any]) -> b
     return True
 
 
+def _lock_events_if_unchanged(bind: Any, events: Sequence[Any]) -> bool:
+    """Compare-and-lock every event fact used to derive the repaired quantity."""
+    for event in sorted(events, key=lambda item: int(item.id)):
+        result = bind.execute(
+            sa.text(
+                """
+                UPDATE position_event
+                SET updated_at = updated_at
+                WHERE id = :event_id
+                  AND (user_id = :user_id OR (user_id IS NULL AND :user_id IS NULL))
+                  AND position_group_id = :position_group_id
+                  AND symbol = :symbol
+                  AND event_type = :event_type
+                  AND event_date = :event_date
+                  AND price = :price
+                  AND quantity = :quantity
+                  AND source = :source
+                  AND (
+                      source_portfolio_id = :source_portfolio_id
+                      OR (source_portfolio_id IS NULL AND :source_portfolio_id IS NULL)
+                  )
+                  AND created_at = :created_at
+                  AND updated_at = :updated_at
+                """
+            ),
+            {
+                "event_id": event.id,
+                "user_id": event.user_id,
+                "position_group_id": event.position_group_id,
+                "symbol": event.symbol,
+                "event_type": event.event_type,
+                "event_date": event.event_date,
+                "price": event.price,
+                "quantity": event.quantity,
+                "source": event.source,
+                "source_portfolio_id": event.source_portfolio_id,
+                "created_at": event.created_at,
+                "updated_at": event.updated_at,
+            },
+        )
+        if result.rowcount != 1:
+            return False
+    return True
+
+
 def _repair_synthetic_group_quantities() -> None:
     """Repair only deterministic active and fully-closed shapes from the original migration."""
     bind = op.get_bind()
@@ -245,6 +293,8 @@ def _repair_synthetic_group_quantities() -> None:
         if int(initial_events[0].quantity) == expected_initial_quantity:
             continue
         if not _lock_portfolio_rows_if_unchanged(bind, group_rows):
+            continue
+        if not _lock_events_if_unchanged(bind, events):
             continue
 
         initial_event = initial_events[0]

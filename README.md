@@ -263,6 +263,18 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
 
+#### Portfolio ledger repair migration 部署門檻
+
+`1b2c3d4e5f6a_repair_synthetic_split_ledger_quantity` 是會修正既有 portfolio/event facts 的 data migration。這一版不可讓舊版 `PUT /portfolio/{id}` writer 與 migration 做 rolling overlap；舊版只更新 portfolio row，可能在 migration commit 後重新造成 ledger 分裂。
+
+部署時必須依序執行：
+
+1. 進入 maintenance mode，停止舊版 backend instances 或至少封鎖 portfolio create/update/add-entry/close writes。
+2. 使用即將部署的 revision 在 `backend/` 明確執行 `uv run alembic upgrade head`，並確認 head 為 `1b2c3d4e5f6a`；不得只依賴 FastAPI lifespan 在 rolling traffic 期間自動升級。
+3. 啟動新版 backend，確認所有舊版 instances 已退出後，再重新開放 portfolio writes。
+
+Migration 內的 compare-and-lock 只保護同一個 DB transaction 讀取快照到寫入之間的競態，不能取代上述跨版本 write quiescence。
+
 ---
 
 ## 使用方式

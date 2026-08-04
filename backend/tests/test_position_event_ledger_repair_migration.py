@@ -1079,3 +1079,61 @@ def test_repair_migration_skips_group_when_source_portfolio_changes_after_snapsh
         assert bind.injected is True
         assert float(active_row.entry_price) == 950
         assert initial_event.quantity == 60
+
+
+def test_repair_migration_skips_group_when_exit_event_changes_after_snapshot() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    with Session(engine) as session:
+        group_id = "group-concurrent-exit-correction"
+        _add_active_split_group(session, group_id=group_id)
+        connection = session.connection()
+
+        class ConcurrentExitCorrectionBind:
+            injected = False
+
+            def execute(self, statement, parameters=None):
+                sql = str(statement)
+                if not self.injected and "UPDATE position_event" in sql:
+                    connection.execute(
+                        text(
+                            """
+                            UPDATE position_event
+                            SET quantity = 30,
+                                updated_at = :updated_at
+                            WHERE position_group_id = :position_group_id
+                              AND event_type = 'partial_exit'
+                            """
+                        ),
+                        {
+                            "updated_at": datetime(2026, 7, 3, tzinfo=timezone.utc),
+                            "position_group_id": group_id,
+                        },
+                    )
+                    self.injected = True
+                if parameters is None:
+                    return connection.execute(statement)
+                return connection.execute(statement, parameters)
+
+        bind = ConcurrentExitCorrectionBind()
+        migration.op = SimpleNamespace(get_bind=lambda: bind)
+        migration._repair_synthetic_group_quantities()
+
+        session.expire_all()
+        events = list(session.execute(
+            select(PositionEvent)
+            .where(PositionEvent.position_group_id == group_id)
+            .order_by(PositionEvent.event_date, PositionEvent.id)
+        ).scalars())
+        assert bind.injected is True
+        assert [(event.event_type, event.quantity) for event in events] == [
+            ("initial_entry", 60),
+            ("partial_exit", 30),
+        ]
+        assert ledger_open_quantity(events) == 30

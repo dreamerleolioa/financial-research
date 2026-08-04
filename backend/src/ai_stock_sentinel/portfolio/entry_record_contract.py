@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Final, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from ai_stock_sentinel.portfolio.storage_limits import (
-    LIFECYCLE_PRICE_MAX,
-    LIFECYCLE_PRICE_MIN,
+    LifecyclePrice,
 )
 
 
@@ -105,11 +104,6 @@ class EntryRecordContext(BaseModel):
     entry_reason: EntryReason | None = None
     planned_holding_period: PlannedHoldingPeriod | None = None
     default_stop_rule: DefaultStopRule | None = None
-    planned_stop_price: float | None = Field(
-        default=None,
-        ge=LIFECYCLE_PRICE_MIN,
-        le=LIFECYCLE_PRICE_MAX,
-        allow_inf_nan=False,
-    )
+    planned_stop_price: LifecyclePrice | None = None
     add_entry_condition: AddEntryCondition | None = None
     note: str | None = None

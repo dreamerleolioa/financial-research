@@ -5,6 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict as _asdict, is_dataclass
 from datetime import date as _date_type
+from decimal import Decimal
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -62,6 +63,8 @@ app = FastAPI(title="AI Stock Sentinel API", version="v1", lifespan=lifespan)
 def _sanitize_validation_error_value(value: Any) -> Any:
     if isinstance(value, BaseException):
         return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, dict):

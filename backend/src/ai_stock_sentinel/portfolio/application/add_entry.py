@@ -20,8 +20,10 @@ from ai_stock_sentinel.portfolio.schemas import AddEntryRequest
 from ai_stock_sentinel.portfolio.storage_limits import (
     PORTFOLIO_PRICE_MAX,
     PORTFOLIO_PRICE_MIN,
+    PORTFOLIO_PRICE_QUANTUM,
     POSITION_EVENT_MONEY_MAX,
     POSTGRES_INTEGER_MAX,
+    quantize_for_storage,
 )
 
 
@@ -61,7 +63,10 @@ def add_entry_to_position(
         actual_fee=Decimal(str(payload.fees)) if payload.fees is not None else None,
     )
     event_taxes = Decimal(str(payload.taxes)) if payload.taxes is not None else Decimal("0")
-    new_entry_price = ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity
+    new_entry_price = quantize_for_storage(
+        ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity,
+        PORTFOLIO_PRICE_QUANTUM,
+    )
     if (
         event_fees > POSITION_EVENT_MONEY_MAX
         or event_taxes > POSITION_EVENT_MONEY_MAX

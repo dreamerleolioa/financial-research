@@ -177,7 +177,7 @@ def test_add_portfolio_rejects_quantity_above_postgresql_integer_max():
     assert resp.status_code == 422
 
 
-@pytest.mark.parametrize("entry_price", [0.001, 100_000_000])
+@pytest.mark.parametrize("entry_price", [0.001, 900.001, 100_000_000])
 def test_add_portfolio_rejects_entry_price_outside_postgresql_numeric_range(
     entry_price,
     monkeypatch: pytest.MonkeyPatch,
@@ -897,7 +897,7 @@ def test_update_portfolio_rejects_quantity_above_postgresql_integer_max():
     assert resp.status_code == 422
 
 
-@pytest.mark.parametrize("entry_price", [0.001, 100_000_000])
+@pytest.mark.parametrize("entry_price", [0.001, 900.001, 100_000_000])
 def test_update_portfolio_rejects_entry_price_outside_postgresql_numeric_range(entry_price):
     item = _make_portfolio_item(user_id=1)
     client = _make_client_with_item(item, user_id=1)
@@ -915,12 +915,13 @@ def test_update_portfolio_rejects_entry_price_outside_postgresql_numeric_range(e
     "/portfolio/42/close",
     "/portfolio/42/add-entry",
 ])
-def test_lifecycle_mutations_reject_price_outside_postgresql_numeric_range(path):
+@pytest.mark.parametrize("invalid_price", [900.001, 100_000_000])
+def test_lifecycle_mutations_reject_price_outside_postgresql_numeric_range(path, invalid_price):
     item = _make_portfolio_item(user_id=1)
     client = _make_client_with_item(item, user_id=1)
     payload = {
         "event_date": "2026-02-01",
-        "price": 100_000_000,
+        "price": invalid_price,
         "quantity": 1,
         "reason_code": "planned_scale_in",
         "plan_adherence": "yes",
@@ -929,7 +930,7 @@ def test_lifecycle_mutations_reject_price_outside_postgresql_numeric_range(path)
     if path.endswith("/close"):
         payload = {
             "exit_date": "2026-02-01",
-            "exit_price": 100_000_000,
+            "exit_price": invalid_price,
             "exit_quantity": 1,
         }
 
