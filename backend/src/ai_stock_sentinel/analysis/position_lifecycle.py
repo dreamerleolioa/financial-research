@@ -53,6 +53,7 @@ def build_position_lifecycle_analysis(
                 .where(
                     StockRawData.symbol == symbol,
                     StockRawData.record_date <= analysis_end,
+                    StockRawData.raw_data_is_final.is_(True),
                 )
                 .order_by(StockRawData.record_date.asc())
             ).scalars().all()

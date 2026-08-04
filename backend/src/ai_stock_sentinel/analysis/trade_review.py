@@ -77,6 +77,8 @@ def ensure_trade_review_market_data(
                         fetched_at=fetched_at,
                         coverage_start=start_date,
                         coverage_end=end_date,
+                        holding_start=target.entry_date,
+                        holding_end=end_date,
                     ),
                 )
         except Exception as exc:
@@ -108,6 +110,8 @@ def ensure_trade_review_market_data(
             missing_reason=missing_reason,
             coverage_start=start_date,
             coverage_end=end_date,
+            holding_start=target.entry_date,
+            holding_end=end_date,
         ),
     )
     if provider_snapshot is None or not fallback_snapshot.rows:

@@ -20,6 +20,7 @@ from ai_stock_sentinel.analysis.trade_review import (
 from ai_stock_sentinel.analysis.review_sources import (
     attach_source_fingerprint,
     market_snapshot_payload,
+    market_snapshot_regressed,
 )
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import Base
@@ -202,6 +203,19 @@ def test_same_day_stale_snapshot_uses_independent_high_low_dates():
     assert values["closes"] == [10, 11]
     assert values["highs"] == [11, 12]
     assert values["lows"] == [9, 10]
+
+
+def test_same_day_stale_snapshot_trims_undated_high_low_even_when_lengths_match():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-01"}
+    row.technical["recent_highs"] = [12, 99]
+    row.technical["recent_lows"] = [9, 1]
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [12]
+    assert values["lows"] == [9]
 
 
 def test_same_day_legacy_snapshot_without_data_date_drops_only_unproven_final_bar():
@@ -480,12 +494,15 @@ def test_market_snapshot_does_not_estimate_known_out_of_window_series_dates():
             "record_date": "2026-04-30",
             "technical": {
                 "recent_closes": list(range(80)),
+                "recent_close_dates": [f"2025-01-{day:02d}" for day in range(1, 29)]
+                + [f"2025-02-{day:02d}" for day in range(1, 29)]
+                + [f"2025-03-{day:02d}" for day in range(1, 25)],
                 "recent_highs": list(range(80)),
                 "recent_lows": list(range(80)),
                 "recent_volumes": list(range(80)),
-                "recent_volume_dates": [f"2025-01-{day:02d}" for day in range(1, 29)]
-                + [f"2025-02-{day:02d}" for day in range(1, 29)]
-                + [f"2025-03-{day:02d}" for day in range(1, 25)],
+                "recent_volume_dates": [f"2026-01-{day:02d}" for day in range(1, 29)]
+                + [f"2026-02-{day:02d}" for day in range(1, 29)]
+                + [f"2026-03-{day:02d}" for day in range(1, 25)],
             },
         }],
         provider="fallback",
@@ -512,6 +529,7 @@ def test_market_snapshot_counts_only_usable_final_trading_bars():
             "record_date": "2026-01-10",
             "technical": {
                 "recent_closes": [100, 101],
+                "recent_close_dates": ["2026-01-08", "2026-01-09"],
                 "recent_highs": [101, 102],
                 "recent_lows": [99, 100],
                 "recent_volumes": [1000, 1100],
@@ -531,8 +549,88 @@ def test_market_snapshot_counts_only_usable_final_trading_bars():
 
     assert weekend_snapshot["quality"]["trading_bar_count"] == 2
     assert weekend_snapshot["quality"]["date_end"] == "2026-01-09"
+    assert weekend_snapshot["quality"]["holding_covered_dates"] == []
     assert invalid_snapshot["quality"]["trading_bar_count"] == 0
     assert invalid_snapshot["quality"]["status"] == "insufficient"
+
+
+def test_market_snapshot_uses_close_dates_instead_of_equal_length_volume_dates():
+    snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-01-10",
+            "technical": {
+                "recent_closes": [100, 101],
+                "recent_close_dates": ["2026-01-08", "2026-01-09"],
+                "recent_volumes": [1000, 1100],
+                "recent_volume_dates": ["2026-01-07", "2026-01-08"],
+            },
+        }],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 1, 12),
+    )
+
+    assert snapshot["quality"]["covered_dates"] == ["2026-01-08", "2026-01-09"]
+
+
+def test_provider_upgrade_cannot_drop_holding_period_dates_at_ninety_percent_total_coverage():
+    existing_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(80)]
+    holding_dates = existing_dates[40:48]
+    provider_dates = existing_dates[:40] + existing_dates[48:]
+
+    def quality(dates: list[date], *, missing_reason: str | None) -> dict:
+        return {
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "dated_bars",
+                "trading_bar_count": len(dates),
+                "covered_dates": [value.isoformat() for value in dates],
+                "holding_covered_dates": [
+                    value.isoformat() for value in dates if value in holding_dates
+                ],
+                "date_start": existing_dates[0].isoformat(),
+                "date_end": existing_dates[-1].isoformat(),
+                "missing_reason": missing_reason,
+            },
+        }
+
+    assert market_snapshot_regressed(
+        quality(existing_dates, missing_reason="provider_fetch_failed_or_empty"),
+        quality(provider_dates, missing_reason=None),
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is True
+
+
+def test_legacy_dated_bars_can_self_heal_to_material_fallback():
+    legacy_provider = {
+        "quality": {"missing_reason": None, "row_count": 1},
+        "bars": [{
+            "record_date": "2026-01-01",
+            "data_date": "2026-01-01",
+            "raw_data_is_final": True,
+            "trailing_dates": [],
+            "trailing_series": [],
+            "bar": {"close": 100},
+        }],
+    }
+    rich_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 80,
+            "covered_dates": [],
+            "holding_covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert market_snapshot_regressed(
+        legacy_provider,
+        rich_fallback,
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is False
 
 
 def test_trade_review_fallback_query_excludes_non_final_rows(db_session: Session):

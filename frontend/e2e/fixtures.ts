@@ -267,6 +267,7 @@ interface ApiMockOptions {
   closedPortfolio?: unknown[];
   tradeReviewGet?: unknown;
   tradeReviewPost?: unknown;
+  tradeReviewPostSequence?: MockResponse[];
   riskSummary?: unknown;
   priceRefreshSummary?: unknown;
   priceRefreshSummaries?: unknown[];
@@ -277,9 +278,16 @@ interface ApiMockOptions {
   requestBodies?: unknown[];
 }
 
-function json(route: Route, body: unknown, status = 200) {
+interface MockResponse {
+  body: unknown;
+  status?: number;
+  headers?: Record<string, string>;
+}
+
+function json(route: Route, body: unknown, status = 200, headers?: Record<string, string>) {
   return route.fulfill({
     status,
+    headers,
     contentType: "application/json",
     body: JSON.stringify(body),
   });
@@ -292,6 +300,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   const riskSummary = options.riskSummary ?? emptyRiskSummary;
   const priceRefreshSummary = options.priceRefreshSummary ?? riskSummary;
   let priceRefreshResponseIndex = 0;
+  let tradeReviewPostResponseIndex = 0;
   const dailyRadar = options.dailyRadar === undefined ? null : options.dailyRadar;
   const analyzeResult = options.analyzeResult ?? quickAnalyzeResult;
 
@@ -324,6 +333,11 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
         : json(route, options.tradeReviewGet);
     }
     if (method === "POST" && /^\/portfolio\/\d+\/review$/.test(pathname)) {
+      const queuedResponse = options.tradeReviewPostSequence?.[tradeReviewPostResponseIndex];
+      tradeReviewPostResponseIndex += 1;
+      if (queuedResponse) {
+        return json(route, queuedResponse.body, queuedResponse.status ?? 200, queuedResponse.headers);
+      }
       return options.tradeReviewPost === undefined
         ? json(route, { detail: "Unhandled trade review POST" }, 404)
         : json(route, options.tradeReviewPost);

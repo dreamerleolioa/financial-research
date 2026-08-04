@@ -937,6 +937,63 @@ def test_db_builder_scopes_user_group_and_performs_no_writes(db_session: Session
     assert any("stock_raw_data" in statement for statement in statements)
 
 
+def test_db_builder_excludes_non_final_market_rows(db_session: Session):
+    db_session.add_all([
+        User(id=1, google_sub="user-1", email="user1@example.com"),
+        PositionEvent(
+            id=1,
+            user_id=1,
+            position_group_id="final-only-group",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=100,
+            quantity=10,
+            fees=0,
+            taxes=0,
+            source="user_recorded_at_event_time",
+            created_at=datetime(2026, 1, 1, 9, 0, 0),
+        ),
+        PositionEvent(
+            id=2,
+            user_id=1,
+            position_group_id="final-only-group",
+            symbol="2330.TW",
+            event_type="full_exit",
+            event_date=date(2026, 1, 3),
+            price=110,
+            quantity=10,
+            fees=0,
+            taxes=0,
+            source="user_recorded_at_event_time",
+            created_at=datetime(2026, 1, 3, 9, 0, 0),
+        ),
+        StockRawData(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 1),
+            technical={"ohlcv": {"close": 100}},
+            raw_data_is_final=True,
+        ),
+        StockRawData(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 2),
+            technical={"ohlcv": {"close": 200}},
+            raw_data_is_final=False,
+        ),
+    ])
+    db_session.commit()
+
+    result, evidence = build_position_lifecycle_analysis(
+        db_session,
+        user_id=1,
+        position_group_id="final-only-group",
+    )
+
+    assert evidence["source_data"]["market_row_count"] == 1
+    assert evidence["market_snapshot"]["quality"]["trading_bar_count"] == 1
+    assert result["lifecycle_metrics"]["max_unrealized_profit_pct"] == pytest.approx(0)
+
+
 def _contains_forbidden_key(value) -> bool:
     forbidden = {
         "ohlcv",

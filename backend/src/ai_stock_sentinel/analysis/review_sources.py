@@ -111,12 +111,11 @@ def _completed_independent_series(
         if shorter_series_is_complete and len(values) < close_count:
             return values
         return values[:-1]
-    if len(values) == close_count:
-        return values
-    if len(values) > close_count:
-        return values[:close_count]
     if shorter_series_is_complete:
         return values
+    # Without per-series dates, equal lengths do not prove that independently
+    # dropna-filtered High/Low values belong to the same trading dates as Close.
+    # Keep only the prefix whose final value cannot be the event-day tail.
     return values[:-1]
 
 
@@ -158,6 +157,8 @@ def market_snapshot_payload(
     missing_reason: str | None = None,
     coverage_start: date | None = None,
     coverage_end: date | None = None,
+    holding_start: date | None = None,
+    holding_end: date | None = None,
 ) -> dict[str, Any]:
     bars = [_market_row_payload(row) for row in rows]
     bars_fingerprint = hashlib.sha256(_canonical_json(bars).encode("utf-8")).hexdigest()
@@ -165,6 +166,8 @@ def market_snapshot_payload(
         bars,
         coverage_start=coverage_start,
         coverage_end=coverage_end,
+        holding_start=holding_start,
+        holding_end=holding_end,
     )
     return {
         "provider": provider,
@@ -194,10 +197,10 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     highs = technical.get("recent_highs") if isinstance(technical.get("recent_highs"), list) else []
     lows = technical.get("recent_lows") if isinstance(technical.get("recent_lows"), list) else []
     volumes = technical.get("recent_volumes") if isinstance(technical.get("recent_volumes"), list) else []
-    volume_dates = (
-        technical.get("recent_volume_dates")
-        if isinstance(technical.get("recent_volume_dates"), list)
-        and len(technical.get("recent_volume_dates")) == len(closes)
+    close_dates = (
+        technical.get("recent_close_dates")
+        if isinstance(technical.get("recent_close_dates"), list)
+        and len(technical.get("recent_close_dates")) == len(closes)
         else []
     )
     data_dates = technical.get("data_dates") if isinstance(technical.get("data_dates"), dict) else {}
@@ -214,7 +217,7 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
         "record_date": _canonical_value(record_date),
         "data_date": _canonical_value(data_dates.get("ohlcv")),
         "raw_data_is_final": raw_data_is_final if isinstance(raw_data_is_final, bool) else None,
-        "trailing_dates": _canonical_value(volume_dates),
+        "trailing_dates": _canonical_value(close_dates),
         "bar": _canonical_value({
             "open": ohlcv.get("open"),
             "high": ohlcv.get("high"),
@@ -289,10 +292,9 @@ def _material_fallback_recovery(
 ) -> bool:
     if bool(existing_quality.get("missing_reason")) or not bool(new_quality.get("missing_reason")):
         return False
-    if (
-        existing_quality.get("coverage_version") != "market-coverage-v1"
-        or new_quality.get("coverage_version") != "market-coverage-v1"
-    ):
+    if existing_quality.get("coverage_version") not in {"market-coverage-v1", "legacy-derived"}:
+        return False
+    if new_quality.get("coverage_version") != "market-coverage-v1":
         return False
     existing_count = existing_quality.get("trading_bar_count")
     new_count = new_quality.get("trading_bar_count")
@@ -314,11 +316,17 @@ def _snapshot_quality(market: dict[str, Any]) -> dict[str, Any]:
         market.get("bars") if isinstance(market.get("bars"), list) else [],
         coverage_start=None,
         coverage_end=None,
+        holding_start=None,
+        holding_end=None,
     )
     quality.update(legacy_coverage)
-    quality["coverage_version"] = "legacy-derived"
-    if not market.get("bars") and isinstance(quality.get("row_count"), int):
+    if market.get("bars"):
+        quality["coverage_version"] = "legacy-derived"
+    elif isinstance(quality.get("row_count"), int):
         quality["trading_bar_count"] = quality["row_count"]
+        quality["coverage_version"] = "legacy-row-count"
+    else:
+        quality["coverage_version"] = "legacy-derived"
     return quality
 
 
@@ -330,6 +338,10 @@ def _dated_coverage_shrunk(
     allow_estimated_recovery: bool,
     provider_upgrade_min_coverage_ratio: float,
 ) -> bool:
+    existing_holding_dates = _quality_dates(existing_quality, "holding_covered_dates")
+    new_holding_dates = _quality_dates(new_quality, "holding_covered_dates")
+    if existing_holding_dates and not existing_holding_dates.issubset(new_holding_dates):
+        return True
     if existing_quality.get("coverage_basis") != "dated_bars":
         return False
     if new_quality.get("coverage_basis") != "dated_bars":
@@ -343,8 +355,8 @@ def _dated_coverage_shrunk(
     if existing_end is not None and (new_end is None or new_end < existing_end):
         return True
 
-    existing_dates = _covered_dates(existing_quality)
-    new_dates = _covered_dates(new_quality)
+    existing_dates = _quality_dates(existing_quality, "covered_dates")
+    new_dates = _quality_dates(new_quality, "covered_dates")
     if not existing_dates or not new_dates:
         return False
     existing_count = existing_quality.get("trading_bar_count")
@@ -355,8 +367,8 @@ def _dated_coverage_shrunk(
     return not existing_dates.issubset(new_dates)
 
 
-def _covered_dates(quality: dict[str, Any]) -> set[date]:
-    raw_dates = quality.get("covered_dates")
+def _quality_dates(quality: dict[str, Any], key: str) -> set[date]:
+    raw_dates = quality.get(key)
     if not isinstance(raw_dates, list):
         return set()
     return {parsed for value in raw_dates if (parsed := _parse_date(value)) is not None}
@@ -367,6 +379,8 @@ def _market_bar_coverage(
     *,
     coverage_start: date | None,
     coverage_end: date | None,
+    holding_start: date | None,
+    holding_end: date | None,
 ) -> dict[str, Any]:
     dated_bars: set[date] = set()
     undated_series_count = 0
@@ -407,11 +421,21 @@ def _market_bar_coverage(
         undated_series_count = min(undated_series_count, _weekday_count(coverage_start, coverage_end))
     trading_bar_count = max(len(dated_bars), undated_series_count)
     coverage_basis = "estimated_trailing_series" if undated_series_count > len(dated_bars) else "dated_bars"
+    holding_dates = (
+        {
+            value
+            for value in dated_bars
+            if _date_in_window(value, holding_start, holding_end)
+        }
+        if holding_start is not None or holding_end is not None
+        else set()
+    )
     return {
         "coverage_version": "market-coverage-v1",
         "coverage_basis": coverage_basis,
         "trading_bar_count": trading_bar_count,
         "covered_dates": [value.isoformat() for value in sorted(dated_bars)],
+        "holding_covered_dates": [value.isoformat() for value in sorted(holding_dates)],
         "date_start": min(dated_bars).isoformat() if dated_bars else None,
         "date_end": max(dated_bars).isoformat() if dated_bars else None,
     }

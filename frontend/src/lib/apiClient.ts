@@ -4,12 +4,14 @@ import { API_BASE_URL } from "./config";
 export class ApiError extends Error {
   status: number;
   detail: unknown;
+  retryAfterSeconds: number | null;
 
-  constructor(message: string, status: number, detail: unknown = null) {
+  constructor(message: string, status: number, detail: unknown = null, retryAfterSeconds: number | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -67,7 +69,16 @@ function buildHeaders(headers: HeadersInit | undefined, includeAuth: boolean, ha
 async function apiErrorFromResponse(response: Response): Promise<ApiError> {
   const detail = await readErrorPayload(response);
   const message = extractErrorMessage(detail) ?? `HTTP ${response.status}`;
-  return new ApiError(message, response.status, detail);
+  return new ApiError(message, response.status, detail, parseRetryAfterSeconds(response.headers.get("Retry-After")));
+}
+
+function parseRetryAfterSeconds(value: string | null): number | null {
+  if (value == null || value.trim() === "") return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.max(0, (retryAt - Date.now()) / 1000);
 }
 
 async function readErrorPayload(response: Response): Promise<unknown> {

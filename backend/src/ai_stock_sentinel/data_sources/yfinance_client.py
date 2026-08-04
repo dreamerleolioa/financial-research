@@ -104,6 +104,7 @@ class YFinanceCrawler:
             raise
 
         recent_closes = []
+        recent_close_dates = []
         recent_highs = []
         recent_lows = []
         recent_high_dates = []
@@ -114,9 +115,9 @@ class YFinanceCrawler:
         if not history.empty and "Close" in history.columns:
             close_series = history["Close"].dropna()
             recent_closes = [float(value) for value in close_series.tolist()]
-            close_dates = _history_dates(close_series.index)
-            if close_dates:
-                data_dates["ohlcv"] = close_dates[-1]
+            recent_close_dates = _history_dates(close_series.index)
+            if recent_close_dates:
+                data_dates["ohlcv"] = recent_close_dates[-1]
         if not history.empty and "High" in history.columns:
             high_series = history["High"].dropna()
             recent_highs = [float(value) for value in high_series.tolist()]
@@ -153,6 +154,7 @@ class YFinanceCrawler:
             recent_closes=recent_closes,
             fetched_at=quote_observed_at,
             volume_source=volume_source,
+            recent_close_dates=recent_close_dates,
             recent_highs=recent_highs,
             recent_lows=recent_lows,
             recent_high_dates=recent_high_dates,

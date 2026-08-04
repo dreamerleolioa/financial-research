@@ -591,6 +591,32 @@ test("Closed Portfolio refreshes a saved v3 trade review before presenting it", 
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
 });
 
+test("Closed Portfolio retries a concurrent trade review refresh using Retry-After", async ({ page }) => {
+  const requestLog: string[] = [];
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedPortfolio: [closedPortfolioItem],
+    tradeReviewGet: currentTradeReview,
+    tradeReviewPostSequence: [
+      {
+        body: { detail: "交易審核正在更新中，請稍後重試" },
+        status: 409,
+        headers: { "Retry-After": "0" },
+      },
+      { body: currentTradeReview },
+    ],
+    requestLog,
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
+  await expect(dialog).toContainText("trade-review-v3");
+  await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(2);
+});
+
 test("Closed Portfolio does not downgrade an unknown newer trade review", async ({ page }) => {
   const requestLog: string[] = [];
   await authenticate(page);

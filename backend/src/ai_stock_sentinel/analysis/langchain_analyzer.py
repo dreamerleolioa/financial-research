@@ -155,6 +155,7 @@ def _snapshot_payload_for_prompt(snapshot: StockSnapshot) -> dict[str, Any]:
     payload = asdict(snapshot)
     for key in (
         "data_dates",
+        "recent_close_dates",
         "recent_high_dates",
         "recent_low_dates",
         "recent_volume_dates",
