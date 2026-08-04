@@ -1,16 +1,20 @@
 # backend/src/ai_stock_sentinel/portfolio/router.py
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from threading import Lock
+from typing import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecycle_analysis
-from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint
+from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint, market_snapshot_regressed
 from ai_stock_sentinel.analysis.trade_review import (
+    TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO,
     TradeReviewMarketTarget,
     build_trade_review_payload,
     ensure_trade_review_market_data,
@@ -63,7 +67,33 @@ KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
 }
 TRADE_REVIEW_SUCCESS_REFRESH_TTL = timedelta(hours=6)
 TRADE_REVIEW_FAILURE_RETRY_TTL = timedelta(minutes=5)
-PROVIDER_UPGRADE_MIN_COVERAGE_RATIO = 0.9
+
+
+class _TradeReviewRefreshSlot:
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.users = 0
+
+
+_TRADE_REVIEW_REFRESH_SLOTS: dict[tuple[int, int], _TradeReviewRefreshSlot] = {}
+_TRADE_REVIEW_REFRESH_SLOTS_GUARD = Lock()
+
+
+@contextmanager
+def _trade_review_refresh_singleflight(key: tuple[int, int]) -> Iterator[None]:
+    """Serialize refresh work for one review without holding a DB resource."""
+    with _TRADE_REVIEW_REFRESH_SLOTS_GUARD:
+        slot = _TRADE_REVIEW_REFRESH_SLOTS.setdefault(key, _TradeReviewRefreshSlot())
+        slot.users += 1
+    slot.lock.acquire()
+    try:
+        yield
+    finally:
+        slot.lock.release()
+        with _TRADE_REVIEW_REFRESH_SLOTS_GUARD:
+            slot.users -= 1
+            if slot.users == 0 and _TRADE_REVIEW_REFRESH_SLOTS.get(key) is slot:
+                del _TRADE_REVIEW_REFRESH_SLOTS[key]
 
 
 def get_portfolio_quote_fetcher():
@@ -352,24 +382,11 @@ def _get_unknown_position_lifecycle_review(
 
 
 def _market_snapshot_regressed(existing_market: object, new_market: object) -> bool:
-    if not isinstance(existing_market, dict) or not isinstance(new_market, dict):
-        return False
-    existing_quality = existing_market.get("quality") if isinstance(existing_market.get("quality"), dict) else {}
-    new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
-    existing_missing = bool(existing_quality.get("missing_reason"))
-    new_missing = bool(new_quality.get("missing_reason"))
-    existing_count = existing_quality.get("row_count")
-    new_count = new_quality.get("row_count")
-    if isinstance(existing_count, int) and isinstance(new_count, int) and existing_count > new_count:
-        upgrading_provider = existing_missing and not new_missing
-        retained_coverage = new_count / existing_count if existing_count > 0 else 1.0
-        if not upgrading_provider or retained_coverage < PROVIDER_UPGRADE_MIN_COVERAGE_RATIO:
-            return True
-    if not existing_missing and new_missing:
-        return True
-    if existing_missing and not new_missing:
-        return False
-    return False
+    return market_snapshot_regressed(
+        existing_market,
+        new_market,
+        provider_upgrade_min_coverage_ratio=TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO,
+    )
 
 
 def _trade_review_snapshot_regressed(existing_review: TradeReview, evidence_payload: dict) -> bool:
@@ -429,6 +446,32 @@ def _trade_review_cache_reusable(
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     age = current_time - fetched_at
     return timedelta(0) <= age < ttl
+
+
+def _trade_review_refresh_superseded(
+    existing_review: TradeReview,
+    item: UserPortfolio,
+    market_snapshot: object,
+) -> bool:
+    """Arbitrate a snapshot fetched before the row lock was acquired."""
+    if not _trade_review_cache_reusable(existing_review, item):
+        return False
+    candidate_market = getattr(market_snapshot, "evidence", None)
+    if not isinstance(candidate_market, dict):
+        return True
+    existing_evidence = existing_review.evidence_payload if isinstance(existing_review.evidence_payload, dict) else {}
+    existing_market = existing_evidence.get("market_snapshot")
+    if _market_snapshot_regressed(existing_market, candidate_market):
+        return True
+    if _market_snapshot_regressed(candidate_market, existing_market):
+        return False
+    existing_fetched_at = _parse_utc_datetime(
+        existing_market.get("fetched_at") if isinstance(existing_market, dict) else None
+    )
+    candidate_fetched_at = _parse_utc_datetime(candidate_market.get("fetched_at"))
+    if existing_fetched_at is None:
+        return False
+    return candidate_fetched_at is None or existing_fetched_at >= candidate_fetched_at
 
 
 @router.get("")
@@ -770,11 +813,12 @@ def create_trade_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id)
+    user_id = current_user.id
+    item = _get_reviewable_portfolio(db, portfolio_id, user_id)
     existing_review = db.execute(
         select(TradeReview).where(
             TradeReview.portfolio_id == portfolio_id,
-            TradeReview.user_id == current_user.id,
+            TradeReview.user_id == user_id,
         )
     ).scalar_one_or_none()
     if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
@@ -782,63 +826,85 @@ def create_trade_review(
     if existing_review and _trade_review_cache_reusable(existing_review, item):
         return _serialize_trade_review(existing_review)
 
-    market_target = TradeReviewMarketTarget(
-        symbol=item.symbol,
-        entry_date=item.entry_date,
-        exit_date=item.exit_date,
-    )
     db.rollback()
-    market_snapshot = ensure_trade_review_market_data(db, market_target)
+    with _trade_review_refresh_singleflight((user_id, portfolio_id)):
+        # A same-key request may have completed while this request waited for
+        # the in-process single-flight slot. Re-read before any provider I/O.
+        item = _get_reviewable_portfolio(db, portfolio_id, user_id)
+        existing_review = db.execute(
+            select(TradeReview).where(
+                TradeReview.portfolio_id == portfolio_id,
+                TradeReview.user_id == user_id,
+            )
+        ).scalar_one_or_none()
+        if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
+            return _serialize_trade_review(existing_review)
+        if existing_review and _trade_review_cache_reusable(existing_review, item):
+            return _serialize_trade_review(existing_review)
 
-    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id, lock=True)
-    existing_review = db.execute(
-        select(TradeReview).where(
-            TradeReview.portfolio_id == portfolio_id,
-            TradeReview.user_id == current_user.id,
-        )
-    ).scalar_one_or_none()
-    if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
-        return _serialize_trade_review(existing_review)
-    review_result, evidence_payload = build_trade_review_payload(db, item, market_snapshot=market_snapshot)
-    if (
-        existing_review
-        and existing_review.review_version == TRADE_REVIEW_VERSION
-        and _trade_review_snapshot_regressed(existing_review, evidence_payload)
-    ):
-        return _serialize_trade_review(existing_review)
-    source_fingerprint = attach_source_fingerprint(
-        evidence_payload,
-        ruleset_version=TRADE_REVIEW_VERSION,
-    )
-    if (
-        existing_review
-        and existing_review.review_version == TRADE_REVIEW_VERSION
-        and isinstance(existing_review.evidence_payload, dict)
-        and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
-    ):
-        return _serialize_trade_review(existing_review)
-    if existing_review:
-        review = existing_review
-        review.review_version = TRADE_REVIEW_VERSION
-        review.review_result = review_result
-        review.evidence_payload = evidence_payload
-        review.llm_summary = None
-        review.updated_at = datetime.now(timezone.utc)
-    else:
-        review = TradeReview(
-            portfolio_id=item.id,
-            user_id=item.user_id,
-            position_group_id=item.position_group_id,
+        market_target = TradeReviewMarketTarget(
             symbol=item.symbol,
-            review_version=TRADE_REVIEW_VERSION,
-            review_result=review_result,
-            evidence_payload=evidence_payload,
-            llm_summary=None,
+            entry_date=item.entry_date,
+            exit_date=item.exit_date,
         )
-        db.add(review)
-    db.commit()
-    db.refresh(review)
-    return _serialize_trade_review(review)
+        db.rollback()
+        market_snapshot = ensure_trade_review_market_data(db, market_target)
+
+        item = _get_reviewable_portfolio(db, portfolio_id, user_id, lock=True)
+        existing_review = db.execute(
+            select(TradeReview).where(
+                TradeReview.portfolio_id == portfolio_id,
+                TradeReview.user_id == user_id,
+            )
+        ).scalar_one_or_none()
+        if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
+            return _serialize_trade_review(existing_review)
+        # A different process may have committed a fresher snapshot while this
+        # request was fetching. Row locks serialize writes, while this second
+        # freshness check prevents an older observation from winning afterward.
+        if existing_review and _trade_review_refresh_superseded(existing_review, item, market_snapshot):
+            return _serialize_trade_review(existing_review)
+
+        review_result, evidence_payload = build_trade_review_payload(db, item, market_snapshot=market_snapshot)
+        if (
+            existing_review
+            and existing_review.review_version == TRADE_REVIEW_VERSION
+            and _trade_review_snapshot_regressed(existing_review, evidence_payload)
+        ):
+            return _serialize_trade_review(existing_review)
+        source_fingerprint = attach_source_fingerprint(
+            evidence_payload,
+            ruleset_version=TRADE_REVIEW_VERSION,
+        )
+        if (
+            existing_review
+            and existing_review.review_version == TRADE_REVIEW_VERSION
+            and isinstance(existing_review.evidence_payload, dict)
+            and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
+        ):
+            return _serialize_trade_review(existing_review)
+        if existing_review:
+            review = existing_review
+            review.review_version = TRADE_REVIEW_VERSION
+            review.review_result = review_result
+            review.evidence_payload = evidence_payload
+            review.llm_summary = None
+            review.updated_at = datetime.now(timezone.utc)
+        else:
+            review = TradeReview(
+                portfolio_id=item.id,
+                user_id=item.user_id,
+                position_group_id=item.position_group_id,
+                symbol=item.symbol,
+                review_version=TRADE_REVIEW_VERSION,
+                review_result=review_result,
+                evidence_payload=evidence_payload,
+                llm_summary=None,
+            )
+            db.add(review)
+        db.commit()
+        db.refresh(review)
+        return _serialize_trade_review(review)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

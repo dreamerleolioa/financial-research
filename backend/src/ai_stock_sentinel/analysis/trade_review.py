@@ -14,7 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
-from ai_stock_sentinel.analysis.review_sources import completed_trailing_series, market_snapshot_payload
+from ai_stock_sentinel.analysis.review_sources import (
+    completed_trailing_series,
+    market_snapshot_payload,
+    market_snapshot_regressed,
+)
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 
 
@@ -22,6 +26,7 @@ MAX_DETECTED_EVENTS = 8
 TRADE_REVIEW_LOOKBACK_DAYS = 120
 TRADE_REVIEW_PROVIDER_CAPACITY = 4
 TRADE_REVIEW_PROVIDER_TIMEOUT_SECONDS = 10
+TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO = 0.9
 _TRADE_REVIEW_PROVIDER_SEMAPHORE = BoundedSemaphore(TRADE_REVIEW_PROVIDER_CAPACITY)
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,7 @@ def ensure_trade_review_market_data(
     end_date = target.exit_date
     fetched_at = datetime.now(timezone.utc)
     missing_reason = "provider_fetch_failed_or_empty"
+    provider_snapshot: ReviewMarketSnapshot | None = None
     if _TRADE_REVIEW_PROVIDER_SEMAPHORE.acquire(blocking=False):
         try:
             history = fetcher(target.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
@@ -63,9 +69,15 @@ def ensure_trade_review_market_data(
             )
             rows = _review_rows_from_history(target, start_date, history)
             if rows:
-                return ReviewMarketSnapshot(
+                provider_snapshot = ReviewMarketSnapshot(
                     rows=rows,
-                    evidence=market_snapshot_payload(rows, provider="yfinance", fetched_at=fetched_at),
+                    evidence=market_snapshot_payload(
+                        rows,
+                        provider="yfinance",
+                        fetched_at=fetched_at,
+                        coverage_start=start_date,
+                        coverage_end=end_date,
+                    ),
                 )
         except Exception as exc:
             # A review may still be built from already persisted canonical rows,
@@ -86,15 +98,27 @@ def ensure_trade_review_market_data(
         )
         .order_by(StockRawData.record_date.asc())
     ).scalars().all()
-    return ReviewMarketSnapshot(
+    fallback_snapshot = ReviewMarketSnapshot(
         rows=list(rows),
         evidence=market_snapshot_payload(
             rows,
             provider="stock_raw_data_read_only_fallback",
             fetched_at=fetched_at,
             missing_reason=missing_reason,
+            coverage_start=start_date,
+            coverage_end=end_date,
         ),
     )
+    if provider_snapshot is None or not fallback_snapshot.rows:
+        return provider_snapshot or fallback_snapshot
+    if market_snapshot_regressed(
+        fallback_snapshot.evidence,
+        provider_snapshot.evidence,
+        provider_upgrade_min_coverage_ratio=TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO,
+    ):
+        fallback_snapshot.evidence["quality"]["missing_reason"] = "provider_coverage_below_fallback"
+        return fallback_snapshot
+    return provider_snapshot
 
 
 def build_trade_review_payload(

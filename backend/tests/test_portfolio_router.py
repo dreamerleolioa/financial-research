@@ -1,5 +1,6 @@
 # backend/tests/test_portfolio_router.py
 from datetime import date, datetime, timedelta, timezone
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import uuid
@@ -3471,14 +3472,26 @@ def test_trade_review_regression_guard_rejects_severe_row_loss_when_provider_rec
         "trade": {"id": 42},
         "market_snapshot": {
             "provider": "stock_raw_data_read_only_fallback",
-            "quality": {"row_count": 80, "missing_reason": "provider_fetch_failed_or_empty"},
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "dated_bars",
+                "trading_bar_count": 80,
+                "row_count": 1,
+                "missing_reason": "provider_fetch_failed_or_empty",
+            },
         },
     })
     tiny_provider_snapshot = {
         "trade": {"id": 42},
         "market_snapshot": {
             "provider": "yfinance",
-            "quality": {"row_count": 1, "missing_reason": None},
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "dated_bars",
+                "trading_bar_count": 1,
+                "row_count": 1,
+                "missing_reason": None,
+            },
         },
     }
 
@@ -3493,17 +3506,130 @@ def test_trade_review_provider_upgrade_requires_ninety_percent_coverage(
     existing = SimpleNamespace(evidence_payload={
         "trade": {"id": 42},
         "market_snapshot": {
-            "quality": {"row_count": 80, "missing_reason": "provider_fetch_failed_or_empty"},
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "estimated_trailing_series",
+                "trading_bar_count": 80,
+                "row_count": 1,
+                "missing_reason": "provider_fetch_failed_or_empty",
+            },
         },
     })
     provider_snapshot = {
         "trade": {"id": 42},
         "market_snapshot": {
-            "quality": {"row_count": provider_rows, "missing_reason": None},
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "dated_bars",
+                "trading_bar_count": provider_rows,
+                "row_count": provider_rows,
+                "missing_reason": None,
+            },
         },
     }
 
     assert portfolio_router_module._trade_review_snapshot_regressed(existing, provider_snapshot) is expected
+
+
+def test_trade_review_coverage_does_not_compare_outer_rows_across_providers():
+    fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": 70,
+            "row_count": 80,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+    provider = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": 70,
+            "row_count": 70,
+            "missing_reason": None,
+        },
+    }
+
+    assert portfolio_router_module._market_snapshot_regressed(fallback, provider) is False
+
+
+def test_trade_review_provider_upgrade_preserves_dated_coverage_bounds():
+    fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": 80,
+            "date_start": "2026-01-01",
+            "date_end": "2026-04-30",
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+    shifted_provider = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": 80,
+            "date_start": "2026-01-02",
+            "date_end": "2026-04-30",
+            "missing_reason": None,
+        },
+    }
+
+    assert portfolio_router_module._market_snapshot_regressed(fallback, shifted_provider) is True
+
+
+def test_trade_review_singleflight_serializes_same_review_key():
+    key = (1, 42)
+    first_entered = Event()
+    release_first = Event()
+    second_started = Event()
+    second_entered = Event()
+
+    def first_request() -> None:
+        with portfolio_router_module._trade_review_refresh_singleflight(key):
+            first_entered.set()
+            assert release_first.wait(timeout=1)
+
+    def second_request() -> None:
+        assert first_entered.wait(timeout=1)
+        second_started.set()
+        with portfolio_router_module._trade_review_refresh_singleflight(key):
+            second_entered.set()
+
+    first = Thread(target=first_request)
+    second = Thread(target=second_request)
+    first.start()
+    second.start()
+    assert second_started.wait(timeout=1)
+    assert second_entered.is_set() is False
+    release_first.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert second_entered.is_set() is True
+    assert key not in portfolio_router_module._TRADE_REVIEW_REFRESH_SLOTS
+
+
+def _trade_review_item() -> UserPortfolio:
+    return UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-review",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 11),
+        exit_price=950,
+        exit_quantity=100,
+        realized_pnl=5000,
+        realized_return_pct=5.5556,
+        holding_days=10,
+    )
 
 
 @pytest.mark.parametrize(
@@ -3522,22 +3648,7 @@ def test_trade_review_cache_uses_distinct_success_and_failure_ttls(
     expected: bool,
 ):
     now = datetime(2026, 8, 4, 8, tzinfo=timezone.utc)
-    item = UserPortfolio(
-        id=42,
-        user_id=1,
-        position_group_id="group-review",
-        symbol="2330.TW",
-        entry_price=900,
-        quantity=100,
-        entry_date=date(2026, 1, 1),
-        is_active=False,
-        exit_date=date(2026, 1, 11),
-        exit_price=950,
-        exit_quantity=100,
-        realized_pnl=5000,
-        realized_return_pct=5.5556,
-        holding_days=10,
-    )
+    item = _trade_review_item()
     review = SimpleNamespace(
         review_version="trade-review-v3",
         evidence_payload={
@@ -3550,6 +3661,66 @@ def test_trade_review_cache_uses_distinct_success_and_failure_ttls(
     )
 
     assert portfolio_router_module._trade_review_cache_reusable(review, item, now=now) is expected
+
+
+def test_trade_review_fresh_fallback_does_not_supersede_better_provider_snapshot():
+    now = datetime.now(timezone.utc)
+    item = _trade_review_item()
+    quality = {
+        "coverage_version": "market-coverage-v1",
+        "coverage_basis": "dated_bars",
+        "trading_bar_count": 80,
+        "row_count": 80,
+    }
+    existing = SimpleNamespace(
+        review_version="trade-review-v3",
+        evidence_payload={
+            "trade": portfolio_router_module.trade_review_source_payload(item),
+            "market_snapshot": {
+                "fetched_at": now.isoformat(),
+                "quality": {**quality, "missing_reason": "provider_fetch_failed_or_empty"},
+            },
+        },
+    )
+    provider_snapshot = SimpleNamespace(evidence={
+        "fetched_at": (now - timedelta(seconds=1)).isoformat(),
+        "quality": {**quality, "missing_reason": None},
+    })
+
+    assert portfolio_router_module._trade_review_refresh_superseded(
+        existing,
+        item,
+        provider_snapshot,
+    ) is False
+
+
+def test_trade_review_newer_saved_snapshot_supersedes_older_equal_quality_fetch():
+    now = datetime.now(timezone.utc)
+    item = _trade_review_item()
+    quality = {
+        "coverage_version": "market-coverage-v1",
+        "coverage_basis": "dated_bars",
+        "trading_bar_count": 80,
+        "row_count": 80,
+        "missing_reason": None,
+    }
+    existing = SimpleNamespace(
+        review_version="trade-review-v3",
+        evidence_payload={
+            "trade": portfolio_router_module.trade_review_source_payload(item),
+            "market_snapshot": {"fetched_at": now.isoformat(), "quality": quality},
+        },
+    )
+    older_snapshot = SimpleNamespace(evidence={
+        "fetched_at": (now - timedelta(seconds=1)).isoformat(),
+        "quality": quality,
+    })
+
+    assert portfolio_router_module._trade_review_refresh_superseded(
+        existing,
+        item,
+        older_snapshot,
+    ) is True
 
 
 def test_position_lifecycle_review_excludes_future_shared_context(
@@ -4144,6 +4315,58 @@ def test_create_trade_review_releases_db_transaction_before_provider_fetch(
 
     assert resp.status_code == 200
     assert transaction_states == [False]
+
+
+def test_create_trade_review_rechecks_freshness_after_provider_fetch(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    item = _add_closed_portfolio(portfolio_db_session)
+    trade_payload = portfolio_router_module.trade_review_source_payload(item)
+    review = TradeReview(
+        portfolio_id=item.id,
+        user_id=item.user_id,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        review_version="trade-review-v3",
+        review_result={"generation": "stale"},
+        evidence_payload={
+            "trade": trade_payload,
+            "market_snapshot": {
+                "fetched_at": (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(),
+                "quality": {"missing_reason": None},
+            },
+        },
+        llm_summary=None,
+    )
+    portfolio_db_session.add(review)
+    portfolio_db_session.commit()
+
+    def concurrent_refresh(db: Session, _target: portfolio_router_module.TradeReviewMarketTarget):
+        saved = db.execute(select(TradeReview).where(TradeReview.portfolio_id == item.id)).scalar_one()
+        saved.review_result = {"generation": "fresh-from-concurrent-request"}
+        saved.evidence_payload = {
+            "trade": trade_payload,
+            "market_snapshot": {
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "quality": {"missing_reason": None},
+            },
+        }
+        db.commit()
+        return None
+
+    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", concurrent_refresh)
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert resp.json()["review_result"] == {"generation": "fresh-from-concurrent-request"}
+    portfolio_db_session.expire_all()
+    assert portfolio_db_session.execute(select(TradeReview)).scalar_one().review_result == {
+        "generation": "fresh-from-concurrent-request",
+    }
 
 
 def test_create_trade_review_upgrades_v2_review_using_current_sources(

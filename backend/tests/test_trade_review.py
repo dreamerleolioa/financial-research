@@ -198,6 +198,19 @@ def test_same_day_legacy_snapshot_without_data_date_drops_only_unproven_final_ba
     assert values["volumes"] == [100, 200]
 
 
+def test_legacy_snapshot_trims_unproven_high_low_when_series_lengths_differ():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200, 300])
+    row.technical.pop("data_dates")
+    row.technical["recent_highs"] = [11, 13]
+    row.technical["recent_lows"] = [9, 11]
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [11]
+    assert values["lows"] == [9]
+
+
 def test_same_day_snapshot_does_not_drop_prior_volume_when_current_volume_is_missing():
     row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200])
     row.technical["data_dates"] = {"ohlcv": "2026-03-02"}
@@ -400,6 +413,47 @@ def test_ensure_trade_review_market_data_does_not_reuse_canonical_rows_as_review
     ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
 
     assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date)]
+
+
+def test_ensure_trade_review_market_data_prefers_rich_fallback_over_partial_provider(db_session: Session):
+    entry_date = date(2026, 6, 1)
+    exit_date = date(2026, 6, 5)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
+    fallback = _snapshot_raw_row("2330.TW", entry_date, list(range(1, 81)))
+    db_session.add_all([portfolio, fallback])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: _history_bars(entry_date, [999]),
+    )
+
+    assert snapshot.rows == [fallback]
+    assert snapshot.evidence["provider"] == "stock_raw_data_read_only_fallback"
+    assert snapshot.evidence["quality"]["missing_reason"] == "provider_coverage_below_fallback"
+    assert snapshot.evidence["quality"]["row_count"] == 1
+    assert snapshot.evidence["quality"]["trading_bar_count"] == 80
+
+
+def test_ensure_trade_review_market_data_uses_trading_bars_for_provider_upgrade(db_session: Session):
+    entry_date = date(2026, 6, 1)
+    exit_date = date(2026, 6, 5)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
+    fallback = _snapshot_raw_row("2330.TW", entry_date, list(range(1, 81)))
+    db_session.add_all([portfolio, fallback])
+    db_session.commit()
+
+    provider_start = entry_date - timedelta(days=71)
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: _history_bars(provider_start, list(range(1, 73))),
+    )
+
+    assert snapshot.evidence["provider"] == "yfinance"
+    assert snapshot.evidence["quality"]["row_count"] == 72
+    assert snapshot.evidence["quality"]["trading_bar_count"] == 72
 
 
 def test_trade_review_download_uses_single_level_columns_and_bounded_timeout(monkeypatch: pytest.MonkeyPatch):
