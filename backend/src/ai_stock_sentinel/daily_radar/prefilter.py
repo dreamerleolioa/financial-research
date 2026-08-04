@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any, Literal, cast
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_RISK_LABELS
+from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
 from ai_stock_sentinel.daily_radar.types import DailyRadarRiskLabel
 
 
@@ -68,6 +69,15 @@ def prefilter_record(
     )
 
     reasons: list[dict[str, Any]] = []
+    missing_fields = missing_scoring_fields(
+        ohlcv=ohlcv,
+        indicators=indicators,
+        institutional_flow=institutional_flow,
+        margin=margin,
+    )
+    if missing_fields:
+        reasons.append(_reason("data_gap", missing_fields=missing_fields))
+
     if avg_turnover_value_million < active_config.min_avg_turnover_value_million:
         reasons.append(
             _reason(

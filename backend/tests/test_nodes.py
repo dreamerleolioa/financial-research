@@ -72,6 +72,83 @@ def test_score_node_with_real_bullish_data():
     assert result["confidence_score"] == result["signal_confidence"]  # 向後相容
 
 
+def test_score_node_missing_sources_reports_zero_data_confidence():
+    """Fallback labels must not be mistaken for successfully loaded source data."""
+    from ai_stock_sentinel.graph.nodes import score_node
+
+    result = score_node({
+        "cleaned_news": None,
+        "institutional_flow": None,
+        "snapshot": None,
+        "cleaned_news_quality": None,
+        "errors": [],
+    })
+
+    assert result["technical_signal"] == "sideways"
+    assert result["data_confidence"] == 0
+
+
+def test_score_node_neutral_sources_with_real_data_reports_full_data_confidence():
+    """Neutral direction remains fully available when the underlying sources exist."""
+    from ai_stock_sentinel.graph.nodes import score_node
+
+    result = score_node({
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": {"flow_label": "neutral"},
+        "snapshot": {"recent_closes": [100.0] * 60},
+        "cleaned_news_quality": {"quality_flags": []},
+        "errors": [],
+    })
+
+    assert result["data_confidence"] == 100
+
+
+def test_score_node_does_not_count_insufficient_technical_profile_as_available():
+    """A derived score alone must not make a one-day technical profile complete."""
+    from ai_stock_sentinel.graph.nodes import score_node
+    from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
+
+    snapshot = {"recent_closes": [100.0]}
+    profile_payload = build_technical_profile_from_snapshot(snapshot)
+    assert profile_payload is not None
+    assert profile_payload["technical_profile"]["score_summary"]["technical_score"] is not None
+    assert profile_payload["technical_profile"]["data_quality"]["lookback_days_available"] == 1
+    profile_payload["technical_profile"]["score_summary"]["technical_score"] = 36
+
+    result = score_node({
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": snapshot,
+        "technical_profile": profile_payload["technical_profile"],
+        "cleaned_news_quality": {"quality_flags": []},
+        "errors": [],
+    })
+
+    assert result["technical_signal"] == "sideways"
+    assert result["data_confidence"] == 33
+
+
+def test_score_node_ignores_insufficient_profile_when_raw_technical_data_is_available():
+    """A short profile must not override a valid raw-price fallback signal."""
+    from ai_stock_sentinel.graph.nodes import score_node
+
+    result = score_node({
+        "cleaned_news": {"sentiment_label": "neutral"},
+        "institutional_flow": None,
+        "snapshot": {"recent_closes": [100.0] * 20},
+        "technical_profile": {
+            "score_summary": {"technical_score": 36},
+            "data_quality": {"lookback_days_available": 1},
+        },
+        "cleaned_news_quality": {"quality_flags": []},
+        "errors": [],
+    })
+
+    assert result["technical_signal"] == "sideways"
+    assert result["signal_confidence"] == 50
+    assert result["data_confidence"] == 67
+
+
 def test_score_node_uses_existing_technical_profile_for_signal():
     """score_node should not recalculate scattered raw signals when a profile is already present."""
     from ai_stock_sentinel.graph.nodes import score_node
@@ -86,7 +163,8 @@ def test_score_node_uses_existing_technical_profile_for_signal():
                 "secondary_score": 0,
                 "capped_total": -4,
                 "technical_score": 36,
-            }
+            },
+            "data_quality": {"lookback_days_available": 30},
         },
         "cleaned_news_quality": None,
         "errors": [],

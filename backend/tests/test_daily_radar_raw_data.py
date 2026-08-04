@@ -244,6 +244,108 @@ def test_ensure_daily_radar_raw_rows_refreshes_existing_final_institutional_payl
     assert stored_row.institutional == fresh_institutional
 
 
+def test_ensure_daily_radar_raw_rows_projects_fresh_full_margin_context_for_prefilter(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    technical = _technical_payload("2330.TW", run_date)
+    technical["ohlcv"]["avg_volume_20"] = 4_000_000
+    _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=technical,
+    )
+    fetcher = FakeBatchFetcher({"2330.TW": technical})
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+        institutional_payloads_by_symbol={
+            "2330.TW": {
+                "institutional_flow": {
+                    "three_party_net_shares": 6_500,
+                    "consecutive_positive_days": 5,
+                    "flow_state": "institutional_accumulation",
+                    "net_flow_to_avg_volume": 0.00325,
+                },
+                "data_dates": {"institutional_flow": run_date.isoformat()},
+            }
+        },
+        margin_contexts_by_symbol={
+            "2330.TW": {
+                "context_type": "full_margin",
+                "as_of_date": run_date.isoformat(),
+                "freshness": "fresh",
+                "payload": {
+                    "latest_margin_balance": 1_200,
+                    "latest_short_balance": 80,
+                    "margin_balance_delta": 200,
+                    "margin_balance_delta_pct": 2.0,
+                    "short_balance_delta": 30,
+                    "short_balance_delta_pct": 0.5,
+                },
+            }
+        },
+    )
+
+    loaded = load_daily_radar_cache_records(rows)[0]
+    assert loaded["margin"] == {
+        "margin_balance": 1_200.0,
+        "short_balance": 80.0,
+        "margin_delta": 200.0,
+        "margin_delta_pct": 2.0,
+        "short_delta": 30.0,
+        "short_delta_pct": 0.5,
+        "margin_to_volume": 0.3,
+        "risk_flags": [],
+    }
+    assert loaded["data_dates"]["margin"] == run_date.isoformat()
+    assert prefilter_record(loaded)["prefilter_status"] == "accepted"
+    assert fetcher.calls == []
+
+
+def test_ensure_daily_radar_raw_rows_does_not_project_stale_full_margin_context(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    row = _add_raw_data(db_session, symbol="2330.TW", record_date=run_date, is_final=True)
+    row.fundamental = {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": "2026-05-20"},
+    }
+    db_session.flush()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        margin_contexts_by_symbol={
+            "2330.TW": {
+                "context_type": "full_margin",
+                "as_of_date": "2026-05-20",
+                "freshness": "stale",
+                "payload": {
+                    "latest_margin_balance": 1_200,
+                    "margin_balance_delta_pct": 2.0,
+                },
+            }
+        },
+    )
+
+    loaded = load_daily_radar_cache_records(rows)[0]
+    assert loaded["margin"] == {}
+    assert loaded["data_dates"]["margin"] == "2026-05-20"
+    missing_fields = prefilter_record(loaded)["prefilter_reasons"][0]["details"]["missing_fields"]
+    assert [field for field in missing_fields if field.startswith("margin.")] == [
+        "margin.margin_delta_pct",
+        "margin.margin_to_volume",
+    ]
+
+
 def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

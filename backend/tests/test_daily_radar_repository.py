@@ -326,7 +326,7 @@ def test_repository_replaces_candidates_for_same_run(db_session: Session) -> Non
             "repeat_status": "new",
             "score_breakdown": {
                 "scoring_version": "daily-radar-scoring-v2.1c",
-                "rule_version": "daily-radar-rules-v2.1c",
+                "rule_version": "daily-radar-rules-v2.2",
                 "relative_strength": {
                     "benchmark_symbol": "TAIEX",
                     "lookback_days": 20,
@@ -378,7 +378,7 @@ def test_repository_replaces_candidates_for_same_run(db_session: Session) -> Non
         ("2454.TW", 82),
     ]
     assert candidates[0].score_breakdown["scoring_version"] == "daily-radar-scoring-v2.1c"
-    assert candidates[0].score_breakdown["rule_version"] == "daily-radar-rules-v2.1c"
+    assert candidates[0].score_breakdown["rule_version"] == "daily-radar-rules-v2.2"
     assert candidates[0].score_breakdown["relative_strength"]["benchmark_symbol"] == "TAIEX"
     assert candidates[0].input_snapshot["evidence"][0]["replay_key"] == "relative_strength:2330.TW:TAIEX:2026-06-02:L20"
     assert candidates[0].data_dates["relative_strength"] == "2026-06-02"
@@ -473,7 +473,7 @@ def test_repository_symbol_history_returns_version_trace_from_score_breakdown(db
     candidate = _add_candidate(db_session, run, symbol="2330.TW", score=83)
     candidate.score_breakdown = {
         "scoring_version": "daily-radar-scoring-v2.1c",
-        "rule_version": "daily-radar-rules-v2.1c",
+        "rule_version": "daily-radar-rules-v2.2",
         "relative_strength": {"benchmark_symbol": "TAIEX", "score": 3},
     }
     db_session.commit()
@@ -487,5 +487,5 @@ def test_repository_symbol_history_returns_version_trace_from_score_breakdown(db
     )
 
     assert history[0]["scoring_version"] == "daily-radar-scoring-v2.1c"
-    assert history[0]["rule_version"] == "daily-radar-rules-v2.1c"
+    assert history[0]["rule_version"] == "daily-radar-rules-v2.2"
     assert history[0]["score_breakdown"]["relative_strength"]["benchmark_symbol"] == "TAIEX"

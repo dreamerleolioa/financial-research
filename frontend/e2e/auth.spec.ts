@@ -27,6 +27,46 @@ test("callback without an authorization code explains recovery", async ({ page }
   await expect(page).toHaveURL(/\/login$/);
 });
 
+test("callback completes Google code login without treating mount initialization as a conflict", async ({ page }) => {
+  const requestLog: string[] = [];
+  const requestBodies: unknown[] = [];
+  await installApiMocks(page, {
+    googleCodeDelayMs: 50,
+    requestLog,
+    requestBodies,
+  });
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("google_oauth_state", "e2e-oauth-state");
+  });
+
+  await page.goto("/login/callback?code=fresh-e2e-code&state=e2e-oauth-state");
+
+  await expect(page).toHaveURL(/\/analyze$/);
+  await expect(page.getByText("e2e@example.com", { exact: true })).toBeVisible();
+  await expect.poll(() => requestLog.filter((request) => request === "POST /auth/google/code").length).toBe(1);
+  await expect(page.evaluate(() => localStorage.getItem("auth_token"))).resolves.toBe("e2e-google-code-token");
+  await expect(page.evaluate(() => sessionStorage.getItem("google_oauth_state"))).resolves.toBeNull();
+  expect(requestBodies).toContainEqual({
+    code: "fresh-e2e-code",
+    redirect_uri: "http://127.0.0.1:4173/login/callback",
+  });
+});
+
+test("callback rejects mismatched OAuth state before exchanging the code", async ({ page }) => {
+  const requestLog: string[] = [];
+  await installApiMocks(page, { requestLog });
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("google_oauth_state", "expected-oauth-state");
+  });
+
+  await page.goto("/login/callback?code=attacker-code&state=unexpected-oauth-state");
+
+  await expect(page.getByRole("heading", { name: "登入尚未完成" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("登入驗證狀態不符");
+  expect(requestLog).not.toContain("POST /auth/google/code");
+  await expect(page.evaluate(() => sessionStorage.getItem("google_oauth_state"))).resolves.toBeNull();
+});
+
 test("auth state and query cache follow token changes from another tab", async ({ context, page }) => {
   const alice = {
     id: 1,

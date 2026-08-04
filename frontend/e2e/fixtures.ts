@@ -55,6 +55,33 @@ export const closedPortfolioItem = {
   notes: null,
 };
 
+export const legacyTradeReview = {
+  id: 301,
+  portfolio_id: closedPortfolioItem.id,
+  user_id: testUser.id,
+  position_group_id: closedPortfolioItem.position_group_id,
+  symbol: closedPortfolioItem.symbol,
+  review_version: "trade-review-v1",
+  review_result: {},
+  evidence_payload: {},
+  llm_summary: null,
+  created_at: "2026-07-16T09:00:00+08:00",
+  updated_at: "2026-07-16T09:00:00+08:00",
+};
+
+export const currentTradeReview = {
+  ...legacyTradeReview,
+  review_version: "trade-review-v2",
+  updated_at: "2026-07-16T09:05:00+08:00",
+};
+
+export const futureTradeReview = {
+  ...currentTradeReview,
+  review_version: "trade-review-v3",
+  llm_summary: "future summary",
+  updated_at: "2026-07-16T09:10:00+08:00",
+};
+
 export const quickAnalyzeResult = {
   snapshot: {
     symbol: "3661.TW",
@@ -229,9 +256,12 @@ export const populatedRiskSummary = {
 
 interface ApiMockOptions {
   usersByToken?: Record<string, unknown>;
+  googleCodeDelayMs?: number;
   watchlist?: unknown[];
   portfolio?: unknown[];
   closedPortfolio?: unknown[];
+  tradeReviewGet?: unknown;
+  tradeReviewPost?: unknown;
   riskSummary?: unknown;
   priceRefreshSummary?: unknown;
   priceRefreshSummaries?: unknown[];
@@ -274,9 +304,25 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
       const token = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
       return json(route, options.usersByToken?.[token] ?? testUser);
     }
+    if (method === "POST" && pathname === "/auth/google/code") {
+      if (options.googleCodeDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.googleCodeDelayMs));
+      }
+      return json(route, { access_token: "e2e-google-code-token", user: testUser });
+    }
     if (method === "GET" && pathname === "/watchlist") return json(route, watchlist);
     if (method === "GET" && pathname === "/portfolio") return json(route, portfolio);
     if (method === "GET" && pathname === "/portfolio/closed") return json(route, closedPortfolio);
+    if (method === "GET" && /^\/portfolio\/\d+\/review$/.test(pathname)) {
+      return options.tradeReviewGet === undefined
+        ? json(route, { detail: "尚未建立交易審核" }, 404)
+        : json(route, options.tradeReviewGet);
+    }
+    if (method === "POST" && /^\/portfolio\/\d+\/review$/.test(pathname)) {
+      return options.tradeReviewPost === undefined
+        ? json(route, { detail: "Unhandled trade review POST" }, 404)
+        : json(route, options.tradeReviewPost);
+    }
     if (method === "GET" && pathname === "/portfolio/risk-summary") return json(route, riskSummary);
     if (method === "POST" && pathname === "/portfolio/risk-summary/refresh-prices") {
       const queuedSummary = options.priceRefreshSummaries?.[priceRefreshResponseIndex];

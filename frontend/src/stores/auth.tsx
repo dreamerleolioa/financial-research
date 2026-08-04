@@ -75,7 +75,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (token) {
       void verifyStoredToken(token);
     } else {
-      verificationSequenceRef.current += 1;
       setState({ user: null, token: null, isLoading: false });
     }
 

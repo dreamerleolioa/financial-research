@@ -403,6 +403,11 @@ def refresh_daily_radar_ohlcv_endpoint(
         selected_symbols,
         technical_fetcher=technical_fetcher,
         institutional_payloads_by_symbol=_institutional_payloads_by_symbol(universe, run_date=run_date),
+        margin_contexts_by_symbol=_full_margin_contexts_by_symbol(
+            db,
+            symbols=selected_symbols,
+            run_date=run_date,
+        ),
     )
     refreshed_universe = refresh_daily_radar_universe_technical_tracks(universe, rows)
     prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
@@ -1025,6 +1030,25 @@ def _institutional_payloads_by_symbol(
     run_date: date,
 ) -> dict[str, dict[str, Any]]:
     return {entry.symbol: _institutional_payload(entry, run_date=run_date) for entry in universe}
+
+
+def _full_margin_contexts_by_symbol(
+    session: Session,
+    *,
+    symbols: Iterable[str],
+    run_date: date,
+) -> dict[str, dict[str, Any]]:
+    traces = get_shared_background_context_trace_by_symbol(
+        session,
+        symbols=symbols,
+        context_types=("full_margin",),
+        reference_date=run_date,
+        point_in_time=True,
+    )
+    return {
+        symbol: dict(contexts[0]) if contexts else {}
+        for symbol, contexts in traces.items()
+    }
 
 
 def _supported_daily_radar_symbols(symbols: Iterable[str]) -> tuple[list[str], dict[str, str]]:

@@ -67,6 +67,7 @@ def ensure_daily_radar_raw_rows(
     *,
     technical_fetcher: BatchTechnicalFetcher | None = None,
     institutional_payloads_by_symbol: Mapping[str, Mapping[str, Any]] | None = None,
+    margin_contexts_by_symbol: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[StockRawData]:
     ordered_symbols = _ordered_unique_symbols(symbols)
     if not ordered_symbols:
@@ -92,7 +93,14 @@ def ensure_daily_radar_raw_rows(
         symbols=ordered_symbols,
         institutional_payloads_by_symbol=institutional_payloads,
     )
-    if missing_symbols or institutional_payloads:
+    if margin_contexts_by_symbol is not None:
+        _apply_margin_contexts(
+            session,
+            run_date=run_date,
+            symbols=ordered_symbols,
+            margin_contexts_by_symbol=margin_contexts_by_symbol,
+        )
+    if missing_symbols or institutional_payloads or margin_contexts_by_symbol is not None:
         session.flush()
 
     return get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
@@ -117,6 +125,62 @@ def _apply_institutional_payloads(
     ).all()
     for row in rows:
         row.institutional = dict(institutional_payloads_by_symbol[row.symbol])
+
+
+def _apply_margin_contexts(
+    session: Session,
+    *,
+    run_date: date,
+    symbols: Sequence[str],
+    margin_contexts_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> None:
+    rows = session.scalars(
+        select(StockRawData).where(
+            StockRawData.record_date == run_date,
+            StockRawData.symbol.in_(symbols),
+        )
+    ).all()
+    for row in rows:
+        context = _mapping(margin_contexts_by_symbol.get(row.symbol))
+        fundamental = dict(_mapping(row.fundamental))
+        data_dates = dict(_mapping(fundamental.get("data_dates")))
+        fundamental["margin"] = _project_margin_context(context, technical=_mapping(row.technical))
+        as_of_date = context.get("as_of_date")
+        if as_of_date is None:
+            data_dates.pop("margin", None)
+        else:
+            data_dates["margin"] = str(as_of_date)
+        fundamental["data_dates"] = data_dates
+        row.fundamental = fundamental
+
+
+def _project_margin_context(
+    context: Mapping[str, Any],
+    *,
+    technical: Mapping[str, Any],
+) -> dict[str, Any]:
+    if context.get("context_type") != "full_margin" or context.get("freshness") != "fresh":
+        return {}
+
+    payload = _mapping(context.get("payload"))
+    margin_balance = _to_float(payload.get("latest_margin_balance"))
+    volume = _to_float(_mapping(technical.get("ohlcv")).get("volume"))
+    margin_to_volume = (
+        margin_balance * 1_000 / volume
+        if margin_balance is not None and volume is not None and volume > 0
+        else None
+    )
+    projected = {
+        "margin_balance": margin_balance,
+        "short_balance": _to_float(payload.get("latest_short_balance")),
+        "margin_delta": _to_float(payload.get("margin_balance_delta")),
+        "margin_delta_pct": _to_float(payload.get("margin_balance_delta_pct")),
+        "short_delta": _to_float(payload.get("short_balance_delta")),
+        "short_delta_pct": _to_float(payload.get("short_balance_delta_pct")),
+        "margin_to_volume": margin_to_volume,
+        "risk_flags": [],
+    }
+    return {key: value for key, value in projected.items() if value is not None}
 
 
 def _store_missing_rows(

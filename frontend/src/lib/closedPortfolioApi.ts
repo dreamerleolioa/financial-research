@@ -6,6 +6,8 @@ import type {
   TradeReviewResponse,
 } from "./portfolioTypes";
 
+export const LEGACY_TRADE_REVIEW_VERSION = "trade-review-v1";
+
 export function fetchClosedPortfolioItems(): Promise<ClosedPortfolioItem[]> {
   return requestJson<ClosedPortfolioItem[]>("/portfolio/closed");
 }
@@ -13,7 +15,8 @@ export function fetchClosedPortfolioItems(): Promise<ClosedPortfolioItem[]> {
 export async function fetchOrCreateTradeReview(portfolioId: number): Promise<TradeReviewResponse> {
   const reviewPath = `/portfolio/${portfolioId}/review`;
   try {
-    return await requestJson<TradeReviewResponse>(reviewPath);
+    const review = await requestJson<TradeReviewResponse>(reviewPath);
+    if (review.review_version !== LEGACY_TRADE_REVIEW_VERSION) return review;
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err;
   }

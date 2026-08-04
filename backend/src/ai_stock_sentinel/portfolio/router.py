@@ -47,7 +47,8 @@ from ai_stock_sentinel.user_models.user import User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
-TRADE_REVIEW_VERSION = "trade-review-v1"
+TRADE_REVIEW_VERSION = "trade-review-v2"
+LEGACY_TRADE_REVIEW_VERSION = "trade-review-v1"
 POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v1"
 
 
@@ -608,22 +609,30 @@ def create_trade_review(
             TradeReview.user_id == current_user.id,
         )
     ).scalar_one_or_none()
-    if existing_review:
+    if existing_review and existing_review.review_version != LEGACY_TRADE_REVIEW_VERSION:
         return _serialize_trade_review(existing_review)
 
     ensure_trade_review_market_data(db, item)
     review_result, evidence_payload = build_trade_review_payload(db, item)
-    review = TradeReview(
-        portfolio_id=item.id,
-        user_id=item.user_id,
-        position_group_id=item.position_group_id,
-        symbol=item.symbol,
-        review_version=TRADE_REVIEW_VERSION,
-        review_result=review_result,
-        evidence_payload=evidence_payload,
-        llm_summary=None,
-    )
-    db.add(review)
+    if existing_review:
+        review = existing_review
+        review.review_version = TRADE_REVIEW_VERSION
+        review.review_result = review_result
+        review.evidence_payload = evidence_payload
+        review.llm_summary = None
+        review.updated_at = datetime.now(timezone.utc)
+    else:
+        review = TradeReview(
+            portfolio_id=item.id,
+            user_id=item.user_id,
+            position_group_id=item.position_group_id,
+            symbol=item.symbol,
+            review_version=TRADE_REVIEW_VERSION,
+            review_result=review_result,
+            evidence_payload=evidence_payload,
+            llm_summary=None,
+        )
+        db.add(review)
     db.commit()
     db.refresh(review)
     return _serialize_trade_review(review)

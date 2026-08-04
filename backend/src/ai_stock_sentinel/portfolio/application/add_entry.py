@@ -11,10 +11,20 @@ from ai_stock_sentinel.portfolio.application.events import (
     add_entry_reason_category,
     add_entry_reason_code,
     add_position_event,
+    ensure_position_event_ledger,
+    ledger_open_quantity,
 )
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
 from ai_stock_sentinel.portfolio.schemas import AddEntryRequest
+from ai_stock_sentinel.portfolio.storage_limits import (
+    PORTFOLIO_PRICE_MAX,
+    PORTFOLIO_PRICE_MIN,
+    PORTFOLIO_PRICE_QUANTUM,
+    POSITION_EVENT_MONEY_MAX,
+    POSTGRES_INTEGER_MAX,
+    quantize_for_storage,
+)
 
 
 def add_entry_to_position(
@@ -31,18 +41,40 @@ def add_entry_to_position(
         raise HTTPException(status_code=409, detail="持倉已關閉")
     if payload.event_date < item.entry_date:
         raise HTTPException(status_code=422, detail="加碼日期不可早於初始進場日期")
+    if Decimal(str(item.entry_price)) <= 0:
+        raise HTTPException(status_code=422, detail="成本價必須大於 0")
+
+    events = ensure_position_event_ledger(db, item)
+    latest_event_date = max(event.event_date for event in events)
+    if payload.event_date < latest_event_date:
+        raise HTTPException(status_code=422, detail="事件日期不可早於目前帳本的最新事件")
+    if ledger_open_quantity(events) != item.quantity:
+        raise HTTPException(status_code=409, detail="事件帳本持有股數與持倉資料不一致，請先更正帳本")
 
     add_price = Decimal(str(payload.price))
     add_quantity = Decimal(payload.quantity)
     existing_quantity = Decimal(item.quantity)
     new_quantity = existing_quantity + add_quantity
+    if new_quantity > POSTGRES_INTEGER_MAX:
+        raise HTTPException(status_code=422, detail="加碼後持有股數超過系統上限")
     gross_amount = add_price * add_quantity
     event_fees = calculate_broker_fee(
         gross_amount,
         actual_fee=Decimal(str(payload.fees)) if payload.fees is not None else None,
     )
     event_taxes = Decimal(str(payload.taxes)) if payload.taxes is not None else Decimal("0")
-    item.entry_price = ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity
+    new_entry_price = quantize_for_storage(
+        ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity,
+        PORTFOLIO_PRICE_QUANTUM,
+    )
+    if (
+        event_fees > POSITION_EVENT_MONEY_MAX
+        or event_taxes > POSITION_EVENT_MONEY_MAX
+        or not PORTFOLIO_PRICE_MIN <= new_entry_price <= PORTFOLIO_PRICE_MAX
+    ):
+        raise HTTPException(status_code=422, detail="加碼金額超過系統可儲存範圍")
+
+    item.entry_price = new_entry_price
     item.quantity = int(new_quantity)
     item.updated_at = datetime.now(timezone.utc)
 

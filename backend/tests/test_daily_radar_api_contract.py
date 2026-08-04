@@ -47,10 +47,10 @@ def _candidate_payload() -> dict[str, Any]:
         "repeat_status": DAILY_RADAR_REPEAT_STATUSES[0],
         "explanation": "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。",
         "scoring_version": "daily-radar-scoring-v2.1c",
-        "rule_version": "daily-radar-rules-v2.1c",
+        "rule_version": "daily-radar-rules-v2.2",
         "score_breakdown": {
             "scoring_version": "daily-radar-scoring-v2.1c",
-            "rule_version": "daily-radar-rules-v2.1c",
+            "rule_version": "daily-radar-rules-v2.2",
             "bucket_scores": {
                 DAILY_RADAR_BUCKETS[1]: 82,
                 DAILY_RADAR_BUCKETS[0]: 68,
@@ -203,7 +203,7 @@ def test_daily_radar_candidate_constrains_shared_contract_values() -> None:
     assert candidate.risk_labels[0] in DAILY_RADAR_RISK_LABELS
     assert candidate.repeat_status in DAILY_RADAR_REPEAT_STATUSES
     assert candidate.scoring_version == "daily-radar-scoring-v2.1c"
-    assert candidate.rule_version == "daily-radar-rules-v2.1c"
+    assert candidate.rule_version == "daily-radar-rules-v2.2"
     assert candidate.input_snapshot["evidence"][0]["applicable_consumers"] == ["daily_radar"]
     assert candidate.score_breakdown["relative_strength"]["benchmark_symbol"] == "TAIEX"
     assert candidate.background_context_labels[0]["context_type"] == "weekly_major_holders"

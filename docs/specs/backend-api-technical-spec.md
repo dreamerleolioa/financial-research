@@ -1,7 +1,7 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-06-24
+> 更新日期：2026-08-03
 > 更新摘要：同步技術面、持股診斷、個人持股上限與 LLM input 穩定化完成狀態；`technical_indicators` 對外欄位新增 KD / ADX / OBV / ATR / MFI / Donchian Channel；新增 canonical `technical_profile` 分層 contract，作為後端 scoring、LLM input summary、Daily Radar trace 與前端分層摘要的主要技術語意來源，並保留 raw `technical_indicators` 作相容與 copy/export；籌碼資料新增連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶結構欄位；`position_analysis` 新增防守線距離、支撐距離、未實現損益與持有天數；個人 active 持股不再有 8 筆硬上限；更新 `/analyze`、`/analyze/position` 與 `/portfolio` contract；新增 authenticated `/watchlist` read/write API contract，定義關注列表為尚未進入持股的觀察標的，不代表進場或交易紀錄；補充 `signal_summary` 為內部 LLM input contract，不屬於 API response；新增 Daily Radar 內部執行與公開讀取 API contract；同步 Daily Radar v2 Phase 1 已穩定的 multi-track universe、market regime、relative strength、version trace、replayable evidence、calibration workflow 與 request budget contract；新增 Daily Radar Phase 2A shared background context cache、chip-context updater endpoint 與背景排程 contract；新增 Daily Radar Phase 2B `background_context_labels` API/detail trace contract；新增 Phase 2C `/analyze` 與 `/analyze/position` 的 shared context read/reference contract；新增 Phase 2D portfolio diagnosis 與 lifecycle review shared context reference / point-in-time contract；Phase 2E release gate 已確認 shared context 只作 evidence/caveat/data quality，不改 Daily Radar ranking、`/analyze/position` rule-based fields、portfolio action 或 lifecycle verdict/classification；新增 Single Trade Review `/portfolio/{portfolio_id}/review` contract、closed portfolio `position_group_id` 欄位與 `review_result.user_readable_conclusion` 使用者可讀結論；新增 group-level Position Lifecycle Review `/portfolio/groups/{position_group_id}/lifecycle-review` contract；補入 Entry Record Optimization Phase A-E 已穩定的 entry context、add-entry、lifecycle plan backfill、decision-context status 與 lifecycle fixed-option review contract；Phase 6 release gate 已建立 rule governance、copy allowlist、forward-validation determinism、portfolio risk data-gap 與 frontend build verifier；Phase 1 Daily AVWAP 已完成 managed-universe snapshot、Daily Radar optional evidence refresh、`/analyze` `phase1_observation`、Portfolio risk summary `phase1_position_state` / `phase1_current_day_lists`、Daily Radar `input_snapshot.phase1_avwap_context` projection；TDCC `weekly_major_holders` 已升級為 holder-level v2，補出千張大戶、400 張以上大戶與 100 張以下散戶比例，並提供獨立 `chip_stability_context` 作為週頻籌碼穩定性補充；不新增公開 endpoint。
 
 ## 1) 目的
@@ -33,6 +33,13 @@ make run-api
   "status": "ok"
 }
 ```
+
+### `POST /auth/google/code`
+
+- **用途**：以 Google OAuth authorization code 完成登入並換取應用程式 JWT。
+- **前端 CSRF 邊界**：redirect request 必須包含密碼學安全的一次性 `state`；callback 在呼叫本端點前需從同一分頁 `sessionStorage` 取出預期值，比對後立即消耗。缺少、不相符或重放的 state 不得送出 code exchange。
+- **Redirect URI 邊界**：後端在向 Google token endpoint 送出請求前，先驗證 `redirect_uri`。若設定 `GOOGLE_OAUTH_REDIRECT_URIS`，只接受逗號分隔清單中的精確 URI；未設定時只接受 `CORS_ORIGINS` 的可信 origin，且 path 必須以 `/login/callback` 結尾，不可包含 query、fragment、credentials 或 `..` path segment。
+- **錯誤行為**：無效 code、未允許的 redirect URI 或 Google token exchange 失敗均回傳 `401`，不建立應用程式 JWT。
 
 ### Phase 1 Daily AVWAP backend foundation（internal service，無公開 endpoint）
 
@@ -284,7 +291,7 @@ make run-api
   | `symbol_name`              | string \| null | 股票名稱，僅供前端顯示；新鮮分析由 `snapshot.name` 浮出，舊快取可由 symbol metadata resolver 補齊，查不到時為 `null`                                                                                                                                                                                |
   | `news_display`             | object \| null | 前端顯示用的新聞資料（乾淨 RSS 標題、ISO 日期、來源 URL）；無新聞時為 null                                                                                                                                                                                                                      |
   | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的維度數量，CS-4 新增）；前端預設應轉成資料品質提示                                                                                                                                                                                                                   |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的新聞、法人籌碼與技術資料維度數量）；availability 與方向標籤分離，缺資料時的 `neutral` / `sideways` fallback 不得算成已取得。技術維度至少需要 20 筆有效收盤資料；僅產出 `technical_profile.score_summary`、但 `data_quality.lookback_days_available < 20` 時仍視為不可用，且該 profile 不得影響 `signal_confidence`。若 raw closes 已達 20 筆則維度仍可用，但必須忽略不足 lookback 的 profile，改由 raw technical fallback 產生訊號。前端預設應轉成資料品質提示 |
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度（CS-4 新增；`confidence_score` 為向後相容別名），用於 guardrail、校準與 trace                                                                                                                                                                                                 |
   | `confidence_score`         | int \| null    | 0–100，內部三維訊號一致性（= `signal_confidence`，向後相容）；不應作為預設前台 headline                                                                                                                                                                                                          |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                                                                                                     |
@@ -507,7 +514,7 @@ make run-api
   | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
   | `snapshot`                 | object         | yfinance 即時快照（與 `/analyze` 相同）                                                          |
   | `position_analysis`        | object         | **持股診斷專屬**——見下方欄位細節                                                                 |
-  | `data_confidence`          | int \| null    | 0–100，資料完整度；前端預設應轉成資料品質提示                                                     |
+  | `data_confidence`          | int \| null    | 0–100，資料完整度；技術維度至少需要 20 筆有效收盤資料，不能以不足 lookback 所產生的 fallback score 充當可用資料；前端預設應轉成資料品質提示 |
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度，用於 guardrail、校準與 trace                                                  |
   | `confidence_score`         | int \| null    | = `signal_confidence`，向後相容；不應作為預設前台 headline                                        |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論（rule-based 固定字串）                                                          |
@@ -770,9 +777,9 @@ make run-api
 - **欄位說明**
   - `symbol`：股票代碼，必填；新增前會以 yfinance 輕量驗證代號是否存在
   - `name`：股票名稱，僅供顯示；由 symbol metadata resolver 補齊，查不到時可為 `null`
-  - `entry_price`：購入成本價，必填
+  - `entry_price`：購入成本價，必填，需為 `0.01`–`99,999,999.99`、最多 2 位小數的有限數值，對齊 `user_portfolio.entry_price NUMERIC(10,2)`；低於可保存精度、超出 precision/scale、`NaN`、正負無限大與溢位成無限大的輸入回傳 `422`
   - `entry_date`：購入日期，必填，ISO 8601 日期字串
-  - `quantity`：持有數量，選填，未提供時預設 0
+  - `quantity`：持有數量，選填，未提供時預設 0；允許範圍為 0–`2,147,483,647`，對齊 PostgreSQL `INTEGER`
   - `notes`：備註，選填
   - `entry_record`：選填的進場決策脈絡，若提供則必須符合 `EntryRecordContext` schema；固定選項是未來 lifecycle review 的主要決策資料來源，`note` 僅為補充，不取代固定選項。
 
@@ -783,6 +790,7 @@ make run-api
   | `entry_reason` | enum \| null | `breakout_confirmation` / `pullback_held_support` / `pullback_held_ma20` / `institutional_flow_strengthened` / `fundamental_thesis_improved` / `event_or_news_catalyst` / `long_term_accumulation` / `value_revaluation` / `other` / `not_recorded` |
   | `planned_holding_period` | enum \| null | `short_term` / `swing` / `medium_term` / `long_term` / `not_recorded` |
   | `default_stop_rule` | enum \| null | `break_20d_low` / `break_ma20` / `break_ma60` / `cost_minus_pct` / `fixed_price` / `no_stop_recorded` / `not_recorded` |
+  | `planned_stop_price` | number \| null | `0.0001`–`99,999,999.9999`、最多 4 位小數；對齊 lifecycle plan 的 `NUMERIC(12,4)` |
   | `add_entry_condition` | enum \| null | `no_add_entry` / `breakout_above_prior_high` / `pullback_holds_ma20` / `pullback_holds_support` / `institutional_flow_continues` / `profit_threshold_reached` / `data_quality_complete_only` / `no_averaging_down` / `custom_plan_required` / `not_recorded` |
   | `note` | string \| null | 使用者補充文字；不得作為固定選項缺漏時的替代決策依據。 |
 
@@ -1110,11 +1118,15 @@ make run-api
 ```
 
 - **Response 200**：回傳欄位同 `GET /portfolio/{portfolio_id}/lifecycle-plan`，且 `source = user_backfilled`、`created_after_entry = true`。
+- **數值儲存邊界**：`planned_stop_price` 為 `0.0001`–`99,999,999.9999`、最多 4 位小數；`planned_risk_amount` 為 0–`9,999,999,999.99`、最多 2 位小數；`planned_risk_pct` 為 0–`9,999.9999`、最多 4 位小數。超出 PostgreSQL 對應 `NUMERIC` precision/scale 時於 request validation 回傳 `422`，不得開始寫入。
 
 ### `PUT /portfolio/{portfolio_id}`
 
-- **用途**：更新既有持股的成本價、數量、購入日期與備註。
-- **權限邊界**：只能更新目前登入使用者自己的持股；非擁有者回傳 `403`。
+- **用途**：更正尚未發生後續 lifecycle event 的 active 持股成本價、數量、購入日期與備註；經濟欄位更正會同步 initial-entry event。已有後續事件時，一般 PUT 只能在經濟欄位不變的前提下更新備註。
+- **權限與一致性邊界**：只能更新目前登入使用者自己的持股；非擁有者回傳 `403`。已結案紀錄回傳 `409`，已有 add-entry／partial-exit／full-exit 後再改寫成本、股數或日期也回傳 `409`，不得造成 portfolio row 與 event ledger 分裂。
+- **Legacy ledger 邊界**：經濟欄位更正與 add-entry／close 共用同一補帳防線。單一舊持倉且完全沒有 event ledger 時，可先以目前 row 補建 `user_backfilled` initial-entry 再套用更正；同群組已有其他分批 portfolio row 時回傳 `409`，不得從目前剩餘股數猜測原始進場數量或歷史事件順序。只修改備註且經濟欄位不變時不觸發補帳。
+- **更正 provenance**：成本、股數或購入日期任一變更時，同步後的 initial-entry event 必須標記 `source = manual_record_correction` 並寫入事後更正 `data_quality_note`；原有固定選項 reason metadata 保留，但不得再把更正後 facts 視為 event-time 或 backfilled 原始紀錄。只修改備註時不改變 event provenance。
+- **數值邊界**：`entry_price` 必須是 `0.01`–`99,999,999.99`、最多 2 位小數的有限數值；`quantity` 必須介於 1–`2,147,483,647`，不符合時於 request validation 回傳 `422`。
 
 - **Request Body**
 
@@ -1144,6 +1156,7 @@ make run-api
 
 - **用途**：為 active 持股建立明確加碼事件；此端點是記錄 add-entry intent 的唯一入口之一，不從一般 `PUT /portfolio/{portfolio_id}` 數量變更推論加碼。
 - **權限與狀態邊界**：只能加碼目前登入使用者自己的 active 持股；非擁有者回傳 `403`，已結案持股回傳 `409`。
+- **Legacy ledger 邊界**：單一舊持倉若完全沒有 event ledger，第一次 lifecycle mutation 會以目前 row 補建 `user_backfilled` initial-entry；同群組已存在其他分批 row 時無法安全還原歷史順序，必須回傳 `409`，不得猜測補帳。
 - **Request Body**
 
 ```json
@@ -1161,11 +1174,11 @@ make run-api
 ```
 
 - **欄位說明**
-  - `event_date`：加碼日期，必填，不可早於初始進場日期；違反時回傳 `422`，訊息為 `加碼日期不可早於初始進場日期`。
-  - `price`：加碼價格，必填，需大於 0。
-  - `quantity`：加碼股數，必填，需大於 0。
-  - `fees`：手續費，選填，未提供時依 broker fee rule 計算 event ledger fee。
-  - `taxes`：交易稅，選填，未提供時 add-entry event 稅額為 0。
+  - `event_date`：加碼日期，必填，不可早於初始進場日期，也不可早於目前帳本的最新事件；違反時回傳 `422`。
+  - `price`：加碼價格，必填，需介於 `0.01`–`99,999,999.99` 且最多 2 位小數。
+  - `quantity`：加碼股數，必填，需介於 1–`2,147,483,647`。
+  - `fees`：手續費，選填，需介於 0–`99,999,999.99` 且最多 2 位小數；未提供時依 broker fee rule 計算 event ledger fee。
+  - `taxes`：交易稅，選填，需介於 0–`99,999,999.99` 且最多 2 位小數；未提供時 add-entry event 稅額為 0。
   - `reason_code`：`breakout_confirmation` / `pullback_held_support` / `pullback_held_ma20` / `institutional_flow_strengthened` / `fundamental_thesis_improved` / `event_or_news_catalyst` / `long_term_accumulation` / `value_revaluation` / `other` / `planned_scale_in` / `averaging_down` / `chasing_momentum` / `not_recorded`。
   - `plan_adherence`：`yes` / `partial` / `no` / `not_recorded`。
   - `confidence_level`：`high` / `medium` / `low` / `not_recorded`。
@@ -1173,6 +1186,8 @@ make run-api
 
 - **行為與計算邊界**
   - 會以平均成本法更新 active portfolio 的 `entry_price` 與 `quantity`。
+  - 加碼後 active portfolio 的總股數不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`；即使單次 quantity 合法，只要加總溢位即回傳 `422`，且 portfolio 與 event ledger 均不得寫入。
+  - 加碼後平均成本會在 application boundary 依 PostgreSQL `NUMERIC(10,2)` 規則明確量化後，再同步寫入 active portfolio；實際／自動計算的 `fees`、`taxes` 也必須符合 event 的 `NUMERIC(10,2)`。任何衍生值超出 envelope 時回傳 `422 加碼金額超過系統可儲存範圍`，且不得先修改 portfolio 或新增 event。
   - 會寫入 `position_event`，`event_type = add_entry`，`source = user_recorded_at_event_time`，並保存 `reason_code`、`plan_adherence`、`confidence_level`、`fees`、`taxes`。
   - `not_recorded` reason 會保留為未記錄脈絡，不推論使用者加碼意圖。
 
@@ -1232,17 +1247,19 @@ make run-api
 
 - **欄位說明**
   - `exit_date`：出場日期，必填，ISO 8601 日期字串。
-  - `exit_price`：出場價格，必填，需大於 0。
-  - `exit_quantity`：出場股數，必填，需大於 0，且不可大於目前 active 持有股數。
-  - `fees`：手續費，選填，需大於或等於 0；未提供時依 broker fee rule 自動估算，若提供則視為使用者覆寫值。
-  - `taxes`：交易稅，選填，需大於或等於 0；未提供時依 sell transaction tax rule 自動估算，若提供則視為使用者覆寫值。
+  - `exit_price`：出場價格，必填，需介於 `0.01`–`99,999,999.99` 且最多 2 位小數。
+  - `exit_quantity`：出場股數，必填，需介於 1–`2,147,483,647`，且不可大於目前 active 持有股數。
+  - `fees`：手續費，選填，需介於 0–`99,999,999.99` 且最多 2 位小數；未提供時依 broker fee rule 自動估算，若提供則視為使用者覆寫值。
+  - `taxes`：交易稅，選填，需介於 0–`99,999,999.99` 且最多 2 位小數；未提供時依 sell transaction tax rule 自動估算，若提供則視為使用者覆寫值。
 
 - **計算邏輯**
   - 已實現損益採平均成本法計算：`realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`，其中 `fees` / `taxes` 使用同一組寫入 closed portfolio row 與 `position_event` 的實際成本值。
   - 已實現報酬率採本次出場股數的成本基準計算：`realized_return_pct = realized_pnl / (entry_price * exit_quantity) * 100`
+  - 寫入前會先將實際／自動計算的 `fees`、`taxes`、`realized_pnl`、`realized_return_pct` 明確量化到各自 `NUMERIC(10,2)`、`NUMERIC(12,2)`、`NUMERIC(10,4)` scale，再檢查 storage envelope；超出任一上限時回傳 `422 結案金額超過系統可儲存範圍`，且 portfolio 與 event ledger 均不得寫入。
   - `holding_days = exit_date - entry_date` 的天數
   - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
   - `exit_quantity < quantity` 時為部分平倉：原 active 持股保留並扣減 `quantity`，另建立一筆 `is_active = FALSE` 的 closed portfolio 紀錄，該 inactive 紀錄代表本次出場股數，response 回傳新建立的 closed portfolio。
+  - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只處理可證明形狀：仍持有群組以「單一 active row + 單一 synthetic initial-entry + 每個 inactive portfolio row 恰好各有一筆 synthetic partial-exit」修正為 `active quantity + partial-exit quantity sum`；完全結案群組以「無 active row + 單一 synthetic initial-entry + 至少一筆 synthetic partial-exit + 最後單一 synthetic full-exit，且 initial/full exit 來自同一最後結案 row」修正為全部 exit quantity 總和。所有 active/source row、synthetic initial/exit event 與計算後 initial quantity 都必須嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`；超出時跳過該群組，不執行可能中止 migration 的溢位更新。exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage，每筆來源 row 的 `quantity`、`exit_quantity`（null 時回退 `quantity`）與對應 exit event quantity 必須一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。所有 portfolio rows 與 events 必須具有同一個非空 symbol；active row 若在 synthetic initial event 建立後又被更新，視為可能含有舊版 PUT 的人工修正而跳過。真正更新 initial event 前，migration 必須按 row id 對所有 contributing portfolio rows 與整組 initial/partial/full events 的 observed facts/timestamps 做 compare-and-lock，再對 initial event 做 compare-and-set；任一來源事實在 snapshot 後遭並行更正都跳過該群組，不得用 stale snapshot 覆寫。這些鎖只保護同一 transaction；部署 `1b2c3d4e5f6a` 時必須先停止舊版 portfolio writers，明確執行 migration，確認舊 instances 已退出後才開放新版流量，不能把 transaction lock 視為 commit 後的跨版本保護。含人工、補填、混合來源、多 active rows、source coverage 不完整、非正數、數量不一致、symbol 分裂、post-backfill mutation、entry price/date 分裂或其他事件形狀的群組不自動改寫，且修補可安全重跑。
 
 - **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
 
@@ -1280,9 +1297,9 @@ make run-api
 
 ### `POST /portfolio/{portfolio_id}/review`
 
-- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在 saved review，直接回傳既有 review，不重新產生。
+- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在且 `review_version = trade-review-v2`，直接回傳既有 review。只有已知的 `trade-review-v1` 會由 POST 依目前 deterministic 規則原地重建為 v2；未知或較新版本原樣回傳，不得降級覆寫。
 - **Request Body**：無必填欄位；目前 frontend 送出空 POST body。
-- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`，第二次以後 POST 回傳既有資料；沒有 refresh 或重新分析行為。
+- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`；目前 v2 再次 POST 維持 idempotent 並回傳既有資料；已知 v1 review 再次 POST 則更新同一筆紀錄的 `review_version`、`review_result` 與 `evidence_payload`，並清除舊 `llm_summary`。GET 保持只讀；frontend 只在讀到 v1 時再送 POST 完成升級，對未知或較新版本不得自動 POST，確保版本單調性與 rollback 相容性。
 - **LLM 邊界**：目前不呼叫 LLM，`llm_summary` 固定為 `null`。
 - **Evidence 邊界**：`evidence_payload` 只存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、source summary；不存完整 OHLCV/K-line arrays、raw news、raw LLM prompts 或 unrelated portfolio history。
 
@@ -1295,7 +1312,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "trade-review-v1",
+  "review_version": "trade-review-v2",
   "review_result": {
     "data_quality": {
       "status": "ok",
@@ -1460,14 +1477,14 @@ make run-api
 - **主要欄位說明**
   - `review_result.data_quality.status`：`ok` 或 `insufficient`。
   - `review_result.user_readable_conclusion`：前端「交易檢討結論」的資料來源，包含 `overall_verdict`、`overall_verdict_label`、`one_sentence_reason`、`evidence`、`next_time_rules`。
-  - `review_result.user_readable_conclusion.overall_verdict`：`early` / `reasonable` / `late` / `insufficient`。
+  - `review_result.user_readable_conclusion.overall_verdict`：`early` / `reasonable` / `late` / `unclassified` / `insufficient`。
   - `entry_review.classification`：`breakout_entry` / `pullback_entry` / `chase_entry` / `weak_entry` / `range_entry` / `insufficient_data`。
-  - `exit_review.classification`：`profit_protection_exit` / `stop_loss_exit` / `late_stop_exit` / `early_profit_exit` / `panic_exit` / `technical_break_exit` / `insufficient_data`。
+  - `exit_review.classification`：`profit_protection_exit` / `stop_loss_exit` / `late_stop_exit` / `early_profit_exit` / `panic_exit` / `technical_break_exit` / `unclassified_exit` / `insufficient_data`。
   - `confidence`：`high` / `medium` / `low`。
   - `market_regime`：`uptrend` / `downtrend` / `range_bound` / `strong_momentum` / `high_volatility` / `insufficient_data`。
   - `holding_review.detected_events`：最多保留重要 holding events，event item 不包含完整 K 線序列。
 
-> **Single Trade Review 結論邊界**：`review_result.user_readable_conclusion` 是 `review_result` JSONB 內的 additive 欄位，不需資料庫 migration。它由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，不新增 `llm_summary`，也不需要將 `review_version` 從 `trade-review-v1` 升版。若資料不足，`overall_verdict` 回傳 `insufficient`，並在 `evidence` 與 `next_time_rules` 說明限制。
+> **Single Trade Review 結論邊界**：`trade-review-v2` 由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，也不新增 `llm_summary`。只有存在可核對的獲利保護、風險控制或技術破位證據時才可回傳 `reasonable`；資料完整但證據不足時回傳 `unclassified`，市場資料不足時回傳 `insufficient`。對既有 v1 紀錄再次 POST 時會以 v2 規則重建。
 
 ### Closed portfolio grouping behavior
 
@@ -1742,10 +1759,10 @@ Daily Radar run status：
   - TWSE-first Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時合併 selected universe、active holdings 與 watchlist symbols 後做 refresh；上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，其他 symbol 只記錄 `skipped_symbol_reasons.unsupported_phase1_avwap_market`。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，step status 會標記 failed 並輸出 per-symbol `missing_symbol_reasons`，其中 TWSE 延遲、request failure 與 parser error 需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`；但 `run-scoring` 仍可放行，候選 detail 以 `phase1_avwap_context.freshness = missing` / `missing_reason` 呈現。
   - AVWAP repair：台灣時間週二至週六 07:00 的 GitHub Actions 補修排程會對前一個 intended trading date 重跑 `refresh-avwap`；若 business status completed，立即重跑同日 `run-scoring`。Public read 以同日期最新完成 run 呈現補齊後版本，不直接改 candidate JSON。
   - FinMind lending / full margin：正式排程分別在 `refresh-lending` / `refresh-full-margin` 小時對 selected universe symbols refresh；同一 `run_date` 已有 fresh shared context 時直接重用，不再呼叫 provider。
-  - yfinance selected-symbol OHLCV：正式排程只在 `refresh-ohlcv` 小時對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用；refresh 完成後會把技術面 tracks 回寫到 prepared universe。
+  - yfinance selected-symbol OHLCV：正式排程只在 `refresh-ohlcv` 小時對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用；refresh 完成後會把技術面 tracks 回寫到 prepared universe。同一步驟會以 `run_date` 做 point-in-time 查詢，將 fresh `full_margin` shared context 投影至新建或既有 final raw row 的 `fundamental.margin`：`margin_balance_delta_pct` 對應 `margin_delta_pct`，`latest_margin_balance × 1000 / ohlcv.volume` 對應 `margin_to_volume`，並以 context `as_of_date` 寫入 `data_dates.margin`。
   - yfinance market index OHLCV：每次 run 只抓固定 benchmark。TW 使用 `TAIEX` / `^TWII`，US 使用 `SPX` / `^GSPC`，用於 market regime 與 relative strength benchmark。
   - Shared background context：正式排程把 `lending` 與 `full_margin` 拆成不同小時 refresh；`weekly_major_holders` 仍由週頻背景排程更新，不在 daily pipeline 內強行日更。
-  - Live limits：回填 rows 只放最小 margin `data_date`，避免技術與法人資料被誤判為 stale；完整融資融券與借券內容由 selected-symbol shared context refresh 寫入 cache 後附加為背景 labels。
+  - Live limits：只有 fresh、適用於 `daily_radar` 且不晚於 `run_date` 的 `full_margin` context 可以投影正式評分欄位；missing / stale / future context 不得合成中性值，raw row 保留空 margin（若有 `as_of_date` 則保留其日期），讓 prefilter 以 `data_gap` fail closed。完整融資融券與借券內容仍由 selected-symbol shared context refresh 保存，並附加為背景 labels。
 
 - **Request Body**
 
@@ -1871,7 +1888,7 @@ Daily Radar run status：
   - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
   - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。舊候選缺少此欄位時，月報必須標記 `replay_input_incomplete`，不得猜測。
-  - Current version trace：`daily-radar-scoring-v2.2` / `daily-radar-rules-v2.1c` / `daily-radar-scoring-config-v1`。
+  - Current version trace：`daily-radar-scoring-v2.3` / `daily-radar-rules-v2.2` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則。
 
 - **Calibration workflow**
   - Daily Radar calibration report 可由 `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` 重跑。

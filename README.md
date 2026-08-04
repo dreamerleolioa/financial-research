@@ -224,6 +224,7 @@ FINMIND_API_TOKEN="your-finmind-api-token"
 CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 GOOGLE_CLIENT_ID="your_google_client_id"    # Google OAuth 登入用
 GOOGLE_CLIENT_SECRET="your_google_client_secret"
+GOOGLE_OAUTH_REDIRECT_URIS="http://localhost:5173/login/callback,https://<username>.github.io/<repo>/login/callback"
 JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
@@ -257,9 +258,22 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | `CORS_ORIGINS`      | `http://localhost:5173,https://<username>.github.io` |
 | `GOOGLE_CLIENT_ID`  | Google OAuth client ID                               |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth code flow client secret              |
+| `GOOGLE_OAUTH_REDIRECT_URIS` | 逗號分隔的 Google OAuth callback 精確 allowlist；應包含 GitHub Pages base path |
 | `JWT_SECRET`        | JWT 簽名密鑰                                         |
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
+
+#### Portfolio ledger repair migration 部署門檻
+
+`1b2c3d4e5f6a_repair_synthetic_split_ledger_quantity` 是會修正既有 portfolio/event facts 的 data migration。這一版不可讓舊版 `PUT /portfolio/{id}` writer 與 migration 做 rolling overlap；舊版只更新 portfolio row，可能在 migration commit 後重新造成 ledger 分裂。
+
+部署時必須依序執行：
+
+1. 進入 maintenance mode，停止舊版 backend instances 或至少封鎖 portfolio create/update/add-entry/close writes。
+2. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `1b2c3d4e5f6a (head)`。
+3. 啟動新版 backend，確認所有舊版 instances 已退出後，再重新開放 portfolio writes。
+
+Migration 內的 compare-and-lock 只保護同一個 DB transaction 讀取快照到寫入之間的競態，不能取代上述跨版本 write quiescence。
 
 ---
 
@@ -322,7 +336,8 @@ pnpm dev
 
 **登入（`/login`）**
 
-- Google OAuth 登入流程
+- Google OAuth authorization-code 登入流程；redirect 前會保存一次性 `state`，callback 必須比對並消耗後才可交換 code
+- Backend 只接受 `GOOGLE_OAUTH_REDIRECT_URIS` 的精確 callback；未設定時才 fallback 到 `CORS_ORIGINS` 中可信 origin 的 `/login/callback` 路徑
 
 ### FastAPI 服務
 

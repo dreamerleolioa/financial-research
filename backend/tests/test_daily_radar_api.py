@@ -1017,6 +1017,64 @@ def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
 
 
+def test_daily_radar_refresh_ohlcv_projects_fresh_full_margin_cache_into_raw_rows(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    upsert_shared_background_context(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        context_type="full_margin",
+        applicable_consumers=("daily_radar",),
+        source={"domain": "background_context", "provider": "fixture_provider"},
+        as_of_date=run_date,
+        freshness="fresh",
+        payload={
+            "latest_margin_balance": 1_200,
+            "latest_short_balance": 80,
+            "margin_balance_delta": 200,
+            "margin_balance_delta_pct": 2.0,
+            "short_balance_delta": 30,
+            "short_balance_delta_pct": 0.5,
+        },
+        replay_key="background_context:2330.TW:full_margin:2026-06-01",
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    row = daily_radar_db_session.query(StockRawData).filter_by(symbol="2330.TW", record_date=run_date).one()
+    assert row.fundamental["margin"]["margin_delta_pct"] == 2.0
+    assert row.fundamental["margin"]["margin_to_volume"] == 0.3
+    assert row.fundamental["data_dates"]["margin"] == run_date.isoformat()
+
+
 def test_daily_radar_refresh_ohlcv_prunes_unsupported_prepared_symbols(
     monkeypatch,
     daily_radar_db_session: Session,

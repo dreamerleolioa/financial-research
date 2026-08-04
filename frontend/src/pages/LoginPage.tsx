@@ -1,7 +1,9 @@
 import { useGoogleLogin } from "@react-oauth/google";
+import { useState } from "react";
 import { Navigate } from "react-router-dom";
 import { AuthenticationShell } from "../components/auth/AuthenticationShell";
 import { appPath } from "../lib/config";
+import { createGoogleOAuthState, storeGoogleOAuthState } from "../lib/googleOAuthState";
 import { useAuth } from "../stores/auth";
 
 function GoogleIcon() {
@@ -29,11 +31,13 @@ function GoogleIcon() {
 
 export default function LoginPage() {
   const { user, isLoading } = useAuth();
+  const [oauthState] = useState(createGoogleOAuthState);
 
   const login = useGoogleLogin({
     flow: "auth-code",
     ux_mode: "redirect",
     redirect_uri: `${window.location.origin}${appPath("login/callback")}`,
+    state: oauthState,
   });
 
   if (user) return <Navigate to="/" replace />;
@@ -46,13 +50,19 @@ export default function LoginPage() {
     >
       <button
         type="button"
-        onClick={() => login()}
+        onClick={() => {
+          storeGoogleOAuthState(oauthState);
+          login();
+        }}
         disabled={isLoading}
         className="ui-button-secondary w-full justify-center bg-surface-raised py-3 text-text-primary shadow-panel"
       >
         {isLoading ? (
           <>
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-accent" aria-hidden="true" />
+            <span
+              className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-accent"
+              aria-hidden="true"
+            />
             驗證登入狀態
           </>
         ) : (

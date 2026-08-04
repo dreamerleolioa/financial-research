@@ -310,6 +310,73 @@ def test_daily_radar_scoring_assigns_each_seed_fixture_primary_bucket() -> None:
         assert result["score_breakdown"]["freshness"]["score"] > 0
 
 
+def test_daily_radar_missing_scoring_inputs_are_rejected_and_never_add_positive_points() -> None:
+    record = {
+        "symbol": "2330.TW",
+        "name": "台積電",
+        "record_date": "2026-05-29",
+        "ohlcv": {
+            "open": 100.0,
+            "high": 102.0,
+            "low": 99.0,
+            "close": 101.0,
+            "previous_close": 100.0,
+            "volume": 2_000_000,
+            "avg_volume_20": 2_000_000,
+            "turnover_value_million": 202.0,
+        },
+        "indicators": {},
+        "institutional_flow": {},
+        "margin": {},
+        "data_dates": {
+            "ohlcv": "2026-05-29",
+            "technical_indicators": "2026-05-29",
+            "institutional_flow": "2026-05-29",
+            "margin": "2026-05-29",
+        },
+    }
+
+    prefilter = prefilter_record(record)
+    result = score_daily_radar_record(record, prefilter_result=prefilter)
+
+    assert prefilter["prefilter_status"] == "rejected"
+    assert any(reason["code"] == "data_gap" for reason in prefilter["prefilter_reasons"])
+    assert result["bucket_scores"] == {
+        "institutional_accumulation": 0,
+        "price_volume_strengthening": 6,
+        "bottoming_reversal": 10,
+        "support_retest": 0,
+    }
+    assert result["matched_rules"] == []
+    assert "data_gap" in result["risk_labels"]
+    assert result["observation_score"] == 0
+
+
+@pytest.mark.parametrize(
+    ("symbol", "section", "field", "forbidden_rule"),
+    [
+        ("2454.TW", "indicators", "ma20", "price_volume_ma20_reclaim"),
+        ("2454.TW", "ohlcv", "previous_close", "price_volume_close_above_previous"),
+        ("3034.TW", "ohlcv", "previous_close", "bottoming_close_recovers"),
+        ("3034.TW", "indicators", "kd_d", "bottoming_kd_low_turn"),
+        ("2303.TW", "indicators", "atr14", "support_retest_near_key_level"),
+        ("2303.TW", "ohlcv", "previous_close", "support_retest_reclaimed_area"),
+    ],
+)
+def test_daily_radar_missing_rule_operand_never_emits_positive_rule(
+    symbol: str,
+    section: str,
+    field: str,
+    forbidden_rule: str,
+) -> None:
+    record = deepcopy(_joined_records_by_symbol()[symbol])
+    record[section][field] = None
+
+    result = score_daily_radar_record(record, market_context=_market_context())
+
+    assert forbidden_rule not in {rule["rule_id"] for rule in result["matched_rules"]}
+
+
 def test_daily_radar_scoring_keeps_secondary_buckets_for_other_matched_setups() -> None:
     records = _joined_records_by_symbol()
 
@@ -341,10 +408,10 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["risk_penalties"] == []
     assert result["data_dates"]["market_index"] == "2026-05-29"
     assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
-    assert result["scoring_version"] == "daily-radar-scoring-v2.2"
-    assert result["rule_version"] == "daily-radar-rules-v2.1c"
-    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.2"
-    assert breakdown["rule_version"] == "daily-radar-rules-v2.1c"
+    assert result["scoring_version"] == "daily-radar-scoring-v2.3"
+    assert result["rule_version"] == "daily-radar-rules-v2.2"
+    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.3"
+    assert breakdown["rule_version"] == "daily-radar-rules-v2.2"
 
 
 def test_daily_radar_scoring_records_technical_profile_layer_trace_without_changing_scores() -> None:
@@ -420,8 +487,8 @@ def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_
     assert result["data_dates"]["relative_strength"] == "2026-05-29"
     assert result["input_snapshot"]["relative_strength"] == relative_strength
     assert result["input_snapshot"]["versions"] == {
-        "scoring_version": "daily-radar-scoring-v2.2",
-        "rule_version": "daily-radar-rules-v2.1c",
+        "scoring_version": "daily-radar-scoring-v2.3",
+        "rule_version": "daily-radar-rules-v2.2",
         "config_version": "daily-radar-scoring-config-v1",
     }
     assert result["input_snapshot"]["replay_input"]["schema_version"] == "daily-radar-replay-input-v1"

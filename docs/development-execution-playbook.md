@@ -72,6 +72,7 @@
 - 後端優先沿用既有 service/repository/provider/router pattern。
 - 前端優先沿用既有 page、lib、type、formatter 與中文 label mapping。
 - DB schema 變更需同時更新 SQLAlchemy model、Alembic migration、API contract 與測試。
+- Data migration 若與舊版 writer 的寫入契約不相容，必須在 release 文件明列 staged rollout 或 write-quiescence gate；transaction row lock 只保護 migration 執行期間，不能宣稱涵蓋 commit 後仍存活的舊版 instance。
 - Shared context 變更需同時檢查 `applicable_consumers`、freshness、replay key、point-in-time 行為與 caveat。
 
 ### 4.3 完成前

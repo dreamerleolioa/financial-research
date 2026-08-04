@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthenticationShell } from "../components/auth/AuthenticationShell";
 import { appPath } from "../lib/config";
+import { consumeGoogleOAuthState } from "../lib/googleOAuthState";
 import { useAuth } from "../stores/auth";
 
 export default function LoginCallbackPage() {
@@ -16,9 +17,14 @@ export default function LoginCallbackPage() {
 
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
+    const oauthState = params.get("state");
 
     if (!code) {
       setError("未收到 Google 授權碼，請返回登入頁後再試一次。");
+      return;
+    }
+    if (!consumeGoogleOAuthState(oauthState)) {
+      setError("登入驗證狀態不符或已失效，請返回登入頁後重新開始。");
       return;
     }
 
