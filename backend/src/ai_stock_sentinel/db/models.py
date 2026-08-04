@@ -422,7 +422,7 @@ class AnalysisCalibrationSample(Base):
             "symbol",
             "record_date",
             "strategy_version",
-            "input_hash",
+            "confidence_config_version",
             name="uq_analysis_calibration_sample_identity",
         ),
         Index("idx_analysis_calibration_samples_record_date", "record_date"),

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select
+from sqlalchemy import Integer, and_, case, cast, extract, func, literal, or_, select, true, union_all
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.governance import (
@@ -30,6 +30,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
 from ai_stock_sentinel.daily_radar.rule_registry import (
+    SCORING_ACTIVE_TIERS,
     RuleRegistryEntry,
     get_rule_registry,
     registry_payload,
@@ -94,7 +95,7 @@ def build_ablation_report(
 ) -> dict[str, Any]:
     rows = [dict(row) for row in outcomes]
     validated_rows = [row for row in rows if row.get("status") == "validated"]
-    windows = sorted({int(row["window_days"]) for row in validated_rows}) or list(DEFAULT_FORWARD_WINDOWS)
+    windows = list(DEFAULT_FORWARD_WINDOWS)
     group_rows = [
         _ablation_group_row(
             group,
@@ -212,7 +213,7 @@ def build_monthly_rule_review_report(
         "counterfactual_ablation_summary": counterfactual_ablation,
         "counterfactual_ablation_scope": {
             "selected_months": selected_months,
-            "ranking_pool": "all_evaluated_candidates_before_outcome_join",
+            "ranking_pool": "all_latest_run_candidates_for_each_forward_window",
             "outcome_join": "validated_results_only_after_selection",
             "live_change_eligible": False,
         },
@@ -261,6 +262,7 @@ def validation_rows_from_results(
     validation_version: str | None = None,
     selected_months: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
+    version = validation_version or FORWARD_VALIDATION_VERSION
     date_predicate = _date_filter(
         DailyRadarRun.run_date,
         start_date=start_date,
@@ -288,11 +290,28 @@ def validation_rows_from_results(
     latest_run_ids = select(ranked_runs.c.run_id).where(
         ranked_runs.c.row_number == 1
     )
+    windows = _forward_windows_subquery()
 
     query = (
-        select(DailyRadarForwardValidationResult, DailyRadarCandidate, DailyRadarRun)
-        .join(DailyRadarCandidate, DailyRadarForwardValidationResult.candidate_id == DailyRadarCandidate.id)
+        select(
+            DailyRadarForwardValidationResult,
+            DailyRadarCandidate,
+            DailyRadarRun,
+            windows.c.window_days,
+        )
+        .select_from(DailyRadarCandidate)
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+        .join(windows, true())
+        .outerjoin(
+            DailyRadarForwardValidationResult,
+            and_(
+                DailyRadarForwardValidationResult.candidate_id
+                == DailyRadarCandidate.id,
+                DailyRadarForwardValidationResult.window_days
+                == windows.c.window_days,
+                DailyRadarForwardValidationResult.validation_version == version,
+            ),
+        )
         .where(
             DailyRadarRun.market == market,
             date_predicate,
@@ -303,14 +322,18 @@ def validation_rows_from_results(
             DailyRadarRun.created_at.desc(),
             DailyRadarRun.id.desc(),
             DailyRadarCandidate.symbol.asc(),
-            DailyRadarForwardValidationResult.window_days.asc(),
+            windows.c.window_days.asc(),
         )
     )
-    if validation_version:
-        query = query.where(DailyRadarForwardValidationResult.validation_version == validation_version)
     return [
-        _row_from_result(result, candidate, run)
-        for result, candidate, run in session.execute(query).all()
+        _row_from_result(
+            result,
+            candidate,
+            run,
+            window_days=int(window_days),
+            validation_version=version,
+        )
+        for result, candidate, run, window_days in session.execute(query).all()
     ]
 
 
@@ -338,6 +361,7 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
         f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Validated samples: {summary.get('validated_sample_count', 0)}",
         f"- Skipped samples: {summary.get('skipped_sample_count', 0)}",
+        f"- Missing validation results: {summary.get('missing_sample_count', 0)}",
         f"- Counterfactual cohort: {', '.join(str(value) for value in _as_list(counterfactual_scope.get('selected_months'))) or 'insufficient'}",
         f"- Counterfactual ranking pool: {counterfactual_scope.get('ranking_pool')}",
         f"- Counterfactual outcome join: {counterfactual_scope.get('outcome_join')}",
@@ -468,11 +492,60 @@ def _counterfactual_ablation_report(
     registry = get_rule_registry()
     results: list[dict[str, Any]] = []
     for group in ablation_groups:
-        excluded_codes = {
+        group_entries = {
             code
             for code, entry in registry.items()
             if entry.ablation_group == group
         }
+        excluded_codes = {
+            code
+            for code in group_entries
+            if registry[code].tier in SCORING_ACTIVE_TIERS
+        }
+        if not excluded_codes:
+            for window in DEFAULT_FORWARD_WINDOWS:
+                before = [
+                    row
+                    for row in baseline
+                    if int(row["window_days"]) == window
+                ]
+                before_selected = {
+                    int(row["candidate_id"])
+                    for row in before
+                    if row.get("selected_for_rank") is True
+                }
+                before_metrics = outcome_metrics(
+                    before,
+                    selection=lambda row: (
+                        row.get("status") == "validated"
+                        and row.get("selected_for_rank") is True
+                    ),
+                )
+                results.append({
+                    "group": group,
+                    "window_days": window,
+                    "method": "not_applicable_context_only",
+                    "excluded_rule_codes": [],
+                    "context_only_rule_codes": sorted(group_entries),
+                    "baseline_selected_count": len(before_selected),
+                    "ablated_selected_count": len(before_selected),
+                    "selection_membership_changed_count": 0,
+                    "validated_selected_sample_count": int(
+                        before_metrics["selected_sample_count"]
+                    ),
+                    "average_excess_return_vs_benchmark_pct_baseline": (
+                        _float_or_none(
+                            before_metrics.get(
+                                "average_excess_return_vs_benchmark_pct"
+                            )
+                        )
+                    ),
+                    "average_excess_return_vs_benchmark_pct_ablated": None,
+                    "delta_average_excess_return_vs_benchmark_pct": None,
+                    "recommendation": "not_in_live_score",
+                    "eligible_for_live_change": False,
+                })
+            continue
         ablated = _replay_daily_radar_rows(
             replayable,
             ScoringConfig(),
@@ -600,11 +673,27 @@ def _recommendation(
 
 
 def _row_from_result(
-    result: DailyRadarForwardValidationResult,
+    result: DailyRadarForwardValidationResult | None,
     candidate: DailyRadarCandidate,
     run: DailyRadarRun,
+    *,
+    window_days: int,
+    validation_version: str,
 ) -> dict[str, Any]:
     snapshot = _candidate_snapshot(candidate, run)
+    if result is None:
+        return {
+            "candidate_id": candidate.id,
+            "symbol": candidate.symbol,
+            "signal_date": run.run_date.isoformat(),
+            "window_days": window_days,
+            "validation_version": validation_version,
+            "benchmark_symbol": None,
+            "status": "missing",
+            "skip_reason": "validation_result_missing",
+            "outcome": {},
+            "candidate_snapshot": snapshot,
+        }
     return {
         "candidate_id": result.candidate_id,
         "symbol": candidate.symbol,
@@ -672,6 +761,7 @@ def _daily_radar_completeness_watermarks(
     latest_run_ids = select(ranked_runs.c.run_id).where(
         ranked_runs.c.row_number == 1
     )
+    windows = _forward_windows_subquery()
     year_value = cast(extract("year", DailyRadarRun.run_date), Integer)
     month_value = cast(extract("month", DailyRadarRun.run_date), Integer)
     expected_count = func.count(func.distinct(DailyRadarCandidate.id))
@@ -699,18 +789,21 @@ def _daily_radar_completeness_watermarks(
         select(
             year_value,
             month_value,
+            windows.c.window_days,
             expected_count,
             evaluated_count,
             validated_count,
         )
         .select_from(DailyRadarCandidate)
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+        .join(windows, true())
         .outerjoin(
             DailyRadarForwardValidationResult,
             and_(
                 DailyRadarForwardValidationResult.candidate_id
                 == DailyRadarCandidate.id,
-                DailyRadarForwardValidationResult.window_days == 20,
+                DailyRadarForwardValidationResult.window_days
+                == windows.c.window_days,
                 DailyRadarForwardValidationResult.validation_version
                 == validation_version,
             ),
@@ -721,29 +814,88 @@ def _daily_radar_completeness_watermarks(
             DailyRadarRun.run_date <= through_date,
             DailyRadarRun.id.in_(latest_run_ids),
         )
-        .group_by(year_value, month_value)
-        .order_by(year_value.asc(), month_value.asc())
+        .group_by(year_value, month_value, windows.c.window_days)
+        .order_by(
+            year_value.asc(),
+            month_value.asc(),
+            windows.c.window_days.asc(),
+        )
     )
+    by_month: dict[str, dict[int, tuple[int, int, int]]] = defaultdict(dict)
+    for year, month, window, expected, evaluated, validated in session.execute(query):
+        by_month[f"{int(year):04d}-{int(month):02d}"][int(window)] = (
+            int(expected or 0),
+            int(evaluated or 0),
+            int(validated or 0),
+        )
     watermarks: list[dict[str, Any]] = []
-    for year, month, expected, evaluated, validated in session.execute(query):
-        expected_value = int(expected or 0)
-        evaluated_value = int(evaluated or 0)
-        validated_value = int(validated or 0)
+    for month, counts_by_window in sorted(by_month.items()):
+        expected_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[0]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        evaluated_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[1]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        validated_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[2]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        evaluated_coverage_by_window = {
+            str(window): validated_coverage(
+                evaluated_by_window[str(window)],
+                expected_by_window[str(window)],
+            )
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        validated_coverage_by_window = {
+            str(window): validated_coverage(
+                validated_by_window[str(window)],
+                expected_by_window[str(window)],
+            )
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        expected_value = expected_by_window["20"]
+        evaluated_value = evaluated_by_window["20"]
+        validated_value = validated_by_window["20"]
+        coverage_values = [
+            value
+            for value in validated_coverage_by_window.values()
+            if value is not None
+        ]
         watermarks.append({
-            "month": f"{int(year):04d}-{int(month):02d}",
+            "month": month,
             "expected_20d_samples": expected_value,
             "evaluated_20d_samples": evaluated_value,
             "validated_20d_samples": validated_value,
+            "expected_samples_by_window": expected_by_window,
+            "evaluated_samples_by_window": evaluated_by_window,
+            "validated_samples_by_window": validated_by_window,
+            "evaluated_coverage_by_window": evaluated_coverage_by_window,
+            "validated_coverage_by_window": validated_coverage_by_window,
             "maturity_complete": (
                 expected_value > 0
-                and evaluated_value >= expected_value
+                and all(
+                    evaluated_by_window[str(window)]
+                    >= expected_by_window[str(window)]
+                    for window in DEFAULT_FORWARD_WINDOWS
+                )
             ),
-            "validated_coverage": validated_coverage(
-                validated_value,
-                expected_value,
-            ),
+            "validated_coverage": min(coverage_values)
+            if len(coverage_values) == len(DEFAULT_FORWARD_WINDOWS)
+            else None,
         })
     return watermarks
+
+
+def _forward_windows_subquery() -> Any:
+    return union_all(
+        *[
+            select(literal(window).label("window_days"))
+            for window in DEFAULT_FORWARD_WINDOWS
+        ]
+    ).subquery("forward_windows")
 
 
 def _date_filter(
@@ -902,7 +1054,16 @@ def _scoring_candidate_report(
         if str(row.get("month")) in set(_as_list(cohort.get("selected_months")))
     ]
     coverage_ok = bool(selected_watermarks) and all(
-        (row.get("validated_coverage") or 0) >= min_validated_coverage
+        all(
+            (
+                _mapping(row.get("validated_coverage_by_window")).get(
+                    str(window)
+                )
+                or 0
+            )
+            >= min_validated_coverage
+            for window in DEFAULT_FORWARD_WINDOWS
+        )
         for row in selected_watermarks
     )
     ci_values = _as_list(bootstrap.get("ci_95"))
@@ -1252,14 +1413,19 @@ def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def _sample_summary(rows: Sequence[Mapping[str, Any]], windows: Sequence[int]) -> dict[str, Any]:
     validated = [row for row in rows if row.get("status") == "validated"]
     skipped = [row for row in rows if row.get("status") == "skipped"]
+    missing = [row for row in rows if row.get("status") == "missing"]
     validated_by_window = Counter(int(row["window_days"]) for row in validated)
     skipped_by_window = Counter(int(row["window_days"]) for row in skipped)
+    missing_by_window = Counter(int(row["window_days"]) for row in missing)
     return {
-        "evaluated_sample_count": len(rows),
+        "candidate_window_count": len(rows),
+        "evaluated_sample_count": len(validated) + len(skipped),
         "validated_sample_count": len(validated),
         "skipped_sample_count": len(skipped),
+        "missing_sample_count": len(missing),
         "validated_by_window": {str(window): validated_by_window[window] for window in windows},
         "skipped_by_window": {str(window): skipped_by_window[window] for window in windows},
+        "missing_by_window": {str(window): missing_by_window[window] for window in windows},
     }
 
 

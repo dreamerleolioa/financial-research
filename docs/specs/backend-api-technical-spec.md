@@ -1916,9 +1916,9 @@ Daily Radar run status：
 - 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析第一版只保存 `.TW` / `.TWO` final `/analyze` 樣本，固定分區為 TW / TAIEX；其他市場不寫入這個 calibration cohort。
 - 兩軌 forward validation 透過 feature adapter 共用 `ai_stock_sentinel.calibration.forward_validation`；月報以 SQL monthly aggregation 選 cohort，再以明確月份條件載入六個成熟月份的 replay / validation detail。
 - 一般分析校準只收 `/analyze`，不含 `/analyze/position`；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。Final cache 內另保存同一份精簡 payload，capture 暫時失敗時由後續 final cache hit 冪等重試；舊 cache 無正式 payload 時不得反推。
-- 一般分析校準的 active cohort 固定為目前 `strategy_version` + `confidence_config_version`；同一 market / symbol / record date 只採最早完成的 point-in-time sample。日內重跑不得因 input hash 改變而增加獨立樣本，舊版本與既有重複列只供歷史稽核。
+- 一般分析校準的 active cohort 固定為目前 `strategy_version` + `confidence_config_version`；資料庫唯一鍵包含 `analysis_type / market / symbol / record_date / strategy_version / confidence_config_version`，日內重跑不得因 input hash 改變而增加獨立樣本。升級 migration 會保留最早樣本、合併不衝突的 forward-validation result，並清理同一 canonical identity 的舊重複列。
 - 一般分析與 Daily Radar 的 candidate config 都必須逐一通過 5 / 10 / 20 日 holdout gate，不得用跨 horizon 聚合改善掩蓋單一窗口退化。
-- Daily Radar `daily-radar-rule-review-v3` 先以完整 candidate pool replay ranking、再接 validated outcome，並輸出 `counterfactual_ablation_summary`；`co_occurrence_summary` 僅是相關性診斷。任何 recommendation 都不直接更新 live config、rule version 或 ranking。
+- Daily Radar `daily-radar-rule-review-v3` 為最新公開 run 的全部 candidate 建立 5 / 10 / 20 日完整池；validation result 不存在時保留 `status = missing`，不得讓候選從 ranking pool 消失。報表先 replay ranking、再接 validated outcome，並輸出 `counterfactual_ablation_summary`；只有 live-score tiers 可執行 counterfactual ablation，context-only 群組輸出 `not_in_live_score`。`co_occurrence_summary` 僅是相關性診斷。任何 recommendation 都不直接更新 live config、rule version 或 ranking。
 
 Forward validation due request：
 
@@ -1950,7 +1950,7 @@ Daily Radar monthly request：
 一般分析 monthly request 另帶 `"benchmark_symbol": "TAIEX"`。回應共同包含 `report_json` 與 `report_markdown`；`report_json` 至少包含：
 
 - `cohort`：最近六個成熟月份、五個 training months 與一個 holdout month。
-- `completeness_watermarks`：20 日 expected / evaluated / validated 與 validated coverage。
+- `completeness_watermarks`：保留 20 日 expected / evaluated / validated 相容欄位，並提供 5 / 10 / 20 日逐窗口 expected / evaluated / validated 與 coverage；三個窗口都完整 evaluated 才算成熟月份。
 - `coverage` 或 `replay_coverage`：distinct samples、整體與逐月 replay coverage、排除原因及 threshold 結果。
 - `candidate_configs[]`：單參數單 step before / after、各窗口 metrics、training block bootstrap、holdout、distinct sample counts、training / holdout block counts、`auto_change_eligible` 與 `eligibility_reason`。
 

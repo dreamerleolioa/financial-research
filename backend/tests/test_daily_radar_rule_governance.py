@@ -209,14 +209,23 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     assert {
         row["method"]
         for row in report.json_report["counterfactual_ablation_summary"]
-    } == {"same_input_counterfactual_replay"}
+    } == {"same_input_counterfactual_replay", "not_applicable_context_only"}
+    context_only_ablation = [
+        row
+        for row in report.json_report["counterfactual_ablation_summary"]
+        if row["group"] in {"news_sentiment", "fundamental_valuation"}
+    ]
+    assert context_only_ablation
+    assert {
+        row["recommendation"] for row in context_only_ablation
+    } == {"not_in_live_score"}
     assert all(
         row["eligible_for_live_change"] is False
         for row in report.json_report["counterfactual_ablation_summary"]
     )
     assert report.json_report["counterfactual_ablation_scope"] == {
         "selected_months": [],
-        "ranking_pool": "all_evaluated_candidates_before_outcome_join",
+        "ranking_pool": "all_latest_run_candidates_for_each_forward_window",
         "outcome_join": "validated_results_only_after_selection",
         "live_change_eligible": False,
     }
@@ -331,7 +340,73 @@ def test_monthly_review_does_not_fall_back_to_validated_older_same_day_run() -> 
             end_date=date(2026, 6, 30),
         )
 
-    assert rows == []
+    assert len(rows) == 3
+    assert {row["window_days"] for row in rows} == {5, 10, 20}
+    assert {row["status"] for row in rows} == {"missing"}
+    assert {row["skip_reason"] for row in rows} == {
+        "validation_result_missing"
+    }
+    assert {row["candidate_id"] for row in rows} == {2}
+
+
+def test_month_is_not_mature_when_shorter_window_results_are_missing() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=20,
+                validation_version=FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=run.run_date,
+                target_date=date(2026, 6, 29),
+                benchmark_symbol="TAIEX",
+                outcome={
+                    "forward_return_pct": 10.0,
+                    "excess_return_vs_benchmark_pct": 8.0,
+                    "hit_above_threshold": True,
+                },
+                skip_reason=None,
+            )
+        )
+        session.commit()
+
+        payload = build_monthly_rule_review_report(
+            session,
+            market="TW",
+            year=2026,
+            month=6,
+            min_sample_count=1,
+        ).json_report
+
+    watermark = payload["completeness_watermarks"][0]
+    assert watermark["maturity_complete"] is False
+    assert watermark["evaluated_samples_by_window"] == {
+        "5": 0,
+        "10": 0,
+        "20": 1,
+    }
+    assert watermark["validated_coverage_by_window"] == {
+        "5": 0.0,
+        "10": 0.0,
+        "20": 1.0,
+    }
+    assert payload["cohort"]["selected_months"] == []
+    assert payload["sample_summary"]["missing_by_window"] == {
+        "5": 1,
+        "10": 1,
+        "20": 0,
+    }
 
 
 def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_months() -> None:

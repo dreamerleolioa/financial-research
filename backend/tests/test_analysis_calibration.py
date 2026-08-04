@@ -146,23 +146,8 @@ def test_general_calibration_canonicalizes_same_day_reruns_and_current_versions(
                 market="TW",
                 benchmark_symbol="TAIEX",
                 strategy_version=STRATEGY_VERSION,
-                confidence_config_version=CONFIDENCE_CONFIG_VERSION,
-                input_hash="duplicate-current-input",
-                replay_input=deepcopy(first.replay_input),
-                output_snapshot=deepcopy(first.output_snapshot),
-                analysis_is_final=True,
-            )
-        )
-        session.add(
-            AnalysisCalibrationSample(
-                symbol="2454.TW",
-                record_date=date(2026, 1, 5),
-                analysis_type="general",
-                market="TW",
-                benchmark_symbol="TAIEX",
-                strategy_version="legacy-strategy",
                 confidence_config_version="legacy-confidence",
-                input_hash="legacy-input",
+                input_hash=first.input_hash,
                 replay_input=deepcopy(first.replay_input),
                 output_snapshot=deepcopy(first.output_snapshot),
                 analysis_is_final=True,
@@ -881,6 +866,32 @@ def test_analysis_calibration_migration_creates_append_only_tables_and_constrain
     assert "DROP TABLE analysis_calibration_samples" in downgrade_sql
 
 
+def test_calibration_identity_migration_deduplicates_and_aligns_unique_key() -> None:
+    migration = _load_identity_migration()
+    buffer = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": buffer},
+    )
+    operations = Operations(context)
+    original_op = migration.op
+    migration.op = operations
+    try:
+        migration.upgrade()
+    finally:
+        migration.op = original_op
+
+    upgrade_sql = buffer.getvalue()
+    assert "ROW_NUMBER() OVER" in upgrade_sql
+    assert "UPDATE analysis_forward_validation_results" in upgrade_sql
+    assert "DELETE FROM analysis_calibration_samples" in upgrade_sql
+    assert (
+        "UNIQUE (analysis_type, market, symbol, record_date, strategy_version, "
+        "confidence_config_version)"
+    ) in upgrade_sql
+    assert "input_hash)" not in upgrade_sql.split("ADD CONSTRAINT", 1)[-1]
+
+
 def _analysis_result() -> dict:
     return {
         "cleaned_news": {
@@ -955,6 +966,21 @@ def _load_migration() -> ModuleType:
         / "0a1b2c3d4e5f_add_analysis_calibration_tables.py"
     )
     spec = importlib.util.spec_from_file_location("analysis_calibration_migration", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_identity_migration() -> ModuleType:
+    path = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "2c3d4e5f6a7b_align_calibration_sample_identity.py"
+    )
+    spec = importlib.util.spec_from_file_location("calibration_identity_migration", path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)

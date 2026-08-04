@@ -84,11 +84,18 @@ const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: stri
   neutral: { emoji: "🔵", label: "中性", color: "text-blue-500" },
 };
 
-const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
+const SIGNAL_CONSISTENCY_BADGE: Record<string, { label: string; cls: string }> = {
   high: { label: "高一致性", cls: "bg-emerald-100 text-emerald-800" },
   medium: { label: "中一致性", cls: "bg-yellow-100 text-yellow-800" },
   low: { label: "低一致性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
+
+function signalConsistencyLevel(score: number | null): "high" | "medium" | "low" | null {
+  if (score == null) return null;
+  if (score >= 80) return "high";
+  if (score >= 60) return "medium";
+  return "low";
+}
 
 function TriggersSection({
   upgradeTriggers,
@@ -456,6 +463,7 @@ export default function AnalyzePage() {
   }
 
   const confidenceScore = result?.confidence_score ?? null;
+  const consistencyLevel = signalConsistencyLevel(confidenceScore);
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
   const analyzedSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : symbol;
@@ -481,7 +489,6 @@ export default function AnalyzePage() {
     typeof actionPlan?.momentum_expectation === "string" ? actionPlan.momentum_expectation : null;
   const actionPlanSuggestedPositionSize: string | null =
     typeof actionPlan?.suggested_position_size === "string" ? actionPlan.suggested_position_size : null;
-  const actionPlanConvictionLevel = actionPlan?.conviction_level;
   const actionPlanUpgradeTriggers = Array.isArray(actionPlan?.upgrade_triggers)
     ? actionPlan.upgrade_triggers.filter((item): item is string => typeof item === "string")
     : undefined;
@@ -731,11 +738,11 @@ export default function AnalyzePage() {
                       <div>
                         <div className="mb-1.5 flex flex-wrap items-center gap-2">
                           <p className="text-xs font-semibold text-text-muted">訊號一致性</p>
-                          {actionPlanConvictionLevel && CONVICTION_BADGE[actionPlanConvictionLevel] && (
+                          {consistencyLevel && (
                             <span
-                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[actionPlanConvictionLevel].cls}`}
+                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${SIGNAL_CONSISTENCY_BADGE[consistencyLevel].cls}`}
                             >
-                              {CONVICTION_BADGE[actionPlanConvictionLevel].label}
+                              {SIGNAL_CONSISTENCY_BADGE[consistencyLevel].label}
                             </span>
                           )}
                           {result.data_confidence != null && result.data_confidence < 60 && (

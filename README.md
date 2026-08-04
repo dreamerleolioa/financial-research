@@ -270,7 +270,7 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 部署時必須依序執行：
 
 1. 進入 maintenance mode，停止舊版 backend instances 或至少封鎖 portfolio create/update/add-entry/close writes。
-2. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `1b2c3d4e5f6a (head)`。
+2. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `2c3d4e5f6a7b (head)`。
 3. 啟動新版 backend，確認所有舊版 instances 已退出後，再重新開放 portfolio writes。
 
 Migration 內的 compare-and-lock 只保護同一個 DB transaction 讀取快照到寫入之間的競態，不能取代上述跨版本 write quiescence。
@@ -294,7 +294,7 @@ pnpm dev
 **新倉分析頁（`/analyze`）**
 
 - 股票代碼輸入框 + 一鍵分析
-- 訊號一致性與資料品質提示（含 `cross_validation_note`；一致性以高／中／低與 `x / 100` 呈現，不使用百分比暗示勝率；`data_confidence < 60` 時仍顯示資料不足百分比）
+- 訊號一致性與資料品質提示（含 `cross_validation_note`；一致性 badge 直接由 `confidence_score` 分級：80 以上高、60–79 中、60 以下低，並以 `x / 100` 呈現，不借用 `action_plan.conviction_level`，也不使用百分比暗示勝率；`data_confidence < 60` 時仍顯示資料不足百分比）
 - 快照資訊（symbol / current_price / volume）
 - 分析報告四維小卡（技術面 / 籌碼面 / 基本面 / 消息面）+ 綜合仲裁全寬卡
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
@@ -365,7 +365,7 @@ make run-api
 
 Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
 
-兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；每個 horizon 另有獨立 holdout 非劣性 gate。一般分析只採目前 strategy/config version，且同一 market／symbol／日期只保留最早 point-in-time sample；Daily Radar 先對完整候選池決定 Top 20 再接 outcome，並以同輸入 counterfactual replay 產生 rule-group ablation。兩軌報告都只提出建議，不直接變更 live scoring。
+兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的逐窗口 validated coverage、replay coverage 均達 90%；每個 horizon 另有獨立 holdout 非劣性 gate。一般分析只採目前 strategy/config version，且資料庫以 strategy/config version 鎖定同一 market／symbol／日期唯一的 point-in-time sample；Daily Radar 為最新公開 run 的每個候選建立完整 5／10／20 日池，缺少 validation result 時明確標記 missing，先決定 Top 20 再接 outcome，並只對 live-score 規則執行同輸入 counterfactual replay；context-only 群組標記為不適用。兩軌報告都只提出建議，不直接變更 live scoring。
 
 Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次 calibration capture 暫時失敗，後續 final cache hit 會以同一 payload 冪等補寫。舊 cache 沒有正式 replay payload 時維持跳過，不會從輸出猜測輸入。
 
