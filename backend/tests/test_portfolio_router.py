@@ -3627,10 +3627,14 @@ def test_create_trade_review_returns_conflict_when_refresh_is_in_progress(
 
     with portfolio_router_module._trade_review_refresh_singleflight((1, 42)) as acquired:
         assert acquired is True
-        response = portfolio_db_client.post("/portfolio/42/review")
+        response = portfolio_db_client.post(
+            "/portfolio/42/review",
+            headers={"Origin": "http://localhost:5173"},
+        )
 
     assert response.status_code == 409
     assert response.headers["retry-after"] == "1"
+    assert response.headers["access-control-expose-headers"] == "Retry-After"
 
 
 def test_trade_review_regression_guard_allows_material_fallback_recovery():
@@ -3640,6 +3644,7 @@ def test_trade_review_regression_guard_allows_material_fallback_recovery():
             "coverage_basis": "dated_bars",
             "trading_bar_count": 1,
             "covered_dates": ["2026-01-01"],
+            "holding_covered_dates": ["2026-01-01"],
             "date_start": "2026-01-01",
             "date_end": "2026-01-01",
             "missing_reason": None,
@@ -3651,6 +3656,7 @@ def test_trade_review_regression_guard_allows_material_fallback_recovery():
             "coverage_basis": "estimated_trailing_series",
             "trading_bar_count": 80,
             "covered_dates": [],
+            "holding_covered_dates": [],
             "date_start": None,
             "date_end": None,
             "missing_reason": "provider_fetch_failed_or_empty",

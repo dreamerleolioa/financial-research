@@ -300,6 +300,8 @@ def _material_fallback_recovery(
     new_count = new_quality.get("trading_bar_count")
     if not isinstance(existing_count, int) or not isinstance(new_count, int) or new_count <= existing_count:
         return False
+    if existing_quality.get("coverage_version") == "legacy-derived" and existing_count >= 60:
+        return False
     required_count = max(
         60,
         math.ceil(existing_count / provider_upgrade_min_coverage_ratio),
@@ -340,7 +342,11 @@ def _dated_coverage_shrunk(
 ) -> bool:
     existing_holding_dates = _quality_dates(existing_quality, "holding_covered_dates")
     new_holding_dates = _quality_dates(new_quality, "holding_covered_dates")
-    if existing_holding_dates and not existing_holding_dates.issubset(new_holding_dates):
+    if (
+        existing_holding_dates
+        and not existing_holding_dates.issubset(new_holding_dates)
+        and not allow_estimated_recovery
+    ):
         return True
     if existing_quality.get("coverage_basis") != "dated_bars":
         return False

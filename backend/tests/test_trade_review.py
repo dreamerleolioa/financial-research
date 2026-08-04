@@ -633,6 +633,42 @@ def test_legacy_dated_bars_can_self_heal_to_material_fallback():
     ) is False
 
 
+def test_healthy_legacy_dated_bars_do_not_downgrade_to_estimated_fallback():
+    legacy_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(60)]
+    legacy_provider = {
+        "quality": {"missing_reason": None, "row_count": len(legacy_dates)},
+        "bars": [
+            {
+                "record_date": value.isoformat(),
+                "data_date": value.isoformat(),
+                "raw_data_is_final": True,
+                "trailing_dates": [],
+                "trailing_series": [],
+                "bar": {"close": 100},
+            }
+            for value in legacy_dates
+        ],
+    }
+    degraded_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 67,
+            "covered_dates": [],
+            "holding_covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert market_snapshot_regressed(
+        legacy_provider,
+        degraded_fallback,
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is True
+
+
 def test_trade_review_fallback_query_excludes_non_final_rows(db_session: Session):
     entry_date = date(2026, 3, 1)
     portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 3, 5))
