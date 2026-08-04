@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -28,6 +29,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
     FORWARD_VALIDATION_VERSION,
 )
+from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
 from ai_stock_sentinel.daily_radar.rule_registry import (
     SCORING_ACTIVE_TIERS,
@@ -49,9 +51,10 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v3"
+RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v4"
 DEFAULT_MIN_SAMPLE_COUNT = 20
 DEFAULT_RANK_CUTOFF = 20
+MAX_GOVERNANCE_CANDIDATES_PER_GROUP = 250
 TUNABLE_SCORING_PARAMETERS = {
     "primary_bucket_weight": 0.05,
     "cross_confirmation_weight": 0.10,
@@ -82,6 +85,17 @@ DEFAULT_ABLATION_GROUPS = (
 class MonthlyRuleReviewReport:
     json_report: dict[str, Any]
     markdown_report: str
+
+
+@dataclass(frozen=True)
+class _DailyRadarReplayContext:
+    eligible_rows: list[dict[str, Any]]
+    baseline_rows: list[dict[str, Any]]
+    replay_coverage: dict[str, Any]
+    ranking_pool_complete: bool
+    ranking_pool_status: str
+    incomplete_ranking_groups: list[dict[str, Any]]
+    exclusion_reasons: dict[str, int]
 
 
 def build_ablation_report(
@@ -179,18 +193,23 @@ def build_monthly_rule_review_report(
         for row in optimizer_detail_rows
         if str(row.get("signal_date") or "")[:7] in selected_month_set
     ]
-    counterfactual_ablation = _counterfactual_ablation_report(
+    replay_context = _prepare_daily_radar_replay_context(
         optimizer_rows,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=min_replay_coverage,
+    )
+    counterfactual_ablation = _counterfactual_ablation_report(
+        replay_context,
         min_sample_count=min_sample_count,
     )
     candidate_configs, replay_coverage = _scoring_candidate_reports(
-        optimizer_rows,
+        replay_context,
         baseline_config=ScoringConfig(),
         cohort=cohort,
         watermarks=watermarks,
         min_sample_count=min_sample_count,
         min_validated_coverage=min_validated_coverage,
-        min_replay_coverage=min_replay_coverage,
     )
     min_training_blocks, min_holdout_blocks = required_block_counts()
     report = {
@@ -214,6 +233,8 @@ def build_monthly_rule_review_report(
         "counterfactual_ablation_scope": {
             "selected_months": selected_months,
             "ranking_pool": "all_latest_run_candidates_for_each_forward_window",
+            "ranking_pool_complete": replay_context.ranking_pool_complete,
+            "ranking_pool_status": replay_context.ranking_pool_status,
             "outcome_join": "validated_results_only_after_selection",
             "live_change_eligible": False,
         },
@@ -357,6 +378,8 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
         f"- Minimum replay coverage: {metadata.get('min_replay_coverage')}",
         f"- Replay coverage: {replay_coverage.get('coverage')}",
         f"- Replay coverage meets threshold: {replay_coverage.get('meets_threshold')}",
+        f"- Replay ranking pool complete: {replay_coverage.get('ranking_pool_complete')}",
+        f"- Replay ranking pool status: {replay_coverage.get('ranking_pool_status')}",
         f"- Minimum training date blocks: {metadata.get('min_training_block_count')}",
         f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Validated samples: {summary.get('validated_sample_count', 0)}",
@@ -473,22 +496,13 @@ def _ablation_group_row(
 
 
 def _counterfactual_ablation_report(
-    rows: Sequence[Mapping[str, Any]],
+    replay_context: _DailyRadarReplayContext,
     *,
     min_sample_count: int,
     ablation_groups: Sequence[str] = DEFAULT_ABLATION_GROUPS,
 ) -> list[dict[str, Any]]:
-    replayable = [
-        dict(row)
-        for row in rows
-        if _mapping(
-            _mapping(
-                _mapping(row.get("candidate_snapshot")).get("input_snapshot")
-            ).get("replay_input")
-        ).get("schema_version")
-        == "daily-radar-replay-input-v1"
-    ]
-    baseline = _replay_daily_radar_rows(replayable, ScoringConfig())
+    replayable = replay_context.eligible_rows
+    baseline = replay_context.baseline_rows
     registry = get_rule_registry()
     results: list[dict[str, Any]] = []
     for group in ablation_groups:
@@ -543,6 +557,60 @@ def _counterfactual_ablation_report(
                     "average_excess_return_vs_benchmark_pct_ablated": None,
                     "delta_average_excess_return_vs_benchmark_pct": None,
                     "recommendation": "not_in_live_score",
+                    "eligible_for_live_change": False,
+                })
+            continue
+        if replay_context.ranking_pool_status == "not_applicable":
+            for window in DEFAULT_FORWARD_WINDOWS:
+                results.append({
+                    "group": group,
+                    "window_days": window,
+                    "method": "not_applicable_no_cohort",
+                    "excluded_rule_codes": sorted(excluded_codes),
+                    "baseline_selected_count": 0,
+                    "ablated_selected_count": 0,
+                    "selection_membership_changed_count": 0,
+                    "validated_selected_sample_count": 0,
+                    "average_excess_return_vs_benchmark_pct_baseline": None,
+                    "average_excess_return_vs_benchmark_pct_ablated": None,
+                    "delta_average_excess_return_vs_benchmark_pct": None,
+                    "recommendation": "not_applicable_no_cohort",
+                    "eligible_for_live_change": False,
+                })
+            continue
+        if replay_context.ranking_pool_status in {
+            "incomplete",
+            "capacity_exceeded",
+        }:
+            blocked_recommendation = (
+                "replay_workload_limit_exceeded"
+                if replay_context.ranking_pool_status == "capacity_exceeded"
+                else "replay_ranking_pool_incomplete"
+            )
+            for window in DEFAULT_FORWARD_WINDOWS:
+                before = [
+                    row
+                    for row in baseline
+                    if int(row["window_days"]) == window
+                ]
+                before_selected = {
+                    int(row["candidate_id"])
+                    for row in before
+                    if row.get("selected_for_rank") is True
+                }
+                results.append({
+                    "group": group,
+                    "window_days": window,
+                    "method": "same_input_counterfactual_replay",
+                    "excluded_rule_codes": sorted(excluded_codes),
+                    "baseline_selected_count": len(before_selected),
+                    "ablated_selected_count": 0,
+                    "selection_membership_changed_count": 0,
+                    "validated_selected_sample_count": 0,
+                    "average_excess_return_vs_benchmark_pct_baseline": None,
+                    "average_excess_return_vs_benchmark_pct_ablated": None,
+                    "delta_average_excess_return_vs_benchmark_pct": None,
+                    "recommendation": blocked_recommendation,
                     "eligible_for_live_change": False,
                 })
             continue
@@ -921,21 +989,61 @@ def _date_filter(
 
 
 def _scoring_candidate_reports(
-    rows: Sequence[Mapping[str, Any]],
+    replay_context: _DailyRadarReplayContext,
     *,
     baseline_config: ScoringConfig,
     cohort: Mapping[str, Any],
     watermarks: Sequence[Mapping[str, Any]],
     min_sample_count: int,
     min_validated_coverage: float,
-    min_replay_coverage: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    reports = [
+        _scoring_candidate_report(
+            (
+                []
+                if replay_context.ranking_pool_status == "capacity_exceeded"
+                else replay_context.eligible_rows
+            ),
+            baseline_rows=replay_context.baseline_rows,
+            baseline_config=baseline_config,
+            parameter=parameter,
+            direction=direction,
+            step=step,
+            cohort=cohort,
+            watermarks=watermarks,
+            min_sample_count=min_sample_count,
+            min_validated_coverage=min_validated_coverage,
+            replay_coverage_ok=bool(
+                replay_context.replay_coverage["meets_threshold"]
+            ),
+            replay_ranking_pool_complete=(
+                replay_context.ranking_pool_complete
+            ),
+            replay_ranking_pool_status=replay_context.ranking_pool_status,
+        )
+        for parameter, step in TUNABLE_SCORING_PARAMETERS.items()
+        for direction in ((1,) if parameter in INCREASE_ONLY_SCORING_PARAMETERS else (-1, 1))
+    ]
+    return reports, {
+        **replay_context.replay_coverage,
+        "ranking_pool_complete": replay_context.ranking_pool_complete,
+        "ranking_pool_status": replay_context.ranking_pool_status,
+        "incomplete_ranking_groups": replay_context.incomplete_ranking_groups,
+        "exclusion_reasons": replay_context.exclusion_reasons,
+    }
+
+
+def _prepare_daily_radar_replay_context(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    baseline_config: ScoringConfig,
+    cohort: Mapping[str, Any],
+    min_replay_coverage: float,
+) -> _DailyRadarReplayContext:
     eligible_rows: list[dict[str, Any]] = []
     excluded_candidate_ids: dict[str, set[int]] = {}
     for row in rows:
-        snapshot = _mapping(row.get("candidate_snapshot"))
-        replay_input = _mapping(_mapping(snapshot.get("input_snapshot")).get("replay_input"))
-        if replay_input.get("schema_version") != "daily-radar-replay-input-v1":
+        if not _is_complete_daily_radar_replay_input(row):
             candidate_id = row.get("candidate_id")
             if candidate_id is not None:
                 excluded_candidate_ids.setdefault(
@@ -954,34 +1062,223 @@ def _scoring_candidate_reports(
         ],
         minimum_coverage=min_replay_coverage,
     )
-    reports = [
-        _scoring_candidate_report(
-            eligible_rows,
-            baseline_config=baseline_config,
-            parameter=parameter,
-            direction=direction,
-            step=step,
-            cohort=cohort,
-            watermarks=watermarks,
-            min_sample_count=min_sample_count,
-            min_validated_coverage=min_validated_coverage,
-            replay_coverage_ok=bool(replay_coverage["meets_threshold"]),
-        )
-        for parameter, step in TUNABLE_SCORING_PARAMETERS.items()
-        for direction in ((1,) if parameter in INCREASE_ONLY_SCORING_PARAMETERS else (-1, 1))
-    ]
-    return reports, {
-        **replay_coverage,
-        "exclusion_reasons": {
+    ranking_pool_status, incomplete_ranking_groups = (
+        _daily_radar_ranking_pool_completeness(rows, eligible_rows)
+    )
+    return _DailyRadarReplayContext(
+        eligible_rows=eligible_rows,
+        baseline_rows=(
+            []
+            if ranking_pool_status == "capacity_exceeded"
+            else _replay_daily_radar_rows(
+                eligible_rows,
+                baseline_config,
+            )
+        ),
+        replay_coverage=replay_coverage,
+        ranking_pool_complete=ranking_pool_status == "complete",
+        ranking_pool_status=ranking_pool_status,
+        incomplete_ranking_groups=incomplete_ranking_groups,
+        exclusion_reasons={
             reason: len(candidate_ids)
             for reason, candidate_ids in sorted(excluded_candidate_ids.items())
         },
-    }
+    )
+
+
+def _daily_radar_ranking_pool_completeness(
+    rows: Sequence[Mapping[str, Any]],
+    eligible_rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    selected_by_group: dict[tuple[str, int], set[int]] = defaultdict(set)
+    eligible_by_group: dict[tuple[str, int], set[int]] = defaultdict(set)
+    for row in rows:
+        candidate_id = row.get("candidate_id")
+        if candidate_id is None:
+            continue
+        key = (
+            str(row.get("signal_date") or ""),
+            int(row.get("window_days") or 0),
+        )
+        selected_by_group[key].add(int(candidate_id))
+    for row in eligible_rows:
+        candidate_id = row.get("candidate_id")
+        if candidate_id is None:
+            continue
+        key = (
+            str(row.get("signal_date") or ""),
+            int(row.get("window_days") or 0),
+        )
+        eligible_by_group[key].add(int(candidate_id))
+    incomplete = []
+    capacity_exceeded = False
+    for (signal_date, window_days), candidate_ids in sorted(
+        selected_by_group.items()
+    ):
+        replayable_ids = eligible_by_group.get((signal_date, window_days), set())
+        missing_ids = sorted(candidate_ids - replayable_ids)
+        exceeds_capacity = (
+            len(candidate_ids) > MAX_GOVERNANCE_CANDIDATES_PER_GROUP
+        )
+        capacity_exceeded = capacity_exceeded or exceeds_capacity
+        if not missing_ids and not exceeds_capacity:
+            continue
+        incomplete.append({
+            "signal_date": signal_date,
+            "window_days": window_days,
+            "candidate_count": len(candidate_ids),
+            "replayable_candidate_count": len(replayable_ids),
+            "missing_candidate_count": len(missing_ids),
+            "maximum_candidate_count": MAX_GOVERNANCE_CANDIDATES_PER_GROUP,
+            "capacity_exceeded": exceeds_capacity,
+        })
+    if not selected_by_group:
+        return "not_applicable", []
+    if capacity_exceeded:
+        return "capacity_exceeded", incomplete
+    if incomplete:
+        return "incomplete", incomplete
+    return "complete", []
+
+
+def _is_complete_daily_radar_replay_input(
+    row: Mapping[str, Any],
+) -> bool:
+    snapshot = row.get("candidate_snapshot")
+    if not isinstance(snapshot, Mapping):
+        return False
+    input_snapshot = snapshot.get("input_snapshot")
+    if not isinstance(input_snapshot, Mapping):
+        return False
+    versions = input_snapshot.get("versions")
+    if not isinstance(versions, Mapping) or dict(versions) != {
+        "scoring_version": SCORING_VERSION,
+        "rule_version": RULE_VERSION,
+        "config_version": SCORING_CONFIG_VERSION,
+    }:
+        return False
+    replay_input = input_snapshot.get("replay_input")
+    if not isinstance(replay_input, Mapping):
+        return False
+    if replay_input.get("schema_version") != "daily-radar-replay-input-v1":
+        return False
+    if not isinstance(replay_input.get("market_context"), Mapping):
+        return False
+    if not isinstance(replay_input.get("prefilter_result"), Mapping):
+        return False
+    baseline_config = replay_input.get("baseline_config")
+    if not isinstance(baseline_config, Mapping):
+        return False
+    if dict(baseline_config) != ScoringConfig().to_dict():
+        return False
+    record = replay_input.get("record")
+    if not isinstance(record, Mapping):
+        return False
+    for key in (
+        "ohlcv",
+        "indicators",
+        "technical_profile",
+        "institutional_flow",
+        "margin",
+        "data_dates",
+    ):
+        if not isinstance(record.get(key), Mapping):
+            return False
+    price_history = record.get("price_history")
+    if not isinstance(price_history, list) or not price_history:
+        return False
+    if any(
+        not isinstance(item, Mapping)
+        or not str(item.get("date") or "")
+        or not _is_finite_replay_number(item.get("close"))
+        for item in price_history
+    ):
+        return False
+    symbol = str(record.get("symbol") or "")
+    if not symbol or symbol != str(row.get("symbol") or ""):
+        return False
+    record_date = str(record.get("record_date") or "")
+    expected_date = str(
+        snapshot.get("record_date") or row.get("signal_date") or ""
+    )
+    if record_date != expected_date:
+        return False
+    try:
+        date.fromisoformat(record_date)
+    except ValueError:
+        return False
+    ohlcv = _mapping(record.get("ohlcv"))
+    indicators = _mapping(record.get("indicators"))
+    institutional_flow = _mapping(record.get("institutional_flow"))
+    margin = _mapping(record.get("margin"))
+    if missing_scoring_fields(
+        ohlcv=ohlcv,
+        indicators=indicators,
+        institutional_flow=institutional_flow,
+        margin=margin,
+    ):
+        return False
+    numeric_fields = (
+        *((ohlcv, key) for key in (
+            "open", "high", "low", "close", "previous_close", "volume",
+            "avg_volume_20",
+        )),
+        *((indicators, key) for key in (
+            "ma5", "ma20", "ma60", "rsi14", "bias20", "macd_histogram",
+            "kd_k", "kd_d", "atr14", "volume_ratio",
+            "missing_trading_days_60",
+        )),
+        *((institutional_flow, key) for key in (
+            "three_party_net_shares", "consecutive_positive_days",
+            "net_flow_to_avg_volume",
+        )),
+        *((margin, key) for key in ("margin_delta_pct", "margin_to_volume")),
+    )
+    if any(
+        not _is_finite_replay_number(payload.get(key))
+        for payload, key in numeric_fields
+    ):
+        return False
+    if not str(institutional_flow.get("flow_state") or ""):
+        return False
+    technical_profile = _mapping(record.get("technical_profile"))
+    if not str(technical_profile.get("version") or ""):
+        return False
+    data_dates = _mapping(record.get("data_dates"))
+    for key in (
+        "ohlcv",
+        "technical_indicators",
+        "institutional_flow",
+        "margin",
+    ):
+        try:
+            date.fromisoformat(str(data_dates.get(key) or ""))
+        except ValueError:
+            return False
+    market_context = _mapping(replay_input.get("market_context"))
+    if not isinstance(market_context.get("market"), Mapping):
+        return False
+    prefilter_result = _mapping(replay_input.get("prefilter_result"))
+    if prefilter_result.get("prefilter_status") != "accepted":
+        return False
+    if not isinstance(prefilter_result.get("prefilter_reasons"), list):
+        return False
+    return True
+
+
+def _is_finite_replay_number(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _scoring_candidate_report(
     rows: Sequence[Mapping[str, Any]],
     *,
+    baseline_rows: Sequence[Mapping[str, Any]],
     baseline_config: ScoringConfig,
     parameter: str,
     direction: int,
@@ -991,6 +1288,8 @@ def _scoring_candidate_report(
     min_sample_count: int,
     min_validated_coverage: float,
     replay_coverage_ok: bool,
+    replay_ranking_pool_complete: bool,
+    replay_ranking_pool_status: str,
 ) -> dict[str, Any]:
     before_value = getattr(baseline_config, parameter)
     raw_after = before_value + (direction * step)
@@ -1000,7 +1299,6 @@ def _scoring_candidate_report(
     else:
         after_value = max(0.0, round(float(raw_after), 4))
     candidate_config = replace(baseline_config, **{parameter: after_value})
-    baseline_rows = _replay_daily_radar_rows(rows, baseline_config)
     candidate_rows = _replay_daily_radar_rows(rows, candidate_config)
     training_months = set(str(value) for value in _as_list(cohort.get("training_months")))
     holdout_month = str(cohort.get("holdout_month") or "")
@@ -1175,6 +1473,7 @@ def _scoring_candidate_report(
         cohort.get("cohort_complete") is True
         and coverage_ok
         and replay_coverage_ok
+        and replay_ranking_pool_complete
         and enough_samples
         and enough_blocks
         and lower_ci is not None
@@ -1186,10 +1485,14 @@ def _scoring_candidate_report(
     )
     if cohort.get("cohort_complete") is not True:
         reason = "insufficient_mature_months"
+    elif replay_ranking_pool_status == "capacity_exceeded":
+        reason = "replay_workload_limit_exceeded"
     elif not coverage_ok:
         reason = "validated_coverage_below_threshold"
     elif not replay_coverage_ok:
         reason = "replay_coverage_below_threshold"
+    elif not replay_ranking_pool_complete:
+        reason = "replay_ranking_pool_incomplete"
     elif not enough_samples:
         reason = "insufficient_independent_samples"
     elif not enough_blocks:
@@ -1246,6 +1549,8 @@ def _scoring_candidate_report(
             "min_holdout_block_count": min_holdout_blocks,
             "selected_months_meet_validated_coverage": coverage_ok,
             "selected_months_meet_replay_coverage": replay_coverage_ok,
+            "replay_ranking_pool_complete": replay_ranking_pool_complete,
+            "replay_ranking_pool_status": replay_ranking_pool_status,
         },
         "auto_change_eligible": eligible,
         "eligibility_reason": reason,
@@ -1259,16 +1564,26 @@ def _replay_daily_radar_rows(
     excluded_rule_codes: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     replayed: list[dict[str, Any]] = []
+    scored_by_candidate: dict[int, Mapping[str, Any]] = {}
     for row in rows:
         snapshot = _mapping(row.get("candidate_snapshot"))
         replay_input = _mapping(_mapping(snapshot.get("input_snapshot")).get("replay_input"))
-        scored = score_daily_radar_record(
-            _mapping(replay_input.get("record")),
-            market_context=_mapping(replay_input.get("market_context")),
-            prefilter_result=_mapping(replay_input.get("prefilter_result")),
-            config=config,
-            excluded_rule_codes=excluded_rule_codes,
+        candidate_id = row.get("candidate_id")
+        scored = (
+            scored_by_candidate.get(int(candidate_id))
+            if candidate_id is not None
+            else None
         )
+        if scored is None:
+            scored = score_daily_radar_record(
+                _mapping(replay_input.get("record")),
+                market_context=_mapping(replay_input.get("market_context")),
+                prefilter_result=_mapping(replay_input.get("prefilter_result")),
+                config=config,
+                excluded_rule_codes=excluded_rule_codes,
+            )
+            if candidate_id is not None:
+                scored_by_candidate[int(candidate_id)] = scored
         replayed.append(
             dict(row)
             | {

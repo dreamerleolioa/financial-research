@@ -10,7 +10,19 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select
+from sqlalchemy import (
+    Integer,
+    and_,
+    case,
+    cast,
+    extract,
+    func,
+    literal,
+    or_,
+    select,
+    true,
+    union_all,
+)
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.confidence_scorer import (
@@ -52,7 +64,7 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v2"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v4"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v5"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
 GENERAL_ANALYSIS_TYPES = ("general",)
@@ -810,6 +822,7 @@ def _general_completeness_watermarks(
 ) -> list[dict[str, Any]]:
     year_value = cast(extract("year", AnalysisCalibrationSample.record_date), Integer)
     month_value = cast(extract("month", AnalysisCalibrationSample.record_date), Integer)
+    windows = _general_forward_windows_subquery()
     expected_count = func.count(func.distinct(AnalysisCalibrationSample.id))
     evaluated_count = func.count(
         func.distinct(
@@ -835,17 +848,20 @@ def _general_completeness_watermarks(
         select(
             year_value,
             month_value,
+            windows.c.window_days,
             expected_count,
             evaluated_count,
             validated_count,
         )
         .select_from(AnalysisCalibrationSample)
+        .join(windows, true())
         .outerjoin(
             AnalysisForwardValidationResult,
             and_(
                 AnalysisForwardValidationResult.sample_id
                 == AnalysisCalibrationSample.id,
-                AnalysisForwardValidationResult.window_days == 20,
+                AnalysisForwardValidationResult.window_days
+                == windows.c.window_days,
                 AnalysisForwardValidationResult.validation_version
                 == ANALYSIS_FORWARD_VALIDATION_VERSION,
             ),
@@ -861,29 +877,89 @@ def _general_completeness_watermarks(
             AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             AnalysisCalibrationSample.record_date <= through_date,
         )
-        .group_by(year_value, month_value)
-        .order_by(year_value.asc(), month_value.asc())
+        .group_by(year_value, month_value, windows.c.window_days)
+        .order_by(
+            year_value.asc(),
+            month_value.asc(),
+            windows.c.window_days.asc(),
+        )
     )
+    by_month: dict[str, dict[int, tuple[int, int, int]]] = {}
+    for year, month, window, expected, evaluated, validated in session.execute(query):
+        month_value_key = f"{int(year):04d}-{int(month):02d}"
+        by_month.setdefault(month_value_key, {})[int(window)] = (
+            int(expected or 0),
+            int(evaluated or 0),
+            int(validated or 0),
+        )
     watermarks: list[dict[str, Any]] = []
-    for year, month, expected, evaluated, validated in session.execute(query):
-        expected_value = int(expected or 0)
-        evaluated_value = int(evaluated or 0)
-        validated_value = int(validated or 0)
+    for month, counts_by_window in sorted(by_month.items()):
+        expected_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[0]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        evaluated_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[1]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        validated_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[2]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        evaluated_coverage_by_window = {
+            str(window): validated_coverage(
+                evaluated_by_window[str(window)],
+                expected_by_window[str(window)],
+            )
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        validated_coverage_by_window = {
+            str(window): validated_coverage(
+                validated_by_window[str(window)],
+                expected_by_window[str(window)],
+            )
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        expected_value = expected_by_window["20"]
+        evaluated_value = evaluated_by_window["20"]
+        validated_value = validated_by_window["20"]
+        coverage_values = [
+            value
+            for value in validated_coverage_by_window.values()
+            if value is not None
+        ]
         watermarks.append({
-            "month": f"{int(year):04d}-{int(month):02d}",
+            "month": month,
             "expected_20d_samples": expected_value,
             "evaluated_20d_samples": evaluated_value,
             "validated_20d_samples": validated_value,
+            "expected_samples_by_window": expected_by_window,
+            "evaluated_samples_by_window": evaluated_by_window,
+            "validated_samples_by_window": validated_by_window,
+            "evaluated_coverage_by_window": evaluated_coverage_by_window,
+            "validated_coverage_by_window": validated_coverage_by_window,
             "maturity_complete": (
                 expected_value > 0
-                and evaluated_value >= expected_value
+                and all(
+                    evaluated_by_window[str(window)]
+                    >= expected_by_window[str(window)]
+                    for window in DEFAULT_FORWARD_WINDOWS
+                )
             ),
-            "validated_coverage": validated_coverage(
-                validated_value,
-                expected_value,
-            ),
+            "validated_coverage": min(coverage_values)
+            if len(coverage_values) == len(DEFAULT_FORWARD_WINDOWS)
+            else None,
         })
     return watermarks
+
+
+def _general_forward_windows_subquery() -> Any:
+    return union_all(
+        *[
+            select(literal(window).label("window_days"))
+            for window in DEFAULT_FORWARD_WINDOWS
+        ]
+    ).subquery("general_forward_windows")
 
 
 def _canonical_general_sample_ids() -> Any:

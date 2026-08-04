@@ -502,9 +502,9 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 11. `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日輸出 AES-256 加密的 Actions artifact；月報只選 5 / 10 / 20 日三個窗口皆已完整評估的最近六個月份，前五個 training、最新一個 holdout，並以 `run_date` 做固定 seed block bootstrap。
 12. 月報 watermark 使用 DB aggregation；cohort 決定後只載入所選六個月份的 candidate / replay / validation detail。Daily Radar 與一般分析透過各自 adapter 共用中立 forward-validation core，並由共用 planning service 統一 benchmark-first refresh 與 evaluation-readiness 排序；不得讓 feature-specific scoring 或 ORM 依賴流入 core。Forward-validation outcome 語意變更時必須升級 `validation_version`；月報預設只讀目前版本，舊版本僅供歷史稽核，不得混合聚合。
 13. `min_sample_count` 以各 5 / 10 / 20 日窗口的 distinct candidate 計算；training 固定至少 20 個 `run_date` blocks、holdout 至少 5 個 blocks。同日多檔股票仍屬同一 bootstrap block。
-14. Replay coverage 必須整體與逐月達 90%；`replay_input_incomplete` 可留在診斷報告，但 coverage 未達標時不得輸出可自動修改資格。
+14. Replay coverage 必須整體與逐月達 90%；eligibility 必須驗證 schema、current scoring/rule/config versions、baseline config、record identity/date、必要 scoring fields 的有限數值、data dates、accepted prefilter 與 technical profile，只有 `schema_version` 或型別正確的空容器不足以證明可回放。`replay_input_incomplete` 可留在診斷報告，但 coverage 未達標時不得輸出可自動修改資格。涉及排名與 counterfactual 的治理另要求每個交易日／窗口 replay ranking pool 100% 完整；即使 coverage 已達 90%，只要缺一個候選也必須輸出 `ranking_pool_status = incomplete`、`replay_ranking_pool_incomplete` 並 fail closed；空 cohort 使用 `not_applicable`／`not_applicable_no_cohort`，不得誤報資料缺漏或假裝執行 ablation。單一交易日／窗口最多接受 250 個候選，超過時使用 `capacity_exceeded`／`replay_workload_limit_exceeded`、不執行 replay，避免異常歷史資料拖垮同步月報。
 15. Actions artifact retention 為 30 天，必須每月下載並自行保存；報表本身不直接建立 PR 或修改 production scoring。
-16. `daily-radar-rule-review-v3` 的 rank replay 必須為最新公開 run 的每個 candidate 建立 5 / 10 / 20 日完整池，缺少 validation result 時以 `status = missing` 保留，再先以同日完整 candidate pool 決定 Top 20，最後以 candidate ID left join validated outcome；缺少 outcome 的原 Top 20 不得被第 21 名遞補。
+16. `daily-radar-rule-review-v4` 的 rank replay 必須為最新公開 run 的每個 candidate 建立 5 / 10 / 20 日完整池，缺少 validation result 時以 `status = missing` 保留，再先以同日完整 candidate pool 決定 Top 20，最後以 candidate ID left join validated outcome；缺少 outcome 的原 Top 20 不得被第 21 名遞補。Baseline replay 在同一份月報內只計算一次，candidate config 與 ablation 共用結果；同一 config 下每個 candidate 只執行一次 scoring，再把結果投影到三個 outcome windows。
 17. Rule-group ablation 必須使用同一份 replay input 分別執行 baseline 與「排除該 group live-score rule codes」的 counterfactual scoring；只有 `driver`、`confirming_evidence`、`risk_modifier` 可消融，context-only / deprecated 群組輸出 `not_in_live_score`，不得產生 `keep_group` 假建議。舊的命中／未命中分組只保留為 `co_occurrence_summary`，不得再稱為 causal ablation。
 18. Candidate config 的 holdout gate 必須分別檢查 5 / 10 / 20 日 excess return 與 downside 非劣性；任一 horizon 缺樣本或退化即不得標記 eligible。報告仍只提供建議，production scoring/ranking 的版本變更必須人工核准。
 
@@ -541,9 +541,9 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 | Background context tests | migration/model、repository upsert/read、internal updater endpoint、workflow request budget、分段 workflow 會在不同小時刷新日頻 selected-symbol context，且 background labels 不改 ranking |
 | Workflow context tests | Scheduled Re-run 保留原始 cron-slot `run_date`；開市、休市與 provider 異常都有回歸覆蓋；所有下游 jobs 共用同一 run context guard |
 | Background label tests | API/schema 可表示 labels、freshness、missing reason；移除 background context 後 score/ranking 不變 |
-| Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、同輸入 counterfactual ablation、完整 candidate pool 先排名再接 outcome、monthly rule-review API、artifact workflow 基本檢查 |
+| Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、同輸入 counterfactual ablation、partial v1 replay payload 不得通過、90% coverage 但 ranking pool 不完整時 fail closed、空 cohort 與 incomplete pool 狀態分離、baseline replay 共用、完整 candidate pool 先排名再接 outcome、monthly rule-review API、artifact workflow 基本檢查 |
 | Weight governance tests | baseline config replay 等於 live score、舊 snapshot 標記 `replay_input_incomplete`、一次只移動一個參數與一個 step、risk / data-gap / prefilter 參數不會成為候選、5 / 10 / 20 日各自通過 holdout 非劣性 gate |
-| Forward completeness tests | due mode 只處理成熟 5 / 10 / 20 日窗口、同日 rerun 去重、最新 run 缺 result 仍保留完整候選池、5 / 10 / 20 日逐窗口 maturity 與 validated coverage 分離 |
+| Forward completeness tests | due mode 只處理成熟 5 / 10 / 20 日窗口、同日 rerun 去重、最新 run 缺 result 仍保留完整候選池、Daily Radar 與一般分析都以 5 / 10 / 20 日逐窗口 maturity 與 validated coverage 判斷 cohort |
 
 ### 13.2 前端測試
 

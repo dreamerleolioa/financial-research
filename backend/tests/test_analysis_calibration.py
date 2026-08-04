@@ -9,10 +9,11 @@ from pathlib import Path
 from time import perf_counter
 from types import ModuleType
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
@@ -491,6 +492,67 @@ def test_general_monthly_report_runs_with_insufficient_mature_samples() -> None:
     assert "# General Analysis Confidence Review" in markdown
 
 
+def test_general_month_is_not_mature_when_shorter_windows_are_missing() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        session.add(
+            AnalysisForwardValidationResult(
+                sample_id=sample.id,
+                window_days=20,
+                validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=sample.record_date,
+                target_date=date(2026, 2, 2),
+                benchmark_symbol="TAIEX",
+                outcome={
+                    "forward_return_pct": 3.0,
+                    "excess_return_vs_benchmark_pct": 1.0,
+                    "max_adverse_excursion_pct": -1.0,
+                    "hit_above_threshold": True,
+                },
+                skip_reason=None,
+            )
+        )
+        session.commit()
+
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=1,
+            min_sample_count=1,
+        )
+
+    watermark = report["completeness_watermarks"][0]
+    assert watermark["maturity_complete"] is False
+    assert watermark["evaluated_samples_by_window"] == {
+        "5": 0,
+        "10": 0,
+        "20": 1,
+    }
+    assert watermark["validated_coverage_by_window"] == {
+        "5": 0.0,
+        "10": 0.0,
+        "20": 1.0,
+    }
+    assert report["cohort"]["selected_months"] == []
+
+
 def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None:
     engine = _engine()
     Base.metadata.create_all(
@@ -866,8 +928,11 @@ def test_analysis_calibration_migration_creates_append_only_tables_and_constrain
     assert "DROP TABLE analysis_calibration_samples" in downgrade_sql
 
 
-def test_calibration_identity_migration_deduplicates_and_aligns_unique_key() -> None:
+def test_calibration_identity_migration_deduplicates_and_aligns_unique_key(
+    monkeypatch,
+) -> None:
     migration = _load_identity_migration()
+    monkeypatch.setenv("CALIBRATION_MIGRATION_BACKUP_CONFIRMED", migration.revision)
     buffer = StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",
@@ -882,14 +947,83 @@ def test_calibration_identity_migration_deduplicates_and_aligns_unique_key() -> 
         migration.op = original_op
 
     upgrade_sql = buffer.getvalue()
-    assert "ROW_NUMBER() OVER" in upgrade_sql
-    assert "UPDATE analysis_forward_validation_results" in upgrade_sql
+    assert "LOCK TABLE analysis_calibration_samples" in upgrade_sql
+    assert "CREATE TEMPORARY TABLE calibration_sample_identity_canonical" in upgrade_sql
+    assert "FIRST_VALUE(samples.id) OVER" in upgrade_sql
+    assert "DELETE FROM analysis_forward_validation_results" in upgrade_sql
+    assert "UPDATE analysis_forward_validation_results" not in upgrade_sql
     assert "DELETE FROM analysis_calibration_samples" in upgrade_sql
     assert (
         "UNIQUE (analysis_type, market, symbol, record_date, strategy_version, "
         "confidence_config_version)"
     ) in upgrade_sql
     assert "input_hash)" not in upgrade_sql.split("ADD CONSTRAINT", 1)[-1]
+
+
+def test_calibration_identity_migration_requires_backup_confirmation(
+    monkeypatch,
+) -> None:
+    migration = _load_identity_migration()
+    monkeypatch.delenv("CALIBRATION_MIGRATION_BACKUP_CONFIRMED", raising=False)
+
+    with pytest.raises(RuntimeError, match="restorable pre-migration"):
+        migration.upgrade()
+
+
+def test_calibration_identity_migration_keeps_strongest_sample_without_moving_outcomes() -> None:
+    migration = _load_identity_migration()
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE analysis_calibration_samples (
+                id INTEGER PRIMARY KEY,
+                analysis_type TEXT NOT NULL,
+                market TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                record_date TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                confidence_config_version TEXT NOT NULL
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE analysis_forward_validation_results (
+                id INTEGER PRIMARY KEY,
+                sample_id INTEGER NOT NULL,
+                window_days INTEGER NOT NULL,
+                validation_version TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+        """))
+        connection.execute(
+            text("""
+                INSERT INTO analysis_calibration_samples (
+                    id, analysis_type, market, symbol, record_date,
+                    strategy_version, confidence_config_version
+                ) VALUES
+                    (1, 'general', 'TW', '2330.TW', '2026-01-05', 'v1', 'c1'),
+                    (2, 'general', 'TW', '2330.TW', '2026-01-05', 'v1', 'c1')
+            """)
+        )
+        connection.execute(text("""
+            INSERT INTO analysis_forward_validation_results (
+                id, sample_id, window_days, validation_version, status
+            ) VALUES
+                (10, 1, 5, 'general-v2', 'validated'),
+                (20, 2, 5, 'general-v2', 'validated'),
+                (21, 2, 10, 'general-v2', 'validated')
+        """))
+        canonical = connection.execute(
+            text(migration._canonical_samples_sql("confidence_config_version"))
+        ).mappings().all()
+
+    assert {row["canonical_id"] for row in canonical} == {2}
+
+
+def test_calibration_identity_migration_downgrade_requires_backup_restore() -> None:
+    migration = _load_identity_migration()
+
+    with pytest.raises(RuntimeError, match="intentionally irreversible"):
+        migration.downgrade()
 
 
 def _analysis_result() -> dict:

@@ -5,6 +5,7 @@ Revises: 1b2c3d4e5f6a
 Create Date: 2026-08-04 00:00:00.000000
 
 """
+import os
 from typing import Sequence, Union
 
 from alembic import op
@@ -25,80 +26,86 @@ _BASE_IDENTITY_COLUMNS = (
     "record_date",
     "strategy_version",
 )
+_CANONICAL_MAPPING_TABLE = "calibration_sample_identity_canonical"
+_BACKUP_CONFIRMATION_ENV = "CALIBRATION_MIGRATION_BACKUP_CONFIRMED"
 
 
-def _deduplicate_samples(identity_column: str) -> None:
+def _canonical_samples_sql(identity_column: str) -> str:
     partition_columns = ", ".join(
         f"samples.{column}"
         for column in (*_BASE_IDENTITY_COLUMNS, identity_column)
     )
+    return f"""
+        WITH sample_quality AS (
+            SELECT
+                samples.id,
+                SUM(
+                    CASE WHEN results.status = 'validated' THEN 1 ELSE 0 END
+                ) AS validated_result_count,
+                COUNT(results.id) AS evaluated_result_count
+            FROM analysis_calibration_samples AS samples
+            LEFT JOIN analysis_forward_validation_results AS results
+              ON results.sample_id = samples.id
+            GROUP BY samples.id
+        )
+        SELECT
+            samples.id,
+            FIRST_VALUE(samples.id) OVER (
+                PARTITION BY {partition_columns}
+                ORDER BY
+                    sample_quality.validated_result_count DESC,
+                    sample_quality.evaluated_result_count DESC,
+                    samples.id ASC
+            ) AS canonical_id
+        FROM analysis_calibration_samples AS samples
+        JOIN sample_quality ON sample_quality.id = samples.id
+    """
+
+
+def _deduplicate_samples(identity_column: str) -> None:
     op.execute(
         sa.text(
             f"""
-            WITH ranked_results AS (
-                SELECT
-                    results.id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY {partition_columns},
-                                     results.window_days,
-                                     results.validation_version
-                        ORDER BY samples.id ASC, results.id ASC
-                    ) AS row_number
-                FROM analysis_forward_validation_results AS results
-                JOIN analysis_calibration_samples AS samples
-                  ON samples.id = results.sample_id
-            )
+            CREATE TEMPORARY TABLE {_CANONICAL_MAPPING_TABLE}
+            ON COMMIT DROP
+            AS {_canonical_samples_sql(identity_column)}
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            f"""
             DELETE FROM analysis_forward_validation_results AS results
-            USING ranked_results
-            WHERE results.id = ranked_results.id
-              AND ranked_results.row_number > 1
+            USING {_CANONICAL_MAPPING_TABLE} AS mapping
+            WHERE results.sample_id = mapping.id
+              AND mapping.id <> mapping.canonical_id
             """
         )
     )
     op.execute(
         sa.text(
             f"""
-            WITH canonical_samples AS (
-                SELECT
-                    samples.id,
-                    MIN(samples.id) OVER (
-                        PARTITION BY {partition_columns}
-                    ) AS canonical_id
-                FROM analysis_calibration_samples AS samples
-            )
-            UPDATE analysis_forward_validation_results AS results
-            SET sample_id = canonical_samples.canonical_id
-            FROM canonical_samples
-            WHERE results.sample_id = canonical_samples.id
-              AND canonical_samples.id <> canonical_samples.canonical_id
-            """
-        )
-    )
-    op.execute(
-        sa.text(
-            f"""
-            WITH duplicate_samples AS (
-                SELECT id
-                FROM (
-                    SELECT
-                        samples.id,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY {partition_columns}
-                            ORDER BY samples.id ASC
-                        ) AS row_number
-                    FROM analysis_calibration_samples AS samples
-                ) AS ranked_samples
-                WHERE ranked_samples.row_number > 1
-            )
             DELETE FROM analysis_calibration_samples AS samples
-            USING duplicate_samples
-            WHERE samples.id = duplicate_samples.id
+            USING {_CANONICAL_MAPPING_TABLE} AS mapping
+            WHERE samples.id = mapping.id
+              AND mapping.id <> mapping.canonical_id
             """
         )
     )
 
 
 def upgrade() -> None:
+    if os.getenv(_BACKUP_CONFIRMATION_ENV) != revision:
+        raise RuntimeError(
+            f"Set {_BACKUP_CONFIRMATION_ENV}={revision} only after creating "
+            "a restorable pre-migration database backup."
+        )
+    op.execute(
+        sa.text(
+            "LOCK TABLE analysis_calibration_samples, "
+            "analysis_forward_validation_results IN ACCESS EXCLUSIVE MODE"
+        )
+    )
     _deduplicate_samples("confidence_config_version")
     op.drop_constraint(
         _CONSTRAINT_NAME,
@@ -120,21 +127,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    _deduplicate_samples("input_hash")
-    op.drop_constraint(
-        _CONSTRAINT_NAME,
-        "analysis_calibration_samples",
-        type_="unique",
-    )
-    op.create_unique_constraint(
-        _CONSTRAINT_NAME,
-        "analysis_calibration_samples",
-        [
-            "analysis_type",
-            "market",
-            "symbol",
-            "record_date",
-            "strategy_version",
-            "input_hash",
-        ],
+    raise RuntimeError(
+        "Revision 2c3d4e5f6a7b canonicalizes historical calibration samples "
+        "and is intentionally irreversible. Restore the pre-migration "
+        "database backup instead of running alembic downgrade."
     )

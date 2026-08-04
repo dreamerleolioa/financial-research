@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.daily_radar import rule_governance as rule_governance_module
 from ai_stock_sentinel.daily_radar.forward_validation import (
     FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
@@ -209,7 +210,7 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     assert {
         row["method"]
         for row in report.json_report["counterfactual_ablation_summary"]
-    } == {"same_input_counterfactual_replay", "not_applicable_context_only"}
+    } == {"not_applicable_no_cohort", "not_applicable_context_only"}
     context_only_ablation = [
         row
         for row in report.json_report["counterfactual_ablation_summary"]
@@ -226,9 +227,16 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     assert report.json_report["counterfactual_ablation_scope"] == {
         "selected_months": [],
         "ranking_pool": "all_latest_run_candidates_for_each_forward_window",
+        "ranking_pool_complete": False,
+        "ranking_pool_status": "not_applicable",
         "outcome_join": "validated_results_only_after_selection",
         "live_change_eligible": False,
     }
+    assert {
+        row["recommendation"]
+        for row in report.json_report["counterfactual_ablation_summary"]
+        if row["method"] == "not_applicable_no_cohort"
+    } == {"not_applicable_no_cohort"}
     candidate_parameters = {
         candidate["parameter"]
         for candidate in report.json_report["candidate_configs"]
@@ -311,6 +319,241 @@ def test_replay_ranks_full_candidate_pool_before_joining_validated_outcomes() ->
     assert by_id[1]["selected_for_rank"] is True
     assert sum(row["selected_for_rank"] is True for row in replayed) == 20
     assert by_id[21]["selected_for_rank"] is False
+
+
+def test_replay_scores_each_candidate_once_across_outcome_windows(monkeypatch) -> None:
+    rows = []
+    for window in (5, 10, 20):
+        row = _governance_replay_row(1, with_replay_input=True)
+        row["window_days"] = window
+        rows.append(row)
+    calls = 0
+    original = rule_governance_module.score_daily_radar_record
+
+    def score_spy(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        rule_governance_module,
+        "score_daily_radar_record",
+        score_spy,
+    )
+
+    replayed = _replay_daily_radar_rows(rows, ScoringConfig())
+
+    assert calls == 1
+    assert {row["window_days"] for row in replayed} == {5, 10, 20}
+
+
+def test_incomplete_replay_pool_cannot_govern_ranked_changes_at_90_percent() -> None:
+    rows = [
+        _governance_replay_row(
+            candidate_id,
+            with_replay_input=candidate_id > 10,
+        )
+        for candidate_id in range(1, 101)
+    ]
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        rows,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+    candidates, coverage = rule_governance_module._scoring_candidate_reports(
+        context,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        watermarks=[{
+            "month": "2026-06",
+            "validated_coverage_by_window": {
+                "5": 1.0,
+                "10": 1.0,
+                "20": 1.0,
+            },
+        }],
+        min_sample_count=1,
+        min_validated_coverage=0.9,
+    )
+    counterfactual = rule_governance_module._counterfactual_ablation_report(
+        context,
+        min_sample_count=1,
+    )
+
+    assert coverage["coverage"] == 0.9
+    assert coverage["meets_threshold"] is True
+    assert coverage["ranking_pool_complete"] is False
+    assert coverage["ranking_pool_status"] == "incomplete"
+    assert coverage["incomplete_ranking_groups"] == [{
+        "signal_date": "2026-06-01",
+        "window_days": 5,
+        "candidate_count": 100,
+        "replayable_candidate_count": 90,
+        "missing_candidate_count": 10,
+        "maximum_candidate_count": 250,
+        "capacity_exceeded": False,
+    }]
+    assert {
+        candidate["eligibility_reason"] for candidate in candidates
+    } == {"replay_ranking_pool_incomplete"}
+    assert {
+        row["recommendation"]
+        for row in counterfactual
+        if row["method"] == "same_input_counterfactual_replay"
+    } == {"replay_ranking_pool_incomplete"}
+
+
+def test_partial_v1_replay_payload_is_not_ranking_eligible() -> None:
+    complete = _governance_replay_row(1, with_replay_input=True)
+    partial = _governance_replay_row(2, with_replay_input=True)
+    partial["candidate_snapshot"]["input_snapshot"]["replay_input"] = {
+        "schema_version": "daily-radar-replay-input-v1",
+        "record": {
+            "symbol": "0002.TW",
+            "name": "0002.TW",
+            "record_date": "2026-06-01",
+            "ohlcv": {},
+            "indicators": {},
+            "technical_profile": {},
+            "price_history": [],
+            "institutional_flow": {},
+            "margin": {},
+            "data_dates": {},
+        },
+        "market_context": {"market": {}},
+        "prefilter_result": {
+            "prefilter_status": "accepted",
+            "prefilter_reasons": [],
+        },
+        "baseline_config": ScoringConfig().to_dict(),
+    }
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        [complete, partial],
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.5,
+    )
+
+    assert context.replay_coverage["coverage"] == 0.5
+    assert context.ranking_pool_status == "incomplete"
+    assert context.exclusion_reasons == {"replay_input_incomplete": 1}
+    assert [row["candidate_id"] for row in context.eligible_rows] == [1]
+
+
+def test_replay_governance_rejects_candidate_groups_over_capacity(
+    monkeypatch,
+) -> None:
+    rows = [
+        _governance_replay_row(candidate_id, with_replay_input=True)
+        for candidate_id in range(1, 252)
+    ]
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+
+    def unexpected_scoring(*args, **kwargs):
+        raise AssertionError("capacity guard must run before replay scoring")
+
+    monkeypatch.setattr(
+        rule_governance_module,
+        "score_daily_radar_record",
+        unexpected_scoring,
+    )
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        rows,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+    candidates, coverage = rule_governance_module._scoring_candidate_reports(
+        context,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        watermarks=[],
+        min_sample_count=1,
+        min_validated_coverage=0.9,
+    )
+
+    assert context.ranking_pool_status == "capacity_exceeded"
+    assert context.baseline_rows == []
+    assert coverage["incomplete_ranking_groups"] == [{
+        "signal_date": "2026-06-01",
+        "window_days": 5,
+        "candidate_count": 251,
+        "replayable_candidate_count": 251,
+        "missing_candidate_count": 0,
+        "maximum_candidate_count": 250,
+        "capacity_exceeded": True,
+    }]
+    assert {
+        candidate["eligibility_reason"] for candidate in candidates
+    } == {"replay_workload_limit_exceeded"}
+
+
+def test_monthly_governance_reuses_one_baseline_replay(monkeypatch) -> None:
+    rows = [_governance_replay_row(1, with_replay_input=True)]
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": False,
+    }
+    calls: list[tuple[ScoringConfig, frozenset[str]]] = []
+    original = rule_governance_module._replay_daily_radar_rows
+
+    def replay_spy(rows, config, *, excluded_rule_codes=None):
+        calls.append((config, frozenset(excluded_rule_codes or ())))
+        return original(
+            rows,
+            config,
+            excluded_rule_codes=excluded_rule_codes,
+        )
+
+    monkeypatch.setattr(
+        rule_governance_module,
+        "_replay_daily_radar_rows",
+        replay_spy,
+    )
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        rows,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+    rule_governance_module._scoring_candidate_reports(
+        context,
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        watermarks=[],
+        min_sample_count=1,
+        min_validated_coverage=0.9,
+    )
+    rule_governance_module._counterfactual_ablation_report(
+        context,
+        min_sample_count=1,
+    )
+
+    assert sum(
+        config == ScoringConfig() and not excluded_codes
+        for config, excluded_codes in calls
+    ) == 1
 
 
 def test_monthly_review_does_not_fall_back_to_validated_older_same_day_run() -> None:
@@ -673,19 +916,98 @@ def _add_validation_result(session: Session, candidate: DailyRadarCandidate) -> 
     )
 
 
+def _governance_replay_row(
+    candidate_id: int,
+    *,
+    with_replay_input: bool,
+) -> dict[str, Any]:
+    replay_input = (
+        {
+            "schema_version": "daily-radar-replay-input-v1",
+            "record": _replay_record(
+                f"{candidate_id:04d}.TW",
+                positive_days=max(0, 5 - candidate_id // 20),
+            ),
+            "market_context": {"market": {}, "data_dates": {}},
+            "prefilter_result": {
+                "prefilter_status": "accepted",
+                "prefilter_reasons": [],
+            },
+            "baseline_config": ScoringConfig().to_dict(),
+        }
+        if with_replay_input
+        else {}
+    )
+    return {
+        "candidate_id": candidate_id,
+        "symbol": f"{candidate_id:04d}.TW",
+        "signal_date": "2026-06-01",
+        "window_days": 5,
+        "status": "validated",
+        "outcome": {
+            "excess_return_vs_benchmark_pct": float(candidate_id),
+            "max_adverse_excursion_pct": -1.0,
+        },
+        "candidate_snapshot": {
+            "record_date": "2026-06-01",
+            "input_snapshot": {
+                "versions": {
+                    "scoring_version": rule_governance_module.SCORING_VERSION,
+                    "rule_version": rule_governance_module.RULE_VERSION,
+                    "config_version": rule_governance_module.SCORING_CONFIG_VERSION,
+                },
+                "replay_input": replay_input,
+            },
+        },
+    }
+
+
 def _replay_record(symbol: str, *, positive_days: int) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "name": symbol,
         "record_date": "2026-06-01",
-        "ohlcv": {},
-        "indicators": {},
-        "technical_profile": {},
-        "price_history": [],
+        "ohlcv": {
+            "open": 100.0,
+            "high": 102.0,
+            "low": 99.0,
+            "close": 101.0,
+            "previous_close": 100.0,
+            "volume": 2_000_000,
+            "avg_volume_20": 1_500_000,
+        },
+        "indicators": {
+            "ma5": 100.0,
+            "ma20": 98.0,
+            "ma60": 95.0,
+            "rsi14": 60.0,
+            "bias20": 3.0,
+            "macd_histogram": 1.0,
+            "kd_k": 60.0,
+            "kd_d": 55.0,
+            "atr14": 2.0,
+            "volume_ratio": 1.2,
+            "missing_trading_days_60": 0,
+        },
+        "technical_profile": {"version": "technical-layer-v1"},
+        "price_history": [
+            {"date": "2026-05-29", "close": 100.0},
+            {"date": "2026-06-01", "close": 101.0},
+        ],
         "institutional_flow": {
             "consecutive_positive_days": positive_days,
             "three_party_net_shares": 1,
+            "flow_state": "consistent_accumulation",
+            "net_flow_to_avg_volume": 0.1,
         },
-        "margin": {},
-        "data_dates": {},
+        "margin": {
+            "margin_delta_pct": 1.0,
+            "margin_to_volume": 0.2,
+        },
+        "data_dates": {
+            "ohlcv": "2026-06-01",
+            "technical_indicators": "2026-06-01",
+            "institutional_flow": "2026-06-01",
+            "margin": "2026-06-01",
+        },
     }
