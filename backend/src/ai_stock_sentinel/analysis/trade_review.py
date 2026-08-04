@@ -95,6 +95,7 @@ def ensure_trade_review_market_data(
             StockRawData.symbol == target.symbol,
             StockRawData.record_date >= start_date,
             StockRawData.record_date < target.exit_date,
+            StockRawData.raw_data_is_final.is_(True),
         )
         .order_by(StockRawData.record_date.asc())
     ).scalars().all()
@@ -132,6 +133,7 @@ def build_trade_review_payload(
             .where(
                 StockRawData.symbol == portfolio.symbol,
                 StockRawData.record_date <= portfolio.exit_date,
+                StockRawData.raw_data_is_final.is_(True),
             )
             .order_by(StockRawData.record_date.asc())
         ).scalars().all()

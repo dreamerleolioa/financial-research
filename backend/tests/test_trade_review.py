@@ -17,7 +17,10 @@ from ai_stock_sentinel.analysis.trade_review import (
     build_trade_review_payload,
     ensure_trade_review_market_data,
 )
-from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint
+from ai_stock_sentinel.analysis.review_sources import (
+    attach_source_fingerprint,
+    market_snapshot_payload,
+)
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.user_models.user import User
@@ -184,6 +187,21 @@ def test_same_day_stale_snapshot_keeps_last_completed_bar():
     values = _point_in_time_values([row], date(2026, 3, 2))
 
     assert values["closes"] == [10, 11, 12]
+
+
+def test_same_day_stale_snapshot_uses_independent_high_low_dates():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-01"}
+    row.technical["recent_highs"] = [11, 12, 99]
+    row.technical["recent_high_dates"] = ["2026-02-28", "2026-03-01", "2026-03-02"]
+    row.technical["recent_lows"] = [9, 10, 1]
+    row.technical["recent_low_dates"] = ["2026-02-28", "2026-03-01", "2026-03-02"]
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [11, 12]
+    assert values["lows"] == [9, 10]
 
 
 def test_same_day_legacy_snapshot_without_data_date_drops_only_unproven_final_bar():
@@ -454,6 +472,81 @@ def test_ensure_trade_review_market_data_uses_trading_bars_for_provider_upgrade(
     assert snapshot.evidence["provider"] == "yfinance"
     assert snapshot.evidence["quality"]["row_count"] == 72
     assert snapshot.evidence["quality"]["trading_bar_count"] == 72
+
+
+def test_market_snapshot_does_not_estimate_known_out_of_window_series_dates():
+    snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-04-30",
+            "technical": {
+                "recent_closes": list(range(80)),
+                "recent_highs": list(range(80)),
+                "recent_lows": list(range(80)),
+                "recent_volumes": list(range(80)),
+                "recent_volume_dates": [f"2025-01-{day:02d}" for day in range(1, 29)]
+                + [f"2025-02-{day:02d}" for day in range(1, 29)]
+                + [f"2025-03-{day:02d}" for day in range(1, 25)],
+            },
+        }],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 5, 1),
+    )
+
+    assert snapshot["quality"]["trading_bar_count"] == 0
+    assert snapshot["quality"]["date_start"] is None
+    assert snapshot["quality"]["date_end"] is None
+
+
+def test_market_snapshot_counts_only_usable_final_trading_bars():
+    non_final = _raw_row("2330.TW", date(2026, 1, 8), 100)
+    non_final.raw_data_is_final = False
+    empty = StockRawData(
+        symbol="2330.TW",
+        record_date=date(2026, 1, 9),
+        technical={},
+        raw_data_is_final=True,
+    )
+    weekend_snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-01-10",
+            "technical": {
+                "recent_closes": [100, 101],
+                "recent_highs": [101, 102],
+                "recent_lows": [99, 100],
+                "recent_volumes": [1000, 1100],
+                "recent_volume_dates": ["2026-01-08", "2026-01-09"],
+            },
+        }],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 1, 12),
+    )
+    invalid_snapshot = market_snapshot_payload(
+        [non_final, empty],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 1, 12),
+    )
+
+    assert weekend_snapshot["quality"]["trading_bar_count"] == 2
+    assert weekend_snapshot["quality"]["date_end"] == "2026-01-09"
+    assert invalid_snapshot["quality"]["trading_bar_count"] == 0
+    assert invalid_snapshot["quality"]["status"] == "insufficient"
+
+
+def test_trade_review_fallback_query_excludes_non_final_rows(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 3, 5))
+    final_row = _raw_row("2330.TW", entry_date, 100)
+    non_final_row = _raw_row("2330.TW", entry_date + timedelta(days=1), 101)
+    non_final_row.raw_data_is_final = False
+    db_session.add_all([portfolio, final_row, non_final_row])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=lambda *_args: [])
+
+    assert snapshot.rows == [final_row]
 
 
 def test_trade_review_download_uses_single_level_columns_and_bounded_timeout(monkeypatch: pytest.MonkeyPatch):

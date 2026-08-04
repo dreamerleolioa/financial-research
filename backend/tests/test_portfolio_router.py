@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.analysis.review_sources import market_snapshot_payload
 from ai_stock_sentinel.portfolio.application import get_risk_summary as portfolio_risk_summary_app
 from ai_stock_sentinel.portfolio.application import refresh_prices as refresh_prices_module
 from ai_stock_sentinel.portfolio.application.refresh_prices import _fetch_quotes, _quote_payload
@@ -3579,38 +3580,154 @@ def test_trade_review_provider_upgrade_preserves_dated_coverage_bounds():
     assert portfolio_router_module._market_snapshot_regressed(fallback, shifted_provider) is True
 
 
-def test_trade_review_singleflight_serializes_same_review_key():
+def test_trade_review_singleflight_rejects_duplicate_without_blocking_worker():
     key = (1, 42)
     first_entered = Event()
     release_first = Event()
     second_started = Event()
-    second_entered = Event()
+    second_finished = Event()
+    acquisitions = []
 
     def first_request() -> None:
-        with portfolio_router_module._trade_review_refresh_singleflight(key):
+        with portfolio_router_module._trade_review_refresh_singleflight(key) as acquired:
+            acquisitions.append(acquired)
             first_entered.set()
             assert release_first.wait(timeout=1)
 
     def second_request() -> None:
         assert first_entered.wait(timeout=1)
         second_started.set()
-        with portfolio_router_module._trade_review_refresh_singleflight(key):
-            second_entered.set()
+        with portfolio_router_module._trade_review_refresh_singleflight(key) as acquired:
+            acquisitions.append(acquired)
+        second_finished.set()
 
     first = Thread(target=first_request)
     second = Thread(target=second_request)
     first.start()
     second.start()
     assert second_started.wait(timeout=1)
-    assert second_entered.is_set() is False
+    assert second_finished.wait(timeout=1)
     release_first.set()
     first.join(timeout=1)
     second.join(timeout=1)
 
     assert first.is_alive() is False
     assert second.is_alive() is False
-    assert second_entered.is_set() is True
+    assert acquisitions == [True, False]
     assert key not in portfolio_router_module._TRADE_REVIEW_REFRESH_SLOTS
+
+
+def test_create_trade_review_returns_conflict_when_refresh_is_in_progress(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
+
+    with portfolio_router_module._trade_review_refresh_singleflight((1, 42)) as acquired:
+        assert acquired is True
+        response = portfolio_db_client.post("/portfolio/42/review")
+
+    assert response.status_code == 409
+    assert response.headers["retry-after"] == "1"
+
+
+def test_trade_review_regression_guard_allows_material_fallback_recovery():
+    tiny_provider = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": 1,
+            "covered_dates": ["2026-01-01"],
+            "date_start": "2026-01-01",
+            "date_end": "2026-01-01",
+            "missing_reason": None,
+        },
+    }
+    rich_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 80,
+            "covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert portfolio_router_module._market_snapshot_regressed(tiny_provider, rich_fallback) is False
+
+
+def test_trade_review_regression_guard_rejects_internal_date_gap():
+    existing_dates = [date(2026, 1, 1) + timedelta(days=offset * 2) for offset in range(40)]
+    candidate_dates = list(existing_dates)
+    candidate_dates[20] += timedelta(days=1)
+
+    def snapshot(dates: list[date]) -> dict:
+        return {
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "dated_bars",
+                "trading_bar_count": len(dates),
+                "covered_dates": [value.isoformat() for value in dates],
+                "date_start": dates[0].isoformat(),
+                "date_end": dates[-1].isoformat(),
+                "missing_reason": None,
+            },
+        }
+
+    assert portfolio_router_module._market_snapshot_regressed(
+        snapshot(existing_dates),
+        snapshot(candidate_dates),
+    ) is True
+
+
+def test_create_trade_review_same_content_refresh_advances_fetched_at(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
+    now = datetime.now(timezone.utc)
+    observed_times = [now - timedelta(hours=7), now]
+
+    def stable_market_snapshot(db: Session, target: portfolio_router_module.TradeReviewMarketTarget):
+        rows = db.execute(
+            select(StockRawData)
+            .where(StockRawData.symbol == target.symbol)
+            .order_by(StockRawData.record_date.asc())
+        ).scalars().all()
+        fetched_at = observed_times.pop(0)
+        return SimpleNamespace(
+            rows=rows,
+            evidence=market_snapshot_payload(
+                rows,
+                provider="yfinance",
+                fetched_at=fetched_at,
+                coverage_start=target.entry_date - timedelta(days=120),
+                coverage_end=target.exit_date,
+            ),
+        )
+
+    monkeypatch.setattr(
+        portfolio_router_module,
+        "ensure_trade_review_market_data",
+        stable_market_snapshot,
+    )
+
+    first = portfolio_db_client.post("/portfolio/42/review")
+    second = portfolio_db_client.post("/portfolio/42/review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert observed_times == []
+    assert first.json()["evidence_payload"]["source_fingerprint"] == second.json()["evidence_payload"]["source_fingerprint"]
+    assert first.json()["evidence_payload"]["market_snapshot"]["fetched_at"] != second.json()["evidence_payload"]["market_snapshot"]["fetched_at"]
+    assert second.json()["evidence_payload"]["market_snapshot"]["fetched_at"] == now.isoformat()
 
 
 def _trade_review_item() -> UserPortfolio:

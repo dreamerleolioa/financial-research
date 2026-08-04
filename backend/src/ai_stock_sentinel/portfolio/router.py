@@ -80,16 +80,17 @@ _TRADE_REVIEW_REFRESH_SLOTS_GUARD = Lock()
 
 
 @contextmanager
-def _trade_review_refresh_singleflight(key: tuple[int, int]) -> Iterator[None]:
-    """Serialize refresh work for one review without holding a DB resource."""
+def _trade_review_refresh_singleflight(key: tuple[int, int]) -> Iterator[bool]:
+    """Reserve one in-process refresh slot without blocking a sync worker."""
     with _TRADE_REVIEW_REFRESH_SLOTS_GUARD:
         slot = _TRADE_REVIEW_REFRESH_SLOTS.setdefault(key, _TradeReviewRefreshSlot())
         slot.users += 1
-    slot.lock.acquire()
+    acquired = slot.lock.acquire(blocking=False)
     try:
-        yield
+        yield acquired
     finally:
-        slot.lock.release()
+        if acquired:
+            slot.lock.release()
         with _TRADE_REVIEW_REFRESH_SLOTS_GUARD:
             slot.users -= 1
             if slot.users == 0 and _TRADE_REVIEW_REFRESH_SLOTS.get(key) is slot:
@@ -827,9 +828,14 @@ def create_trade_review(
         return _serialize_trade_review(existing_review)
 
     db.rollback()
-    with _trade_review_refresh_singleflight((user_id, portfolio_id)):
-        # A same-key request may have completed while this request waited for
-        # the in-process single-flight slot. Re-read before any provider I/O.
+    with _trade_review_refresh_singleflight((user_id, portfolio_id)) as refresh_acquired:
+        if not refresh_acquired:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="交易審核正在更新，請稍後重試",
+                headers={"Retry-After": "1"},
+            )
+        # Re-read after reserving the in-process slot and before provider I/O.
         item = _get_reviewable_portfolio(db, portfolio_id, user_id)
         existing_review = db.execute(
             select(TradeReview).where(
@@ -882,6 +888,21 @@ def create_trade_review(
             and isinstance(existing_review.evidence_payload, dict)
             and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
         ):
+            existing_market = existing_review.evidence_payload.get("market_snapshot")
+            candidate_market = evidence_payload.get("market_snapshot")
+            existing_fetched_at = _parse_utc_datetime(
+                existing_market.get("fetched_at") if isinstance(existing_market, dict) else None
+            )
+            candidate_fetched_at = _parse_utc_datetime(
+                candidate_market.get("fetched_at") if isinstance(candidate_market, dict) else None
+            )
+            if candidate_fetched_at is not None and (
+                existing_fetched_at is None or candidate_fetched_at > existing_fetched_at
+            ):
+                existing_review.evidence_payload = evidence_payload
+                existing_review.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                db.refresh(existing_review)
             return _serialize_trade_review(existing_review)
         if existing_review:
             review = existing_review

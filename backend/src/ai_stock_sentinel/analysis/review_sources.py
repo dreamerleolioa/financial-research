@@ -36,29 +36,88 @@ def completed_trailing_series(
     if data_date > as_of:
         return None
     if data_date < as_of:
-        return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
+        return {
+            "closes": closes,
+            "highs": _completed_independent_series(
+                highs,
+                technical.get("recent_high_dates"),
+                as_of=as_of,
+                close_count=len(closes),
+                close_includes_as_of=False,
+            ),
+            "lows": _completed_independent_series(
+                lows,
+                technical.get("recent_low_dates"),
+                as_of=as_of,
+                close_count=len(closes),
+                close_includes_as_of=False,
+            ),
+            "volumes": _completed_independent_series(
+                volumes,
+                technical.get("recent_volume_dates"),
+                as_of=as_of,
+                close_count=len(closes),
+                close_includes_as_of=False,
+                shorter_series_is_complete=True,
+            ),
+        }
 
     close_count = len(closes)
-    volume_dates = technical.get("recent_volume_dates")
-    parsed_volume_dates = (
-        [_parse_date(value) for value in volume_dates]
-        if isinstance(volume_dates, list) and len(volume_dates) == len(volumes)
-        else []
-    )
-    latest_volume_date = parsed_volume_dates[-1] if parsed_volume_dates else None
-    if latest_volume_date is not None:
-        volume_includes_as_of = latest_volume_date == as_of
-    else:
-        volume_includes_as_of = len(volumes) == close_count
     return {
         "closes": closes[:-1],
-        # High/low series are independently dropna'd by the provider. Without
-        # per-value dates, a mismatched length cannot prove that its final
-        # value predates the event, so trim every non-empty price series.
-        "highs": highs[:-1],
-        "lows": lows[:-1],
-        "volumes": volumes[:-1] if volume_includes_as_of else volumes,
+        "highs": _completed_independent_series(
+            highs,
+            technical.get("recent_high_dates"),
+            as_of=as_of,
+            close_count=close_count,
+            close_includes_as_of=True,
+        ),
+        "lows": _completed_independent_series(
+            lows,
+            technical.get("recent_low_dates"),
+            as_of=as_of,
+            close_count=close_count,
+            close_includes_as_of=True,
+        ),
+        "volumes": _completed_independent_series(
+            volumes,
+            technical.get("recent_volume_dates"),
+            as_of=as_of,
+            close_count=close_count,
+            close_includes_as_of=True,
+            shorter_series_is_complete=True,
+        ),
     }
+
+
+def _completed_independent_series(
+    values: list[float],
+    raw_dates: Any,
+    *,
+    as_of: date,
+    close_count: int,
+    close_includes_as_of: bool,
+    shorter_series_is_complete: bool = False,
+) -> list[float]:
+    if isinstance(raw_dates, list) and len(raw_dates) == len(values):
+        parsed_dates = [_parse_date(value) for value in raw_dates]
+        if all(value is not None for value in parsed_dates):
+            return [
+                value
+                for value, value_date in zip(values, parsed_dates, strict=True)
+                if value_date is not None and value_date < as_of
+            ]
+    if close_includes_as_of:
+        if shorter_series_is_complete and len(values) < close_count:
+            return values
+        return values[:-1]
+    if len(values) == close_count:
+        return values
+    if len(values) > close_count:
+        return values[:close_count]
+    if shorter_series_is_complete:
+        return values
+    return values[:-1]
 
 
 def _parse_date(value: Any) -> date | None:
@@ -111,7 +170,7 @@ def market_snapshot_payload(
         "provider": provider,
         "fetched_at": _canonical_value(fetched_at) if fetched_at is not None else None,
         "quality": {
-            "status": "available" if bars else "insufficient",
+            "status": "available" if coverage["trading_bar_count"] > 0 else "insufficient",
             "missing_reason": missing_reason,
             "row_count": len(bars),
             **coverage,
@@ -125,9 +184,11 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     if isinstance(row, dict):
         record_date = row.get("record_date", row.get("date"))
         technical = row.get("technical") or {}
+        raw_data_is_final = row.get("raw_data_is_final")
     else:
         record_date = getattr(row, "record_date", None)
         technical = getattr(row, "technical", None) or {}
+        raw_data_is_final = getattr(row, "raw_data_is_final", None)
     ohlcv = technical.get("ohlcv") if isinstance(technical.get("ohlcv"), dict) else {}
     closes = technical.get("recent_closes") if isinstance(technical.get("recent_closes"), list) else []
     highs = technical.get("recent_highs") if isinstance(technical.get("recent_highs"), list) else []
@@ -152,6 +213,7 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     return {
         "record_date": _canonical_value(record_date),
         "data_date": _canonical_value(data_dates.get("ohlcv")),
+        "raw_data_is_final": raw_data_is_final if isinstance(raw_data_is_final, bool) else None,
         "trailing_dates": _canonical_value(volume_dates),
         "bar": _canonical_value({
             "open": ohlcv.get("open"),
@@ -186,7 +248,12 @@ def market_snapshot_regressed(
     existing_count = existing_quality.get("trading_bar_count")
     new_count = new_quality.get("trading_bar_count")
 
-    if not existing_missing and new_missing:
+    material_fallback_recovery = _material_fallback_recovery(
+        existing_quality,
+        new_quality,
+        provider_upgrade_min_coverage_ratio=provider_upgrade_min_coverage_ratio,
+    )
+    if not existing_missing and new_missing and not material_fallback_recovery:
         return True
 
     upgrading_provider = existing_missing and not new_missing
@@ -203,9 +270,39 @@ def market_snapshot_regressed(
         if new_count < required_count:
             return True
 
-    if _dated_coverage_shrunk(existing_quality, new_quality):
+    if _dated_coverage_shrunk(
+        existing_quality,
+        new_quality,
+        upgrading_provider=upgrading_provider,
+        allow_estimated_recovery=material_fallback_recovery,
+        provider_upgrade_min_coverage_ratio=provider_upgrade_min_coverage_ratio,
+    ):
         return True
     return False
+
+
+def _material_fallback_recovery(
+    existing_quality: dict[str, Any],
+    new_quality: dict[str, Any],
+    *,
+    provider_upgrade_min_coverage_ratio: float,
+) -> bool:
+    if bool(existing_quality.get("missing_reason")) or not bool(new_quality.get("missing_reason")):
+        return False
+    if (
+        existing_quality.get("coverage_version") != "market-coverage-v1"
+        or new_quality.get("coverage_version") != "market-coverage-v1"
+    ):
+        return False
+    existing_count = existing_quality.get("trading_bar_count")
+    new_count = new_quality.get("trading_bar_count")
+    if not isinstance(existing_count, int) or not isinstance(new_count, int) or new_count <= existing_count:
+        return False
+    required_count = max(
+        60,
+        math.ceil(existing_count / provider_upgrade_min_coverage_ratio),
+    )
+    return new_count >= required_count
 
 
 def _snapshot_quality(market: dict[str, Any]) -> dict[str, Any]:
@@ -225,18 +322,44 @@ def _snapshot_quality(market: dict[str, Any]) -> dict[str, Any]:
     return quality
 
 
-def _dated_coverage_shrunk(existing_quality: dict[str, Any], new_quality: dict[str, Any]) -> bool:
+def _dated_coverage_shrunk(
+    existing_quality: dict[str, Any],
+    new_quality: dict[str, Any],
+    *,
+    upgrading_provider: bool,
+    allow_estimated_recovery: bool,
+    provider_upgrade_min_coverage_ratio: float,
+) -> bool:
     if existing_quality.get("coverage_basis") != "dated_bars":
         return False
     if new_quality.get("coverage_basis") != "dated_bars":
-        return True
+        return not allow_estimated_recovery
     existing_start = _parse_date(existing_quality.get("date_start"))
     existing_end = _parse_date(existing_quality.get("date_end"))
     new_start = _parse_date(new_quality.get("date_start"))
     new_end = _parse_date(new_quality.get("date_end"))
     if existing_start is not None and (new_start is None or new_start > existing_start):
         return True
-    return existing_end is not None and (new_end is None or new_end < existing_end)
+    if existing_end is not None and (new_end is None or new_end < existing_end):
+        return True
+
+    existing_dates = _covered_dates(existing_quality)
+    new_dates = _covered_dates(new_quality)
+    if not existing_dates or not new_dates:
+        return False
+    existing_count = existing_quality.get("trading_bar_count")
+    new_count = new_quality.get("trading_bar_count")
+    if upgrading_provider and isinstance(existing_count, int) and isinstance(new_count, int) and new_count < existing_count:
+        required_overlap = math.ceil(len(existing_dates) * provider_upgrade_min_coverage_ratio)
+        return len(existing_dates & new_dates) < required_overlap
+    return not existing_dates.issubset(new_dates)
+
+
+def _covered_dates(quality: dict[str, Any]) -> set[date]:
+    raw_dates = quality.get("covered_dates")
+    if not isinstance(raw_dates, list):
+        return set()
+    return {parsed for value in raw_dates if (parsed := _parse_date(value)) is not None}
 
 
 def _market_bar_coverage(
@@ -248,6 +371,8 @@ def _market_bar_coverage(
     dated_bars: set[date] = set()
     undated_series_count = 0
     for payload in bars:
+        if payload.get("raw_data_is_final") is False:
+            continue
         series = payload.get("trailing_series") if isinstance(payload.get("trailing_series"), list) else []
         raw_series_dates = payload.get("trailing_dates")
         series_dates = (
@@ -255,15 +380,28 @@ def _market_bar_coverage(
             if isinstance(raw_series_dates, list)
             else []
         )
-        valid_series_dates = [value for value in series_dates if _date_in_window(value, coverage_start, coverage_end)]
+        valid_series_dates = [
+            value
+            for value, series_bar in zip(series_dates, series, strict=False)
+            if _date_in_window(value, coverage_start, coverage_end)
+            and isinstance(series_bar, dict)
+            and _is_usable_price(series_bar.get("close"))
+        ]
         if valid_series_dates:
             dated_bars.update(valid_series_dates)
-        elif series:
-            undated_series_count = max(undated_series_count, len(series))
+        elif not raw_series_dates:
+            usable_series_count = sum(
+                1
+                for series_bar in series
+                if isinstance(series_bar, dict) and _is_usable_price(series_bar.get("close"))
+            )
+            undated_series_count = max(undated_series_count, usable_series_count)
 
-        bar_date = _parse_date(payload.get("data_date")) or _parse_date(payload.get("record_date"))
-        if _date_in_window(bar_date, coverage_start, coverage_end):
-            dated_bars.add(bar_date)
+        bar = payload.get("bar") if isinstance(payload.get("bar"), dict) else {}
+        if not series and _is_usable_price(bar.get("close")):
+            bar_date = _parse_date(payload.get("data_date")) or _parse_date(payload.get("record_date"))
+            if _date_in_window(bar_date, coverage_start, coverage_end):
+                dated_bars.add(bar_date)
 
     if coverage_start is not None and coverage_end is not None and undated_series_count:
         undated_series_count = min(undated_series_count, _weekday_count(coverage_start, coverage_end))
@@ -273,9 +411,20 @@ def _market_bar_coverage(
         "coverage_version": "market-coverage-v1",
         "coverage_basis": coverage_basis,
         "trading_bar_count": trading_bar_count,
+        "covered_dates": [value.isoformat() for value in sorted(dated_bars)],
         "date_start": min(dated_bars).isoformat() if dated_bars else None,
         "date_end": max(dated_bars).isoformat() if dated_bars else None,
     }
+
+
+def _is_usable_price(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+        return math.isfinite(number) and number > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _date_in_window(value: date | None, start: date | None, end: date | None) -> bool:

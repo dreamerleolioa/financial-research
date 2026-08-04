@@ -33,6 +33,8 @@ class StockSnapshot:
     name: str | None = None
     recent_highs: List[float] = field(default_factory=list)
     recent_lows: List[float] = field(default_factory=list)
+    recent_high_dates: List[str] = field(default_factory=list)
+    recent_low_dates: List[str] = field(default_factory=list)
     recent_volumes: List[float] = field(default_factory=list)
     recent_volume_dates: List[str] = field(default_factory=list)
     data_dates: dict[str, str] = field(default_factory=dict)
