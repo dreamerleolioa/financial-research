@@ -633,6 +633,44 @@ def test_legacy_dated_bars_can_self_heal_to_material_fallback():
     ) is False
 
 
+@pytest.mark.parametrize(("existing_count", "expected_regressed"), [(59, False), (60, True)])
+def test_current_coverage_material_fallback_recovery_requires_fewer_than_sixty_bars(
+    existing_count: int,
+    expected_regressed: bool,
+):
+    provider_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(existing_count)]
+    current_provider = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": existing_count,
+            "covered_dates": [value.isoformat() for value in provider_dates],
+            "holding_covered_dates": [value.isoformat() for value in provider_dates],
+            "date_start": provider_dates[0].isoformat(),
+            "date_end": provider_dates[-1].isoformat(),
+            "missing_reason": None,
+        },
+    }
+    estimated_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 67,
+            "covered_dates": [],
+            "holding_covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert market_snapshot_regressed(
+        current_provider,
+        estimated_fallback,
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is expected_regressed
+
+
 def test_healthy_legacy_dated_bars_do_not_downgrade_to_estimated_fallback():
     legacy_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(60)]
     legacy_provider = {

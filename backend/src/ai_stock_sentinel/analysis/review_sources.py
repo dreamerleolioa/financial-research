@@ -300,7 +300,7 @@ def _material_fallback_recovery(
     new_count = new_quality.get("trading_bar_count")
     if not isinstance(existing_count, int) or not isinstance(new_count, int) or new_count <= existing_count:
         return False
-    if existing_quality.get("coverage_version") == "legacy-derived" and existing_count >= 60:
+    if existing_count >= 60:
         return False
     required_count = max(
         60,
