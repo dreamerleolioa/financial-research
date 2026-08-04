@@ -52,7 +52,7 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v2"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v3"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v4"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
 GENERAL_ANALYSIS_TYPES = ("general",)
@@ -63,6 +63,7 @@ TUNABLE_CONFIDENCE_PARAMETERS = (
     "bullish_technical_points",
     "three_resonance_bonus",
 )
+HOLDOUT_HORIZON_CORRELATION_FLOOR = -0.01
 logger = logging.getLogger(__name__)
 
 
@@ -99,16 +100,18 @@ def capture_general_analysis_calibration_sample(
         )
         return None
     input_hash = _canonical_hash(active_replay_input)
-    existing = session.execute(
+    existing = session.scalars(
         select(AnalysisCalibrationSample).where(
             AnalysisCalibrationSample.analysis_type == "general",
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.symbol == symbol,
             AnalysisCalibrationSample.record_date == record_date,
             AnalysisCalibrationSample.strategy_version == strategy_version,
-            AnalysisCalibrationSample.input_hash == input_hash,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
         )
-    ).scalar_one_or_none()
+        .order_by(AnalysisCalibrationSample.id.asc())
+    ).first()
     if existing is not None:
         return existing
 
@@ -179,6 +182,10 @@ def general_validation_samples(
         AnalysisCalibrationSample.analysis_is_final.is_(True),
         AnalysisCalibrationSample.market == market,
         AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+        AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+        AnalysisCalibrationSample.confidence_config_version
+        == CONFIDENCE_CONFIG_VERSION,
+        AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
     )
     if start_date is not None:
         query = query.where(AnalysisCalibrationSample.record_date >= start_date)
@@ -364,6 +371,10 @@ def build_general_analysis_monthly_report(
             AnalysisCalibrationSample.analysis_is_final.is_(True),
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+            AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             selected_month_filter,
         )
         .order_by(AnalysisCalibrationSample.record_date.asc(), AnalysisCalibrationSample.id.asc())
@@ -578,6 +589,40 @@ def _confidence_candidate_report(
     holdout_before = confidence_excess_correlation(baseline_holdout)
     holdout_after = confidence_excess_correlation(candidate_holdout)
     holdout_delta = _delta(holdout_after, holdout_before)
+    holdout_horizon_gates = {
+        window: {
+            "before": before_holdout_metrics[window].get(
+                "confidence_outcome_correlation"
+            ),
+            "after": after_holdout_metrics[window].get(
+                "confidence_outcome_correlation"
+            ),
+            "delta": _delta(
+                _number(
+                    after_holdout_metrics[window].get(
+                        "confidence_outcome_correlation"
+                    )
+                ),
+                _number(
+                    before_holdout_metrics[window].get(
+                        "confidence_outcome_correlation"
+                    )
+                ),
+            ),
+        }
+        for window in ("5", "10", "20")
+    }
+    for gate in holdout_horizon_gates.values():
+        delta = _number(gate["delta"])
+        gate["minimum_delta"] = HOLDOUT_HORIZON_CORRELATION_FLOOR
+        gate["preserved"] = (
+            delta is not None
+            and delta >= HOLDOUT_HORIZON_CORRELATION_FLOOR
+        )
+    horizons_preserved = all(
+        bool(gate["preserved"])
+        for gate in holdout_horizon_gates.values()
+    )
     selected_watermarks = [
         row
         for row in watermarks
@@ -624,8 +669,7 @@ def _confidence_candidate_report(
         and lower_ci >= 0
         and training_delta is not None
         and training_delta > 0
-        and holdout_delta is not None
-        and holdout_delta >= -0.01
+        and horizons_preserved
         and before_value != after_value
     )
     if cohort.get("cohort_complete") is not True:
@@ -640,8 +684,8 @@ def _confidence_candidate_report(
         reason = "insufficient_date_blocks"
     elif lower_ci is None or lower_ci < 0 or training_delta is None or training_delta <= 0:
         reason = "training_bootstrap_not_positive"
-    elif holdout_delta is None or holdout_delta < -0.01:
-        reason = "holdout_not_preserved"
+    elif not horizons_preserved:
+        reason = "holdout_horizon_degraded"
     else:
         reason = "eligible"
     return {
@@ -665,6 +709,7 @@ def _confidence_candidate_report(
             "after": holdout_after,
             "delta": holdout_delta,
         },
+        "holdout_horizon_gates": holdout_horizon_gates,
         "coverage": {
             "training_rows": len(baseline_training),
             "holdout_rows": len(baseline_holdout),
@@ -725,6 +770,10 @@ def _validation_rows(
             AnalysisCalibrationSample.analysis_type == "general",
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+            AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             _month_filter(
                 AnalysisCalibrationSample.record_date,
                 selected_months,
@@ -806,6 +855,10 @@ def _general_completeness_watermarks(
             AnalysisCalibrationSample.analysis_is_final.is_(True),
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+            AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             AnalysisCalibrationSample.record_date <= through_date,
         )
         .group_by(year_value, month_value)
@@ -831,6 +884,25 @@ def _general_completeness_watermarks(
             ),
         })
     return watermarks
+
+
+def _canonical_general_sample_ids() -> Any:
+    """Return one point-in-time sample per symbol/date in the active cohort."""
+    return (
+        select(func.min(AnalysisCalibrationSample.id))
+        .where(
+            AnalysisCalibrationSample.analysis_type == "general",
+            AnalysisCalibrationSample.analysis_is_final.is_(True),
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+        )
+        .group_by(
+            AnalysisCalibrationSample.market,
+            AnalysisCalibrationSample.symbol,
+            AnalysisCalibrationSample.record_date,
+        )
+    )
 
 
 def _month_filter(column: Any, months: Sequence[str]) -> Any:

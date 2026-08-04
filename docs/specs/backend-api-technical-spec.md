@@ -1916,6 +1916,9 @@ Daily Radar run status：
 - 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析第一版只保存 `.TW` / `.TWO` final `/analyze` 樣本，固定分區為 TW / TAIEX；其他市場不寫入這個 calibration cohort。
 - 兩軌 forward validation 透過 feature adapter 共用 `ai_stock_sentinel.calibration.forward_validation`；月報以 SQL monthly aggregation 選 cohort，再以明確月份條件載入六個成熟月份的 replay / validation detail。
 - 一般分析校準只收 `/analyze`，不含 `/analyze/position`；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。Final cache 內另保存同一份精簡 payload，capture 暫時失敗時由後續 final cache hit 冪等重試；舊 cache 無正式 payload 時不得反推。
+- 一般分析校準的 active cohort 固定為目前 `strategy_version` + `confidence_config_version`；同一 market / symbol / record date 只採最早完成的 point-in-time sample。日內重跑不得因 input hash 改變而增加獨立樣本，舊版本與既有重複列只供歷史稽核。
+- 一般分析與 Daily Radar 的 candidate config 都必須逐一通過 5 / 10 / 20 日 holdout gate，不得用跨 horizon 聚合改善掩蓋單一窗口退化。
+- Daily Radar `daily-radar-rule-review-v3` 先以完整 candidate pool replay ranking、再接 validated outcome，並輸出 `counterfactual_ablation_summary`；`co_occurrence_summary` 僅是相關性診斷。任何 recommendation 都不直接更新 live config、rule version 或 ranking。
 
 Forward validation due request：
 

@@ -504,6 +504,9 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 13. `min_sample_count` 以各 5 / 10 / 20 日窗口的 distinct candidate 計算；training 固定至少 20 個 `run_date` blocks、holdout 至少 5 個 blocks。同日多檔股票仍屬同一 bootstrap block。
 14. Replay coverage 必須整體與逐月達 90%；`replay_input_incomplete` 可留在診斷報告，但 coverage 未達標時不得輸出可自動修改資格。
 15. Actions artifact retention 為 30 天，必須每月下載並自行保存；報表本身不直接建立 PR 或修改 production scoring。
+16. `daily-radar-rule-review-v3` 的 rank replay 必須先以同日完整 candidate pool 決定 Top 20，再以 candidate ID left join validated outcome；缺少 outcome 的原 Top 20 不得被第 21 名遞補。
+17. Rule-group ablation 必須使用同一份 replay input 分別執行 baseline 與「排除該 group rule codes」的 counterfactual scoring；舊的命中／未命中分組只保留為 `co_occurrence_summary`，不得再稱為 causal ablation。
+18. Candidate config 的 holdout gate 必須分別檢查 5 / 10 / 20 日 excess return 與 downside 非劣性；任一 horizon 缺樣本或退化即不得標記 eligible。報告仍只提供建議，production scoring/ranking 的版本變更必須人工核准。
 
 內部端點需使用 internal token 驗證。token 放在 GitHub Actions secrets 與 Zeabur environment variables，不寫入 repo。
 
@@ -538,8 +541,8 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 | Background context tests | migration/model、repository upsert/read、internal updater endpoint、workflow request budget、分段 workflow 會在不同小時刷新日頻 selected-symbol context，且 background labels 不改 ranking |
 | Workflow context tests | Scheduled Re-run 保留原始 cron-slot `run_date`；開市、休市與 provider 異常都有回歸覆蓋；所有下游 jobs 共用同一 run context guard |
 | Background label tests | API/schema 可表示 labels、freshness、missing reason；移除 background context 後 score/ranking 不變 |
-| Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、ablation snapshot、monthly rule-review API、artifact workflow 基本檢查 |
-| Weight governance tests | baseline config replay 等於 live score、舊 snapshot 標記 `replay_input_incomplete`、一次只移動一個參數與一個 step、risk / data-gap / prefilter 參數不會成為候選 |
+| Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、同輸入 counterfactual ablation、完整 candidate pool 先排名再接 outcome、monthly rule-review API、artifact workflow 基本檢查 |
+| Weight governance tests | baseline config replay 等於 live score、舊 snapshot 標記 `replay_input_incomplete`、一次只移動一個參數與一個 step、risk / data-gap / prefilter 參數不會成為候選、5 / 10 / 20 日各自通過 holdout 非劣性 gate |
 | Forward completeness tests | due mode 只處理成熟 5 / 10 / 20 日窗口、同日 rerun 去重、20 日 maturity watermark 與 validated coverage 分離 |
 
 ### 13.2 前端測試

@@ -85,9 +85,9 @@ const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: stri
 };
 
 const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
-  high: { label: "高信心", cls: "bg-emerald-100 text-emerald-800" },
-  medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
-  low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  high: { label: "高一致性", cls: "bg-emerald-100 text-emerald-800" },
+  medium: { label: "中一致性", cls: "bg-yellow-100 text-yellow-800" },
+  low: { label: "低一致性", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
 };
 
 function TriggersSection({
@@ -730,7 +730,7 @@ export default function AnalyzePage() {
                     <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px] md:items-center">
                       <div>
                         <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                          <p className="text-xs font-semibold text-text-muted">信心指數</p>
+                          <p className="text-xs font-semibold text-text-muted">訊號一致性</p>
                           {actionPlanConvictionLevel && CONVICTION_BADGE[actionPlanConvictionLevel] && (
                             <span
                               className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[actionPlanConvictionLevel].cls}`}
@@ -750,9 +750,9 @@ export default function AnalyzePage() {
                       </div>
                       <div>
                         <div className="mb-1 flex items-baseline justify-between gap-3">
-                          <span className="text-xs text-text-muted">信心分數</span>
+                          <span className="text-xs text-text-muted">一致性分數</span>
                           <span className="text-xl font-semibold text-text-primary">
-                            {confidenceScore != null ? `${confidenceScore}%` : "—"}
+                            {confidenceScore != null ? `${confidenceScore} / 100` : "—"}
                           </span>
                         </div>
                         <div className="h-2 rounded-full bg-border">

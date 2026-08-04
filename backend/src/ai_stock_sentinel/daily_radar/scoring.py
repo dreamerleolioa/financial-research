@@ -18,6 +18,53 @@ SCORING_VERSION = "daily-radar-scoring-v2.3"
 RULE_VERSION = "daily-radar-rules-v2.2"
 SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v1"
 
+RULE_SCORE_ADJUSTMENTS: dict[str, int] = {
+    "institutional_consecutive_flow": 28,
+    "institutional_multi_day_flow": 22,
+    "institutional_early_flow": 14,
+    "institutional_aligned_participants": 18,
+    "institutional_net_positive": 8,
+    "institutional_constructive_state": 18,
+    "institutional_volume_confirmed_state": 12,
+    "institutional_early_stabilization": 6,
+    "institutional_flow_ratio_high": 14,
+    "institutional_flow_ratio_constructive": 8,
+    "institutional_flow_ratio_positive": 4,
+    "institutional_not_overextended": 12,
+    "institutional_margin_contained": 6,
+    "institutional_close_below_open": -8,
+    "price_volume_expanded_participation": 25,
+    "price_volume_constructive_participation": 10,
+    "price_volume_near_range_high": 18,
+    "price_volume_ma20_reclaim": 15,
+    "price_volume_obv_rising": 12,
+    "price_volume_obv_turning": 8,
+    "price_volume_mfi_confirmed": 10,
+    "price_volume_macd_positive": 10,
+    "price_volume_close_above_previous": 6,
+    "price_volume_volume_without_range_reclaim": -10,
+    "bottoming_low_holds_support_zone": 20,
+    "bottoming_close_recovers": 10,
+    "bottoming_macd_improving": 18,
+    "bottoming_macd_positive": 8,
+    "bottoming_kd_low_turn": 18,
+    "bottoming_bias_near_midline": 12,
+    "bottoming_participation_turning": 12,
+    "bottoming_rsi_mid_recovery": 10,
+    "bottoming_margin_easing": 8,
+    "bottoming_participation_insufficient": -12,
+    "support_retest_near_key_level": 22,
+    "support_retest_reclaimed_area": 18,
+    "support_retest_ma20_area": 16,
+    "support_retest_ma60_area": 10,
+    "support_retest_orderly_participation": 12,
+    "support_retest_atr_contained": 10,
+    "support_retest_participation_stable": 12,
+    "support_retest_margin_not_expanding": 8,
+    "support_retest_macd_stable": 7,
+    "support_retest_close_below_support": -20,
+}
+
 
 @dataclass(frozen=True)
 class ScoringConfig:
@@ -70,8 +117,10 @@ def score_daily_radar_record(
     market_context: Mapping[str, Any] | None = None,
     prefilter_result: Mapping[str, Any] | None = None,
     config: ScoringConfig | None = None,
+    excluded_rule_codes: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     active_config = config or ScoringConfig()
+    excluded = excluded_rule_codes or frozenset()
     normalized = _normalize_record(record)
     ohlcv = normalized["ohlcv"]
     indicators = normalized["indicators"]
@@ -85,6 +134,11 @@ def score_daily_radar_record(
         "bottoming_reversal": _score_bottoming_reversal(ohlcv, indicators, margin),
         "support_retest": _score_support_retest(ohlcv, indicators, margin),
     }
+    if excluded:
+        bucket_rule_sets = {
+            bucket: _without_rules(rule_set, excluded)
+            for bucket, rule_set in bucket_rule_sets.items()
+        }
     bucket_scores = {
         bucket: _clamp_score(score)
         for bucket, (score, _rules) in bucket_rule_sets.items()
@@ -105,15 +159,39 @@ def score_daily_radar_record(
         prefilter_result=prefilter_result,
         config=active_config,
     )
+    risk_penalties = [
+        penalty
+        for penalty in risk_penalties
+        if _risk_penalty_rule_code(penalty) not in excluded
+    ]
     risk_labels = _risk_labels(risk_penalties)
-    cross_confirmation = _cross_confirmation(ohlcv, indicators, flow)
-    market_component = _market_context_component(market_context, risk_labels, config=active_config)
-    freshness_component = _freshness_component(risk_labels, config=active_config)
+    cross_confirmation = _cross_confirmation(
+        ohlcv,
+        indicators,
+        flow,
+        excluded_rule_codes=excluded,
+    )
+    market_component = _market_context_component(
+        market_context,
+        risk_labels,
+        config=active_config,
+        excluded_rule_codes=excluded,
+    )
+    freshness_component = _freshness_component(
+        risk_labels,
+        config=active_config,
+        excluded_rule_codes=excluded,
+    )
     relative_strength_component = _relative_strength_component(
         normalized,
         market_context=market_context,
         lookback_days=active_config.relative_strength_lookback_days,
     )
+    if "relative_strength" in excluded:
+        relative_strength_component = dict(relative_strength_component) | {
+            "score": 0,
+            "excluded_from_score": True,
+        }
     risk_adjustment = sum(int(penalty["score_adjustment"]) for penalty in risk_penalties)
     primary_bucket_score = bucket_scores[primary_bucket]
     weighted_primary_bucket_score = primary_bucket_score * active_config.primary_bucket_weight
@@ -518,13 +596,24 @@ def _cross_confirmation(
     ohlcv: Mapping[str, Any],
     indicators: Mapping[str, Any],
     flow: Mapping[str, Any],
+    *,
+    excluded_rule_codes: set[str] | frozenset[str],
 ) -> dict[str, Any]:
     components: list[str] = []
     score = 0
-    if _float(flow.get("three_party_net_shares")) > 0 and _int(flow.get("consecutive_positive_days")) >= 2:
+    if (
+        "cross_confirmation_institutional_flow" not in excluded_rule_codes
+        and _float(flow.get("three_party_net_shares")) > 0
+        and _int(flow.get("consecutive_positive_days")) >= 2
+    ):
         score += 3
         components.append("institutional_flow")
-    if _float(indicators.get("volume_ratio")) >= 1.05 and str(indicators.get("obv_trend") or "") in {"rising", "rising_fast", "turning_up", "flat_to_up"}:
+    if (
+        "cross_confirmation_price_volume" not in excluded_rule_codes
+        and _float(indicators.get("volume_ratio")) >= 1.05
+        and str(indicators.get("obv_trend") or "")
+        in {"rising", "rising_fast", "turning_up", "flat_to_up"}
+    ):
         score += 3
         components.append("price_volume")
     technical_confirmed = (
@@ -536,7 +625,10 @@ def _cross_confirmation(
             and _float(ohlcv.get("close")) > _float(indicators.get("ma20"))
         )
     )
-    if technical_confirmed:
+    if (
+        "cross_confirmation_technical" not in excluded_rule_codes
+        and technical_confirmed
+    ):
         score += 2
         components.append("technical")
     return {"score": min(8, score), "components": components}
@@ -547,11 +639,16 @@ def _market_context_component(
     risk_labels: list[DailyRadarRiskLabel],
     *,
     config: ScoringConfig,
+    excluded_rule_codes: set[str] | frozenset[str],
 ) -> dict[str, Any]:
     market = _mapping(_mapping(market_context).get("market"))
     if "market_weakness" in risk_labels:
+        if "market_context_weakness_penalty" in excluded_rule_codes:
+            return {"score": 0, "label": "weak_excluded", "details": dict(market)}
         return {"score": config.weak_market_component, "label": "weak", "details": dict(market)}
     if market.get("above_ma20") is True and market.get("above_ma60") is True and str(market.get("volatility_state") or "") in {"normal", "stable"}:
+        if "market_context_supportive" in excluded_rule_codes:
+            return {"score": 0, "label": "supportive_excluded", "details": dict(market)}
         return {"score": config.supportive_market_component, "label": "supportive", "details": dict(market)}
     return {"score": 0, "label": "neutral", "details": dict(market)}
 
@@ -560,9 +657,14 @@ def _freshness_component(
     risk_labels: list[DailyRadarRiskLabel],
     *,
     config: ScoringConfig,
+    excluded_rule_codes: set[str] | frozenset[str],
 ) -> dict[str, Any]:
     if "data_gap" in risk_labels:
+        if "freshness_data_gap_penalty" in excluded_rule_codes:
+            return {"score": 0, "label": "data_gap_excluded"}
         return {"score": config.data_gap_freshness_component, "label": "data_gap"}
+    if "freshness_bonus" in excluded_rule_codes:
+        return {"score": 0, "label": "fresh_excluded"}
     return {"score": config.fresh_freshness_component, "label": "fresh"}
 
 
@@ -741,6 +843,29 @@ def _risk_labels(penalties: list[dict[str, Any]]) -> list[DailyRadarRiskLabel]:
 
 def _rule(rule_id: str, label: str, **details: Any) -> dict[str, Any]:
     return {"rule_id": rule_id, "label": label, "details": details}
+
+
+def _without_rules(
+    rule_set: tuple[int, list[dict[str, Any]]],
+    excluded_rule_codes: set[str] | frozenset[str],
+) -> tuple[int, list[dict[str, Any]]]:
+    _score, rules = rule_set
+    remaining = [
+        rule
+        for rule in rules
+        if str(rule.get("rule_id")) not in excluded_rule_codes
+    ]
+    return (
+        sum(
+            RULE_SCORE_ADJUSTMENTS[str(rule["rule_id"])]
+            for rule in remaining
+        ),
+        remaining,
+    )
+
+
+def _risk_penalty_rule_code(penalty: Mapping[str, Any]) -> str:
+    return f"risk_label_{penalty.get('label')}"
 
 
 def _penalty(label: DailyRadarRiskLabel, score_adjustment: int, reason: str, **details: Any) -> dict[str, Any]:

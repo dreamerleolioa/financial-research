@@ -23,6 +23,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 from ai_stock_sentinel.daily_radar.rule_governance import (
     DEFAULT_ABLATION_GROUPS,
+    _replay_daily_radar_rows,
     build_ablation_report,
     build_monthly_rule_review_report,
     validation_rows_from_results,
@@ -32,7 +33,12 @@ from ai_stock_sentinel.daily_radar.rule_registry import (
     assert_rule_can_affect_score,
     get_rule_registry,
 )
-from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION, SCORING_VERSION
+from ai_stock_sentinel.daily_radar.scoring import (
+    RULE_SCORE_ADJUSTMENTS,
+    RULE_VERSION,
+    SCORING_VERSION,
+    ScoringConfig,
+)
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarForwardValidationResult,
@@ -59,6 +65,7 @@ def test_rule_registry_covers_every_scoring_rule_and_active_score_driver() -> No
 
     assert scoring_rule_codes
     assert scoring_rule_codes <= set(registry)
+    assert scoring_rule_codes == set(RULE_SCORE_ADJUSTMENTS)
     for code in scoring_rule_codes:
         assert registry[code].tier in SCORING_ACTIVE_TIERS
         assert registry[code].owner_module == "daily_radar.scoring"
@@ -118,7 +125,8 @@ def test_ablation_report_fixture_is_deterministic_and_marks_low_samples() -> Non
 
     assert first == second
     assert {row["group"] for row in first["ablation_groups"]} == set(DEFAULT_ABLATION_GROUPS)
-    assert first["metadata"]["positioning"] == "rule_quality_governance_diagnostic_not_live_scoring_change"
+    assert first["metadata"]["method"] == "co_occurrence_not_counterfactual"
+    assert first["metadata"]["positioning"] == "rule_quality_co_occurrence_diagnostic_not_live_scoring_change"
     assert first["sample_summary"]["validated_by_window"] == {"5": 4, "10": 4, "20": 4}
     assert first["insufficient_sample_cases"]
     assert first["version_manifest"]["live_scoring_changed"] is False
@@ -196,6 +204,22 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     assert manifest["automated_recommendations_only"] is True
     assert report.json_report["baseline_config"]["primary_bucket_weight"] == 0.8
     assert report.json_report["auto_change_eligible"] is False
+    assert report.json_report["counterfactual_ablation_summary"] == report.json_report["ablation_summary"]
+    assert report.json_report["co_occurrence_summary"]
+    assert {
+        row["method"]
+        for row in report.json_report["counterfactual_ablation_summary"]
+    } == {"same_input_counterfactual_replay"}
+    assert all(
+        row["eligible_for_live_change"] is False
+        for row in report.json_report["counterfactual_ablation_summary"]
+    )
+    assert report.json_report["counterfactual_ablation_scope"] == {
+        "selected_months": [],
+        "ranking_pool": "all_evaluated_candidates_before_outcome_join",
+        "outcome_join": "validated_results_only_after_selection",
+        "live_change_eligible": False,
+    }
     candidate_parameters = {
         candidate["parameter"]
         for candidate in report.json_report["candidate_configs"]
@@ -236,6 +260,48 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
         candidate["holdout_primary_metric"]["metric"]
         for candidate in threshold_candidates
     } == {"secondary_bucket_average_excess_return_pct"}
+    assert all(
+        set(candidate["holdout_horizon_gates"]) == {"5", "10", "20"}
+        for candidate in report.json_report["candidate_configs"]
+    )
+
+
+def test_replay_ranks_full_candidate_pool_before_joining_validated_outcomes() -> None:
+    rows = []
+    for candidate_id in range(1, 22):
+        positive_days = 5 if candidate_id == 1 else max(0, 5 - candidate_id // 5)
+        rows.append({
+            "candidate_id": candidate_id,
+            "symbol": f"{candidate_id:04d}.TW",
+            "signal_date": "2026-06-01",
+            "window_days": 5,
+            "status": "skipped" if candidate_id == 1 else "validated",
+            "outcome": {} if candidate_id == 1 else {
+                "excess_return_vs_benchmark_pct": float(candidate_id),
+                "max_adverse_excursion_pct": -1.0,
+            },
+            "candidate_snapshot": {
+                "record_date": "2026-06-01",
+                "input_snapshot": {
+                    "replay_input": {
+                        "schema_version": "daily-radar-replay-input-v1",
+                        "record": _replay_record(
+                            f"{candidate_id:04d}.TW",
+                            positive_days=positive_days,
+                        ),
+                        "market_context": {},
+                        "prefilter_result": {},
+                    }
+                },
+            },
+        })
+
+    replayed = _replay_daily_radar_rows(rows, ScoringConfig())
+    by_id = {row["candidate_id"]: row for row in replayed}
+
+    assert by_id[1]["selected_for_rank"] is True
+    assert sum(row["selected_for_rank"] is True for row in replayed) == 20
+    assert by_id[21]["selected_for_rank"] is False
 
 
 def test_monthly_review_does_not_fall_back_to_validated_older_same_day_run() -> None:
@@ -530,3 +596,21 @@ def _add_validation_result(session: Session, candidate: DailyRadarCandidate) -> 
             skip_reason=None,
         )
     )
+
+
+def _replay_record(symbol: str, *, positive_days: int) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "name": symbol,
+        "record_date": "2026-06-01",
+        "ohlcv": {},
+        "indicators": {},
+        "technical_profile": {},
+        "price_history": [],
+        "institutional_flow": {
+            "consecutive_positive_days": positive_days,
+            "three_party_net_shares": 1,
+        },
+        "margin": {},
+        "data_dates": {},
+    }

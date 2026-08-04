@@ -48,7 +48,7 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v2"
+RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v3"
 DEFAULT_MIN_SAMPLE_COUNT = 20
 DEFAULT_RANK_CUTOFF = 20
 TUNABLE_SCORING_PARAMETERS = {
@@ -112,7 +112,8 @@ def build_ablation_report(
             "sample_source": sample_source,
             "validation_version": validation_version,
             "min_sample_count": min_sample_count,
-            "positioning": "rule_quality_governance_diagnostic_not_live_scoring_change",
+            "method": "co_occurrence_not_counterfactual",
+            "positioning": "rule_quality_co_occurrence_diagnostic_not_live_scoring_change",
         },
         "sample_summary": _sample_summary(rows, windows),
         "ablation_groups": group_rows,
@@ -175,9 +176,12 @@ def build_monthly_rule_review_report(
     optimizer_rows = [
         row
         for row in optimizer_detail_rows
-        if row.get("status") == "validated"
-        and str(row.get("signal_date") or "")[:7] in selected_month_set
+        if str(row.get("signal_date") or "")[:7] in selected_month_set
     ]
+    counterfactual_ablation = _counterfactual_ablation_report(
+        optimizer_rows,
+        min_sample_count=min_sample_count,
+    )
     candidate_configs, replay_coverage = _scoring_candidate_reports(
         optimizer_rows,
         baseline_config=ScoringConfig(),
@@ -204,7 +208,15 @@ def build_monthly_rule_review_report(
         },
         "sample_summary": ablation["sample_summary"],
         "registry_summary": _registry_summary(),
-        "ablation_summary": ablation["ablation_groups"],
+        "ablation_summary": counterfactual_ablation,
+        "counterfactual_ablation_summary": counterfactual_ablation,
+        "counterfactual_ablation_scope": {
+            "selected_months": selected_months,
+            "ranking_pool": "all_evaluated_candidates_before_outcome_join",
+            "outcome_join": "validated_results_only_after_selection",
+            "live_change_eligible": False,
+        },
+        "co_occurrence_summary": ablation["ablation_groups"],
         "rule_recommendations": rule_recommendations,
         "skip_reasons": _skip_reasons(rows),
         "cohort": cohort,
@@ -306,6 +318,9 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
     metadata = _mapping(report.get("metadata"))
     summary = _mapping(report.get("sample_summary"))
     replay_coverage = _mapping(report.get("replay_coverage"))
+    counterfactual_scope = _mapping(
+        report.get("counterfactual_ablation_scope")
+    )
     lines = [
         f"# Daily Radar Rule Review {metadata.get('month')}",
         "",
@@ -323,10 +338,13 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
         f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Validated samples: {summary.get('validated_sample_count', 0)}",
         f"- Skipped samples: {summary.get('skipped_sample_count', 0)}",
+        f"- Counterfactual cohort: {', '.join(str(value) for value in _as_list(counterfactual_scope.get('selected_months'))) or 'insufficient'}",
+        f"- Counterfactual ranking pool: {counterfactual_scope.get('ranking_pool')}",
+        f"- Counterfactual outcome join: {counterfactual_scope.get('outcome_join')}",
         "",
-        "## Automated Ablation Recommendations",
+        "## Counterfactual Ablation Recommendations",
         "",
-        "| Group | Window | With sample | Delta excess pct | Recommendation |",
+        "| Group | Window | Validated sample | Delta excess pct | Recommendation |",
         "| --- | ---: | ---: | ---: | --- |",
     ]
     for row in _as_list(report.get("ablation_summary")):
@@ -334,7 +352,7 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
             "| {group} | {window} | {sample} | {delta} | {recommendation} |".format(
                 group=row.get("group"),
                 window=row.get("window_days"),
-                sample=row.get("sample_count_with_group"),
+                sample=row.get("validated_selected_sample_count"),
                 delta=_markdown_value(row.get("delta_average_excess_return_vs_benchmark_pct")),
                 recommendation=row.get("recommendation"),
             )
@@ -428,6 +446,92 @@ def _ablation_group_row(
         "profit_factor_like_ratio_with_group": metrics_with["profit_factor_like_ratio"],
         "recommendation": recommendation,
     }
+
+
+def _counterfactual_ablation_report(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    min_sample_count: int,
+    ablation_groups: Sequence[str] = DEFAULT_ABLATION_GROUPS,
+) -> list[dict[str, Any]]:
+    replayable = [
+        dict(row)
+        for row in rows
+        if _mapping(
+            _mapping(
+                _mapping(row.get("candidate_snapshot")).get("input_snapshot")
+            ).get("replay_input")
+        ).get("schema_version")
+        == "daily-radar-replay-input-v1"
+    ]
+    baseline = _replay_daily_radar_rows(replayable, ScoringConfig())
+    registry = get_rule_registry()
+    results: list[dict[str, Any]] = []
+    for group in ablation_groups:
+        excluded_codes = {
+            code
+            for code, entry in registry.items()
+            if entry.ablation_group == group
+        }
+        ablated = _replay_daily_radar_rows(
+            replayable,
+            ScoringConfig(),
+            excluded_rule_codes=excluded_codes,
+        )
+        for window in DEFAULT_FORWARD_WINDOWS:
+            before = [row for row in baseline if int(row["window_days"]) == window]
+            after = [row for row in ablated if int(row["window_days"]) == window]
+            selection = lambda row: (
+                row.get("status") == "validated"
+                and row.get("selected_for_rank") is True
+            )
+            before_metrics = outcome_metrics(before, selection=selection)
+            after_metrics = outcome_metrics(after, selection=selection)
+            before_excess = _float_or_none(
+                before_metrics.get("average_excess_return_vs_benchmark_pct")
+            )
+            after_excess = _float_or_none(
+                after_metrics.get("average_excess_return_vs_benchmark_pct")
+            )
+            delta_excess = _delta(after_excess, before_excess)
+            validated_count = min(
+                int(before_metrics["selected_sample_count"]),
+                int(after_metrics["selected_sample_count"]),
+            )
+            if validated_count < min_sample_count or delta_excess is None:
+                recommendation = "insufficient_sample"
+            elif delta_excess > 0:
+                recommendation = "review_group_removal"
+            else:
+                recommendation = "keep_group"
+            before_selected = {
+                int(row["candidate_id"])
+                for row in before
+                if row.get("selected_for_rank") is True
+            }
+            after_selected = {
+                int(row["candidate_id"])
+                for row in after
+                if row.get("selected_for_rank") is True
+            }
+            results.append({
+                "group": group,
+                "window_days": window,
+                "method": "same_input_counterfactual_replay",
+                "excluded_rule_codes": sorted(excluded_codes),
+                "baseline_selected_count": len(before_selected),
+                "ablated_selected_count": len(after_selected),
+                "selection_membership_changed_count": len(
+                    before_selected.symmetric_difference(after_selected)
+                ),
+                "validated_selected_sample_count": validated_count,
+                "average_excess_return_vs_benchmark_pct_baseline": before_excess,
+                "average_excess_return_vs_benchmark_pct_ablated": after_excess,
+                "delta_average_excess_return_vs_benchmark_pct": delta_excess,
+                "recommendation": recommendation,
+                "eligible_for_live_change": False,
+            })
+    return results
 
 
 def _rule_recommendations(
@@ -754,7 +858,10 @@ def _scoring_candidate_report(
     after_holdout = [row for row in candidate_rows if str(row["record_date"])[:7] == holdout_month]
     is_secondary_threshold = parameter == "secondary_bucket_threshold"
     selection_key = "selected_for_secondary" if is_secondary_threshold else "selected_for_rank"
-    selection = lambda row: row.get(selection_key) is True
+    selection = lambda row: (
+        row.get("status") == "validated"
+        and row.get(selection_key) is True
+    )
     primary_metric = _secondary_average_excess if is_secondary_threshold else _selected_average_excess
     downside_metric = _secondary_average_downside if is_secondary_threshold else _selected_average_downside
     objective_name = (
@@ -865,6 +972,44 @@ def _scoring_candidate_report(
         and downside_after is not None
         and downside_after >= downside_before - 0.25
     )
+    holdout_horizon_gates: dict[str, dict[str, Any]] = {}
+    for window in ("5", "10", "20"):
+        before_window = _mapping(before_holdout_metrics.get(window))
+        after_window = _mapping(after_holdout_metrics.get(window))
+        before_excess = _float_or_none(
+            before_window.get("average_excess_return_vs_benchmark_pct")
+        )
+        after_excess = _float_or_none(
+            after_window.get("average_excess_return_vs_benchmark_pct")
+        )
+        before_downside = _float_or_none(
+            before_window.get("average_downside_pct")
+        )
+        after_downside = _float_or_none(
+            after_window.get("average_downside_pct")
+        )
+        excess_delta = _delta(after_excess, before_excess)
+        downside_delta = _delta(after_downside, before_downside)
+        holdout_horizon_gates[window] = {
+            "before_excess_return_pct": before_excess,
+            "after_excess_return_pct": after_excess,
+            "excess_return_delta_pct": excess_delta,
+            "minimum_excess_return_delta_pct": -0.05,
+            "before_downside_pct": before_downside,
+            "after_downside_pct": after_downside,
+            "downside_delta_pct": downside_delta,
+            "minimum_downside_delta_pct": -0.25,
+            "preserved": (
+                excess_delta is not None
+                and excess_delta >= -0.05
+                and downside_delta is not None
+                and downside_delta >= -0.25
+            ),
+        }
+    horizons_preserved = all(
+        bool(gate["preserved"])
+        for gate in holdout_horizon_gates.values()
+    )
     eligible = (
         cohort.get("cohort_complete") is True
         and coverage_ok
@@ -875,9 +1020,7 @@ def _scoring_candidate_report(
         and lower_ci >= 0
         and training_delta is not None
         and training_delta > 0
-        and holdout_delta is not None
-        and holdout_delta >= -0.05
-        and downside_preserved
+        and horizons_preserved
         and before_value != after_value
     )
     if cohort.get("cohort_complete") is not True:
@@ -892,10 +1035,8 @@ def _scoring_candidate_report(
         reason = "insufficient_date_blocks"
     elif lower_ci is None or lower_ci < 0 or training_delta is None or training_delta <= 0:
         reason = "training_bootstrap_not_positive"
-    elif holdout_delta is None or holdout_delta < -0.05:
-        reason = "holdout_not_preserved"
-    elif not downside_preserved:
-        reason = "holdout_downside_worsened"
+    elif not horizons_preserved:
+        reason = "holdout_horizon_degraded"
     else:
         reason = "eligible"
     return {
@@ -924,6 +1065,7 @@ def _scoring_candidate_report(
             "after": downside_after,
             "preserved": downside_preserved,
         },
+        "holdout_horizon_gates": holdout_horizon_gates,
         "coverage": {
             "training_selected_rows": sum(
                 1 for row in before_training if selection(row)
@@ -952,6 +1094,8 @@ def _scoring_candidate_report(
 def _replay_daily_radar_rows(
     rows: Sequence[Mapping[str, Any]],
     config: ScoringConfig,
+    *,
+    excluded_rule_codes: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     replayed: list[dict[str, Any]] = []
     for row in rows:
@@ -962,6 +1106,7 @@ def _replay_daily_radar_rows(
             market_context=_mapping(replay_input.get("market_context")),
             prefilter_result=_mapping(replay_input.get("prefilter_result")),
             config=config,
+            excluded_rule_codes=excluded_rule_codes,
         )
         replayed.append(
             dict(row)
@@ -991,7 +1136,10 @@ def _replay_daily_radar_rows(
 def _selected_average_excess(rows: Sequence[Mapping[str, Any]]) -> float | None:
     metrics = outcome_metrics(
         rows,
-        selection=lambda row: row.get("selected_for_rank") is True,
+        selection=lambda row: (
+            row.get("status") == "validated"
+            and row.get("selected_for_rank") is True
+        ),
     )
     return _float_or_none(metrics.get("average_excess_return_vs_benchmark_pct"))
 
@@ -999,19 +1147,30 @@ def _selected_average_excess(rows: Sequence[Mapping[str, Any]]) -> float | None:
 def _selected_average_downside(rows: Sequence[Mapping[str, Any]]) -> float | None:
     metrics = outcome_metrics(
         rows,
-        selection=lambda row: row.get("selected_for_rank") is True,
+        selection=lambda row: (
+            row.get("status") == "validated"
+            and row.get("selected_for_rank") is True
+        ),
     )
     return _float_or_none(metrics.get("average_downside_pct"))
 
 
 def _selected_count(rows: Sequence[Mapping[str, Any]]) -> int:
-    return sum(1 for row in rows if row.get("selected_for_rank") is True)
+    return sum(
+        1
+        for row in rows
+        if row.get("status") == "validated"
+        and row.get("selected_for_rank") is True
+    )
 
 
 def _secondary_average_excess(rows: Sequence[Mapping[str, Any]]) -> float | None:
     metrics = outcome_metrics(
         rows,
-        selection=lambda row: row.get("selected_for_secondary") is True,
+        selection=lambda row: (
+            row.get("status") == "validated"
+            and row.get("selected_for_secondary") is True
+        ),
     )
     return _float_or_none(metrics.get("average_excess_return_vs_benchmark_pct"))
 
@@ -1019,13 +1178,21 @@ def _secondary_average_excess(rows: Sequence[Mapping[str, Any]]) -> float | None
 def _secondary_average_downside(rows: Sequence[Mapping[str, Any]]) -> float | None:
     metrics = outcome_metrics(
         rows,
-        selection=lambda row: row.get("selected_for_secondary") is True,
+        selection=lambda row: (
+            row.get("status") == "validated"
+            and row.get("selected_for_secondary") is True
+        ),
     )
     return _float_or_none(metrics.get("average_downside_pct"))
 
 
 def _secondary_count(rows: Sequence[Mapping[str, Any]]) -> int:
-    return sum(1 for row in rows if row.get("selected_for_secondary") is True)
+    return sum(
+        1
+        for row in rows
+        if row.get("status") == "validated"
+        and row.get("selected_for_secondary") is True
+    )
 
 
 def _rule_groups(row: Mapping[str, Any]) -> list[str]:

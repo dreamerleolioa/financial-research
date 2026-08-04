@@ -90,9 +90,9 @@
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
 
-Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母；final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
+Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母，active cohort 同時鎖定目前 strategy/config version，且同一 market / symbol / record date 只採最早的 point-in-time sample；final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
 
-Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sample_count`，不以 5 / 10 / 20 日 validation rows 加總；training 與 holdout 另要求最低 distinct date blocks。Validated coverage 與 replay coverage 是兩道獨立 gate，後者必須在整體及每個入選月份都達標，否則只輸出診斷，不得標記為可自動修改。
+Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sample_count`，不以 5 / 10 / 20 日 validation rows 加總；training 與 holdout 另要求最低 distinct date blocks。Validated coverage 與 replay coverage 是兩道獨立 gate，後者必須在整體及每個入選月份都達標，否則只輸出診斷，不得標記為可自動修改。Holdout 非劣性也按 5 / 10 / 20 日分開判斷，任一窗口退化或無法計算即 fail closed。Daily Radar 的 Top 20 replay 先對完整日候選池排名再接 outcome，rule-group diagnostics 使用相同輸入的 counterfactual scoring；co-occurrence 僅保留為非因果參考。
 
 ### 0.5 Shared Context 使用邊界
 
@@ -916,7 +916,7 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
    - MVP 入口（例如輸入 2330.TW）
 
 2. **訊號強度 / 資料品質 + 快照資訊卡片**（合併為單一卡片）
-   - 左側：以等級、狀態或 label 呈現 rule-based 訊號強度與資料品質；`confidence_score` / `signal_confidence` 的 raw 0~100 值保留作為 API 相容、內部 guardrail、校準與 advanced trace，不作為預設主視覺
+   - 左側：以「訊號一致性」與高／中／低一致性 label 呈現 rule-based 三維訊號關係；若顯示 raw 0~100 值，格式為 `x / 100`，不得使用 `%` 暗示勝率或機率。`confidence_score` / `signal_confidence` 仍保留作為 API 相容、內部 guardrail、校準與 advanced trace
    - `cross_validation_note` 顯示於狀態下方（灰色小字）
    - 右側：快照資訊（代碼 / 現價 / 成交量 / 成交量來源），以 `<dl>` 列表呈現
    - `data_confidence < 60` 時顯示「資料不足」提示；可在 advanced trace 顯示 raw percentage，但預設文案應強調資料限制而非精確分數

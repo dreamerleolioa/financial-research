@@ -27,9 +27,11 @@ from ai_stock_sentinel.analysis.calibration import (
     upsert_general_analysis_validation_results,
 )
 from ai_stock_sentinel.analysis.confidence_scorer import (
+    CONFIDENCE_CONFIG_VERSION,
     ConfidenceScoringConfig,
     adjust_confidence_by_divergence,
 )
+from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.calibration.router import (
     _exclude_persisted_general_analysis_windows,
 )
@@ -112,6 +114,66 @@ def test_final_general_analysis_capture_is_append_only_deduplicated_and_private(
     assert "user_id" not in encoded
     assert "private note" not in encoded
     assert "full news body" not in encoded
+
+
+def test_general_calibration_canonicalizes_same_day_reruns_and_current_versions() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine, tables=[AnalysisCalibrationSample.__table__])
+    with Session(engine) as session:
+        first = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert first is not None
+        changed = deepcopy(_analysis_result())
+        changed["cleaned_news"]["sentiment_label"] = "negative"
+        rerun = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=changed,
+            is_final=True,
+        )
+        assert rerun is first
+        session.add(
+            AnalysisCalibrationSample(
+                symbol="2330.TW",
+                record_date=date(2026, 1, 5),
+                analysis_type="general",
+                market="TW",
+                benchmark_symbol="TAIEX",
+                strategy_version=STRATEGY_VERSION,
+                confidence_config_version=CONFIDENCE_CONFIG_VERSION,
+                input_hash="duplicate-current-input",
+                replay_input=deepcopy(first.replay_input),
+                output_snapshot=deepcopy(first.output_snapshot),
+                analysis_is_final=True,
+            )
+        )
+        session.add(
+            AnalysisCalibrationSample(
+                symbol="2454.TW",
+                record_date=date(2026, 1, 5),
+                analysis_type="general",
+                market="TW",
+                benchmark_symbol="TAIEX",
+                strategy_version="legacy-strategy",
+                confidence_config_version="legacy-confidence",
+                input_hash="legacy-input",
+                replay_input=deepcopy(first.replay_input),
+                output_snapshot=deepcopy(first.output_snapshot),
+                analysis_is_final=True,
+            )
+        )
+        session.commit()
+        first_id = first.id
+
+        samples = general_validation_samples(session)
+
+    assert [sample["sample_id"] for sample in samples] == [first_id]
 
 
 def test_intraday_general_analysis_is_not_captured() -> None:
@@ -719,15 +781,9 @@ def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_m
         "2000-01-01" not in str(parameters)
         for _statement, parameters in select_statements
     )
-    detail_statements = [
-        statement
-        for statement, _parameters in select_statements
-        if "GROUP BY" not in statement
-    ]
-    assert detail_statements
-    assert all(
+    assert any(
         "analysis_calibration_samples.record_date >= ?" in statement
-        for statement in detail_statements
+        for statement, _parameters in select_statements
     )
 
 

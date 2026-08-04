@@ -61,6 +61,28 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await expect(openDialogButton).toBeFocused();
 });
 
+test("Analyze presents signal consistency as a score instead of a probability", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    analyzeResult: {
+      ...quickAnalyzeResult,
+      analysis: "多維訊號一致性測試。",
+      confidence_score: 72,
+      cross_validation_note: "技術與籌碼方向一致。",
+    },
+  });
+
+  await page.goto("/analyze");
+  await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
+  await page.getByRole("button", { name: "完整 AI 分析" }).click();
+
+  await expect(page.getByText("訊號一致性", { exact: true })).toBeVisible();
+  await expect(page.getByText("中一致性", { exact: true })).toBeVisible();
+  await expect(page.getByText("一致性分數", { exact: true })).toBeVisible();
+  await expect(page.getByText("72 / 100", { exact: true })).toBeVisible();
+  await expect(page.getByText("72%", { exact: true })).toHaveCount(0);
+});
+
 test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await authenticate(page);

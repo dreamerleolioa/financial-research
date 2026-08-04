@@ -294,7 +294,7 @@ pnpm dev
 **新倉分析頁（`/analyze`）**
 
 - 股票代碼輸入框 + 一鍵分析
-- 訊號強度與資料品質提示（含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示；raw score 保留為內部排序、校準與 advanced trace）
+- 訊號一致性與資料品質提示（含 `cross_validation_note`；一致性以高／中／低與 `x / 100` 呈現，不使用百分比暗示勝率；`data_confidence < 60` 時仍顯示資料不足百分比）
 - 快照資訊（symbol / current_price / volume）
 - 分析報告四維小卡（技術面 / 籌碼面 / 基本面 / 消息面）+ 綜合仲裁全寬卡
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
@@ -365,7 +365,7 @@ make run-api
 
 Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
 
-兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；validation rows 不會被當成獨立樣本重複計數。一般分析 replay coverage 的分母只包含 optimizer scope 內的 `short_term`／`mid_term`，`defensive_wait` 等刻意排除策略仍列入 exclusion diagnostics，但不會被誤算成 replay 缺漏。
+兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；每個 horizon 另有獨立 holdout 非劣性 gate。一般分析只採目前 strategy/config version，且同一 market／symbol／日期只保留最早 point-in-time sample；Daily Radar 先對完整候選池決定 Top 20 再接 outcome，並以同輸入 counterfactual replay 產生 rule-group ablation。兩軌報告都只提出建議，不直接變更 live scoring。
 
 Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次 calibration capture 暫時失敗，後續 final cache hit 會以同一 payload 冪等補寫。舊 cache 沒有正式 replay payload 時維持跳過，不會從輸出猜測輸入。
 
