@@ -257,6 +257,7 @@ def test_fetch_basic_snapshot_includes_recent_high_low_volume_series() -> None:
     assert snapshot.recent_lows == [94.0, 97.0, 99.0]
     assert snapshot.recent_volumes == [111.0, 222.0, 333.0]
     assert snapshot.recent_volume_dates == ["2026-07-27", "2026-07-28", "2026-07-29"]
+    assert snapshot.data_dates == {"ohlcv": "2026-07-29"}
 
 
 # ─── StockSnapshot 位階欄位測試 ───────────────────────────────────────────────

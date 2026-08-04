@@ -28,7 +28,12 @@ def completed_trailing_series(
         return None
     data_dates = technical.get("data_dates")
     data_date = _parse_date(data_dates.get("ohlcv")) if isinstance(data_dates, dict) else None
-    if data_date is None or data_date > as_of:
+    if data_date is None:
+        # Legacy StockRawData rows did not persist the provider's final OHLCV
+        # date. Conservatively treat their final price bar as unproven rather
+        # than discarding the entire trailing history.
+        data_date = as_of
+    if data_date > as_of:
         return None
     if data_date < as_of:
         return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}

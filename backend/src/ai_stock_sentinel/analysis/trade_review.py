@@ -32,29 +32,36 @@ class ReviewMarketSnapshot:
     evidence: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class TradeReviewMarketTarget:
+    symbol: str
+    entry_date: date
+    exit_date: date | None
+
+
 def ensure_trade_review_market_data(
     db: Session,
-    portfolio: UserPortfolio,
+    target: UserPortfolio | TradeReviewMarketTarget,
     fetcher=None,
 ) -> ReviewMarketSnapshot:
-    if portfolio.exit_date is None:
+    if target.exit_date is None:
         return ReviewMarketSnapshot(
             rows=[],
             evidence=market_snapshot_payload([], provider="none", missing_reason="exit_date_missing"),
         )
 
-    start_date = portfolio.entry_date - timedelta(days=TRADE_REVIEW_LOOKBACK_DAYS)
-    end_date = portfolio.exit_date
+    start_date = target.entry_date - timedelta(days=TRADE_REVIEW_LOOKBACK_DAYS)
+    end_date = target.exit_date
     fetched_at = datetime.now(timezone.utc)
     missing_reason = "provider_fetch_failed_or_empty"
     if _TRADE_REVIEW_PROVIDER_SEMAPHORE.acquire(blocking=False):
         try:
-            history = fetcher(portfolio.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
-                portfolio.symbol,
+            history = fetcher(target.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
+                target.symbol,
                 start_date,
                 end_date,
             )
-            rows = _review_rows_from_history(portfolio, start_date, history)
+            rows = _review_rows_from_history(target, start_date, history)
             if rows:
                 return ReviewMarketSnapshot(
                     rows=rows,
@@ -63,19 +70,19 @@ def ensure_trade_review_market_data(
         except Exception as exc:
             # A review may still be built from already persisted canonical rows,
             # but the request must never mutate that canonical dataset.
-            logger.warning("Trade review market fetch failed for %s: %s", portfolio.symbol, exc)
+            logger.warning("Trade review market fetch failed for %s: %s", target.symbol, exc)
         finally:
             _TRADE_REVIEW_PROVIDER_SEMAPHORE.release()
     else:
         missing_reason = "provider_capacity_exhausted"
-        logger.warning("Trade review provider capacity exhausted for %s", portfolio.symbol)
+        logger.warning("Trade review provider capacity exhausted for %s", target.symbol)
 
     rows = db.execute(
         select(StockRawData)
         .where(
-            StockRawData.symbol == portfolio.symbol,
+            StockRawData.symbol == target.symbol,
             StockRawData.record_date >= start_date,
-            StockRawData.record_date < portfolio.exit_date,
+            StockRawData.record_date < target.exit_date,
         )
         .order_by(StockRawData.record_date.asc())
     ).scalars().all()
@@ -834,10 +841,14 @@ def _download_trade_review_history(symbol: str, start_date: date, end_date: date
     )
 
 
-def _review_rows_from_history(portfolio: UserPortfolio, start_date: date, history: Any) -> list[Any]:
-    if portfolio.exit_date is None:
+def _review_rows_from_history(
+    target: UserPortfolio | TradeReviewMarketTarget,
+    start_date: date,
+    history: Any,
+) -> list[Any]:
+    if target.exit_date is None:
         return []
-    bars = [bar for bar in _iter_history_bars(history) if start_date <= bar["date"] < portfolio.exit_date]
+    bars = [bar for bar in _iter_history_bars(history) if start_date <= bar["date"] < target.exit_date]
     if not bars:
         return []
 
@@ -848,7 +859,7 @@ def _review_rows_from_history(portfolio: UserPortfolio, start_date: date, histor
         volumes = [recent_bar["volume"] for recent_bar in recent_bars if recent_bar["volume"] is not None]
         avg_volume_20 = sum(volumes[-20:]) / len(volumes[-20:]) if volumes else None
         technical = {
-            "name": portfolio.symbol,
+            "name": target.symbol,
             "ohlcv": {
                 "open": bar["open"],
                 "high": bar["high"],
@@ -865,7 +876,7 @@ def _review_rows_from_history(portfolio: UserPortfolio, start_date: date, histor
             },
         }
         rows.append(SimpleNamespace(
-            symbol=portfolio.symbol,
+            symbol=target.symbol,
             record_date=bar["date"],
             technical=technical,
         ))

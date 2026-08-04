@@ -187,6 +187,7 @@ def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None
     snapshot = _make_snapshot(
         recent_volumes=[1_000.0, 1_100.0],
         recent_volume_dates=["2026-03-03", "2026-03-04"],
+        data_dates={"ohlcv": "2026-03-04"},
         exchange="TAI",
         exchange_timezone="Asia/Taipei",
         regular_market_open="2026-07-31T01:00:00+00:00",
@@ -210,6 +211,7 @@ def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None
     invoke_kwargs = mock_chain.invoke.call_args.args[0]
     raw_data_snapshot = json.loads(invoke_kwargs["raw_data_snapshot"])
     prompt_snapshot = raw_data_snapshot["snapshot"]
+    assert "data_dates" not in prompt_snapshot
     assert "recent_volume_dates" not in prompt_snapshot
     assert "exchange" not in prompt_snapshot
     assert "exchange_timezone" not in prompt_snapshot

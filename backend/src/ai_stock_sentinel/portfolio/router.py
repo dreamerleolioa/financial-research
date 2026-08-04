@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecycle_analysis
 from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint
 from ai_stock_sentinel.analysis.trade_review import (
+    TradeReviewMarketTarget,
     build_trade_review_payload,
     ensure_trade_review_market_data,
     trade_review_source_payload,
@@ -62,6 +63,7 @@ KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
 }
 TRADE_REVIEW_SUCCESS_REFRESH_TTL = timedelta(hours=6)
 TRADE_REVIEW_FAILURE_RETRY_TTL = timedelta(minutes=5)
+PROVIDER_UPGRADE_MIN_COVERAGE_RATIO = 0.9
 
 
 def get_portfolio_quote_fetcher():
@@ -356,13 +358,18 @@ def _market_snapshot_regressed(existing_market: object, new_market: object) -> b
     new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
     existing_missing = bool(existing_quality.get("missing_reason"))
     new_missing = bool(new_quality.get("missing_reason"))
+    existing_count = existing_quality.get("row_count")
+    new_count = new_quality.get("row_count")
+    if isinstance(existing_count, int) and isinstance(new_count, int) and existing_count > new_count:
+        upgrading_provider = existing_missing and not new_missing
+        retained_coverage = new_count / existing_count if existing_count > 0 else 1.0
+        if not upgrading_provider or retained_coverage < PROVIDER_UPGRADE_MIN_COVERAGE_RATIO:
+            return True
     if not existing_missing and new_missing:
         return True
     if existing_missing and not new_missing:
         return False
-    existing_count = existing_quality.get("row_count")
-    new_count = new_quality.get("row_count")
-    return isinstance(existing_count, int) and isinstance(new_count, int) and existing_count > new_count
+    return False
 
 
 def _trade_review_snapshot_regressed(existing_review: TradeReview, evidence_payload: dict) -> bool:
@@ -763,7 +770,7 @@ def create_trade_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id, lock=True)
+    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id)
     existing_review = db.execute(
         select(TradeReview).where(
             TradeReview.portfolio_id == portfolio_id,
@@ -775,7 +782,23 @@ def create_trade_review(
     if existing_review and _trade_review_cache_reusable(existing_review, item):
         return _serialize_trade_review(existing_review)
 
-    market_snapshot = ensure_trade_review_market_data(db, item)
+    market_target = TradeReviewMarketTarget(
+        symbol=item.symbol,
+        entry_date=item.entry_date,
+        exit_date=item.exit_date,
+    )
+    db.rollback()
+    market_snapshot = ensure_trade_review_market_data(db, market_target)
+
+    item = _get_reviewable_portfolio(db, portfolio_id, current_user.id, lock=True)
+    existing_review = db.execute(
+        select(TradeReview).where(
+            TradeReview.portfolio_id == portfolio_id,
+            TradeReview.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
+        return _serialize_trade_review(existing_review)
     review_result, evidence_payload = build_trade_review_payload(db, item, market_snapshot=market_snapshot)
     if (
         existing_review

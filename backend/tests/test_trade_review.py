@@ -186,6 +186,18 @@ def test_same_day_stale_snapshot_keeps_last_completed_bar():
     assert values["closes"] == [10, 11, 12]
 
 
+def test_same_day_legacy_snapshot_without_data_date_drops_only_unproven_final_bar():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200, 300])
+    row.technical.pop("data_dates")
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [11, 12]
+    assert values["lows"] == [9, 10]
+    assert values["volumes"] == [100, 200]
+
+
 def test_same_day_snapshot_does_not_drop_prior_volume_when_current_volume_is_missing():
     row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200])
     row.technical["data_dates"] = {"ohlcv": "2026-03-02"}

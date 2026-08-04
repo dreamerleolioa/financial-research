@@ -3466,6 +3466,46 @@ def test_trade_review_regression_guard_prefers_normal_provider_over_larger_fallb
     assert portfolio_router_module._trade_review_snapshot_regressed(existing, fallback) is True
 
 
+def test_trade_review_regression_guard_rejects_severe_row_loss_when_provider_recovers():
+    existing = SimpleNamespace(evidence_payload={
+        "trade": {"id": 42},
+        "market_snapshot": {
+            "provider": "stock_raw_data_read_only_fallback",
+            "quality": {"row_count": 80, "missing_reason": "provider_fetch_failed_or_empty"},
+        },
+    })
+    tiny_provider_snapshot = {
+        "trade": {"id": 42},
+        "market_snapshot": {
+            "provider": "yfinance",
+            "quality": {"row_count": 1, "missing_reason": None},
+        },
+    }
+
+    assert portfolio_router_module._trade_review_snapshot_regressed(existing, tiny_provider_snapshot) is True
+
+
+@pytest.mark.parametrize(("provider_rows", "expected"), [(72, False), (71, True)])
+def test_trade_review_provider_upgrade_requires_ninety_percent_coverage(
+    provider_rows: int,
+    expected: bool,
+):
+    existing = SimpleNamespace(evidence_payload={
+        "trade": {"id": 42},
+        "market_snapshot": {
+            "quality": {"row_count": 80, "missing_reason": "provider_fetch_failed_or_empty"},
+        },
+    })
+    provider_snapshot = {
+        "trade": {"id": 42},
+        "market_snapshot": {
+            "quality": {"row_count": provider_rows, "missing_reason": None},
+        },
+    }
+
+    assert portfolio_router_module._trade_review_snapshot_regressed(existing, provider_snapshot) is expected
+
+
 @pytest.mark.parametrize(
     ("missing_reason", "age", "expected"),
     [
@@ -4070,8 +4110,8 @@ def test_create_trade_review_calls_market_data_ensure_before_first_save(
 ):
     calls = []
 
-    def spy_ensure(_db: Session, item: UserPortfolio) -> None:
-        calls.append(item.id)
+    def spy_ensure(_db: Session, item: portfolio_router_module.TradeReviewMarketTarget) -> None:
+        calls.append((item.symbol, item.entry_date, item.exit_date))
 
     monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", spy_ensure)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
@@ -4081,7 +4121,29 @@ def test_create_trade_review_calls_market_data_ensure_before_first_save(
     resp = portfolio_db_client.post("/portfolio/42/review")
 
     assert resp.status_code == 200
-    assert calls == [42]
+    assert calls == [("2330.TW", date(2026, 1, 1), date(2026, 1, 11))]
+
+
+def test_create_trade_review_releases_db_transaction_before_provider_fetch(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    transaction_states = []
+
+    def spy_ensure(db: Session, _item: UserPortfolio):
+        transaction_states.append(db.in_transaction())
+        return None
+
+    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", spy_ensure)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
+
+    resp = portfolio_db_client.post("/portfolio/42/review")
+
+    assert resp.status_code == 200
+    assert transaction_states == [False]
 
 
 def test_create_trade_review_upgrades_v2_review_using_current_sources(

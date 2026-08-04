@@ -346,6 +346,16 @@ def test_lifecycle_same_day_stale_snapshot_keeps_last_completed_bar():
     assert values["closes"] == [10, 11, 12]
 
 
+def test_lifecycle_same_day_legacy_snapshot_without_data_date_keeps_completed_history():
+    row = _snapshot_row(date(2026, 3, 2), [10, 11, 12])
+    row.technical.pop("data_dates")
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["volumes"] == [1000, 1001]
+
+
 def test_lifecycle_same_day_snapshot_keeps_prior_volume_when_current_volume_is_missing():
     row = _snapshot_row(date(2026, 3, 2), [10, 11, 12])
     row.technical["recent_volumes"] = [100, 200]
