@@ -210,7 +210,7 @@ def test_entry_and_exit_sequence_metrics():
     assert entry["entry_count"] == 2
     assert entry["add_entry_count"] == 1
     assert entry["initial_entry_vs_ma20_pct"] == pytest.approx(0)
-    assert entry["each_add_entry_vs_ma20_pct"] == [pytest.approx(-9.7744)]
+    assert entry["each_add_entry_vs_ma20_pct"] == [pytest.approx(-10.2244)]
     assert entry["average_up_count"] == 0
     assert entry["average_down_count"] == 1
     assert entry["add_after_breakdown_count"] == 1
@@ -292,8 +292,10 @@ def test_advanced_internal_risk_path_and_scores():
     assert advanced["mfe_pct"] == pytest.approx(36.6264)
     assert advanced["mfe_r_multiple"] == pytest.approx(3.485)
     assert advanced["mfe_capture_rate"] == pytest.approx(-15.6384)
-    assert advanced["plan_adherence_score"] == pytest.approx(62.5)
-    assert advanced["decision_quality_score"] == pytest.approx(28.47)
+    assert advanced["declared_plan_adherence_score"] == pytest.approx(62.5)
+    assert advanced["observed_plan_adherence_score"] is None
+    assert advanced["plan_adherence_score"] is None
+    assert advanced["decision_quality_score"] is None
     assert advanced["capital_at_risk_by_event"][-1]["capital_at_risk"] == pytest.approx(0)
     assert advanced["exposure_curve"][1]["position_size"] == 20
     assert advanced["benchmark_relative_return_pct"] is None
@@ -327,10 +329,10 @@ def test_point_in_time_indicators_do_not_use_future_market_data():
     )
 
     snapshot = result["event_indicator_snapshots"][0]
-    assert snapshot["ma20"] == pytest.approx(54.5)
-    assert snapshot["ma60"] == pytest.approx(34.5)
+    assert snapshot["ma20"] == pytest.approx(53.5)
+    assert snapshot["ma60"] == pytest.approx(33.5)
     assert snapshot["rsi14"] == pytest.approx(100)
-    assert snapshot["event_price_vs_ma20_pct"] == pytest.approx(17.4312)
+    assert snapshot["event_price_vs_ma20_pct"] == pytest.approx(19.6262)
 
 
 def test_evidence_payload_is_compact_and_excludes_forbidden_raw_context():
@@ -367,6 +369,9 @@ def test_lifecycle_evidence_payload_contains_copyable_ai_context_fields():
         "detected_events",
         "market_regime_snapshots",
         "shared_context",
+        "decision_context",
+        "plan_snapshot",
+        "market_snapshot",
         "source_data",
         "data_quality",
     }
@@ -430,6 +435,7 @@ def test_insufficient_market_data_preserves_ledger_metrics_and_marks_context_ins
     assert result["decision_context"] == {
         "status": "insufficient",
         "has_plan": False,
+        "historical_judgment_eligible": False,
         "source": None,
         "created_after_entry": None,
         "planned_holding_period": None,
@@ -491,8 +497,9 @@ def test_lifecycle_review_includes_backfilled_plan_provenance_caveat():
 
     review = result["lifecycle_review"]
     assert result["decision_context"] == {
-        "status": "present",
+        "status": "retrospective_only",
         "has_plan": True,
+        "historical_judgment_eligible": False,
         "source": "user_backfilled",
         "created_after_entry": True,
         "planned_holding_period": None,
@@ -501,6 +508,9 @@ def test_lifecycle_review_includes_backfilled_plan_provenance_caveat():
     }
     assert any("事後補填" in caveat["text"] for caveat in review["classification"]["caveats"])
     assert any("不視為原始進場" in item["text"] for item in review["data_quality_notes"])
+    assert result["advanced_internal"]["plan_adherence_score"] is None
+    assert result["advanced_internal"]["decision_quality_score"] is None
+    assert review["classification"]["tier"] != "constructive"
 
 
 def test_lifecycle_review_phase_e_no_averaging_down_plan_flags_lower_add_below_ma20():
@@ -515,7 +525,7 @@ def test_lifecycle_review_phase_e_no_averaging_down_plan_flags_lower_add_below_m
         events=events,
         market_rows=[
             _snapshot_row(date(2026, 1, 10), [100] * 20),
-            _snapshot_row(date(2026, 1, 11), [100] * 19 + [95]),
+            _snapshot_row(date(2026, 1, 11), [100] * 20 + [95]),
         ],
         plan=_plan(add_entry_condition="no_averaging_down"),
     )
@@ -547,7 +557,7 @@ def test_lifecycle_review_phase_e_pullback_held_ma20_reason_adds_traceable_posit
         position_group_id="group-life",
         symbol="2330.TW",
         events=events,
-        market_rows=[_snapshot_row(date(2026, 1, 10), [100] * 19 + [101])],
+        market_rows=[_snapshot_row(date(2026, 1, 10), [100] * 20 + [101])],
         plan=_plan(),
     )
 
@@ -571,8 +581,8 @@ def test_lifecycle_review_phase_e_break_ma20_stop_rule_without_acted_context_nee
         symbol="2330.TW",
         events=events,
         market_rows=[
-            _snapshot_row(date(2026, 1, 10), [100] * 20),
-            _snapshot_row(date(2026, 1, 11), [105] * 19 + [101]),
+            _snapshot_row(date(2026, 1, 10), [105] * 19 + [100]),
+            _snapshot_row(date(2026, 1, 11), [105] * 20 + [101]),
         ],
         plan=_plan(default_stop_rule="break_ma20"),
     )
@@ -633,6 +643,7 @@ def test_lifecycle_review_phase_e_missing_decision_context_does_not_hard_judge_f
     assert result["decision_context"] == {
         "status": "insufficient",
         "has_plan": False,
+        "historical_judgment_eligible": False,
         "source": None,
         "created_after_entry": None,
         "planned_holding_period": None,
@@ -661,8 +672,9 @@ def test_lifecycle_review_phase_e_backfilled_plan_keeps_provenance_caveat_with_f
     )
 
     assert result["decision_context"] == {
-        "status": "present",
+        "status": "retrospective_only",
         "has_plan": True,
+        "historical_judgment_eligible": False,
         "source": "user_backfilled",
         "created_after_entry": True,
         "planned_holding_period": "swing",
@@ -670,6 +682,9 @@ def test_lifecycle_review_phase_e_backfilled_plan_keeps_provenance_caveat_with_f
         "add_entry_condition": "no_averaging_down",
     }
     assert any("事後補填" in caveat["text"] for caveat in result["lifecycle_review"]["classification"]["caveats"])
+    assert "add_entry_plan_violation" not in result["lifecycle_review"]["classification"]["labels"]
+    assert "unacted_stop_rule_break" not in result["lifecycle_review"]["classification"]["labels"]
+    assert "holding_period_needs_review" not in result["lifecycle_review"]["classification"]["labels"]
     assert not _contains_forbidden_key(result)
 
 
@@ -696,8 +711,8 @@ def test_lifecycle_review_premature_scale_out_requires_recorded_context():
         events=events,
         market_rows=[
             _snapshot_row(date(2026, 1, 10), list(range(81, 101))),
-            _snapshot_row(date(2026, 1, 11), list(range(101, 121))),
-            _snapshot_row(date(2026, 1, 12), list(range(121, 141))),
+            _snapshot_row(date(2026, 1, 11), list(range(101, 122))),
+            _snapshot_row(date(2026, 1, 12), list(range(121, 142))),
         ],
         plan=_plan(),
     )
@@ -726,7 +741,7 @@ def test_lifecycle_review_missing_context_does_not_infer_premature_scale_out():
     assert any("不會被直接判定為過早" in caveat["text"] for caveat in result["lifecycle_review"]["classification"]["caveats"])
 
 
-def test_lifecycle_review_classifies_coherent_position_management():
+def test_declared_plan_adherence_does_not_create_coherent_classification():
     events = [
         _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
         _event(2, "full_exit", date(2026, 1, 11), 110, 10, fees=0, taxes=0, plan_adherence="yes"),
@@ -740,8 +755,10 @@ def test_lifecycle_review_classifies_coherent_position_management():
         plan=_plan(),
     )
 
-    assert result["lifecycle_review"]["classification"]["primary_label"] == "coherent_position_management"
-    assert result["lifecycle_review"]["classification"]["tier"] == "constructive"
+    assert result["advanced_internal"]["declared_plan_adherence_score"] == pytest.approx(100)
+    assert result["advanced_internal"]["observed_plan_adherence_score"] is None
+    assert "coherent_position_management" not in result["lifecycle_review"]["classification"]["labels"]
+    assert result["lifecycle_review"]["classification"]["tier"] != "constructive"
 
 
 def test_lifecycle_shared_context_caveat_does_not_override_classification():

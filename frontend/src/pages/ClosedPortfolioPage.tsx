@@ -1734,14 +1734,14 @@ function LifecycleReviewModal({
 
               {hasDecisionWarning && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  決策脈絡不足：decision_context 未完整存在，或分類包含資料不足。此檢討只使用已保存事件、ledger 費稅與
-                  point-in-time 指標，不推論未記錄意圖。
+                  決策脈絡限制：原始計畫缺失、屬於事後補填，或分類包含資料不足。此檢討只使用已保存事件、ledger 費稅與
+                  前一個完整交易日指標，不推論未記錄意圖，也不以事後計畫改寫歷史判斷。
                 </div>
               )}
 
               {hasBackfilledCaveat && (
                 <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 shadow-sm dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300">
-                  事後補填計畫提示：此生命週期檢討使用了使用者事後補填的操作計畫。它可改善檢討脈絡，但不代表原始進場當下已存在同一份計畫。
+                  事後補填計畫提示：這份計畫只作回顧脈絡，不參與歷史違規、客觀遵循度或決策品質評分，也不代表原始進場當下已存在同一份計畫。
                 </div>
               )}
 

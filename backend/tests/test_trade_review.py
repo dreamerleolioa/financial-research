@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
+from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.user_models.user import User
@@ -120,6 +121,19 @@ def _history_bars(start: date, closes: list[float]) -> list[dict]:
     ]
 
 
+def test_source_fingerprint_ignores_fetch_time_but_changes_with_market_content():
+    first = {"market_snapshot": {"fetched_at": "2026-08-04T01:00:00Z", "bars": [{"close": 100.0}]}}
+    same_content = {"market_snapshot": {"fetched_at": "2026-08-04T02:00:00Z", "bars": [{"close": 100.0}]}}
+    changed_content = {"market_snapshot": {"fetched_at": "2026-08-04T02:00:00Z", "bars": [{"close": 101.0}]}}
+
+    first_fingerprint = attach_source_fingerprint(first, ruleset_version="trade-review-v3")
+    same_fingerprint = attach_source_fingerprint(same_content, ruleset_version="trade-review-v3")
+    changed_fingerprint = attach_source_fingerprint(changed_content, ruleset_version="trade-review-v3")
+
+    assert same_fingerprint == first_fingerprint
+    assert changed_fingerprint != first_fingerprint
+
+
 def test_path_metrics_compute_max_profit_drawdown_and_giveback(db_session: Session):
     portfolio = _portfolio()
     db_session.add(portfolio)
@@ -145,8 +159,8 @@ def test_path_metrics_compute_max_profit_drawdown_and_giveback(db_session: Sessi
 
 
 def test_entry_and_exit_indicators_use_point_in_time_slices(db_session: Session):
-    entry_date = date(2026, 3, 1)
-    exit_date = date(2026, 3, 3)
+    entry_date = date(2026, 3, 2)
+    exit_date = date(2026, 3, 4)
     portfolio = _portfolio(
         entry_date=entry_date,
         exit_date=exit_date,
@@ -213,11 +227,11 @@ def test_point_in_time_indicators_use_snapshot_recent_arrays_without_ohlcv(db_se
 
     entry_indicators = review_result["trade_result"]["entry_indicators"]
     exit_indicators = review_result["trade_result"]["exit_indicators"]
-    assert entry_indicators["ma20"] == pytest.approx(54.5)
-    assert entry_indicators["ma60"] == pytest.approx(34.5)
+    assert entry_indicators["ma20"] == pytest.approx(53.5)
+    assert entry_indicators["ma60"] == pytest.approx(33.5)
     assert entry_indicators["rsi14"] == pytest.approx(100)
-    assert exit_indicators["ma20"] == pytest.approx(149.95)
-    assert exit_indicators["exit_vs_ma20_pct"] == pytest.approx(566.888963, rel=1e-4)
+    assert exit_indicators["ma20"] == pytest.approx(102.25)
+    assert exit_indicators["exit_vs_ma20_pct"] == pytest.approx(877.9951, rel=1e-4)
     assert evidence_payload["data_quality"]["status"] == "ok"
 
 
@@ -234,11 +248,11 @@ def test_entry_indicators_use_latest_snapshot_at_or_before_entry_date(db_session
 
     entry_indicators = review_result["trade_result"]["entry_indicators"]
     exit_indicators = review_result["trade_result"]["exit_indicators"]
-    assert entry_indicators["ma20"] == pytest.approx(54.5)
+    assert entry_indicators["ma20"] == pytest.approx(53.5)
     assert exit_indicators["ma20"] == pytest.approx(1000)
 
 
-def test_ensure_trade_review_market_data_backfills_bounded_ohlcv_rows(db_session: Session):
+def test_ensure_trade_review_market_data_builds_isolated_bounded_snapshot(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
@@ -252,18 +266,17 @@ def test_ensure_trade_review_market_data_backfills_bounded_ohlcv_rows(db_session
             {"date": exit_date + timedelta(days=1), "open": 999, "high": 999, "low": 999, "close": 999, "volume": 999},
         ]
 
-    ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+    rows = snapshot.rows
 
-    assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date + timedelta(days=1))]
-    rows = db_session.query(StockRawData).filter(StockRawData.symbol == "2330.TW").order_by(StockRawData.record_date).all()
+    assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date)]
     assert rows
-    assert rows[-1].record_date == exit_date
-    assert all(row.record_date <= exit_date for row in rows)
-    assert rows[-1].technical["ohlcv"]["close"] == 75
-    assert rows[-1].raw_data_is_final is True
+    assert rows[-1].record_date < exit_date
+    assert all(row.record_date < exit_date for row in rows)
+    assert db_session.query(StockRawData).filter(StockRawData.symbol == "2330.TW").count() == 0
 
 
-def test_ensure_trade_review_market_data_preserves_existing_final_ohlcv_rows(db_session: Session):
+def test_ensure_trade_review_market_data_does_not_mutate_existing_canonical_rows(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
@@ -275,16 +288,17 @@ def test_ensure_trade_review_market_data_preserves_existing_final_ohlcv_rows(db_
     def fake_fetcher(_symbol: str, _start: date, _end: date):
         return _history_bars(entry_date - timedelta(days=70), list(range(1, 76)))
 
-    ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
 
     stored = db_session.query(StockRawData).filter(
         StockRawData.symbol == "2330.TW",
         StockRawData.record_date == entry_date,
     ).one()
     assert stored.technical["ohlcv"]["close"] == 123
+    assert snapshot.rows
 
 
-def test_ensure_trade_review_market_data_skips_fetch_when_data_sufficient(db_session: Session):
+def test_ensure_trade_review_market_data_does_not_reuse_canonical_rows_as_review_snapshot(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
@@ -292,10 +306,31 @@ def test_ensure_trade_review_market_data_skips_fetch_when_data_sufficient(db_ses
     _add_rows(db_session, "2330.TW", entry_date - timedelta(days=70), list(range(1, 76)))
     db_session.commit()
 
-    def fake_fetcher(_symbol: str, _start: date, _end: date):
-        raise AssertionError("fetcher should not be called when data is sufficient")
+    calls = []
+
+    def fake_fetcher(symbol: str, start: date, end: date):
+        calls.append((symbol, start, end))
+        return _history_bars(entry_date - timedelta(days=70), list(range(1, 76)))
 
     ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+
+    assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date)]
+
+
+def test_point_in_time_indicators_exclude_same_day_close(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    exit_date = date(2026, 3, 3)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date, entry_price=60, exit_price=1000)
+    db_session.add(portfolio)
+    _add_rows(db_session, "2330.TW", date(2026, 1, 1), list(range(1, 61)) + [1000, 2000])
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    entry = review_result["trade_result"]["entry_indicators"]
+    exit_ = review_result["trade_result"]["exit_indicators"]
+    assert entry["ma20"] == pytest.approx(49.5)
+    assert exit_["ma20"] == pytest.approx(98.45)
 
 
 def test_phase3_entry_review_classifies_breakout_with_market_regime_and_confidence(db_session: Session):
@@ -310,10 +345,10 @@ def test_phase3_entry_review_classifies_breakout_with_market_regime_and_confiden
         holding_days=2,
     )
     db_session.add(portfolio)
-    pre_entry = [100 + offset * 0.3 for offset in range(59)]
+    pre_entry = [100 + offset * 0.3 for offset in range(60)]
     closes = pre_entry + [125, 128, 130]
-    volumes = [1000] * 59 + [3000, 1200, 1200]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes, volumes)
+    volumes = [1000] * 60 + [3000, 1200, 1200]
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes, volumes)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -333,9 +368,9 @@ def test_trade_review_keeps_codes_stable_but_returns_chinese_prose(db_session: S
     exit_date = date(2026, 3, 6)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date, entry_price=100, exit_price=108, realized_return_pct=8, holding_days=5)
     db_session.add(portfolio)
-    pre_entry = [90 + offset * 0.2 for offset in range(59)]
+    pre_entry = [90 + offset * 0.2 for offset in range(60)]
     closes = pre_entry + [100, 118, 116, 112, 109, 108]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes)
     db_session.commit()
 
     review_result, evidence_payload = build_trade_review_payload(db_session, portfolio)
@@ -367,7 +402,7 @@ def test_entry_review_ignores_post_entry_future_data_for_classification(db_sessi
     )
     db_session.add(portfolio)
     closes = [100] * 60 + [100, 250, 250]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -390,9 +425,9 @@ def test_exit_review_classifies_profit_protection_after_giveback(db_session: Ses
         holding_days=5,
     )
     db_session.add(portfolio)
-    pre_entry = [90 + offset * 0.2 for offset in range(59)]
+    pre_entry = [90 + offset * 0.2 for offset in range(60)]
     closes = pre_entry + [100, 118, 116, 112, 109, 108]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes)
     db_session.commit()
 
     review_result, evidence_payload = build_trade_review_payload(db_session, portfolio)
@@ -421,9 +456,9 @@ def test_exit_review_does_not_default_to_reasonable_without_supporting_evidence(
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [80 + offset * 0.3 for offset in range(59)]
+    pre_entry = [80 + offset * 0.3 for offset in range(60)]
     holding = [100, 102, 101, 101, 100]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -449,9 +484,9 @@ def test_exit_review_keeps_reasonable_when_technical_break_has_evidence(db_sessi
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [120.0] * 59
+    pre_entry = [120.0] * 60
     holding = [110, 108, 105, 102, 100]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -473,9 +508,9 @@ def test_user_readable_conclusion_marks_small_profit_above_mas_as_early(db_sessi
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [90 + offset * 0.2 for offset in range(59)]
+    pre_entry = [90 + offset * 0.2 for offset in range(60)]
     holding = [100, 102, 103, 104, 104]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -501,9 +536,9 @@ def test_user_readable_conclusion_marks_late_stop_as_late(db_session: Session):
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [100] * 59
+    pre_entry = [100] * 60
     holding = [100, 96, 92, 88, 90]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -544,10 +579,10 @@ def test_holding_detected_events_are_capped_and_concise(db_session: Session):
         holding_days=19,
     )
     db_session.add(portfolio)
-    pre_entry = [100 + offset * 0.1 for offset in range(59)]
+    pre_entry = [100 + offset * 0.1 for offset in range(60)]
     holding = [105, 110, 108, 112, 106, 104, 102, 98, 101, 96, 94, 99, 93, 97, 92, 96, 91, 95, 90, 95]
-    volumes = [1000] * 59 + [1000, 1000, 2500, 1000, 2600, 2700, 2800, 3000, 1000, 3200, 3300, 1000, 3400, 1000, 3500, 1000, 3600, 1000, 3700, 1000]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding, volumes)
+    volumes = [1000] * 60 + [1000, 1000, 2500, 1000, 2600, 2700, 2800, 3000, 1000, 3200, 3300, 1000, 3400, 1000, 3500, 1000, 3600, 1000, 3700, 1000]
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding, volumes)
     db_session.commit()
 
     review_result, evidence_payload = build_trade_review_payload(db_session, portfolio)
@@ -571,9 +606,9 @@ def test_holding_events_ignore_pre_entry_high_when_tracking_running_high(db_sess
         holding_days=2,
     )
     db_session.add(portfolio)
-    pre_entry = [150] * 59
+    pre_entry = [150] * 60
     holding = [100, 106, 104]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)

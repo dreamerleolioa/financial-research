@@ -3182,6 +3182,13 @@ def _add_lifecycle_group(
         entry_price=900,
         quantity=100,
         entry_date=date(2026, 1, 1),
+        is_active=False,
+        exit_date=date(2026, 1, 11),
+        exit_price=950,
+        exit_quantity=100,
+        realized_pnl=5000,
+        realized_return_pct=5.5556,
+        holding_days=10,
     )
     session.add(item)
     session.add(PositionEvent(
@@ -3191,6 +3198,19 @@ def _add_lifecycle_group(
         event_type="initial_entry",
         event_date=date(2026, 1, 1),
         price=900,
+        quantity=100,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=77,
+        source="user_recorded_at_event_time",
+    ))
+    session.add(PositionEvent(
+        user_id=user_id,
+        position_group_id=position_group_id,
+        symbol=symbol,
+        event_type="full_exit",
+        event_date=date(2026, 1, 11),
+        price=950,
         quantity=100,
         fees=0,
         taxes=0,
@@ -3242,7 +3262,7 @@ def test_create_position_lifecycle_review_first_post_saves_result_and_evidence_p
     assert data["user_id"] == 1
     assert data["position_group_id"] == "group-life-review"
     assert data["symbol"] == "2330.TW"
-    assert data["review_version"] == "position-lifecycle-review-v1"
+    assert data["review_version"] == "position-lifecycle-review-v2"
     assert data["llm_summary"] is None
     assert data["review_result"]["lifecycle_review"]["classification"]["tier"] == "constructive"
     assert data["evidence_payload"]["events"] == [{"event_type": "initial_entry"}]
@@ -3251,6 +3271,100 @@ def test_create_position_lifecycle_review_first_post_saves_result_and_evidence_p
     assert len(reviews) == 1
     assert reviews[0].review_result == data["review_result"]
     assert reviews[0].evidence_payload == data["evidence_payload"]
+
+
+def test_position_lifecycle_review_rejects_active_or_open_ledger_group(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_builder(*_args, **_kwargs):
+        raise AssertionError("open lifecycle must be rejected before review building")
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=88,
+        user_id=1,
+        position_group_id="group-open-review",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+        is_active=True,
+    ))
+    portfolio_db_session.add(PositionEvent(
+        user_id=1,
+        position_group_id="group-open-review",
+        symbol="2330.TW",
+        event_type="initial_entry",
+        event_date=date(2026, 1, 1),
+        price=900,
+        quantity=100,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=88,
+        source="user_recorded_at_event_time",
+    ))
+    portfolio_db_session.commit()
+
+    post_resp = portfolio_db_client.post("/portfolio/groups/group-open-review/lifecycle-review")
+    get_resp = portfolio_db_client.get("/portfolio/groups/group-open-review/lifecycle-review")
+
+    assert post_resp.status_code == 409
+    assert get_resp.status_code == 409
+    assert post_resp.json()["detail"]["code"] == "position_lifecycle_not_closed"
+    assert portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all() == []
+
+
+def test_position_lifecycle_review_rebuilds_when_market_snapshot_changes(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+
+    first = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=date(2026, 1, 5),
+        technical={"ohlcv": {"open": 910, "high": 915, "low": 905, "close": 912, "volume": 1000}},
+        raw_data_is_final=True,
+    ))
+    portfolio_db_session.commit()
+    second = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["evidence_payload"]["source_fingerprint"] != first.json()["evidence_payload"]["source_fingerprint"]
+    assert second.json()["evidence_payload"]["market_snapshot"]["quality"]["row_count"] == 1
+
+
+def test_position_lifecycle_review_keeps_better_snapshot_when_market_rows_regress(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    portfolio_db_session.add(StockRawData(
+        symbol="2330.TW",
+        record_date=date(2026, 1, 5),
+        technical={"ohlcv": {"open": 910, "high": 915, "low": 905, "close": 912, "volume": 1000}},
+        raw_data_is_final=True,
+    ))
+    portfolio_db_session.commit()
+    first = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    row = portfolio_db_session.execute(select(StockRawData)).scalar_one()
+    portfolio_db_session.delete(row)
+    portfolio_db_session.commit()
+    second = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert second.json()["evidence_payload"]["market_snapshot"]["quality"]["row_count"] == 1
 
 
 def test_position_lifecycle_review_excludes_future_shared_context(
@@ -3351,7 +3465,7 @@ def test_position_lifecycle_review_missing_shared_context_is_nonblocking(
     assert shared_context["consumer"] == "lifecycle_review"
     assert shared_context["data_quality"]["blocking"] is False
     assert "context_cache_missing" in shared_context["data_quality"]["missing_reasons"]
-    assert data["review_version"] == "position-lifecycle-review-v1"
+    assert data["review_version"] == "position-lifecycle-review-v2"
 
 
 def test_get_position_lifecycle_review_returns_existing_review(
@@ -3374,6 +3488,29 @@ def test_get_position_lifecycle_review_returns_existing_review(
     assert resp.json() == created
 
 
+def test_get_position_lifecycle_review_can_read_saved_v1_until_post_upgrades(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v1",
+        review_result={"legacy": True},
+        evidence_payload={"legacy": True},
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert resp.status_code == 200
+    assert resp.json()["review_version"] == "position-lifecycle-review-v1"
+    assert resp.json()["review_result"] == {"legacy": True}
+
+
 def test_get_position_lifecycle_review_missing_owned_group_returns_404(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -3387,31 +3524,20 @@ def test_get_position_lifecycle_review_missing_owned_group_returns_404(
     assert portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all() == []
 
 
-def test_create_position_lifecycle_review_existing_review_skips_recompute_and_duplicate(
+def test_create_position_lifecycle_review_same_fingerprint_does_not_duplicate(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
-        raise AssertionError("existing lifecycle review must not be recomputed")
+    calls = []
 
-    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fail_builder)
+    def stable_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        calls.append((user_id, position_group_id))
+        return _lifecycle_payload(position_group_id)
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", stable_builder)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     _add_lifecycle_group(portfolio_db_session)
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
-    event.updated_at = datetime(2026, 1, 1, 9, 0, 0)
-    portfolio_db_session.add(PositionLifecycleReview(
-        user_id=1,
-        position_group_id="group-life-review",
-        symbol="2330.TW",
-        review_version="position-lifecycle-review-v1",
-        review_result={"existing": True},
-        evidence_payload={"existing": True},
-        llm_summary=None,
-        created_at=datetime(2026, 1, 1, 10, 0, 0),
-        updated_at=datetime(2026, 1, 1, 10, 0, 0),
-    ))
-    portfolio_db_session.commit()
 
     first = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
     second = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
@@ -3419,7 +3545,8 @@ def test_create_position_lifecycle_review_existing_review_skips_recompute_and_du
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json() == second.json()
-    assert first.json()["review_result"] == {"existing": True}
+    assert calls == [(1, "group-life-review"), (1, "group-life-review")]
+    assert first.json()["review_result"] == _lifecycle_payload()[0]
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
 
@@ -3441,14 +3568,16 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fake_builder)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     _add_lifecycle_group(portfolio_db_session)
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+    ).scalar_one()
     event.updated_at = datetime(2026, 1, 1, 10, 0, 0)
     portfolio_db_session.add(PositionLifecycleReview(
         id=7,
         user_id=1,
         position_group_id="group-life-review",
         symbol="OLD.TW",
-        review_version="position-lifecycle-review-v1",
+        review_version="position-lifecycle-review-v2",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary="old summary",
@@ -3465,7 +3594,10 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["id"] == 7
     assert data["symbol"] == "2330.TW"
     assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
-    assert data["evidence_payload"] == {"source": "event", "events": [{"event_type": "full_exit"}]}
+    assert data["evidence_payload"]["source"] == "event"
+    assert data["evidence_payload"]["events"] == [{"event_type": "full_exit"}]
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-review-v2"
+    assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
@@ -3491,7 +3623,9 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", fake_builder)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     _add_lifecycle_group(portfolio_db_session)
-    event = portfolio_db_session.execute(select(PositionEvent)).scalar_one()
+    event = portfolio_db_session.execute(
+        select(PositionEvent).where(PositionEvent.event_type == "initial_entry")
+    ).scalar_one()
     event.updated_at = datetime(2026, 1, 1, 8, 30, 0)
     portfolio_db_session.add(PositionLifecyclePlan(
         user_id=1,
@@ -3509,7 +3643,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
         user_id=1,
         position_group_id="group-life-review",
         symbol="OLD.TW",
-        review_version="position-lifecycle-review-v1",
+        review_version="position-lifecycle-review-v2",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary="old summary",
@@ -3526,7 +3660,10 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["id"] == 8
     assert data["symbol"] == "2330.TW"
     assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
-    assert data["evidence_payload"] == {"source": "plan", "plan": {"planned_holding_period": "long_term"}}
+    assert data["evidence_payload"]["source"] == "plan"
+    assert data["evidence_payload"]["plan"] == {"planned_holding_period": "long_term"}
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-review-v2"
+    assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
@@ -3672,6 +3809,19 @@ def test_position_lifecycle_review_does_not_change_single_trade_review_behavior(
         source_portfolio_id=item.id,
         source="user_recorded_at_event_time",
     ))
+    portfolio_db_session.add(PositionEvent(
+        user_id=1,
+        position_group_id=item.position_group_id,
+        symbol=item.symbol,
+        event_type="full_exit",
+        event_date=item.exit_date,
+        price=item.exit_price,
+        quantity=item.quantity,
+        fees=0,
+        taxes=0,
+        source_portfolio_id=item.id,
+        source="user_recorded_at_event_time",
+    ))
     portfolio_db_session.commit()
     _add_raw_rows(portfolio_db_session)
 
@@ -3680,8 +3830,8 @@ def test_position_lifecycle_review_does_not_change_single_trade_review_behavior(
 
     assert lifecycle_resp.status_code == 200
     assert trade_resp.status_code == 200
-    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v1"
-    assert trade_resp.json()["review_version"] == "trade-review-v2"
+    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v2"
+    assert trade_resp.json()["review_version"] == "trade-review-v3"
     assert trade_resp.json()["portfolio_id"] == 42
     assert trade_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
     assert len(portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()) == 1
@@ -3704,7 +3854,7 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
     assert data["user_id"] == 1
     assert data["position_group_id"] == "group-review"
     assert data["symbol"] == "2330.TW"
-    assert data["review_version"] == "trade-review-v2"
+    assert data["review_version"] == "trade-review-v3"
     assert data["llm_summary"] is None
     assert set(data["review_result"]) == {
         "data_quality", "trade_result", "entry_review", "holding_review", "exit_review", "operation_review", "user_readable_conclusion",
@@ -3733,6 +3883,7 @@ def test_create_trade_review_first_post_saves_real_trade_result_and_evidence_pay
     assert data["review_result"]["trade_result"]["profit_giveback_pct"] == pytest.approx(1.1111)
     assert set(data["evidence_payload"]) == {
         "trade", "position_group_id", "path_metrics", "entry_indicators", "exit_indicators", "detected_events", "data_quality", "source_data",
+        "market_snapshot", "ruleset_version", "source_fingerprint",
     }
     assert data["evidence_payload"]["position_group_id"] == "group-review"
     assert data["evidence_payload"]["trade"]["position_group_id"] == "group-review"
@@ -3759,7 +3910,7 @@ def test_create_trade_review_accepts_snapshot_raw_data_without_ohlcv_and_persist
     assert second.status_code == 200
     data = first.json()
     assert second.json() == data
-    assert data["review_version"] == "trade-review-v2"
+    assert data["review_version"] == "trade-review-v3"
     assert data["review_result"]["trade_result"]["entry_indicators"]["ma20"] is not None
     assert data["review_result"]["trade_result"]["exit_indicators"]["ma20"] is not None
     assert data["review_result"]["data_quality"]["status"] == "ok"
@@ -3788,15 +3939,10 @@ def test_create_trade_review_calls_market_data_ensure_before_first_save(
     assert calls == [42]
 
 
-def test_create_trade_review_existing_review_skips_market_data_ensure(
+def test_create_trade_review_upgrades_v2_review_using_current_sources(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail_ensure(_db: Session, _item: UserPortfolio) -> None:
-        raise AssertionError("existing review must not trigger market data ensure")
-
-    monkeypatch.setattr(portfolio_router_module, "ensure_trade_review_market_data", fail_ensure)
     portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
     item = _add_closed_portfolio(portfolio_db_session)
     portfolio_db_session.add(TradeReview(
@@ -3814,7 +3960,9 @@ def test_create_trade_review_existing_review_skips_market_data_ensure(
     resp = portfolio_db_client.post("/portfolio/42/review")
 
     assert resp.status_code == 200
-    assert resp.json()["review_result"] == {"existing": True}
+    assert resp.json()["review_version"] == "trade-review-v3"
+    assert resp.json()["review_result"] != {"existing": True}
+    assert resp.json()["evidence_payload"]["ruleset_version"] == "trade-review-v3"
 
 
 def test_create_trade_review_rebuilds_legacy_review_version_in_place(
@@ -3839,12 +3987,12 @@ def test_create_trade_review_rebuilds_legacy_review_version_in_place(
     resp = portfolio_db_client.post("/portfolio/42/review")
 
     assert resp.status_code == 200
-    assert resp.json()["review_version"] == "trade-review-v2"
+    assert resp.json()["review_version"] == "trade-review-v3"
     assert resp.json()["review_result"] != {"legacy": True}
     assert resp.json()["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
     assert len(reviews) == 1
-    assert reviews[0].review_version == "trade-review-v2"
+    assert reviews[0].review_version == "trade-review-v3"
 
 
 def test_create_trade_review_preserves_unknown_newer_review_version(
@@ -3863,7 +4011,7 @@ def test_create_trade_review_preserves_unknown_newer_review_version(
         user_id=item.user_id,
         position_group_id=item.position_group_id,
         symbol=item.symbol,
-        review_version="trade-review-v3",
+        review_version="trade-review-v4",
         review_result={"future": True},
         evidence_payload={"future": True},
         llm_summary="future summary",
@@ -3873,15 +4021,34 @@ def test_create_trade_review_preserves_unknown_newer_review_version(
     resp = portfolio_db_client.post("/portfolio/42/review")
 
     assert resp.status_code == 200
-    assert resp.json()["review_version"] == "trade-review-v3"
+    assert resp.json()["review_version"] == "trade-review-v4"
     assert resp.json()["review_result"] == {"future": True}
     assert resp.json()["llm_summary"] == "future summary"
     review = portfolio_db_session.execute(select(TradeReview)).scalar_one()
-    assert review.review_version == "trade-review-v3"
+    assert review.review_version == "trade-review-v4"
     assert review.evidence_payload == {"future": True}
 
 
 def test_create_trade_review_second_post_returns_existing_without_duplicate(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
+
+    first = portfolio_db_client.post("/portfolio/42/review")
+    second = portfolio_db_client.post("/portfolio/42/review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert second.json()["review_result"]["trade_result"]["max_profit_pct"] == pytest.approx(6.6667)
+    reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
+    assert len(reviews) == 1
+
+
+def test_create_trade_review_rebuilds_when_review_market_snapshot_changes(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
@@ -3894,10 +4061,29 @@ def test_create_trade_review_second_post_returns_existing_without_duplicate(
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["evidence_payload"]["source_fingerprint"] != first.json()["evidence_payload"]["source_fingerprint"]
+    assert len(portfolio_db_session.execute(select(TradeReview)).scalars().all()) == 1
+
+
+def test_create_trade_review_keeps_better_snapshot_when_refresh_regresses(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_closed_portfolio(portfolio_db_session)
+    _add_raw_rows(portfolio_db_session)
+    first = portfolio_db_client.post("/portfolio/42/review")
+
+    for row in portfolio_db_session.execute(select(StockRawData)).scalars().all():
+        portfolio_db_session.delete(row)
+    portfolio_db_session.commit()
+    second = portfolio_db_client.post("/portfolio/42/review")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
     assert second.json() == first.json()
-    assert second.json()["review_result"]["trade_result"]["max_profit_pct"] is None
-    reviews = portfolio_db_session.execute(select(TradeReview)).scalars().all()
-    assert len(reviews) == 1
+    assert second.json()["evidence_payload"]["market_snapshot"]["quality"]["row_count"] == 5
 
 
 def test_create_trade_review_partial_close_uses_closed_slice_not_same_group_batch(

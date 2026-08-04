@@ -534,6 +534,8 @@ export interface PositionLifecycleAdvancedInternal {
   mfe_pct?: number | null;
   mfe_r_multiple?: number | null;
   mfe_capture_rate?: number | null;
+  declared_plan_adherence_score?: number | null;
+  observed_plan_adherence_score?: number | null;
   plan_adherence_score?: number | null;
   decision_quality_score?: number | null;
   capital_at_risk_by_event?: PositionLifecycleRiskPoint[];
@@ -579,6 +581,7 @@ export interface PositionLifecycleEventFact {
 export interface PositionLifecycleDecisionContext {
   status?: DecisionContextStatus | string;
   has_plan?: boolean;
+  historical_judgment_eligible?: boolean;
   source?: string | null;
   created_after_entry?: boolean | null;
   planned_holding_period?: PlannedHoldingPeriod | null;

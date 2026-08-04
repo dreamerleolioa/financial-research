@@ -5,10 +5,11 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecycle_analysis
+from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint
 from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
@@ -22,6 +23,7 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.portfolio.application.add_entry import add_entry_to_position
+from ai_stock_sentinel.portfolio.application.events import ledger_open_quantity
 from ai_stock_sentinel.portfolio.application.add_position import create_portfolio
 from ai_stock_sentinel.portfolio.application.close_position import close_position as close_position_use_case
 from ai_stock_sentinel.portfolio.application.get_risk_summary import build_user_portfolio_risk_summary
@@ -47,9 +49,9 @@ from ai_stock_sentinel.user_models.user import User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
-TRADE_REVIEW_VERSION = "trade-review-v2"
-LEGACY_TRADE_REVIEW_VERSION = "trade-review-v1"
-POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v1"
+TRADE_REVIEW_VERSION = "trade-review-v3"
+KNOWN_TRADE_REVIEW_VERSIONS = {"trade-review-v1", "trade-review-v2", TRADE_REVIEW_VERSION}
+POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v2"
 
 
 def get_portfolio_quote_fetcher():
@@ -236,6 +238,38 @@ def _get_owned_position_group(db: Session, position_group_id: str, user_id: int)
     return group
 
 
+def _get_owned_closed_position_group(db: Session, position_group_id: str, user_id: int) -> UserPortfolio:
+    rows = db.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == user_id,
+            UserPortfolio.position_group_id == position_group_id,
+        )
+    ).scalars().all()
+    if not rows:
+        raise HTTPException(status_code=403, detail="無權限")
+    events = db.execute(
+        select(PositionEvent)
+        .where(
+            PositionEvent.user_id == user_id,
+            PositionEvent.position_group_id == position_group_id,
+        )
+        .order_by(PositionEvent.event_date.asc(), PositionEvent.created_at.asc(), PositionEvent.id.asc())
+    ).scalars().all()
+    if (
+        any(row.is_active for row in rows)
+        or not any(event.event_type == "full_exit" for event in events)
+        or ledger_open_quantity(events) != 0
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "position_lifecycle_not_closed",
+                "message": "持股生命週期尚未完整結案，不能建立或讀取結案回顧。",
+            },
+        )
+    return rows[0]
+
+
 def _get_position_lifecycle_review(db: Session, position_group_id: str, user_id: int) -> PositionLifecycleReview | None:
     return db.execute(
         select(PositionLifecycleReview).where(
@@ -246,37 +280,68 @@ def _get_position_lifecycle_review(db: Session, position_group_id: str, user_id:
     ).scalar_one_or_none()
 
 
-def _as_comparable_datetime(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
-
-
-def _get_position_lifecycle_source_updated_at(db: Session, position_group_id: str, user_id: int) -> datetime | None:
-    latest_event_updated_at = db.execute(
-        select(func.max(PositionEvent.updated_at)).where(
-            PositionEvent.user_id == user_id,
-            PositionEvent.position_group_id == position_group_id,
+def _get_latest_saved_position_lifecycle_review(
+    db: Session,
+    position_group_id: str,
+    user_id: int,
+) -> PositionLifecycleReview | None:
+    current = _get_position_lifecycle_review(db, position_group_id, user_id)
+    if current is not None:
+        return current
+    return db.execute(
+        select(PositionLifecycleReview)
+        .where(
+            PositionLifecycleReview.user_id == user_id,
+            PositionLifecycleReview.position_group_id == position_group_id,
         )
-    ).scalar_one_or_none()
-    latest_plan_updated_at = db.execute(
-        select(func.max(PositionLifecyclePlan.updated_at)).where(
-            PositionLifecyclePlan.user_id == user_id,
-            PositionLifecyclePlan.position_group_id == position_group_id,
-        )
-    ).scalar_one_or_none()
-    updated_ats = [updated_at for updated_at in (latest_event_updated_at, latest_plan_updated_at) if updated_at is not None]
-    if not updated_ats:
-        return None
-    return max(updated_ats, key=_as_comparable_datetime)
+        .order_by(PositionLifecycleReview.created_at.desc(), PositionLifecycleReview.id.desc())
+    ).scalars().first()
 
 
-def _position_lifecycle_review_is_fresh(review: PositionLifecycleReview, source_updated_at: datetime | None) -> bool:
-    if source_updated_at is None:
-        return True
-    if review.updated_at is None:
+def _trade_review_snapshot_regressed(existing_review: TradeReview, evidence_payload: dict) -> bool:
+    existing_evidence = existing_review.evidence_payload if isinstance(existing_review.evidence_payload, dict) else {}
+    if existing_evidence.get("trade") != evidence_payload.get("trade"):
         return False
-    return _as_comparable_datetime(source_updated_at) <= _as_comparable_datetime(review.updated_at)
+    existing_market = existing_evidence.get("market_snapshot")
+    new_market = evidence_payload.get("market_snapshot")
+    if not isinstance(existing_market, dict) or not isinstance(new_market, dict):
+        return False
+    existing_quality = existing_market.get("quality") if isinstance(existing_market.get("quality"), dict) else {}
+    new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
+    existing_count = existing_quality.get("row_count")
+    new_count = new_quality.get("row_count")
+    if not isinstance(existing_count, int) or not isinstance(new_count, int):
+        return False
+    if existing_count > new_count:
+        return True
+    return (
+        existing_count >= new_count
+        and not existing_quality.get("missing_reason")
+        and bool(new_quality.get("missing_reason"))
+    )
+
+
+def _lifecycle_review_snapshot_regressed(
+    existing_review: PositionLifecycleReview,
+    evidence_payload: dict,
+) -> bool:
+    existing_evidence = existing_review.evidence_payload if isinstance(existing_review.evidence_payload, dict) else {}
+    for key in ("events", "plan_snapshot", "shared_context"):
+        if existing_evidence.get(key) != evidence_payload.get(key):
+            return False
+    existing_market = existing_evidence.get("market_snapshot")
+    new_market = evidence_payload.get("market_snapshot")
+    if not isinstance(existing_market, dict) or not isinstance(new_market, dict):
+        return False
+    existing_quality = existing_market.get("quality") if isinstance(existing_market.get("quality"), dict) else {}
+    new_quality = new_market.get("quality") if isinstance(new_market.get("quality"), dict) else {}
+    existing_count = existing_quality.get("row_count")
+    new_count = new_quality.get("row_count")
+    return (
+        isinstance(existing_count, int)
+        and isinstance(new_count, int)
+        and existing_count > new_count
+    )
 
 
 @router.get("")
@@ -527,8 +592,8 @@ def get_position_lifecycle_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _get_owned_position_group(db, position_group_id, current_user.id)
-    review = _get_position_lifecycle_review(db, position_group_id, current_user.id)
+    _get_owned_closed_position_group(db, position_group_id, current_user.id)
+    review = _get_latest_saved_position_lifecycle_review(db, position_group_id, current_user.id)
     if not review:
         raise HTTPException(status_code=404, detail="尚未建立持股生命週期審核")
     return _serialize_position_lifecycle_review(review)
@@ -540,11 +605,8 @@ def create_position_lifecycle_review(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    group = _get_owned_position_group(db, position_group_id, current_user.id)
+    group = _get_owned_closed_position_group(db, position_group_id, current_user.id)
     existing_review = _get_position_lifecycle_review(db, position_group_id, current_user.id)
-    source_updated_at = _get_position_lifecycle_source_updated_at(db, position_group_id, current_user.id)
-    if existing_review and _position_lifecycle_review_is_fresh(existing_review, source_updated_at):
-        return _serialize_position_lifecycle_review(existing_review)
 
     try:
         review_result, evidence_payload = build_position_lifecycle_analysis(
@@ -552,6 +614,17 @@ def create_position_lifecycle_review(
             user_id=current_user.id,
             position_group_id=position_group_id,
         )
+        if existing_review and _lifecycle_review_snapshot_regressed(existing_review, evidence_payload):
+            return _serialize_position_lifecycle_review(existing_review)
+        source_fingerprint = attach_source_fingerprint(
+            evidence_payload,
+            ruleset_version=POSITION_LIFECYCLE_REVIEW_VERSION,
+        )
+        if (
+            existing_review
+            and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
+        ):
+            return _serialize_position_lifecycle_review(existing_review)
         if existing_review:
             review = existing_review
             review.symbol = group.symbol
@@ -609,11 +682,27 @@ def create_trade_review(
             TradeReview.user_id == current_user.id,
         )
     ).scalar_one_or_none()
-    if existing_review and existing_review.review_version != LEGACY_TRADE_REVIEW_VERSION:
+    if existing_review and existing_review.review_version not in KNOWN_TRADE_REVIEW_VERSIONS:
         return _serialize_trade_review(existing_review)
 
-    ensure_trade_review_market_data(db, item)
-    review_result, evidence_payload = build_trade_review_payload(db, item)
+    market_snapshot = ensure_trade_review_market_data(db, item)
+    review_result, evidence_payload = build_trade_review_payload(db, item, market_snapshot=market_snapshot)
+    if (
+        existing_review
+        and existing_review.review_version == TRADE_REVIEW_VERSION
+        and _trade_review_snapshot_regressed(existing_review, evidence_payload)
+    ):
+        return _serialize_trade_review(existing_review)
+    source_fingerprint = attach_source_fingerprint(
+        evidence_payload,
+        ruleset_version=TRADE_REVIEW_VERSION,
+    )
+    if (
+        existing_review
+        and existing_review.review_version == TRADE_REVIEW_VERSION
+        and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
+    ):
+        return _serialize_trade_review(existing_review)
     if existing_review:
         review = existing_review
         review.review_version = TRADE_REVIEW_VERSION

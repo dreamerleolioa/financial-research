@@ -880,11 +880,15 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 | `manual_record_correction` | 使用者手動修正紀錄。 |
 | `not_recorded` | 決策脈絡未記錄。 |
 
-`decision_context.status = insufficient` 是正式語意，不是錯誤狀態。當 lifecycle plan 缺失、只有 optional note、或資料 provenance 不足以代表原始意圖時，review 仍可輸出價格路徑與 event facts，但必須以 caveats 說明限制，且不得判斷使用者是否遵循未記錄計畫。
+`decision_context.status = insufficient` 與 `retrospective_only` 都是正式語意，不是錯誤狀態。只有 `source = user_recorded_at_event_time`、`created_after_entry != true` 的 plan 具有 `historical_judgment_eligible = true`。Plan 缺失時仍可輸出價格路徑與 event facts；事後補填時仍可呈現 retrospective context，但兩者都不得產生歷史 plan violation、observed adherence、decision-quality score 或僅靠自報遵循度形成 constructive tier。
 
 一般 `PUT /portfolio/{id}` 若更正尚未發生後續 lifecycle event 的 initial-entry 成本、股數或日期，該 event 的 `source` 必須改為 `manual_record_correction`，並留下事後更正 caveat；不可繼續標示為 `user_recorded_at_event_time` 或 `user_backfilled`。既有固定選項 reason metadata 可保留，但其 provenance 以更正後 source 與 caveat 為準。
 
 Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
+
+結案回顧只接受完整關閉的 lifecycle：不得存在 active portfolio row、ledger 必須包含 `full_exit`，且最終 open quantity 必須為 0。事件沒有成交時間時，所有 entry/exit indicator snapshot 僅能使用前一個 completed bar；同日 rolling snapshot 必須剔除最後一筆，禁止使用同日收盤結果回頭評分盤中決策。
+
+Review 行情與正式分析行情有不同寫入邊界。Single Trade Review 的 provider backfill 只能建立 request-scoped snapshot，失敗時可唯讀 fallback 到 `StockRawData`，但不得寫回 canonical row。Trade v3 與 lifecycle v2 的 evidence 都保存 compact market snapshot、ruleset 與 source fingerprint；fingerprint 必須涵蓋 review-relevant portfolio/event facts、plan provenance、market snapshot 與 lifecycle shared-context replay trace，取代只比較 event/plan `updated_at` 的 freshness 判斷。
 
 Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能修正可證明的純 synthetic 形狀：仍持有時必須是單一 active row、單一 synthetic initial-entry，且每一個 inactive portfolio row 都恰好對應一筆 synthetic partial-exit，不得遺漏或重複引用 source row；修正量為 active 剩餘股數加上歷史 partial-exit 總和。完全結案時必須是單一 synthetic initial-entry、至少一筆 synthetic partial-exit、單一且最後一筆 synthetic full-exit，initial-entry 與 full-exit 必須源自同一個最後結案 portfolio row，且所有 exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage；修正量為所有 exit 總和。兩種形狀都必須確認 active、來源 row、synthetic initial/exit event 與計算後 initial quantity 全部嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`，超出時必須跳過該群組，避免 migration 因欄位溢位中止；每筆來源 row 的 `quantity`、`exit_quantity`（若為 null 則回退 `quantity`）與對應 exit event quantity 完全一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。群組內所有 portfolio rows 與 events 還必須具有同一個非空 symbol；active row 的 `updated_at` 不得晚於 synthetic initial event 的 `created_at`，否則可能是 backfill 後的舊版 PUT 修正，不能再折回原始進場事實。真正寫入前必須先按 row id 對所有 contributing portfolio rows 與整組 contributing events 的 observed facts/timestamps 做 compare-and-lock，再以 initial event 的 user/group/source/source row/quantity/price/date/timestamps 做 compare-and-set；同一 transaction 內任一來源 row 或 event 並行更正時，migration 應跳過 stale snapshot，不得覆寫。Transaction lock 不涵蓋 commit 後仍存活的舊版 writer，因此部署此 data migration 必須先 quiesce portfolio writes／停止舊 instances，明確完成 DB upgrade 後才啟動新版並恢復流量。任一數量、symbol、時間或初始經濟事實不一致即視為不可證明。只要含有 user-recorded、backfilled、manual、多 active rows、source coverage 不完整、非正數、數量不一致、entry price/date 分裂或其他 event shape，就不得自動重寫；migration 必須可重跑。
 
@@ -895,7 +899,7 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
 - Lifecycle review 使用 event ledger、point-in-time indicator snapshots、fixed option plan facts 與 source refs 產生 labels、reasons、caveats、next-operation rules。
 - 已穩定的 fixed-option labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`。
 - `holding_period_needs_review` 是檢討提示，不是硬性錯誤；不得宣稱精準高低點或單一時間點是唯一正確操作。
-- Raw 0-100 lifecycle scores 保留於 `advanced_internal` / evidence trace，用於 guardrail、debug、校準與 future review；預設 UI 與 user-facing copy 需以 tier、label、reason、caveat、source event 呈現。
+- 使用者自報的 yes / partial / no 只保留為 `declared_plan_adherence_score` trace；在沒有獨立客觀觀測器前，`observed_plan_adherence_score`、相容欄位 `plan_adherence_score` 與 `decision_quality_score` 必須為 `null`。預設 UI 與 user-facing copy 需以 tier、label、reason、caveat、source event 呈現。
 - LLM 不參與 intent capture、metric calculation、classification assignment 或 missing-intent inference。未來若加入 narrative summary，必須只摘要 deterministic review facts，且不得升級為判斷來源。
 
 ---

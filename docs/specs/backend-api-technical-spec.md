@@ -1297,11 +1297,12 @@ make run-api
 
 ### `POST /portfolio/{portfolio_id}/review`
 
-- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在且 `review_version = trade-review-v2`，直接回傳既有 review。只有已知的 `trade-review-v1` 會由 POST 依目前 deterministic 規則原地重建為 v2；未知或較新版本原樣回傳，不得降級覆寫。
+- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review。`trade-review-v1` / `trade-review-v2` 會由 POST 原地升級為 v3；目前 v3 會以 source fingerprint 判斷是否可重用，未知或較新版本原樣回傳，不得降級覆寫。
 - **Request Body**：無必填欄位；目前 frontend 送出空 POST body。
-- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`；目前 v2 再次 POST 維持 idempotent 並回傳既有資料；已知 v1 review 再次 POST 則更新同一筆紀錄的 `review_version`、`review_result` 與 `evidence_payload`，並清除舊 `llm_summary`。GET 保持只讀；frontend 只在讀到 v1 時再送 POST 完成升級，對未知或較新版本不得自動 POST，確保版本單調性與 rollback 相容性。
+- **持久化與 freshness 語義**：同一 `portfolio_id` 只保存一筆預設 review。POST 會以目前 closed-row facts、review ruleset 與獨立 review market snapshot 建立 `source_fingerprint`；同版且 fingerprint 相同時回傳原紀錄，來源改變時原地重建 `review_result` / `evidence_payload` 並清除舊 `llm_summary`。若 closed-row facts 相同但新 snapshot row count 較少，或相同筆數卻由正常 provider 降級成帶 missing reason 的 fallback，保留既有較完整 review，避免暫時失敗反向降級證據。GET 保持只讀；frontend 在讀到 v1、v2 或目前 v3 時送 POST 完成升級／freshness 檢查，對未知或較新版本不得自動 POST。
 - **LLM 邊界**：目前不呼叫 LLM，`llm_summary` 固定為 `null`。
-- **Evidence 邊界**：`evidence_payload` 只存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、source summary；不存完整 OHLCV/K-line arrays、raw news、raw LLM prompts 或 unrelated portfolio history。
+- **行情與 look-ahead 邊界**：review 補行情不得寫入或覆寫正式 `StockRawData`。yfinance 資料只建立 request-scoped review snapshot；provider 失敗時才唯讀使用既有 `StockRawData`。事件只有日期、沒有可證明的成交時間，因此 entry/exit 指標一律只使用 `record_date < event_date` 的 completed bar；同日 rolling snapshot 必須剔除最後一筆當日值。
+- **Evidence 邊界**：`evidence_payload` 保存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、compact market snapshot、`ruleset_version` 與 `source_fingerprint`；不存 raw news、raw LLM prompts 或 unrelated portfolio history。Compact snapshot 使用 bar / trailing-series 結構，不把 canonical `StockRawData` 當成 review 可寫 cache。
 
 - **Response 200**
 
@@ -1312,7 +1313,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "trade-review-v2",
+  "review_version": "trade-review-v3",
   "review_result": {
     "data_quality": {
       "status": "ok",
@@ -1484,7 +1485,7 @@ make run-api
   - `market_regime`：`uptrend` / `downtrend` / `range_bound` / `strong_momentum` / `high_volatility` / `insufficient_data`。
   - `holding_review.detected_events`：最多保留重要 holding events，event item 不包含完整 K 線序列。
 
-> **Single Trade Review 結論邊界**：`trade-review-v2` 由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，也不新增 `llm_summary`。只有存在可核對的獲利保護、風險控制或技術破位證據時才可回傳 `reasonable`；資料完整但證據不足時回傳 `unclassified`，市場資料不足時回傳 `insufficient`。對既有 v1 紀錄再次 POST 時會以 v2 規則重建。
+> **Single Trade Review 結論邊界**：`trade-review-v3` 由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，也不新增 `llm_summary`。只有存在可核對的獲利保護、風險控制或技術破位證據時才可回傳 `reasonable`；資料完整但證據不足時回傳 `unclassified`，市場資料不足時回傳 `insufficient`。既有 v1 / v2 紀錄會在 POST 時依 v3 規則與當前 source fingerprint 重建。
 
 ### Closed portfolio grouping behavior
 
@@ -1543,6 +1544,7 @@ make run-api
 - **用途**：讀取同一 `position_group_id` 的已保存 Position Lifecycle Review；此端點只讀取已保存結果，不觸發 freshness 檢查或重算。
 - **權限邊界**：只能讀取目前登入使用者自己的 position group；非擁有者回傳 `403`。
 - **資料邊界**：review 單位是整個 position group lifecycle，不與 `/portfolio/{portfolio_id}/review` 共用 endpoint，也不寫入 `trade_review`。
+- **closed-only 邊界**：GET 與 POST 都要求 group 內沒有 active portfolio row、ledger 至少一筆 `full_exit`，且 `entry quantity - exit quantity = 0`；未完整結案回傳 `409`，`detail.code = position_lifecycle_not_closed`。
 - **Response 200**：回傳欄位同 `POST /portfolio/groups/{position_group_id}/lifecycle-review`。
 - **404**：目前登入使用者擁有該 group 但尚未建立 saved lifecycle review 時，回傳 `404`。
 
@@ -1550,10 +1552,10 @@ make run-api
 
 - **用途**：為同一 `position_group_id` 建立或更新 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在且來源資料未變，直接回傳既有 review。
 - **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
-- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 會比較同一使用者與 `position_group_id` 下 `PositionEvent.updated_at` 與 `PositionLifecyclePlan.updated_at` 的最新時間；若來源資料比 saved review 更新，重建 `review_result` / `evidence_payload` 並更新同一筆 `position_lifecycle_review`，避免部分出場後新增事件或事後補填 plan 時持續讀到 stale lifecycle review。
-- **版本策略**：`review_version` 為 `position-lifecycle-review-v1`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v2 review。若 event / plan / shared-context facts 未變而新 market snapshot row count 下降，保留較完整的既有 review。舊 v1 可讀，但 POST 會建立 v2，避免以單一 `updated_at` 漏掉行情或 shared-context 變更。
+- **版本策略**：`review_version` 為 `position-lifecycle-review-v2`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。
 - **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
-- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、Phase 2D point-in-time shared context references、source summary 與 data quality；不存完整 OHLCV/K-line arrays、raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
+- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、review-relevant plan snapshot、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、compact market snapshot、Phase 2D point-in-time shared context references、source summary、data quality、ruleset 與 fingerprint；不存 raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
 - **Shared context point-in-time 邊界（Phase 2D）**：`review_result.shared_context` 與 `evidence_payload.shared_context` 以每個 `PositionEvent.event_date` 作為 `reference_date`，只引用適用目標 consumer 且 `as_of_date <= event_date` 的 shared background context。`shared_background_contexts` 以 `symbol` / `context_type` / `replay_key` 保留歷史 trace；若沒有可用歷史 context 且只存在晚於事件日的 context，會以 `missing_reason = "future_context_excluded"` 保留 caveat，並保留原始 excluded `as_of_date` trace；不得使用該未來資料批評 entry/exit-time decision。Shared context 只作 evidence/caveat/data quality，不改 `lifecycle_review.classification.primary_label`、tier、deterministic metrics 或 fixed-option decision-context 判讀。
 - **Response 200**
 
@@ -1563,7 +1565,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "position-lifecycle-review-v1",
+  "review_version": "position-lifecycle-review-v2",
   "review_result": {
     "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
@@ -1694,9 +1696,11 @@ make run-api
   - `review_result.event_indicator_snapshots`：每個 entry/exit event 的 point-in-time 技術指標與 market regime snapshot，不包含完整 K 線序列。
   - `review_result.event_facts[].fees` / `taxes`：event ledger 中已保存或系統計算的成本事實；不表示本端點要求使用者手動輸入交易稅。
   - `review_result.shared_context` / `evidence_payload.shared_context`：每個事件的 shared context read payload，包含 `source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `data_quality`；missing/stale/future-excluded 均非阻塞。
-  - `review_result.decision_context.status`：`present` / `insufficient`。若為 `insufficient`，前端需明確提示不要推論未記錄意圖。
+  - `review_result.decision_context.status`：`present` / `retrospective_only` / `insufficient`。只有 `present` 且 `historical_judgment_eligible = true` 可參與歷史計畫判定；其餘狀態需明確提示不要推論或事後改寫原始意圖。
   - `review_result.decision_context.source` / `created_after_entry`：用於標示 plan provenance；`source = user_backfilled` 或 `created_after_entry = true` 時必須顯示事後補填 caveat，不可視為原始 entry-time intent。
-  - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts，可被 deterministic lifecycle review 引用，但缺漏或 `not_recorded` 時不得用未記錄 intent 補判。
+  - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts。只有 event-time plan 可用於 `add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；backfilled plan 僅作 retrospective context。
+  - `review_result.advanced_internal.declared_plan_adherence_score`：使用者自報的 yes / partial / no trace；不得當成客觀 observed score。
+  - `review_result.advanced_internal.observed_plan_adherence_score` / `plan_adherence_score` / `decision_quality_score`：目前在沒有獨立客觀觀測器時為 `null`，避免自報答案直接產生權威分數或 constructive tier。
   - Phase E 已穩定的 lifecycle review labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；這些 labels 需以 `reasons`、`caveats`、`source_refs` 追溯到 `event_facts`、`event_indicator_snapshots` 或 `decision_context`，不得使用未來資料批評 entry-time decision，也不得以 raw 0-100 score 作為預設主視覺。
 
 > **Position Lifecycle Review 邊界**：本端點與 Single Trade Review 分離。`/portfolio/{portfolio_id}/review` 繼續代表 one sell decision；`/portfolio/groups/{position_group_id}/lifecycle-review` 代表 whole multi-entry/multi-exit lifecycle。兩者資料表、endpoint 與 review version 均不同。

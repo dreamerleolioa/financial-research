@@ -71,13 +71,18 @@ export const legacyTradeReview = {
 
 export const currentTradeReview = {
   ...legacyTradeReview,
-  review_version: "trade-review-v2",
+  review_version: "trade-review-v3",
   updated_at: "2026-07-16T09:05:00+08:00",
+};
+
+export const previousTradeReview = {
+  ...currentTradeReview,
+  review_version: "trade-review-v2",
 };
 
 export const futureTradeReview = {
   ...currentTradeReview,
-  review_version: "trade-review-v3",
+  review_version: "trade-review-v4",
   llm_summary: "future summary",
   updated_at: "2026-07-16T09:10:00+08:00",
 };

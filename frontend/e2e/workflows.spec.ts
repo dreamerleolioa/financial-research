@@ -6,6 +6,7 @@ import {
   futureTradeReview,
   installApiMocks,
   legacyTradeReview,
+  previousTradeReview,
   populatedRiskSummary,
   portfolioItem,
   quickAnalyzeResult,
@@ -545,7 +546,47 @@ test("Closed Portfolio upgrades a saved v1 trade review before presenting it", a
   await closedPosition.getByRole("button", { name: "檢討分析" }).click();
 
   const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v2");
+  await expect(dialog).toContainText("trade-review-v3");
+  await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
+  await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
+});
+
+test("Closed Portfolio upgrades a saved v2 trade review before presenting it", async ({ page }) => {
+  const requestLog: string[] = [];
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedPortfolio: [closedPortfolioItem],
+    tradeReviewGet: previousTradeReview,
+    tradeReviewPost: currentTradeReview,
+    requestLog,
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
+  await expect(dialog).toContainText("trade-review-v3");
+  await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
+  await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
+});
+
+test("Closed Portfolio refreshes a saved v3 trade review before presenting it", async ({ page }) => {
+  const requestLog: string[] = [];
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedPortfolio: [closedPortfolioItem],
+    tradeReviewGet: currentTradeReview,
+    tradeReviewPost: currentTradeReview,
+    requestLog,
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
+  await expect(dialog).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
 });
@@ -564,7 +605,7 @@ test("Closed Portfolio does not downgrade an unknown newer trade review", async 
   await closedPosition.getByRole("button", { name: "檢討分析" }).click();
 
   const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v3");
+  await expect(dialog).toContainText("trade-review-v4");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   expect(requestLog.filter((entry) => entry === "POST /portfolio/201/review")).toHaveLength(0);
 });
