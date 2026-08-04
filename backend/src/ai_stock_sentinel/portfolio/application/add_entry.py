@@ -16,7 +16,13 @@ from ai_stock_sentinel.portfolio.application.events import (
 )
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
-from ai_stock_sentinel.portfolio.schemas import AddEntryRequest, POSTGRES_INTEGER_MAX
+from ai_stock_sentinel.portfolio.schemas import AddEntryRequest
+from ai_stock_sentinel.portfolio.storage_limits import (
+    PORTFOLIO_PRICE_MAX,
+    PORTFOLIO_PRICE_MIN,
+    POSITION_EVENT_MONEY_MAX,
+    POSTGRES_INTEGER_MAX,
+)
 
 
 def add_entry_to_position(
@@ -55,7 +61,15 @@ def add_entry_to_position(
         actual_fee=Decimal(str(payload.fees)) if payload.fees is not None else None,
     )
     event_taxes = Decimal(str(payload.taxes)) if payload.taxes is not None else Decimal("0")
-    item.entry_price = ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity
+    new_entry_price = ((Decimal(str(item.entry_price)) * existing_quantity) + gross_amount) / new_quantity
+    if (
+        event_fees > POSITION_EVENT_MONEY_MAX
+        or event_taxes > POSITION_EVENT_MONEY_MAX
+        or not PORTFOLIO_PRICE_MIN <= new_entry_price <= PORTFOLIO_PRICE_MAX
+    ):
+        raise HTTPException(status_code=422, detail="加碼金額超過系統可儲存範圍")
+
+    item.entry_price = new_entry_price
     item.quantity = int(new_quantity)
     item.updated_at = datetime.now(timezone.utc)
 

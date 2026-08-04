@@ -6,14 +6,22 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from ai_stock_sentinel.portfolio.entry_record_contract import EntryRecordContext
+from ai_stock_sentinel.portfolio.storage_limits import (
+    LIFECYCLE_MONEY_MAX,
+    LIFECYCLE_PERCENT_MAX,
+    LIFECYCLE_PRICE_MAX,
+    LIFECYCLE_PRICE_MIN,
+    PORTFOLIO_PRICE_MAX,
+    PORTFOLIO_PRICE_MIN,
+    POSITION_EVENT_MONEY_MAX,
+    POSTGRES_INTEGER_MAX,
+)
 from ai_stock_sentinel.taiwan_symbols import validate_taiwan_symbol
-
-POSTGRES_INTEGER_MAX = 2_147_483_647
 
 
 class PortfolioCreateRequest(BaseModel):
     symbol: str
-    entry_price: float = Field(gt=0, allow_inf_nan=False)
+    entry_price: float = Field(ge=PORTFOLIO_PRICE_MIN, le=PORTFOLIO_PRICE_MAX, allow_inf_nan=False)
     entry_date: date
     quantity: int = Field(default=0, ge=0, le=POSTGRES_INTEGER_MAX)
     notes: str | None = None
@@ -24,10 +32,10 @@ class PortfolioCreateRequest(BaseModel):
 
 class ClosePortfolioRequest(BaseModel):
     exit_date: date
-    exit_price: float = Field(gt=0, allow_inf_nan=False)
+    exit_price: float = Field(ge=PORTFOLIO_PRICE_MIN, le=PORTFOLIO_PRICE_MAX, allow_inf_nan=False)
     exit_quantity: int = Field(gt=0, le=POSTGRES_INTEGER_MAX)
-    fees: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    taxes: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    fees: float | None = Field(default=None, ge=0, le=POSITION_EVENT_MONEY_MAX, allow_inf_nan=False)
+    taxes: float | None = Field(default=None, ge=0, le=POSITION_EVENT_MONEY_MAX, allow_inf_nan=False)
 
 
 AddEntryReasonCode = Literal[
@@ -84,10 +92,10 @@ AddEntryCondition = Literal[
 
 class AddEntryRequest(BaseModel):
     event_date: date
-    price: float = Field(gt=0, allow_inf_nan=False)
+    price: float = Field(ge=PORTFOLIO_PRICE_MIN, le=PORTFOLIO_PRICE_MAX, allow_inf_nan=False)
     quantity: int = Field(gt=0, le=POSTGRES_INTEGER_MAX)
-    fees: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    taxes: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    fees: float | None = Field(default=None, ge=0, le=POSITION_EVENT_MONEY_MAX, allow_inf_nan=False)
+    taxes: float | None = Field(default=None, ge=0, le=POSITION_EVENT_MONEY_MAX, allow_inf_nan=False)
     reason_code: AddEntryReasonCode
     plan_adherence: Literal["yes", "partial", "no", "not_recorded"]
     confidence_level: Literal["high", "medium", "low", "not_recorded"]
@@ -101,15 +109,30 @@ class BackfillLifecyclePlanRequest(BaseModel):
     default_stop_rule: DefaultStopRule | None = None
     add_entry_condition: AddEntryCondition | None = None
     planned_invalidation: str | None = None
-    planned_stop_price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    planned_stop_price: float | None = Field(
+        default=None,
+        ge=LIFECYCLE_PRICE_MIN,
+        le=LIFECYCLE_PRICE_MAX,
+        allow_inf_nan=False,
+    )
     planned_target_or_scale_out_rule: str | None = None
-    planned_risk_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    planned_risk_pct: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    planned_risk_amount: float | None = Field(
+        default=None,
+        ge=0,
+        le=LIFECYCLE_MONEY_MAX,
+        allow_inf_nan=False,
+    )
+    planned_risk_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=LIFECYCLE_PERCENT_MAX,
+        allow_inf_nan=False,
+    )
     position_sizing_rationale: str | None = None
 
 
 class UpdatePortfolioRequest(BaseModel):
-    entry_price: float = Field(gt=0, allow_inf_nan=False)
+    entry_price: float = Field(ge=PORTFOLIO_PRICE_MIN, le=PORTFOLIO_PRICE_MAX, allow_inf_nan=False)
     quantity: int = Field(gt=0, le=POSTGRES_INTEGER_MAX)
     entry_date: date
     notes: str | None = None

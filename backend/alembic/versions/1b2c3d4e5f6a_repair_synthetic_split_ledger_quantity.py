@@ -112,6 +112,44 @@ def _has_single_symbol(group_rows: Sequence[Any], events: Sequence[Any]) -> bool
     return len(symbols) == len(items) and len(set(symbols)) == 1
 
 
+def _lock_portfolio_rows_if_unchanged(bind: Any, group_rows: Sequence[Any]) -> bool:
+    """Compare-and-lock every source row before applying the event-side CAS."""
+    for row in sorted(group_rows, key=lambda item: int(item.id)):
+        result = bind.execute(
+            sa.text(
+                """
+                UPDATE user_portfolio
+                SET updated_at = updated_at
+                WHERE id = :row_id
+                  AND (user_id = :user_id OR (user_id IS NULL AND :user_id IS NULL))
+                  AND position_group_id = :position_group_id
+                  AND symbol = :symbol
+                  AND entry_price = :entry_price
+                  AND quantity = :quantity
+                  AND entry_date = :entry_date
+                  AND (exit_quantity = :exit_quantity OR (exit_quantity IS NULL AND :exit_quantity IS NULL))
+                  AND is_active = :is_active
+                  AND updated_at = :updated_at
+                """
+            ),
+            {
+                "row_id": row.id,
+                "user_id": row.user_id,
+                "position_group_id": row.position_group_id,
+                "symbol": row.symbol,
+                "entry_price": row.entry_price,
+                "quantity": row.quantity,
+                "entry_date": row.entry_date,
+                "exit_quantity": row.exit_quantity,
+                "is_active": row.is_active,
+                "updated_at": row.updated_at,
+            },
+        )
+        if result.rowcount != 1:
+            return False
+    return True
+
+
 def _repair_synthetic_group_quantities() -> None:
     """Repair only deterministic active and fully-closed shapes from the original migration."""
     bind = op.get_bind()
@@ -205,6 +243,8 @@ def _repair_synthetic_group_quantities() -> None:
         ):
             continue
         if int(initial_events[0].quantity) == expected_initial_quantity:
+            continue
+        if not _lock_portfolio_rows_if_unchanged(bind, group_rows):
             continue
 
         initial_event = initial_events[0]

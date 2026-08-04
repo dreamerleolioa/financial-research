@@ -1028,3 +1028,54 @@ def test_repair_migration_does_not_overwrite_concurrent_manual_correction() -> N
         initial_event = _initial_event(session, "group-concurrent-correction")
         assert initial_event.quantity == 80
         assert initial_event.source == "manual_record_correction"
+
+
+def test_repair_migration_skips_group_when_source_portfolio_changes_after_snapshot() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[User.__table__, UserPortfolio.__table__, PositionEvent.__table__])
+    migration = _load_repair_migration()
+
+    with Session(engine) as session:
+        _add_active_split_group(session, group_id="group-concurrent-portfolio-correction")
+        connection = session.connection()
+
+        class ConcurrentPortfolioCorrectionBind:
+            injected = False
+
+            def execute(self, statement, parameters=None):
+                sql = str(statement)
+                if not self.injected and "UPDATE user_portfolio" in sql:
+                    connection.execute(
+                        text(
+                            """
+                            UPDATE user_portfolio
+                            SET entry_price = 950,
+                                updated_at = :updated_at
+                            WHERE position_group_id = :position_group_id
+                              AND is_active = 1
+                            """
+                        ),
+                        {
+                            "updated_at": datetime(2026, 7, 3, tzinfo=timezone.utc),
+                            "position_group_id": "group-concurrent-portfolio-correction",
+                        },
+                    )
+                    self.injected = True
+                if parameters is None:
+                    return connection.execute(statement)
+                return connection.execute(statement, parameters)
+
+        bind = ConcurrentPortfolioCorrectionBind()
+        migration.op = SimpleNamespace(get_bind=lambda: bind)
+        migration._repair_synthetic_group_quantities()
+
+        session.expire_all()
+        active_row = session.get(UserPortfolio, 1)
+        initial_event = _initial_event(session, "group-concurrent-portfolio-correction")
+        assert bind.injected is True
+        assert float(active_row.entry_price) == 950
+        assert initial_event.quantity == 60

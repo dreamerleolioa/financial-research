@@ -15,6 +15,11 @@ from ai_stock_sentinel.portfolio.application.events import (
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee, calculate_sell_transaction_tax
 from ai_stock_sentinel.portfolio.repository import get_owned_portfolio
 from ai_stock_sentinel.portfolio.schemas import ClosePortfolioRequest
+from ai_stock_sentinel.portfolio.storage_limits import (
+    POSITION_EVENT_MONEY_MAX,
+    REALIZED_PNL_MAX,
+    REALIZED_RETURN_PCT_MAX,
+)
 
 
 def close_position(
@@ -63,6 +68,14 @@ def close_position(
     )
     realized_pnl = (exit_price - entry_price) * exit_quantity - row_fees - row_taxes
     realized_return_pct = realized_pnl / (entry_price * exit_quantity) * Decimal("100")
+    if (
+        row_fees > POSITION_EVENT_MONEY_MAX
+        or row_taxes > POSITION_EVENT_MONEY_MAX
+        or abs(realized_pnl) > REALIZED_PNL_MAX
+        or abs(realized_return_pct) > REALIZED_RETURN_PCT_MAX
+    ):
+        raise HTTPException(status_code=422, detail="結案金額超過系統可儲存範圍")
+
     holding_days = (payload.exit_date - item.entry_date).days
     updated_at = datetime.now(timezone.utc)
 
