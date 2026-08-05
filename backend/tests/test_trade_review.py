@@ -330,6 +330,48 @@ def test_compact_market_snapshot_prefers_later_completed_history_over_earlier_pa
     }
 
 
+def test_compact_market_snapshot_accepts_later_completed_corrections_without_losing_fields() -> None:
+    snapshot = market_snapshot_payload(
+        [
+            {
+                "record_date": "2026-01-01",
+                "raw_data_is_final": True,
+                "technical": {
+                    "recent_closes": [100],
+                    "recent_highs": [101],
+                    "recent_lows": [99],
+                    "recent_volumes": [1000],
+                    "recent_close_dates": ["2026-01-01"],
+                    "recent_high_dates": ["2026-01-01"],
+                    "recent_low_dates": ["2026-01-01"],
+                    "recent_volume_dates": ["2026-01-01"],
+                },
+            },
+            {
+                "record_date": "2026-01-02",
+                "raw_data_is_final": True,
+                "technical": {
+                    "recent_closes": [102],
+                    "recent_lows": [100],
+                    "recent_volumes": [1200],
+                    "recent_close_dates": ["2026-01-01"],
+                    "recent_low_dates": ["2026-01-01"],
+                    "recent_volume_dates": ["2026-01-01"],
+                },
+            },
+        ],
+        provider="stock_raw_data_read_only",
+        compact=True,
+    )
+
+    assert snapshot["bars"][0]["bar"] == {
+        "close": 102,
+        "high": 101,
+        "low": 100,
+        "volume": 1200,
+    }
+
+
 def test_source_fingerprint_ignores_fetch_time_but_changes_with_market_content():
     first = {"market_snapshot": {"fetched_at": "2026-08-04T01:00:00Z", "bars": [{"close": 100.0}]}}
     same_content = {"market_snapshot": {"fetched_at": "2026-08-04T02:00:00Z", "bars": [{"close": 100.0}]}}

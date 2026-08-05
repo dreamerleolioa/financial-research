@@ -327,7 +327,7 @@ pnpm dev
 
 - 獨立頁面保留結案紀錄與歷史診斷，不再把出場等同刪除追蹤
 - 期間篩選：1天 / 1週 / 1月 / 1季 / 1年，並顯示篩選後的 `已實現損益` 總計
-- Trade Review 與 Lifecycle Review 使用原始 final rows 計算，但持久化的 `StockRawData` market evidence 會依交易日 compact；所有 dated trailing series 會先於 outer bars 合併，同日重疊時保留先取得的 completed trailing bar，後續 series 或 partial outer bar 只補既有 bar 的缺少欄位，避免盤中 outer quote 覆蓋治理使用的完整 OHLCV、重複保存整段歷史或扭曲 source fingerprint
+- Trade Review 與 Lifecycle Review 使用原始 final rows 計算，但持久化的 `StockRawData` market evidence 會依交易日 compact；所有 dated trailing series 會先於 outer bars 合併，同日重疊的 trailing history 以較新非空值更新並保留其缺少欄位，partial outer bar 則只能補缺，避免盤中 outer quote 覆蓋治理使用的 completed OHLCV、重複保存整段歷史或扭曲 source fingerprint
 
 **Daily Radar（`/daily-radar`）**
 

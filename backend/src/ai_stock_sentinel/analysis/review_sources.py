@@ -326,6 +326,7 @@ def _compact_market_bars(
             bar_date,
             bar,
             raw_data_is_final=raw_data_is_final,
+            fill_missing_only=True,
         )
 
     compacted = [dated_bars[value] for value in sorted(dated_bars)]
@@ -340,6 +341,7 @@ def _merged_market_bar_payload(
     bar: dict[str, Any],
     *,
     raw_data_is_final: Any,
+    fill_missing_only: bool = False,
 ) -> dict[str, Any]:
     existing_bar = (
         existing_payload.get("bar")
@@ -348,9 +350,13 @@ def _merged_market_bar_payload(
         else {}
     )
     merged_bar = dict(existing_bar)
-    for key, value in bar.items():
-        if value is not None and merged_bar.get(key) is None:
-            merged_bar[key] = value
+    non_null_bar = {key: value for key, value in bar.items() if value is not None}
+    if fill_missing_only:
+        for key, value in non_null_bar.items():
+            if merged_bar.get(key) is None:
+                merged_bar[key] = value
+    else:
+        merged_bar.update(non_null_bar)
     existing_finality = (
         existing_payload.get("raw_data_is_final")
         if isinstance(existing_payload, dict)
