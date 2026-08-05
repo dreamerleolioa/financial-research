@@ -274,6 +274,7 @@ interface ApiMockOptions {
   priceRefreshDelayMs?: number;
   dailyRadar?: unknown | null;
   analyzeResult?: unknown;
+  analyzeResponsesBySymbol?: Record<string, MockResponse>;
   requestLog?: string[];
   requestBodies?: unknown[];
 }
@@ -373,7 +374,13 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
         created_after_entry: null,
       });
     }
-    if (method === "POST" && pathname === "/analyze") return json(route, analyzeResult);
+    if (method === "POST" && pathname === "/analyze") {
+      const body = request.postDataJSON() as { symbol?: string };
+      const symbolResponse = body.symbol ? options.analyzeResponsesBySymbol?.[body.symbol] : undefined;
+      return symbolResponse
+        ? json(route, symbolResponse.body, symbolResponse.status ?? 200, symbolResponse.headers)
+        : json(route, analyzeResult);
+    }
     if (method === "DELETE" && /^\/portfolio\/\d+$/.test(pathname)) return route.fulfill({ status: 204 });
     if (method === "GET" && pathname === "/daily-radar/latest") {
       return dailyRadar

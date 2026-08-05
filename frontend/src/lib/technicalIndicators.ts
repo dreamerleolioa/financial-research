@@ -3,6 +3,11 @@ import { formatPrice, formatVolume } from "./formatters";
 
 export type CopyStatus = "idle" | "success" | "error";
 
+export type TechnicalIndicatorsCopyPayload = Pick<
+  AnalyzeResponse,
+  "symbol_name" | "technical_indicators" | "is_final" | "phase1_observation" | "chip_stability_context"
+>;
+
 export const COPY_STATUS_RESET_MS = 1800;
 
 const BOLLINGER_POSITION_LABEL: Record<string, { label: string }> = {
@@ -128,7 +133,10 @@ export function getTechnicalIndicatorLabel(
   return TECHNICAL_LABELS[kind][value]?.label ?? value;
 }
 
-export function getAnalyzeSymbolName(result: AnalyzeResponse | null, snapshot: Record<string, unknown>): string | null {
+export function getAnalyzeSymbolName(
+  result: Pick<AnalyzeResponse, "symbol_name"> | null,
+  snapshot: Record<string, unknown>,
+): string | null {
   if (typeof result?.symbol_name === "string" && result.symbol_name.trim()) return result.symbol_name.trim();
   if (typeof snapshot.name === "string" && snapshot.name.trim()) return snapshot.name.trim();
   return null;
@@ -245,7 +253,10 @@ function buildChipStabilityCopyRows(context: ChipStabilityContext | null | undef
   ];
 }
 
-export function buildTechnicalIndicatorsCopyText(result: AnalyzeResponse, snapshot: Record<string, unknown>): string {
+export function buildTechnicalIndicatorsCopyText(
+  result: TechnicalIndicatorsCopyPayload,
+  snapshot: Record<string, unknown>,
+): string {
   const indicators = result.technical_indicators;
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
   const displaySymbol = snapshotSymbol ?? "—";

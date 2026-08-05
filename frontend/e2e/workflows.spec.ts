@@ -153,6 +153,392 @@ test("Portfolio destructive action requires confirmation before DELETE", async (
   await expect.poll(() => requestLog).toContain("DELETE /portfolio/11");
 });
 
+test("Portfolio prepares and copies neutral technical snapshots for every holding", async ({ page, context }) => {
+  const requestLog: string[] = [];
+  const requestBodies: unknown[] = [];
+  const secondPortfolioItem = {
+    ...portfolioItem,
+    id: 12,
+    symbol: "6488.TWO",
+    name: "環球晶",
+    entry_price: 690,
+    quantity: 200,
+    entry_date: "2026-06-12",
+  };
+  const riskSummary = {
+    ...populatedRiskSummary,
+    position_risks: [
+      { ...populatedRiskSummary.position_risks[0], portfolio_weight_pct: 80 },
+      {
+        ...populatedRiskSummary.position_risks[0],
+        symbol: secondPortfolioItem.symbol,
+        name: secondPortfolioItem.name,
+        quantity: secondPortfolioItem.quantity,
+        current_price: 700,
+        entry_price: secondPortfolioItem.entry_price,
+        market_value: 140_000,
+        unrealized_pnl: 2_000,
+        defense_reference: { price: 650, source: "planned_stop_price" },
+        portfolio_weight_pct: 20,
+      },
+    ],
+  };
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem, secondPortfolioItem],
+    riskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: {
+            ...quickAnalyzeResult.snapshot,
+            symbol: "2330.TW",
+            current_price: 1085,
+            market_current_price: 1085,
+            price_limit_status: "normal",
+          },
+          symbol_name: "台積電",
+        },
+      },
+      "6488.TWO": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: {
+            ...quickAnalyzeResult.snapshot,
+            symbol: "6488.TWO",
+            current_price: 700,
+            market_current_price: 700,
+            price_limit_status: "normal",
+          },
+          symbol_name: "環球晶",
+        },
+      },
+    },
+    requestLog,
+    requestBodies,
+  });
+
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
+
+  await expect(page.getByText("已整理 2/2 檔技術資料")).toBeVisible();
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+  await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toContainText("已複製");
+
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toMatch(/^技術指標摘要\n持股成本：1018\n進場日期：2026-05-08\n持有股數：1000\n股票名稱：台積電/);
+  expect(copiedText).toContain("持股成本：1018");
+  expect(copiedText).toContain("進場日期：2026-05-08");
+  expect(copiedText).toContain("持有股數：1000");
+  expect(copiedText).toContain("股票名稱：台積電");
+  expect(copiedText).toContain("股票名稱：環球晶");
+  expect(copiedText.match(/\n\n---\n\n/g)).toHaveLength(1);
+  expect(copiedText).toContain("均線 MA5/20/60");
+  expect(copiedText).not.toContain("全部持股技術資料");
+  expect(copiedText).not.toContain("產生時間：");
+  expect(copiedText).not.toContain("資料範圍：");
+  expect(copiedText).not.toContain("整理結果：");
+  expect(copiedText).not.toContain("持股 1/2");
+  expect(copiedText).not.toContain("持股權重：");
+  expect(copiedText).not.toContain("目前損益率：");
+  expect(copiedText).not.toContain("防守參考：");
+  expect(copiedText).not.toContain("技術資料日：");
+  expect(copiedText).not.toContain("technical_score");
+
+  const technicalBodies = requestBodies.filter(
+    (body): body is { symbol: string; skip_ai: boolean } =>
+      typeof body === "object" && body !== null && "symbol" in body && "skip_ai" in body,
+  );
+  expect(technicalBodies).toHaveLength(2);
+  expect(technicalBodies.map((body) => body.symbol).sort()).toEqual(["2330.TW", "6488.TWO"]);
+  expect(technicalBodies.every((body) => body.skip_ai === true)).toBe(true);
+  expect(requestLog).not.toContain("POST /analyze/position");
+
+  await page.evaluate(() => {
+    localStorage.setItem("portfolio_mutation_revision", "changed-after-technical-lookup");
+  });
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+  await expect(page.getByText("持股資料已變更，請重新整理技術資料")).toBeVisible();
+  await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toHaveCount(0);
+});
+
+test("Portfolio reloads position facts after a cross-tab mutation before technical lookup", async ({
+  page,
+  context,
+}) => {
+  const updatedPortfolioItem = {
+    ...portfolioItem,
+    entry_price: 1018.25,
+    entry_date: "2026-07-01",
+    quantity: 900,
+  };
+  let updatedItemsRequestCount = 0;
+  let releaseUpdatedItems: (() => void) | undefined;
+  const updatedItemsGate = new Promise<void>((resolve) => {
+    releaseUpdatedItems = resolve;
+  });
+
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: { ...quickAnalyzeResult.snapshot, symbol: "2330.TW" },
+          symbol_name: "台積電",
+        },
+      },
+    },
+  });
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+
+  await page.route("http://127.0.0.1:8001/portfolio", async (route) => {
+    updatedItemsRequestCount += 1;
+    await updatedItemsGate;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([updatedPortfolioItem]) });
+  });
+  await page.evaluate(() => {
+    const oldValue = localStorage.getItem("portfolio_mutation_revision");
+    const newValue = "changed-in-another-tab-before-technical-lookup";
+    localStorage.setItem("portfolio_mutation_revision", newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "portfolio_mutation_revision",
+        oldValue,
+        newValue,
+      }),
+    );
+  });
+
+  await expect.poll(() => updatedItemsRequestCount).toBe(1);
+  await expect(prepareButton).toBeDisabled();
+  releaseUpdatedItems?.();
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
+  await expect(page.getByText("已整理 1/1 檔技術資料")).toBeVisible();
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toContain("持股成本：1018.25");
+  expect(copiedText).toContain("進場日期：2026-07-01");
+  expect(copiedText).toContain("持有股數：900");
+  expect(copiedText).not.toContain("持股成本：1020");
+});
+
+test("Portfolio keeps technical lookup disabled when a cross-tab items reload fails", async ({ page }) => {
+  const requestLog: string[] = [];
+  let failedItemsRequestCount = 0;
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    requestLog,
+  });
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+
+  await page.route("http://127.0.0.1:8001/portfolio", async (route) => {
+    failedItemsRequestCount += 1;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "portfolio unavailable" }),
+    });
+  });
+  await page.evaluate(() => {
+    const oldValue = localStorage.getItem("portfolio_mutation_revision");
+    const newValue = "changed-in-another-tab-with-failed-items-reload";
+    localStorage.setItem("portfolio_mutation_revision", newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "portfolio_mutation_revision",
+        oldValue,
+        newValue,
+      }),
+    );
+  });
+
+  await expect.poll(() => failedItemsRequestCount, { timeout: 5000 }).toBe(2);
+  await page.waitForTimeout(100);
+  await expect(prepareButton).toBeDisabled();
+  expect(requestLog).not.toContain("POST /analyze");
+});
+
+test("Portfolio keeps invalidated technical workers locked until their requests settle", async ({ page }) => {
+  const portfolio = [
+    portfolioItem,
+    { ...portfolioItem, id: 12, symbol: "6488.TWO", name: "環球晶" },
+    { ...portfolioItem, id: 13, symbol: "2454.TW", name: "聯發科" },
+    { ...portfolioItem, id: 14, symbol: "2308.TW", name: "台達電" },
+  ];
+  const updatedPortfolio = portfolio.map((item, index) =>
+    index === 0 ? { ...item, entry_price: item.entry_price + 0.25 } : item,
+  );
+  let activeAnalyzeRequests = 0;
+  let maxActiveAnalyzeRequests = 0;
+  let analyzeRequestCount = 0;
+  let releaseFirstBatch: (() => void) | undefined;
+  let updatedItemsRequestCount = 0;
+  let releaseUpdatedItems: (() => void) | undefined;
+  const firstBatchGate = new Promise<void>((resolve) => {
+    releaseFirstBatch = resolve;
+  });
+  const updatedItemsGate = new Promise<void>((resolve) => {
+    releaseUpdatedItems = resolve;
+  });
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio,
+    riskSummary: populatedRiskSummary,
+  });
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+
+  await page.route("http://127.0.0.1:8001/analyze", async (route) => {
+    const requestNumber = ++analyzeRequestCount;
+    activeAnalyzeRequests += 1;
+    maxActiveAnalyzeRequests = Math.max(maxActiveAnalyzeRequests, activeAnalyzeRequests);
+    try {
+      if (requestNumber <= 3) await firstBatchGate;
+      const body = route.request().postDataJSON() as { symbol: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...quickAnalyzeResult,
+          snapshot: { ...quickAnalyzeResult.snapshot, symbol: body.symbol },
+        }),
+      });
+    } finally {
+      activeAnalyzeRequests -= 1;
+    }
+  });
+  await page.route("http://127.0.0.1:8001/portfolio", async (route) => {
+    updatedItemsRequestCount += 1;
+    await updatedItemsGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(updatedPortfolio),
+    });
+  });
+
+  await prepareButton.click();
+  await expect.poll(() => analyzeRequestCount).toBe(3);
+  expect(maxActiveAnalyzeRequests).toBe(3);
+  await page.evaluate(() => {
+    const oldValue = localStorage.getItem("portfolio_mutation_revision");
+    const newValue = "changed-while-technical-workers-are-running";
+    localStorage.setItem("portfolio_mutation_revision", newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "portfolio_mutation_revision",
+        oldValue,
+        newValue,
+      }),
+    );
+  });
+
+  await expect.poll(() => updatedItemsRequestCount).toBe(1);
+  await expect(page.getByRole("button", { name: /技術整理中/ })).toBeDisabled();
+  releaseFirstBatch?.();
+  await expect(page.getByText("持股資料已變更，請重新整理技術資料")).toBeVisible();
+  await page.waitForTimeout(100);
+  expect(analyzeRequestCount).toBe(3);
+
+  const rerunButton = page.getByRole("button", { name: "重新整理技術資料" });
+  await expect(rerunButton).toBeDisabled();
+  releaseUpdatedItems?.();
+  const readyRerunButton = page.getByRole("button", { name: /^(整理全部技術資料|重新整理技術資料)$/ });
+  await expect(readyRerunButton).toBeEnabled();
+  await readyRerunButton.click();
+  await expect(page.getByText("已整理 4/4 檔技術資料")).toBeVisible();
+  expect(analyzeRequestCount).toBe(7);
+  expect(maxActiveAnalyzeRequests).toBe(3);
+});
+
+test("Portfolio treats a structured 200 analysis error as a failed technical holding", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: { ...quickAnalyzeResult.snapshot, symbol: "2330.TW" },
+          technical_indicators: {},
+          errors: [{ code: "ANALYZE_RUNTIME_ERROR", message: "provider unavailable" }],
+        },
+      },
+    },
+  });
+  await page.goto("/portfolio");
+  await page.getByRole("button", { name: "整理全部技術資料" }).click();
+
+  await expect(page.getByText("技術資料整理失敗：2330.TW")).toBeVisible();
+  await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toHaveCount(0);
+});
+
+test("Portfolio keeps successful technical data copyable when one holding fails", async ({ page, context }) => {
+  const secondPortfolioItem = {
+    ...portfolioItem,
+    id: 12,
+    symbol: "6488.TWO",
+    name: "環球晶",
+  };
+
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem, secondPortfolioItem],
+    riskSummary: populatedRiskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: {
+            ...quickAnalyzeResult.snapshot,
+            symbol: "2330.TW",
+            current_price: 1085,
+            market_current_price: 1085,
+            price_limit_status: "normal",
+          },
+          symbol_name: "台積電",
+        },
+      },
+      "6488.TWO": { body: { detail: "provider unavailable" }, status: 503 },
+    },
+  });
+
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
+
+  await expect(page.getByText("已整理 1/2 檔，失敗：6488.TWO")).toBeVisible();
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toContain("股票代碼：2330.TW");
+  expect(copiedText).not.toContain("\n\n---\n\n");
+  expect(copiedText).not.toContain("失敗標的：6488.TWO");
+});
+
 test("Portfolio refreshes prices without triggering AI analysis", async ({ page }) => {
   const requestLog: string[] = [];
   const refreshedRiskSummary = {
