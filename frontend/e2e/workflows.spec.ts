@@ -377,6 +377,124 @@ test("Portfolio keeps technical lookup disabled when a cross-tab items reload fa
   expect(requestLog).not.toContain("POST /analyze");
 });
 
+test("Portfolio keeps invalidated technical workers locked until their requests settle", async ({ page }) => {
+  const portfolio = [
+    portfolioItem,
+    { ...portfolioItem, id: 12, symbol: "6488.TWO", name: "環球晶" },
+    { ...portfolioItem, id: 13, symbol: "2454.TW", name: "聯發科" },
+    { ...portfolioItem, id: 14, symbol: "2308.TW", name: "台達電" },
+  ];
+  const updatedPortfolio = portfolio.map((item, index) =>
+    index === 0 ? { ...item, entry_price: item.entry_price + 0.25 } : item,
+  );
+  let activeAnalyzeRequests = 0;
+  let maxActiveAnalyzeRequests = 0;
+  let analyzeRequestCount = 0;
+  let releaseFirstBatch: (() => void) | undefined;
+  let updatedItemsRequestCount = 0;
+  let releaseUpdatedItems: (() => void) | undefined;
+  const firstBatchGate = new Promise<void>((resolve) => {
+    releaseFirstBatch = resolve;
+  });
+  const updatedItemsGate = new Promise<void>((resolve) => {
+    releaseUpdatedItems = resolve;
+  });
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio,
+    riskSummary: populatedRiskSummary,
+  });
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+
+  await page.route("http://127.0.0.1:8001/analyze", async (route) => {
+    const requestNumber = ++analyzeRequestCount;
+    activeAnalyzeRequests += 1;
+    maxActiveAnalyzeRequests = Math.max(maxActiveAnalyzeRequests, activeAnalyzeRequests);
+    try {
+      if (requestNumber <= 3) await firstBatchGate;
+      const body = route.request().postDataJSON() as { symbol: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...quickAnalyzeResult,
+          snapshot: { ...quickAnalyzeResult.snapshot, symbol: body.symbol },
+        }),
+      });
+    } finally {
+      activeAnalyzeRequests -= 1;
+    }
+  });
+  await page.route("http://127.0.0.1:8001/portfolio", async (route) => {
+    updatedItemsRequestCount += 1;
+    await updatedItemsGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(updatedPortfolio),
+    });
+  });
+
+  await prepareButton.click();
+  await expect.poll(() => analyzeRequestCount).toBe(3);
+  expect(maxActiveAnalyzeRequests).toBe(3);
+  await page.evaluate(() => {
+    const oldValue = localStorage.getItem("portfolio_mutation_revision");
+    const newValue = "changed-while-technical-workers-are-running";
+    localStorage.setItem("portfolio_mutation_revision", newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "portfolio_mutation_revision",
+        oldValue,
+        newValue,
+      }),
+    );
+  });
+
+  await expect.poll(() => updatedItemsRequestCount).toBe(1);
+  await expect(page.getByRole("button", { name: /技術整理中/ })).toBeDisabled();
+  releaseFirstBatch?.();
+  await expect(page.getByText("持股資料已變更，請重新整理技術資料")).toBeVisible();
+  await page.waitForTimeout(100);
+  expect(analyzeRequestCount).toBe(3);
+
+  const rerunButton = page.getByRole("button", { name: "重新整理技術資料" });
+  await expect(rerunButton).toBeDisabled();
+  releaseUpdatedItems?.();
+  const readyRerunButton = page.getByRole("button", { name: /^(整理全部技術資料|重新整理技術資料)$/ });
+  await expect(readyRerunButton).toBeEnabled();
+  await readyRerunButton.click();
+  await expect(page.getByText("已整理 4/4 檔技術資料")).toBeVisible();
+  expect(analyzeRequestCount).toBe(7);
+  expect(maxActiveAnalyzeRequests).toBe(3);
+});
+
+test("Portfolio treats a structured 200 analysis error as a failed technical holding", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: { ...quickAnalyzeResult.snapshot, symbol: "2330.TW" },
+          technical_indicators: {},
+          errors: [{ code: "ANALYZE_RUNTIME_ERROR", message: "provider unavailable" }],
+        },
+      },
+    },
+  });
+  await page.goto("/portfolio");
+  await page.getByRole("button", { name: "整理全部技術資料" }).click();
+
+  await expect(page.getByText("技術資料整理失敗：2330.TW")).toBeVisible();
+  await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toHaveCount(0);
+});
+
 test("Portfolio keeps successful technical data copyable when one holding fails", async ({ page, context }) => {
   const secondPortfolioItem = {
     ...portfolioItem,

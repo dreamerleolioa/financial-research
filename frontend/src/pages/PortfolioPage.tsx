@@ -2236,12 +2236,25 @@ type TechnicalBatchStatus = "idle" | "running" | "ready" | "partialError" | "err
 type PortfolioId = PortfolioItem["id"];
 type PortfolioIdKey = `${PortfolioId}`;
 
+const PORTFOLIO_TECHNICAL_REQUIRED_KEYS = ["ma5", "ma20", "ma60", "high_20d", "low_20d", "macd_bias", "atr"] as const;
+
 function portfolioIdKey(id: PortfolioId): PortfolioIdKey {
   return String(id) as PortfolioIdKey;
 }
 
 function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
+}
+
+function isUsablePortfolioTechnicalResult(result: AnalyzeResponse, expectedSymbol: string): boolean {
+  const snapshotSymbol = result.snapshot.symbol;
+  const indicators = result.technical_indicators;
+  return (
+    indicators != null &&
+    PORTFOLIO_TECHNICAL_REQUIRED_KEYS.every((key) => Object.prototype.hasOwnProperty.call(indicators, key)) &&
+    typeof snapshotSymbol === "string" &&
+    snapshotSymbol.trim().toUpperCase() === expectedSymbol.trim().toUpperCase()
+  );
 }
 
 function portfolioCardDisplayName(
@@ -2479,9 +2492,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
   const technicalBatchRevisionRef = useRef<string | null>(null);
   const technicalBatchSequenceRef = useRef(0);
+  const technicalBatchInFlightRef = useRef(false);
+  const technicalBatchAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const technicalCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const technicalPortfolioSignatureRef = useRef<string>("");
   const [technicalBatchStatus, setTechnicalBatchStatus] = useState<TechnicalBatchStatus>("idle");
+  const [technicalBatchInFlight, setTechnicalBatchInFlight] = useState(false);
   const [technicalBatchProgress, setTechnicalBatchProgress] = useState({ done: 0, total: 0 });
   const [technicalResultsByItemId, setTechnicalResultsByItemId] = useState<Record<number, AnalyzeResponse>>({});
   const [technicalFailedSymbols, setTechnicalFailedSymbols] = useState<string[]>([]);
@@ -2496,17 +2512,23 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
         .join("|")}`,
     [items, riskSummary?.portfolio_revision],
   );
-  const technicalBatchRunning = technicalBatchStatus === "running";
+  const technicalBatchRunning = technicalBatchInFlight;
   const technicalResultCount = items.reduce((count, item) => count + (technicalResultsByItemId[item.id] ? 1 : 0), 0);
   const hasTechnicalResults = technicalResultCount > 0;
-  const technicalLookupButtonLabel = technicalBatchRunning
-    ? `技術整理中 ${technicalBatchProgress.done}/${technicalBatchProgress.total}`
-    : technicalBatchStatus === "idle"
-      ? "整理全部技術資料"
-      : "重新整理技術資料";
+  const technicalLookupButtonLabel =
+    technicalBatchStatus === "running"
+      ? `技術整理中 ${technicalBatchProgress.done}/${technicalBatchProgress.total}`
+      : technicalBatchInFlight
+        ? "等待舊技術整理結束"
+        : technicalBatchStatus === "idle"
+          ? "整理全部技術資料"
+          : "重新整理技術資料";
 
   useEffect(() => {
     return () => {
+      technicalBatchSequenceRef.current += 1;
+      for (const controller of technicalBatchAbortControllersRef.current) controller.abort();
+      technicalBatchAbortControllersRef.current.clear();
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
       if (technicalCopyTimerRef.current) clearTimeout(technicalCopyTimerRef.current);
       if (priceRefreshTimerRef.current) clearTimeout(priceRefreshTimerRef.current);
@@ -2515,10 +2537,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   useEffect(() => {
     if (technicalPortfolioSignatureRef.current === technicalPortfolioSignature) return;
+    const hasInvalidatedBatchInFlight = technicalBatchInFlightRef.current;
     technicalBatchSequenceRef.current += 1;
     technicalBatchRevisionRef.current = null;
     technicalPortfolioSignatureRef.current = technicalPortfolioSignature;
-    setTechnicalBatchStatus("idle");
+    setTechnicalBatchStatus(hasInvalidatedBatchInFlight ? "stale" : "idle");
     setTechnicalBatchProgress({ done: 0, total: 0 });
     setTechnicalResultsByItemId({});
     setTechnicalFailedSymbols([]);
@@ -2658,7 +2681,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   async function runPortfolioTechnicalLookup(): Promise<void> {
     const revisionAtStart = readPortfolioMutationRevision();
     if (
-      technicalBatchRunning ||
+      technicalBatchInFlightRef.current ||
       portfolioItemsQuery.isFetching ||
       readLoadedPortfolioItemsRevision() !== revisionAtStart ||
       items.length === 0
@@ -2670,45 +2693,70 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     const batchSequence = technicalBatchSequenceRef.current + 1;
     technicalBatchSequenceRef.current = batchSequence;
     technicalBatchRevisionRef.current = revisionAtStart;
+    technicalBatchInFlightRef.current = true;
     const successfulResults: Record<number, AnalyzeResponse> = {};
     const failedSymbols: string[] = [];
     let nextIndex = 0;
     let completedCount = 0;
 
+    setTechnicalBatchInFlight(true);
     setTechnicalBatchStatus("running");
     setTechnicalBatchProgress({ done: 0, total: batchItems.length });
     setTechnicalResultsByItemId({});
     setTechnicalFailedSymbols([]);
     setTechnicalCopyStatus("idle");
 
-    async function worker(): Promise<void> {
-      while (nextIndex < batchItems.length) {
-        const item = batchItems[nextIndex];
-        nextIndex += 1;
-        try {
-          successfulResults[item.id] = await analyzeSymbol({ symbol: item.symbol, skip_ai: true });
-        } catch {
-          failedSymbols.push(item.symbol);
-        }
-        completedCount += 1;
-        if (technicalBatchSequenceRef.current === batchSequence) {
+    try {
+      async function worker(): Promise<void> {
+        while (
+          technicalBatchSequenceRef.current === batchSequence &&
+          readPortfolioMutationRevision() === revisionAtStart &&
+          nextIndex < batchItems.length
+        ) {
+          const item = batchItems[nextIndex];
+          nextIndex += 1;
+          const controller = new AbortController();
+          technicalBatchAbortControllersRef.current.add(controller);
+          try {
+            const result = await analyzeSymbol({ symbol: item.symbol, skip_ai: true }, controller.signal);
+            if (
+              technicalBatchSequenceRef.current !== batchSequence ||
+              readPortfolioMutationRevision() !== revisionAtStart
+            ) {
+              return;
+            }
+            if (isUsablePortfolioTechnicalResult(result, item.symbol)) {
+              successfulResults[item.id] = result;
+            } else {
+              failedSymbols.push(item.symbol);
+            }
+          } catch {
+            if (technicalBatchSequenceRef.current === batchSequence) failedSymbols.push(item.symbol);
+          } finally {
+            technicalBatchAbortControllersRef.current.delete(controller);
+          }
+          if (technicalBatchSequenceRef.current !== batchSequence) return;
+          completedCount += 1;
           setTechnicalBatchProgress({ done: completedCount, total: batchItems.length });
         }
       }
-    }
 
-    const workerCount = Math.min(3, batchItems.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    if (technicalBatchSequenceRef.current !== batchSequence) return;
-    if (readPortfolioMutationRevision() !== revisionAtStart) {
-      discardStaleTechnicalBatch();
-      return;
-    }
+      const workerCount = Math.min(3, batchItems.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      if (technicalBatchSequenceRef.current !== batchSequence) return;
+      if (readPortfolioMutationRevision() !== revisionAtStart) {
+        discardStaleTechnicalBatch();
+        return;
+      }
 
-    const successCount = Object.keys(successfulResults).length;
-    setTechnicalResultsByItemId(successfulResults);
-    setTechnicalFailedSymbols(failedSymbols);
-    setTechnicalBatchStatus(successCount === 0 ? "error" : failedSymbols.length > 0 ? "partialError" : "ready");
+      const successCount = Object.keys(successfulResults).length;
+      setTechnicalResultsByItemId(successfulResults);
+      setTechnicalFailedSymbols(failedSymbols);
+      setTechnicalBatchStatus(successCount === 0 ? "error" : failedSymbols.length > 0 ? "partialError" : "ready");
+    } finally {
+      technicalBatchInFlightRef.current = false;
+      setTechnicalBatchInFlight(false);
+    }
   }
 
   async function copyPortfolioTechnicalResults(): Promise<void> {
@@ -2937,7 +2985,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="font-medium">
-                      {technicalBatchRunning &&
+                      {technicalBatchStatus === "running" &&
                         `技術資料整理中 ${technicalBatchProgress.done}/${technicalBatchProgress.total}`}
                       {technicalBatchStatus === "ready" && `已整理 ${technicalResultCount}/${items.length} 檔技術資料`}
                       {technicalBatchStatus === "partialError" &&
