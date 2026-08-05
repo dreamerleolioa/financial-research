@@ -937,7 +937,10 @@ def _has_stale_core_dates(record: Mapping[str, Any]) -> bool:
         return False
     for value in _mapping(record.get("data_dates")).values():
         data_date = _parse_date(str(value))
-        if data_date is None or (record_date - data_date).days > 2:
+        if data_date is None:
+            return True
+        lag_days = (record_date - data_date).days
+        if lag_days < 0 or lag_days > 2:
             return True
     return False
 

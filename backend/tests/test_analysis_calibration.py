@@ -366,6 +366,124 @@ def test_general_due_mode_recomputes_candidate_refresh_after_benchmark_expands(m
     assert result.target_date == date(2026, 6, 5)
 
 
+@pytest.mark.parametrize(
+    ("signal_date", "benchmark_symbol"),
+    [
+        ("not-a-date", "TAIEX"),
+        ("2026-01-06", "TAIEX"),
+        ("2026-01-05", "SPX"),
+    ],
+)
+def test_general_validation_upsert_rejects_invalid_sample_identity(
+    signal_date: str,
+    benchmark_symbol: str,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+
+        with pytest.raises(ValueError, match="valid signal_date|identity"):
+            upsert_general_analysis_validation_results(
+                session,
+                [
+                    {
+                        "sample_id": sample.id,
+                        "window_days": 5,
+                        "validation_version": ANALYSIS_FORWARD_VALIDATION_VERSION,
+                        "status": "validated",
+                        "signal_date": signal_date,
+                        "benchmark_symbol": benchmark_symbol,
+                        "outcome": {},
+                    }
+                ],
+            )
+
+        assert session.scalar(
+            select(func.count()).select_from(AnalysisForwardValidationResult)
+        ) == 0
+
+
+def test_general_watermark_excludes_and_reports_mismatched_validation_identity() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        for window in (5, 10, 20):
+            session.add(
+                AnalysisForwardValidationResult(
+                    sample_id=sample.id,
+                    window_days=window,
+                    validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                    status="validated",
+                    signal_date=(
+                        date(2026, 1, 6)
+                        if window == 5
+                        else sample.record_date
+                    ),
+                    target_date=date(2026, 2, 5),
+                    benchmark_symbol=sample.benchmark_symbol,
+                    outcome={},
+                    skip_reason=None,
+                )
+            )
+        session.flush()
+
+        watermarks = calibration_module._general_completeness_watermarks(
+            session,
+            through_date=date(2026, 1, 31),
+            market="TW",
+            benchmark_symbol="TAIEX",
+        )
+
+    assert len(watermarks) == 1
+    watermark = watermarks[0]
+    assert watermark["evaluated_samples_by_window"] == {
+        "5": 0,
+        "10": 1,
+        "20": 1,
+    }
+    assert watermark["validated_samples_by_window"] == {
+        "5": 0,
+        "10": 1,
+        "20": 1,
+    }
+    assert watermark["validation_identity_mismatch_samples_by_window"] == {
+        "5": 1,
+        "10": 0,
+        "20": 0,
+    }
+    assert watermark["maturity_complete"] is False
+
+
 def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> None:
     engine = _engine()
     Base.metadata.create_all(
@@ -1167,7 +1285,11 @@ def test_calibration_identity_migration_deduplicates_and_aligns_unique_key(
         migration.op = original_op
 
     upgrade_sql = buffer.getvalue()
+    assert "SET LOCAL statement_timeout = '5min'" in upgrade_sql
     assert "SET LOCAL lock_timeout = '10s'" in upgrade_sql
+    assert upgrade_sql.index("SET LOCAL statement_timeout") < upgrade_sql.index(
+        "LOCK TABLE analysis_calibration_samples"
+    )
     assert upgrade_sql.index("SET LOCAL lock_timeout") < upgrade_sql.index(
         "LOCK TABLE analysis_calibration_samples"
     )

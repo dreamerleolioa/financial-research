@@ -352,6 +352,25 @@ def test_daily_radar_missing_scoring_inputs_are_rejected_and_never_add_positive_
     assert result["observation_score"] == 0
 
 
+def test_daily_radar_scoring_fails_closed_on_future_core_data_date() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2330.TW"])
+    record["data_dates"]["institutional_flow"] = "2026-05-30"
+
+    result = score_daily_radar_record(
+        record,
+        prefilter_result={
+            "prefilter_status": "accepted",
+            "prefilter_reasons": [],
+        },
+    )
+
+    assert "data_gap" in result["risk_labels"]
+    assert any(
+        penalty["label"] == "data_gap"
+        for penalty in result["score_breakdown"]["risk_penalties"]
+    )
+
+
 @pytest.mark.parametrize(
     ("symbol", "section", "field", "forbidden_rule"),
     [

@@ -1285,13 +1285,6 @@ def _is_complete_daily_radar_replay_input(
     price_history = record.get("price_history")
     if not isinstance(price_history, list) or not price_history:
         return False
-    if any(
-        not isinstance(item, Mapping)
-        or not str(item.get("date") or "")
-        or not _is_finite_replay_number(item.get("close"))
-        for item in price_history
-    ):
-        return False
     symbol = str(record.get("symbol") or "")
     if not symbol or symbol != str(row.get("symbol") or ""):
         return False
@@ -1303,9 +1296,20 @@ def _is_complete_daily_radar_replay_input(
     if record_date != snapshot_date or record_date != validation_date:
         return False
     try:
-        date.fromisoformat(record_date)
+        record_date_value = date.fromisoformat(record_date)
     except ValueError:
         return False
+    for item in price_history:
+        if not isinstance(item, Mapping) or not _is_finite_replay_number(
+            item.get("close")
+        ):
+            return False
+        try:
+            price_date = date.fromisoformat(str(item.get("date") or ""))
+        except ValueError:
+            return False
+        if price_date > record_date_value:
+            return False
     ohlcv = _mapping(record.get("ohlcv"))
     indicators = _mapping(record.get("indicators"))
     institutional_flow = _mapping(record.get("institutional_flow"))
@@ -1351,12 +1355,44 @@ def _is_complete_daily_radar_replay_input(
         "margin",
     ):
         try:
-            date.fromisoformat(str(data_dates.get(key) or ""))
+            data_date = date.fromisoformat(str(data_dates.get(key) or ""))
         except ValueError:
             return False
+        if data_date > record_date_value:
+            return False
     market_context = _mapping(replay_input.get("market_context"))
-    if not isinstance(market_context.get("market"), Mapping):
+    market = market_context.get("market")
+    if not isinstance(market, Mapping):
         return False
+    market_dates = _mapping(market_context.get("data_dates"))
+    benchmark = _mapping(market_context.get("benchmark"))
+    benchmark_dates = _mapping(benchmark.get("data_dates"))
+    for value in (*market_dates.values(), *benchmark_dates.values()):
+        try:
+            context_date = date.fromisoformat(str(value or ""))
+        except ValueError:
+            return False
+        if context_date > record_date_value:
+            return False
+    market_data_date = market.get("data_date")
+    if market_data_date is not None:
+        try:
+            parsed_market_date = date.fromisoformat(str(market_data_date))
+        except ValueError:
+            return False
+        if parsed_market_date > record_date_value:
+            return False
+    benchmark_history = benchmark.get("price_history")
+    if isinstance(benchmark_history, list):
+        for item in benchmark_history:
+            if not isinstance(item, Mapping):
+                return False
+            try:
+                benchmark_date = date.fromisoformat(str(item.get("date") or ""))
+            except ValueError:
+                return False
+            if benchmark_date > record_date_value:
+                return False
     prefilter_result = _mapping(replay_input.get("prefilter_result"))
     if prefilter_result.get("prefilter_status") != "accepted":
         return False

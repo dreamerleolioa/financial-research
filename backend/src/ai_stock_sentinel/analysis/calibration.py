@@ -303,12 +303,45 @@ def upsert_general_analysis_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
 ) -> dict[str, int]:
+    outcome_rows = list(outcomes)
+    sample_ids = {
+        int(outcome["sample_id"])
+        for outcome in outcome_rows
+        if outcome.get("sample_id") is not None
+    }
+    sample_identity_by_id = {
+        int(sample_id): (record_date, benchmark_symbol)
+        for sample_id, record_date, benchmark_symbol in session.execute(
+            select(
+                AnalysisCalibrationSample.id,
+                AnalysisCalibrationSample.record_date,
+                AnalysisCalibrationSample.benchmark_symbol,
+            ).where(AnalysisCalibrationSample.id.in_(sample_ids))
+        )
+    }
     written = validated = skipped = 0
     retryable_skipped = terminal_skipped = 0
-    for outcome in outcomes:
+    for outcome in outcome_rows:
         sample_id = outcome.get("sample_id")
         if sample_id is None:
             continue
+        signal_date = _parse_date(outcome.get("signal_date"))
+        if signal_date is None:
+            raise ValueError(
+                "General analysis validation outcome requires a valid signal_date"
+            )
+        benchmark_symbol = str(outcome.get("benchmark_symbol") or "")
+        sample_identity = sample_identity_by_id.get(int(sample_id))
+        if sample_identity is None:
+            raise ValueError(f"General analysis validation sample {sample_id} does not exist")
+        sample_record_date, sample_benchmark_symbol = sample_identity
+        if (
+            signal_date != sample_record_date
+            or benchmark_symbol != sample_benchmark_symbol
+        ):
+            raise ValueError(
+                "General analysis validation identity must match its calibration sample"
+            )
         existing = session.execute(
             select(AnalysisForwardValidationResult).where(
                 AnalysisForwardValidationResult.sample_id == int(sample_id),
@@ -325,17 +358,17 @@ def upsert_general_analysis_validation_results(
                 window_days=int(outcome["window_days"]),
                 validation_version=str(outcome["validation_version"]),
                 status=str(outcome["status"]),
-                signal_date=_parse_date(outcome.get("signal_date")) or date.min,
+                signal_date=signal_date,
                 target_date=_parse_date(outcome.get("target_date")),
-                benchmark_symbol=str(outcome.get("benchmark_symbol") or ""),
+                benchmark_symbol=benchmark_symbol,
                 outcome=payload,
                 skip_reason=_string_or_none(outcome.get("skip_reason")),
             )
         else:
             existing.status = str(outcome["status"])
-            existing.signal_date = _parse_date(outcome.get("signal_date")) or date.min
+            existing.signal_date = signal_date
             existing.target_date = _parse_date(outcome.get("target_date"))
-            existing.benchmark_symbol = str(outcome.get("benchmark_symbol") or "")
+            existing.benchmark_symbol = benchmark_symbol
             existing.outcome = payload
             existing.skip_reason = _string_or_none(outcome.get("skip_reason"))
         session.add(existing)
@@ -406,6 +439,11 @@ def build_general_analysis_monthly_report(
     selected_months = set(cohort["selected_months"])
     selected_rows = [row for row in rows if row["month"] in selected_months and row["status"] == "validated"]
     sample_by_id = {sample.id: sample for sample in samples}
+    identity_mismatch_sample_ids = {
+        int(row["sample_id"])
+        for row in selected_rows
+        if row.get("validation_identity_valid") is not True
+    }
 
     baseline_config = ConfidenceScoringConfig()
     exclusions: Counter[str] = Counter()
@@ -424,6 +462,12 @@ def build_general_analysis_monthly_report(
             continue
         optimizer_row = row | {"sample": sample}
         optimizer_scope_rows.append(optimizer_row)
+        if sample_id in identity_mismatch_sample_ids:
+            excluded_sample_ids.setdefault(
+                "validation_identity_mismatch",
+                set(),
+            ).add(sample_id)
+            continue
         if not _is_complete_replay_input(
             sample.replay_input,
             baseline_config=baseline_config,
@@ -876,6 +920,12 @@ def _validation_rows(
             "status": result.status,
             "skip_reason": result.skip_reason,
             "outcome": dict(result.outcome or {}),
+            "validation_signal_date": result.signal_date.isoformat(),
+            "validation_benchmark_symbol": result.benchmark_symbol,
+            "validation_identity_valid": (
+                result.signal_date == sample.record_date
+                and result.benchmark_symbol == sample.benchmark_symbol
+            ),
         }
         for result, sample in session.execute(query).all()
     ]
@@ -896,7 +946,13 @@ def _general_completeness_watermarks(
         func.distinct(
             case(
                 (
-                    AnalysisForwardValidationResult.id.is_not(None),
+                    and_(
+                        AnalysisForwardValidationResult.id.is_not(None),
+                        AnalysisForwardValidationResult.signal_date
+                        == AnalysisCalibrationSample.record_date,
+                        AnalysisForwardValidationResult.benchmark_symbol
+                        == AnalysisCalibrationSample.benchmark_symbol,
+                    ),
                     AnalysisCalibrationSample.id,
                 )
             )
@@ -906,7 +962,31 @@ def _general_completeness_watermarks(
         func.distinct(
             case(
                 (
-                    AnalysisForwardValidationResult.status == "validated",
+                    and_(
+                        AnalysisForwardValidationResult.status == "validated",
+                        AnalysisForwardValidationResult.signal_date
+                        == AnalysisCalibrationSample.record_date,
+                        AnalysisForwardValidationResult.benchmark_symbol
+                        == AnalysisCalibrationSample.benchmark_symbol,
+                    ),
+                    AnalysisCalibrationSample.id,
+                )
+            )
+        )
+    )
+    identity_mismatch_count = func.count(
+        func.distinct(
+            case(
+                (
+                    and_(
+                        AnalysisForwardValidationResult.id.is_not(None),
+                        or_(
+                            AnalysisForwardValidationResult.signal_date
+                            != AnalysisCalibrationSample.record_date,
+                            AnalysisForwardValidationResult.benchmark_symbol
+                            != AnalysisCalibrationSample.benchmark_symbol,
+                        ),
+                    ),
                     AnalysisCalibrationSample.id,
                 )
             )
@@ -920,6 +1000,7 @@ def _general_completeness_watermarks(
             expected_count,
             evaluated_count,
             validated_count,
+            identity_mismatch_count,
         )
         .select_from(AnalysisCalibrationSample)
         .join(windows, true())
@@ -953,13 +1034,25 @@ def _general_completeness_watermarks(
         )
     )
     by_month: dict[str, dict[int, tuple[int, int, int]]] = {}
-    for year, month, window, expected, evaluated, validated in session.execute(query):
+    identity_mismatches_by_month: dict[str, dict[int, int]] = {}
+    for (
+        year,
+        month,
+        window,
+        expected,
+        evaluated,
+        validated,
+        identity_mismatches,
+    ) in session.execute(query):
         month_value_key = f"{int(year):04d}-{int(month):02d}"
         by_month.setdefault(month_value_key, {})[int(window)] = (
             int(expected or 0),
             int(evaluated or 0),
             int(validated or 0),
         )
+        identity_mismatches_by_month.setdefault(month_value_key, {})[
+            int(window)
+        ] = int(identity_mismatches or 0)
     watermarks: list[dict[str, Any]] = []
     for month, counts_by_window in sorted(by_month.items()):
         expected_by_window = {
@@ -972,6 +1065,10 @@ def _general_completeness_watermarks(
         }
         validated_by_window = {
             str(window): counts_by_window.get(window, (0, 0, 0))[2]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        identity_mismatch_by_window = {
+            str(window): identity_mismatches_by_month.get(month, {}).get(window, 0)
             for window in DEFAULT_FORWARD_WINDOWS
         }
         evaluated_coverage_by_window = {
@@ -1004,6 +1101,9 @@ def _general_completeness_watermarks(
             "expected_samples_by_window": expected_by_window,
             "evaluated_samples_by_window": evaluated_by_window,
             "validated_samples_by_window": validated_by_window,
+            "validation_identity_mismatch_samples_by_window": (
+                identity_mismatch_by_window
+            ),
             "evaluated_coverage_by_window": evaluated_coverage_by_window,
             "validated_coverage_by_window": validated_coverage_by_window,
             "maturity_complete": (

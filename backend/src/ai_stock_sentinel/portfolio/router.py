@@ -67,6 +67,7 @@ KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
 }
 TRADE_REVIEW_SUCCESS_REFRESH_TTL = timedelta(hours=6)
 TRADE_REVIEW_FAILURE_RETRY_TTL = timedelta(minutes=5)
+TRADE_REVIEW_PARTIAL_COVERAGE_RETRY_TTL = timedelta(hours=24)
 
 
 class _TradeReviewRefreshSlot:
@@ -443,7 +444,13 @@ def _trade_review_cache_reusable(
     if fetched_at is None:
         return False
     quality = market.get("quality") if isinstance(market.get("quality"), dict) else {}
-    ttl = TRADE_REVIEW_FAILURE_RETRY_TTL if quality.get("missing_reason") else TRADE_REVIEW_SUCCESS_REFRESH_TTL
+    missing_reason = quality.get("missing_reason")
+    if missing_reason == "provider_coverage_insufficient":
+        ttl = TRADE_REVIEW_PARTIAL_COVERAGE_RETRY_TTL
+    elif missing_reason:
+        ttl = TRADE_REVIEW_FAILURE_RETRY_TTL
+    else:
+        ttl = TRADE_REVIEW_SUCCESS_REFRESH_TTL
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     age = current_time - fetched_at
     return timedelta(0) <= age < ttl

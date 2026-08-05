@@ -1185,20 +1185,28 @@ def _average_daily_range_pct(rows: list[StockRawData]) -> float | None:
         close = _close(row)
         if high is not None and low is not None and close:
             ranges.append((high - low) / close * 100)
-    if not ranges:
+    if len(ranges) < 20:
         return None
     return _round_pct(sum(ranges) / len(ranges))
 
 
-def _average_daily_range_pct_from_values(closes: list[float], highs: list[float], lows: list[float]) -> float | None:
+def _average_daily_range_pct_from_values(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+) -> float | None:
     aligned_length = min(len(closes), len(highs), len(lows))
-    if aligned_length == 0:
+    if aligned_length < 20:
         return None
     ranges: list[float] = []
-    for close, high, low in zip(closes[-aligned_length:][-20:], highs[-aligned_length:][-20:], lows[-aligned_length:][-20:]):
+    for close, high, low in zip(
+        closes[-aligned_length:][-20:],
+        highs[-aligned_length:][-20:],
+        lows[-aligned_length:][-20:],
+    ):
         if close:
             ranges.append((high - low) / close * 100)
-    if not ranges:
+    if len(ranges) < 20:
         return None
     return _round_pct(sum(ranges) / len(ranges))
 

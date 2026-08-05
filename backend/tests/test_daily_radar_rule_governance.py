@@ -497,6 +497,63 @@ def test_replay_input_requires_validation_signal_date_to_match_candidate_snapsho
 
 
 @pytest.mark.parametrize(
+    "future_date_source",
+    [
+        "core_data_date",
+        "price_history",
+        "market_context_data_date",
+        "market_data_date",
+        "benchmark_data_date",
+        "benchmark_price_history",
+    ],
+)
+def test_replay_input_rejects_dates_after_the_candidate_record_date(
+    future_date_source: str,
+) -> None:
+    row = _governance_replay_row(1, with_replay_input=True)
+    replay_input = row["candidate_snapshot"]["input_snapshot"]["replay_input"]
+    record = replay_input["record"]
+    market_context = replay_input["market_context"]
+    if future_date_source == "core_data_date":
+        record["data_dates"]["ohlcv"] = "2026-06-02"
+    elif future_date_source == "price_history":
+        record["price_history"].append(
+            {"date": "2026-06-02", "close": 102.0}
+        )
+    elif future_date_source == "market_context_data_date":
+        market_context["data_dates"]["market_index"] = "2026-06-02"
+    elif future_date_source == "market_data_date":
+        market_context["market"]["data_date"] = "2026-06-02"
+    elif future_date_source == "benchmark_data_date":
+        market_context["benchmark"] = {
+            "data_dates": {"market_index": "2026-06-02"}
+        }
+    else:
+        market_context["benchmark"] = {
+            "price_history": [
+                {"date": "2026-06-02", "close": 1000.0}
+            ]
+        }
+
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        [row],
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+
+    assert context.eligible_rows == []
+    assert context.ranking_pool_status == "incomplete"
+    assert context.exclusion_reasons == {"replay_input_incomplete": 1}
+
+
+@pytest.mark.parametrize(
     ("field", "mismatched_value"),
     [
         ("observation_score", -1),

@@ -194,6 +194,22 @@ def test_prefilter_hard_gates_weak_long_term_structure() -> None:
     assert result["debug"]["structure"]["close_below_ma60"] is True
 
 
+def test_prefilter_rejects_core_data_dates_after_record_date() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["data_dates"]["ohlcv"] = "2026-05-30"
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "stale_data"
+    assert "stale_core_data" in _reason_codes(result)
+    stale_reason = next(
+        reason
+        for reason in result["prefilter_reasons"]
+        if reason["code"] == "stale_core_data"
+    )
+    assert stale_reason["details"]["stale_fields"]["ohlcv"] == -1
+
+
 def test_stage1_prefilter_limits_accepted_records_to_top_n_deterministically() -> None:
     results = run_stage1_prefilter(
         load_daily_radar_fixture_records(FIXTURE_DIR),

@@ -29,6 +29,7 @@ _BASE_IDENTITY_COLUMNS = (
 _CANONICAL_MAPPING_TABLE = "calibration_sample_identity_canonical"
 _BACKUP_CONFIRMATION_ENV = "CALIBRATION_MIGRATION_BACKUP_CONFIRMED"
 _LOCK_TIMEOUT = "10s"
+_STATEMENT_TIMEOUT = "5min"
 
 
 def _canonical_samples_sql(identity_column: str) -> str:
@@ -101,6 +102,7 @@ def upgrade() -> None:
             f"Set {_BACKUP_CONFIRMATION_ENV}={revision} only after creating "
             "a restorable pre-migration database backup."
         )
+    op.execute(sa.text(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT}'"))
     op.execute(sa.text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
     op.execute(
         sa.text(

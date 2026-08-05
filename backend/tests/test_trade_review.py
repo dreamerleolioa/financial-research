@@ -185,6 +185,24 @@ def test_market_regime_does_not_treat_misaligned_ohlc_as_high_volatility():
     assert trade_review_module._classify_market_regime([row], as_of) == "strong_momentum"
 
 
+def test_market_regime_requires_twenty_aligned_ohlc_bars_for_volatility() -> None:
+    trading_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(21)]
+    closes = [100.0 + offset * 10 for offset in range(len(trading_dates))]
+    as_of = trading_dates[-1] + timedelta(days=1)
+    row = _snapshot_raw_row("2330.TW", as_of, closes)
+    row.technical.update({
+        "recent_close_dates": [value.isoformat() for value in trading_dates],
+        "recent_highs": [closes[-1] * 1.2],
+        "recent_high_dates": [trading_dates[-1].isoformat()],
+        "recent_lows": [closes[-1] * 0.8],
+        "recent_low_dates": [trading_dates[-1].isoformat()],
+        "recent_volume_dates": [value.isoformat() for value in trading_dates],
+        "data_dates": {"ohlcv": trading_dates[-1].isoformat()},
+    })
+
+    assert trade_review_module._classify_market_regime([row], as_of) == "strong_momentum"
+
+
 def test_market_snapshot_evidence_binds_independent_ohlc_values_to_dates():
     snapshot = market_snapshot_payload(
         [{
@@ -567,7 +585,9 @@ def test_ensure_trade_review_market_data_prefers_rich_fallback_over_partial_prov
     assert snapshot.evidence["quality"]["trading_bar_count"] == 80
 
 
-def test_ensure_trade_review_market_data_marks_tiny_provider_response_for_short_retry(db_session: Session):
+def test_ensure_trade_review_market_data_marks_tiny_provider_response_as_partial_coverage(
+    db_session: Session,
+):
     entry_date = date(2026, 6, 1)
     portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 6, 5))
 

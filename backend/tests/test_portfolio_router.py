@@ -3763,6 +3763,8 @@ def _trade_review_item() -> UserPortfolio:
         (None, timedelta(minutes=-1), False),
         ("provider_fetch_failed_or_empty", timedelta(minutes=4), True),
         ("provider_fetch_failed_or_empty", timedelta(minutes=6), False),
+        ("provider_coverage_insufficient", timedelta(hours=23), True),
+        ("provider_coverage_insufficient", timedelta(hours=25), False),
     ],
 )
 def test_trade_review_cache_uses_distinct_success_and_failure_ttls(

@@ -92,6 +92,8 @@
 
 Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母，active cohort 同時鎖定目前 strategy/config version；`general-analysis-confidence-review-v7` 另要求 replay input 的型別、值域與 baseline config 完整符合 current contract，在 baseline replay 前以 300,000 scoring calls／40,000,000 次 before／after bootstrap row-iterations 為整批 workload 上限，超限即 fail closed。容量允許時按 sample 單次重播 current baseline 後與 production `signal_confidence` 等價比較，mismatch 必須排除、重算 coverage 且阻止全部 candidate eligibility。正常 capture 的同日重跑沿用第一筆 point-in-time sample，歷史 migration 若已有重複 identity，則先固定 validated/evaluated outcome 證據最完整的 canonical sample，且只保留該 sample 原生 outcomes。Final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
 
+一般分析 validation outcome 的 `signal_date` 與 `benchmark_symbol` 必須和所屬 calibration sample 完全一致；寫入時不一致即拒絕，既有異常 row 也不得計入 evaluated/validated watermark，並輸出逐窗口 identity mismatch 診斷，避免錯誤 outcome 讓月份提早成熟或進入 optimizer。
+
 Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sample_count`，不以 5 / 10 / 20 日 validation rows 加總；training 與 holdout 另要求最低 distinct date blocks。Validated coverage 與 replay coverage 是兩道獨立 gate：validated coverage 必須逐 5 / 10 / 20 日窗口、replay coverage 必須在整體及每個入選月份都達標，否則只輸出診斷，不得標記為可自動修改。Holdout 非劣性也按 5 / 10 / 20 日分開判斷，任一窗口退化或無法計算即 fail closed。兩軌在 scoring／bootstrap 前都計算跨六個月的 aggregate replay workload，超過各自 budget 時停止 replay 並 fail closed。Daily Radar 為最新 run 的所有候選建立完整窗口池，missing validation result 也不得從 Top 20 ranking pool 消失；結構合法的 replay 還必須重現原 production score、bucket、risk labels 與 matched rule IDs，baseline 不一致時以 `baseline_replay_mismatch` 排除並讓 ranking pool fail closed。正常 workload 的 mean bootstrap 先把 validated selected rows 預聚合成每日期 sum／count，再重抽 block statistics，且保留原本先將抽樣平均值四捨五入至四位再計算 delta 的 eligibility 語義；完整日期 block universe 仍被保留，避免空 selection 日期被誤刪而改變統計語意。Rule-group diagnostics 只對 live-score tiers 使用相同輸入的 counterfactual scoring，context-only 群組明確標為不適用；co-occurrence 僅保留為非因果參考。
 
 ### 0.5 Shared Context 使用邊界
@@ -898,7 +900,8 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
 
 **Deterministic lifecycle review 邊界：**
 
-- Provider 即使回傳非空資料，少於 MA60 所需的 60 根可用交易 bar 時仍須標記 `provider_coverage_insufficient` 並採 5 分鐘失敗短 TTL；只有至少 60 根的正常 snapshot 可使用 6 小時成功 TTL。
+- Provider 即使回傳非空資料，少於 MA60 所需的 60 根可用交易 bar 時仍須標記 `provider_coverage_insufficient`，但這類可能源自新上市或永久短歷史的 partial coverage 使用 24 小時重試 TTL，避免每次開啟頁面都重抓；真正 provider 失敗／空回應仍採 5 分鐘短 TTL，至少 60 根的正常 snapshot 使用 6 小時成功 TTL。
+- 結案回顧的 `high_volatility` 分類至少需要 20 根依共同交易日對齊的 Close／High／Low；少於 20 根時不得以少數極端 bar 推定高波動，應回退到其他可用趨勢分類。
 - Lifecycle review 使用 event ledger、point-in-time indicator snapshots、fixed option plan facts 與 source refs 產生 labels、reasons、caveats、next-operation rules。
 - 已穩定的 fixed-option labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`。
 - `holding_period_needs_review` 是檢討提示，不是硬性錯誤；不得宣稱精準高低點或單一時間點是唯一正確操作。
