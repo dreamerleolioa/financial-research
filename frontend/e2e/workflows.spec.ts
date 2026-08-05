@@ -153,6 +153,162 @@ test("Portfolio destructive action requires confirmation before DELETE", async (
   await expect.poll(() => requestLog).toContain("DELETE /portfolio/11");
 });
 
+test("Portfolio prepares and copies neutral technical snapshots for every holding", async ({ page, context }) => {
+  const requestLog: string[] = [];
+  const requestBodies: unknown[] = [];
+  const secondPortfolioItem = {
+    ...portfolioItem,
+    id: 12,
+    symbol: "6488.TWO",
+    name: "環球晶",
+    entry_price: 690,
+    quantity: 200,
+    entry_date: "2026-06-12",
+  };
+  const riskSummary = {
+    ...populatedRiskSummary,
+    position_risks: [
+      { ...populatedRiskSummary.position_risks[0], portfolio_weight_pct: 80 },
+      {
+        ...populatedRiskSummary.position_risks[0],
+        symbol: secondPortfolioItem.symbol,
+        name: secondPortfolioItem.name,
+        quantity: secondPortfolioItem.quantity,
+        current_price: 700,
+        entry_price: secondPortfolioItem.entry_price,
+        market_value: 140_000,
+        unrealized_pnl: 2_000,
+        defense_reference: { price: 650, source: "planned_stop_price" },
+        portfolio_weight_pct: 20,
+      },
+    ],
+  };
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem, secondPortfolioItem],
+    riskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: {
+            ...quickAnalyzeResult.snapshot,
+            symbol: "2330.TW",
+            current_price: 1085,
+            market_current_price: 1085,
+            price_limit_status: "normal",
+          },
+          symbol_name: "台積電",
+        },
+      },
+      "6488.TWO": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: {
+            ...quickAnalyzeResult.snapshot,
+            symbol: "6488.TWO",
+            current_price: 700,
+            market_current_price: 700,
+            price_limit_status: "normal",
+          },
+          symbol_name: "環球晶",
+        },
+      },
+    },
+    requestLog,
+    requestBodies,
+  });
+
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
+
+  await expect(page.getByText("已整理 2/2 檔技術資料")).toBeVisible();
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+  await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toContainText("已複製");
+
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toContain("持股成本：1020");
+  expect(copiedText).toContain("進場日期：2026-05-08");
+  expect(copiedText).toContain("持有股數：1000");
+  expect(copiedText).toContain("股票名稱：台積電");
+  expect(copiedText).toContain("股票名稱：環球晶");
+  expect(copiedText).toContain("均線 MA5/20/60");
+  expect(copiedText).not.toContain("全部持股技術資料");
+  expect(copiedText).not.toContain("產生時間：");
+  expect(copiedText).not.toContain("資料範圍：");
+  expect(copiedText).not.toContain("整理結果：");
+  expect(copiedText).not.toContain("持股 1/2");
+  expect(copiedText).not.toContain("持股權重：");
+  expect(copiedText).not.toContain("目前損益率：");
+  expect(copiedText).not.toContain("防守參考：");
+  expect(copiedText).not.toContain("技術資料日：");
+  expect(copiedText).not.toContain("technical_score");
+
+  const technicalBodies = requestBodies.filter(
+    (body): body is { symbol: string; skip_ai: boolean } =>
+      typeof body === "object" && body !== null && "symbol" in body && "skip_ai" in body,
+  );
+  expect(technicalBodies).toHaveLength(2);
+  expect(technicalBodies.map((body) => body.symbol).sort()).toEqual(["2330.TW", "6488.TWO"]);
+  expect(technicalBodies.every((body) => body.skip_ai === true)).toBe(true);
+  expect(requestLog).not.toContain("POST /analyze/position");
+
+  await page.evaluate(() => {
+    localStorage.setItem("portfolio_mutation_revision", "changed-after-technical-lookup");
+  });
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+  await expect(page.getByText("持股資料已變更，請重新整理技術資料")).toBeVisible();
+  await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toHaveCount(0);
+});
+
+test("Portfolio keeps successful technical data copyable when one holding fails", async ({ page, context }) => {
+  const secondPortfolioItem = {
+    ...portfolioItem,
+    id: 12,
+    symbol: "6488.TWO",
+    name: "環球晶",
+  };
+
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem, secondPortfolioItem],
+    riskSummary: populatedRiskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: {
+            ...quickAnalyzeResult.snapshot,
+            symbol: "2330.TW",
+            current_price: 1085,
+            market_current_price: 1085,
+            price_limit_status: "normal",
+          },
+          symbol_name: "台積電",
+        },
+      },
+      "6488.TWO": { body: { detail: "provider unavailable" }, status: 503 },
+    },
+  });
+
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
+
+  await expect(page.getByText("已整理 1/2 檔，失敗：6488.TWO")).toBeVisible();
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toContain("股票代碼：2330.TW");
+  expect(copiedText).not.toContain("失敗標的：6488.TWO");
+});
+
 test("Portfolio refreshes prices without triggering AI analysis", async ({ page }) => {
   const requestLog: string[] = [];
   const refreshedRiskSummary = {

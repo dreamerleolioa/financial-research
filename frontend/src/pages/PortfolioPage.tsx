@@ -9,6 +9,7 @@ import {
   useUpdateLifecyclePlanMutation,
   useUpdatePortfolioItemMutation,
 } from "../features/portfolio/mutations";
+import { readPortfolioMutationRevision } from "../features/portfolio/mutationCoordinator";
 import {
   useDecisionContextStatusQuery,
   useLatestPortfolioHistoryQuery,
@@ -17,6 +18,7 @@ import {
   usePortfolioRiskSummaryQuery,
 } from "../features/portfolio/queries";
 import { portfolioKeys } from "../features/portfolio/queryKeys";
+import { buildPortfolioTechnicalCopyText } from "../features/portfolio/technicalExport";
 import { deleteAsyncMapValue, setAsyncMapValue } from "../lib/asyncMap";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, PositionResult } from "../lib/analysisTypes";
@@ -60,6 +62,7 @@ import {
   PLAN_ADHERENCE_LABEL,
   PLANNED_HOLDING_PERIOD_OPTIONS,
 } from "../lib/portfolioLabels";
+import { COPY_STATUS_RESET_MS, writeClipboardText, type CopyStatus } from "../lib/technicalIndicators";
 
 type HistoryEntry = PortfolioHistoryEntry;
 type PortfolioPositionRiskItem = PortfolioRiskSummary["position_risks"][number];
@@ -2228,6 +2231,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
 }
 
 type BatchStatus = "idle" | "running" | "done" | "partialError";
+type TechnicalBatchStatus = "idle" | "running" | "ready" | "partialError" | "error" | "stale";
 type PortfolioId = PortfolioItem["id"];
 type PortfolioIdKey = `${PortfolioId}`;
 
@@ -2470,16 +2474,55 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [batchStatus, setBatchStatus] = useState<BatchStatus>("idle");
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [batchFailedSymbols, setBatchFailedSymbols] = useState<string[]>([]);
+  const technicalBatchRevisionRef = useRef<string | null>(null);
+  const technicalBatchSequenceRef = useRef(0);
+  const technicalCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const technicalPortfolioSignatureRef = useRef<string>("");
+  const [technicalBatchStatus, setTechnicalBatchStatus] = useState<TechnicalBatchStatus>("idle");
+  const [technicalBatchProgress, setTechnicalBatchProgress] = useState({ done: 0, total: 0 });
+  const [technicalResultsByItemId, setTechnicalResultsByItemId] = useState<Record<number, AnalyzeResponse>>({});
+  const [technicalFailedSymbols, setTechnicalFailedSymbols] = useState<string[]>([]);
+  const [technicalCopyStatus, setTechnicalCopyStatus] = useState<CopyStatus>("idle");
   const priceRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [priceRefreshTarget, setPriceRefreshTarget] = useState<"all" | number | null>(null);
   const [priceRefreshNotice, setPriceRefreshNotice] = useState<PriceRefreshNotice | null>(null);
+  const technicalPortfolioSignature = useMemo(
+    () =>
+      `${riskSummary?.portfolio_revision ?? "no-risk-revision"}|${items.map((item) => `${item.id}:${item.symbol}`).join("|")}`,
+    [items, riskSummary?.portfolio_revision],
+  );
+  const technicalBatchRunning = technicalBatchStatus === "running";
+  const technicalResultCount = items.reduce((count, item) => count + (technicalResultsByItemId[item.id] ? 1 : 0), 0);
+  const hasTechnicalResults = technicalResultCount > 0;
+  const technicalLookupButtonLabel = technicalBatchRunning
+    ? `技術整理中 ${technicalBatchProgress.done}/${technicalBatchProgress.total}`
+    : technicalBatchStatus === "idle"
+      ? "整理全部技術資料"
+      : "重新整理技術資料";
 
   useEffect(() => {
     return () => {
       if (batchTimerRef.current) clearTimeout(batchTimerRef.current);
+      if (technicalCopyTimerRef.current) clearTimeout(technicalCopyTimerRef.current);
       if (priceRefreshTimerRef.current) clearTimeout(priceRefreshTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (technicalPortfolioSignatureRef.current === technicalPortfolioSignature) return;
+    technicalBatchSequenceRef.current += 1;
+    technicalBatchRevisionRef.current = null;
+    technicalPortfolioSignatureRef.current = technicalPortfolioSignature;
+    setTechnicalBatchStatus("idle");
+    setTechnicalBatchProgress({ done: 0, total: 0 });
+    setTechnicalResultsByItemId({});
+    setTechnicalFailedSymbols([]);
+    setTechnicalCopyStatus("idle");
+    if (technicalCopyTimerRef.current) {
+      clearTimeout(technicalCopyTimerRef.current);
+      technicalCopyTimerRef.current = null;
+    }
+  }, [technicalPortfolioSignature]);
 
   useEffect(() => {
     if (actionMenuId == null) return;
@@ -2597,6 +2640,113 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
     await runPositionAnalysis(item).catch(() => {});
   }
 
+  function discardStaleTechnicalBatch(): void {
+    technicalBatchSequenceRef.current += 1;
+    technicalBatchRevisionRef.current = null;
+    setTechnicalBatchStatus("stale");
+    setTechnicalBatchProgress({ done: 0, total: 0 });
+    setTechnicalResultsByItemId({});
+    setTechnicalFailedSymbols([]);
+    setTechnicalCopyStatus("idle");
+  }
+
+  async function runPortfolioTechnicalLookup(): Promise<void> {
+    if (technicalBatchRunning || items.length === 0) return;
+
+    const batchItems = [...items];
+    const revisionAtStart = readPortfolioMutationRevision();
+    const batchSequence = technicalBatchSequenceRef.current + 1;
+    technicalBatchSequenceRef.current = batchSequence;
+    technicalBatchRevisionRef.current = revisionAtStart;
+    const successfulResults: Record<number, AnalyzeResponse> = {};
+    const failedSymbols: string[] = [];
+    let nextIndex = 0;
+    let completedCount = 0;
+
+    setTechnicalBatchStatus("running");
+    setTechnicalBatchProgress({ done: 0, total: batchItems.length });
+    setTechnicalResultsByItemId({});
+    setTechnicalFailedSymbols([]);
+    setTechnicalCopyStatus("idle");
+
+    async function worker(): Promise<void> {
+      while (nextIndex < batchItems.length) {
+        const item = batchItems[nextIndex];
+        nextIndex += 1;
+        try {
+          successfulResults[item.id] = await analyzeSymbol({ symbol: item.symbol, skip_ai: true });
+        } catch {
+          failedSymbols.push(item.symbol);
+        }
+        completedCount += 1;
+        if (technicalBatchSequenceRef.current === batchSequence) {
+          setTechnicalBatchProgress({ done: completedCount, total: batchItems.length });
+        }
+      }
+    }
+
+    const workerCount = Math.min(3, batchItems.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    if (technicalBatchSequenceRef.current !== batchSequence) return;
+    if (readPortfolioMutationRevision() !== revisionAtStart) {
+      discardStaleTechnicalBatch();
+      return;
+    }
+
+    const successCount = Object.keys(successfulResults).length;
+    setTechnicalResultsByItemId(successfulResults);
+    setTechnicalFailedSymbols(failedSymbols);
+    setTechnicalBatchStatus(successCount === 0 ? "error" : failedSymbols.length > 0 ? "partialError" : "ready");
+  }
+
+  async function copyPortfolioTechnicalResults(): Promise<void> {
+    if (!hasTechnicalResults) return;
+    if (
+      technicalBatchRevisionRef.current == null ||
+      technicalBatchRevisionRef.current !== readPortfolioMutationRevision()
+    ) {
+      discardStaleTechnicalBatch();
+      return;
+    }
+
+    const entries = items.flatMap((item) => {
+      const result = technicalResultsByItemId[item.id];
+      if (!result) return [];
+      return [
+        {
+          position: {
+            symbol: item.symbol,
+            entryPrice: item.entry_price,
+            entryDate: item.entry_date,
+            quantity: item.quantity,
+          },
+          technical: {
+            symbol_name: result.symbol_name,
+            technical_indicators: result.technical_indicators,
+            is_final: result.is_final,
+            phase1_observation: result.phase1_observation,
+            chip_stability_context: result.chip_stability_context,
+          },
+          snapshot: result.snapshot,
+        },
+      ];
+    });
+
+    try {
+      await writeClipboardText(
+        buildPortfolioTechnicalCopyText({
+          entries,
+        }),
+      );
+      setTechnicalCopyStatus("success");
+    } catch {
+      setTechnicalCopyStatus("error");
+    }
+
+    if (technicalCopyTimerRef.current) clearTimeout(technicalCopyTimerRef.current);
+    technicalCopyTimerRef.current = setTimeout(() => setTechnicalCopyStatus("idle"), COPY_STATUS_RESET_MS);
+  }
+
   async function runBatchAnalysis(): Promise<void> {
     if (batchStatus === "running" || items.length === 0) return;
 
@@ -2709,18 +2859,30 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   disabled={
                     portfolioRiskSummaryQuery.isFetching ||
                     refreshPortfolioPricesMutation.isPending ||
-                    batchStatus === "running"
+                    batchStatus === "running" ||
+                    technicalBatchRunning
                   }
                   className="ui-button-secondary min-h-10 px-3 text-xs"
                 >
-                  {portfolioRiskSummaryQuery.isLoading || priceRefreshTarget === "all"
-                    ? "價格更新中"
-                    : "更新全部價格"}
+                  {portfolioRiskSummaryQuery.isLoading || priceRefreshTarget === "all" ? "價格更新中" : "更新全部價格"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runPortfolioTechnicalLookup()}
+                  disabled={
+                    technicalBatchRunning ||
+                    batchStatus === "running" ||
+                    portfolioRiskSummaryQuery.isFetching ||
+                    refreshPortfolioPricesMutation.isPending
+                  }
+                  className="ui-button-secondary min-h-10 px-3 text-xs"
+                >
+                  {technicalLookupButtonLabel}
                 </button>
                 <button
                   type="button"
                   onClick={runBatchAnalysis}
-                  disabled={batchStatus !== "idle"}
+                  disabled={batchStatus !== "idle" || technicalBatchRunning}
                   className="ui-button-secondary min-h-10 px-3 text-xs"
                 >
                   {batchStatus === "running" ? "AI 分析中" : "一鍵全部分析"}
@@ -2740,6 +2902,52 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 role="status"
               >
                 {priceRefreshNotice.text}
+              </div>
+            )}
+
+            {technicalBatchStatus !== "idle" && (
+              <div
+                className={`rounded-[10px] border px-4 py-3 text-sm ${
+                  technicalBatchStatus === "ready"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300"
+                    : technicalBatchStatus === "partialError" || technicalBatchStatus === "stale"
+                      ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300"
+                      : technicalBatchStatus === "error"
+                        ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/45 dark:text-red-300"
+                        : "border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/45 dark:text-indigo-300"
+                }`}
+                role="status"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-medium">
+                      {technicalBatchRunning &&
+                        `技術資料整理中 ${technicalBatchProgress.done}/${technicalBatchProgress.total}`}
+                      {technicalBatchStatus === "ready" && `已整理 ${technicalResultCount}/${items.length} 檔技術資料`}
+                      {technicalBatchStatus === "partialError" &&
+                        `已整理 ${technicalResultCount}/${items.length} 檔，失敗：${technicalFailedSymbols.join("、")}`}
+                      {technicalBatchStatus === "error" && `技術資料整理失敗：${technicalFailedSymbols.join("、")}`}
+                      {technicalBatchStatus === "stale" && "持股資料已變更，請重新整理技術資料"}
+                    </p>
+                    <p className="mt-1 text-xs opacity-80">
+                      本次取得的盤中／收盤快照＋日線 5／20／60 日波段結構，不執行 AI 分析。
+                    </p>
+                  </div>
+                  {hasTechnicalResults && !technicalBatchRunning && (
+                    <button
+                      type="button"
+                      onClick={() => void copyPortfolioTechnicalResults()}
+                      className="ui-button-secondary min-h-10 shrink-0 px-3 text-xs"
+                      aria-label="複製全部持股技術資料"
+                    >
+                      {technicalCopyStatus === "success"
+                        ? "已複製"
+                        : technicalCopyStatus === "error"
+                          ? "複製失敗"
+                          : "複製全部"}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -2895,7 +3103,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           disabled={
                             portfolioRiskSummaryQuery.isFetching ||
                             refreshPortfolioPricesMutation.isPending ||
-                            isAnalyzing
+                            isAnalyzing ||
+                            technicalBatchRunning
                           }
                           aria-label={`更新 ${portfolioDisplayName(item)} 最新價格`}
                           className="ui-button-secondary min-h-10 px-3 text-xs"
@@ -2905,7 +3114,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         <button
                           type="button"
                           onClick={() => void openAnalysis(item)}
-                          disabled={isAnalyzing || isRefreshingPrice}
+                          disabled={isAnalyzing || isRefreshingPrice || technicalBatchRunning}
                           className="ui-button-primary min-h-10 px-3 text-xs"
                         >
                           {isAnalyzing ? "分析中" : "AI 分析"}

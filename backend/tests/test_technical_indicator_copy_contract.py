@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TECHNICAL_INDICATORS_SOURCE = ROOT / "frontend/src/lib/technicalIndicators.ts"
+PORTFOLIO_TECHNICAL_EXPORT_SOURCE = ROOT / "frontend/src/features/portfolio/technicalExport.ts"
 
 FORBIDDEN_INTERNAL_LAYER_TOKENS = [
     "technical_profile",
@@ -21,6 +22,22 @@ FORBIDDEN_INTERNAL_LAYER_TOKENS = [
     "Secondary",
     "Display-only",
     "bucket impact",
+]
+
+PORTFOLIO_FORBIDDEN_INTERNAL_TOKENS = [
+    "technical_profile",
+    "primary_score_inputs",
+    "risk_overheat_filters",
+    "secondary_evidence",
+    "display_only",
+    "score_summary",
+    "capped_total",
+    "technical_score",
+    "bucket impact",
+    "analysis_detail",
+    "action_plan",
+    "recommended_action",
+    "discipline_triggers",
 ]
 
 REQUIRED_NEUTRAL_COPY_TOKENS = [
@@ -90,6 +107,35 @@ def test_technical_indicator_copy_keeps_neutral_raw_context_payload() -> None:
     missing = [token for token in REQUIRED_NEUTRAL_COPY_TOKENS if token not in source]
 
     assert missing == []
+
+
+def test_portfolio_technical_export_keeps_neutral_position_context() -> None:
+    source = PORTFOLIO_TECHNICAL_EXPORT_SOURCE.read_text(encoding="utf-8")
+
+    forbidden_hits = [token for token in PORTFOLIO_FORBIDDEN_INTERNAL_TOKENS if token in source]
+    required_position_tokens = [
+        "持股成本",
+        "進場日期",
+        "持有股數",
+        "buildTechnicalIndicatorsCopyText",
+    ]
+    removed_wrapper_tokens = [
+        "全部持股技術資料",
+        "產生時間",
+        "資料範圍",
+        "整理結果",
+        "持股權重",
+        "目前損益率",
+        "防守參考",
+        "技術資料日",
+        "失敗標的",
+    ]
+    missing = [token for token in required_position_tokens if token not in source]
+    wrapper_hits = [token for token in removed_wrapper_tokens if token in source]
+
+    assert forbidden_hits == []
+    assert missing == []
+    assert wrapper_hits == []
 
 
 def _extract_function_body(source: str, function_name: str) -> str:
