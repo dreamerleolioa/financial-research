@@ -11,6 +11,7 @@ import {
 } from "../features/portfolio/mutations";
 import { readPortfolioMutationRevision } from "../features/portfolio/mutationCoordinator";
 import {
+  readLoadedPortfolioItemsRevision,
   useDecisionContextStatusQuery,
   useLatestPortfolioHistoryQuery,
   useLifecyclePlanQuery,
@@ -2430,6 +2431,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const riskSummary = portfolioRiskSummaryQuery.data ?? null;
   const riskSummaryError =
     portfolioRiskSummaryQuery.error instanceof Error ? portfolioRiskSummaryQuery.error.message : null;
+  const portfolioItemsRevisionCurrent =
+    portfolioItemsQuery.data != null && readLoadedPortfolioItemsRevision() === readPortfolioMutationRevision();
   const riskSummaryNamesBySymbol = useMemo(() => {
     const names = new Map<string, string>();
     for (const risk of riskSummary?.position_risks ?? []) {
@@ -2488,7 +2491,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   const [priceRefreshNotice, setPriceRefreshNotice] = useState<PriceRefreshNotice | null>(null);
   const technicalPortfolioSignature = useMemo(
     () =>
-      `${riskSummary?.portfolio_revision ?? "no-risk-revision"}|${items.map((item) => `${item.id}:${item.symbol}`).join("|")}`,
+      `${riskSummary?.portfolio_revision ?? "no-risk-revision"}|${items
+        .map((item) => `${item.id}:${item.symbol}:${item.entry_price}:${item.entry_date}:${item.quantity}`)
+        .join("|")}`,
     [items, riskSummary?.portfolio_revision],
   );
   const technicalBatchRunning = technicalBatchStatus === "running";
@@ -2651,10 +2656,17 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
   }
 
   async function runPortfolioTechnicalLookup(): Promise<void> {
-    if (technicalBatchRunning || items.length === 0) return;
+    const revisionAtStart = readPortfolioMutationRevision();
+    if (
+      technicalBatchRunning ||
+      portfolioItemsQuery.isFetching ||
+      readLoadedPortfolioItemsRevision() !== revisionAtStart ||
+      items.length === 0
+    ) {
+      return;
+    }
 
     const batchItems = [...items];
-    const revisionAtStart = readPortfolioMutationRevision();
     const batchSequence = technicalBatchSequenceRef.current + 1;
     technicalBatchSequenceRef.current = batchSequence;
     technicalBatchRevisionRef.current = revisionAtStart;
@@ -2701,9 +2713,11 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
   async function copyPortfolioTechnicalResults(): Promise<void> {
     if (!hasTechnicalResults) return;
+    const currentRevision = readPortfolioMutationRevision();
     if (
       technicalBatchRevisionRef.current == null ||
-      technicalBatchRevisionRef.current !== readPortfolioMutationRevision()
+      technicalBatchRevisionRef.current !== currentRevision ||
+      readLoadedPortfolioItemsRevision() !== currentRevision
     ) {
       discardStaleTechnicalBatch();
       return;
@@ -2872,6 +2886,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   disabled={
                     technicalBatchRunning ||
                     batchStatus === "running" ||
+                    !portfolioItemsRevisionCurrent ||
+                    portfolioItemsQuery.isFetching ||
                     portfolioRiskSummaryQuery.isFetching ||
                     refreshPortfolioPricesMutation.isPending
                   }

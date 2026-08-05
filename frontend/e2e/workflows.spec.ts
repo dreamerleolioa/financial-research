@@ -232,8 +232,8 @@ test("Portfolio prepares and copies neutral technical snapshots for every holdin
   await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toContainText("已複製");
 
   const copiedText = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copiedText).toMatch(/^技術指標摘要\n持股成本：1020\n進場日期：2026-05-08\n持有股數：1000\n股票名稱：台積電/);
-  expect(copiedText).toContain("持股成本：1020");
+  expect(copiedText).toMatch(/^技術指標摘要\n持股成本：1018\n進場日期：2026-05-08\n持有股數：1000\n股票名稱：台積電/);
+  expect(copiedText).toContain("持股成本：1018");
   expect(copiedText).toContain("進場日期：2026-05-08");
   expect(copiedText).toContain("持有股數：1000");
   expect(copiedText).toContain("股票名稱：台積電");
@@ -266,6 +266,115 @@ test("Portfolio prepares and copies neutral technical snapshots for every holdin
   await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
   await expect(page.getByText("持股資料已變更，請重新整理技術資料")).toBeVisible();
   await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toHaveCount(0);
+});
+
+test("Portfolio reloads position facts after a cross-tab mutation before technical lookup", async ({
+  page,
+  context,
+}) => {
+  const updatedPortfolioItem = {
+    ...portfolioItem,
+    entry_price: 1018.25,
+    entry_date: "2026-07-01",
+    quantity: 900,
+  };
+  let updatedItemsRequestCount = 0;
+  let releaseUpdatedItems: (() => void) | undefined;
+  const updatedItemsGate = new Promise<void>((resolve) => {
+    releaseUpdatedItems = resolve;
+  });
+
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    analyzeResponsesBySymbol: {
+      "2330.TW": {
+        body: {
+          ...quickAnalyzeResult,
+          snapshot: { ...quickAnalyzeResult.snapshot, symbol: "2330.TW" },
+          symbol_name: "台積電",
+        },
+      },
+    },
+  });
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+
+  await page.route("http://127.0.0.1:8001/portfolio", async (route) => {
+    updatedItemsRequestCount += 1;
+    await updatedItemsGate;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([updatedPortfolioItem]) });
+  });
+  await page.evaluate(() => {
+    const oldValue = localStorage.getItem("portfolio_mutation_revision");
+    const newValue = "changed-in-another-tab-before-technical-lookup";
+    localStorage.setItem("portfolio_mutation_revision", newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "portfolio_mutation_revision",
+        oldValue,
+        newValue,
+      }),
+    );
+  });
+
+  await expect.poll(() => updatedItemsRequestCount).toBe(1);
+  await expect(prepareButton).toBeDisabled();
+  releaseUpdatedItems?.();
+  await expect(prepareButton).toBeEnabled();
+  await prepareButton.click();
+  await expect(page.getByText("已整理 1/1 檔技術資料")).toBeVisible();
+  await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
+
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toContain("持股成本：1018.25");
+  expect(copiedText).toContain("進場日期：2026-07-01");
+  expect(copiedText).toContain("持有股數：900");
+  expect(copiedText).not.toContain("持股成本：1020");
+});
+
+test("Portfolio keeps technical lookup disabled when a cross-tab items reload fails", async ({ page }) => {
+  const requestLog: string[] = [];
+  let failedItemsRequestCount = 0;
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+    requestLog,
+  });
+  await page.goto("/portfolio");
+  const prepareButton = page.getByRole("button", { name: "整理全部技術資料" });
+  await expect(prepareButton).toBeEnabled();
+
+  await page.route("http://127.0.0.1:8001/portfolio", async (route) => {
+    failedItemsRequestCount += 1;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "portfolio unavailable" }),
+    });
+  });
+  await page.evaluate(() => {
+    const oldValue = localStorage.getItem("portfolio_mutation_revision");
+    const newValue = "changed-in-another-tab-with-failed-items-reload";
+    localStorage.setItem("portfolio_mutation_revision", newValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "portfolio_mutation_revision",
+        oldValue,
+        newValue,
+      }),
+    );
+  });
+
+  await expect.poll(() => failedItemsRequestCount, { timeout: 5000 }).toBe(2);
+  await page.waitForTimeout(100);
+  await expect(prepareButton).toBeDisabled();
+  expect(requestLog).not.toContain("POST /analyze");
 });
 
 test("Portfolio keeps successful technical data copyable when one holding fails", async ({ page, context }) => {

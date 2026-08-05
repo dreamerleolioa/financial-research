@@ -130,6 +130,7 @@ def test_portfolio_technical_export_keeps_neutral_position_context() -> None:
         "防守參考",
         "技術資料日",
         "失敗標的",
+        "formatPrice(",
     ]
     missing = [token for token in required_position_tokens if token not in source]
     wrapper_hits = [token for token in removed_wrapper_tokens if token in source]

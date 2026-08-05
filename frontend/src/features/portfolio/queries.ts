@@ -9,15 +9,27 @@ import {
 } from "../../lib/portfolioApi";
 import { portfolioKeys } from "./queryKeys";
 import { clearPriceRefreshOverlay, readPriceRefreshOverlay } from "./priceRefreshOverlay";
-import {
-  PORTFOLIO_MUTATION_REVISION_KEY,
-  readPortfolioMutationRevision,
-} from "./mutationCoordinator";
+import { PORTFOLIO_MUTATION_REVISION_KEY, readPortfolioMutationRevision } from "./mutationCoordinator";
+
+let loadedPortfolioItemsRevision: string | null = null;
+
+export function readLoadedPortfolioItemsRevision(): string | null {
+  return loadedPortfolioItemsRevision;
+}
 
 export function usePortfolioItemsQuery() {
   return useQuery({
     queryKey: portfolioKeys.items(),
-    queryFn: fetchPortfolioItems,
+    queryFn: async () => {
+      const revisionAtStart = readPortfolioMutationRevision();
+      const items = await fetchPortfolioItems();
+      if (readPortfolioMutationRevision() !== revisionAtStart) {
+        throw new Error("持股資料已變更，正在重新載入最新持股");
+      }
+      loadedPortfolioItemsRevision = revisionAtStart;
+      return items;
+    },
+    retry: 1,
   });
 }
 
@@ -26,8 +38,9 @@ export function usePortfolioRiskSummaryQuery() {
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key !== PORTFOLIO_MUTATION_REVISION_KEY) return;
+      loadedPortfolioItemsRevision = null;
       clearPriceRefreshOverlay(queryClient);
-      void queryClient.invalidateQueries({ queryKey: portfolioKeys.riskSummary() });
+      void queryClient.invalidateQueries({ queryKey: portfolioKeys.all });
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
