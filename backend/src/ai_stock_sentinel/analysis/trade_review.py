@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+import logging
+import math
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from threading import BoundedSemaphore
+from types import SimpleNamespace
 from typing import Any
 
 import yfinance as yf
@@ -9,49 +14,148 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
+from ai_stock_sentinel.analysis.review_sources import (
+    completed_trailing_series,
+    market_snapshot_payload,
+    market_snapshot_regressed,
+)
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 
 
 MAX_DETECTED_EVENTS = 8
 TRADE_REVIEW_LOOKBACK_DAYS = 120
-TRADE_REVIEW_REQUIRED_LOOKBACK_ROWS = 60
+TRADE_REVIEW_PROVIDER_CAPACITY = 4
+TRADE_REVIEW_PROVIDER_TIMEOUT_SECONDS = 10
+TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO = 0.9
+TRADE_REVIEW_PROVIDER_MIN_TRADING_BARS = 60
+_TRADE_REVIEW_PROVIDER_SEMAPHORE = BoundedSemaphore(TRADE_REVIEW_PROVIDER_CAPACITY)
+logger = logging.getLogger(__name__)
 
 
-def ensure_trade_review_market_data(db: Session, portfolio: UserPortfolio, fetcher=None) -> None:
-    if portfolio.exit_date is None:
-        return
+@dataclass(frozen=True)
+class ReviewMarketSnapshot:
+    rows: list[Any]
+    evidence: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TradeReviewMarketTarget:
+    symbol: str
+    entry_date: date
+    exit_date: date | None
+
+
+def ensure_trade_review_market_data(
+    db: Session,
+    target: UserPortfolio | TradeReviewMarketTarget,
+    fetcher=None,
+) -> ReviewMarketSnapshot:
+    if target.exit_date is None:
+        return ReviewMarketSnapshot(
+            rows=[],
+            evidence=market_snapshot_payload([], provider="none", missing_reason="exit_date_missing"),
+        )
+
+    start_date = target.entry_date - timedelta(days=TRADE_REVIEW_LOOKBACK_DAYS)
+    end_date = target.exit_date
+    fetched_at = datetime.now(timezone.utc)
+    missing_reason = "provider_fetch_failed_or_empty"
+    provider_snapshot: ReviewMarketSnapshot | None = None
+    if _TRADE_REVIEW_PROVIDER_SEMAPHORE.acquire(blocking=False):
+        try:
+            history = fetcher(target.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
+                target.symbol,
+                start_date,
+                end_date,
+            )
+            rows = _review_rows_from_history(target, start_date, history)
+            if rows:
+                provider_evidence = market_snapshot_payload(
+                    rows,
+                    provider="yfinance",
+                    fetched_at=fetched_at,
+                    coverage_start=start_date,
+                    coverage_end=end_date,
+                    holding_start=target.entry_date,
+                    holding_end=end_date,
+                )
+                provider_quality = provider_evidence["quality"]
+                if provider_quality["trading_bar_count"] < TRADE_REVIEW_PROVIDER_MIN_TRADING_BARS:
+                    provider_quality["status"] = "insufficient"
+                    provider_quality["missing_reason"] = "provider_coverage_insufficient"
+                provider_snapshot = ReviewMarketSnapshot(
+                    rows=rows,
+                    evidence=provider_evidence,
+                )
+        except Exception as exc:
+            # A review may still be built from already persisted canonical rows,
+            # but the request must never mutate that canonical dataset.
+            logger.warning("Trade review market fetch failed for %s: %s", target.symbol, exc)
+        finally:
+            _TRADE_REVIEW_PROVIDER_SEMAPHORE.release()
+    else:
+        missing_reason = "provider_capacity_exhausted"
+        logger.warning("Trade review provider capacity exhausted for %s", target.symbol)
 
     rows = db.execute(
         select(StockRawData)
         .where(
-            StockRawData.symbol == portfolio.symbol,
-            StockRawData.record_date <= portfolio.exit_date,
+            StockRawData.symbol == target.symbol,
+            StockRawData.record_date >= start_date,
+            StockRawData.record_date < target.exit_date,
+            StockRawData.raw_data_is_final.is_(True),
         )
         .order_by(StockRawData.record_date.asc())
     ).scalars().all()
-    if not _needs_trade_review_backfill(rows, portfolio):
-        return
-
-    start_date = portfolio.entry_date - timedelta(days=TRADE_REVIEW_LOOKBACK_DAYS)
-    end_date = portfolio.exit_date + timedelta(days=1)
-    history = fetcher(portfolio.symbol, start_date, end_date) if fetcher else _download_trade_review_history(
-        portfolio.symbol,
-        start_date,
-        end_date,
+    fallback_snapshot = ReviewMarketSnapshot(
+        rows=list(rows),
+        evidence=market_snapshot_payload(
+            rows,
+            provider="stock_raw_data_read_only_fallback",
+            fetched_at=fetched_at,
+            missing_reason=missing_reason,
+            coverage_start=start_date,
+            coverage_end=end_date,
+            holding_start=target.entry_date,
+            holding_end=end_date,
+            compact=True,
+        ),
     )
-    _store_trade_review_ohlcv_rows(db, portfolio, start_date, history)
-    db.flush()
+    if provider_snapshot is None or not fallback_snapshot.rows:
+        return provider_snapshot or fallback_snapshot
+    if market_snapshot_regressed(
+        fallback_snapshot.evidence,
+        provider_snapshot.evidence,
+        provider_upgrade_min_coverage_ratio=TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO,
+    ):
+        fallback_snapshot.evidence["quality"]["missing_reason"] = "provider_coverage_below_fallback"
+        return fallback_snapshot
+    return provider_snapshot
 
 
-def build_trade_review_payload(db: Session, portfolio: UserPortfolio) -> tuple[dict, dict]:
-    rows = db.execute(
-        select(StockRawData)
-        .where(
-            StockRawData.symbol == portfolio.symbol,
-            StockRawData.record_date <= portfolio.exit_date,
+def build_trade_review_payload(
+    db: Session,
+    portfolio: UserPortfolio,
+    market_snapshot: ReviewMarketSnapshot | None = None,
+) -> tuple[dict, dict]:
+    if market_snapshot is None:
+        rows = db.execute(
+            select(StockRawData)
+            .where(
+                StockRawData.symbol == portfolio.symbol,
+                StockRawData.record_date <= portfolio.exit_date,
+                StockRawData.raw_data_is_final.is_(True),
+            )
+            .order_by(StockRawData.record_date.asc())
+        ).scalars().all()
+        snapshot_evidence = market_snapshot_payload(
+            rows,
+            provider="stock_raw_data_read_only",
+            compact=True,
         )
-        .order_by(StockRawData.record_date.asc())
-    ).scalars().all()
+    else:
+        rows = market_snapshot.rows
+        snapshot_evidence = market_snapshot.evidence
 
     data_quality = _build_data_quality(portfolio, rows)
     path_metrics = _build_path_metrics(portfolio, rows, data_quality)
@@ -109,7 +213,7 @@ def build_trade_review_payload(db: Session, portfolio: UserPortfolio) -> tuple[d
         "user_readable_conclusion": user_readable_conclusion,
     }
     evidence_payload = {
-        "trade": _serialize_trade(portfolio),
+        "trade": trade_review_source_payload(portfolio),
         "position_group_id": portfolio.position_group_id,
         "path_metrics": path_metrics,
         "entry_indicators": entry_indicators,
@@ -123,6 +227,7 @@ def build_trade_review_payload(db: Session, portfolio: UserPortfolio) -> tuple[d
             "first_record_date": _date_to_iso(rows[0].record_date) if rows else None,
             "last_record_date": _date_to_iso(rows[-1].record_date) if rows else None,
         },
+        "market_snapshot": snapshot_evidence,
     }
     return review_result, evidence_payload
 
@@ -152,24 +257,21 @@ def _build_entry_review(
     entry_vs_ma60 = _number(entry_indicators.get("entry_vs_ma60_pct"))
     rsi14 = _number(entry_indicators.get("rsi14"))
     volume_ratio = _number(entry_indicators.get("volume_ratio"))
-    previous_closes = valid_closes[:-1] if point_values["from_snapshot"] else [
-        close for row in point_rows if row.record_date < portfolio.entry_date for close in [_close(row)] if close is not None
-    ]
+    previous_closes = valid_closes
     recent_high = max(previous_closes[-20:]) if previous_closes else None
 
-    if recent_high is not None and entry_close is not None and entry_close >= recent_high * 1.01:
-        supporting.append("進場當日收盤價突破近 20 筆資料高點。")
+    if recent_high is not None and entry_price is not None and entry_price >= recent_high * 1.01:
+        supporting.append("進場成交價突破前一個完整交易日以前的近 20 筆資料高點。")
+        classification = "breakout_entry"
         if volume_ratio is not None and volume_ratio >= 1.15:
-            supporting.append("進場量能高於近 20 筆平均量。")
-            classification = "breakout_entry"
+            supporting.append("前一個完整交易日量能高於近 20 筆平均量。")
         else:
-            conflicting.append("突破時量能確認不足。")
-            classification = "range_entry"
+            caveats.append("事件只有日期，未使用進場當日收盤量能確認突破。")
 
     if entry_vs_ma20 is not None and entry_vs_ma20 >= 8 and rsi14 is not None and rsi14 >= 70:
         supporting.append("進場價明顯高於 MA20，且 RSI 偏高。")
-        if classification == "breakout_entry" and volume_ratio is not None and volume_ratio >= 1.5:
-            conflicting.append("動能已有延伸，突破品質需要保守看待。")
+        if classification == "breakout_entry":
+            conflicting.append("進場成交價距離 MA20 偏遠，突破位置已有延伸。")
         else:
             classification = "chase_entry"
 
@@ -584,7 +686,7 @@ def _event_label(event_type: str) -> str:
     return labels.get(event_type, event_type)
 
 
-def _serialize_trade(portfolio: UserPortfolio) -> dict[str, Any]:
+def trade_review_source_payload(portfolio: UserPortfolio) -> dict[str, Any]:
     realized_return_pct = _number(portfolio.realized_return_pct)
     return {
         "id": portfolio.id,
@@ -722,13 +824,13 @@ def _build_point_in_time_indicators(
 def _holding_rows(portfolio: UserPortfolio, rows: list[StockRawData]) -> list[StockRawData]:
     if portfolio.exit_date is None:
         return []
-    return [row for row in rows if portfolio.entry_date <= row.record_date <= portfolio.exit_date]
+    return [row for row in rows if portfolio.entry_date <= row.record_date < portfolio.exit_date]
 
 
 def _rows_up_to(rows: list[StockRawData], as_of: date | None) -> list[StockRawData]:
     if as_of is None:
         return []
-    return [row for row in rows if row.record_date <= as_of]
+    return [row for row in rows if row.record_date < as_of]
 
 
 def _classify_market_regime(rows: list[StockRawData], as_of: date | None) -> str:
@@ -746,7 +848,7 @@ def _classify_market_regime(rows: list[StockRawData], as_of: date | None) -> str
     recent_return_pct = _distance_pct(latest_close, recent_closes[0])
     recent_range_pct = _distance_pct(max(recent_closes), min(recent_closes))
     avg_daily_range_pct = _average_daily_range_pct_from_values(
-        point_values["closes"],
+        point_values.get("ohlc_closes", []),
         point_values["highs"],
         point_values["lows"],
     )
@@ -767,17 +869,6 @@ def _classify_market_regime(rows: list[StockRawData], as_of: date | None) -> str
     return "range_bound"
 
 
-def _needs_trade_review_backfill(rows: list[StockRawData], portfolio: UserPortfolio) -> bool:
-    entry_values = _point_in_time_values(rows, portfolio.entry_date)
-    exit_values = _point_in_time_values(rows, portfolio.exit_date)
-    holding_has_close = any(_close(row) is not None for row in _holding_rows(portfolio, rows))
-    return (
-        len(entry_values["closes"]) < TRADE_REVIEW_REQUIRED_LOOKBACK_ROWS
-        or len(exit_values["closes"]) < TRADE_REVIEW_REQUIRED_LOOKBACK_ROWS
-        or not holding_has_close
-    )
-
-
 def _download_trade_review_history(symbol: str, start_date: date, end_date: date):
     return yf.download(
         symbol,
@@ -786,38 +877,30 @@ def _download_trade_review_history(symbol: str, start_date: date, end_date: date
         interval="1d",
         progress=False,
         threads=False,
+        timeout=TRADE_REVIEW_PROVIDER_TIMEOUT_SECONDS,
+        multi_level_index=False,
     )
 
 
-def _store_trade_review_ohlcv_rows(db: Session, portfolio: UserPortfolio, start_date: date, history: Any) -> None:
-    if portfolio.exit_date is None:
-        return
-    bars = [bar for bar in _iter_history_bars(history) if start_date <= bar["date"] <= portfolio.exit_date]
+def _review_rows_from_history(
+    target: UserPortfolio | TradeReviewMarketTarget,
+    start_date: date,
+    history: Any,
+) -> list[Any]:
+    if target.exit_date is None:
+        return []
+    bars = [bar for bar in _iter_history_bars(history) if start_date <= bar["date"] < target.exit_date]
     if not bars:
-        return
+        return []
 
-    existing_rows = db.execute(
-        select(StockRawData).where(
-            StockRawData.symbol == portfolio.symbol,
-            StockRawData.record_date.in_([bar["date"] for bar in bars]),
-        )
-    ).scalars().all()
-    existing_by_date = {row.record_date: row for row in existing_rows}
+    rows: list[Any] = []
     previous_close: float | None = None
-
     for index, bar in enumerate(bars):
-        row = existing_by_date.get(bar["date"])
-        if row is not None and row.raw_data_is_final and _close(row) is not None:
-            previous_close = _close(row)
-            continue
-        row = row or StockRawData(symbol=portfolio.symbol, record_date=bar["date"])
-        if row.id is None:
-            db.add(row)
         recent_bars = bars[max(0, index - 59):index + 1]
         volumes = [recent_bar["volume"] for recent_bar in recent_bars if recent_bar["volume"] is not None]
         avg_volume_20 = sum(volumes[-20:]) / len(volumes[-20:]) if volumes else None
-        row.technical = {
-            "name": portfolio.symbol,
+        technical = {
+            "name": target.symbol,
             "ohlcv": {
                 "open": bar["open"],
                 "high": bar["high"],
@@ -833,8 +916,13 @@ def _store_trade_review_ohlcv_rows(db: Session, portfolio: UserPortfolio, start_
                 "technical_indicators": bar["date"].isoformat(),
             },
         }
-        row.raw_data_is_final = True
+        rows.append(SimpleNamespace(
+            symbol=target.symbol,
+            record_date=bar["date"],
+            technical=technical,
+        ))
         previous_close = bar["close"]
+    return rows
 
 
 def _iter_history_bars(history: Any) -> list[dict[str, Any]]:
@@ -846,7 +934,7 @@ def _iter_history_bars(history: Any) -> list[dict[str, Any]]:
             bar = _normalize_history_bar(item.get("date"), item)
             if bar is not None:
                 bars.append(bar)
-        return bars
+        return _sorted_unique_bars(bars)
     if not hasattr(history, "iterrows") or getattr(history, "empty", True):
         return []
     bars = []
@@ -854,7 +942,12 @@ def _iter_history_bars(history: Any) -> list[dict[str, Any]]:
         bar = _normalize_history_bar(index, row)
         if bar is not None:
             bars.append(bar)
-    return bars
+    return _sorted_unique_bars(bars)
+
+
+def _sorted_unique_bars(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_date = {bar["date"]: bar for bar in bars}
+    return [by_date[bar_date] for bar_date in sorted(by_date)]
 
 
 def _normalize_history_bar(raw_date: Any, row: Any) -> dict[str, Any] | None:
@@ -896,8 +989,13 @@ def _bar_date(value: Any) -> date | None:
 
 
 def _finite_number(value: Any) -> float | None:
+    if hasattr(value, "iloc"):
+        try:
+            value = value.iloc[0] if len(value) == 1 else value
+        except TypeError:
+            pass
     number = _number(value)
-    if number is None or number != number:
+    if number is None or not math.isfinite(number):
         return None
     return number
 
@@ -921,7 +1019,7 @@ def _detect_holding_events(portfolio: UserPortfolio, rows: list[StockRawData]) -
         volume = _volume(row)
         if close is None:
             continue
-        in_holding_window = portfolio.entry_date <= row.record_date <= portfolio.exit_date
+        in_holding_window = portfolio.entry_date <= row.record_date < portfolio.exit_date
         ma20 = ma(prior_closes + [close], 20)
         ma60 = ma(prior_closes + [close], 60)
         rsi14 = calc_rsi(prior_closes + [close], period=14)
@@ -1020,29 +1118,52 @@ def _latest_row_at_or_before(rows: list[StockRawData], as_of: date | None) -> St
     if as_of is None:
         return None
     for row in reversed(rows):
-        if row.record_date <= as_of:
+        if row.record_date < as_of:
             return row
     return None
 
 
 def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[str, Any]:
+    same_day_row = next((row for row in reversed(rows) if row.record_date == as_of), None)
+    same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
+    if same_day_closes:
+        completed = completed_trailing_series(
+            same_day_row.technical,
+            as_of,
+            closes=same_day_closes,
+            highs=_technical_values(same_day_row, "recent_highs"),
+            lows=_technical_values(same_day_row, "recent_lows"),
+            volumes=_technical_values(same_day_row, "recent_volumes"),
+        )
+        if completed is not None:
+            return {**completed, "from_snapshot": True}
     latest_row = _latest_row_at_or_before(rows, as_of)
     if latest_row is not None:
         closes = _technical_values(latest_row, "recent_closes")
-        if closes:
-            return {
-                "closes": closes,
-                "highs": _technical_values(latest_row, "recent_highs"),
-                "lows": _technical_values(latest_row, "recent_lows"),
-                "volumes": _technical_values(latest_row, "recent_volumes"),
-                "from_snapshot": True,
-            }
+        if closes and as_of is not None:
+            completed = completed_trailing_series(
+                latest_row.technical,
+                as_of,
+                closes=closes,
+                highs=_technical_values(latest_row, "recent_highs"),
+                lows=_technical_values(latest_row, "recent_lows"),
+                volumes=_technical_values(latest_row, "recent_volumes"),
+            )
+            if completed is not None:
+                return {**completed, "from_snapshot": True}
 
     point_rows = _rows_up_to(rows, as_of)
+    aligned_ohlc = [
+        (close, high, low)
+        for row in point_rows
+        for close, high, low in [(_close(row), _high(row), _low(row))]
+        if close is not None and high is not None and low is not None
+    ]
     return {
         "closes": [close for row in point_rows for close in [_close(row)] if close is not None],
-        "highs": [high for row in point_rows for high in [_high(row)] if high is not None],
-        "lows": [low for row in point_rows for low in [_low(row)] if low is not None],
+        "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
+        "highs": [high for _close_value, high, _low_value in aligned_ohlc],
+        "lows": [low for _close_value, _high_value, low in aligned_ohlc],
         "volumes": [volume for row in point_rows for volume in [_volume(row)] if volume is not None],
         "from_snapshot": False,
     }
@@ -1069,20 +1190,28 @@ def _average_daily_range_pct(rows: list[StockRawData]) -> float | None:
         close = _close(row)
         if high is not None and low is not None and close:
             ranges.append((high - low) / close * 100)
-    if not ranges:
+    if len(ranges) < 20:
         return None
     return _round_pct(sum(ranges) / len(ranges))
 
 
-def _average_daily_range_pct_from_values(closes: list[float], highs: list[float], lows: list[float]) -> float | None:
+def _average_daily_range_pct_from_values(
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+) -> float | None:
     aligned_length = min(len(closes), len(highs), len(lows))
-    if aligned_length == 0:
+    if aligned_length < 20:
         return None
     ranges: list[float] = []
-    for close, high, low in zip(closes[-aligned_length:][-20:], highs[-aligned_length:][-20:], lows[-aligned_length:][-20:]):
+    for close, high, low in zip(
+        closes[-aligned_length:][-20:],
+        highs[-aligned_length:][-20:],
+        lows[-aligned_length:][-20:],
+    ):
         if close:
             ranges.append((high - low) / close * 100)
-    if not ranges:
+    if len(ranges) < 20:
         return None
     return _round_pct(sum(ranges) / len(ranges))
 

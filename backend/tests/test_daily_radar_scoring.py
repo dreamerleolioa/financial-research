@@ -352,6 +352,25 @@ def test_daily_radar_missing_scoring_inputs_are_rejected_and_never_add_positive_
     assert result["observation_score"] == 0
 
 
+def test_daily_radar_scoring_fails_closed_on_future_core_data_date() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2330.TW"])
+    record["data_dates"]["institutional_flow"] = "2026-05-30"
+
+    result = score_daily_radar_record(
+        record,
+        prefilter_result={
+            "prefilter_status": "accepted",
+            "prefilter_reasons": [],
+        },
+    )
+
+    assert "data_gap" in result["risk_labels"]
+    assert any(
+        penalty["label"] == "data_gap"
+        for penalty in result["score_breakdown"]["risk_penalties"]
+    )
+
+
 @pytest.mark.parametrize(
     ("symbol", "section", "field", "forbidden_rule"),
     [
@@ -412,6 +431,30 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert result["rule_version"] == "daily-radar-rules-v2.2"
     assert breakdown["scoring_version"] == "daily-radar-scoring-v2.3"
     assert breakdown["rule_version"] == "daily-radar-rules-v2.2"
+
+
+def test_daily_radar_counterfactual_exclusion_uses_same_input_without_mutating_default_score() -> None:
+    record = _joined_records_by_symbol()["2454.TW"]
+    market_context = _market_context()
+    baseline = score_daily_radar_record(record, market_context=market_context)
+    ablated = score_daily_radar_record(
+        record,
+        market_context=market_context,
+        excluded_rule_codes={
+            "price_volume_expanded_participation",
+            "price_volume_obv_rising",
+            "cross_confirmation_price_volume",
+        },
+    )
+    repeated = score_daily_radar_record(record, market_context=market_context)
+
+    assert repeated == baseline
+    assert ablated["observation_score"] < baseline["observation_score"]
+    assert {
+        "price_volume_expanded_participation",
+        "price_volume_obv_rising",
+    }.isdisjoint({rule["rule_id"] for rule in ablated["matched_rules"]})
+    assert "price_volume" not in ablated["score_breakdown"]["cross_confirmation"]["components"]
 
 
 def test_daily_radar_scoring_records_technical_profile_layer_trace_without_changing_scores() -> None:

@@ -36,7 +36,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
 - `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入，並在列表內單筆或一鍵批次快速查看技術指標與複製摘要；它不代表進場、部位或交易紀錄。
-- `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。
+- `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。結案回顧採 closed-only、以前一 completed bar、source fingerprint、版本唯讀保護與短 transaction 並行鎖為契約；review provider 補行情具 timeout／容量／TTL／可用 final trading-bar、Close 專屬日期、完整日期集合與持有期間關鍵日期 coverage 邊界，同一 review refresh 採 process-local non-blocking single-flight（重複 refresh 回 `409`／`Retry-After`，backend 透過 CORS 暴露該 header，frontend 依 header 有界重試），外部 I/O 不持有 DB lock 且不寫回正式 `StockRawData`。相同 market content 的成功 refresh 仍會推進 freshness；OHLC 先依各自日期排除事件日，再以共同交易日對齊後計算，波動分類至少需要 20 根共同交易日 OHLC，full-exit 當日收盤不納入已持有路徑；compact lifecycle evidence 遇到同日 partial outer bar 時會逐欄合併非空值，不得覆寫 trailing series 已提供的 OHLCV；provider 少於 60 根可用交易 bar 時標記 coverage insufficient，保留 24 小時後重試，真正抓取失敗或空回應仍採 5 分鐘短 TTL。Lifecycle 計算與 evidence 都只讀取 final 行情，事後補填或進場後已修改的 plan 也不參與歷史違規或決策品質評分。
 - `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、刷新試驗版 Daily AVWAP evidence snapshot、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `phase1_avwap`：試驗版 Daily AVWAP 觀察層，針對 active holdings、watchlist 與 Daily Radar selected candidates 建立日頻 AVWAP snapshot。Snapshot 是全域市場 cache，只保存 market bars / generic anchors / data quality，不保存使用者持股 entry date 或 avg cost；Portfolio risk summary 會在 read projection 時用 portfolio domain 的持股資料計算 holding-specific state。此功能只透過既有 Analyze、Portfolio risk summary、Daily Radar response 顯示，不新增 public endpoint、不改 Daily Radar scoring。
 - `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
@@ -263,17 +263,18 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
 
-#### Portfolio ledger repair migration 部署門檻
+#### Data migration 部署門檻
 
-`1b2c3d4e5f6a_repair_synthetic_split_ledger_quantity` 是會修正既有 portfolio/event facts 的 data migration。這一版不可讓舊版 `PUT /portfolio/{id}` writer 與 migration 做 rolling overlap；舊版只更新 portfolio row，可能在 migration commit 後重新造成 ledger 分裂。
+`1b2c3d4e5f6a_repair_synthetic_split_ledger_quantity` 會修正既有 portfolio/event facts；`2c3d4e5f6a7b_align_calibration_sample_identity` 會鎖定並 canonicalize calibration samples/results。這一版不可讓任何舊版 backend、`/analyze` capture、forward-validation 或 portfolio writer 與 migration 做 rolling overlap。
 
 部署時必須依序執行：
 
-1. 進入 maintenance mode，停止舊版 backend instances 或至少封鎖 portfolio create/update/add-entry/close writes。
-2. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `1b2c3d4e5f6a (head)`。
-3. 啟動新版 backend，確認所有舊版 instances 已退出後，再重新開放 portfolio writes。
+1. 進入 maintenance mode 並停止所有舊版 backend instances；只封鎖 portfolio writes 不足以保護 calibration migration。
+2. 建立可還原的 migration 前資料庫備份，先盤點 calibration tables 的 row count、duplicate identity 數量與可接受維護窗口，確認後暫時設定 `CALIBRATION_MIGRATION_BACKUP_CONFIRMED=2c3d4e5f6a7b`。`2c3d4e5f6a7b` 會刪除非 canonical 的歷史 calibration duplicates，缺少此精確確認值時 migration 會中止；它也刻意禁止 Alembic downgrade，需要回退時必須還原備份。
+3. 部署新版；`backend/zbpack.json` 的 production start command 會先執行 `uv run alembic upgrade head`，再以 `uv run alembic current --check-heads` 確認目前 DB 已套用所有 head。Calibration migration 的 exclusive lock 最多等待 10 秒，整個 migration statement 最多執行 5 分鐘，任一逾時都會 fail closed；應先找出並結束阻塞 transaction 或重新評估資料規模，再重新部署，不得移除 timeout 或繞過 migration。任一步驟失敗都不得啟動 Uvicorn；本次輸出應為 `2c3d4e5f6a7b (head)`。確認 migration 完成後即可移除一次性 confirmation variable，後續啟動不會再次執行已套用的 revision。
+4. 啟動新版 backend，確認所有舊版 instances 已退出後，再重新開放 API traffic 與背景 calibration workflows。
 
-Migration 內的 compare-and-lock 只保護同一個 DB transaction 讀取快照到寫入之間的競態，不能取代上述跨版本 write quiescence。
+Portfolio migration 的 compare-and-lock 與 calibration migration 的 exclusive table lock 只保護各自 DB transaction 內的競態，不能取代上述跨版本 write quiescence。
 
 ---
 
@@ -294,7 +295,7 @@ pnpm dev
 **新倉分析頁（`/analyze`）**
 
 - 股票代碼輸入框 + 一鍵分析
-- 訊號強度與資料品質提示（含 `cross_validation_note`；`data_confidence < 60` 時顯示資料不足提示；raw score 保留為內部排序、校準與 advanced trace）
+- 有方向的綜合訊號強度與資料品質提示（含 `cross_validation_note`；`confidence_score` 以 50 為中性基準，badge 分為 `>= 80` 強烈偏多、`60–79` 偏多、`41–59` 中性／混合、`21–40` 偏空、`<= 20` 強烈偏空，並以 `x / 100` 呈現，不借用 `action_plan.conviction_level`，也不使用百分比暗示勝率；`data_confidence < 60` 時仍顯示資料不足百分比）
 - 快照資訊（symbol / current_price / volume）
 - 分析報告四維小卡（技術面 / 籌碼面 / 基本面 / 消息面）+ 綜合仲裁全寬卡
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
@@ -326,6 +327,7 @@ pnpm dev
 
 - 獨立頁面保留結案紀錄與歷史診斷，不再把出場等同刪除追蹤
 - 期間篩選：1天 / 1週 / 1月 / 1季 / 1年，並顯示篩選後的 `已實現損益` 總計
+- Trade Review 與 Lifecycle Review 使用原始 final rows 計算，但持久化的 `StockRawData` market evidence 會依交易日 compact；所有 dated trailing series 會先於 outer bars 合併，同日重疊的 trailing history 以較新非空值更新並保留其缺少欄位，partial outer bar 則只能補缺，避免盤中 outer quote 覆蓋治理使用的 completed OHLCV、重複保存整段歷史或扭曲 source fingerprint
 
 **Daily Radar（`/daily-radar`）**
 
@@ -348,6 +350,8 @@ make run-api
 
 預設開啟：`http://127.0.0.1:8000`
 
+所有 API 啟動入口都會先執行 Alembic upgrade；migration 缺少人工確認、逾時或執行失敗時必須直接中止啟動，不得只記錄錯誤後在舊 schema 上提供服務。資料庫已位於 head 時不需要保留一次性的 migration confirmation variable。
+
 - `GET /health`
 - `POST /analyze` — 新倉策略分析
 - `POST /analyze/position` — 持股操作建議
@@ -365,7 +369,7 @@ make run-api
 
 Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
 
-兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個成熟月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個 5／10／20 日窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個日期 block，且整體與每個入選月份的 validated coverage、replay coverage 均達 90%；validation rows 不會被當成獨立樣本重複計數。一般分析 replay coverage 的分母只包含 optimizer scope 內的 `short_term`／`mid_term`，`defensive_wait` 等刻意排除策略仍列入 exclusion diagnostics，但不會被誤算成 replay 缺漏。
+兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個 5／10／20 日皆成熟的月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個 blocks，且整體與每個入選月份的逐窗口 validated coverage、replay coverage 均達 90%；Daily Radar 涉及排名或 counterfactual 的治理另要求每個交易日／窗口 replay ranking pool 100% 完整。每個 horizon 另有獨立 holdout 非劣性 gate。一般分析與 Daily Radar 都會在 scoring／bootstrap 前檢查整批 replay workload，超限時 fail closed；一般分析只採目前 strategy/config version，且資料庫以 strategy/config version 鎖定同一 market／symbol／日期唯一的 point-in-time sample；validation 的 `signal_date` 與 `benchmark_symbol` 必須和該 sample 完全一致，否則不得計入 watermark 或 optimizer。Daily Radar 缺少 validation result 時明確標記 missing，先決定 Top 20 再接 outcome，並只對 live-score 規則執行同輸入 counterfactual replay；context-only 群組標記為不適用。兩軌報告都只提出建議，不直接變更 live scoring。
 
 Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次 calibration capture 暫時失敗，後續 final cache hit 會以同一 payload 冪等補寫。舊 cache 沒有正式 replay payload 時維持跳過，不會從輸出猜測輸入。
 
@@ -421,8 +425,8 @@ make test
 | `cleaned_news_quality`     | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`）                                                                                                                                            |
 | `news_display_items`       | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔）                                                                                    |
 | `action_plan_tag`          | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`）                                                                                      |
-| `confidence_score`         | 信心分數 0–100（`signal_confidence` 別名，向後相容）                                                                                                                                               |
-| `signal_confidence`        | 訊號強度分數（多維加權計算）                                                                                                                                                                       |
+| `confidence_score`         | 有方向的訊號強度 0–100（`signal_confidence` 別名；50 中性、低於 50 偏空、高於 50 偏多）                                                                                                             |
+| `signal_confidence`        | 有方向的訊號強度分數（多維加權計算；不代表勝率或不分方向的一致性）                                                                                                                                 |
 | `data_confidence`          | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算）                                                                                                                                    |
 | `cross_validation_note`    | 三維交叉驗證備注（rule-based 固定字串）                                                                                                                                                            |
 | `strategy_type`            | 策略方向（`short_term` / `mid_term` / `defensive_wait`）                                                                                                                                           |

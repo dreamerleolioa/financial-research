@@ -235,19 +235,87 @@ def load_benchmark_prices_from_prepared_market_context(
     )
 
 
+def validate_forward_validation_benchmark(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    benchmark_symbol: str,
+) -> None:
+    mismatched_candidate_ids = [
+        int(candidate["candidate_id"])
+        for candidate in candidates
+        if candidate.get("candidate_id") is not None
+        and candidate_forward_validation_benchmark_symbol(
+            candidate.get("input_snapshot")
+        )
+        != benchmark_symbol
+    ]
+    if mismatched_candidate_ids:
+        raise ValueError(
+            "Daily Radar forward validation benchmark must match the benchmark "
+            "used by every scoring candidate"
+        )
+
+
+def candidate_forward_validation_benchmark_symbol(input_snapshot: Any) -> str:
+    replay_input = _mapping(_mapping(input_snapshot).get("replay_input"))
+    market_context = _mapping(replay_input.get("market_context"))
+    benchmark = _mapping(market_context.get("benchmark"))
+    return str(benchmark.get("symbol") or DEFAULT_BENCHMARK_SYMBOL)
+
+
 def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
 ) -> dict[str, int]:
+    outcome_rows = list(outcomes)
+    candidate_ids = {
+        int(outcome["candidate_id"])
+        for outcome in outcome_rows
+        if outcome.get("candidate_id") is not None
+    }
+    candidate_identity_by_id = {
+        int(candidate_id): (
+            run_date,
+            candidate_forward_validation_benchmark_symbol(input_snapshot),
+        )
+        for candidate_id, run_date, input_snapshot in session.execute(
+            select(
+                DailyRadarCandidate.id,
+                DailyRadarRun.run_date,
+                DailyRadarCandidate.input_snapshot,
+            )
+            .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+            .where(DailyRadarCandidate.id.in_(candidate_ids))
+        )
+    }
     written = 0
     validated = 0
     skipped = 0
     retryable_skipped = 0
     terminal_skipped = 0
-    for outcome in outcomes:
+    for outcome in outcome_rows:
         candidate_id = outcome.get("candidate_id")
         if candidate_id is None:
             continue
+        signal_date = _parse_date(outcome.get("signal_date"))
+        if signal_date is None:
+            raise ValueError(
+                "Daily Radar validation outcome requires a valid signal_date"
+            )
+        benchmark_symbol = str(outcome.get("benchmark_symbol") or "")
+        candidate_identity = candidate_identity_by_id.get(int(candidate_id))
+        if candidate_identity is None:
+            raise ValueError(
+                f"Daily Radar validation candidate {candidate_id} does not exist"
+            )
+        expected_signal_date, expected_benchmark_symbol = candidate_identity
+        if (
+            signal_date != expected_signal_date
+            or benchmark_symbol != expected_benchmark_symbol
+        ):
+            raise ValueError(
+                "Daily Radar validation identity must match its scoring candidate"
+            )
         existing = session.execute(
             select(DailyRadarForwardValidationResult).where(
                 DailyRadarForwardValidationResult.candidate_id == int(candidate_id),
@@ -264,17 +332,17 @@ def upsert_forward_validation_results(
                 window_days=int(outcome["window_days"]),
                 validation_version=str(outcome["validation_version"]),
                 status=str(outcome["status"]),
-                signal_date=_parse_date(outcome.get("signal_date")) or date.min,
+                signal_date=signal_date,
                 target_date=_parse_date(outcome.get("target_date")),
-                benchmark_symbol=str(outcome.get("benchmark_symbol") or ""),
+                benchmark_symbol=benchmark_symbol,
                 outcome=payload,
                 skip_reason=outcome.get("skip_reason"),
             )
         else:
             existing.status = str(outcome["status"])
-            existing.signal_date = _parse_date(outcome.get("signal_date")) or date.min
+            existing.signal_date = signal_date
             existing.target_date = _parse_date(outcome.get("target_date"))
-            existing.benchmark_symbol = str(outcome.get("benchmark_symbol") or "")
+            existing.benchmark_symbol = benchmark_symbol
             existing.outcome = payload
             existing.skip_reason = outcome.get("skip_reason")
         session.add(existing)
@@ -324,6 +392,7 @@ def exclude_persisted_daily_radar_windows(
     windows_by_candidate: Mapping[str, Sequence[int]],
     *,
     validation_version: str = FORWARD_VALIDATION_VERSION,
+    benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
 ) -> dict[str, list[int]]:
     candidate_ids = [
         int(key.removeprefix("id:"))
@@ -338,16 +407,38 @@ def exclude_persisted_daily_radar_windows(
         }
     terminal = {
         (result.candidate_id, result.window_days)
-        for result in session.scalars(
-            select(DailyRadarForwardValidationResult).where(
+        for result, candidate, run in session.execute(
+            select(
+                DailyRadarForwardValidationResult,
+                DailyRadarCandidate,
+                DailyRadarRun,
+            )
+            .join(
+                DailyRadarCandidate,
+                DailyRadarForwardValidationResult.candidate_id
+                == DailyRadarCandidate.id,
+            )
+            .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+            .where(
                 DailyRadarForwardValidationResult.candidate_id.in_(candidate_ids),
                 DailyRadarForwardValidationResult.validation_version == validation_version,
             )
         ).all()
-        if result.status == "validated"
-        or (
-            result.status == "skipped"
-            and result.skip_reason in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+        if (
+            result.signal_date == run.run_date
+            and result.benchmark_symbol == benchmark_symbol
+            and result.benchmark_symbol
+            == candidate_forward_validation_benchmark_symbol(
+                candidate.input_snapshot
+            )
+            and (
+                result.status == "validated"
+                or (
+                    result.status == "skipped"
+                    and result.skip_reason
+                    in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+                )
+            )
         )
     }
     pending: dict[str, list[int]] = {}
@@ -741,6 +832,7 @@ __all__ = [
     "FORWARD_VALIDATION_VERSION",
     "ForwardValidationEvaluation",
     "build_forward_validation_report",
+    "candidate_forward_validation_benchmark_symbol",
     "default_due_start_date",
     "due_windows_by_candidate",
     "exclude_persisted_daily_radar_windows",
@@ -754,5 +846,6 @@ __all__ = [
     "merge_price_series",
     "symbols_requiring_forward_price_refresh",
     "upsert_forward_validation_results",
+    "validate_forward_validation_benchmark",
     "write_report",
 ]

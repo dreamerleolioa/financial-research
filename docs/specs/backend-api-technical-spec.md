@@ -19,6 +19,8 @@ make run-api
 
 預設位址：`http://127.0.0.1:8000`
 
+所有支援的 API 啟動入口都必須先執行 Alembic upgrade 並採 fail-closed；migration 缺少人工確認、逾時或執行失敗時不得進入 FastAPI lifespan 的 serving 階段。Production prestart 另以 `alembic current --check-heads` 驗證目前資料庫位於唯一 head。
+
 ---
 
 ## 3) Endpoint 契約
@@ -91,6 +93,7 @@ make run-api
     "limit_down_price": 828.0,
     "volume": 28450000,
     "recent_closes": [910.0, 915.0, 920.0, 925.0],
+    "data_dates": {"ohlcv": "2026-03-03"},
     "fetched_at": "2026-03-03T00:00:00+00:00",
     "support_20d": 900.0,
     "resistance_20d": 950.0
@@ -285,7 +288,7 @@ make run-api
 
   | 欄位                       | 類型           | 說明                                                                                                                                                                                                                                                                                            |
   | -------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `snapshot`                 | object         | yfinance 即時快照                                                                                                                                                                                                                                                                               |
+  | `snapshot`                 | object         | yfinance 即時快照；`data_dates.ohlcv` 為 history 中最後一筆有效 close 的實際交易日，供 raw storage 與 deterministic point-in-time replay 使用，不送入 LLM prompt                                                                                                                              |
   | `analysis`                 | string         | LLM Skeptic Mode 四步驟完整分析文字                                                                                                                                                                                                                                                             |
   | `cleaned_news`             | object \| null | LLM pipeline 消費用的新聞結構（`sentiment_label`、`mentioned_numbers` 等）；無新聞時為 null                                                                                                                                                                                                     |
   | `symbol_name`              | string \| null | 股票名稱，僅供前端顯示；新鮮分析由 `snapshot.name` 浮出，舊快取可由 symbol metadata resolver 補齊，查不到時為 `null`                                                                                                                                                                                |
@@ -293,7 +296,7 @@ make run-api
   | `cleaned_news_quality`     | object \| null | 新聞摘要品質評估（`quality_score: 0-100`、`quality_flags: string[]`）；無新聞時為 null                                                                                                                                                                                                          |
   | `data_confidence`          | int \| null    | 0–100，資料完整度（成功取得的新聞、法人籌碼與技術資料維度數量）；availability 與方向標籤分離，缺資料時的 `neutral` / `sideways` fallback 不得算成已取得。技術維度至少需要 20 筆有效收盤資料；僅產出 `technical_profile.score_summary`、但 `data_quality.lookback_days_available < 20` 時仍視為不可用，且該 profile 不得影響 `signal_confidence`。若 raw closes 已達 20 筆則維度仍可用，但必須忽略不足 lookback 的 profile，改由 raw technical fallback 產生訊號。前端預設應轉成資料品質提示 |
   | `signal_confidence`        | int \| null    | 0–100，內部訊號強度（CS-4 新增；`confidence_score` 為向後相容別名），用於 guardrail、校準與 trace                                                                                                                                                                                                 |
-  | `confidence_score`         | int \| null    | 0–100，內部三維訊號一致性（= `signal_confidence`，向後相容）；不應作為預設前台 headline                                                                                                                                                                                                          |
+  | `confidence_score`         | int \| null    | 0–100，有方向的內部訊號強度（= `signal_confidence`，向後相容；50 為中性基準，低於 50 偏空、高於 50 偏多）；不得解讀為不分方向的一致性、勝率或機率                                                                                                                                                    |
   | `cross_validation_note`    | string \| null | 三維交叉驗證結論簡述（rule-based 固定字串）                                                                                                                                                                                                                                                     |
   | `strategy_type`            | enum \| null   | `short_term` / `mid_term` / `defensive_wait`                                                                                                                                                                                                                                                    |
   | `entry_zone`               | string \| null | 建議入場區間（rule-based）                                                                                                                                                                                                                                                                      |
@@ -1094,6 +1097,13 @@ make run-api
 }
 ```
 
+### `PUT /portfolio/{portfolio_id}/lifecycle-plan`
+
+- **用途**：更新目前登入使用者 active 持股的 lifecycle plan。
+- **provenance 邊界**：若既有 plan 是 `user_recorded_at_event_time` 且 request 實際改變任一 plan 欄位，更新後必須改標為 `source = user_backfilled`、`created_after_entry = true`，避免事後改寫的規則回頭參與歷史判斷。完全相同的 idempotent payload 保留原始 event-time provenance。
+- **權限與並行邊界**：非擁有者回傳 `403`，已結案持股回傳 `409`；更新時鎖定 portfolio row，與 add-entry、close 等同群組操作序列化。
+- **Request / Response**：Request 欄位與 backfill endpoint 相同；Response 200 欄位同 `GET /portfolio/{portfolio_id}/lifecycle-plan`。
+
 ### `PUT /portfolio/{portfolio_id}/lifecycle-plan/backfill`
 
 - **用途**：為既有 active 持股補填 lifecycle plan，改善未來 review context，但不把補填內容當成原始進場當下意圖。
@@ -1297,11 +1307,15 @@ make run-api
 
 ### `POST /portfolio/{portfolio_id}/review`
 
-- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review；若已存在且 `review_version = trade-review-v2`，直接回傳既有 review。只有已知的 `trade-review-v1` 會由 POST 依目前 deterministic 規則原地重建為 v2；未知或較新版本原樣回傳，不得降級覆寫。
+- **用途**：為一筆已結案持股建立 deterministic rule-based Single Trade Review。`trade-review-v1` / `trade-review-v2` 會由 POST 原地升級為 v3；目前 v3 會以 source fingerprint 判斷是否可重用，未知或較新版本原樣回傳，不得降級覆寫。
 - **Request Body**：無必填欄位；目前 frontend 送出空 POST body。
-- **持久化語義**：同一 `portfolio_id` 只會有一筆預設 review。第一次 POST 建立 `trade_review`；目前 v2 再次 POST 維持 idempotent 並回傳既有資料；已知 v1 review 再次 POST 則更新同一筆紀錄的 `review_version`、`review_result` 與 `evidence_payload`，並清除舊 `llm_summary`。GET 保持只讀；frontend 只在讀到 v1 時再送 POST 完成升級，對未知或較新版本不得自動 POST，確保版本單調性與 rollback 相容性。
+- **持久化與 freshness 語義**：同一 `portfolio_id` 只保存一筆預設 review。POST 先以短 read transaction 驗證 ownership／closed facts 與 TTL，cache miss 時必須結束 transaction、釋放 DB connection 後才能呼叫 provider；同一 process 內相同 user／portfolio key 的 refresh 使用 non-blocking single-flight，slot 已被占用時立即回 `409 Conflict`、`Retry-After: 1` 與 `交易審核正在更新，請稍後重試`，不得讓同步 request worker 排隊等待；backend 的 CORS middleware 必須暴露 `Retry-After`，first-party frontend 只對這個 `409` 依該 header 做最多 12 次、單次最多 5 秒的有界重試。取得 snapshot 後再鎖定 closed portfolio row、重新讀取 saved review，並在短 transaction 內以品質、normalized trading-bar coverage 與 `fetched_at` 仲裁後完成 fingerprint 比較與寫入，避免持鎖等待外部 I/O、並行重複建立或 stale overwrite；若其他 process 已寫入較新但降級的 fallback，而本次取得足夠完整的正常 provider，仍允許品質升級。closed-row facts 未變時，成功的 market snapshot 可重用 6 小時，帶 `missing_reason` 的降級 snapshot 僅重用 5 分鐘；到期後才重新呼叫 provider。重建時以 closed-row facts、review ruleset 與獨立 review market snapshot 建立 `source_fingerprint`；同版且 fingerprint 相同、但成功 refresh 的 `fetched_at` 較新時，必須更新 evidence freshness 與 TTL 而不清除既有 `llm_summary`；來源內容改變時才原地重建 `review_result` / `evidence_payload` 並清除舊 summary。GET 保持只讀；frontend 在讀到 v1、v2 或目前 v3 時送 POST 完成升級／freshness 檢查，對未知或較新版本不得自動 POST。
+- **Partial provider TTL**：provider 即使回傳非空資料，少於 MA60 所需的 60 根可用交易 bar 時仍必須標記 `provider_coverage_insufficient`，並使用 24 小時 partial-coverage retry TTL，避免新上市或永久短歷史標的每次開啟都重抓；真正 provider 抓取失敗／空回應仍使用 5 分鐘失敗短 TTL，至少 60 根的正常 snapshot 使用 6 小時成功 TTL。
 - **LLM 邊界**：目前不呼叫 LLM，`llm_summary` 固定為 `null`。
-- **Evidence 邊界**：`evidence_payload` 只存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、source summary；不存完整 OHLCV/K-line arrays、raw news、raw LLM prompts 或 unrelated portfolio history。
+- **行情與 look-ahead 邊界**：review 補行情不得寫入或覆寫正式 `StockRawData`。yfinance 資料只建立 request-scoped review snapshot；下載明確使用單層欄位、10 秒 timeout、process-wide 4 路 non-blocking bulkhead，容量已滿或 provider 失敗時唯讀使用 bounded、`raw_data_is_final = true` 的既有 `StockRawData`，lifecycle query 與 evidence 也套用相同 final-only 邊界。即使 provider 回傳非空資料，首次建立與後續 refresh 都必須和 fallback 比較 `market-coverage-v1`：`row_count` 只表示 evidence container rows，實際選優只計 finite 且大於 0 的 close，並使用 `trading_bar_count`、Close 自有日期形成的完整 `covered_dates`、`holding_covered_dates`、`date_start`、`date_end` 與 `coverage_basis`；已提供但全部落在目標 window 外的日期不得降級成 undated series 估算，已有 trailing dates 時也不得再把 observation `record_date` 當成額外交易 bar。正常 provider 至少保留既有可比較 trading-bar coverage 的 90%，而既有持有期間日期必須 100% 保留；相同或更多總數仍不得遺失既有內部日期。品質已嚴重不足、少於 60 根的 `market-coverage-v1` evidence，或少於 60 根且具有實際 bars、可推導 coverage 的 legacy evidence，可由至少 60 根且達 material recovery 門檻的 fallback 自癒；一旦明確符合 material recovery，estimated fallback 可越過 holding-date subset gate，避免少量精確日期反向鎖死整體自癒。只有舊 `row_count`、沒有 bars 的不相容 legacy evidence 不得放寬。provider bars 必須依交易日升序並以日期去重後才可計算。一般 yfinance snapshot producer 必須把最後一筆有效 Close 的交易日保存到 `technical.data_dates.ohlcv`，並把 Close／High／Low 各自獨立去除缺值後的日期保存到 `recent_close_dates`／`recent_high_dates`／`recent_low_dates`。事件只有日期、沒有可證明的成交時間，因此 entry/exit 指標一律只使用 event date 前已 completed 的 bar；同日 cache row 要逐序列依日期排除事件日資料，不能用 Close 日期替 High／Low／Volume 證明 finality；High／Low 日期缺失時，即使長度等於 Close 也要保守移除無法證明的尾端值。既有 legacy row 若沒有 data date，保守移除各個無法證明完成的 OHLC 尾端值，但保留更早 trailing history；成交量依 `recent_volume_dates` 或實際 series 對齊獨立判斷，不得把整份 legacy snapshot 丟棄或把 stale cache 的前一日資料誤刪。
+- **OHLC 與 full-exit 路徑邊界**：逐序列完成 event-date 裁切後，需要 OHLC 的指標與 compact evidence 必須再取 Close／High／Low 的共同交易日，禁止按索引拼接獨立 `dropna()` 後的序列。Single Trade Review 的平均日內 range 至少需要 20 根對齊 OHLC，樣本不足時不得把單一極端 bar 判為 `high_volatility`。Full-exit 只有日期而無成交時間時，結案日收盤不得進入 lifecycle 已持有路徑；實際出場價只使用 ledger event fact。
+- **Evidence 邊界**：`evidence_payload` 保存 trade scalar、path metrics、point-in-time indicators、detected events、data quality、compact market snapshot、`ruleset_version` 與 `source_fingerprint`；不存 raw news、raw LLM prompts 或 unrelated portfolio history。Compact snapshot 使用 bar / trailing-series 結構，不把 canonical `StockRawData` 當成 review 可寫 cache。
+- **StockRawData compact 邊界**：Trade Review 保留 fallback／direct-read 的原始 final rows 進行 deterministic 計算，但 evidence 與 fingerprint 必須依交易日 compact。所有 dated trailing series 先於 outer bars 合併；同日重疊的 trailing history 以較新非空值更新，較新 series 缺少的欄位保留既有 completed 值，partial outer bar 則只能補缺，不得用非空的盤中 outer quote 覆蓋 completed OHLCV；無日期的重複 trailing history 只保存最長一份。`quality.row_count` 保留來源 outer rows 數量，`quality.persisted_bar_count` 表示實際持久化的 compact bars，避免 provider fallback 將相同歷史重複寫入 JSONB 與 API response。
 
 - **Response 200**
 
@@ -1312,7 +1326,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "trade-review-v2",
+  "review_version": "trade-review-v3",
   "review_result": {
     "data_quality": {
       "status": "ok",
@@ -1484,7 +1498,7 @@ make run-api
   - `market_regime`：`uptrend` / `downtrend` / `range_bound` / `strong_momentum` / `high_volatility` / `insufficient_data`。
   - `holding_review.detected_events`：最多保留重要 holding events，event item 不包含完整 K 線序列。
 
-> **Single Trade Review 結論邊界**：`trade-review-v2` 由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，也不新增 `llm_summary`。只有存在可核對的獲利保護、風險控制或技術破位證據時才可回傳 `reasonable`；資料完整但證據不足時回傳 `unclassified`，市場資料不足時回傳 `insufficient`。對既有 v1 紀錄再次 POST 時會以 v2 規則重建。
+> **Single Trade Review 結論邊界**：`trade-review-v3` 由後端 deterministic rule-based 邏輯產出，不呼叫 LLM，也不新增 `llm_summary`。只有存在可核對的獲利保護、風險控制或技術破位證據時才可回傳 `reasonable`；資料完整但證據不足時回傳 `unclassified`，市場資料不足時回傳 `insufficient`。既有 v1 / v2 紀錄會在 POST 時依 v3 規則與當前 source fingerprint 重建。
 
 ### Closed portfolio grouping behavior
 
@@ -1543,6 +1557,7 @@ make run-api
 - **用途**：讀取同一 `position_group_id` 的已保存 Position Lifecycle Review；此端點只讀取已保存結果，不觸發 freshness 檢查或重算。
 - **權限邊界**：只能讀取目前登入使用者自己的 position group；非擁有者回傳 `403`。
 - **資料邊界**：review 單位是整個 position group lifecycle，不與 `/portfolio/{portfolio_id}/review` 共用 endpoint，也不寫入 `trade_review`。
+- **closed-only 邊界**：GET 與 POST 都要求 group 內沒有 active portfolio row、ledger 至少一筆 `full_exit`，且 `entry quantity - exit quantity = 0`；未完整結案回傳 `409`，`detail.code = position_lifecycle_not_closed`。
 - **Response 200**：回傳欄位同 `POST /portfolio/groups/{position_group_id}/lifecycle-review`。
 - **404**：目前登入使用者擁有該 group 但尚未建立 saved lifecycle review 時，回傳 `404`。
 
@@ -1550,10 +1565,10 @@ make run-api
 
 - **用途**：為同一 `position_group_id` 建立或更新 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在且來源資料未變，直接回傳既有 review。
 - **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
-- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。第二次以後 POST 會比較同一使用者與 `position_group_id` 下 `PositionEvent.updated_at` 與 `PositionLifecyclePlan.updated_at` 的最新時間；若來源資料比 saved review 更新，重建 `review_result` / `evidence_payload` 並更新同一筆 `position_lifecycle_review`，避免部分出場後新增事件或事後補填 plan 時持續讀到 stale lifecycle review。
-- **版本策略**：`review_version` 為 `position-lifecycle-review-v1`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v2 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 可讀，但 POST 會建立 v2，避免以單一 `updated_at` 漏掉行情或 shared-context 變更。
+- **版本策略**：`review_version` 為 `position-lifecycle-review-v2`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。若資料庫已有不在已知 v1/v2 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v2 或降級覆寫。
 - **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
-- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、Phase 2D point-in-time shared context references、source summary 與 data quality；不存完整 OHLCV/K-line arrays、raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。
+- **Evidence 邊界**：`evidence_payload` 只存 compact event facts、review-relevant plan snapshot、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、compact market snapshot、Phase 2D point-in-time shared context references、source summary、data quality、ruleset 與 fingerprint；不存 raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。正式 lifecycle market query 從首次進場前 120 個日曆日開始，保留完整持有期間直到最後 lifecycle event；較早歷史不得無界載入。寫入 evidence 前，具有日期的重疊 trailing series 會攤平成依交易日去重的單日 bars，且全部先於 outer bars 合併；同日重疊的 trailing history 以較新非空值更新並保留其缺少的 completed 欄位，outer bar 只補缺，不得用盤中／partial quote 覆蓋完整 OHLCV；legacy 無日期 series 只保留最長一份，避免每個 `StockRawData` row 重複保存整段歷史。`quality.row_count` 表示來源 rows，`quality.persisted_bar_count` 表示 compact 後實際保存的 bars。
 - **Shared context point-in-time 邊界（Phase 2D）**：`review_result.shared_context` 與 `evidence_payload.shared_context` 以每個 `PositionEvent.event_date` 作為 `reference_date`，只引用適用目標 consumer 且 `as_of_date <= event_date` 的 shared background context。`shared_background_contexts` 以 `symbol` / `context_type` / `replay_key` 保留歷史 trace；若沒有可用歷史 context 且只存在晚於事件日的 context，會以 `missing_reason = "future_context_excluded"` 保留 caveat，並保留原始 excluded `as_of_date` trace；不得使用該未來資料批評 entry/exit-time decision。Shared context 只作 evidence/caveat/data quality，不改 `lifecycle_review.classification.primary_label`、tier、deterministic metrics 或 fixed-option decision-context 判讀。
 - **Response 200**
 
@@ -1563,7 +1578,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "position-lifecycle-review-v1",
+  "review_version": "position-lifecycle-review-v2",
   "review_result": {
     "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
@@ -1587,8 +1602,10 @@ make run-api
       "profit_protected_by_partial_exits": 8000.0
     },
     "advanced_internal": {
-      "plan_adherence_score": 75.0,
-      "decision_quality_score": 68.2
+      "declared_plan_adherence_score": 75.0,
+      "observed_plan_adherence_score": null,
+      "plan_adherence_score": null,
+      "decision_quality_score": null
     },
     "event_indicator_snapshots": [
       {
@@ -1618,8 +1635,9 @@ make run-api
       }
     ],
     "decision_context": {
-      "status": "present",
+      "status": "retrospective_only",
       "has_plan": true,
+      "historical_judgment_eligible": false,
       "source": "user_backfilled",
       "created_after_entry": true,
       "planned_holding_period": "swing",
@@ -1634,7 +1652,7 @@ make run-api
     "lifecycle_review": {
       "classification": {
         "primary_label": "disciplined_scale_out",
-        "labels": ["disciplined_scale_out", "coherent_position_management"],
+        "labels": ["disciplined_scale_out"],
         "tier": "constructive",
         "reasons": [
           {
@@ -1694,9 +1712,11 @@ make run-api
   - `review_result.event_indicator_snapshots`：每個 entry/exit event 的 point-in-time 技術指標與 market regime snapshot，不包含完整 K 線序列。
   - `review_result.event_facts[].fees` / `taxes`：event ledger 中已保存或系統計算的成本事實；不表示本端點要求使用者手動輸入交易稅。
   - `review_result.shared_context` / `evidence_payload.shared_context`：每個事件的 shared context read payload，包含 `source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `data_quality`；missing/stale/future-excluded 均非阻塞。
-  - `review_result.decision_context.status`：`present` / `insufficient`。若為 `insufficient`，前端需明確提示不要推論未記錄意圖。
+  - `review_result.decision_context.status`：`present` / `retrospective_only` / `insufficient`。只有 `present` 且 `historical_judgment_eligible = true` 可參與歷史計畫判定；其餘狀態需明確提示不要推論或事後改寫原始意圖。
   - `review_result.decision_context.source` / `created_after_entry`：用於標示 plan provenance；`source = user_backfilled` 或 `created_after_entry = true` 時必須顯示事後補填 caveat，不可視為原始 entry-time intent。
-  - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts，可被 deterministic lifecycle review 引用，但缺漏或 `not_recorded` 時不得用未記錄 intent 補判。
+  - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts。只有 event-time plan 可用於 `add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；backfilled plan 僅作 retrospective context。
+  - `review_result.advanced_internal.declared_plan_adherence_score`：使用者自報的 yes / partial / no trace；不得當成客觀 observed score。
+  - `review_result.advanced_internal.observed_plan_adherence_score` / `plan_adherence_score` / `decision_quality_score`：目前在沒有獨立客觀觀測器時為 `null`，避免自報答案直接產生權威分數或 constructive tier。
   - Phase E 已穩定的 lifecycle review labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；這些 labels 需以 `reasons`、`caveats`、`source_refs` 追溯到 `event_facts`、`event_indicator_snapshots` 或 `decision_context`，不得使用未來資料批評 entry-time decision，也不得以 raw 0-100 score 作為預設主視覺。
 
 > **Position Lifecycle Review 邊界**：本端點與 Single Trade Review 分離。`/portfolio/{portfolio_id}/review` 繼續代表 one sell decision；`/portfolio/groups/{position_group_id}/lifecycle-review` 代表 whole multi-entry/multi-exit lifecycle。兩者資料表、endpoint 與 review version 均不同。
@@ -1904,6 +1924,15 @@ Daily Radar run status：
 - 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析第一版只保存 `.TW` / `.TWO` final `/analyze` 樣本，固定分區為 TW / TAIEX；其他市場不寫入這個 calibration cohort。
 - 兩軌 forward validation 透過 feature adapter 共用 `ai_stock_sentinel.calibration.forward_validation`；月報以 SQL monthly aggregation 選 cohort，再以明確月份條件載入六個成熟月份的 replay / validation detail。
 - 一般分析校準只收 `/analyze`，不含 `/analyze/position`；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。Final cache 內另保存同一份精簡 payload，capture 暫時失敗時由後續 final cache hit 冪等重試；舊 cache 無正式 payload 時不得反推。
+- 一般分析校準的 active cohort 固定為目前 `strategy_version` + `confidence_config_version`；資料庫唯一鍵包含 `analysis_type / market / symbol / record_date / strategy_version / confidence_config_version`，日內重跑不得因 input hash 改變而增加獨立樣本。Validation outcome 的 `signal_date`／`benchmark_symbol` 必須和所屬 sample 一致；寫入不一致時拒絕，既有異常 row 不得計入 evaluated／validated watermark，並在 watermark 保留逐窗口 mismatch 計數。Due mode 判斷既有 terminal row 時也必須重新核對 sample identity；日期或 benchmark 錯配的舊 row 視為尚未完成並重新排入 evaluation，讓系統可用正確結果自癒。升級 migration 會以 exclusive table lock 阻止 writer 競態，lock 等待上限固定為 10 秒，整個 statement 執行上限為 5 分鐘，逾時必須 fail closed 並由 operator 排除阻塞 transaction 或重新評估資料規模後重試；同一 identity 先一次性固定具有最多 `validated` outcomes 的 canonical sample，再以 evaluated outcome 數與最早 ID 決定 tie-break。只保留 canonical sample 原生 outcomes，絕不把其他 input hash 的 outcome 改掛過來；缺少的窗口由後續 due validation 重算。此 canonicalization 刻意不可 downgrade，部署前必須備份、盤點 table row/duplicate 規模、停止所有舊版 backend 與 calibration workflows，並設定一次性 `CALIBRATION_MIGRATION_BACKUP_CONFIRMED=2c3d4e5f6a7b`，否則 upgrade fail closed。
+- 一般分析與 Daily Radar 的月份 maturity 都必須以 5／10／20 日三個窗口共同判斷；只完成 20 日窗口的月份不得進入最近六個月 cohort。
+- 一般分析與 Daily Radar 的 candidate config 都必須逐一通過 5 / 10 / 20 日 holdout gate，不得用跨 horizon 聚合改善掩蓋單一窗口退化。
+- 一般分析 `general-analysis-confidence-review-v7` 的 replay eligibility 必須驗證 current schema、`base_score` 0–100 整數、方向 labels、0–1.6 有限 `sentiment_strength`、布林 `date_unknown` 與完整 current `ConfidenceScoringConfig`；結構通過後先計算 aggregate workload，最多 300,000 次 estimated scoring calls 與 40,000,000 次 before／after bootstrap row-iterations，任一超限即輸出 `replay_workload_limit_exceeded` 並在 baseline replay 前停止。容量允許時按 sample 單次重播 current baseline，並和 production 保存的 `signal_confidence` 比較。任一 mismatch 以 `baseline_replay_mismatch` 排除並重算 coverage；即使整體與逐月 coverage 仍達 threshold，`baseline_replay_complete = false` 也必須阻止所有 candidate config eligibility。
+- Daily Radar `daily-radar-rule-review-v5` 為最新公開 run 的全部 candidate 建立 5 / 10 / 20 日完整池；validation result 不存在時保留 `status = missing`，不得讓候選從 ranking pool 消失。Replay eligibility 必須驗證 schema、current scoring/rule/config versions、baseline config、record identity/date、必要 scoring fields 的有限數值、data dates、accepted prefilter 與 technical profile，不得只看 `schema_version` 或空容器。結構驗證通過後，baseline replay 還必須逐 candidate 重現原 production 的 observation score、primary/secondary buckets、bucket scores、risk labels 與 matched rule IDs；任一不一致以 `baseline_replay_mismatch` 排除，並將該交易日／窗口 ranking pool 標為 `incomplete`。90% replay coverage 保留作資料品質診斷，但任何 ranking／counterfactual governance 必須逐交易日、逐窗口具備 100% replay ranking pool；不完整時輸出 `ranking_pool_status = incomplete`、`replay_ranking_pool_incomplete` 並禁止調整資格，沒有成熟 cohort 時則為 `not_applicable`，active ablation 輸出 `not_applicable_no_cohort` 而不執行 replay。除單一交易日／窗口 production cap 250 candidates 外，月報在 scoring 前另計算 aggregate workload：最多 300,000 次 estimated scoring calls 與 220,000,000 bootstrap row-iterations，任一超限即輸出 `capacity_exceeded`／`replay_workload_limit_exceeded` 並停止 replay。報表共用一次 baseline replay，同一 config 下每個 candidate 只 scoring 一次再投影到三個 outcome windows；mean bootstrap 將 validated selected rows 預聚合為每日期 sum／count 後重抽統計量，每次抽樣仍先把 before／after 平均值四捨五入至四位再計算 delta，並以完整 training dates 作 block universe，保留無 selected rows 日期的統計語意。結果最後接 validated outcome 並輸出 `counterfactual_ablation_summary`；只有 live-score tiers 可執行 counterfactual ablation，context-only 群組輸出 `not_in_live_score`。`co_occurrence_summary` 僅是相關性診斷。任何 recommendation 都不直接更新 live config、rule version 或 ranking。
+- Daily Radar validation identity 另綁定 candidate scoring snapshot 的 `benchmark_symbol` 與所屬 run date：forward-validation request 或新 outcome 錯配時直接拒絕，既有錯配 row 視為 `validation_identity_mismatch` 並重新排入 due evaluation，不得進入 rule recommendation、maturity 或 replay。月報的 aggregate workload 必須先用只計數、不選取 candidate JSON snapshot 的 SQL preflight 判斷；超限時不得再 hydrate optimizer detail。
+
+- Daily Radar replay identity 另要求 validation row `signal_date`、candidate snapshot `record_date` 與 replay record `record_date` 三者完全一致；任一缺漏或不一致都以 `replay_input_incomplete` fail closed，錯日期 outcome 不得進入治理。
+- Daily Radar freshness identity 同時要求 core `data_dates`、price history、market context 與 benchmark dates 都不得晚於 candidate `record_date`；replay 遇到未來日期時以 `replay_input_incomplete` 排除，live prefilter/scoring 則把負 lag 視為 freshness/data gap，避免未來資料進入正式候選。
 
 Forward validation due request：
 
@@ -1924,6 +1953,7 @@ Daily Radar monthly request：
 ```json
 {
   "market": "TW",
+  "benchmark_symbol": "TAIEX",
   "year": 2026,
   "month": 6,
   "min_sample_count": 20,
@@ -1935,8 +1965,8 @@ Daily Radar monthly request：
 一般分析 monthly request 另帶 `"benchmark_symbol": "TAIEX"`。回應共同包含 `report_json` 與 `report_markdown`；`report_json` 至少包含：
 
 - `cohort`：最近六個成熟月份、五個 training months 與一個 holdout month。
-- `completeness_watermarks`：20 日 expected / evaluated / validated 與 validated coverage。
-- `coverage` 或 `replay_coverage`：distinct samples、整體與逐月 replay coverage、排除原因及 threshold 結果。
+- `completeness_watermarks`：保留 20 日 expected / evaluated / validated 相容欄位，並提供 5 / 10 / 20 日逐窗口 expected / evaluated / validated 與 coverage；三個窗口都完整 evaluated 才算成熟月份。
+- `coverage` 或 `replay_coverage`：distinct samples、整體與逐月 replay coverage、排除原因及 threshold 結果。一般分析另輸出 `baseline_replay_complete`；兩軌的 `replay_workload` 都輸出 sample／candidate、row、config、estimated scoring calls、bootstrap row-iterations、各上限及 exceeded limits，Daily Radar 另外包含 ablation 數量。
 - `candidate_configs[]`：單參數單 step before / after、各窗口 metrics、training block bootstrap、holdout、distinct sample counts、training / holdout block counts、`auto_change_eligible` 與 `eligibility_reason`。
 
 `min_sample_count` 是每個 5 / 10 / 20 日窗口的 distinct sample / candidate 數，不是三個窗口的 validation row 總和。Training 固定至少需要 20 個日期 blocks、holdout 至少 5 個日期 blocks；replay coverage 必須整體與每個入選月份都達 90%，且一般分析的 coverage 分母只計 optimizer scope 的 `short_term` / `mid_term`。Artifact retention 為 30 天，因此每月需下載保存；報表可累積六個成熟月份後再人工審查，且不會直接修改 production。

@@ -43,7 +43,7 @@ def test_analysis_calibration_models_are_append_only_and_window_versioned() -> N
     sample_columns = {column.name for column in AnalysisCalibrationSample.__table__.columns}
     result_columns = {column.name for column in AnalysisForwardValidationResult.__table__.columns}
     sample_constraints = {
-        constraint.name
+        constraint.name: tuple(column.name for column in constraint.columns)
         for constraint in AnalysisCalibrationSample.__table__.constraints
         if isinstance(constraint, UniqueConstraint)
     }
@@ -76,6 +76,14 @@ def test_analysis_calibration_models_are_append_only_and_window_versioned() -> N
         "skip_reason",
     } <= result_columns
     assert "uq_analysis_calibration_sample_identity" in sample_constraints
+    assert sample_constraints["uq_analysis_calibration_sample_identity"] == (
+        "analysis_type",
+        "market",
+        "symbol",
+        "record_date",
+        "strategy_version",
+        "confidence_config_version",
+    )
     assert "uq_analysis_forward_validation_sample_window_version" in result_constraints
 
 

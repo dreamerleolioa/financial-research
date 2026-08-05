@@ -5,11 +5,14 @@ import {
   fetchLatestPortfolioHistory,
   fetchLifecyclePlan,
   fetchPortfolioItems,
-  fetchPortfolioRiskSummary,
+  refreshPortfolioPrices,
 } from "../../lib/portfolioApi";
 import { portfolioKeys } from "./queryKeys";
 import { clearPriceRefreshOverlay, readPriceRefreshOverlay } from "./priceRefreshOverlay";
-import { PORTFOLIO_MUTATION_REVISION_KEY } from "./mutationCoordinator";
+import {
+  PORTFOLIO_MUTATION_REVISION_KEY,
+  readPortfolioMutationRevision,
+} from "./mutationCoordinator";
 
 export function usePortfolioItemsQuery() {
   return useQuery({
@@ -33,8 +36,17 @@ export function usePortfolioRiskSummaryQuery() {
   return useQuery({
     queryKey: portfolioKeys.riskSummary(),
     queryFn: async () => {
-      const serverSummary = await fetchPortfolioRiskSummary();
-      return readPriceRefreshOverlay(queryClient, serverSummary) ?? serverSummary;
+      const revisionAtStart = readPortfolioMutationRevision();
+      const refreshedSummary = await refreshPortfolioPrices();
+      if (readPortfolioMutationRevision() !== revisionAtStart) {
+        clearPriceRefreshOverlay(queryClient);
+        throw new Error("持股資料已變更，正在重新載入最新價格");
+      }
+      if (refreshedSummary.price_refresh?.status === "complete") {
+        clearPriceRefreshOverlay(queryClient);
+        return refreshedSummary;
+      }
+      return readPriceRefreshOverlay(queryClient, refreshedSummary) ?? refreshedSummary;
     },
     retry: 1,
     staleTime: 0,

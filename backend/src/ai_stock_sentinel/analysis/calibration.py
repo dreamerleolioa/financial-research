@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
@@ -10,7 +11,19 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select
+from sqlalchemy import (
+    Integer,
+    and_,
+    case,
+    cast,
+    extract,
+    func,
+    literal,
+    or_,
+    select,
+    true,
+    union_all,
+)
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.confidence_scorer import (
@@ -20,6 +33,7 @@ from ai_stock_sentinel.analysis.confidence_scorer import (
     compute_confidence,
 )
 from ai_stock_sentinel.calibration.governance import (
+    DEFAULT_BOOTSTRAP_ITERATIONS,
     DEFAULT_MIN_REPLAY_COVERAGE,
     DEFAULT_MIN_VALIDATED_COVERAGE,
     block_bootstrap_delta,
@@ -52,7 +66,7 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v2"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v3"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v7"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
 GENERAL_ANALYSIS_TYPES = ("general",)
@@ -63,6 +77,11 @@ TUNABLE_CONFIDENCE_PARAMETERS = (
     "bullish_technical_points",
     "three_resonance_bonus",
 )
+HOLDOUT_HORIZON_CORRELATION_FLOOR = -0.01
+MAX_REPLAY_SENTIMENT_STRENGTH = 1.6
+GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT = len(TUNABLE_CONFIDENCE_PARAMETERS) * 2
+MAX_GENERAL_ANALYSIS_REPLAY_SCORING_CALLS = 300_000
+MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS = 40_000_000
 logger = logging.getLogger(__name__)
 
 
@@ -99,16 +118,18 @@ def capture_general_analysis_calibration_sample(
         )
         return None
     input_hash = _canonical_hash(active_replay_input)
-    existing = session.execute(
+    existing = session.scalars(
         select(AnalysisCalibrationSample).where(
             AnalysisCalibrationSample.analysis_type == "general",
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.symbol == symbol,
             AnalysisCalibrationSample.record_date == record_date,
             AnalysisCalibrationSample.strategy_version == strategy_version,
-            AnalysisCalibrationSample.input_hash == input_hash,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
         )
-    ).scalar_one_or_none()
+        .order_by(AnalysisCalibrationSample.id.asc())
+    ).first()
     if existing is not None:
         return existing
 
@@ -179,6 +200,10 @@ def general_validation_samples(
         AnalysisCalibrationSample.analysis_is_final.is_(True),
         AnalysisCalibrationSample.market == market,
         AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+        AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+        AnalysisCalibrationSample.confidence_config_version
+        == CONFIDENCE_CONFIG_VERSION,
+        AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
     )
     if start_date is not None:
         query = query.where(AnalysisCalibrationSample.record_date >= start_date)
@@ -278,12 +303,45 @@ def upsert_general_analysis_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
 ) -> dict[str, int]:
+    outcome_rows = list(outcomes)
+    sample_ids = {
+        int(outcome["sample_id"])
+        for outcome in outcome_rows
+        if outcome.get("sample_id") is not None
+    }
+    sample_identity_by_id = {
+        int(sample_id): (record_date, benchmark_symbol)
+        for sample_id, record_date, benchmark_symbol in session.execute(
+            select(
+                AnalysisCalibrationSample.id,
+                AnalysisCalibrationSample.record_date,
+                AnalysisCalibrationSample.benchmark_symbol,
+            ).where(AnalysisCalibrationSample.id.in_(sample_ids))
+        )
+    }
     written = validated = skipped = 0
     retryable_skipped = terminal_skipped = 0
-    for outcome in outcomes:
+    for outcome in outcome_rows:
         sample_id = outcome.get("sample_id")
         if sample_id is None:
             continue
+        signal_date = _parse_date(outcome.get("signal_date"))
+        if signal_date is None:
+            raise ValueError(
+                "General analysis validation outcome requires a valid signal_date"
+            )
+        benchmark_symbol = str(outcome.get("benchmark_symbol") or "")
+        sample_identity = sample_identity_by_id.get(int(sample_id))
+        if sample_identity is None:
+            raise ValueError(f"General analysis validation sample {sample_id} does not exist")
+        sample_record_date, sample_benchmark_symbol = sample_identity
+        if (
+            signal_date != sample_record_date
+            or benchmark_symbol != sample_benchmark_symbol
+        ):
+            raise ValueError(
+                "General analysis validation identity must match its calibration sample"
+            )
         existing = session.execute(
             select(AnalysisForwardValidationResult).where(
                 AnalysisForwardValidationResult.sample_id == int(sample_id),
@@ -300,17 +358,17 @@ def upsert_general_analysis_validation_results(
                 window_days=int(outcome["window_days"]),
                 validation_version=str(outcome["validation_version"]),
                 status=str(outcome["status"]),
-                signal_date=_parse_date(outcome.get("signal_date")) or date.min,
+                signal_date=signal_date,
                 target_date=_parse_date(outcome.get("target_date")),
-                benchmark_symbol=str(outcome.get("benchmark_symbol") or ""),
+                benchmark_symbol=benchmark_symbol,
                 outcome=payload,
                 skip_reason=_string_or_none(outcome.get("skip_reason")),
             )
         else:
             existing.status = str(outcome["status"])
-            existing.signal_date = _parse_date(outcome.get("signal_date")) or date.min
+            existing.signal_date = signal_date
             existing.target_date = _parse_date(outcome.get("target_date"))
-            existing.benchmark_symbol = str(outcome.get("benchmark_symbol") or "")
+            existing.benchmark_symbol = benchmark_symbol
             existing.outcome = payload
             existing.skip_reason = _string_or_none(outcome.get("skip_reason"))
         session.add(existing)
@@ -364,6 +422,10 @@ def build_general_analysis_monthly_report(
             AnalysisCalibrationSample.analysis_is_final.is_(True),
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+            AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             selected_month_filter,
         )
         .order_by(AnalysisCalibrationSample.record_date.asc(), AnalysisCalibrationSample.id.asc())
@@ -377,7 +439,13 @@ def build_general_analysis_monthly_report(
     selected_months = set(cohort["selected_months"])
     selected_rows = [row for row in rows if row["month"] in selected_months and row["status"] == "validated"]
     sample_by_id = {sample.id: sample for sample in samples}
+    identity_mismatch_sample_ids = {
+        int(row["sample_id"])
+        for row in selected_rows
+        if row.get("validation_identity_valid") is not True
+    }
 
+    baseline_config = ConfidenceScoringConfig()
     exclusions: Counter[str] = Counter()
     excluded_sample_ids: dict[str, set[int]] = {}
     optimizer_scope_rows: list[dict[str, Any]] = []
@@ -394,13 +462,50 @@ def build_general_analysis_monthly_report(
             continue
         optimizer_row = row | {"sample": sample}
         optimizer_scope_rows.append(optimizer_row)
-        if not _is_complete_replay_input(sample.replay_input):
+        if sample_id in identity_mismatch_sample_ids:
+            excluded_sample_ids.setdefault(
+                "validation_identity_mismatch",
+                set(),
+            ).add(sample_id)
+            continue
+        if not _is_complete_replay_input(
+            sample.replay_input,
+            baseline_config=baseline_config,
+        ):
             excluded_sample_ids.setdefault(
                 "replay_input_incomplete",
                 set(),
             ).add(sample_id)
             continue
         eligible_rows.append(optimizer_row)
+    replay_workload = _general_analysis_replay_workload(
+        eligible_rows,
+        cohort=cohort,
+    )
+    workload_within_budget = not bool(replay_workload["capacity_exceeded"])
+    baseline_rows: list[dict[str, Any]] = []
+    mismatch_sample_ids: set[int] = set()
+    if workload_within_budget:
+        baseline_rows = _replay_rows(eligible_rows, baseline_config)
+        mismatch_sample_ids = _baseline_replay_mismatch_sample_ids(
+            baseline_rows,
+            sample_by_id=sample_by_id,
+        )
+        if mismatch_sample_ids:
+            excluded_sample_ids.setdefault(
+                "baseline_replay_mismatch",
+                set(),
+            ).update(mismatch_sample_ids)
+            eligible_rows = [
+                row
+                for row in eligible_rows
+                if int(row["sample_id"]) not in mismatch_sample_ids
+            ]
+            baseline_rows = [
+                row
+                for row in baseline_rows
+                if int(row["sample_id"]) not in mismatch_sample_ids
+            ]
     exclusions.update({
         reason: len(sample_ids)
         for reason, sample_ids in excluded_sample_ids.items()
@@ -416,10 +521,10 @@ def build_general_analysis_monthly_report(
     )
     min_training_blocks, min_holdout_blocks = required_block_counts()
 
-    baseline_config = ConfidenceScoringConfig()
     candidates = [
         _confidence_candidate_report(
             eligible_rows,
+            baseline_rows=baseline_rows,
             baseline_config=baseline_config,
             parameter=parameter,
             direction=direction,
@@ -428,6 +533,10 @@ def build_general_analysis_monthly_report(
             min_sample_count=min_sample_count,
             min_validated_coverage=min_validated_coverage,
             replay_coverage_ok=bool(replay_coverage["meets_threshold"]),
+            baseline_replay_complete=(
+                workload_within_budget and not mismatch_sample_ids
+            ),
+            replay_workload_within_budget=workload_within_budget,
         )
         for parameter in TUNABLE_CONFIDENCE_PARAMETERS
         for direction in (-1, 1)
@@ -467,8 +576,12 @@ def build_general_analysis_monthly_report(
             "all_selected_validation_rows": len(selected_rows),
             "optimizer_scope_validation_rows": len(optimizer_scope_rows),
             "optimizer_eligible_rows": len(eligible_rows),
+            "baseline_replay_complete": (
+                workload_within_budget and not mismatch_sample_ids
+            ),
             "replay_coverage": replay_coverage["coverage"],
             "exclusion_reasons": dict(sorted(exclusions.items())),
+            "replay_workload": replay_workload,
         },
         "auto_change_eligible": any(candidate["auto_change_eligible"] for candidate in candidates),
         "human_approval_boundary": {
@@ -495,6 +608,9 @@ def render_general_analysis_monthly_markdown(report: Mapping[str, Any]) -> str:
         f"- Holdout month: {cohort.get('holdout_month') or 'insufficient'}",
         f"- Replay coverage: {coverage.get('replay_coverage')}",
         f"- Replay coverage meets threshold: {coverage.get('meets_threshold')}",
+        f"- Estimated replay scoring calls: {_mapping(coverage.get('replay_workload')).get('estimated_scoring_calls')}",
+        f"- Estimated bootstrap row-iterations: {_mapping(coverage.get('replay_workload')).get('estimated_bootstrap_row_iterations')}",
+        f"- Replay workload within budget: {not bool(_mapping(coverage.get('replay_workload')).get('capacity_exceeded'))}",
         f"- Minimum training date blocks: {metadata.get('min_training_block_count')}",
         f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Auto-change eligible: {report.get('auto_change_eligible')}",
@@ -529,6 +645,7 @@ def render_general_analysis_monthly_markdown(report: Mapping[str, Any]) -> str:
 def _confidence_candidate_report(
     rows: Sequence[Mapping[str, Any]],
     *,
+    baseline_rows: Sequence[Mapping[str, Any]],
     baseline_config: ConfidenceScoringConfig,
     parameter: str,
     direction: int,
@@ -537,12 +654,17 @@ def _confidence_candidate_report(
     min_sample_count: int,
     min_validated_coverage: float,
     replay_coverage_ok: bool,
+    baseline_replay_complete: bool,
+    replay_workload_within_budget: bool,
 ) -> dict[str, Any]:
     before_value = int(getattr(baseline_config, parameter))
     after_value = max(0, before_value + direction)
     candidate_config = replace(baseline_config, **{parameter: after_value})
-    baseline_rows = _replay_rows(rows, baseline_config)
-    candidate_rows = _replay_rows(rows, candidate_config)
+    candidate_rows = (
+        _replay_rows(rows, candidate_config)
+        if replay_workload_within_budget
+        else []
+    )
     training_months = set(str(value) for value in _as_list(cohort.get("training_months")))
     holdout_month = str(cohort.get("holdout_month") or "")
     baseline_training = [row for row in baseline_rows if row["month"] in training_months]
@@ -578,6 +700,40 @@ def _confidence_candidate_report(
     holdout_before = confidence_excess_correlation(baseline_holdout)
     holdout_after = confidence_excess_correlation(candidate_holdout)
     holdout_delta = _delta(holdout_after, holdout_before)
+    holdout_horizon_gates = {
+        window: {
+            "before": before_holdout_metrics[window].get(
+                "confidence_outcome_correlation"
+            ),
+            "after": after_holdout_metrics[window].get(
+                "confidence_outcome_correlation"
+            ),
+            "delta": _delta(
+                _number(
+                    after_holdout_metrics[window].get(
+                        "confidence_outcome_correlation"
+                    )
+                ),
+                _number(
+                    before_holdout_metrics[window].get(
+                        "confidence_outcome_correlation"
+                    )
+                ),
+            ),
+        }
+        for window in ("5", "10", "20")
+    }
+    for gate in holdout_horizon_gates.values():
+        delta = _number(gate["delta"])
+        gate["minimum_delta"] = HOLDOUT_HORIZON_CORRELATION_FLOOR
+        gate["preserved"] = (
+            delta is not None
+            and delta >= HOLDOUT_HORIZON_CORRELATION_FLOOR
+        )
+    horizons_preserved = all(
+        bool(gate["preserved"])
+        for gate in holdout_horizon_gates.values()
+    )
     selected_watermarks = [
         row
         for row in watermarks
@@ -618,18 +774,23 @@ def _confidence_candidate_report(
         cohort.get("cohort_complete") is True
         and coverage_ok
         and replay_coverage_ok
+        and replay_workload_within_budget
+        and baseline_replay_complete
         and enough_samples
         and enough_blocks
         and lower_ci is not None
         and lower_ci >= 0
         and training_delta is not None
         and training_delta > 0
-        and holdout_delta is not None
-        and holdout_delta >= -0.01
+        and horizons_preserved
         and before_value != after_value
     )
     if cohort.get("cohort_complete") is not True:
         reason = "insufficient_mature_months"
+    elif not replay_workload_within_budget:
+        reason = "replay_workload_limit_exceeded"
+    elif not baseline_replay_complete:
+        reason = "baseline_replay_mismatch"
     elif not coverage_ok:
         reason = "validated_coverage_below_threshold"
     elif not replay_coverage_ok:
@@ -640,8 +801,8 @@ def _confidence_candidate_report(
         reason = "insufficient_date_blocks"
     elif lower_ci is None or lower_ci < 0 or training_delta is None or training_delta <= 0:
         reason = "training_bootstrap_not_positive"
-    elif holdout_delta is None or holdout_delta < -0.01:
-        reason = "holdout_not_preserved"
+    elif not horizons_preserved:
+        reason = "holdout_horizon_degraded"
     else:
         reason = "eligible"
     return {
@@ -665,6 +826,7 @@ def _confidence_candidate_report(
             "after": holdout_after,
             "delta": holdout_delta,
         },
+        "holdout_horizon_gates": holdout_horizon_gates,
         "coverage": {
             "training_rows": len(baseline_training),
             "holdout_rows": len(baseline_holdout),
@@ -676,6 +838,8 @@ def _confidence_candidate_report(
             "min_holdout_block_count": min_holdout_blocks,
             "selected_months_meet_validated_coverage": coverage_ok,
             "selected_months_meet_replay_coverage": replay_coverage_ok,
+            "replay_workload_within_budget": replay_workload_within_budget,
+            "baseline_replay_complete": baseline_replay_complete,
         },
         "auto_change_eligible": eligible,
         "eligibility_reason": reason,
@@ -687,23 +851,28 @@ def _replay_rows(
     config: ConfidenceScoringConfig,
 ) -> list[dict[str, Any]]:
     replayed: list[dict[str, Any]] = []
+    scored_by_sample: dict[int, int] = {}
     for row in rows:
         sample = row.get("sample")
         if not isinstance(sample, AnalysisCalibrationSample):
             continue
-        replay = _mapping(sample.replay_input)
-        result = compute_confidence(
-            int(replay.get("base_score") or BASE_CONFIDENCE),
-            news_sentiment=str(replay.get("news_sentiment") or "neutral"),
-            inst_flow=str(replay.get("institutional_flow") or "unknown"),
-            technical_signal=str(replay.get("technical_signal") or "sideways"),
-            date_unknown=bool(replay.get("date_unknown")),
-            sentiment_strength=_number(replay.get("sentiment_strength")) or 1.0,
-            config=config,
-        )
+        replayed_score = scored_by_sample.get(sample.id)
+        if replayed_score is None:
+            replay = _mapping(sample.replay_input)
+            result = compute_confidence(
+                int(replay["base_score"]),
+                news_sentiment=str(replay["news_sentiment"]),
+                inst_flow=str(replay["institutional_flow"]),
+                technical_signal=str(replay["technical_signal"]),
+                date_unknown=replay["date_unknown"] is True,
+                sentiment_strength=float(replay["sentiment_strength"]),
+                config=config,
+            )
+            replayed_score = int(result["signal_confidence"])
+            scored_by_sample[sample.id] = replayed_score
         replayed.append(
             {key: value for key, value in row.items() if key != "sample"}
-            | {"replayed_score": int(result["signal_confidence"])}
+            | {"replayed_score": replayed_score}
         )
     return replayed
 
@@ -725,6 +894,10 @@ def _validation_rows(
             AnalysisCalibrationSample.analysis_type == "general",
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+            AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             _month_filter(
                 AnalysisCalibrationSample.record_date,
                 selected_months,
@@ -747,6 +920,12 @@ def _validation_rows(
             "status": result.status,
             "skip_reason": result.skip_reason,
             "outcome": dict(result.outcome or {}),
+            "validation_signal_date": result.signal_date.isoformat(),
+            "validation_benchmark_symbol": result.benchmark_symbol,
+            "validation_identity_valid": (
+                result.signal_date == sample.record_date
+                and result.benchmark_symbol == sample.benchmark_symbol
+            ),
         }
         for result, sample in session.execute(query).all()
     ]
@@ -761,12 +940,19 @@ def _general_completeness_watermarks(
 ) -> list[dict[str, Any]]:
     year_value = cast(extract("year", AnalysisCalibrationSample.record_date), Integer)
     month_value = cast(extract("month", AnalysisCalibrationSample.record_date), Integer)
+    windows = _general_forward_windows_subquery()
     expected_count = func.count(func.distinct(AnalysisCalibrationSample.id))
     evaluated_count = func.count(
         func.distinct(
             case(
                 (
-                    AnalysisForwardValidationResult.id.is_not(None),
+                    and_(
+                        AnalysisForwardValidationResult.id.is_not(None),
+                        AnalysisForwardValidationResult.signal_date
+                        == AnalysisCalibrationSample.record_date,
+                        AnalysisForwardValidationResult.benchmark_symbol
+                        == AnalysisCalibrationSample.benchmark_symbol,
+                    ),
                     AnalysisCalibrationSample.id,
                 )
             )
@@ -776,7 +962,31 @@ def _general_completeness_watermarks(
         func.distinct(
             case(
                 (
-                    AnalysisForwardValidationResult.status == "validated",
+                    and_(
+                        AnalysisForwardValidationResult.status == "validated",
+                        AnalysisForwardValidationResult.signal_date
+                        == AnalysisCalibrationSample.record_date,
+                        AnalysisForwardValidationResult.benchmark_symbol
+                        == AnalysisCalibrationSample.benchmark_symbol,
+                    ),
+                    AnalysisCalibrationSample.id,
+                )
+            )
+        )
+    )
+    identity_mismatch_count = func.count(
+        func.distinct(
+            case(
+                (
+                    and_(
+                        AnalysisForwardValidationResult.id.is_not(None),
+                        or_(
+                            AnalysisForwardValidationResult.signal_date
+                            != AnalysisCalibrationSample.record_date,
+                            AnalysisForwardValidationResult.benchmark_symbol
+                            != AnalysisCalibrationSample.benchmark_symbol,
+                        ),
+                    ),
                     AnalysisCalibrationSample.id,
                 )
             )
@@ -786,17 +996,21 @@ def _general_completeness_watermarks(
         select(
             year_value,
             month_value,
+            windows.c.window_days,
             expected_count,
             evaluated_count,
             validated_count,
+            identity_mismatch_count,
         )
         .select_from(AnalysisCalibrationSample)
+        .join(windows, true())
         .outerjoin(
             AnalysisForwardValidationResult,
             and_(
                 AnalysisForwardValidationResult.sample_id
                 == AnalysisCalibrationSample.id,
-                AnalysisForwardValidationResult.window_days == 20,
+                AnalysisForwardValidationResult.window_days
+                == windows.c.window_days,
                 AnalysisForwardValidationResult.validation_version
                 == ANALYSIS_FORWARD_VALIDATION_VERSION,
             ),
@@ -806,31 +1020,133 @@ def _general_completeness_watermarks(
             AnalysisCalibrationSample.analysis_is_final.is_(True),
             AnalysisCalibrationSample.market == market,
             AnalysisCalibrationSample.benchmark_symbol == benchmark_symbol,
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+            AnalysisCalibrationSample.id.in_(_canonical_general_sample_ids()),
             AnalysisCalibrationSample.record_date <= through_date,
         )
-        .group_by(year_value, month_value)
-        .order_by(year_value.asc(), month_value.asc())
+        .group_by(year_value, month_value, windows.c.window_days)
+        .order_by(
+            year_value.asc(),
+            month_value.asc(),
+            windows.c.window_days.asc(),
+        )
     )
+    by_month: dict[str, dict[int, tuple[int, int, int]]] = {}
+    identity_mismatches_by_month: dict[str, dict[int, int]] = {}
+    for (
+        year,
+        month,
+        window,
+        expected,
+        evaluated,
+        validated,
+        identity_mismatches,
+    ) in session.execute(query):
+        month_value_key = f"{int(year):04d}-{int(month):02d}"
+        by_month.setdefault(month_value_key, {})[int(window)] = (
+            int(expected or 0),
+            int(evaluated or 0),
+            int(validated or 0),
+        )
+        identity_mismatches_by_month.setdefault(month_value_key, {})[
+            int(window)
+        ] = int(identity_mismatches or 0)
     watermarks: list[dict[str, Any]] = []
-    for year, month, expected, evaluated, validated in session.execute(query):
-        expected_value = int(expected or 0)
-        evaluated_value = int(evaluated or 0)
-        validated_value = int(validated or 0)
+    for month, counts_by_window in sorted(by_month.items()):
+        expected_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[0]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        evaluated_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[1]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        validated_by_window = {
+            str(window): counts_by_window.get(window, (0, 0, 0))[2]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        identity_mismatch_by_window = {
+            str(window): identity_mismatches_by_month.get(month, {}).get(window, 0)
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        evaluated_coverage_by_window = {
+            str(window): validated_coverage(
+                evaluated_by_window[str(window)],
+                expected_by_window[str(window)],
+            )
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        validated_coverage_by_window = {
+            str(window): validated_coverage(
+                validated_by_window[str(window)],
+                expected_by_window[str(window)],
+            )
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        expected_value = expected_by_window["20"]
+        evaluated_value = evaluated_by_window["20"]
+        validated_value = validated_by_window["20"]
+        coverage_values = [
+            value
+            for value in validated_coverage_by_window.values()
+            if value is not None
+        ]
         watermarks.append({
-            "month": f"{int(year):04d}-{int(month):02d}",
+            "month": month,
             "expected_20d_samples": expected_value,
             "evaluated_20d_samples": evaluated_value,
             "validated_20d_samples": validated_value,
+            "expected_samples_by_window": expected_by_window,
+            "evaluated_samples_by_window": evaluated_by_window,
+            "validated_samples_by_window": validated_by_window,
+            "validation_identity_mismatch_samples_by_window": (
+                identity_mismatch_by_window
+            ),
+            "evaluated_coverage_by_window": evaluated_coverage_by_window,
+            "validated_coverage_by_window": validated_coverage_by_window,
             "maturity_complete": (
                 expected_value > 0
-                and evaluated_value >= expected_value
+                and all(
+                    evaluated_by_window[str(window)]
+                    >= expected_by_window[str(window)]
+                    for window in DEFAULT_FORWARD_WINDOWS
+                )
             ),
-            "validated_coverage": validated_coverage(
-                validated_value,
-                expected_value,
-            ),
+            "validated_coverage": min(coverage_values)
+            if len(coverage_values) == len(DEFAULT_FORWARD_WINDOWS)
+            else None,
         })
     return watermarks
+
+
+def _general_forward_windows_subquery() -> Any:
+    return union_all(
+        *[
+            select(literal(window).label("window_days"))
+            for window in DEFAULT_FORWARD_WINDOWS
+        ]
+    ).subquery("general_forward_windows")
+
+
+def _canonical_general_sample_ids() -> Any:
+    """Return one point-in-time sample per symbol/date in the active cohort."""
+    return (
+        select(func.min(AnalysisCalibrationSample.id))
+        .where(
+            AnalysisCalibrationSample.analysis_type == "general",
+            AnalysisCalibrationSample.analysis_is_final.is_(True),
+            AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
+            AnalysisCalibrationSample.confidence_config_version
+            == CONFIDENCE_CONFIG_VERSION,
+        )
+        .group_by(
+            AnalysisCalibrationSample.market,
+            AnalysisCalibrationSample.symbol,
+            AnalysisCalibrationSample.record_date,
+        )
+    )
 
 
 def _month_filter(column: Any, months: Sequence[str]) -> Any:
@@ -864,23 +1180,127 @@ def _sample_id_from_candidate(outcome: Mapping[str, Any]) -> int | None:
     return int(candidate_id) if candidate_id is not None else None
 
 
-def _is_complete_replay_input(value: Any) -> bool:
-    replay = _mapping(value)
-    return (
-        replay.get("schema_version") == GENERAL_REPLAY_INPUT_VERSION
-        and all(
-            key in replay
-            for key in (
-                "base_score",
-                "news_sentiment",
-                "sentiment_strength",
-                "institutional_flow",
-                "technical_signal",
-                "date_unknown",
-                "baseline_config",
-            )
-        )
+def _general_analysis_replay_workload(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    cohort: Mapping[str, Any],
+) -> dict[str, Any]:
+    sample_ids = {
+        int(row["sample_id"])
+        for row in rows
+        if row.get("sample_id") is not None
+    }
+    training_months = {
+        str(value)
+        for value in _as_list(cohort.get("training_months"))
+    }
+    training_row_count = sum(
+        1
+        for row in rows
+        if str(row.get("month") or "") in training_months
     )
+    scoring_pass_count = 1 + GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT
+    estimated_scoring_calls = len(sample_ids) * scoring_pass_count
+    # Correlation bootstrap scans both baseline and candidate rows per sample.
+    estimated_bootstrap_row_iterations = (
+        training_row_count
+        * GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT
+        * DEFAULT_BOOTSTRAP_ITERATIONS
+        * 2
+    )
+    exceeded_limits = []
+    if (
+        estimated_scoring_calls
+        > MAX_GENERAL_ANALYSIS_REPLAY_SCORING_CALLS
+    ):
+        exceeded_limits.append("replay_scoring_calls")
+    if (
+        estimated_bootstrap_row_iterations
+        > MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS
+    ):
+        exceeded_limits.append("bootstrap_row_iterations")
+    return {
+        "sample_count": len(sample_ids),
+        "candidate_window_row_count": len(rows),
+        "training_row_count": training_row_count,
+        "candidate_config_count": GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT,
+        "scoring_pass_count": scoring_pass_count,
+        "estimated_scoring_calls": estimated_scoring_calls,
+        "maximum_scoring_calls": MAX_GENERAL_ANALYSIS_REPLAY_SCORING_CALLS,
+        "bootstrap_iterations": DEFAULT_BOOTSTRAP_ITERATIONS,
+        "estimated_bootstrap_row_iterations": (
+            estimated_bootstrap_row_iterations
+        ),
+        "maximum_bootstrap_row_iterations": (
+            MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS
+        ),
+        "capacity_exceeded": bool(exceeded_limits),
+        "exceeded_limits": exceeded_limits,
+    }
+
+
+def _is_complete_replay_input(
+    value: Any,
+    *,
+    baseline_config: ConfidenceScoringConfig | None = None,
+) -> bool:
+    replay = _mapping(value)
+    expected_config = (baseline_config or ConfidenceScoringConfig()).to_dict()
+    base_score = replay.get("base_score")
+    sentiment_strength = replay.get("sentiment_strength")
+    return bool(
+        replay.get("schema_version") == GENERAL_REPLAY_INPUT_VERSION
+        and type(base_score) is int
+        and 0 <= base_score <= 100
+        and replay.get("news_sentiment")
+        in {"positive", "negative", "neutral", "unknown"}
+        and _is_finite_number(sentiment_strength)
+        and 0 <= float(sentiment_strength) <= MAX_REPLAY_SENTIMENT_STRENGTH
+        and replay.get("institutional_flow")
+        in {
+            "institutional_accumulation",
+            "distribution",
+            "retail_chasing",
+            "neutral",
+            "unknown",
+        }
+        and replay.get("technical_signal")
+        in {"bullish", "bearish", "sideways", "unknown"}
+        and type(replay.get("date_unknown")) is bool
+        and replay.get("baseline_config") == expected_config
+    )
+
+
+def _baseline_replay_mismatch_sample_ids(
+    baseline_rows: Sequence[Mapping[str, Any]],
+    *,
+    sample_by_id: Mapping[int, AnalysisCalibrationSample],
+) -> set[int]:
+    mismatches: set[int] = set()
+    checked: set[int] = set()
+    for row in baseline_rows:
+        sample_id = int(row["sample_id"])
+        if sample_id in checked:
+            continue
+        checked.add(sample_id)
+        sample = sample_by_id.get(sample_id)
+        stored_score = _number(sample.signal_confidence) if sample is not None else None
+        replayed_score = _number(row.get("replayed_score"))
+        if (
+            stored_score is None
+            or replayed_score is None
+            or not stored_score.is_integer()
+            or not replayed_score.is_integer()
+            or not 0 <= stored_score <= 100
+            or int(stored_score) != int(replayed_score)
+        ):
+            mismatches.add(sample_id)
+    return mismatches
+
+
+def _is_finite_number(value: Any) -> bool:
+    number = _number(value)
+    return number is not None and math.isfinite(number)
 
 
 def _general_analysis_calibration_partition(

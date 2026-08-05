@@ -179,14 +179,18 @@ def test_analyze_returns_analysis_detail_when_llm_returns_json():
     assert result.technical_signal == "bullish"
 
 
-def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None:
+def test_analyze_excludes_internal_series_dates_from_raw_data_snapshot() -> None:
     """Prompt payload should omit date-alignment metadata that the LLM does not use."""
     from unittest.mock import patch
 
     analyzer = LangChainStockAnalyzer(llm=MagicMock())
     snapshot = _make_snapshot(
         recent_volumes=[1_000.0, 1_100.0],
+        recent_close_dates=["2026-03-03", "2026-03-04"],
+        recent_high_dates=["2026-03-03", "2026-03-04"],
+        recent_low_dates=["2026-03-03", "2026-03-04"],
         recent_volume_dates=["2026-03-03", "2026-03-04"],
+        data_dates={"ohlcv": "2026-03-04"},
         exchange="TAI",
         exchange_timezone="Asia/Taipei",
         regular_market_open="2026-07-31T01:00:00+00:00",
@@ -210,6 +214,10 @@ def test_analyze_excludes_internal_volume_dates_from_raw_data_snapshot() -> None
     invoke_kwargs = mock_chain.invoke.call_args.args[0]
     raw_data_snapshot = json.loads(invoke_kwargs["raw_data_snapshot"])
     prompt_snapshot = raw_data_snapshot["snapshot"]
+    assert "data_dates" not in prompt_snapshot
+    assert "recent_close_dates" not in prompt_snapshot
+    assert "recent_high_dates" not in prompt_snapshot
+    assert "recent_low_dates" not in prompt_snapshot
     assert "recent_volume_dates" not in prompt_snapshot
     assert "exchange" not in prompt_snapshot
     assert "exchange_timezone" not in prompt_snapshot

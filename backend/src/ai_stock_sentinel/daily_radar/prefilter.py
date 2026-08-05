@@ -294,7 +294,7 @@ def _stale_core_fields(
             stale_fields[key] = max_lag_days + 1
             continue
         lag_days = (record_date - data_date).days
-        if lag_days > max_lag_days:
+        if lag_days < 0 or lag_days > max_lag_days:
             stale_fields[key] = lag_days
     return stale_fields
 

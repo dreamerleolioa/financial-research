@@ -8,6 +8,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -38,6 +39,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     merge_price_series,
     symbols_requiring_forward_price_refresh,
     upsert_forward_validation_results,
+    validate_forward_validation_benchmark,
 )
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
@@ -789,6 +791,79 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
     assert pending == {f"id:{candidate.id}": [5]}
     assert stale == {}
     assert completed == {}
+
+
+def test_daily_radar_validation_rejects_and_requeues_identity_mismatches() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        candidate.input_snapshot = {
+            **candidate.input_snapshot,
+            "replay_input": {
+                "market_context": {
+                    "benchmark": {"symbol": "TAIEX"},
+                }
+            },
+        }
+        session.flush()
+
+        with pytest.raises(ValueError, match="benchmark must match"):
+            validate_forward_validation_benchmark(
+                [
+                    {
+                        "candidate_id": candidate.id,
+                        "input_snapshot": candidate.input_snapshot,
+                    }
+                ],
+                benchmark_symbol="SPY",
+            )
+        with pytest.raises(ValueError, match="validation identity"):
+            upsert_forward_validation_results(
+                session,
+                [
+                    {
+                        "candidate_id": candidate.id,
+                        "window_days": 5,
+                        "validation_version": FORWARD_VALIDATION_VERSION,
+                        "status": "validated",
+                        "signal_date": "2026-06-02",
+                        "benchmark_symbol": "TAIEX",
+                        "outcome": {"forward_return_pct": 1.0},
+                        "skip_reason": None,
+                    }
+                ],
+            )
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=5,
+                validation_version=FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=run.run_date,
+                target_date=date(2026, 6, 8),
+                benchmark_symbol="SPY",
+                outcome={"forward_return_pct": 1.0},
+                skip_reason=None,
+            )
+        )
+        session.flush()
+
+        pending = exclude_persisted_daily_radar_windows(
+            session,
+            {f"id:{candidate.id}": [5]},
+            benchmark_symbol="TAIEX",
+        )
+
+    assert pending == {f"id:{candidate.id}": [5]}
 
 
 def test_legacy_v1_result_does_not_block_current_validation_version() -> None:

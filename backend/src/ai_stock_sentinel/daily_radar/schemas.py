@@ -135,6 +135,11 @@ class DailyRadarForwardValidationRunResponse(BaseModel):
 
 class DailyRadarMonthlyRuleReviewRequest(BaseModel):
     market: str = Field(default="TW", min_length=1, max_length=20)
+    benchmark_symbol: str = Field(
+        default=DEFAULT_BENCHMARK_SYMBOL,
+        min_length=1,
+        max_length=40,
+    )
     year: int = Field(ge=2000, le=2100)
     month: int = Field(ge=1, le=12)
     validation_version: str | None = Field(default=None, min_length=1, max_length=80)

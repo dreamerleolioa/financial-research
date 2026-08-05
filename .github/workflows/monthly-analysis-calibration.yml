@@ -94,6 +94,8 @@ jobs:
               min_replay_coverage: 0.9
             }')"
           curl --fail-with-body --show-error --silent \
+            --connect-timeout 10 \
+            --max-time 180 \
             --request POST \
             --header "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" \
             --header "Content-Type: application/json" \
@@ -101,6 +103,8 @@ jobs:
             "${CALIBRATION_API_BASE_URL%/}/internal/daily-radar/rule-review/monthly" \
             > /tmp/daily-radar-review.json
           curl --fail-with-body --show-error --silent \
+            --connect-timeout 10 \
+            --max-time 180 \
             --request POST \
             --header "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" \
             --header "Content-Type: application/json" \

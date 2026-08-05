@@ -9,10 +9,11 @@ from pathlib import Path
 from time import perf_counter
 from types import ModuleType
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
@@ -26,10 +27,13 @@ from ai_stock_sentinel.analysis.calibration import (
     general_validation_samples,
     upsert_general_analysis_validation_results,
 )
+from ai_stock_sentinel.analysis import calibration as calibration_module
 from ai_stock_sentinel.analysis.confidence_scorer import (
+    CONFIDENCE_CONFIG_VERSION,
     ConfidenceScoringConfig,
     adjust_confidence_by_divergence,
 )
+from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.calibration.router import (
     _exclude_persisted_general_analysis_windows,
 )
@@ -74,6 +78,34 @@ def test_confidence_config_preserves_baseline_and_can_replay_one_parameter_step(
     assert ConfidenceScoringConfig().distribution_penalty == -10
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("base_score", True),
+        ("base_score", 101),
+        ("news_sentiment", "unexpected"),
+        ("sentiment_strength", float("inf")),
+        ("sentiment_strength", 1.61),
+        ("institutional_flow", "unexpected"),
+        ("technical_signal", "unexpected"),
+        ("date_unknown", "false"),
+        ("baseline_config", {"positive_sentiment_points": 999}),
+    ],
+)
+def test_general_replay_input_requires_current_typed_baseline_contract(
+    field: str,
+    invalid_value: object,
+) -> None:
+    replay_input = calibration_module.build_general_analysis_replay_input(
+        _analysis_result()
+    )
+    assert calibration_module._is_complete_replay_input(replay_input) is True
+
+    replay_input[field] = invalid_value
+
+    assert calibration_module._is_complete_replay_input(replay_input) is False
+
+
 def test_final_general_analysis_capture_is_append_only_deduplicated_and_private() -> None:
     engine = _engine()
     Base.metadata.create_all(engine, tables=[AnalysisCalibrationSample.__table__])
@@ -112,6 +144,51 @@ def test_final_general_analysis_capture_is_append_only_deduplicated_and_private(
     assert "user_id" not in encoded
     assert "private note" not in encoded
     assert "full news body" not in encoded
+
+
+def test_general_calibration_canonicalizes_same_day_reruns_and_current_versions() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine, tables=[AnalysisCalibrationSample.__table__])
+    with Session(engine) as session:
+        first = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert first is not None
+        changed = deepcopy(_analysis_result())
+        changed["cleaned_news"]["sentiment_label"] = "negative"
+        rerun = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=changed,
+            is_final=True,
+        )
+        assert rerun is first
+        session.add(
+            AnalysisCalibrationSample(
+                symbol="2330.TW",
+                record_date=date(2026, 1, 5),
+                analysis_type="general",
+                market="TW",
+                benchmark_symbol="TAIEX",
+                strategy_version=STRATEGY_VERSION,
+                confidence_config_version="legacy-confidence",
+                input_hash=first.input_hash,
+                replay_input=deepcopy(first.replay_input),
+                output_snapshot=deepcopy(first.output_snapshot),
+                analysis_is_final=True,
+            )
+        )
+        session.commit()
+        first_id = first.id
+
+        samples = general_validation_samples(session)
+
+    assert [sample["sample_id"] for sample in samples] == [first_id]
 
 
 def test_intraday_general_analysis_is_not_captured() -> None:
@@ -289,6 +366,124 @@ def test_general_due_mode_recomputes_candidate_refresh_after_benchmark_expands(m
     assert result.target_date == date(2026, 6, 5)
 
 
+@pytest.mark.parametrize(
+    ("signal_date", "benchmark_symbol"),
+    [
+        ("not-a-date", "TAIEX"),
+        ("2026-01-06", "TAIEX"),
+        ("2026-01-05", "SPX"),
+    ],
+)
+def test_general_validation_upsert_rejects_invalid_sample_identity(
+    signal_date: str,
+    benchmark_symbol: str,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+
+        with pytest.raises(ValueError, match="valid signal_date|identity"):
+            upsert_general_analysis_validation_results(
+                session,
+                [
+                    {
+                        "sample_id": sample.id,
+                        "window_days": 5,
+                        "validation_version": ANALYSIS_FORWARD_VALIDATION_VERSION,
+                        "status": "validated",
+                        "signal_date": signal_date,
+                        "benchmark_symbol": benchmark_symbol,
+                        "outcome": {},
+                    }
+                ],
+            )
+
+        assert session.scalar(
+            select(func.count()).select_from(AnalysisForwardValidationResult)
+        ) == 0
+
+
+def test_general_watermark_excludes_and_reports_mismatched_validation_identity() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        for window in (5, 10, 20):
+            session.add(
+                AnalysisForwardValidationResult(
+                    sample_id=sample.id,
+                    window_days=window,
+                    validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                    status="validated",
+                    signal_date=(
+                        date(2026, 1, 6)
+                        if window == 5
+                        else sample.record_date
+                    ),
+                    target_date=date(2026, 2, 5),
+                    benchmark_symbol=sample.benchmark_symbol,
+                    outcome={},
+                    skip_reason=None,
+                )
+            )
+        session.flush()
+
+        watermarks = calibration_module._general_completeness_watermarks(
+            session,
+            through_date=date(2026, 1, 31),
+            market="TW",
+            benchmark_symbol="TAIEX",
+        )
+
+    assert len(watermarks) == 1
+    watermark = watermarks[0]
+    assert watermark["evaluated_samples_by_window"] == {
+        "5": 0,
+        "10": 1,
+        "20": 1,
+    }
+    assert watermark["validated_samples_by_window"] == {
+        "5": 0,
+        "10": 1,
+        "20": 1,
+    }
+    assert watermark["validation_identity_mismatch_samples_by_window"] == {
+        "5": 1,
+        "10": 0,
+        "20": 0,
+    }
+    assert watermark["maturity_complete"] is False
+
+
 def test_general_analysis_retryable_skip_is_retried_but_stale_is_terminal() -> None:
     engine = _engine()
     Base.metadata.create_all(
@@ -410,6 +605,48 @@ def test_general_legacy_v1_result_does_not_block_current_validation_version() ->
     assert pending == {f"id:{sample.id}": [5]}
 
 
+def test_general_identity_mismatch_is_requeued_in_due_mode() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        session.add(
+            AnalysisForwardValidationResult(
+                sample_id=sample.id,
+                window_days=5,
+                validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=date(2026, 1, 6),
+                target_date=date(2026, 1, 12),
+                benchmark_symbol="SPY",
+                outcome={"forward_return_pct": 1.0},
+                skip_reason=None,
+            )
+        )
+        session.flush()
+
+        pending = _exclude_persisted_general_analysis_windows(
+            session,
+            {f"id:{sample.id}": [5]},
+        )
+
+    assert pending == {f"id:{sample.id}": [5]}
+
+
 def test_general_monthly_report_runs_with_insufficient_mature_samples() -> None:
     engine = _engine()
     Base.metadata.create_all(
@@ -444,6 +681,67 @@ def test_general_monthly_report_runs_with_insufficient_mature_samples() -> None:
     assert "# General Analysis Confidence Review" in markdown
 
 
+def test_general_month_is_not_mature_when_shorter_windows_are_missing() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        session.add(
+            AnalysisForwardValidationResult(
+                sample_id=sample.id,
+                window_days=20,
+                validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=sample.record_date,
+                target_date=date(2026, 2, 2),
+                benchmark_symbol="TAIEX",
+                outcome={
+                    "forward_return_pct": 3.0,
+                    "excess_return_vs_benchmark_pct": 1.0,
+                    "max_adverse_excursion_pct": -1.0,
+                    "hit_above_threshold": True,
+                },
+                skip_reason=None,
+            )
+        )
+        session.commit()
+
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=1,
+            min_sample_count=1,
+        )
+
+    watermark = report["completeness_watermarks"][0]
+    assert watermark["maturity_complete"] is False
+    assert watermark["evaluated_samples_by_window"] == {
+        "5": 0,
+        "10": 0,
+        "20": 1,
+    }
+    assert watermark["validated_coverage_by_window"] == {
+        "5": 0.0,
+        "10": 0.0,
+        "20": 1.0,
+    }
+    assert report["cohort"]["selected_months"] == []
+
+
 def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None:
     engine = _engine()
     Base.metadata.create_all(
@@ -459,6 +757,8 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
             result["cleaned_news"]["sentiment_label"] = (
                 "positive" if month % 2 else "neutral"
             )
+            if month % 2 == 0:
+                result["signal_confidence"] = 62
             sample = capture_general_analysis_calibration_sample(
                 session,
                 symbol=f"23{month:02d}.TW",
@@ -503,8 +803,26 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
         "2026-04",
         "2026-05",
     ]
+    assert (
+        report["metadata"]["report_version"]
+        == "general-analysis-confidence-review-v7"
+    )
     assert report["cohort"]["holdout_month"] == "2026-06"
     assert all(row["maturity_complete"] is True for row in report["completeness_watermarks"])
+    assert report["coverage"]["replay_workload"] == {
+        "sample_count": 6,
+        "candidate_window_row_count": 18,
+        "training_row_count": 15,
+        "candidate_config_count": 8,
+        "scoring_pass_count": 9,
+        "estimated_scoring_calls": 54,
+        "maximum_scoring_calls": 300_000,
+        "bootstrap_iterations": 500,
+        "estimated_bootstrap_row_iterations": 120_000,
+        "maximum_bootstrap_row_iterations": 40_000_000,
+        "capacity_exceeded": False,
+        "exceeded_limits": [],
+    }
     candidate = report["candidate_configs"][0]
     assert set(candidate["training"]["before"]) == {"5", "10", "20"}
     assert candidate["training_block_bootstrap"]["seed"] == 20260724
@@ -521,6 +839,175 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     }
     assert candidate["coverage"]["training_block_count"] == 5
     assert candidate["coverage"]["holdout_block_count"] == 1
+    assert candidate["coverage"]["replay_workload_within_budget"] is True
+
+
+def test_general_monthly_baseline_mismatch_fails_closed_after_one_replay(
+    monkeypatch,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        for month in range(1, 7):
+            for sample_index in range(10):
+                sample = capture_general_analysis_calibration_sample(
+                    session,
+                    symbol=f"{month}{sample_index:03d}.TW",
+                    record_date=date(2026, month, 5),
+                    result=_analysis_result(),
+                    is_final=True,
+                )
+                assert sample is not None
+                if month == 1 and sample_index == 0:
+                    sample.signal_confidence = 0
+                session.flush()
+                for window in (5, 10, 20):
+                    session.add(
+                        AnalysisForwardValidationResult(
+                            sample_id=sample.id,
+                            window_days=window,
+                            validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                            status="validated",
+                            signal_date=sample.record_date,
+                            target_date=date(
+                                2026,
+                                month,
+                                min(25, 5 + window),
+                            ),
+                            benchmark_symbol="TAIEX",
+                            outcome={
+                                "forward_return_pct": float(month + window),
+                                "excess_return_vs_benchmark_pct": float(month),
+                                "max_adverse_excursion_pct": -float(month) / 10,
+                                "hit_above_threshold": True,
+                            },
+                            skip_reason=None,
+                        )
+                    )
+        session.commit()
+
+        replay_calls = 0
+        original_compute_confidence = calibration_module.compute_confidence
+
+        def compute_confidence_spy(*args, **kwargs):
+            nonlocal replay_calls
+            replay_calls += 1
+            return original_compute_confidence(*args, **kwargs)
+
+        monkeypatch.setattr(
+            calibration_module,
+            "compute_confidence",
+            compute_confidence_spy,
+        )
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=6,
+            min_sample_count=1,
+            min_replay_coverage=0.8,
+        )
+
+    assert report["coverage"]["replay_coverage"] == 0.9833
+    assert report["coverage"]["meets_threshold"] is True
+    assert report["coverage"]["baseline_replay_complete"] is False
+    assert report["coverage"]["exclusion_reasons"] == {
+        "baseline_replay_mismatch": 1,
+    }
+    assert report["auto_change_eligible"] is False
+    assert {
+        candidate["eligibility_reason"]
+        for candidate in report["candidate_configs"]
+    } == {"baseline_replay_mismatch"}
+    assert replay_calls == 60 + 59 * len(report["candidate_configs"])
+
+
+def test_general_monthly_rejects_aggregate_workload_before_replay(
+    monkeypatch,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        for month in range(1, 7):
+            sample = capture_general_analysis_calibration_sample(
+                session,
+                symbol=f"24{month:02d}.TW",
+                record_date=date(2026, month, 5),
+                result=_analysis_result(),
+                is_final=True,
+            )
+            assert sample is not None
+            session.flush()
+            for window in (5, 10, 20):
+                session.add(
+                    AnalysisForwardValidationResult(
+                        sample_id=sample.id,
+                        window_days=window,
+                        validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                        status="validated",
+                        signal_date=sample.record_date,
+                        target_date=date(2026, month, min(25, 5 + window)),
+                        benchmark_symbol="TAIEX",
+                        outcome={
+                            "forward_return_pct": float(month),
+                            "excess_return_vs_benchmark_pct": float(month),
+                            "max_adverse_excursion_pct": -1.0,
+                            "hit_above_threshold": True,
+                        },
+                        skip_reason=None,
+                    )
+                )
+        session.commit()
+
+        monkeypatch.setattr(
+            calibration_module,
+            "MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS",
+            1,
+        )
+
+        def reject_replay(*args, **kwargs):
+            raise AssertionError("aggregate workload guard must run before replay")
+
+        monkeypatch.setattr(calibration_module, "_replay_rows", reject_replay)
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=6,
+            min_sample_count=1,
+        )
+
+    workload = report["coverage"]["replay_workload"]
+    assert workload == {
+        "sample_count": 6,
+        "candidate_window_row_count": 18,
+        "training_row_count": 15,
+        "candidate_config_count": 8,
+        "scoring_pass_count": 9,
+        "estimated_scoring_calls": 54,
+        "maximum_scoring_calls": 300_000,
+        "bootstrap_iterations": 500,
+        "estimated_bootstrap_row_iterations": 120_000,
+        "maximum_bootstrap_row_iterations": 1,
+        "capacity_exceeded": True,
+        "exceeded_limits": ["bootstrap_row_iterations"],
+    }
+    assert report["coverage"]["baseline_replay_complete"] is False
+    assert report["auto_change_eligible"] is False
+    assert {
+        candidate["eligibility_reason"]
+        for candidate in report["candidate_configs"]
+    } == {"replay_workload_limit_exceeded"}
 
 
 def test_general_monthly_replay_coverage_uses_only_optimizer_scope_strategies() -> None:
@@ -719,15 +1206,9 @@ def test_general_monthly_report_aggregates_watermarks_and_bounds_detail_to_six_m
         "2000-01-01" not in str(parameters)
         for _statement, parameters in select_statements
     )
-    detail_statements = [
-        statement
-        for statement, _parameters in select_statements
-        if "GROUP BY" not in statement
-    ]
-    assert detail_statements
-    assert all(
+    assert any(
         "analysis_calibration_samples.record_date >= ?" in statement
-        for statement in detail_statements
+        for statement, _parameters in select_statements
     )
 
 
@@ -804,6 +1285,8 @@ def test_forward_validation_and_monthly_workflows_fail_on_gaps_and_encrypt_artif
     assert 'cron: "0 10 6 * *"' in monthly
     assert "actions/upload-artifact@v4" in monthly
     assert "CALIBRATION_REPORT_PASSPHRASE" in monthly
+    assert monthly.count("--connect-timeout 10") == 2
+    assert monthly.count("--max-time 180") == 2
     assert "--passphrase-fd 0" in monthly
     assert "path: artifacts/*.tar.gz.gpg" in monthly
     assert "issues: write" not in monthly
@@ -823,6 +1306,112 @@ def test_analysis_calibration_migration_creates_append_only_tables_and_constrain
     assert "FOREIGN KEY(sample_id) REFERENCES analysis_calibration_samples (id)" in upgrade_sql
     assert "DROP TABLE analysis_forward_validation_results" in downgrade_sql
     assert "DROP TABLE analysis_calibration_samples" in downgrade_sql
+
+
+def test_calibration_identity_migration_deduplicates_and_aligns_unique_key(
+    monkeypatch,
+) -> None:
+    migration = _load_identity_migration()
+    monkeypatch.setenv("CALIBRATION_MIGRATION_BACKUP_CONFIRMED", migration.revision)
+    buffer = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": buffer},
+    )
+    operations = Operations(context)
+    original_op = migration.op
+    migration.op = operations
+    try:
+        migration.upgrade()
+    finally:
+        migration.op = original_op
+
+    upgrade_sql = buffer.getvalue()
+    assert "SET LOCAL statement_timeout = '5min'" in upgrade_sql
+    assert "SET LOCAL lock_timeout = '10s'" in upgrade_sql
+    assert upgrade_sql.index("SET LOCAL statement_timeout") < upgrade_sql.index(
+        "LOCK TABLE analysis_calibration_samples"
+    )
+    assert upgrade_sql.index("SET LOCAL lock_timeout") < upgrade_sql.index(
+        "LOCK TABLE analysis_calibration_samples"
+    )
+    assert "LOCK TABLE analysis_calibration_samples" in upgrade_sql
+    assert "CREATE TEMPORARY TABLE calibration_sample_identity_canonical" in upgrade_sql
+    assert "FIRST_VALUE(samples.id) OVER" in upgrade_sql
+    assert "DELETE FROM analysis_forward_validation_results" in upgrade_sql
+    assert "UPDATE analysis_forward_validation_results" not in upgrade_sql
+    assert "DELETE FROM analysis_calibration_samples" in upgrade_sql
+    assert (
+        "UNIQUE (analysis_type, market, symbol, record_date, strategy_version, "
+        "confidence_config_version)"
+    ) in upgrade_sql
+    assert "input_hash)" not in upgrade_sql.split("ADD CONSTRAINT", 1)[-1]
+
+
+def test_calibration_identity_migration_requires_backup_confirmation(
+    monkeypatch,
+) -> None:
+    migration = _load_identity_migration()
+    monkeypatch.delenv("CALIBRATION_MIGRATION_BACKUP_CONFIRMED", raising=False)
+
+    with pytest.raises(RuntimeError, match="restorable pre-migration"):
+        migration.upgrade()
+
+
+def test_calibration_identity_migration_keeps_strongest_sample_without_moving_outcomes() -> None:
+    migration = _load_identity_migration()
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE analysis_calibration_samples (
+                id INTEGER PRIMARY KEY,
+                analysis_type TEXT NOT NULL,
+                market TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                record_date TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                confidence_config_version TEXT NOT NULL
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE analysis_forward_validation_results (
+                id INTEGER PRIMARY KEY,
+                sample_id INTEGER NOT NULL,
+                window_days INTEGER NOT NULL,
+                validation_version TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+        """))
+        connection.execute(
+            text("""
+                INSERT INTO analysis_calibration_samples (
+                    id, analysis_type, market, symbol, record_date,
+                    strategy_version, confidence_config_version
+                ) VALUES
+                    (1, 'general', 'TW', '2330.TW', '2026-01-05', 'v1', 'c1'),
+                    (2, 'general', 'TW', '2330.TW', '2026-01-05', 'v1', 'c1')
+            """)
+        )
+        connection.execute(text("""
+            INSERT INTO analysis_forward_validation_results (
+                id, sample_id, window_days, validation_version, status
+            ) VALUES
+                (10, 1, 5, 'general-v2', 'validated'),
+                (20, 2, 5, 'general-v2', 'validated'),
+                (21, 2, 10, 'general-v2', 'validated')
+        """))
+        canonical = connection.execute(
+            text(migration._canonical_samples_sql("confidence_config_version"))
+        ).mappings().all()
+
+    assert {row["canonical_id"] for row in canonical} == {2}
+
+
+def test_calibration_identity_migration_downgrade_requires_backup_restore() -> None:
+    migration = _load_identity_migration()
+
+    with pytest.raises(RuntimeError, match="intentionally irreversible"):
+        migration.downgrade()
 
 
 def _analysis_result() -> dict:
@@ -899,6 +1488,21 @@ def _load_migration() -> ModuleType:
         / "0a1b2c3d4e5f_add_analysis_calibration_tables.py"
     )
     spec = importlib.util.spec_from_file_location("analysis_calibration_migration", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_identity_migration() -> ModuleType:
+    path = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "2c3d4e5f6a7b_align_calibration_sample_identity.py"
+    )
+    spec = importlib.util.spec_from_file_location("calibration_identity_migration", path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)

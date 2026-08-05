@@ -46,6 +46,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
     upsert_forward_validation_results,
+    validate_forward_validation_benchmark,
 )
 from ai_stock_sentinel.calibration.forward_validation_planning import (
     prepare_due_forward_validation,
@@ -839,6 +840,13 @@ def run_daily_radar_forward_validation_endpoint(
         start_date=start_date,
         end_date=request.end_date or as_of_date,
     )
+    try:
+        validate_forward_validation_benchmark(
+            candidates,
+            benchmark_symbol=request.benchmark_symbol,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     symbols = {str(candidate["symbol"]) for candidate in candidates}
     candidate_record_dates = [
         parsed_date
@@ -875,6 +883,7 @@ def run_daily_radar_forward_validation_endpoint(
         windows_by_candidate = exclude_persisted_daily_radar_windows(
             db,
             windows_by_candidate,
+            benchmark_symbol=request.benchmark_symbol,
         )
         preparation = prepare_due_forward_validation(
             candidates,
@@ -932,6 +941,7 @@ def run_daily_radar_monthly_rule_review_endpoint(
         market=payload.market,
         year=payload.year,
         month=payload.month,
+        benchmark_symbol=payload.benchmark_symbol,
         validation_version=payload.validation_version,
         min_sample_count=payload.min_sample_count,
         min_validated_coverage=payload.min_validated_coverage,

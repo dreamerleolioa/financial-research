@@ -52,8 +52,9 @@ async def lifespan(app: FastAPI):
     try:
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
-    except Exception as exc:
-        logging.getLogger(__name__).error("Alembic migration failed: %s", exc, exc_info=True)
+    except Exception:
+        logging.getLogger(__name__).exception("Alembic migration failed")
+        raise
     yield
 
 
@@ -90,6 +91,7 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
     allow_credentials=True,
 )
 

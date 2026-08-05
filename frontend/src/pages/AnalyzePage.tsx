@@ -84,11 +84,24 @@ const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: stri
   neutral: { emoji: "🔵", label: "中性", color: "text-blue-500" },
 };
 
-const CONVICTION_BADGE: Record<string, { label: string; cls: string }> = {
-  high: { label: "高信心", cls: "bg-emerald-100 text-emerald-800" },
-  medium: { label: "中信心", cls: "bg-yellow-100 text-yellow-800" },
-  low: { label: "低信心", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+const SIGNAL_DIRECTION_BADGE: Record<string, { label: string; cls: string }> = {
+  strong_bullish: { label: "強烈偏多", cls: "bg-emerald-100 text-emerald-800" },
+  bullish: { label: "偏多", cls: "bg-green-100 text-green-800" },
+  mixed: { label: "中性／混合", cls: "bg-badge-neutral-bg text-badge-neutral-text" },
+  bearish: { label: "偏空", cls: "bg-orange-100 text-orange-800" },
+  strong_bearish: { label: "強烈偏空", cls: "bg-red-100 text-red-800" },
 };
+
+function signalDirectionLevel(
+  score: number | null,
+): "strong_bullish" | "bullish" | "mixed" | "bearish" | "strong_bearish" | null {
+  if (score == null) return null;
+  if (score >= 80) return "strong_bullish";
+  if (score >= 60) return "bullish";
+  if (score > 40) return "mixed";
+  if (score > 20) return "bearish";
+  return "strong_bearish";
+}
 
 function TriggersSection({
   upgradeTriggers,
@@ -456,6 +469,7 @@ export default function AnalyzePage() {
   }
 
   const confidenceScore = result?.confidence_score ?? null;
+  const signalDirection = signalDirectionLevel(confidenceScore);
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
   const analyzedSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : symbol;
@@ -481,7 +495,6 @@ export default function AnalyzePage() {
     typeof actionPlan?.momentum_expectation === "string" ? actionPlan.momentum_expectation : null;
   const actionPlanSuggestedPositionSize: string | null =
     typeof actionPlan?.suggested_position_size === "string" ? actionPlan.suggested_position_size : null;
-  const actionPlanConvictionLevel = actionPlan?.conviction_level;
   const actionPlanUpgradeTriggers = Array.isArray(actionPlan?.upgrade_triggers)
     ? actionPlan.upgrade_triggers.filter((item): item is string => typeof item === "string")
     : undefined;
@@ -730,12 +743,12 @@ export default function AnalyzePage() {
                     <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px] md:items-center">
                       <div>
                         <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                          <p className="text-xs font-semibold text-text-muted">信心指數</p>
-                          {actionPlanConvictionLevel && CONVICTION_BADGE[actionPlanConvictionLevel] && (
+                          <p className="text-xs font-semibold text-text-muted">綜合訊號強度</p>
+                          {signalDirection && (
                             <span
-                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONVICTION_BADGE[actionPlanConvictionLevel].cls}`}
+                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${SIGNAL_DIRECTION_BADGE[signalDirection].cls}`}
                             >
-                              {CONVICTION_BADGE[actionPlanConvictionLevel].label}
+                              {SIGNAL_DIRECTION_BADGE[signalDirection].label}
                             </span>
                           )}
                           {result.data_confidence != null && result.data_confidence < 60 && (
@@ -750,9 +763,9 @@ export default function AnalyzePage() {
                       </div>
                       <div>
                         <div className="mb-1 flex items-baseline justify-between gap-3">
-                          <span className="text-xs text-text-muted">信心分數</span>
+                          <span className="text-xs text-text-muted">訊號分數</span>
                           <span className="text-xl font-semibold text-text-primary">
-                            {confidenceScore != null ? `${confidenceScore}%` : "—"}
+                            {confidenceScore != null ? `${confidenceScore} / 100` : "—"}
                           </span>
                         </div>
                         <div className="h-2 rounded-full bg-border">

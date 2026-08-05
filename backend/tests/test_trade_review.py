@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import JSONB
@@ -9,7 +10,19 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from ai_stock_sentinel.analysis.trade_review import build_trade_review_payload, ensure_trade_review_market_data
+from ai_stock_sentinel.analysis import trade_review as trade_review_module
+from ai_stock_sentinel.analysis.trade_review import (
+    _iter_history_bars,
+    _point_in_time_values,
+    build_trade_review_payload,
+    ensure_trade_review_market_data,
+)
+from ai_stock_sentinel.analysis.review_sources import (
+    attach_source_fingerprint,
+    completed_trailing_series,
+    market_snapshot_payload,
+    market_snapshot_regressed,
+)
 from ai_stock_sentinel.db.models import StockRawData, UserPortfolio
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.user_models.user import User
@@ -95,6 +108,7 @@ def _snapshot_raw_row(
             "recent_highs": [close + 1 for close in closes],
             "recent_lows": [close - 1 for close in closes],
             "recent_volumes": volumes,
+            "data_dates": {"ohlcv": record_date.isoformat()},
         },
         raw_data_is_final=True,
     )
@@ -118,6 +132,375 @@ def _history_bars(start: date, closes: list[float]) -> list[dict]:
         }
         for offset, close in enumerate(closes)
     ]
+
+
+def test_completed_trailing_series_aligns_ohlc_by_trading_date():
+    trading_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(22)]
+    close_by_date = {
+        value_date: 100.0 + offset
+        for offset, value_date in enumerate(trading_dates)
+    }
+    high_dates = trading_dates[1:]
+    low_dates = trading_dates[:-1]
+    technical = {
+        "recent_close_dates": [value.isoformat() for value in trading_dates],
+        "recent_high_dates": [value.isoformat() for value in high_dates],
+        "recent_low_dates": [value.isoformat() for value in low_dates],
+        "recent_volume_dates": [value.isoformat() for value in trading_dates],
+        "data_dates": {"ohlcv": trading_dates[-1].isoformat()},
+    }
+
+    completed = completed_trailing_series(
+        technical,
+        trading_dates[-1] + timedelta(days=1),
+        closes=[close_by_date[value] for value in trading_dates],
+        highs=[close_by_date[value] + 1 for value in high_dates],
+        lows=[close_by_date[value] - 1 for value in low_dates],
+        volumes=[1000.0 + offset for offset in range(len(trading_dates))],
+    )
+
+    common_dates = trading_dates[1:-1]
+    assert completed is not None
+    assert completed["closes"] == [close_by_date[value] for value in trading_dates]
+    assert completed["ohlc_closes"] == [close_by_date[value] for value in common_dates]
+    assert completed["highs"] == [close_by_date[value] + 1 for value in common_dates]
+    assert completed["lows"] == [close_by_date[value] - 1 for value in common_dates]
+
+
+def test_market_regime_does_not_treat_misaligned_ohlc_as_high_volatility():
+    trading_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(21)]
+    closes = [100.0 + offset * 10 for offset in range(len(trading_dates))]
+    as_of = trading_dates[-1] + timedelta(days=1)
+    row = _snapshot_raw_row("2330.TW", as_of, closes)
+    row.technical.update({
+        "recent_close_dates": [value.isoformat() for value in trading_dates],
+        "recent_highs": [close + 1 for close in closes[1:]],
+        "recent_high_dates": [value.isoformat() for value in trading_dates[1:]],
+        "recent_lows": [close - 1 for close in closes[:-1]],
+        "recent_low_dates": [value.isoformat() for value in trading_dates[:-1]],
+        "recent_volume_dates": [value.isoformat() for value in trading_dates],
+        "data_dates": {"ohlcv": trading_dates[-1].isoformat()},
+    })
+
+    assert trade_review_module._classify_market_regime([row], as_of) == "strong_momentum"
+
+
+def test_market_regime_requires_twenty_aligned_ohlc_bars_for_volatility() -> None:
+    trading_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(21)]
+    closes = [100.0 + offset * 10 for offset in range(len(trading_dates))]
+    as_of = trading_dates[-1] + timedelta(days=1)
+    row = _snapshot_raw_row("2330.TW", as_of, closes)
+    row.technical.update({
+        "recent_close_dates": [value.isoformat() for value in trading_dates],
+        "recent_highs": [closes[-1] * 1.2],
+        "recent_high_dates": [trading_dates[-1].isoformat()],
+        "recent_lows": [closes[-1] * 0.8],
+        "recent_low_dates": [trading_dates[-1].isoformat()],
+        "recent_volume_dates": [value.isoformat() for value in trading_dates],
+        "data_dates": {"ohlcv": trading_dates[-1].isoformat()},
+    })
+
+    assert trade_review_module._classify_market_regime([row], as_of) == "strong_momentum"
+
+
+def test_market_snapshot_evidence_binds_independent_ohlc_values_to_dates():
+    snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-01-03",
+            "raw_data_is_final": True,
+            "technical": {
+                "recent_closes": [100.0, 101.0, 102.0],
+                "recent_close_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
+                "recent_highs": [102.0, 103.0],
+                "recent_high_dates": ["2026-01-02", "2026-01-03"],
+                "recent_lows": [99.0, 100.0],
+                "recent_low_dates": ["2026-01-01", "2026-01-02"],
+                "recent_volumes": [1000.0, 1100.0, 1200.0],
+                "recent_volume_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
+                "data_dates": {"ohlcv": "2026-01-03"},
+            },
+        }],
+        provider="fixture",
+    )
+
+    series = snapshot["bars"][0]["trailing_series"]
+    assert series == [
+        {"close": 100.0, "high": None, "low": 99.0, "volume": 1000.0},
+        {"close": 101.0, "high": 102.0, "low": 100.0, "volume": 1100.0},
+        {"close": 102.0, "high": 103.0, "low": None, "volume": 1200.0},
+    ]
+
+
+def test_compact_market_snapshot_fingerprint_keeps_complete_overlapping_fields() -> None:
+    def snapshot(high: float) -> dict:
+        return market_snapshot_payload(
+            [
+                {
+                    "record_date": "2026-01-01",
+                    "raw_data_is_final": True,
+                    "technical": {
+                        "ohlcv": {
+                            "open": 98,
+                            "high": 999,
+                            "low": 1,
+                            "close": 999,
+                            "volume": 9999,
+                        },
+                        "recent_closes": [100],
+                        "recent_highs": [high],
+                        "recent_lows": [99],
+                        "recent_volumes": [1000],
+                        "recent_close_dates": ["2026-01-01"],
+                        "recent_high_dates": ["2026-01-01"],
+                        "recent_low_dates": ["2026-01-01"],
+                        "recent_volume_dates": ["2026-01-01"],
+                        "data_dates": {"ohlcv": "2026-01-01"},
+                    },
+                },
+            ],
+            provider="stock_raw_data_read_only",
+            compact=True,
+        )
+
+    first = snapshot(101)
+    changed = snapshot(110)
+
+    assert first["bars"][0]["bar"] == {
+        "close": 100,
+        "high": 101,
+        "low": 99,
+        "open": 98,
+        "volume": 1000,
+    }
+    assert changed["bars"][0]["bar"]["high"] == 110
+    assert first["bars_fingerprint"] != changed["bars_fingerprint"]
+
+
+def test_compact_market_snapshot_prefers_later_completed_history_over_earlier_partial_outer() -> None:
+    snapshot = market_snapshot_payload(
+        [
+            {
+                "record_date": "2026-01-02",
+                "raw_data_is_final": True,
+                "technical": {
+                    "ohlcv": {
+                        "open": 998,
+                        "high": 999,
+                        "low": 1,
+                        "close": 999,
+                        "volume": 9999,
+                    },
+                    "recent_closes": [100],
+                    "recent_highs": [101],
+                    "recent_lows": [99],
+                    "recent_volumes": [1000],
+                    "recent_close_dates": ["2026-01-01"],
+                    "recent_high_dates": ["2026-01-01"],
+                    "recent_low_dates": ["2026-01-01"],
+                    "recent_volume_dates": ["2026-01-01"],
+                    "data_dates": {"ohlcv": "2026-01-02"},
+                },
+            },
+            {
+                "record_date": "2026-01-03",
+                "raw_data_is_final": True,
+                "technical": {
+                    "recent_closes": [100, 102],
+                    "recent_highs": [101, 103],
+                    "recent_lows": [99, 100],
+                    "recent_volumes": [1000, 1200],
+                    "recent_close_dates": ["2026-01-01", "2026-01-02"],
+                    "recent_high_dates": ["2026-01-01", "2026-01-02"],
+                    "recent_low_dates": ["2026-01-01", "2026-01-02"],
+                    "recent_volume_dates": ["2026-01-01", "2026-01-02"],
+                },
+            },
+        ],
+        provider="stock_raw_data_read_only",
+        compact=True,
+    )
+
+    bars_by_date = {bar["data_date"]: bar["bar"] for bar in snapshot["bars"]}
+    assert bars_by_date["2026-01-02"] == {
+        "close": 102,
+        "high": 103,
+        "low": 100,
+        "open": 998,
+        "volume": 1200,
+    }
+
+
+def test_compact_market_snapshot_accepts_later_completed_corrections_without_losing_fields() -> None:
+    snapshot = market_snapshot_payload(
+        [
+            {
+                "record_date": "2026-01-01",
+                "raw_data_is_final": True,
+                "technical": {
+                    "recent_closes": [100],
+                    "recent_highs": [101],
+                    "recent_lows": [99],
+                    "recent_volumes": [1000],
+                    "recent_close_dates": ["2026-01-01"],
+                    "recent_high_dates": ["2026-01-01"],
+                    "recent_low_dates": ["2026-01-01"],
+                    "recent_volume_dates": ["2026-01-01"],
+                },
+            },
+            {
+                "record_date": "2026-01-02",
+                "raw_data_is_final": True,
+                "technical": {
+                    "recent_closes": [102],
+                    "recent_lows": [100],
+                    "recent_volumes": [1200],
+                    "recent_close_dates": ["2026-01-01"],
+                    "recent_low_dates": ["2026-01-01"],
+                    "recent_volume_dates": ["2026-01-01"],
+                },
+            },
+        ],
+        provider="stock_raw_data_read_only",
+        compact=True,
+    )
+
+    assert snapshot["bars"][0]["bar"] == {
+        "close": 102,
+        "high": 101,
+        "low": 100,
+        "volume": 1200,
+    }
+
+
+def test_source_fingerprint_ignores_fetch_time_but_changes_with_market_content():
+    first = {"market_snapshot": {"fetched_at": "2026-08-04T01:00:00Z", "bars": [{"close": 100.0}]}}
+    same_content = {"market_snapshot": {"fetched_at": "2026-08-04T02:00:00Z", "bars": [{"close": 100.0}]}}
+    changed_content = {"market_snapshot": {"fetched_at": "2026-08-04T02:00:00Z", "bars": [{"close": 101.0}]}}
+
+    first_fingerprint = attach_source_fingerprint(first, ruleset_version="trade-review-v3")
+    same_fingerprint = attach_source_fingerprint(same_content, ruleset_version="trade-review-v3")
+    changed_fingerprint = attach_source_fingerprint(changed_content, ruleset_version="trade-review-v3")
+
+    assert same_fingerprint == first_fingerprint
+    assert changed_fingerprint != first_fingerprint
+
+
+def test_history_parser_accepts_single_ticker_yfinance_multiindex_frame():
+    columns = pd.MultiIndex.from_product(
+        [["Close", "High", "Low", "Open", "Volume"], ["2330.TW"]],
+    )
+    history = pd.DataFrame(
+        [[100.0, 101.0, 99.0, 100.0, 1234.0]],
+        index=pd.to_datetime(["2026-03-01"]),
+        columns=columns,
+    )
+
+    assert _iter_history_bars(history) == [
+        {
+            "date": date(2026, 3, 1),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1234.0,
+        },
+    ]
+
+
+def test_history_parser_sorts_and_deduplicates_provider_bars_by_date():
+    history = [
+        {"date": date(2026, 3, 2), "open": 102, "high": 103, "low": 101, "close": 102, "volume": 1200},
+        {"date": date(2026, 3, 1), "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1000},
+        {"date": date(2026, 3, 2), "open": 104, "high": 105, "low": 103, "close": 104, "volume": 1400},
+    ]
+
+    bars = _iter_history_bars(history)
+
+    assert [bar["date"] for bar in bars] == [date(2026, 3, 1), date(2026, 3, 2)]
+    assert bars[-1]["close"] == 104
+
+
+def test_same_day_stale_snapshot_keeps_last_completed_bar():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-01"}
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11, 12]
+
+
+def test_same_day_stale_snapshot_uses_independent_high_low_dates():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-01"}
+    row.technical["recent_highs"] = [11, 12, 99]
+    row.technical["recent_high_dates"] = ["2026-02-28", "2026-03-01", "2026-03-02"]
+    row.technical["recent_lows"] = [9, 10, 1]
+    row.technical["recent_low_dates"] = ["2026-02-28", "2026-03-01", "2026-03-02"]
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [11, 12]
+    assert values["lows"] == [9, 10]
+
+
+def test_same_day_stale_snapshot_trims_undated_high_low_even_when_lengths_match():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-01"}
+    row.technical["recent_highs"] = [12, 99]
+    row.technical["recent_lows"] = [9, 1]
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [12]
+    assert values["lows"] == [9]
+
+
+def test_same_day_legacy_snapshot_without_data_date_drops_only_unproven_final_bar():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200, 300])
+    row.technical.pop("data_dates")
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [11, 12]
+    assert values["lows"] == [9, 10]
+    assert values["volumes"] == [100, 200]
+
+
+def test_legacy_snapshot_trims_unproven_high_low_when_series_lengths_differ():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200, 300])
+    row.technical.pop("data_dates")
+    row.technical["recent_highs"] = [11, 13]
+    row.technical["recent_lows"] = [9, 11]
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["highs"] == [11]
+    assert values["lows"] == [9]
+
+
+def test_same_day_snapshot_does_not_drop_prior_volume_when_current_volume_is_missing():
+    row = _snapshot_raw_row("2330.TW", date(2026, 3, 2), [10, 11, 12], volumes=[100, 200])
+    row.technical["data_dates"] = {"ohlcv": "2026-03-02"}
+
+    values = _point_in_time_values([row], date(2026, 3, 2))
+
+    assert values["closes"] == [10, 11]
+    assert values["volumes"] == [100, 200]
+
+
+def test_same_day_snapshot_trusts_explicit_prior_volume_dates_over_equal_series_lengths():
+    as_of = date(2026, 3, 2)
+    row = _snapshot_raw_row("2330.TW", as_of, [10, 11, 12], volumes=[100, 200, 300])
+    row.technical["recent_volume_dates"] = ["2026-02-27", "2026-02-28", "2026-03-01"]
+
+    values = _point_in_time_values([row], as_of)
+
+    assert values["closes"] == [10, 11]
+    assert values["volumes"] == [100, 200, 300]
 
 
 def test_path_metrics_compute_max_profit_drawdown_and_giveback(db_session: Session):
@@ -144,9 +527,28 @@ def test_path_metrics_compute_max_profit_drawdown_and_giveback(db_session: Sessi
     assert evidence_payload["path_metrics"]["max_profit_pct"] == pytest.approx(20)
 
 
+def test_trade_review_path_excludes_exit_day_close(db_session: Session):
+    portfolio = _portfolio(
+        entry_date=date(2026, 3, 1),
+        exit_date=date(2026, 3, 3),
+        entry_price=100,
+        exit_price=105,
+    )
+    db_session.add(portfolio)
+    _add_rows(db_session, "2330.TW", date(2026, 3, 1), [100, 110, 50])
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    metrics = review_result["trade_result"]
+    assert metrics["highest_close_during_holding"] == pytest.approx(110)
+    assert metrics["lowest_close_during_holding"] == pytest.approx(100)
+    assert metrics["max_drawdown_pct"] == pytest.approx(0)
+
+
 def test_entry_and_exit_indicators_use_point_in_time_slices(db_session: Session):
-    entry_date = date(2026, 3, 1)
-    exit_date = date(2026, 3, 3)
+    entry_date = date(2026, 3, 2)
+    exit_date = date(2026, 3, 4)
     portfolio = _portfolio(
         entry_date=entry_date,
         exit_date=exit_date,
@@ -213,11 +615,11 @@ def test_point_in_time_indicators_use_snapshot_recent_arrays_without_ohlcv(db_se
 
     entry_indicators = review_result["trade_result"]["entry_indicators"]
     exit_indicators = review_result["trade_result"]["exit_indicators"]
-    assert entry_indicators["ma20"] == pytest.approx(54.5)
-    assert entry_indicators["ma60"] == pytest.approx(34.5)
+    assert entry_indicators["ma20"] == pytest.approx(53.5)
+    assert entry_indicators["ma60"] == pytest.approx(33.5)
     assert entry_indicators["rsi14"] == pytest.approx(100)
-    assert exit_indicators["ma20"] == pytest.approx(149.95)
-    assert exit_indicators["exit_vs_ma20_pct"] == pytest.approx(566.888963, rel=1e-4)
+    assert exit_indicators["ma20"] == pytest.approx(102.25)
+    assert exit_indicators["exit_vs_ma20_pct"] == pytest.approx(877.9951, rel=1e-4)
     assert evidence_payload["data_quality"]["status"] == "ok"
 
 
@@ -234,11 +636,11 @@ def test_entry_indicators_use_latest_snapshot_at_or_before_entry_date(db_session
 
     entry_indicators = review_result["trade_result"]["entry_indicators"]
     exit_indicators = review_result["trade_result"]["exit_indicators"]
-    assert entry_indicators["ma20"] == pytest.approx(54.5)
+    assert entry_indicators["ma20"] == pytest.approx(53.5)
     assert exit_indicators["ma20"] == pytest.approx(1000)
 
 
-def test_ensure_trade_review_market_data_backfills_bounded_ohlcv_rows(db_session: Session):
+def test_ensure_trade_review_market_data_builds_isolated_bounded_snapshot(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
@@ -252,18 +654,17 @@ def test_ensure_trade_review_market_data_backfills_bounded_ohlcv_rows(db_session
             {"date": exit_date + timedelta(days=1), "open": 999, "high": 999, "low": 999, "close": 999, "volume": 999},
         ]
 
-    ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+    rows = snapshot.rows
 
-    assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date + timedelta(days=1))]
-    rows = db_session.query(StockRawData).filter(StockRawData.symbol == "2330.TW").order_by(StockRawData.record_date).all()
+    assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date)]
     assert rows
-    assert rows[-1].record_date == exit_date
-    assert all(row.record_date <= exit_date for row in rows)
-    assert rows[-1].technical["ohlcv"]["close"] == 75
-    assert rows[-1].raw_data_is_final is True
+    assert rows[-1].record_date < exit_date
+    assert all(row.record_date < exit_date for row in rows)
+    assert db_session.query(StockRawData).filter(StockRawData.symbol == "2330.TW").count() == 0
 
 
-def test_ensure_trade_review_market_data_preserves_existing_final_ohlcv_rows(db_session: Session):
+def test_ensure_trade_review_market_data_does_not_mutate_existing_canonical_rows(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
@@ -275,16 +676,17 @@ def test_ensure_trade_review_market_data_preserves_existing_final_ohlcv_rows(db_
     def fake_fetcher(_symbol: str, _start: date, _end: date):
         return _history_bars(entry_date - timedelta(days=70), list(range(1, 76)))
 
-    ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
 
     stored = db_session.query(StockRawData).filter(
         StockRawData.symbol == "2330.TW",
         StockRawData.record_date == entry_date,
     ).one()
     assert stored.technical["ohlcv"]["close"] == 123
+    assert snapshot.rows
 
 
-def test_ensure_trade_review_market_data_skips_fetch_when_data_sufficient(db_session: Session):
+def test_ensure_trade_review_market_data_does_not_reuse_canonical_rows_as_review_snapshot(db_session: Session):
     entry_date = date(2026, 3, 1)
     exit_date = date(2026, 3, 5)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
@@ -292,10 +694,422 @@ def test_ensure_trade_review_market_data_skips_fetch_when_data_sufficient(db_ses
     _add_rows(db_session, "2330.TW", entry_date - timedelta(days=70), list(range(1, 76)))
     db_session.commit()
 
-    def fake_fetcher(_symbol: str, _start: date, _end: date):
-        raise AssertionError("fetcher should not be called when data is sufficient")
+    calls = []
+
+    def fake_fetcher(symbol: str, start: date, end: date):
+        calls.append((symbol, start, end))
+        return _history_bars(entry_date - timedelta(days=70), list(range(1, 76)))
 
     ensure_trade_review_market_data(db_session, portfolio, fetcher=fake_fetcher)
+
+    assert calls == [("2330.TW", entry_date - timedelta(days=120), exit_date)]
+
+
+def test_ensure_trade_review_market_data_prefers_rich_fallback_over_partial_provider(db_session: Session):
+    entry_date = date(2026, 6, 1)
+    exit_date = date(2026, 6, 5)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
+    fallback = _snapshot_raw_row("2330.TW", entry_date, list(range(1, 81)))
+    db_session.add_all([portfolio, fallback])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: _history_bars(entry_date, [999]),
+    )
+
+    assert snapshot.rows == [fallback]
+    assert snapshot.evidence["provider"] == "stock_raw_data_read_only_fallback"
+    assert snapshot.evidence["quality"]["missing_reason"] == "provider_coverage_below_fallback"
+    assert snapshot.evidence["quality"]["row_count"] == 1
+    assert snapshot.evidence["quality"]["trading_bar_count"] == 80
+
+
+def test_trade_review_fallback_compacts_overlapping_dated_history(
+    db_session: Session,
+) -> None:
+    entry_date = date(2026, 6, 1)
+    exit_date = date(2026, 6, 5)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
+    closes = list(range(1, 81))
+    dates = [
+        (entry_date - timedelta(days=78) + timedelta(days=offset)).isoformat()
+        for offset in range(len(closes))
+    ]
+    rows = [
+        _snapshot_raw_row("2330.TW", entry_date, closes),
+        _snapshot_raw_row("2330.TW", entry_date + timedelta(days=1), closes),
+    ]
+    for row in rows:
+        row.technical = dict(row.technical) | {
+            "recent_close_dates": dates,
+            "recent_high_dates": dates,
+            "recent_low_dates": dates,
+            "recent_volume_dates": dates,
+        }
+    db_session.add_all([portfolio, *rows])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: [],
+    )
+
+    assert snapshot.rows == rows
+    assert snapshot.evidence["quality"]["row_count"] == 2
+    assert snapshot.evidence["quality"]["persisted_bar_count"] == 80
+    assert len(snapshot.evidence["bars"]) == 80
+    assert all(not bar["trailing_series"] for bar in snapshot.evidence["bars"])
+
+
+def test_ensure_trade_review_market_data_marks_tiny_provider_response_as_partial_coverage(
+    db_session: Session,
+):
+    entry_date = date(2026, 6, 1)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 6, 5))
+
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: _history_bars(entry_date, [999]),
+    )
+
+    assert snapshot.evidence["provider"] == "yfinance"
+    assert snapshot.evidence["quality"]["status"] == "insufficient"
+    assert snapshot.evidence["quality"]["missing_reason"] == "provider_coverage_insufficient"
+    assert snapshot.evidence["quality"]["trading_bar_count"] == 1
+
+
+def test_ensure_trade_review_market_data_uses_trading_bars_for_provider_upgrade(db_session: Session):
+    entry_date = date(2026, 6, 1)
+    exit_date = date(2026, 6, 5)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
+    fallback = _snapshot_raw_row("2330.TW", entry_date, list(range(1, 81)))
+    db_session.add_all([portfolio, fallback])
+    db_session.commit()
+
+    provider_start = entry_date - timedelta(days=71)
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: _history_bars(provider_start, list(range(1, 73))),
+    )
+
+    assert snapshot.evidence["provider"] == "yfinance"
+    assert snapshot.evidence["quality"]["row_count"] == 72
+    assert snapshot.evidence["quality"]["trading_bar_count"] == 72
+
+
+def test_market_snapshot_does_not_estimate_known_out_of_window_series_dates():
+    snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-04-30",
+            "technical": {
+                "recent_closes": list(range(80)),
+                "recent_close_dates": [f"2025-01-{day:02d}" for day in range(1, 29)]
+                + [f"2025-02-{day:02d}" for day in range(1, 29)]
+                + [f"2025-03-{day:02d}" for day in range(1, 25)],
+                "recent_highs": list(range(80)),
+                "recent_lows": list(range(80)),
+                "recent_volumes": list(range(80)),
+                "recent_volume_dates": [f"2026-01-{day:02d}" for day in range(1, 29)]
+                + [f"2026-02-{day:02d}" for day in range(1, 29)]
+                + [f"2026-03-{day:02d}" for day in range(1, 25)],
+            },
+        }],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 5, 1),
+    )
+
+    assert snapshot["quality"]["trading_bar_count"] == 0
+    assert snapshot["quality"]["date_start"] is None
+    assert snapshot["quality"]["date_end"] is None
+
+
+def test_market_snapshot_counts_only_usable_final_trading_bars():
+    non_final = _raw_row("2330.TW", date(2026, 1, 8), 100)
+    non_final.raw_data_is_final = False
+    empty = StockRawData(
+        symbol="2330.TW",
+        record_date=date(2026, 1, 9),
+        technical={},
+        raw_data_is_final=True,
+    )
+    weekend_snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-01-10",
+            "technical": {
+                "recent_closes": [100, 101],
+                "recent_close_dates": ["2026-01-08", "2026-01-09"],
+                "recent_highs": [101, 102],
+                "recent_lows": [99, 100],
+                "recent_volumes": [1000, 1100],
+                "recent_volume_dates": ["2026-01-08", "2026-01-09"],
+            },
+        }],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 1, 12),
+    )
+    invalid_snapshot = market_snapshot_payload(
+        [non_final, empty],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 1, 12),
+    )
+
+    assert weekend_snapshot["quality"]["trading_bar_count"] == 2
+    assert weekend_snapshot["quality"]["date_end"] == "2026-01-09"
+    assert weekend_snapshot["quality"]["holding_covered_dates"] == []
+    assert invalid_snapshot["quality"]["trading_bar_count"] == 0
+    assert invalid_snapshot["quality"]["status"] == "insufficient"
+
+
+def test_market_snapshot_uses_close_dates_instead_of_equal_length_volume_dates():
+    snapshot = market_snapshot_payload(
+        [{
+            "record_date": "2026-01-10",
+            "technical": {
+                "recent_closes": [100, 101],
+                "recent_close_dates": ["2026-01-08", "2026-01-09"],
+                "recent_volumes": [1000, 1100],
+                "recent_volume_dates": ["2026-01-07", "2026-01-08"],
+            },
+        }],
+        provider="fallback",
+        coverage_start=date(2026, 1, 1),
+        coverage_end=date(2026, 1, 12),
+    )
+
+    assert snapshot["quality"]["covered_dates"] == ["2026-01-08", "2026-01-09"]
+
+
+def test_provider_upgrade_cannot_drop_holding_period_dates_at_ninety_percent_total_coverage():
+    existing_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(80)]
+    holding_dates = existing_dates[40:48]
+    provider_dates = existing_dates[:40] + existing_dates[48:]
+
+    def quality(dates: list[date], *, missing_reason: str | None) -> dict:
+        return {
+            "quality": {
+                "coverage_version": "market-coverage-v1",
+                "coverage_basis": "dated_bars",
+                "trading_bar_count": len(dates),
+                "covered_dates": [value.isoformat() for value in dates],
+                "holding_covered_dates": [
+                    value.isoformat() for value in dates if value in holding_dates
+                ],
+                "date_start": existing_dates[0].isoformat(),
+                "date_end": existing_dates[-1].isoformat(),
+                "missing_reason": missing_reason,
+            },
+        }
+
+    assert market_snapshot_regressed(
+        quality(existing_dates, missing_reason="provider_fetch_failed_or_empty"),
+        quality(provider_dates, missing_reason=None),
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is True
+
+
+def test_legacy_dated_bars_can_self_heal_to_material_fallback():
+    legacy_provider = {
+        "quality": {"missing_reason": None, "row_count": 1},
+        "bars": [{
+            "record_date": "2026-01-01",
+            "data_date": "2026-01-01",
+            "raw_data_is_final": True,
+            "trailing_dates": [],
+            "trailing_series": [],
+            "bar": {"close": 100},
+        }],
+    }
+    rich_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 80,
+            "covered_dates": [],
+            "holding_covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert market_snapshot_regressed(
+        legacy_provider,
+        rich_fallback,
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is False
+
+
+@pytest.mark.parametrize(("existing_count", "expected_regressed"), [(59, False), (60, True)])
+def test_current_coverage_material_fallback_recovery_requires_fewer_than_sixty_bars(
+    existing_count: int,
+    expected_regressed: bool,
+):
+    provider_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(existing_count)]
+    current_provider = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "dated_bars",
+            "trading_bar_count": existing_count,
+            "covered_dates": [value.isoformat() for value in provider_dates],
+            "holding_covered_dates": [value.isoformat() for value in provider_dates],
+            "date_start": provider_dates[0].isoformat(),
+            "date_end": provider_dates[-1].isoformat(),
+            "missing_reason": None,
+        },
+    }
+    estimated_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 67,
+            "covered_dates": [],
+            "holding_covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert market_snapshot_regressed(
+        current_provider,
+        estimated_fallback,
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is expected_regressed
+
+
+def test_healthy_legacy_dated_bars_do_not_downgrade_to_estimated_fallback():
+    legacy_dates = [date(2026, 1, 1) + timedelta(days=offset) for offset in range(60)]
+    legacy_provider = {
+        "quality": {"missing_reason": None, "row_count": len(legacy_dates)},
+        "bars": [
+            {
+                "record_date": value.isoformat(),
+                "data_date": value.isoformat(),
+                "raw_data_is_final": True,
+                "trailing_dates": [],
+                "trailing_series": [],
+                "bar": {"close": 100},
+            }
+            for value in legacy_dates
+        ],
+    }
+    degraded_fallback = {
+        "quality": {
+            "coverage_version": "market-coverage-v1",
+            "coverage_basis": "estimated_trailing_series",
+            "trading_bar_count": 67,
+            "covered_dates": [],
+            "holding_covered_dates": [],
+            "date_start": None,
+            "date_end": None,
+            "missing_reason": "provider_fetch_failed_or_empty",
+        },
+    }
+
+    assert market_snapshot_regressed(
+        legacy_provider,
+        degraded_fallback,
+        provider_upgrade_min_coverage_ratio=0.9,
+    ) is True
+
+
+def test_trade_review_fallback_query_excludes_non_final_rows(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 3, 5))
+    final_row = _raw_row("2330.TW", entry_date, 100)
+    non_final_row = _raw_row("2330.TW", entry_date + timedelta(days=1), 101)
+    non_final_row.raw_data_is_final = False
+    db_session.add_all([portfolio, final_row, non_final_row])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=lambda *_args: [])
+
+    assert snapshot.rows == [final_row]
+
+
+def test_trade_review_download_uses_single_level_columns_and_bounded_timeout(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    def fake_download(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return []
+
+    monkeypatch.setattr(trade_review_module.yf, "download", fake_download)
+
+    trade_review_module._download_trade_review_history("2330.TW", date(2026, 1, 1), date(2026, 1, 2))
+
+    assert captured["kwargs"]["multi_level_index"] is False
+    assert captured["kwargs"]["timeout"] == 10
+
+
+def test_trade_review_provider_capacity_falls_back_without_calling_provider(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class NoCapacity:
+        def acquire(self, *, blocking: bool) -> bool:
+            assert blocking is False
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("unacquired provider capacity must not be released")
+
+    entry_date = date(2026, 3, 1)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 3, 5))
+    db_session.add_all([portfolio, _raw_row("2330.TW", entry_date, 123)])
+    db_session.commit()
+    monkeypatch.setattr(trade_review_module, "_TRADE_REVIEW_PROVIDER_SEMAPHORE", NoCapacity())
+
+    def fail_fetcher(*_args):
+        raise AssertionError("capacity exhaustion must skip the provider")
+
+    snapshot = ensure_trade_review_market_data(db_session, portfolio, fetcher=fail_fetcher)
+
+    assert snapshot.evidence["provider"] == "stock_raw_data_read_only_fallback"
+    assert snapshot.evidence["quality"]["missing_reason"] == "provider_capacity_exhausted"
+    assert snapshot.evidence["fetched_at"] is not None
+
+
+def test_trade_review_fallback_is_bounded_to_the_review_lookback(db_session: Session):
+    entry_date = date(2026, 6, 1)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=date(2026, 6, 5))
+    old_row = _raw_row("2330.TW", entry_date - timedelta(days=121), 100)
+    bounded_row = _raw_row("2330.TW", entry_date - timedelta(days=120), 101)
+    db_session.add_all([portfolio, old_row, bounded_row])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: [],
+    )
+
+    assert [row.record_date for row in snapshot.rows] == [bounded_row.record_date]
+
+
+def test_point_in_time_indicators_exclude_same_day_close(db_session: Session):
+    entry_date = date(2026, 3, 1)
+    exit_date = date(2026, 3, 3)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date, entry_price=60, exit_price=1000)
+    db_session.add(portfolio)
+    _add_rows(db_session, "2330.TW", date(2026, 1, 1), list(range(1, 61)) + [1000, 2000])
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    entry = review_result["trade_result"]["entry_indicators"]
+    exit_ = review_result["trade_result"]["exit_indicators"]
+    assert entry["ma20"] == pytest.approx(49.5)
+    assert exit_["ma20"] == pytest.approx(98.45)
 
 
 def test_phase3_entry_review_classifies_breakout_with_market_regime_and_confidence(db_session: Session):
@@ -310,10 +1124,10 @@ def test_phase3_entry_review_classifies_breakout_with_market_regime_and_confiden
         holding_days=2,
     )
     db_session.add(portfolio)
-    pre_entry = [100 + offset * 0.3 for offset in range(59)]
+    pre_entry = [100 + offset * 0.3 for offset in range(60)]
     closes = pre_entry + [125, 128, 130]
-    volumes = [1000] * 59 + [3000, 1200, 1200]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes, volumes)
+    volumes = [1000] * 60 + [3000, 1200, 1200]
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes, volumes)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -333,9 +1147,9 @@ def test_trade_review_keeps_codes_stable_but_returns_chinese_prose(db_session: S
     exit_date = date(2026, 3, 6)
     portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date, entry_price=100, exit_price=108, realized_return_pct=8, holding_days=5)
     db_session.add(portfolio)
-    pre_entry = [90 + offset * 0.2 for offset in range(59)]
+    pre_entry = [90 + offset * 0.2 for offset in range(60)]
     closes = pre_entry + [100, 118, 116, 112, 109, 108]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes)
     db_session.commit()
 
     review_result, evidence_payload = build_trade_review_payload(db_session, portfolio)
@@ -367,7 +1181,7 @@ def test_entry_review_ignores_post_entry_future_data_for_classification(db_sessi
     )
     db_session.add(portfolio)
     closes = [100] * 60 + [100, 250, 250]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -390,9 +1204,9 @@ def test_exit_review_classifies_profit_protection_after_giveback(db_session: Ses
         holding_days=5,
     )
     db_session.add(portfolio)
-    pre_entry = [90 + offset * 0.2 for offset in range(59)]
+    pre_entry = [90 + offset * 0.2 for offset in range(60)]
     closes = pre_entry + [100, 118, 116, 112, 109, 108]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), closes)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), closes)
     db_session.commit()
 
     review_result, evidence_payload = build_trade_review_payload(db_session, portfolio)
@@ -421,9 +1235,9 @@ def test_exit_review_does_not_default_to_reasonable_without_supporting_evidence(
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [80 + offset * 0.3 for offset in range(59)]
+    pre_entry = [80 + offset * 0.3 for offset in range(60)]
     holding = [100, 102, 101, 101, 100]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -449,9 +1263,9 @@ def test_exit_review_keeps_reasonable_when_technical_break_has_evidence(db_sessi
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [120.0] * 59
+    pre_entry = [120.0] * 60
     holding = [110, 108, 105, 102, 100]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -473,9 +1287,9 @@ def test_user_readable_conclusion_marks_small_profit_above_mas_as_early(db_sessi
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [90 + offset * 0.2 for offset in range(59)]
+    pre_entry = [90 + offset * 0.2 for offset in range(60)]
     holding = [100, 102, 103, 104, 104]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -501,9 +1315,9 @@ def test_user_readable_conclusion_marks_late_stop_as_late(db_session: Session):
         holding_days=4,
     )
     db_session.add(portfolio)
-    pre_entry = [100] * 59
+    pre_entry = [100] * 60
     holding = [100, 96, 92, 88, 90]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)
@@ -544,10 +1358,10 @@ def test_holding_detected_events_are_capped_and_concise(db_session: Session):
         holding_days=19,
     )
     db_session.add(portfolio)
-    pre_entry = [100 + offset * 0.1 for offset in range(59)]
+    pre_entry = [100 + offset * 0.1 for offset in range(60)]
     holding = [105, 110, 108, 112, 106, 104, 102, 98, 101, 96, 94, 99, 93, 97, 92, 96, 91, 95, 90, 95]
-    volumes = [1000] * 59 + [1000, 1000, 2500, 1000, 2600, 2700, 2800, 3000, 1000, 3200, 3300, 1000, 3400, 1000, 3500, 1000, 3600, 1000, 3700, 1000]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding, volumes)
+    volumes = [1000] * 60 + [1000, 1000, 2500, 1000, 2600, 2700, 2800, 3000, 1000, 3200, 3300, 1000, 3400, 1000, 3500, 1000, 3600, 1000, 3700, 1000]
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding, volumes)
     db_session.commit()
 
     review_result, evidence_payload = build_trade_review_payload(db_session, portfolio)
@@ -571,9 +1385,9 @@ def test_holding_events_ignore_pre_entry_high_when_tracking_running_high(db_sess
         holding_days=2,
     )
     db_session.add(portfolio)
-    pre_entry = [150] * 59
+    pre_entry = [150] * 60
     holding = [100, 106, 104]
-    _add_rows(db_session, "2330.TW", date(2026, 1, 1), pre_entry + holding)
+    _add_rows(db_session, "2330.TW", date(2025, 12, 31), pre_entry + holding)
     db_session.commit()
 
     review_result, _ = build_trade_review_payload(db_session, portfolio)

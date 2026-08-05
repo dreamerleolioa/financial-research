@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
+from ai_stock_sentinel.analysis.review_sources import completed_trailing_series, market_snapshot_payload
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData
 from ai_stock_sentinel.shared_context import (
     SHARED_CONTEXT_CONSUMER_LIFECYCLE,
@@ -19,6 +20,7 @@ from ai_stock_sentinel.shared_context import (
 ENTRY_TYPES = {"initial_entry", "add_entry"}
 EXIT_TYPES = {"partial_exit", "full_exit"}
 MAX_DETECTED_EVENTS = 8
+POSITION_LIFECYCLE_LOOKBACK_DAYS = 120
 
 
 def build_position_lifecycle_analysis(
@@ -44,15 +46,23 @@ def build_position_lifecycle_analysis(
         ).scalar_one_or_none()
 
         symbol = _event_value(events[0], "symbol") if events else _event_value(plan, "symbol")
+        analysis_start = _analysis_start_date(events)
         analysis_end = _analysis_end_date(events)
         market_rows: list[StockRawData] = []
         if symbol is not None and analysis_end is not None:
-            market_rows = db.execute(
-                select(StockRawData)
-                .where(
-                    StockRawData.symbol == symbol,
-                    StockRawData.record_date <= analysis_end,
+            market_query = select(StockRawData).where(
+                StockRawData.symbol == symbol,
+                StockRawData.record_date <= analysis_end,
+                StockRawData.raw_data_is_final.is_(True),
+            )
+            if analysis_start is not None:
+                market_query = market_query.where(
+                    StockRawData.record_date
+                    >= analysis_start
+                    - timedelta(days=POSITION_LIFECYCLE_LOOKBACK_DAYS)
                 )
+            market_rows = db.execute(
+                market_query
                 .order_by(StockRawData.record_date.asc())
             ).scalars().all()
         shared_context = _build_event_shared_context(
@@ -92,17 +102,18 @@ def build_position_lifecycle_analysis_from_rows(
     lifecycle_metrics = _build_lifecycle_metrics(ordered_events, ordered_rows, accounting, data_quality)
     entry_sequence = _build_entry_sequence(ordered_events, accounting, event_snapshots)
     exit_sequence = _build_exit_sequence(ordered_events, accounting, event_snapshots, ordered_rows)
+    decision_context = _build_decision_context(plan, data_quality)
     advanced_internal = _build_advanced_internal(
         ordered_events,
         ordered_rows,
         accounting,
         lifecycle_metrics,
         plan,
+        decision_context,
         data_quality,
     )
     detected_events = _detect_market_events(ordered_events, ordered_rows)
     market_regime_snapshots = _market_regime_snapshots(event_snapshots)
-    decision_context = _build_decision_context(plan, data_quality)
     shared_context_payload = shared_context or _empty_lifecycle_shared_context(symbol)
     source_data = _source_data(symbol, ordered_events, ordered_rows, plan)
     event_facts = _compact_events(ordered_events)
@@ -147,6 +158,19 @@ def build_position_lifecycle_analysis_from_rows(
         "detected_events": detected_events,
         "market_regime_snapshots": market_regime_snapshots,
         "shared_context": shared_context_payload,
+        "decision_context": decision_context,
+        "plan_snapshot": _plan_source_data(plan),
+        "market_snapshot": market_snapshot_payload(
+            ordered_rows,
+            provider="stock_raw_data_read_only",
+            holding_start=_analysis_start_date(ordered_events),
+            holding_end=(
+                _analysis_end_date(ordered_events) + timedelta(days=1)
+                if _analysis_end_date(ordered_events) is not None
+                else None
+            ),
+            compact=True,
+        ),
         "source_data": source_data,
         "data_quality": result["data_quality"],
     }
@@ -192,6 +216,7 @@ def _build_lifecycle_review(
     planned_holding_period = decision_context.get("planned_holding_period")
     add_entry_condition = decision_context.get("add_entry_condition")
     default_stop_rule = decision_context.get("default_stop_rule")
+    historical_judgment_eligible = decision_context.get("historical_judgment_eligible") is True
     total_holding_days = lifecycle_metrics.get("total_holding_days_from_first_entry")
 
     if not event_facts or entry_sequence.get("entry_count", 0) == 0:
@@ -248,7 +273,7 @@ def _build_lifecycle_review(
     add_entry_plan_violations = _add_entry_plan_violation_events(
         event_facts,
         snapshot_by_key,
-        add_entry_condition,
+        add_entry_condition if historical_judgment_eligible else None,
     )
     if add_entry_plan_violations:
         _append_label(labels, "add_entry_plan_violation")
@@ -263,7 +288,7 @@ def _build_lifecycle_review(
     stop_rule_violations = _unacted_stop_rule_break_events(
         event_facts,
         snapshot_by_key,
-        default_stop_rule,
+        default_stop_rule if historical_judgment_eligible else None,
     )
     if stop_rule_violations:
         _append_label(labels, "unacted_stop_rule_break")
@@ -275,7 +300,10 @@ def _build_lifecycle_review(
         reasons.append(item)
         what_needs_review.append(item)
 
-    holding_period_review = _holding_period_review(planned_holding_period, total_holding_days)
+    holding_period_review = _holding_period_review(
+        planned_holding_period if historical_judgment_eligible else None,
+        total_holding_days,
+    )
     if holding_period_review is not None:
         _append_label(labels, "holding_period_needs_review")
         item = _text_item(
@@ -353,7 +381,7 @@ def _build_lifecycle_review(
         what_needs_review.append(item)
 
     coherent = (
-        not decision_context_insufficient
+        historical_judgment_eligible
         and plan_adherence_score is not None
         and plan_adherence_score >= 75
         and realized_pnl is not None
@@ -786,7 +814,12 @@ def _build_lifecycle_metrics(
     final_exit_event = next((event for event in reversed(exit_events) if _event_value(event, "event_type") == "full_exit"), None)
     final_exit_date = _event_value(final_exit_event, "event_date") if final_exit_event is not None else None
     analysis_end = final_exit_date or _analysis_end_date(events)
-    path_points = _market_points(rows, first_entry_date, analysis_end)
+    path_points = _market_points(
+        rows,
+        first_entry_date,
+        analysis_end,
+        end_inclusive=final_exit_date is None,
+    )
     weighted_entry = _number(accounting.get("weighted_average_entry_price"))
 
     max_profit_pct = None
@@ -934,9 +967,11 @@ def _build_advanced_internal(
     accounting: dict[str, Any],
     lifecycle_metrics: dict[str, Any],
     plan: Any,
+    decision_context: dict[str, Any],
     data_quality: dict[str, Any],
 ) -> dict[str, Any]:
-    planned_r = _planned_r_amount(plan, accounting)
+    historical_judgment_eligible = decision_context.get("historical_judgment_eligible") is True
+    planned_r = _planned_r_amount(plan, accounting) if historical_judgment_eligible else None
     if planned_r is None:
         _add_note(data_quality, "planned_1r_amount", "Plan risk was unavailable; R-multiple metrics are null.")
     planned_r_value = _number(planned_r)
@@ -947,7 +982,8 @@ def _build_advanced_internal(
     mfe_pct = _number(lifecycle_metrics.get("max_unrealized_profit_pct"))
     mae_amount = weighted_entry * max_position_size * mae_pct / 100 if weighted_entry and mae_pct is not None else None
     mfe_amount = weighted_entry * max_position_size * mfe_pct / 100 if weighted_entry and mfe_pct is not None else None
-    plan_score = _plan_adherence_score(events, plan)
+    declared_plan_score = _plan_adherence_score(events, plan)
+    observed_plan_score = None
     capture_rate = _round_pct(_safe_div(realized_pnl, mfe_amount) * 100) if mfe_amount and mfe_amount > 0 else None
 
     _add_note(data_quality, "benchmark_relative_return_pct", "Benchmark market data was unavailable for this lifecycle analysis.")
@@ -961,8 +997,10 @@ def _build_advanced_internal(
         "mfe_pct": _round_pct(mfe_pct),
         "mfe_r_multiple": _round_ratio(_safe_div(mfe_amount, planned_r_value)),
         "mfe_capture_rate": capture_rate,
-        "plan_adherence_score": plan_score,
-        "decision_quality_score": _decision_quality_score(realized_pnl, planned_r_value, capture_rate, plan_score),
+        "declared_plan_adherence_score": declared_plan_score,
+        "observed_plan_adherence_score": observed_plan_score,
+        "plan_adherence_score": observed_plan_score,
+        "decision_quality_score": None,
         "capital_at_risk_by_event": accounting["capital_at_risk_by_event"],
         "exposure_curve": accounting["exposure_curve"],
         "benchmark_relative_return_pct": None,
@@ -1011,7 +1049,12 @@ def _build_event_indicator_snapshots(events: list[Any], rows: list[Any], data_qu
             "volume_ratio": _round_ratio(volume_ratio),
             "event_price_vs_ma20_pct": _distance_pct(price, ma20),
             "event_price_vs_ma60_pct": _distance_pct(price, ma60),
-            "market_regime": _classify_market_regime(closes, values["highs"], values["lows"]),
+            "market_regime": _classify_market_regime(
+                closes,
+                values.get("ohlc_closes", []),
+                values["highs"],
+                values["lows"],
+            ),
         })
     return snapshots
 
@@ -1044,22 +1087,6 @@ def _plan_adherence_score(events: list[Any], plan: Any) -> float | None:
     if values:
         return _round_score(sum(values) / len(values))
     return None if plan is None else 50.0
-
-
-def _decision_quality_score(
-    realized_pnl: float | None,
-    planned_r: float | None,
-    capture_rate: float | None,
-    plan_score: float | None,
-) -> float | None:
-    if planned_r is None or planned_r <= 0 or realized_pnl is None:
-        return None
-    score = 50.0 + _safe_div(realized_pnl, planned_r) * 20
-    if capture_rate is not None:
-        score += (capture_rate - 50.0) * 0.2
-    if plan_score is not None:
-        score += (plan_score - 50.0) * 0.2
-    return _round_score(max(0.0, min(100.0, score)))
 
 
 def _active_exposure_days(events: list[Any], analysis_end: date | None) -> int | None:
@@ -1109,7 +1136,12 @@ def _detect_market_events(events: list[Any], rows: list[Any]) -> list[dict[str, 
         return []
     start = _event_value(first_entry, "event_date")
     end = _analysis_end_date(events)
-    points = _market_points(rows, start, end)
+    points = _market_points(
+        rows,
+        start,
+        end,
+        end_inclusive=_full_exit_date(events) is None,
+    )
     detected: list[dict[str, Any]] = []
     running_high = None
     previous_close = None
@@ -1146,13 +1178,24 @@ def _append_detected(events: list[dict[str, Any]], event_date: date, event_type:
     events.append({"date": _date_to_iso(event_date), "type": event_type, "evidence": evidence})
 
 
-def _market_points(rows: list[Any], start: date | None, end: date | None) -> list[dict[str, Any]]:
+def _market_points(
+    rows: list[Any],
+    start: date | None,
+    end: date | None,
+    *,
+    end_inclusive: bool = True,
+) -> list[dict[str, Any]]:
     if start is None or end is None:
         return []
     points = []
     for row in rows:
         row_date = _event_value(row, "record_date")
-        if not isinstance(row_date, date) or row_date < start or row_date > end:
+        if (
+            not isinstance(row_date, date)
+            or row_date < start
+            or row_date > end
+            or (not end_inclusive and row_date == end)
+        ):
             continue
         close = _close(row)
         if close is None:
@@ -1169,31 +1212,63 @@ def _market_points(rows: list[Any], start: date | None, end: date | None) -> lis
 
 def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list[float]]:
     if as_of is None:
-        return {"closes": [], "highs": [], "lows": [], "volumes": []}
+        return {"closes": [], "ohlc_closes": [], "highs": [], "lows": [], "volumes": []}
+    same_day_row = next(
+        (row for row in reversed(rows) if _event_value(row, "record_date") == as_of),
+        None,
+    )
+    same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
+    if same_day_closes:
+        completed = completed_trailing_series(
+            _event_value(same_day_row, "technical"),
+            as_of,
+            closes=same_day_closes,
+            highs=_technical_values(same_day_row, "recent_highs"),
+            lows=_technical_values(same_day_row, "recent_lows"),
+            volumes=_technical_values(same_day_row, "recent_volumes"),
+        )
+        if completed is not None:
+            return completed
     latest_row = None
     for row in rows:
         row_date = _event_value(row, "record_date")
-        if isinstance(row_date, date) and row_date <= as_of:
+        if isinstance(row_date, date) and row_date < as_of:
             latest_row = row
     if latest_row is not None:
         closes = _technical_values(latest_row, "recent_closes")
         if closes:
-            return {
-                "closes": closes,
-                "highs": _technical_values(latest_row, "recent_highs"),
-                "lows": _technical_values(latest_row, "recent_lows"),
-                "volumes": _technical_values(latest_row, "recent_volumes"),
-            }
-    point_rows = [row for row in rows if isinstance(_event_value(row, "record_date"), date) and _event_value(row, "record_date") <= as_of]
+            completed = completed_trailing_series(
+                _event_value(latest_row, "technical"),
+                as_of,
+                closes=closes,
+                highs=_technical_values(latest_row, "recent_highs"),
+                lows=_technical_values(latest_row, "recent_lows"),
+                volumes=_technical_values(latest_row, "recent_volumes"),
+            )
+            if completed is not None:
+                return completed
+    point_rows = [row for row in rows if isinstance(_event_value(row, "record_date"), date) and _event_value(row, "record_date") < as_of]
+    aligned_ohlc = [
+        (close, high, low)
+        for row in point_rows
+        for close, high, low in [(_close(row), _high(row), _low(row))]
+        if close is not None and high is not None and low is not None
+    ]
     return {
         "closes": [value for row in point_rows for value in [_close(row)] if value is not None],
-        "highs": [value for row in point_rows for value in [_high(row)] if value is not None],
-        "lows": [value for row in point_rows for value in [_low(row)] if value is not None],
+        "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
+        "highs": [high for _close_value, high, _low_value in aligned_ohlc],
+        "lows": [low for _close_value, _high_value, low in aligned_ohlc],
         "volumes": [value for row in point_rows for value in [_volume(row)] if value is not None],
     }
 
 
-def _classify_market_regime(closes: list[float], highs: list[float], lows: list[float]) -> str:
+def _classify_market_regime(
+    closes: list[float],
+    ohlc_closes: list[float],
+    highs: list[float],
+    lows: list[float],
+) -> str:
     if len(closes) < 20:
         return "insufficient_data"
     latest_close = closes[-1]
@@ -1204,8 +1279,12 @@ def _classify_market_regime(closes: list[float], highs: list[float], lows: list[
     recent_return = _distance_pct(latest_close, recent[0])
     recent_range = _distance_pct(max(recent), min(recent))
     average_range = None
-    if len(highs) >= 20 and len(lows) >= 20 and len(highs) == len(lows):
-        ranges = [(high - low) / close * 100 for high, low, close in zip(highs[-20:], lows[-20:], closes[-20:]) if close]
+    if len(ohlc_closes) >= 20 and len(highs) >= 20 and len(lows) >= 20:
+        ranges = [
+            (high - low) / close * 100
+            for high, low, close in zip(highs[-20:], lows[-20:], ohlc_closes[-20:], strict=True)
+            if close
+        ]
         average_range = sum(ranges) / len(ranges) if ranges else None
     if average_range is not None and average_range >= 6:
         return "high_volatility"
@@ -1225,7 +1304,12 @@ def _peak_market_date(events: list[Any], rows: list[Any]) -> date | None:
     first_entry = next((event for event in events if _event_value(event, "event_type") in ENTRY_TYPES), None)
     if first_entry is None:
         return None
-    points = _market_points(rows, _event_value(first_entry, "event_date"), _analysis_end_date(events))
+    points = _market_points(
+        rows,
+        _event_value(first_entry, "event_date"),
+        _analysis_end_date(events),
+        end_inclusive=_full_exit_date(events) is None,
+    )
     if not points:
         return None
     return max(points, key=lambda point: point["close"])["date"]
@@ -1274,17 +1358,22 @@ def _build_decision_context(plan: Any, data_quality: dict[str, Any]) -> dict[str
         return {
             "status": "insufficient",
             "has_plan": False,
+            "historical_judgment_eligible": False,
             "source": None,
             "created_after_entry": None,
             "planned_holding_period": None,
             "default_stop_rule": None,
             "add_entry_condition": None,
         }
+    source = _event_value(plan, "source")
+    created_after_entry = _event_value(plan, "created_after_entry")
+    historical_judgment_eligible = source == "user_recorded_at_event_time" and created_after_entry is not True
     return {
-        "status": "present",
+        "status": "present" if historical_judgment_eligible else "retrospective_only",
         "has_plan": True,
-        "source": _event_value(plan, "source"),
-        "created_after_entry": _event_value(plan, "created_after_entry"),
+        "historical_judgment_eligible": historical_judgment_eligible,
+        "source": source,
+        "created_after_entry": created_after_entry,
         "planned_holding_period": _event_value(plan, "planned_holding_period"),
         "default_stop_rule": _event_value(plan, "default_stop_rule"),
         "add_entry_condition": _event_value(plan, "add_entry_condition"),
@@ -1299,6 +1388,21 @@ def _source_data(symbol: str, events: list[Any], rows: list[Any], plan: Any) -> 
         "first_market_date": _date_to_iso(_event_value(rows[0], "record_date")) if rows else None,
         "last_market_date": _date_to_iso(_event_value(rows[-1], "record_date")) if rows else None,
         "plan_present": plan is not None,
+    }
+
+
+def _plan_source_data(plan: Any) -> dict[str, Any] | None:
+    if plan is None:
+        return None
+    return {
+        "source": _event_value(plan, "source"),
+        "created_after_entry": _event_value(plan, "created_after_entry"),
+        "planned_holding_period": _event_value(plan, "planned_holding_period"),
+        "default_stop_rule": _event_value(plan, "default_stop_rule"),
+        "add_entry_condition": _event_value(plan, "add_entry_condition"),
+        "planned_stop_price": _number(_event_value(plan, "planned_stop_price")),
+        "planned_risk_amount": _number(_event_value(plan, "planned_risk_amount")),
+        "planned_risk_pct": _number(_event_value(plan, "planned_risk_pct")),
     }
 
 
@@ -1397,6 +1501,32 @@ def _sort_market_rows(rows: list[Any]) -> list[Any]:
 def _analysis_end_date(events: list[Any]) -> date | None:
     event_dates = [_event_value(event, "event_date") for event in events if isinstance(_event_value(event, "event_date"), date)]
     return max(event_dates) if event_dates else None
+
+
+def _analysis_start_date(events: list[Any]) -> date | None:
+    entry_dates = [
+        _event_value(event, "event_date")
+        for event in events
+        if _event_value(event, "event_type") in ENTRY_TYPES
+        and isinstance(_event_value(event, "event_date"), date)
+    ]
+    if entry_dates:
+        return min(entry_dates)
+    event_dates = [
+        _event_value(event, "event_date")
+        for event in events
+        if isinstance(_event_value(event, "event_date"), date)
+    ]
+    return min(event_dates) if event_dates else None
+
+
+def _full_exit_date(events: list[Any]) -> date | None:
+    for event in reversed(events):
+        if _event_value(event, "event_type") != "full_exit":
+            continue
+        event_date = _event_value(event, "event_date")
+        return event_date if isinstance(event_date, date) else None
+    return None
 
 
 def _event_key(event: Any, index: int) -> str:

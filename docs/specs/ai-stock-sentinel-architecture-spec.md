@@ -90,9 +90,11 @@
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
 
-Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母；final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
+Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母，active cohort 同時鎖定目前 strategy/config version；`general-analysis-confidence-review-v7` 另要求 replay input 的型別、值域與 baseline config 完整符合 current contract，在 baseline replay 前以 300,000 scoring calls／40,000,000 次 before／after bootstrap row-iterations 為整批 workload 上限，超限即 fail closed。容量允許時按 sample 單次重播 current baseline 後與 production `signal_confidence` 等價比較，mismatch 必須排除、重算 coverage 且阻止全部 candidate eligibility。正常 capture 的同日重跑沿用第一筆 point-in-time sample，歷史 migration 若已有重複 identity，則先固定 validated/evaluated outcome 證據最完整的 canonical sample，且只保留該 sample 原生 outcomes。Final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
 
-Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sample_count`，不以 5 / 10 / 20 日 validation rows 加總；training 與 holdout 另要求最低 distinct date blocks。Validated coverage 與 replay coverage 是兩道獨立 gate，後者必須在整體及每個入選月份都達標，否則只輸出診斷，不得標記為可自動修改。
+一般分析 validation outcome 的 `signal_date` 與 `benchmark_symbol` 必須和所屬 calibration sample 完全一致；寫入時不一致即拒絕，既有異常 row 也不得計入 evaluated/validated watermark，並輸出逐窗口 identity mismatch 診斷，避免錯誤 outcome 讓月份提早成熟或進入 optimizer。
+
+Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sample_count`，不以 5 / 10 / 20 日 validation rows 加總；training 與 holdout 另要求最低 distinct date blocks。Validated coverage 與 replay coverage 是兩道獨立 gate：validated coverage 必須逐 5 / 10 / 20 日窗口、replay coverage 必須在整體及每個入選月份都達標，否則只輸出診斷，不得標記為可自動修改。Holdout 非劣性也按 5 / 10 / 20 日分開判斷，任一窗口退化或無法計算即 fail closed。兩軌在 scoring／bootstrap 前都計算跨六個月的 aggregate replay workload，超過各自 budget 時停止 replay 並 fail closed。Daily Radar 為最新 run 的所有候選建立完整窗口池，missing validation result 也不得從 Top 20 ranking pool 消失；結構合法的 replay 還必須重現原 production score、bucket、risk labels 與 matched rule IDs，baseline 不一致時以 `baseline_replay_mismatch` 排除並讓 ranking pool fail closed。正常 workload 的 mean bootstrap 先把 validated selected rows 預聚合成每日期 sum／count，再重抽 block statistics，且保留原本先將抽樣平均值四捨五入至四位再計算 delta 的 eligibility 語義；完整日期 block universe 仍被保留，避免空 selection 日期被誤刪而改變統計語意。Rule-group diagnostics 只對 live-score tiers 使用相同輸入的 counterfactual scoring，context-only 群組明確標為不適用；co-occurrence 僅保留為非因果參考。
 
 ### 0.5 Shared Context 使用邊界
 
@@ -865,6 +867,7 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 
 **資料捕捉原則：**
 
+- Trade Review 與 Lifecycle Review 保留原始 final rows 作 deterministic 計算，但持久化的 `StockRawData` evidence 必須 compact。有日期的 trailing series 攤平成單日 bars，且所有 dated trailing series 必須先於 outer bars 合併；同日重疊的 trailing history 以較新非空值更新，較新 series 缺少的欄位仍保留既有 completed 值，outer bar 則只能補既有 bar 的缺少欄位，不得用盤中／partial outer quote 覆蓋已捕捉的完整行情。無日期的重複 trailing history 只保存最長一份，避免 evidence payload 隨 outer rows 成倍膨脹，並確保 source fingerprint 可重建實際輸入。
 - 進場與加碼決策採 `fixed options first -> optional note second`。固定選項是 deterministic review 的主要資料來源；free-text note 只能補充，不可取代或覆寫固定選項。
 - 新建持股的最小 entry context 包含 `entry_reason`、`planned_holding_period`、`default_stop_rule`、`add_entry_condition`。缺漏欄位保持缺漏，不以預設 intent 補齊。
 - 加碼必須透過明確 add-entry flow 記錄 `reason_code`、`plan_adherence`、`confidence_level`；一般持股 row update 不推論為加碼決策。
@@ -880,11 +883,17 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 | `manual_record_correction` | 使用者手動修正紀錄。 |
 | `not_recorded` | 決策脈絡未記錄。 |
 
-`decision_context.status = insufficient` 是正式語意，不是錯誤狀態。當 lifecycle plan 缺失、只有 optional note、或資料 provenance 不足以代表原始意圖時，review 仍可輸出價格路徑與 event facts，但必須以 caveats 說明限制，且不得判斷使用者是否遵循未記錄計畫。
+`decision_context.status = insufficient` 與 `retrospective_only` 都是正式語意，不是錯誤狀態。只有 `source = user_recorded_at_event_time`、`created_after_entry != true` 的 plan 具有 `historical_judgment_eligible = true`。Plan 缺失時仍可輸出價格路徑與 event facts；事後補填時仍可呈現 retrospective context，但兩者都不得產生歷史 plan violation、observed adherence、decision-quality score 或僅靠自報遵循度形成 constructive tier。
+
+原始 event-time plan 只在內容未變時保留 provenance。進場後透過一般 lifecycle-plan 更新 endpoint 實際改變任一規則，必須轉為 `source = user_backfilled`、`created_after_entry = true`；完全相同的 idempotent 寫入才可保留 `user_recorded_at_event_time`。因此事後編輯不能回頭改變歷史判斷資格。
 
 一般 `PUT /portfolio/{id}` 若更正尚未發生後續 lifecycle event 的 initial-entry 成本、股數或日期，該 event 的 `source` 必須改為 `manual_record_correction`，並留下事後更正 caveat；不可繼續標示為 `user_recorded_at_event_time` 或 `user_backfilled`。既有固定選項 reason metadata 可保留，但其 provenance 以更正後 source 與 caveat 為準。
 
 Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
+
+結案回顧只接受完整關閉的 lifecycle：不得存在 active portfolio row、ledger 必須包含 `full_exit`，且最終 open quantity 必須為 0。事件沒有成交時間時，所有 entry/exit indicator snapshot 僅能使用前一個 completed bar；同日 cache row 必須以 OHLCV 的實際 data date 判斷最後一筆是否屬於事件日，stale cache 不得盲目剔除最後一筆。Close、High、Low 與 Volume 由 provider 獨立去除缺值，因此 snapshot producer 必須分別保存 Close／High／Low／Volume 日期並逐序列裁切，不能用 Volume 日期代表 Close coverage，也不能用最後有效 Close 日期替其他序列證明 finality；完成裁切後，所有需要 OHLC 的計算與 evidence 必須再取 Close／High／Low 的共同交易日，不得依陣列索引拼接不同日期。缺少 High／Low 日期時，即使長度與 Close 相同也要保守移除無法證明的尾端值，禁止使用同日結果回頭評分盤中決策。Full-exit 只有日期而無成交時間時，結案日收盤必須排除在已持有行情路徑之外，實際出場價只取 event fact。Lifecycle 的行情 query、指標計算與 compact evidence 必須共用 `raw_data_is_final = true` 邊界。
+
+Review 行情與正式分析行情有不同寫入邊界。Single Trade Review 的 provider backfill 只能建立 request-scoped snapshot，失敗或 coverage 較差時可唯讀 fallback 到 final `StockRawData`，但不得寫回 canonical row。外部下載必須具備明確 timeout、process-wide non-blocking bulkhead、同 review key 的 process-local non-blocking single-flight、日期排序去重，以及成功／失敗分離的 refresh TTL；重複 refresh 不等待同步 worker，回 `409` 與 `Retry-After`，backend 透過 CORS 暴露該 header，first-party frontend 依 header 有界重試，容量耗盡則釋放主流程並留下 missing reason。一般 snapshot producer 同步保存最後有效 Close 與獨立 Close／High／Low／Volume 日期；legacy row 缺少日期時只保守移除各個無法證明完成的 OHLC 尾端值，不丟棄更早歷史。Provider I/O 前不得持有 DB row lock 或占用 transaction connection；snapshot 完成後才以短 row-lock transaction 重新讀取並寫入，並以品質、normalized usable trading-bar count、Close-owned 完整 covered-date set、持有期間關鍵日期集合、可證明的日期範圍與 fetched-at 共同仲裁，避免過期／非 final／空 row、週末 observation、持有區間缺口、內部日期缺口或較舊 refresh 覆寫較完整結果。正常 provider 的 90% 總 coverage 容忍不得移除既有持有期間日期；只有少於 60 根的 `market-coverage-v1` evidence，或少於 60 根且具有實際 bars、可推導 coverage 的 legacy evidence，才可進行 material fallback 自癒，只有不相容 row count 的 evidence 不得放寬；一旦符合 material recovery，無日期的 estimated fallback 可取代少量 holding dates，避免持有日期保護反向鎖死低品質 evidence。首次建立與後續 refresh 都必須比較 provider／fallback coverage；outer row count 只作 evidence，不得當成跨 provider coverage 單位。Trade v3 與 lifecycle v2 的 evidence 都保存 compact market snapshot、ruleset 與 source fingerprint；fingerprint 必須涵蓋 review-relevant portfolio/event facts、plan provenance、market snapshot 與 lifecycle shared-context replay trace，取代只比較 event/plan `updated_at` 的 freshness 判斷。成功 refresh 即使 content fingerprint 未變，也必須以較新的 `fetched_at` 推進 TTL，且不得清除既有 LLM summary。未知 lifecycle review version 維持唯讀，不由舊程式建立 v2 或覆寫。
 
 Event ledger 與 active portfolio row 必須維持 `entry quantity - exit quantity = active remaining quantity`。歷史 migration 若把分批出場群組的 synthetic initial-entry 記成剩餘股數，只能修正可證明的純 synthetic 形狀：仍持有時必須是單一 active row、單一 synthetic initial-entry，且每一個 inactive portfolio row 都恰好對應一筆 synthetic partial-exit，不得遺漏或重複引用 source row；修正量為 active 剩餘股數加上歷史 partial-exit 總和。完全結案時必須是單一 synthetic initial-entry、至少一筆 synthetic partial-exit、單一且最後一筆 synthetic full-exit，initial-entry 與 full-exit 必須源自同一個最後結案 portfolio row，且所有 exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage；修正量為所有 exit 總和。兩種形狀都必須確認 active、來源 row、synthetic initial/exit event 與計算後 initial quantity 全部嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`，超出時必須跳過該群組，避免 migration 因欄位溢位中止；每筆來源 row 的 `quantity`、`exit_quantity`（若為 null 則回退 `quantity`）與對應 exit event quantity 完全一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。群組內所有 portfolio rows 與 events 還必須具有同一個非空 symbol；active row 的 `updated_at` 不得晚於 synthetic initial event 的 `created_at`，否則可能是 backfill 後的舊版 PUT 修正，不能再折回原始進場事實。真正寫入前必須先按 row id 對所有 contributing portfolio rows 與整組 contributing events 的 observed facts/timestamps 做 compare-and-lock，再以 initial event 的 user/group/source/source row/quantity/price/date/timestamps 做 compare-and-set；同一 transaction 內任一來源 row 或 event 並行更正時，migration 應跳過 stale snapshot，不得覆寫。Transaction lock 不涵蓋 commit 後仍存活的舊版 writer，因此部署此 data migration 必須先 quiesce portfolio writes／停止舊 instances，明確完成 DB upgrade 後才啟動新版並恢復流量。任一數量、symbol、時間或初始經濟事實不一致即視為不可證明。只要含有 user-recorded、backfilled、manual、多 active rows、source coverage 不完整、非正數、數量不一致、entry price/date 分裂或其他 event shape，就不得自動重寫；migration 必須可重跑。
 
@@ -892,10 +901,12 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
 
 **Deterministic lifecycle review 邊界：**
 
+- Provider 即使回傳非空資料，少於 MA60 所需的 60 根可用交易 bar 時仍須標記 `provider_coverage_insufficient`，但這類可能源自新上市或永久短歷史的 partial coverage 使用 24 小時重試 TTL，避免每次開啟頁面都重抓；真正 provider 失敗／空回應仍採 5 分鐘短 TTL，至少 60 根的正常 snapshot 使用 6 小時成功 TTL。
+- 結案回顧的 `high_volatility` 分類至少需要 20 根依共同交易日對齊的 Close／High／Low；少於 20 根時不得以少數極端 bar 推定高波動，應回退到其他可用趨勢分類。
 - Lifecycle review 使用 event ledger、point-in-time indicator snapshots、fixed option plan facts 與 source refs 產生 labels、reasons、caveats、next-operation rules。
 - 已穩定的 fixed-option labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`。
 - `holding_period_needs_review` 是檢討提示，不是硬性錯誤；不得宣稱精準高低點或單一時間點是唯一正確操作。
-- Raw 0-100 lifecycle scores 保留於 `advanced_internal` / evidence trace，用於 guardrail、debug、校準與 future review；預設 UI 與 user-facing copy 需以 tier、label、reason、caveat、source event 呈現。
+- 使用者自報的 yes / partial / no 只保留為 `declared_plan_adherence_score` trace；在沒有獨立客觀觀測器前，`observed_plan_adherence_score`、相容欄位 `plan_adherence_score` 與 `decision_quality_score` 必須為 `null`。預設 UI 與 user-facing copy 需以 tier、label、reason、caveat、source event 呈現。
 - LLM 不參與 intent capture、metric calculation、classification assignment 或 missing-intent inference。未來若加入 narrative summary，必須只摘要 deterministic review facts，且不得升級為判斷來源。
 
 ---
@@ -910,7 +921,7 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
    - MVP 入口（例如輸入 2330.TW）
 
 2. **訊號強度 / 資料品質 + 快照資訊卡片**（合併為單一卡片）
-   - 左側：以等級、狀態或 label 呈現 rule-based 訊號強度與資料品質；`confidence_score` / `signal_confidence` 的 raw 0~100 值保留作為 API 相容、內部 guardrail、校準與 advanced trace，不作為預設主視覺
+   - 左側：以「綜合訊號強度」呈現 rule-based 三維訊號的有方向結果；label 直接依 `confidence_score` 分級（`>= 80` 強烈偏多、`60–79` 偏多、`41–59` 中性／混合、`21–40` 偏空、`<= 20` 強烈偏空），不得把一致偏空誤標成低一致性，也不得借用另受資料品質、盤中狀態與策略類型 guardrail 影響的 `action_plan.conviction_level`。若顯示 raw 0~100 值，格式為 `x / 100`，不得使用 `%` 暗示勝率或機率。`confidence_score` / `signal_confidence` 仍保留作為 API 相容、內部 guardrail、校準與 advanced trace
    - `cross_validation_note` 顯示於狀態下方（灰色小字）
    - 右側：快照資訊（代碼 / 現價 / 成交量 / 成交量來源），以 `<dl>` 列表呈現
    - `data_confidence < 60` 時顯示「資料不足」提示；可在 advanced trace 顯示 raw percentage，但預設文案應強調資料限制而非精確分數
@@ -1100,7 +1111,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 ### Phase 3（已完成：前端初步串接）
 
 - React 輸入框 + 分析結果頁
-- 信心指數與雜訊對比元件
+- 有方向的綜合訊號強度與雜訊對比元件
 - Agent 分析路徑可視化
 
 ### Phase 4（下一步：深度分析升級）
@@ -1140,7 +1151,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
   - `entry_zone`（必填，具體價格區間）
   - `stop_loss`（必填，具體停損價位，例：近20日低點 -3%）
   - `holding_period`（必填，具體時間窗）
-  - `confidence_score`：0–100，反映三維訊號一致性
+  - `confidence_score`：0–100，反映有方向的三維訊號強度；50 為中性基準，低於 50 偏空、高於 50 偏多，不代表不分方向的一致性、勝率或機率
   - `cross_validation_note`：說明三維訊號的交叉驗證結論
   - `risks`：風險提示列表
   - `data_sources`：資料來源列表

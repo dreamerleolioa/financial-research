@@ -31,10 +31,14 @@ class StockSnapshot:
     fetched_at: str
     volume_source: str = "realtime"
     name: str | None = None
+    recent_close_dates: List[str] = field(default_factory=list)
     recent_highs: List[float] = field(default_factory=list)
     recent_lows: List[float] = field(default_factory=list)
+    recent_high_dates: List[str] = field(default_factory=list)
+    recent_low_dates: List[str] = field(default_factory=list)
     recent_volumes: List[float] = field(default_factory=list)
     recent_volume_dates: List[str] = field(default_factory=list)
+    data_dates: dict[str, str] = field(default_factory=dict)
     high_20d: float | None = None       # 近 20 日最高收盤價
     low_20d: float | None = None        # 近 20 日最低收盤價
     support_20d: float | None = None    # 近 20 日支撐位（low_20d × 0.99）

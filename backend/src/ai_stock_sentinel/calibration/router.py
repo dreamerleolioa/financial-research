@@ -36,7 +36,10 @@ from ai_stock_sentinel.calibration.repository import (
     load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
 )
-from ai_stock_sentinel.db.models import AnalysisForwardValidationResult
+from ai_stock_sentinel.db.models import (
+    AnalysisCalibrationSample,
+    AnalysisForwardValidationResult,
+)
 from ai_stock_sentinel.db.session import get_db
 
 
@@ -247,17 +250,33 @@ def _exclude_persisted_general_analysis_windows(
     ]
     terminal = {
         (result.sample_id, result.window_days)
-        for result in session.scalars(
-            select(AnalysisForwardValidationResult).where(
+        for result, sample in session.execute(
+            select(
+                AnalysisForwardValidationResult,
+                AnalysisCalibrationSample,
+            )
+            .join(
+                AnalysisCalibrationSample,
+                AnalysisForwardValidationResult.sample_id
+                == AnalysisCalibrationSample.id,
+            )
+            .where(
                 AnalysisForwardValidationResult.sample_id.in_(sample_ids),
                 AnalysisForwardValidationResult.validation_version
                 == ANALYSIS_FORWARD_VALIDATION_VERSION,
             )
         ).all()
-        if result.status == "validated"
-        or (
-            result.status == "skipped"
-            and result.skip_reason in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+        if (
+            result.signal_date == sample.record_date
+            and result.benchmark_symbol == sample.benchmark_symbol
+            and (
+                result.status == "validated"
+                or (
+                    result.status == "skipped"
+                    and result.skip_reason
+                    in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+                )
+            )
         )
     } if sample_ids else set()
     pending: dict[str, list[int]] = {}
