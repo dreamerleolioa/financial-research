@@ -645,10 +645,24 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     ]
     assert (
         report["metadata"]["report_version"]
-        == "general-analysis-confidence-review-v6"
+        == "general-analysis-confidence-review-v7"
     )
     assert report["cohort"]["holdout_month"] == "2026-06"
     assert all(row["maturity_complete"] is True for row in report["completeness_watermarks"])
+    assert report["coverage"]["replay_workload"] == {
+        "sample_count": 6,
+        "candidate_window_row_count": 18,
+        "training_row_count": 15,
+        "candidate_config_count": 8,
+        "scoring_pass_count": 9,
+        "estimated_scoring_calls": 54,
+        "maximum_scoring_calls": 300_000,
+        "bootstrap_iterations": 500,
+        "estimated_bootstrap_row_iterations": 120_000,
+        "maximum_bootstrap_row_iterations": 40_000_000,
+        "capacity_exceeded": False,
+        "exceeded_limits": [],
+    }
     candidate = report["candidate_configs"][0]
     assert set(candidate["training"]["before"]) == {"5", "10", "20"}
     assert candidate["training_block_bootstrap"]["seed"] == 20260724
@@ -665,6 +679,7 @@ def test_general_monthly_report_uses_six_mature_months_and_date_blocks() -> None
     }
     assert candidate["coverage"]["training_block_count"] == 5
     assert candidate["coverage"]["holdout_block_count"] == 1
+    assert candidate["coverage"]["replay_workload_within_budget"] is True
 
 
 def test_general_monthly_baseline_mismatch_fails_closed_after_one_replay(
@@ -750,6 +765,89 @@ def test_general_monthly_baseline_mismatch_fails_closed_after_one_replay(
         for candidate in report["candidate_configs"]
     } == {"baseline_replay_mismatch"}
     assert replay_calls == 60 + 59 * len(report["candidate_configs"])
+
+
+def test_general_monthly_rejects_aggregate_workload_before_replay(
+    monkeypatch,
+) -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        for month in range(1, 7):
+            sample = capture_general_analysis_calibration_sample(
+                session,
+                symbol=f"24{month:02d}.TW",
+                record_date=date(2026, month, 5),
+                result=_analysis_result(),
+                is_final=True,
+            )
+            assert sample is not None
+            session.flush()
+            for window in (5, 10, 20):
+                session.add(
+                    AnalysisForwardValidationResult(
+                        sample_id=sample.id,
+                        window_days=window,
+                        validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                        status="validated",
+                        signal_date=sample.record_date,
+                        target_date=date(2026, month, min(25, 5 + window)),
+                        benchmark_symbol="TAIEX",
+                        outcome={
+                            "forward_return_pct": float(month),
+                            "excess_return_vs_benchmark_pct": float(month),
+                            "max_adverse_excursion_pct": -1.0,
+                            "hit_above_threshold": True,
+                        },
+                        skip_reason=None,
+                    )
+                )
+        session.commit()
+
+        monkeypatch.setattr(
+            calibration_module,
+            "MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS",
+            1,
+        )
+
+        def reject_replay(*args, **kwargs):
+            raise AssertionError("aggregate workload guard must run before replay")
+
+        monkeypatch.setattr(calibration_module, "_replay_rows", reject_replay)
+        report, _ = build_general_analysis_monthly_report(
+            session,
+            through_year=2026,
+            through_month=6,
+            min_sample_count=1,
+        )
+
+    workload = report["coverage"]["replay_workload"]
+    assert workload == {
+        "sample_count": 6,
+        "candidate_window_row_count": 18,
+        "training_row_count": 15,
+        "candidate_config_count": 8,
+        "scoring_pass_count": 9,
+        "estimated_scoring_calls": 54,
+        "maximum_scoring_calls": 300_000,
+        "bootstrap_iterations": 500,
+        "estimated_bootstrap_row_iterations": 120_000,
+        "maximum_bootstrap_row_iterations": 1,
+        "capacity_exceeded": True,
+        "exceeded_limits": ["bootstrap_row_iterations"],
+    }
+    assert report["coverage"]["baseline_replay_complete"] is False
+    assert report["auto_change_eligible"] is False
+    assert {
+        candidate["eligibility_reason"]
+        for candidate in report["candidate_configs"]
+    } == {"replay_workload_limit_exceeded"}
 
 
 def test_general_monthly_replay_coverage_uses_only_optimizer_scope_strategies() -> None:
@@ -1027,6 +1125,8 @@ def test_forward_validation_and_monthly_workflows_fail_on_gaps_and_encrypt_artif
     assert 'cron: "0 10 6 * *"' in monthly
     assert "actions/upload-artifact@v4" in monthly
     assert "CALIBRATION_REPORT_PASSPHRASE" in monthly
+    assert monthly.count("--connect-timeout 10") == 2
+    assert monthly.count("--max-time 180") == 2
     assert "--passphrase-fd 0" in monthly
     assert "path: artifacts/*.tar.gz.gpg" in monthly
     assert "issues: write" not in monthly

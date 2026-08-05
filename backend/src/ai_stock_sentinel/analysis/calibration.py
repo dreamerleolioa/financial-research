@@ -33,6 +33,7 @@ from ai_stock_sentinel.analysis.confidence_scorer import (
     compute_confidence,
 )
 from ai_stock_sentinel.calibration.governance import (
+    DEFAULT_BOOTSTRAP_ITERATIONS,
     DEFAULT_MIN_REPLAY_COVERAGE,
     DEFAULT_MIN_VALIDATED_COVERAGE,
     block_bootstrap_delta,
@@ -65,7 +66,7 @@ from ai_stock_sentinel.db.models import (
 
 
 ANALYSIS_FORWARD_VALIDATION_VERSION = "general-analysis-forward-validation-v2"
-ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v6"
+ANALYSIS_CALIBRATION_REPORT_VERSION = "general-analysis-confidence-review-v7"
 GENERAL_REPLAY_INPUT_VERSION = "general-analysis-replay-input-v1"
 GENERAL_REPLAY_CACHE_KEY = "_calibration_replay_input"
 GENERAL_ANALYSIS_TYPES = ("general",)
@@ -78,6 +79,9 @@ TUNABLE_CONFIDENCE_PARAMETERS = (
 )
 HOLDOUT_HORIZON_CORRELATION_FLOOR = -0.01
 MAX_REPLAY_SENTIMENT_STRENGTH = 1.6
+GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT = len(TUNABLE_CONFIDENCE_PARAMETERS) * 2
+MAX_GENERAL_ANALYSIS_REPLAY_SCORING_CALLS = 300_000
+MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS = 40_000_000
 logger = logging.getLogger(__name__)
 
 
@@ -430,26 +434,34 @@ def build_general_analysis_monthly_report(
             ).add(sample_id)
             continue
         eligible_rows.append(optimizer_row)
-    baseline_rows = _replay_rows(eligible_rows, baseline_config)
-    mismatch_sample_ids = _baseline_replay_mismatch_sample_ids(
-        baseline_rows,
-        sample_by_id=sample_by_id,
+    replay_workload = _general_analysis_replay_workload(
+        eligible_rows,
+        cohort=cohort,
     )
-    if mismatch_sample_ids:
-        excluded_sample_ids.setdefault(
-            "baseline_replay_mismatch",
-            set(),
-        ).update(mismatch_sample_ids)
-        eligible_rows = [
-            row
-            for row in eligible_rows
-            if int(row["sample_id"]) not in mismatch_sample_ids
-        ]
-        baseline_rows = [
-            row
-            for row in baseline_rows
-            if int(row["sample_id"]) not in mismatch_sample_ids
-        ]
+    workload_within_budget = not bool(replay_workload["capacity_exceeded"])
+    baseline_rows: list[dict[str, Any]] = []
+    mismatch_sample_ids: set[int] = set()
+    if workload_within_budget:
+        baseline_rows = _replay_rows(eligible_rows, baseline_config)
+        mismatch_sample_ids = _baseline_replay_mismatch_sample_ids(
+            baseline_rows,
+            sample_by_id=sample_by_id,
+        )
+        if mismatch_sample_ids:
+            excluded_sample_ids.setdefault(
+                "baseline_replay_mismatch",
+                set(),
+            ).update(mismatch_sample_ids)
+            eligible_rows = [
+                row
+                for row in eligible_rows
+                if int(row["sample_id"]) not in mismatch_sample_ids
+            ]
+            baseline_rows = [
+                row
+                for row in baseline_rows
+                if int(row["sample_id"]) not in mismatch_sample_ids
+            ]
     exclusions.update({
         reason: len(sample_ids)
         for reason, sample_ids in excluded_sample_ids.items()
@@ -477,7 +489,10 @@ def build_general_analysis_monthly_report(
             min_sample_count=min_sample_count,
             min_validated_coverage=min_validated_coverage,
             replay_coverage_ok=bool(replay_coverage["meets_threshold"]),
-            baseline_replay_complete=not mismatch_sample_ids,
+            baseline_replay_complete=(
+                workload_within_budget and not mismatch_sample_ids
+            ),
+            replay_workload_within_budget=workload_within_budget,
         )
         for parameter in TUNABLE_CONFIDENCE_PARAMETERS
         for direction in (-1, 1)
@@ -517,9 +532,12 @@ def build_general_analysis_monthly_report(
             "all_selected_validation_rows": len(selected_rows),
             "optimizer_scope_validation_rows": len(optimizer_scope_rows),
             "optimizer_eligible_rows": len(eligible_rows),
-            "baseline_replay_complete": not mismatch_sample_ids,
+            "baseline_replay_complete": (
+                workload_within_budget and not mismatch_sample_ids
+            ),
             "replay_coverage": replay_coverage["coverage"],
             "exclusion_reasons": dict(sorted(exclusions.items())),
+            "replay_workload": replay_workload,
         },
         "auto_change_eligible": any(candidate["auto_change_eligible"] for candidate in candidates),
         "human_approval_boundary": {
@@ -546,6 +564,9 @@ def render_general_analysis_monthly_markdown(report: Mapping[str, Any]) -> str:
         f"- Holdout month: {cohort.get('holdout_month') or 'insufficient'}",
         f"- Replay coverage: {coverage.get('replay_coverage')}",
         f"- Replay coverage meets threshold: {coverage.get('meets_threshold')}",
+        f"- Estimated replay scoring calls: {_mapping(coverage.get('replay_workload')).get('estimated_scoring_calls')}",
+        f"- Estimated bootstrap row-iterations: {_mapping(coverage.get('replay_workload')).get('estimated_bootstrap_row_iterations')}",
+        f"- Replay workload within budget: {not bool(_mapping(coverage.get('replay_workload')).get('capacity_exceeded'))}",
         f"- Minimum training date blocks: {metadata.get('min_training_block_count')}",
         f"- Minimum holdout date blocks: {metadata.get('min_holdout_block_count')}",
         f"- Auto-change eligible: {report.get('auto_change_eligible')}",
@@ -590,11 +611,16 @@ def _confidence_candidate_report(
     min_validated_coverage: float,
     replay_coverage_ok: bool,
     baseline_replay_complete: bool,
+    replay_workload_within_budget: bool,
 ) -> dict[str, Any]:
     before_value = int(getattr(baseline_config, parameter))
     after_value = max(0, before_value + direction)
     candidate_config = replace(baseline_config, **{parameter: after_value})
-    candidate_rows = _replay_rows(rows, candidate_config)
+    candidate_rows = (
+        _replay_rows(rows, candidate_config)
+        if replay_workload_within_budget
+        else []
+    )
     training_months = set(str(value) for value in _as_list(cohort.get("training_months")))
     holdout_month = str(cohort.get("holdout_month") or "")
     baseline_training = [row for row in baseline_rows if row["month"] in training_months]
@@ -704,6 +730,7 @@ def _confidence_candidate_report(
         cohort.get("cohort_complete") is True
         and coverage_ok
         and replay_coverage_ok
+        and replay_workload_within_budget
         and baseline_replay_complete
         and enough_samples
         and enough_blocks
@@ -716,6 +743,8 @@ def _confidence_candidate_report(
     )
     if cohort.get("cohort_complete") is not True:
         reason = "insufficient_mature_months"
+    elif not replay_workload_within_budget:
+        reason = "replay_workload_limit_exceeded"
     elif not baseline_replay_complete:
         reason = "baseline_replay_mismatch"
     elif not coverage_ok:
@@ -765,6 +794,7 @@ def _confidence_candidate_report(
             "min_holdout_block_count": min_holdout_blocks,
             "selected_months_meet_validated_coverage": coverage_ok,
             "selected_months_meet_replay_coverage": replay_coverage_ok,
+            "replay_workload_within_budget": replay_workload_within_budget,
             "baseline_replay_complete": baseline_replay_complete,
         },
         "auto_change_eligible": eligible,
@@ -1048,6 +1078,65 @@ def _sample_snapshot(sample: AnalysisCalibrationSample) -> dict[str, Any]:
 def _sample_id_from_candidate(outcome: Mapping[str, Any]) -> int | None:
     candidate_id = outcome.get("candidate_id")
     return int(candidate_id) if candidate_id is not None else None
+
+
+def _general_analysis_replay_workload(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    cohort: Mapping[str, Any],
+) -> dict[str, Any]:
+    sample_ids = {
+        int(row["sample_id"])
+        for row in rows
+        if row.get("sample_id") is not None
+    }
+    training_months = {
+        str(value)
+        for value in _as_list(cohort.get("training_months"))
+    }
+    training_row_count = sum(
+        1
+        for row in rows
+        if str(row.get("month") or "") in training_months
+    )
+    scoring_pass_count = 1 + GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT
+    estimated_scoring_calls = len(sample_ids) * scoring_pass_count
+    # Correlation bootstrap scans both baseline and candidate rows per sample.
+    estimated_bootstrap_row_iterations = (
+        training_row_count
+        * GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT
+        * DEFAULT_BOOTSTRAP_ITERATIONS
+        * 2
+    )
+    exceeded_limits = []
+    if (
+        estimated_scoring_calls
+        > MAX_GENERAL_ANALYSIS_REPLAY_SCORING_CALLS
+    ):
+        exceeded_limits.append("replay_scoring_calls")
+    if (
+        estimated_bootstrap_row_iterations
+        > MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS
+    ):
+        exceeded_limits.append("bootstrap_row_iterations")
+    return {
+        "sample_count": len(sample_ids),
+        "candidate_window_row_count": len(rows),
+        "training_row_count": training_row_count,
+        "candidate_config_count": GENERAL_ANALYSIS_CANDIDATE_CONFIG_COUNT,
+        "scoring_pass_count": scoring_pass_count,
+        "estimated_scoring_calls": estimated_scoring_calls,
+        "maximum_scoring_calls": MAX_GENERAL_ANALYSIS_REPLAY_SCORING_CALLS,
+        "bootstrap_iterations": DEFAULT_BOOTSTRAP_ITERATIONS,
+        "estimated_bootstrap_row_iterations": (
+            estimated_bootstrap_row_iterations
+        ),
+        "maximum_bootstrap_row_iterations": (
+            MAX_GENERAL_ANALYSIS_BOOTSTRAP_ROW_ITERATIONS
+        ),
+        "capacity_exceeded": bool(exceeded_limits),
+        "exceeded_limits": exceeded_limits,
+    }
 
 
 def _is_complete_replay_input(

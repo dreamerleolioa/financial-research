@@ -757,14 +757,21 @@ def test_block_bootstrap_preserves_explicit_blocks_without_selected_rows() -> No
 
 def test_mean_bootstrap_matches_generic_bootstrap_without_row_rebuilds() -> None:
     before = [
-        {"record_date": "2026-01-05", "value": 1.0},
-        {"record_date": "2026-01-05", "value": 3.0},
-        {"record_date": "2026-01-06", "value": 2.0},
+        {"record_date": "2026-01-01", "value": 0.8214394288679769},
+        {"record_date": "2026-01-02", "value": -1.972180397600749},
+        {"record_date": "2026-01-03", "value": -0.1820005504515918},
     ]
-    after = [row | {"value": float(row["value"]) + 0.5} for row in before]
-    blocks = ["2026-01-05", "2026-01-06", "2026-01-07"]
+    after = [
+        {"record_date": "2026-01-01", "value": 0.8215793061016093},
+        {"record_date": "2026-01-02", "value": -1.972220498231419},
+        {"record_date": "2026-01-03", "value": -0.18186045374162296},
+    ]
+    blocks = ["2026-01-01", "2026-01-02", "2026-01-03"]
     metric = lambda rows: (
-        sum(float(row["value"]) for row in rows) / len(rows)
+        round(
+            sum(float(row["value"]) for row in rows) / len(rows),
+            4,
+        )
         if rows
         else None
     )
@@ -775,7 +782,7 @@ def test_mean_bootstrap_matches_generic_bootstrap_without_row_rebuilds() -> None
         metric=metric,
         block_key="record_date",
         block_values=blocks,
-        iterations=50,
+        iterations=500,
     )
     optimized = block_bootstrap_mean_delta(
         before,
@@ -783,9 +790,16 @@ def test_mean_bootstrap_matches_generic_bootstrap_without_row_rebuilds() -> None
         value=lambda row: float(row["value"]),
         block_key="record_date",
         block_values=blocks,
-        iterations=50,
+        iterations=500,
     )
 
+    assert generic == {
+        "seed": 20260724,
+        "iterations": 500,
+        "block_count": 3,
+        "delta": 0.0,
+        "ci_95": [0.0, 0.0002],
+    }
     assert optimized == generic
 
 

@@ -206,10 +206,10 @@ def block_bootstrap_mean_delta(
             )
             after_sum += block_sum
             after_count += block_count
-        if before_count and after_count:
-            deltas.append(
-                (after_sum / after_count) - (before_sum / before_count)
-            )
+        before_value = _mean_from_stats(((before_sum, before_count),))
+        after_value = _mean_from_stats(((after_sum, after_count),))
+        if before_value is not None and after_value is not None:
+            deltas.append(after_value - before_value)
     before_value = _mean_from_stats(before_by_block.values())
     after_value = _mean_from_stats(after_by_block.values())
     return {
@@ -365,7 +365,7 @@ def _mean_from_stats(
     for block_sum, block_count in values:
         total += block_sum
         count += block_count
-    return total / count if count else None
+    return round(total / count, 4) if count else None
 
 
 def _sample_ids(
