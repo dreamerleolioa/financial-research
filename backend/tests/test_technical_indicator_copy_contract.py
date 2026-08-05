@@ -117,6 +117,7 @@ def test_portfolio_technical_export_keeps_neutral_position_context() -> None:
         "持股成本",
         "進場日期",
         "持有股數",
+        'join("\\n\\n---\\n\\n")',
         "buildTechnicalIndicatorsCopyText",
     ]
     removed_wrapper_tokens = [

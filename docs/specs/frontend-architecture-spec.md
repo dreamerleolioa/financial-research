@@ -167,7 +167,7 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 
 `frontend/src/lib/technicalIndicators.ts` 的 `buildTechnicalIndicatorsCopyText()` 是 copy-to-AI 專用 raw/context formatter。它必須維持中立資料包：股票、資料狀態、價格成交量、raw 技術指標、AVWAP context 與千張大戶資料。它不得輸出 `technical_profile` 的 Primary/Risk/Secondary/Display-only 分段、bucket impact、score summary、cap 後分數或任何內部 scoring 權重；此契約由 `backend/tests/test_technical_indicator_copy_contract.py` 以 source guard 保護。
 
-Portfolio 的「整理全部技術資料」沿用 `POST /analyze` 並固定帶 `skip_ai: true`，以前端最多 3 路並行取得目前 active holdings 的 deterministic 技術快照；不得呼叫 `/analyze/position`、執行 LLM 或寫入持股分析歷史。部分標的失敗時仍可複製成功結果，失敗代碼只留在頁面狀態，不加入複製內容。批次開始與複製前都必須比對 portfolio mutation revision，持股內容已改變時需丟棄舊結果並要求重新整理。`frontend/src/features/portfolio/technicalExport.ts` 只能接受 allowlist 後的成本、進場日、股數與中立技術欄位；輸出直接串接每檔技術摘要，不加入批次標頭、序號、權重、損益率、防守參考、internal technical score、bucket、權重、分析詳情或系統交易建議。
+Portfolio 的「整理全部技術資料」沿用 `POST /analyze` 並固定帶 `skip_ai: true`，以前端最多 3 路並行取得目前 active holdings 的 deterministic 技術快照；不得呼叫 `/analyze/position`、執行 LLM 或寫入持股分析歷史。部分標的失敗時仍可複製成功結果，失敗代碼只留在頁面狀態，不加入複製內容。批次開始與複製前都必須比對 portfolio mutation revision，持股內容已改變時需丟棄舊結果並要求重新整理。`frontend/src/features/portfolio/technicalExport.ts` 只能接受 allowlist 後的成本、進場日、股數與中立技術欄位；持股事實需放在各檔「技術指標摘要」標題內，多檔摘要之間以獨立一行 `---` 分隔。輸出不得加入批次標頭、序號、權重、損益率、防守參考、internal technical score、bucket、權重、分析詳情或系統交易建議。
 
 ## Portfolio Mutations
 

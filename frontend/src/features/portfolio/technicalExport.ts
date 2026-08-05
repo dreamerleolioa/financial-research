@@ -28,10 +28,9 @@ function buildPositionContextRows({ position }: PortfolioTechnicalExportEntry): 
 
 export function buildPortfolioTechnicalCopyText({ entries }: PortfolioTechnicalExportInput): string {
   return entries
-    .map((entry) =>
-      [...buildPositionContextRows(entry), "", buildTechnicalIndicatorsCopyText(entry.technical, entry.snapshot)].join(
-        "\n",
-      ),
-    )
-    .join("\n\n");
+    .map((entry) => {
+      const [heading, ...technicalRows] = buildTechnicalIndicatorsCopyText(entry.technical, entry.snapshot).split("\n");
+      return [heading, ...buildPositionContextRows(entry), ...technicalRows].join("\n");
+    })
+    .join("\n\n---\n\n");
 }

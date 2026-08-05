@@ -232,11 +232,13 @@ test("Portfolio prepares and copies neutral technical snapshots for every holdin
   await expect(page.getByRole("button", { name: "複製全部持股技術資料" })).toContainText("已複製");
 
   const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toMatch(/^技術指標摘要\n持股成本：1020\n進場日期：2026-05-08\n持有股數：1000\n股票名稱：台積電/);
   expect(copiedText).toContain("持股成本：1020");
   expect(copiedText).toContain("進場日期：2026-05-08");
   expect(copiedText).toContain("持有股數：1000");
   expect(copiedText).toContain("股票名稱：台積電");
   expect(copiedText).toContain("股票名稱：環球晶");
+  expect(copiedText.match(/\n\n---\n\n/g)).toHaveLength(1);
   expect(copiedText).toContain("均線 MA5/20/60");
   expect(copiedText).not.toContain("全部持股技術資料");
   expect(copiedText).not.toContain("產生時間：");
@@ -306,6 +308,7 @@ test("Portfolio keeps successful technical data copyable when one holding fails"
   await page.getByRole("button", { name: "複製全部持股技術資料" }).click();
   const copiedText = await page.evaluate(() => navigator.clipboard.readText());
   expect(copiedText).toContain("股票代碼：2330.TW");
+  expect(copiedText).not.toContain("\n\n---\n\n");
   expect(copiedText).not.toContain("失敗標的：6488.TWO");
 });
 
