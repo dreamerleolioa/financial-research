@@ -118,6 +118,7 @@ def ensure_trade_review_market_data(
             coverage_end=end_date,
             holding_start=target.entry_date,
             holding_end=end_date,
+            compact=True,
         ),
     )
     if provider_snapshot is None or not fallback_snapshot.rows:
@@ -147,7 +148,11 @@ def build_trade_review_payload(
             )
             .order_by(StockRawData.record_date.asc())
         ).scalars().all()
-        snapshot_evidence = market_snapshot_payload(rows, provider="stock_raw_data_read_only")
+        snapshot_evidence = market_snapshot_payload(
+            rows,
+            provider="stock_raw_data_read_only",
+            compact=True,
+        )
     else:
         rows = market_snapshot.rows
         snapshot_evidence = market_snapshot.evidence

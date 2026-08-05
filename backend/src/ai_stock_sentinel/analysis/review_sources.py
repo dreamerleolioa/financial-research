@@ -289,7 +289,8 @@ def _compact_market_bars(
                     or not _is_usable_price(series_bar.get("close"))
                 ):
                     continue
-                dated_bars[bar_date] = _single_market_bar_payload(
+                dated_bars[bar_date] = _merged_market_bar_payload(
+                    dated_bars.get(bar_date),
                     bar_date,
                     series_bar,
                     raw_data_is_final=payload.get("raw_data_is_final"),
@@ -310,20 +311,10 @@ def _compact_market_bars(
             payload.get("record_date")
         )
         if bar_date is not None and _is_usable_price(bar.get("close")):
-            existing_payload = dated_bars.get(bar_date)
-            existing_bar = (
-                existing_payload.get("bar")
-                if isinstance(existing_payload, dict)
-                and isinstance(existing_payload.get("bar"), dict)
-                else {}
-            )
-            merged_bar = dict(existing_bar)
-            merged_bar.update(
-                {key: value for key, value in bar.items() if value is not None}
-            )
-            dated_bars[bar_date] = _single_market_bar_payload(
+            dated_bars[bar_date] = _merged_market_bar_payload(
+                dated_bars.get(bar_date),
                 bar_date,
-                merged_bar,
+                bar,
                 raw_data_is_final=payload.get("raw_data_is_final"),
             )
 
@@ -331,6 +322,40 @@ def _compact_market_bars(
     if longest_undated is not None:
         compacted.append(longest_undated)
     return compacted
+
+
+def _merged_market_bar_payload(
+    existing_payload: dict[str, Any] | None,
+    bar_date: date,
+    bar: dict[str, Any],
+    *,
+    raw_data_is_final: Any,
+) -> dict[str, Any]:
+    existing_bar = (
+        existing_payload.get("bar")
+        if isinstance(existing_payload, dict)
+        and isinstance(existing_payload.get("bar"), dict)
+        else {}
+    )
+    merged_bar = dict(existing_bar)
+    merged_bar.update(
+        {key: value for key, value in bar.items() if value is not None}
+    )
+    existing_finality = (
+        existing_payload.get("raw_data_is_final")
+        if isinstance(existing_payload, dict)
+        else None
+    )
+    merged_finality = (
+        raw_data_is_final
+        if isinstance(raw_data_is_final, bool)
+        else existing_finality
+    )
+    return _single_market_bar_payload(
+        bar_date,
+        merged_bar,
+        raw_data_is_final=merged_finality,
+    )
 
 
 def _single_market_bar_payload(

@@ -1066,27 +1066,21 @@ def test_lifecycle_evidence_compacts_overlapping_trailing_market_history() -> No
             technical={
                 "ohlcv": {"close": 104},
                 "recent_closes": [102, 103, 104],
-                "recent_highs": [103, 104, 105],
-                "recent_lows": [101, 102, 103],
-                "recent_volumes": [1100, 1200, 1300],
+                "recent_highs": [105],
+                "recent_lows": [103],
+                "recent_volumes": [1300],
                 "recent_close_dates": [
                     "2026-01-02",
                     "2026-01-03",
                     "2026-01-04",
                 ],
                 "recent_high_dates": [
-                    "2026-01-02",
-                    "2026-01-03",
                     "2026-01-04",
                 ],
                 "recent_low_dates": [
-                    "2026-01-02",
-                    "2026-01-03",
                     "2026-01-04",
                 ],
                 "recent_volume_dates": [
-                    "2026-01-02",
-                    "2026-01-03",
                     "2026-01-04",
                 ],
                 "data_dates": {"ohlcv": "2026-01-04"},

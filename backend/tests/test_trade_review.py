@@ -231,6 +231,43 @@ def test_market_snapshot_evidence_binds_independent_ohlc_values_to_dates():
     ]
 
 
+def test_compact_market_snapshot_fingerprint_keeps_complete_overlapping_fields() -> None:
+    def snapshot(high: float) -> dict:
+        return market_snapshot_payload(
+            [
+                {
+                    "record_date": "2026-01-02",
+                    "raw_data_is_final": True,
+                    "technical": {
+                        "recent_closes": [100],
+                        "recent_highs": [high],
+                        "recent_lows": [99],
+                        "recent_close_dates": ["2026-01-01"],
+                        "recent_high_dates": ["2026-01-01"],
+                        "recent_low_dates": ["2026-01-01"],
+                    },
+                },
+                {
+                    "record_date": "2026-01-04",
+                    "raw_data_is_final": True,
+                    "technical": {
+                        "recent_closes": [100],
+                        "recent_close_dates": ["2026-01-01"],
+                    },
+                },
+            ],
+            provider="stock_raw_data_read_only",
+            compact=True,
+        )
+
+    first = snapshot(101)
+    changed = snapshot(110)
+
+    assert first["bars"][0]["bar"]["high"] == 101
+    assert changed["bars"][0]["bar"]["high"] == 110
+    assert first["bars_fingerprint"] != changed["bars_fingerprint"]
+
+
 def test_source_fingerprint_ignores_fetch_time_but_changes_with_market_content():
     first = {"market_snapshot": {"fetched_at": "2026-08-04T01:00:00Z", "bars": [{"close": 100.0}]}}
     same_content = {"market_snapshot": {"fetched_at": "2026-08-04T02:00:00Z", "bars": [{"close": 100.0}]}}
@@ -583,6 +620,44 @@ def test_ensure_trade_review_market_data_prefers_rich_fallback_over_partial_prov
     assert snapshot.evidence["quality"]["missing_reason"] == "provider_coverage_below_fallback"
     assert snapshot.evidence["quality"]["row_count"] == 1
     assert snapshot.evidence["quality"]["trading_bar_count"] == 80
+
+
+def test_trade_review_fallback_compacts_overlapping_dated_history(
+    db_session: Session,
+) -> None:
+    entry_date = date(2026, 6, 1)
+    exit_date = date(2026, 6, 5)
+    portfolio = _portfolio(entry_date=entry_date, exit_date=exit_date)
+    closes = list(range(1, 81))
+    dates = [
+        (entry_date - timedelta(days=78) + timedelta(days=offset)).isoformat()
+        for offset in range(len(closes))
+    ]
+    rows = [
+        _snapshot_raw_row("2330.TW", entry_date, closes),
+        _snapshot_raw_row("2330.TW", entry_date + timedelta(days=1), closes),
+    ]
+    for row in rows:
+        row.technical = dict(row.technical) | {
+            "recent_close_dates": dates,
+            "recent_high_dates": dates,
+            "recent_low_dates": dates,
+            "recent_volume_dates": dates,
+        }
+    db_session.add_all([portfolio, *rows])
+    db_session.commit()
+
+    snapshot = ensure_trade_review_market_data(
+        db_session,
+        portfolio,
+        fetcher=lambda *_args: [],
+    )
+
+    assert snapshot.rows == rows
+    assert snapshot.evidence["quality"]["row_count"] == 2
+    assert snapshot.evidence["quality"]["persisted_bar_count"] == 80
+    assert len(snapshot.evidence["bars"]) == 80
+    assert all(not bar["trailing_series"] for bar in snapshot.evidence["bars"])
 
 
 def test_ensure_trade_review_market_data_marks_tiny_provider_response_as_partial_coverage(
