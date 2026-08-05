@@ -473,6 +473,29 @@ def test_partial_v1_replay_payload_is_not_ranking_eligible() -> None:
     assert [row["candidate_id"] for row in context.eligible_rows] == [1]
 
 
+def test_replay_input_requires_validation_signal_date_to_match_candidate_snapshot() -> None:
+    row = _governance_replay_row(1, with_replay_input=True)
+    row["signal_date"] = "2026-06-02"
+    cohort = {
+        "selected_months": ["2026-06"],
+        "training_months": [],
+        "holdout_month": "2026-06",
+        "cohort_complete": True,
+    }
+
+    context = rule_governance_module._prepare_daily_radar_replay_context(
+        [row],
+        baseline_config=ScoringConfig(),
+        cohort=cohort,
+        min_replay_coverage=0.9,
+    )
+
+    assert context.eligible_rows == []
+    assert context.baseline_rows == []
+    assert context.ranking_pool_status == "incomplete"
+    assert context.exclusion_reasons == {"replay_input_incomplete": 1}
+
+
 @pytest.mark.parametrize(
     ("field", "mismatched_value"),
     [

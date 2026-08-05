@@ -888,7 +888,7 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 
 Backfilled plan 的 `source = user_backfilled` 或 `created_after_entry = true` 必須保留到 API 與 UI。它可以提供未來檢討脈絡，例如固定停損規則、預期持有週期或加碼條件，但不應被描述為 entry-time plan，也不得用來改寫歷史決策事實。
 
-結案回顧只接受完整關閉的 lifecycle：不得存在 active portfolio row、ledger 必須包含 `full_exit`，且最終 open quantity 必須為 0。事件沒有成交時間時，所有 entry/exit indicator snapshot 僅能使用前一個 completed bar；同日 cache row 必須以 OHLCV 的實際 data date 判斷最後一筆是否屬於事件日，stale cache 不得盲目剔除最後一筆。Close、High、Low 與 Volume 由 provider 獨立去除缺值，因此 snapshot producer 必須分別保存 Close／High／Low／Volume 日期並逐序列裁切，不能用 Volume 日期代表 Close coverage，也不能用最後有效 Close 日期替其他序列證明 finality；缺少 High／Low 日期時，即使長度與 Close 相同也要保守移除無法證明的尾端值，禁止使用同日結果回頭評分盤中決策。Lifecycle 的行情 query、指標計算與 compact evidence 必須共用 `raw_data_is_final = true` 邊界。
+結案回顧只接受完整關閉的 lifecycle：不得存在 active portfolio row、ledger 必須包含 `full_exit`，且最終 open quantity 必須為 0。事件沒有成交時間時，所有 entry/exit indicator snapshot 僅能使用前一個 completed bar；同日 cache row 必須以 OHLCV 的實際 data date 判斷最後一筆是否屬於事件日，stale cache 不得盲目剔除最後一筆。Close、High、Low 與 Volume 由 provider 獨立去除缺值，因此 snapshot producer 必須分別保存 Close／High／Low／Volume 日期並逐序列裁切，不能用 Volume 日期代表 Close coverage，也不能用最後有效 Close 日期替其他序列證明 finality；完成裁切後，所有需要 OHLC 的計算與 evidence 必須再取 Close／High／Low 的共同交易日，不得依陣列索引拼接不同日期。缺少 High／Low 日期時，即使長度與 Close 相同也要保守移除無法證明的尾端值，禁止使用同日結果回頭評分盤中決策。Full-exit 只有日期而無成交時間時，結案日收盤必須排除在已持有行情路徑之外，實際出場價只取 event fact。Lifecycle 的行情 query、指標計算與 compact evidence 必須共用 `raw_data_is_final = true` 邊界。
 
 Review 行情與正式分析行情有不同寫入邊界。Single Trade Review 的 provider backfill 只能建立 request-scoped snapshot，失敗或 coverage 較差時可唯讀 fallback 到 final `StockRawData`，但不得寫回 canonical row。外部下載必須具備明確 timeout、process-wide non-blocking bulkhead、同 review key 的 process-local non-blocking single-flight、日期排序去重，以及成功／失敗分離的 refresh TTL；重複 refresh 不等待同步 worker，回 `409` 與 `Retry-After`，backend 透過 CORS 暴露該 header，first-party frontend 依 header 有界重試，容量耗盡則釋放主流程並留下 missing reason。一般 snapshot producer 同步保存最後有效 Close 與獨立 Close／High／Low／Volume 日期；legacy row 缺少日期時只保守移除各個無法證明完成的 OHLC 尾端值，不丟棄更早歷史。Provider I/O 前不得持有 DB row lock 或占用 transaction connection；snapshot 完成後才以短 row-lock transaction 重新讀取並寫入，並以品質、normalized usable trading-bar count、Close-owned 完整 covered-date set、持有期間關鍵日期集合、可證明的日期範圍與 fetched-at 共同仲裁，避免過期／非 final／空 row、週末 observation、持有區間缺口、內部日期缺口或較舊 refresh 覆寫較完整結果。正常 provider 的 90% 總 coverage 容忍不得移除既有持有期間日期；只有少於 60 根的 `market-coverage-v1` evidence，或少於 60 根且具有實際 bars、可推導 coverage 的 legacy evidence，才可進行 material fallback 自癒，只有不相容 row count 的 evidence 不得放寬；一旦符合 material recovery，無日期的 estimated fallback 可取代少量 holding dates，避免持有日期保護反向鎖死低品質 evidence。首次建立與後續 refresh 都必須比較 provider／fallback coverage；outer row count 只作 evidence，不得當成跨 provider coverage 單位。Trade v3 與 lifecycle v2 的 evidence 都保存 compact market snapshot、ruleset 與 source fingerprint；fingerprint 必須涵蓋 review-relevant portfolio/event facts、plan provenance、market snapshot 與 lifecycle shared-context replay trace，取代只比較 event/plan `updated_at` 的 freshness 判斷。成功 refresh 即使 content fingerprint 未變，也必須以較新的 `fetched_at` 推進 TTL，且不得清除既有 LLM summary。未知 lifecycle review version 維持唯讀，不由舊程式建立 v2 或覆寫。
 
@@ -898,6 +898,7 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
 
 **Deterministic lifecycle review 邊界：**
 
+- Provider 即使回傳非空資料，少於 MA60 所需的 60 根可用交易 bar 時仍須標記 `provider_coverage_insufficient` 並採 5 分鐘失敗短 TTL；只有至少 60 根的正常 snapshot 可使用 6 小時成功 TTL。
 - Lifecycle review 使用 event ledger、point-in-time indicator snapshots、fixed option plan facts 與 source refs 產生 labels、reasons、caveats、next-operation rules。
 - 已穩定的 fixed-option labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`。
 - `holding_period_needs_review` 是檢討提示，不是硬性錯誤；不得宣稱精準高低點或單一時間點是唯一正確操作。
@@ -916,7 +917,7 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
    - MVP 入口（例如輸入 2330.TW）
 
 2. **訊號強度 / 資料品質 + 快照資訊卡片**（合併為單一卡片）
-   - 左側：以「訊號一致性」與高／中／低一致性 label 呈現 rule-based 三維訊號關係；label 直接依 `confidence_score` 分級（`>= 80` 高、`60–79` 中、`< 60` 低），不得借用另受資料品質、盤中狀態與策略類型 guardrail 影響的 `action_plan.conviction_level`。若顯示 raw 0~100 值，格式為 `x / 100`，不得使用 `%` 暗示勝率或機率。`confidence_score` / `signal_confidence` 仍保留作為 API 相容、內部 guardrail、校準與 advanced trace
+   - 左側：以「綜合訊號強度」呈現 rule-based 三維訊號的有方向結果；label 直接依 `confidence_score` 分級（`>= 80` 強烈偏多、`60–79` 偏多、`41–59` 中性／混合、`21–40` 偏空、`<= 20` 強烈偏空），不得把一致偏空誤標成低一致性，也不得借用另受資料品質、盤中狀態與策略類型 guardrail 影響的 `action_plan.conviction_level`。若顯示 raw 0~100 值，格式為 `x / 100`，不得使用 `%` 暗示勝率或機率。`confidence_score` / `signal_confidence` 仍保留作為 API 相容、內部 guardrail、校準與 advanced trace
    - `cross_validation_note` 顯示於狀態下方（灰色小字）
    - 右側：快照資訊（代碼 / 現價 / 成交量 / 成交量來源），以 `<dl>` 列表呈現
    - `data_confidence < 60` 時顯示「資料不足」提示；可在 advanced trace 顯示 raw percentage，但預設文案應強調資料限制而非精確分數
@@ -1106,7 +1107,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 ### Phase 3（已完成：前端初步串接）
 
 - React 輸入框 + 分析結果頁
-- 信心指數與雜訊對比元件
+- 有方向的綜合訊號強度與雜訊對比元件
 - Agent 分析路徑可視化
 
 ### Phase 4（下一步：深度分析升級）
@@ -1146,7 +1147,7 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
   - `entry_zone`（必填，具體價格區間）
   - `stop_loss`（必填，具體停損價位，例：近20日低點 -3%）
   - `holding_period`（必填，具體時間窗）
-  - `confidence_score`：0–100，反映三維訊號一致性
+  - `confidence_score`：0–100，反映有方向的三維訊號強度；50 為中性基準，低於 50 偏空、高於 50 偏多，不代表不分方向的一致性、勝率或機率
   - `cross_validation_note`：說明三維訊號的交叉驗證結論
   - `risks`：風險提示列表
   - `data_sources`：資料來源列表

@@ -796,7 +796,12 @@ def _build_lifecycle_metrics(
     final_exit_event = next((event for event in reversed(exit_events) if _event_value(event, "event_type") == "full_exit"), None)
     final_exit_date = _event_value(final_exit_event, "event_date") if final_exit_event is not None else None
     analysis_end = final_exit_date or _analysis_end_date(events)
-    path_points = _market_points(rows, first_entry_date, analysis_end)
+    path_points = _market_points(
+        rows,
+        first_entry_date,
+        analysis_end,
+        end_inclusive=final_exit_date is None,
+    )
     weighted_entry = _number(accounting.get("weighted_average_entry_price"))
 
     max_profit_pct = None
@@ -1026,7 +1031,12 @@ def _build_event_indicator_snapshots(events: list[Any], rows: list[Any], data_qu
             "volume_ratio": _round_ratio(volume_ratio),
             "event_price_vs_ma20_pct": _distance_pct(price, ma20),
             "event_price_vs_ma60_pct": _distance_pct(price, ma60),
-            "market_regime": _classify_market_regime(closes, values["highs"], values["lows"]),
+            "market_regime": _classify_market_regime(
+                closes,
+                values.get("ohlc_closes", []),
+                values["highs"],
+                values["lows"],
+            ),
         })
     return snapshots
 
@@ -1108,7 +1118,12 @@ def _detect_market_events(events: list[Any], rows: list[Any]) -> list[dict[str, 
         return []
     start = _event_value(first_entry, "event_date")
     end = _analysis_end_date(events)
-    points = _market_points(rows, start, end)
+    points = _market_points(
+        rows,
+        start,
+        end,
+        end_inclusive=_full_exit_date(events) is None,
+    )
     detected: list[dict[str, Any]] = []
     running_high = None
     previous_close = None
@@ -1145,13 +1160,24 @@ def _append_detected(events: list[dict[str, Any]], event_date: date, event_type:
     events.append({"date": _date_to_iso(event_date), "type": event_type, "evidence": evidence})
 
 
-def _market_points(rows: list[Any], start: date | None, end: date | None) -> list[dict[str, Any]]:
+def _market_points(
+    rows: list[Any],
+    start: date | None,
+    end: date | None,
+    *,
+    end_inclusive: bool = True,
+) -> list[dict[str, Any]]:
     if start is None or end is None:
         return []
     points = []
     for row in rows:
         row_date = _event_value(row, "record_date")
-        if not isinstance(row_date, date) or row_date < start or row_date > end:
+        if (
+            not isinstance(row_date, date)
+            or row_date < start
+            or row_date > end
+            or (not end_inclusive and row_date == end)
+        ):
             continue
         close = _close(row)
         if close is None:
@@ -1168,7 +1194,7 @@ def _market_points(rows: list[Any], start: date | None, end: date | None) -> lis
 
 def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list[float]]:
     if as_of is None:
-        return {"closes": [], "highs": [], "lows": [], "volumes": []}
+        return {"closes": [], "ohlc_closes": [], "highs": [], "lows": [], "volumes": []}
     same_day_row = next(
         (row for row in reversed(rows) if _event_value(row, "record_date") == as_of),
         None,
@@ -1193,22 +1219,38 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
     if latest_row is not None:
         closes = _technical_values(latest_row, "recent_closes")
         if closes:
-            return {
-                "closes": closes,
-                "highs": _technical_values(latest_row, "recent_highs"),
-                "lows": _technical_values(latest_row, "recent_lows"),
-                "volumes": _technical_values(latest_row, "recent_volumes"),
-            }
+            completed = completed_trailing_series(
+                _event_value(latest_row, "technical"),
+                as_of,
+                closes=closes,
+                highs=_technical_values(latest_row, "recent_highs"),
+                lows=_technical_values(latest_row, "recent_lows"),
+                volumes=_technical_values(latest_row, "recent_volumes"),
+            )
+            if completed is not None:
+                return completed
     point_rows = [row for row in rows if isinstance(_event_value(row, "record_date"), date) and _event_value(row, "record_date") < as_of]
+    aligned_ohlc = [
+        (close, high, low)
+        for row in point_rows
+        for close, high, low in [(_close(row), _high(row), _low(row))]
+        if close is not None and high is not None and low is not None
+    ]
     return {
         "closes": [value for row in point_rows for value in [_close(row)] if value is not None],
-        "highs": [value for row in point_rows for value in [_high(row)] if value is not None],
-        "lows": [value for row in point_rows for value in [_low(row)] if value is not None],
+        "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
+        "highs": [high for _close_value, high, _low_value in aligned_ohlc],
+        "lows": [low for _close_value, _high_value, low in aligned_ohlc],
         "volumes": [value for row in point_rows for value in [_volume(row)] if value is not None],
     }
 
 
-def _classify_market_regime(closes: list[float], highs: list[float], lows: list[float]) -> str:
+def _classify_market_regime(
+    closes: list[float],
+    ohlc_closes: list[float],
+    highs: list[float],
+    lows: list[float],
+) -> str:
     if len(closes) < 20:
         return "insufficient_data"
     latest_close = closes[-1]
@@ -1219,8 +1261,12 @@ def _classify_market_regime(closes: list[float], highs: list[float], lows: list[
     recent_return = _distance_pct(latest_close, recent[0])
     recent_range = _distance_pct(max(recent), min(recent))
     average_range = None
-    if len(highs) >= 20 and len(lows) >= 20 and len(highs) == len(lows):
-        ranges = [(high - low) / close * 100 for high, low, close in zip(highs[-20:], lows[-20:], closes[-20:]) if close]
+    if len(ohlc_closes) >= 20 and len(highs) >= 20 and len(lows) >= 20:
+        ranges = [
+            (high - low) / close * 100
+            for high, low, close in zip(highs[-20:], lows[-20:], ohlc_closes[-20:], strict=True)
+            if close
+        ]
         average_range = sum(ranges) / len(ranges) if ranges else None
     if average_range is not None and average_range >= 6:
         return "high_volatility"
@@ -1240,7 +1286,12 @@ def _peak_market_date(events: list[Any], rows: list[Any]) -> date | None:
     first_entry = next((event for event in events if _event_value(event, "event_type") in ENTRY_TYPES), None)
     if first_entry is None:
         return None
-    points = _market_points(rows, _event_value(first_entry, "event_date"), _analysis_end_date(events))
+    points = _market_points(
+        rows,
+        _event_value(first_entry, "event_date"),
+        _analysis_end_date(events),
+        end_inclusive=_full_exit_date(events) is None,
+    )
     if not points:
         return None
     return max(points, key=lambda point: point["close"])["date"]
@@ -1432,6 +1483,15 @@ def _sort_market_rows(rows: list[Any]) -> list[Any]:
 def _analysis_end_date(events: list[Any]) -> date | None:
     event_dates = [_event_value(event, "event_date") for event in events if isinstance(_event_value(event, "event_date"), date)]
     return max(event_dates) if event_dates else None
+
+
+def _full_exit_date(events: list[Any]) -> date | None:
+    for event in reversed(events):
+        if _event_value(event, "event_type") != "full_exit":
+            continue
+        event_date = _event_value(event, "event_date")
+        return event_date if isinstance(event_date, date) else None
+    return None
 
 
 def _event_key(event: Any, index: int) -> str:

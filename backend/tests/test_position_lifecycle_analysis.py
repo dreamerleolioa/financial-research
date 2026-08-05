@@ -182,6 +182,29 @@ def test_lifecycle_metrics_weighted_cost_realized_pnl_and_fees_taxes():
     assert any("missing taxes" in note for note in result["data_quality"]["notes"])
 
 
+def test_lifecycle_metrics_exclude_full_exit_day_close_from_holding_path():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0),
+        _event(2, "full_exit", date(2026, 1, 12), 105, 10, fees=0, taxes=0),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _row(date(2026, 1, 10), 100),
+            _row(date(2026, 1, 11), 110),
+            _row(date(2026, 1, 12), 50),
+        ],
+    )
+
+    metrics = result["lifecycle_metrics"]
+    assert metrics["max_unrealized_profit_pct"] == pytest.approx(10)
+    assert metrics["max_unrealized_drawdown_pct"] == pytest.approx(0)
+    assert metrics["profit_giveback_pct"] == pytest.approx(5)
+
+
 def test_no_manual_tax_requirement_when_event_taxes_are_omitted():
     events = [
         _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=None),
@@ -734,7 +757,7 @@ def test_lifecycle_review_premature_scale_out_requires_recorded_context():
             plan_adherence="no",
             reason_code="emotional_exit",
         ),
-        _event(3, "full_exit", date(2026, 1, 12), 140, 5, fees=0, taxes=0, plan_adherence="yes"),
+        _event(3, "full_exit", date(2026, 1, 13), 140, 5, fees=0, taxes=0, plan_adherence="yes"),
     ]
 
     result, _ = build_position_lifecycle_analysis_from_rows(

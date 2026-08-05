@@ -61,19 +61,19 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await expect(openDialogButton).toBeFocused();
 });
 
-test("Analyze presents signal consistency as a score instead of a probability", async ({ page }) => {
+test("Analyze presents a bearish directional score without calling it low consistency", async ({ page }) => {
   await authenticate(page);
   await installApiMocks(page, {
     analyzeResult: {
       ...quickAnalyzeResult,
-      analysis: "多維訊號一致性測試。",
-      confidence_score: 80,
+      analysis: "多維偏空訊號測試。",
+      confidence_score: 13,
       data_confidence: 50,
       action_plan: {
         ...quickAnalyzeResult.action_plan,
         conviction_level: "low",
       },
-      cross_validation_note: "技術與籌碼方向一致。",
+      cross_validation_note: "技術、籌碼與消息皆偏空。",
     },
   });
 
@@ -81,12 +81,13 @@ test("Analyze presents signal consistency as a score instead of a probability", 
   await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
   await page.getByRole("button", { name: "完整 AI 分析" }).click();
 
-  await expect(page.getByText("訊號一致性", { exact: true })).toBeVisible();
-  await expect(page.getByText("高一致性", { exact: true })).toBeVisible();
+  await expect(page.getByText("綜合訊號強度", { exact: true })).toBeVisible();
+  await expect(page.getByText("強烈偏空", { exact: true })).toBeVisible();
+  await expect(page.getByText("低一致性", { exact: true })).toHaveCount(0);
   await expect(page.getByText("資料不足 50%", { exact: true })).toBeVisible();
-  await expect(page.getByText("一致性分數", { exact: true })).toBeVisible();
-  await expect(page.getByText("80 / 100", { exact: true })).toBeVisible();
-  await expect(page.getByText("80%", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("訊號分數", { exact: true })).toBeVisible();
+  await expect(page.getByText("13 / 100", { exact: true })).toBeVisible();
+  await expect(page.getByText("13%", { exact: true })).toHaveCount(0);
 });
 
 test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, context }) => {

@@ -35,9 +35,35 @@ def completed_trailing_series(
         data_date = as_of
     if data_date > as_of:
         return None
+    aligned_ohlc = _completed_aligned_ohlc(
+        technical,
+        as_of=as_of,
+        closes=closes,
+        highs=highs,
+        lows=lows,
+    )
+    if aligned_ohlc is not None:
+        aligned_ohlc["closes"] = _completed_independent_series(
+            closes,
+            technical.get("recent_close_dates"),
+            as_of=as_of,
+            close_count=len(closes),
+            close_includes_as_of=data_date == as_of,
+            shorter_series_is_complete=True,
+        )
+        aligned_ohlc["volumes"] = _completed_independent_series(
+            volumes,
+            technical.get("recent_volume_dates"),
+            as_of=as_of,
+            close_count=len(closes),
+            close_includes_as_of=data_date == as_of,
+            shorter_series_is_complete=True,
+        )
+        return aligned_ohlc
     if data_date < as_of:
         return {
             "closes": closes,
+            "ohlc_closes": [],
             "highs": _completed_independent_series(
                 highs,
                 technical.get("recent_high_dates"),
@@ -65,6 +91,7 @@ def completed_trailing_series(
     close_count = len(closes)
     return {
         "closes": closes[:-1],
+        "ohlc_closes": [],
         "highs": _completed_independent_series(
             highs,
             technical.get("recent_high_dates"),
@@ -88,6 +115,49 @@ def completed_trailing_series(
             shorter_series_is_complete=True,
         ),
     }
+
+
+def _completed_aligned_ohlc(
+    technical: dict[str, Any],
+    *,
+    as_of: date,
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+) -> dict[str, list[float]] | None:
+    close_series = _dated_series(closes, technical.get("recent_close_dates"))
+    high_series = _dated_series(highs, technical.get("recent_high_dates"))
+    low_series = _dated_series(lows, technical.get("recent_low_dates"))
+    if close_series is None or high_series is None or low_series is None:
+        return None
+
+    highs_by_date = dict(high_series)
+    lows_by_date = dict(low_series)
+    common_dates = [
+        value_date
+        for value_date, _value in close_series
+        if value_date < as_of
+        and value_date in highs_by_date
+        and value_date in lows_by_date
+    ]
+    closes_by_date = dict(close_series)
+    return {
+        "ohlc_closes": [closes_by_date[value_date] for value_date in common_dates],
+        "highs": [highs_by_date[value_date] for value_date in common_dates],
+        "lows": [lows_by_date[value_date] for value_date in common_dates],
+    }
+
+
+def _dated_series(values: list[Any], raw_dates: Any) -> list[tuple[date, Any]] | None:
+    if not isinstance(raw_dates, list) or len(raw_dates) != len(values):
+        return None
+    parsed_dates = [_parse_date(value) for value in raw_dates]
+    if any(value is None for value in parsed_dates):
+        return None
+    resolved_dates = [value for value in parsed_dates if value is not None]
+    if len(set(resolved_dates)) != len(resolved_dates):
+        return None
+    return list(zip(resolved_dates, values, strict=True))
 
 
 def _completed_independent_series(
@@ -197,22 +267,35 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     highs = technical.get("recent_highs") if isinstance(technical.get("recent_highs"), list) else []
     lows = technical.get("recent_lows") if isinstance(technical.get("recent_lows"), list) else []
     volumes = technical.get("recent_volumes") if isinstance(technical.get("recent_volumes"), list) else []
-    close_dates = (
-        technical.get("recent_close_dates")
-        if isinstance(technical.get("recent_close_dates"), list)
-        and len(technical.get("recent_close_dates")) == len(closes)
-        else []
-    )
+    close_series = _dated_series(closes, technical.get("recent_close_dates"))
+    high_series = _dated_series(highs, technical.get("recent_high_dates"))
+    low_series = _dated_series(lows, technical.get("recent_low_dates"))
+    volume_series = _dated_series(volumes, technical.get("recent_volume_dates"))
+    close_value_dates = [value_date for value_date, _value in close_series or []]
+    close_dates = [value_date.isoformat() for value_date in close_value_dates]
+    highs_by_date = dict(high_series) if high_series is not None else None
+    lows_by_date = dict(low_series) if low_series is not None else None
+    volumes_by_date = dict(volume_series) if volume_series is not None else None
     data_dates = technical.get("data_dates") if isinstance(technical.get("data_dates"), dict) else {}
     series = [
         {
             "close": closes[index],
-            "high": highs[index] if index < len(highs) else None,
-            "low": lows[index] if index < len(lows) else None,
-            "volume": volumes[index] if index < len(volumes) else None,
+            "high": highs_by_date.get(value_date) if highs_by_date is not None else None,
+            "low": lows_by_date.get(value_date) if lows_by_date is not None else None,
+            "volume": volumes_by_date.get(value_date) if volumes_by_date is not None else None,
         }
-        for index in range(len(closes))
+        for index, value_date in enumerate(close_value_dates)
     ]
+    if not close_dates:
+        series = [
+            {
+                "close": closes[index],
+                "high": highs[index] if index < len(highs) else None,
+                "low": lows[index] if index < len(lows) else None,
+                "volume": volumes[index] if index < len(volumes) else None,
+            }
+            for index in range(len(closes))
+        ]
     return {
         "record_date": _canonical_value(record_date),
         "data_date": _canonical_value(data_dates.get("ohlcv")),

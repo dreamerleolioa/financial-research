@@ -27,6 +27,7 @@ TRADE_REVIEW_LOOKBACK_DAYS = 120
 TRADE_REVIEW_PROVIDER_CAPACITY = 4
 TRADE_REVIEW_PROVIDER_TIMEOUT_SECONDS = 10
 TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO = 0.9
+TRADE_REVIEW_PROVIDER_MIN_TRADING_BARS = 60
 _TRADE_REVIEW_PROVIDER_SEMAPHORE = BoundedSemaphore(TRADE_REVIEW_PROVIDER_CAPACITY)
 logger = logging.getLogger(__name__)
 
@@ -69,17 +70,22 @@ def ensure_trade_review_market_data(
             )
             rows = _review_rows_from_history(target, start_date, history)
             if rows:
+                provider_evidence = market_snapshot_payload(
+                    rows,
+                    provider="yfinance",
+                    fetched_at=fetched_at,
+                    coverage_start=start_date,
+                    coverage_end=end_date,
+                    holding_start=target.entry_date,
+                    holding_end=end_date,
+                )
+                provider_quality = provider_evidence["quality"]
+                if provider_quality["trading_bar_count"] < TRADE_REVIEW_PROVIDER_MIN_TRADING_BARS:
+                    provider_quality["status"] = "insufficient"
+                    provider_quality["missing_reason"] = "provider_coverage_insufficient"
                 provider_snapshot = ReviewMarketSnapshot(
                     rows=rows,
-                    evidence=market_snapshot_payload(
-                        rows,
-                        provider="yfinance",
-                        fetched_at=fetched_at,
-                        coverage_start=start_date,
-                        coverage_end=end_date,
-                        holding_start=target.entry_date,
-                        holding_end=end_date,
-                    ),
+                    evidence=provider_evidence,
                 )
         except Exception as exc:
             # A review may still be built from already persisted canonical rows,
@@ -813,7 +819,7 @@ def _build_point_in_time_indicators(
 def _holding_rows(portfolio: UserPortfolio, rows: list[StockRawData]) -> list[StockRawData]:
     if portfolio.exit_date is None:
         return []
-    return [row for row in rows if portfolio.entry_date <= row.record_date <= portfolio.exit_date]
+    return [row for row in rows if portfolio.entry_date <= row.record_date < portfolio.exit_date]
 
 
 def _rows_up_to(rows: list[StockRawData], as_of: date | None) -> list[StockRawData]:
@@ -837,7 +843,7 @@ def _classify_market_regime(rows: list[StockRawData], as_of: date | None) -> str
     recent_return_pct = _distance_pct(latest_close, recent_closes[0])
     recent_range_pct = _distance_pct(max(recent_closes), min(recent_closes))
     avg_daily_range_pct = _average_daily_range_pct_from_values(
-        point_values["closes"],
+        point_values.get("ohlc_closes", []),
         point_values["highs"],
         point_values["lows"],
     )
@@ -1008,7 +1014,7 @@ def _detect_holding_events(portfolio: UserPortfolio, rows: list[StockRawData]) -
         volume = _volume(row)
         if close is None:
             continue
-        in_holding_window = portfolio.entry_date <= row.record_date <= portfolio.exit_date
+        in_holding_window = portfolio.entry_date <= row.record_date < portfolio.exit_date
         ma20 = ma(prior_closes + [close], 20)
         ma60 = ma(prior_closes + [close], 60)
         rsi14 = calc_rsi(prior_closes + [close], period=14)
@@ -1129,20 +1135,30 @@ def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[
     latest_row = _latest_row_at_or_before(rows, as_of)
     if latest_row is not None:
         closes = _technical_values(latest_row, "recent_closes")
-        if closes:
-            return {
-                "closes": closes,
-                "highs": _technical_values(latest_row, "recent_highs"),
-                "lows": _technical_values(latest_row, "recent_lows"),
-                "volumes": _technical_values(latest_row, "recent_volumes"),
-                "from_snapshot": True,
-            }
+        if closes and as_of is not None:
+            completed = completed_trailing_series(
+                latest_row.technical,
+                as_of,
+                closes=closes,
+                highs=_technical_values(latest_row, "recent_highs"),
+                lows=_technical_values(latest_row, "recent_lows"),
+                volumes=_technical_values(latest_row, "recent_volumes"),
+            )
+            if completed is not None:
+                return {**completed, "from_snapshot": True}
 
     point_rows = _rows_up_to(rows, as_of)
+    aligned_ohlc = [
+        (close, high, low)
+        for row in point_rows
+        for close, high, low in [(_close(row), _high(row), _low(row))]
+        if close is not None and high is not None and low is not None
+    ]
     return {
         "closes": [close for row in point_rows for close in [_close(row)] if close is not None],
-        "highs": [high for row in point_rows for high in [_high(row)] if high is not None],
-        "lows": [low for row in point_rows for low in [_low(row)] if low is not None],
+        "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
+        "highs": [high for _close_value, high, _low_value in aligned_ohlc],
+        "lows": [low for _close_value, _high_value, low in aligned_ohlc],
         "volumes": [volume for row in point_rows for volume in [_volume(row)] if volume is not None],
         "from_snapshot": False,
     }

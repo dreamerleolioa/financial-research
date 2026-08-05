@@ -1296,10 +1296,11 @@ def _is_complete_daily_radar_replay_input(
     if not symbol or symbol != str(row.get("symbol") or ""):
         return False
     record_date = str(record.get("record_date") or "")
-    expected_date = str(
-        snapshot.get("record_date") or row.get("signal_date") or ""
-    )
-    if record_date != expected_date:
+    snapshot_date = str(snapshot.get("record_date") or "")
+    validation_date = str(row.get("signal_date") or "")
+    if not snapshot_date or not validation_date:
+        return False
+    if record_date != snapshot_date or record_date != validation_date:
         return False
     try:
         date.fromisoformat(record_date)
