@@ -993,6 +993,12 @@ def test_db_builder_excludes_non_final_market_rows(db_session: Session):
         ),
         StockRawData(
             symbol="2330.TW",
+            record_date=date(2025, 1, 1),
+            technical={"ohlcv": {"close": 50}},
+            raw_data_is_final=True,
+        ),
+        StockRawData(
+            symbol="2330.TW",
             record_date=date(2026, 1, 1),
             technical={"ohlcv": {"close": 100}},
             raw_data_is_final=True,
@@ -1014,7 +1020,102 @@ def test_db_builder_excludes_non_final_market_rows(db_session: Session):
 
     assert evidence["source_data"]["market_row_count"] == 1
     assert evidence["market_snapshot"]["quality"]["trading_bar_count"] == 1
+    assert evidence["market_snapshot"]["quality"]["row_count"] == 1
     assert result["lifecycle_metrics"]["max_unrealized_profit_pct"] == pytest.approx(0)
+
+
+def test_lifecycle_evidence_compacts_overlapping_trailing_market_history() -> None:
+    rows = [
+        SimpleNamespace(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 3),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"close": 103},
+                "recent_closes": [101, 102, 103],
+                "recent_highs": [102, 103, 104],
+                "recent_lows": [100, 101, 102],
+                "recent_volumes": [1000, 1100, 1200],
+                "recent_close_dates": [
+                    "2026-01-01",
+                    "2026-01-02",
+                    "2026-01-03",
+                ],
+                "recent_high_dates": [
+                    "2026-01-01",
+                    "2026-01-02",
+                    "2026-01-03",
+                ],
+                "recent_low_dates": [
+                    "2026-01-01",
+                    "2026-01-02",
+                    "2026-01-03",
+                ],
+                "recent_volume_dates": [
+                    "2026-01-01",
+                    "2026-01-02",
+                    "2026-01-03",
+                ],
+                "data_dates": {"ohlcv": "2026-01-03"},
+            },
+        ),
+        SimpleNamespace(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 4),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"close": 104},
+                "recent_closes": [102, 103, 104],
+                "recent_highs": [103, 104, 105],
+                "recent_lows": [101, 102, 103],
+                "recent_volumes": [1100, 1200, 1300],
+                "recent_close_dates": [
+                    "2026-01-02",
+                    "2026-01-03",
+                    "2026-01-04",
+                ],
+                "recent_high_dates": [
+                    "2026-01-02",
+                    "2026-01-03",
+                    "2026-01-04",
+                ],
+                "recent_low_dates": [
+                    "2026-01-02",
+                    "2026-01-03",
+                    "2026-01-04",
+                ],
+                "recent_volume_dates": [
+                    "2026-01-02",
+                    "2026-01-03",
+                    "2026-01-04",
+                ],
+                "data_dates": {"ohlcv": "2026-01-04"},
+            },
+        ),
+    ]
+    _, evidence = build_position_lifecycle_analysis_from_rows(
+        position_group_id="compact-group",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 3), 103, 1),
+            _event(2, "full_exit", date(2026, 1, 4), 104, 1),
+        ],
+        market_rows=rows,
+        plan=_plan(),
+    )
+
+    snapshot = evidence["market_snapshot"]
+    assert snapshot["quality"]["row_count"] == 2
+    assert snapshot["quality"]["persisted_bar_count"] == 4
+    assert snapshot["quality"]["covered_dates"] == [
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-03",
+        "2026-01-04",
+    ]
+    assert len(snapshot["bars"]) == 4
+    assert all(not bar["trailing_dates"] for bar in snapshot["bars"])
+    assert all(not bar["trailing_series"] for bar in snapshot["bars"])
 
 
 def _contains_forbidden_key(value) -> bool:

@@ -605,6 +605,48 @@ def test_general_legacy_v1_result_does_not_block_current_validation_version() ->
     assert pending == {f"id:{sample.id}": [5]}
 
 
+def test_general_identity_mismatch_is_requeued_in_due_mode() -> None:
+    engine = _engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AnalysisCalibrationSample.__table__,
+            AnalysisForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        sample = capture_general_analysis_calibration_sample(
+            session,
+            symbol="2330.TW",
+            record_date=date(2026, 1, 5),
+            result=_analysis_result(),
+            is_final=True,
+        )
+        assert sample is not None
+        session.flush()
+        session.add(
+            AnalysisForwardValidationResult(
+                sample_id=sample.id,
+                window_days=5,
+                validation_version=ANALYSIS_FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=date(2026, 1, 6),
+                target_date=date(2026, 1, 12),
+                benchmark_symbol="SPY",
+                outcome={"forward_return_pct": 1.0},
+                skip_reason=None,
+            )
+        )
+        session.flush()
+
+        pending = _exclude_persisted_general_analysis_windows(
+            session,
+            {f"id:{sample.id}": [5]},
+        )
+
+    assert pending == {f"id:{sample.id}": [5]}
+
+
 def test_general_monthly_report_runs_with_insufficient_mature_samples() -> None:
     engine = _engine()
     Base.metadata.create_all(

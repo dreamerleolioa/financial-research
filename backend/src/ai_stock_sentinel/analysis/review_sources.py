@@ -229,8 +229,10 @@ def market_snapshot_payload(
     coverage_end: date | None = None,
     holding_start: date | None = None,
     holding_end: date | None = None,
+    compact: bool = False,
 ) -> dict[str, Any]:
-    bars = [_market_row_payload(row) for row in rows]
+    source_bars = [_market_row_payload(row) for row in rows]
+    bars = _compact_market_bars(source_bars) if compact else source_bars
     bars_fingerprint = hashlib.sha256(_canonical_json(bars).encode("utf-8")).hexdigest()
     coverage = _market_bar_coverage(
         bars,
@@ -245,11 +247,99 @@ def market_snapshot_payload(
         "quality": {
             "status": "available" if coverage["trading_bar_count"] > 0 else "insufficient",
             "missing_reason": missing_reason,
-            "row_count": len(bars),
+            "row_count": len(source_bars),
+            **({"persisted_bar_count": len(bars)} if compact else {}),
             **coverage,
         },
         "bars_fingerprint": bars_fingerprint,
         "bars": bars,
+    }
+
+
+def _compact_market_bars(
+    bars: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    dated_bars: dict[date, dict[str, Any]] = {}
+    longest_undated: dict[str, Any] | None = None
+    longest_undated_count = 0
+    for payload in bars:
+        if payload.get("raw_data_is_final") is False:
+            continue
+        series = (
+            payload.get("trailing_series")
+            if isinstance(payload.get("trailing_series"), list)
+            else []
+        )
+        raw_dates = payload.get("trailing_dates")
+        parsed_dates = (
+            [_parse_date(value) for value in raw_dates]
+            if isinstance(raw_dates, list)
+            else []
+        )
+        has_dated_series = len(parsed_dates) == len(series) and bool(series)
+        if has_dated_series:
+            for bar_date, series_bar in zip(
+                parsed_dates,
+                series,
+                strict=True,
+            ):
+                if (
+                    bar_date is None
+                    or not isinstance(series_bar, dict)
+                    or not _is_usable_price(series_bar.get("close"))
+                ):
+                    continue
+                dated_bars[bar_date] = _single_market_bar_payload(
+                    bar_date,
+                    series_bar,
+                    raw_data_is_final=payload.get("raw_data_is_final"),
+                )
+        elif series:
+            usable_count = sum(
+                1
+                for series_bar in series
+                if isinstance(series_bar, dict)
+                and _is_usable_price(series_bar.get("close"))
+            )
+            if usable_count > longest_undated_count:
+                longest_undated = payload
+                longest_undated_count = usable_count
+
+        bar = payload.get("bar") if isinstance(payload.get("bar"), dict) else {}
+        bar_date = _parse_date(payload.get("data_date")) or _parse_date(
+            payload.get("record_date")
+        )
+        if bar_date is not None and _is_usable_price(bar.get("close")):
+            dated_bars[bar_date] = _single_market_bar_payload(
+                bar_date,
+                bar,
+                raw_data_is_final=payload.get("raw_data_is_final"),
+            )
+
+    compacted = [dated_bars[value] for value in sorted(dated_bars)]
+    if longest_undated is not None:
+        compacted.append(longest_undated)
+    return compacted
+
+
+def _single_market_bar_payload(
+    bar_date: date,
+    bar: dict[str, Any],
+    *,
+    raw_data_is_final: Any,
+) -> dict[str, Any]:
+    date_value = bar_date.isoformat()
+    return {
+        "record_date": date_value,
+        "data_date": date_value,
+        "raw_data_is_final": (
+            raw_data_is_final
+            if isinstance(raw_data_is_final, bool)
+            else None
+        ),
+        "trailing_dates": [],
+        "bar": _canonical_value(bar),
+        "trailing_series": [],
     }
 
 

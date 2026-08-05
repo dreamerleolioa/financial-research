@@ -1127,7 +1127,7 @@ def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_s
         for statement, parameters in statements
         if statement.lstrip().upper().startswith("SELECT")
     ]
-    assert len(select_statements) == 3
+    assert len(select_statements) == 4
     assert any(
         "GROUP BY" in statement
         and "daily_radar_forward_validation_results" in statement
@@ -1141,12 +1141,93 @@ def test_daily_radar_monthly_report_aggregates_watermarks_and_bounds_detail_to_s
         statement
         for statement, _parameters in select_statements
         if "GROUP BY" not in statement
+        and "count(daily_radar_candidates.id)" not in statement.lower()
     ]
     assert detail_statements
     assert all(
         "daily_radar_runs.run_date >= ?" in statement
         for statement in detail_statements
     )
+
+
+def test_monthly_report_checks_capacity_before_loading_optimizer_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        for month in range(1, 7):
+            run_date = date(2026, month, 1)
+            run = _add_run(session)
+            run.run_date = run_date
+            run.created_at = datetime(
+                2026,
+                month,
+                1,
+                tzinfo=timezone.utc,
+            )
+            candidate = _add_candidate(session, run)
+            candidate.data_dates = {"ohlcv": run_date.isoformat()}
+            for window in (5, 10, 20):
+                session.add(
+                    DailyRadarForwardValidationResult(
+                        candidate_id=candidate.id,
+                        window_days=window,
+                        validation_version=FORWARD_VALIDATION_VERSION,
+                        status="validated",
+                        signal_date=run_date,
+                        target_date=run_date,
+                        benchmark_symbol="TAIEX",
+                        outcome={
+                            "forward_return_pct": 1.0,
+                            "excess_return_vs_benchmark_pct": 1.0,
+                            "max_adverse_excursion_pct": -1.0,
+                            "hit_above_threshold": True,
+                        },
+                        skip_reason=None,
+                    )
+                )
+        session.commit()
+
+        original_loader = rule_governance_module.validation_rows_from_results
+
+        def guarded_loader(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            if kwargs.get("selected_months") is not None:
+                raise AssertionError("optimizer JSON snapshots were loaded")
+            return original_loader(*args, **kwargs)
+
+        monkeypatch.setattr(
+            rule_governance_module,
+            "MAX_GOVERNANCE_BOOTSTRAP_ROW_ITERATIONS",
+            1,
+        )
+        monkeypatch.setattr(
+            rule_governance_module,
+            "validation_rows_from_results",
+            guarded_loader,
+        )
+
+        report = build_monthly_rule_review_report(
+            session,
+            market="TW",
+            year=2026,
+            month=6,
+            min_sample_count=1,
+        ).json_report
+
+    assert report["replay_coverage"]["ranking_pool_status"] == (
+        "capacity_exceeded"
+    )
+    assert report["replay_coverage"]["replay_workload"][
+        "capacity_exceeded"
+    ] is True
 
 
 def test_daily_radar_monthly_report_defaults_to_current_validation_version() -> None:
@@ -1193,6 +1274,66 @@ def test_daily_radar_monthly_report_defaults_to_current_validation_version() -> 
     assert report["metadata"]["validation_version"] == FORWARD_VALIDATION_VERSION
     assert report["sample_summary"]["evaluated_sample_count"] == 1
     assert report["sample_summary"]["validated_sample_count"] == 1
+
+
+def test_monthly_report_excludes_benchmark_identity_mismatch() -> None:
+    engine = _sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        candidate.input_snapshot = {
+            **candidate.input_snapshot,
+            "replay_input": {
+                "market_context": {
+                    "benchmark": {"symbol": "TAIEX"},
+                }
+            },
+        }
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=5,
+                validation_version=FORWARD_VALIDATION_VERSION,
+                status="validated",
+                signal_date=run.run_date,
+                target_date=date(2026, 6, 8),
+                benchmark_symbol="SPY",
+                outcome={
+                    "forward_return_pct": 999.0,
+                    "excess_return_vs_benchmark_pct": 999.0,
+                    "hit_above_threshold": True,
+                },
+                skip_reason=None,
+            )
+        )
+        session.commit()
+
+        report = build_monthly_rule_review_report(
+            session,
+            market="TW",
+            year=2026,
+            month=6,
+            benchmark_symbol="SPY",
+            min_sample_count=1,
+        ).json_report
+
+    assert report["sample_summary"]["validated_sample_count"] == 0
+    assert report["sample_summary"]["missing_by_window"]["5"] == 1
+    assert report["completeness_watermarks"][0][
+        "validation_identity_mismatch_samples_by_window"
+    ]["5"] == 1
+    assert all(
+        item["max_window_sample_count"] == 0
+        for item in report["rule_recommendations"]
+    )
 
 
 def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:
@@ -1301,7 +1442,11 @@ def _governance_replay_row(
         f"{candidate_id:04d}.TW",
         positive_days=max(0, 5 - candidate_id // 20),
     )
-    market_context = {"market": {}, "data_dates": {}}
+    market_context = {
+        "market": {},
+        "data_dates": {},
+        "benchmark": {"symbol": "TAIEX", "data_dates": {}},
+    }
     prefilter_result = {
         "prefilter_status": "accepted",
         "prefilter_reasons": [],
@@ -1327,6 +1472,7 @@ def _governance_replay_row(
         "symbol": f"{candidate_id:04d}.TW",
         "signal_date": "2026-06-01",
         "window_days": 5,
+        "benchmark_symbol": "TAIEX",
         "status": "validated",
         "outcome": {
             "excess_return_vs_benchmark_pct": float(candidate_id),

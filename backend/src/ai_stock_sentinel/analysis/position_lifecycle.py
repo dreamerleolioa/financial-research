@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +20,7 @@ from ai_stock_sentinel.shared_context import (
 ENTRY_TYPES = {"initial_entry", "add_entry"}
 EXIT_TYPES = {"partial_exit", "full_exit"}
 MAX_DETECTED_EVENTS = 8
+POSITION_LIFECYCLE_LOOKBACK_DAYS = 120
 
 
 def build_position_lifecycle_analysis(
@@ -45,16 +46,23 @@ def build_position_lifecycle_analysis(
         ).scalar_one_or_none()
 
         symbol = _event_value(events[0], "symbol") if events else _event_value(plan, "symbol")
+        analysis_start = _analysis_start_date(events)
         analysis_end = _analysis_end_date(events)
         market_rows: list[StockRawData] = []
         if symbol is not None and analysis_end is not None:
-            market_rows = db.execute(
-                select(StockRawData)
-                .where(
-                    StockRawData.symbol == symbol,
-                    StockRawData.record_date <= analysis_end,
-                    StockRawData.raw_data_is_final.is_(True),
+            market_query = select(StockRawData).where(
+                StockRawData.symbol == symbol,
+                StockRawData.record_date <= analysis_end,
+                StockRawData.raw_data_is_final.is_(True),
+            )
+            if analysis_start is not None:
+                market_query = market_query.where(
+                    StockRawData.record_date
+                    >= analysis_start
+                    - timedelta(days=POSITION_LIFECYCLE_LOOKBACK_DAYS)
                 )
+            market_rows = db.execute(
+                market_query
                 .order_by(StockRawData.record_date.asc())
             ).scalars().all()
         shared_context = _build_event_shared_context(
@@ -152,7 +160,17 @@ def build_position_lifecycle_analysis_from_rows(
         "shared_context": shared_context_payload,
         "decision_context": decision_context,
         "plan_snapshot": _plan_source_data(plan),
-        "market_snapshot": market_snapshot_payload(ordered_rows, provider="stock_raw_data_read_only"),
+        "market_snapshot": market_snapshot_payload(
+            ordered_rows,
+            provider="stock_raw_data_read_only",
+            holding_start=_analysis_start_date(ordered_events),
+            holding_end=(
+                _analysis_end_date(ordered_events) + timedelta(days=1)
+                if _analysis_end_date(ordered_events) is not None
+                else None
+            ),
+            compact=True,
+        ),
         "source_data": source_data,
         "data_quality": result["data_quality"],
     }
@@ -1483,6 +1501,23 @@ def _sort_market_rows(rows: list[Any]) -> list[Any]:
 def _analysis_end_date(events: list[Any]) -> date | None:
     event_dates = [_event_value(event, "event_date") for event in events if isinstance(_event_value(event, "event_date"), date)]
     return max(event_dates) if event_dates else None
+
+
+def _analysis_start_date(events: list[Any]) -> date | None:
+    entry_dates = [
+        _event_value(event, "event_date")
+        for event in events
+        if _event_value(event, "event_type") in ENTRY_TYPES
+        and isinstance(_event_value(event, "event_date"), date)
+    ]
+    if entry_dates:
+        return min(entry_dates)
+    event_dates = [
+        _event_value(event, "event_date")
+        for event in events
+        if isinstance(_event_value(event, "event_date"), date)
+    ]
+    return min(event_dates) if event_dates else None
 
 
 def _full_exit_date(events: list[Any]) -> date | None:

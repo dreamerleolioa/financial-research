@@ -27,8 +27,10 @@ from ai_stock_sentinel.calibration.governance import (
     validated_coverage,
 )
 from ai_stock_sentinel.daily_radar.forward_validation import (
+    DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
     FORWARD_VALIDATION_VERSION,
+    candidate_forward_validation_benchmark_symbol,
 )
 from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
@@ -153,6 +155,7 @@ def build_monthly_rule_review_report(
     market: str,
     year: int,
     month: int,
+    benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
     validation_version: str | None = None,
     min_sample_count: int = DEFAULT_MIN_SAMPLE_COUNT,
     min_validated_coverage: float = DEFAULT_MIN_VALIDATED_COVERAGE,
@@ -165,6 +168,7 @@ def build_monthly_rule_review_report(
         market=market,
         start_date=month_start,
         end_date=month_end,
+        benchmark_symbol=benchmark_symbol,
         validation_version=version,
     )
     ablation = build_ablation_report(
@@ -180,6 +184,7 @@ def build_monthly_rule_review_report(
         session,
         market=market,
         through_date=month_end,
+        benchmark_symbol=benchmark_symbol,
         validation_version=version,
     )
     cohort = select_training_and_holdout_months(watermarks)
@@ -188,24 +193,34 @@ def build_monthly_rule_review_report(
         for value in _as_list(cohort.get("selected_months"))
     ]
     selected_month_set = set(selected_months)
-    optimizer_detail_rows = validation_rows_from_results(
+    replay_workload = _daily_radar_replay_workload_preflight(
         session,
         market=market,
-        start_date=None,
-        end_date=None,
-        validation_version=version,
         selected_months=selected_months,
     )
-    optimizer_rows = [
-        row
-        for row in optimizer_detail_rows
-        if str(row.get("signal_date") or "")[:7] in selected_month_set
-    ]
+    if replay_workload["capacity_exceeded"]:
+        optimizer_rows: list[dict[str, Any]] = []
+    else:
+        optimizer_detail_rows = validation_rows_from_results(
+            session,
+            market=market,
+            start_date=None,
+            end_date=None,
+            benchmark_symbol=benchmark_symbol,
+            validation_version=version,
+            selected_months=selected_months,
+        )
+        optimizer_rows = [
+            row
+            for row in optimizer_detail_rows
+            if str(row.get("signal_date") or "")[:7] in selected_month_set
+        ]
     replay_context = _prepare_daily_radar_replay_context(
         optimizer_rows,
         baseline_config=ScoringConfig(),
         cohort=cohort,
         min_replay_coverage=min_replay_coverage,
+        replay_workload=replay_workload,
     )
     counterfactual_ablation = _counterfactual_ablation_report(
         replay_context,
@@ -224,6 +239,7 @@ def build_monthly_rule_review_report(
         "metadata": {
             "report_version": RULE_REVIEW_REPORT_VERSION,
             "market": market,
+            "benchmark_symbol": benchmark_symbol,
             "month": f"{year:04d}-{month:02d}",
             "sample_source": "production_db",
             "validation_version": version,
@@ -289,6 +305,7 @@ def validation_rows_from_results(
     market: str,
     start_date: date | None,
     end_date: date | None,
+    benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
     validation_version: str | None = None,
     selected_months: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -361,6 +378,7 @@ def validation_rows_from_results(
             candidate,
             run,
             window_days=int(window_days),
+            benchmark_symbol=benchmark_symbol,
             validation_version=version,
         )
         for result, candidate, run, window_days in session.execute(query).all()
@@ -759,6 +777,7 @@ def _row_from_result(
     run: DailyRadarRun,
     *,
     window_days: int,
+    benchmark_symbol: str,
     validation_version: str,
 ) -> dict[str, Any]:
     snapshot = _candidate_snapshot(candidate, run)
@@ -774,6 +793,29 @@ def _row_from_result(
             "skip_reason": "validation_result_missing",
             "outcome": {},
             "candidate_snapshot": snapshot,
+            "validation_identity_valid": None,
+        }
+    identity_valid = (
+        result.signal_date == run.run_date
+        and result.benchmark_symbol == benchmark_symbol
+        and result.benchmark_symbol
+        == candidate_forward_validation_benchmark_symbol(
+            candidate.input_snapshot
+        )
+    )
+    if not identity_valid:
+        return {
+            "candidate_id": candidate.id,
+            "symbol": candidate.symbol,
+            "signal_date": run.run_date.isoformat(),
+            "window_days": window_days,
+            "validation_version": validation_version,
+            "benchmark_symbol": result.benchmark_symbol,
+            "status": "missing",
+            "skip_reason": "validation_identity_mismatch",
+            "outcome": {},
+            "candidate_snapshot": snapshot,
+            "validation_identity_valid": False,
         }
     return {
         "candidate_id": result.candidate_id,
@@ -786,6 +828,7 @@ def _row_from_result(
         "skip_reason": result.skip_reason,
         "outcome": dict(result.outcome or {}),
         "candidate_snapshot": snapshot,
+        "validation_identity_valid": True,
     }
 
 
@@ -819,6 +862,7 @@ def _daily_radar_completeness_watermarks(
     *,
     market: str,
     through_date: date,
+    benchmark_symbol: str,
     validation_version: str,
 ) -> list[dict[str, Any]]:
     ranked_runs = (
@@ -845,12 +889,25 @@ def _daily_radar_completeness_watermarks(
     windows = _forward_windows_subquery()
     year_value = cast(extract("year", DailyRadarRun.run_date), Integer)
     month_value = cast(extract("month", DailyRadarRun.run_date), Integer)
+    candidate_benchmark_symbol = func.coalesce(
+        DailyRadarCandidate.input_snapshot["replay_input"][
+            "market_context"
+        ]["benchmark"]["symbol"].as_string(),
+        DEFAULT_BENCHMARK_SYMBOL,
+    )
     expected_count = func.count(func.distinct(DailyRadarCandidate.id))
     evaluated_count = func.count(
         func.distinct(
             case(
                 (
-                    DailyRadarForwardValidationResult.id.is_not(None),
+                    and_(
+                        DailyRadarForwardValidationResult.id.is_not(None),
+                        DailyRadarForwardValidationResult.signal_date
+                        == DailyRadarRun.run_date,
+                        DailyRadarForwardValidationResult.benchmark_symbol
+                        == benchmark_symbol,
+                        candidate_benchmark_symbol == benchmark_symbol,
+                    ),
                     DailyRadarCandidate.id,
                 )
             )
@@ -860,7 +917,38 @@ def _daily_radar_completeness_watermarks(
         func.distinct(
             case(
                 (
-                    DailyRadarForwardValidationResult.status == "validated",
+                    and_(
+                        DailyRadarForwardValidationResult.status == "validated",
+                        DailyRadarForwardValidationResult.signal_date
+                        == DailyRadarRun.run_date,
+                        DailyRadarForwardValidationResult.benchmark_symbol
+                        == benchmark_symbol,
+                        candidate_benchmark_symbol == benchmark_symbol,
+                    ),
+                    DailyRadarCandidate.id,
+                )
+            )
+        )
+    )
+    identity_mismatch_count = func.count(
+        func.distinct(
+            case(
+                (
+                    and_(
+                        DailyRadarForwardValidationResult.id.is_not(None),
+                        or_(
+                            DailyRadarForwardValidationResult.signal_date
+                            != DailyRadarRun.run_date,
+                            DailyRadarForwardValidationResult.benchmark_symbol
+                            != benchmark_symbol,
+                            candidate_benchmark_symbol != benchmark_symbol,
+                            func.coalesce(
+                                DailyRadarForwardValidationResult.benchmark_symbol,
+                                "",
+                            )
+                            != candidate_benchmark_symbol,
+                        ),
+                    ),
                     DailyRadarCandidate.id,
                 )
             )
@@ -874,6 +962,7 @@ def _daily_radar_completeness_watermarks(
             expected_count,
             evaluated_count,
             validated_count,
+            identity_mismatch_count,
         )
         .select_from(DailyRadarCandidate)
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
@@ -903,11 +992,24 @@ def _daily_radar_completeness_watermarks(
         )
     )
     by_month: dict[str, dict[int, tuple[int, int, int]]] = defaultdict(dict)
-    for year, month, window, expected, evaluated, validated in session.execute(query):
-        by_month[f"{int(year):04d}-{int(month):02d}"][int(window)] = (
+    identity_mismatches_by_month: dict[str, dict[int, int]] = defaultdict(dict)
+    for (
+        year,
+        month,
+        window,
+        expected,
+        evaluated,
+        validated,
+        identity_mismatches,
+    ) in session.execute(query):
+        month_key = f"{int(year):04d}-{int(month):02d}"
+        by_month[month_key][int(window)] = (
             int(expected or 0),
             int(evaluated or 0),
             int(validated or 0),
+        )
+        identity_mismatches_by_month[month_key][int(window)] = int(
+            identity_mismatches or 0
         )
     watermarks: list[dict[str, Any]] = []
     for month, counts_by_window in sorted(by_month.items()):
@@ -921,6 +1023,13 @@ def _daily_radar_completeness_watermarks(
         }
         validated_by_window = {
             str(window): counts_by_window.get(window, (0, 0, 0))[2]
+            for window in DEFAULT_FORWARD_WINDOWS
+        }
+        identity_mismatch_by_window = {
+            str(window): identity_mismatches_by_month.get(month, {}).get(
+                window,
+                0,
+            )
             for window in DEFAULT_FORWARD_WINDOWS
         }
         evaluated_coverage_by_window = {
@@ -953,6 +1062,9 @@ def _daily_radar_completeness_watermarks(
             "expected_samples_by_window": expected_by_window,
             "evaluated_samples_by_window": evaluated_by_window,
             "validated_samples_by_window": validated_by_window,
+            "validation_identity_mismatch_samples_by_window": (
+                identity_mismatch_by_window
+            ),
             "evaluated_coverage_by_window": evaluated_coverage_by_window,
             "validated_coverage_by_window": validated_coverage_by_window,
             "maturity_complete": (
@@ -1053,8 +1165,37 @@ def _prepare_daily_radar_replay_context(
     baseline_config: ScoringConfig,
     cohort: Mapping[str, Any],
     min_replay_coverage: float,
+    replay_workload: Mapping[str, Any] | None = None,
 ) -> _DailyRadarReplayContext:
-    replay_workload = _daily_radar_replay_workload(rows)
+    workload = dict(replay_workload or _daily_radar_replay_workload(rows))
+    if workload["capacity_exceeded"]:
+        replay_coverage = replay_coverage_summary(
+            [],
+            [],
+            sample_key="candidate_id",
+            date_key="signal_date",
+            selected_months=[
+                str(value)
+                for value in _as_list(cohort.get("selected_months"))
+            ],
+            minimum_coverage=min_replay_coverage,
+        )
+        replay_coverage.update({
+            "selected_validation_rows": workload[
+                "candidate_window_row_count"
+            ],
+            "selected_samples": workload["candidate_count"],
+        })
+        return _DailyRadarReplayContext(
+            eligible_rows=[],
+            baseline_rows=[],
+            replay_coverage=replay_coverage,
+            ranking_pool_complete=False,
+            ranking_pool_status="capacity_exceeded",
+            incomplete_ranking_groups=[],
+            exclusion_reasons={},
+            replay_workload=workload,
+        )
     eligible_rows: list[dict[str, Any]] = []
     excluded_candidate_ids: dict[str, set[int]] = {}
     for row in rows:
@@ -1072,7 +1213,7 @@ def _prepare_daily_radar_replay_context(
             rows,
             eligible_rows,
             workload_capacity_exceeded=bool(
-                replay_workload["capacity_exceeded"]
+                workload["capacity_exceeded"]
             ),
         )
     )
@@ -1124,7 +1265,7 @@ def _prepare_daily_radar_replay_context(
             reason: len(candidate_ids)
             for reason, candidate_ids in sorted(excluded_candidate_ids.items())
         },
-        replay_workload=replay_workload,
+        replay_workload=workload,
     )
 
 
@@ -1193,6 +1334,71 @@ def _daily_radar_replay_workload(
         for row in rows
         if row.get("candidate_id") is not None
     }
+    return _daily_radar_replay_workload_from_counts(
+        candidate_count=len(candidate_ids),
+        candidate_window_row_count=len(rows),
+    )
+
+
+def _daily_radar_replay_workload_preflight(
+    session: Session,
+    *,
+    market: str,
+    selected_months: Sequence[str],
+) -> dict[str, Any]:
+    if not selected_months:
+        return _daily_radar_replay_workload_from_counts(
+            candidate_count=0,
+            candidate_window_row_count=0,
+        )
+    date_predicate = _date_filter(
+        DailyRadarRun.run_date,
+        start_date=None,
+        end_date=None,
+        selected_months=selected_months,
+    )
+    ranked_runs = (
+        select(
+            DailyRadarRun.id.label("run_id"),
+            func.row_number().over(
+                partition_by=DailyRadarRun.run_date,
+                order_by=(
+                    DailyRadarRun.created_at.desc(),
+                    DailyRadarRun.id.desc(),
+                ),
+            ).label("row_number"),
+        )
+        .where(
+            DailyRadarRun.market == market,
+            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+            date_predicate,
+        )
+        .subquery()
+    )
+    latest_run_ids = select(ranked_runs.c.run_id).where(
+        ranked_runs.c.row_number == 1
+    )
+    candidate_count = int(
+        session.scalar(
+            select(func.count(DailyRadarCandidate.id)).where(
+                DailyRadarCandidate.run_id.in_(latest_run_ids)
+            )
+        )
+        or 0
+    )
+    return _daily_radar_replay_workload_from_counts(
+        candidate_count=candidate_count,
+        candidate_window_row_count=(
+            candidate_count * len(DEFAULT_FORWARD_WINDOWS)
+        ),
+    )
+
+
+def _daily_radar_replay_workload_from_counts(
+    *,
+    candidate_count: int,
+    candidate_window_row_count: int,
+) -> dict[str, Any]:
     registry = get_rule_registry()
     active_ablation_groups = {
         entry.ablation_group
@@ -1205,9 +1411,9 @@ def _daily_radar_replay_workload(
         + SCORING_CANDIDATE_CONFIG_COUNT
         + len(active_ablation_groups)
     )
-    estimated_scoring_calls = len(candidate_ids) * scoring_pass_count
+    estimated_scoring_calls = candidate_count * scoring_pass_count
     estimated_bootstrap_row_iterations = (
-        len(rows)
+        candidate_window_row_count
         * SCORING_CANDIDATE_CONFIG_COUNT
         * DEFAULT_BOOTSTRAP_ITERATIONS
     )
@@ -1220,8 +1426,8 @@ def _daily_radar_replay_workload(
     ):
         exceeded_limits.append("bootstrap_row_iterations")
     return {
-        "candidate_count": len(candidate_ids),
-        "candidate_window_row_count": len(rows),
+        "candidate_count": candidate_count,
+        "candidate_window_row_count": candidate_window_row_count,
         "candidate_config_count": SCORING_CANDIDATE_CONFIG_COUNT,
         "active_ablation_group_count": len(active_ablation_groups),
         "scoring_pass_count": scoring_pass_count,
@@ -1366,6 +1572,11 @@ def _is_complete_daily_radar_replay_input(
         return False
     market_dates = _mapping(market_context.get("data_dates"))
     benchmark = _mapping(market_context.get("benchmark"))
+    if (
+        str(benchmark.get("symbol") or "")
+        != str(row.get("benchmark_symbol") or "")
+    ):
+        return False
     benchmark_dates = _mapping(benchmark.get("data_dates"))
     for value in (*market_dates.values(), *benchmark_dates.values()):
         try:
