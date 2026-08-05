@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict
 from typing import Any
@@ -90,6 +91,24 @@ def _client_with_graph(graph) -> TestClient:
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+
+
+def test_lifespan_aborts_when_alembic_migration_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alembic import command
+
+    def fail_upgrade(*_args, **_kwargs) -> None:
+        raise RuntimeError("migration confirmation missing")
+
+    monkeypatch.setattr(command, "upgrade", fail_upgrade)
+
+    async def start_app() -> None:
+        async with api.lifespan(api.app):
+            pytest.fail("application started after migration failure")
+
+    with pytest.raises(RuntimeError, match="migration confirmation missing"):
+        asyncio.run(start_app())
 
 
 def test_health_endpoint() -> None:

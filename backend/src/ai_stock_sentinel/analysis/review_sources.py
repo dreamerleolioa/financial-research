@@ -310,9 +310,20 @@ def _compact_market_bars(
             payload.get("record_date")
         )
         if bar_date is not None and _is_usable_price(bar.get("close")):
+            existing_payload = dated_bars.get(bar_date)
+            existing_bar = (
+                existing_payload.get("bar")
+                if isinstance(existing_payload, dict)
+                and isinstance(existing_payload.get("bar"), dict)
+                else {}
+            )
+            merged_bar = dict(existing_bar)
+            merged_bar.update(
+                {key: value for key, value in bar.items() if value is not None}
+            )
             dated_bars[bar_date] = _single_market_bar_payload(
                 bar_date,
-                bar,
+                merged_bar,
                 raw_data_is_final=payload.get("raw_data_is_final"),
             )
 

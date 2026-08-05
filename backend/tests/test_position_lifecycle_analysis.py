@@ -1116,6 +1116,19 @@ def test_lifecycle_evidence_compacts_overlapping_trailing_market_history() -> No
     assert len(snapshot["bars"]) == 4
     assert all(not bar["trailing_dates"] for bar in snapshot["bars"])
     assert all(not bar["trailing_series"] for bar in snapshot["bars"])
+    bars_by_date = {bar["data_date"]: bar["bar"] for bar in snapshot["bars"]}
+    assert bars_by_date["2026-01-03"] == {
+        "close": 103,
+        "high": 104,
+        "low": 102,
+        "volume": 1200,
+    }
+    assert bars_by_date["2026-01-04"] == {
+        "close": 104,
+        "high": 105,
+        "low": 103,
+        "volume": 1300,
+    }
 
 
 def _contains_forbidden_key(value) -> bool:
