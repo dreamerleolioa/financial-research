@@ -236,23 +236,25 @@ def test_compact_market_snapshot_fingerprint_keeps_complete_overlapping_fields()
         return market_snapshot_payload(
             [
                 {
-                    "record_date": "2026-01-02",
+                    "record_date": "2026-01-01",
                     "raw_data_is_final": True,
                     "technical": {
+                        "ohlcv": {
+                            "open": 98,
+                            "high": 999,
+                            "low": 1,
+                            "close": 999,
+                            "volume": 9999,
+                        },
                         "recent_closes": [100],
                         "recent_highs": [high],
                         "recent_lows": [99],
+                        "recent_volumes": [1000],
                         "recent_close_dates": ["2026-01-01"],
                         "recent_high_dates": ["2026-01-01"],
                         "recent_low_dates": ["2026-01-01"],
-                    },
-                },
-                {
-                    "record_date": "2026-01-04",
-                    "raw_data_is_final": True,
-                    "technical": {
-                        "recent_closes": [100],
-                        "recent_close_dates": ["2026-01-01"],
+                        "recent_volume_dates": ["2026-01-01"],
+                        "data_dates": {"ohlcv": "2026-01-01"},
                     },
                 },
             ],
@@ -263,9 +265,69 @@ def test_compact_market_snapshot_fingerprint_keeps_complete_overlapping_fields()
     first = snapshot(101)
     changed = snapshot(110)
 
-    assert first["bars"][0]["bar"]["high"] == 101
+    assert first["bars"][0]["bar"] == {
+        "close": 100,
+        "high": 101,
+        "low": 99,
+        "open": 98,
+        "volume": 1000,
+    }
     assert changed["bars"][0]["bar"]["high"] == 110
     assert first["bars_fingerprint"] != changed["bars_fingerprint"]
+
+
+def test_compact_market_snapshot_prefers_later_completed_history_over_earlier_partial_outer() -> None:
+    snapshot = market_snapshot_payload(
+        [
+            {
+                "record_date": "2026-01-02",
+                "raw_data_is_final": True,
+                "technical": {
+                    "ohlcv": {
+                        "open": 998,
+                        "high": 999,
+                        "low": 1,
+                        "close": 999,
+                        "volume": 9999,
+                    },
+                    "recent_closes": [100],
+                    "recent_highs": [101],
+                    "recent_lows": [99],
+                    "recent_volumes": [1000],
+                    "recent_close_dates": ["2026-01-01"],
+                    "recent_high_dates": ["2026-01-01"],
+                    "recent_low_dates": ["2026-01-01"],
+                    "recent_volume_dates": ["2026-01-01"],
+                    "data_dates": {"ohlcv": "2026-01-02"},
+                },
+            },
+            {
+                "record_date": "2026-01-03",
+                "raw_data_is_final": True,
+                "technical": {
+                    "recent_closes": [100, 102],
+                    "recent_highs": [101, 103],
+                    "recent_lows": [99, 100],
+                    "recent_volumes": [1000, 1200],
+                    "recent_close_dates": ["2026-01-01", "2026-01-02"],
+                    "recent_high_dates": ["2026-01-01", "2026-01-02"],
+                    "recent_low_dates": ["2026-01-01", "2026-01-02"],
+                    "recent_volume_dates": ["2026-01-01", "2026-01-02"],
+                },
+            },
+        ],
+        provider="stock_raw_data_read_only",
+        compact=True,
+    )
+
+    bars_by_date = {bar["data_date"]: bar["bar"] for bar in snapshot["bars"]}
+    assert bars_by_date["2026-01-02"] == {
+        "close": 102,
+        "high": 103,
+        "low": 100,
+        "open": 998,
+        "volume": 1200,
+    }
 
 
 def test_source_fingerprint_ignores_fetch_time_but_changes_with_market_content():

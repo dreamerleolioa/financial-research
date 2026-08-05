@@ -1031,7 +1031,13 @@ def test_lifecycle_evidence_compacts_overlapping_trailing_market_history() -> No
             record_date=date(2026, 1, 3),
             raw_data_is_final=True,
             technical={
-                "ohlcv": {"close": 103},
+                "ohlcv": {
+                    "open": 102.5,
+                    "high": 999,
+                    "low": 1,
+                    "close": 999,
+                    "volume": 9999,
+                },
                 "recent_closes": [101, 102, 103],
                 "recent_highs": [102, 103, 104],
                 "recent_lows": [100, 101, 102],
@@ -1115,6 +1121,7 @@ def test_lifecycle_evidence_compacts_overlapping_trailing_market_history() -> No
         "close": 103,
         "high": 104,
         "low": 102,
+        "open": 102.5,
         "volume": 1200,
     }
     assert bars_by_date["2026-01-04"] == {

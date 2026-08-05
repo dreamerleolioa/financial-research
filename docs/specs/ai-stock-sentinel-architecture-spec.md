@@ -867,7 +867,7 @@ Entry Record Optimization Phase A-E 已將「原始進場意圖」與「事後�
 
 **資料捕捉原則：**
 
-- Trade Review 與 Lifecycle Review 保留原始 final rows 作 deterministic 計算，但持久化的 `StockRawData` evidence 必須 compact。有日期的 trailing series 攤平成單日 bars；同日重疊 series 或 outer bar 若只有 partial OHLCV，只能逐欄合併非空值，不得刪除已捕捉的完整行情欄位。無日期的重複 trailing history 只保存最長一份，避免 evidence payload 隨 outer rows 成倍膨脹，並確保 source fingerprint 可重建實際輸入。
+- Trade Review 與 Lifecycle Review 保留原始 final rows 作 deterministic 計算，但持久化的 `StockRawData` evidence 必須 compact。有日期的 trailing series 攤平成單日 bars，且所有 dated trailing series 必須先於 outer bars 合併；同日重疊時，先取得的 completed trailing bar 具有優先權，後續 series 或 outer bar 只能補既有 bar 的缺少欄位，不得用盤中／partial outer quote 覆蓋已捕捉的完整行情。無日期的重複 trailing history 只保存最長一份，避免 evidence payload 隨 outer rows 成倍膨脹，並確保 source fingerprint 可重建實際輸入。
 - 進場與加碼決策採 `fixed options first -> optional note second`。固定選項是 deterministic review 的主要資料來源；free-text note 只能補充，不可取代或覆寫固定選項。
 - 新建持股的最小 entry context 包含 `entry_reason`、`planned_holding_period`、`default_stop_rule`、`add_entry_condition`。缺漏欄位保持缺漏，不以預設 intent 補齊。
 - 加碼必須透過明確 add-entry flow 記錄 `reason_code`、`plan_adherence`、`confidence_level`；一般持股 row update 不推論為加碼決策。

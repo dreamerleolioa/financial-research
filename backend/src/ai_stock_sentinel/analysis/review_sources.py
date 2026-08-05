@@ -260,6 +260,7 @@ def _compact_market_bars(
     bars: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     dated_bars: dict[date, dict[str, Any]] = {}
+    outer_bars: list[tuple[date, dict[str, Any], Any]] = []
     longest_undated: dict[str, Any] | None = None
     longest_undated_count = 0
     for payload in bars:
@@ -311,12 +312,21 @@ def _compact_market_bars(
             payload.get("record_date")
         )
         if bar_date is not None and _is_usable_price(bar.get("close")):
-            dated_bars[bar_date] = _merged_market_bar_payload(
-                dated_bars.get(bar_date),
-                bar_date,
-                bar,
-                raw_data_is_final=payload.get("raw_data_is_final"),
+            outer_bars.append(
+                (bar_date, bar, payload.get("raw_data_is_final"))
             )
+
+    # Process every dated trailing series before outer OHLCV. A later cache row
+    # may be the first row that contains the completed bar for an earlier
+    # partial quote date, so interleaving outer bars with row history would let
+    # the partial quote claim that date before the completed series arrives.
+    for bar_date, bar, raw_data_is_final in outer_bars:
+        dated_bars[bar_date] = _merged_market_bar_payload(
+            dated_bars.get(bar_date),
+            bar_date,
+            bar,
+            raw_data_is_final=raw_data_is_final,
+        )
 
     compacted = [dated_bars[value] for value in sorted(dated_bars)]
     if longest_undated is not None:
@@ -338,9 +348,9 @@ def _merged_market_bar_payload(
         else {}
     )
     merged_bar = dict(existing_bar)
-    merged_bar.update(
-        {key: value for key, value in bar.items() if value is not None}
-    )
+    for key, value in bar.items():
+        if value is not None and merged_bar.get(key) is None:
+            merged_bar[key] = value
     existing_finality = (
         existing_payload.get("raw_data_is_final")
         if isinstance(existing_payload, dict)
