@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from threading import BoundedSemaphore, Event, Lock
+from threading import BoundedSemaphore, Event, Lock, Thread
 
 import pytest
 
@@ -371,6 +371,69 @@ def test_finmind_client_fails_fast_without_spending_budget_when_request_capacity
 
     assert quota_exc_info.value.code == "quota_exceeded"
     assert [call["data_id"] for call in calls] == ["2331"]
+
+
+def test_finmind_client_can_wait_for_capacity_within_a_bounded_deadline() -> None:
+    capacity = BoundedSemaphore(1)
+    assert capacity.acquire(blocking=False)
+    started = Event()
+    completed = Event()
+    results: list[list[dict]] = []
+    errors: list[Exception] = []
+
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        return _FakeFinMindResponse({"status": 200, "data": [{"data_id": params["data_id"]}]})
+
+    client = FinMindClient(
+        api_token="test-token",
+        request_get=fake_get,
+        request_retries=0,
+        request_capacity=capacity,
+    )
+
+    def fetch() -> None:
+        started.set()
+        try:
+            results.append(
+                client.fetch_data(
+                    dataset="TaiwanStockSecuritiesLending",
+                    data_id="2330",
+                    start_date="2026-06-01",
+                    end_date="2026-06-10",
+                    capacity_wait_seconds=0.5,
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    worker = Thread(target=fetch)
+    worker.start()
+    try:
+        assert started.wait(timeout=1)
+        assert not completed.wait(timeout=0.05)
+    finally:
+        capacity.release()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert results == [[{"data_id": "2330"}]]
+
+
+def test_default_request_capacity_reads_environment_when_first_client_is_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(finmind_client_module, "_DEFAULT_MAX_CONCURRENT_REQUESTS", None)
+    monkeypatch.setattr(finmind_client_module, "_DEFAULT_REQUEST_CAPACITY", None)
+    monkeypatch.setenv("FINMIND_MAX_CONCURRENT_REQUESTS", "2")
+
+    first_client = FinMindClient(api_token="test-token", request_get=lambda *args, **kwargs: None)
+    second_client = FinMindClient(api_token="test-token", request_get=lambda *args, **kwargs: None)
+
+    assert finmind_client_module.finmind_max_concurrent_requests() == 2
+    assert first_client._request_capacity is second_client._request_capacity
 
 
 def test_finmind_client_raises_request_error_after_retry_budget_is_exhausted(

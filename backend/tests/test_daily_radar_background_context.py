@@ -738,6 +738,35 @@ def test_finmind_background_provider_does_not_schedule_full_batch_before_ordered
     assert set(calls) == {"1802", "2330"}
 
 
+def test_finmind_background_provider_passes_bounded_capacity_wait_to_client() -> None:
+    class CapturingClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def fetch_data(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return [{"date": "2026-06-10", "stock_id": kwargs["data_id"], "volume": 100}]
+
+    client = CapturingClient()
+    provider = FinMindBackgroundChipContextProvider(
+        client=client,  # type: ignore[arg-type]
+        max_workers=1,
+        capacity_wait_seconds=0.25,
+    )
+
+    payloads = list(
+        provider.fetch(
+            symbols=["2330.TW"],
+            context_types=["lending"],
+            run_date=date(2026, 6, 11),
+            market="TW",
+        )
+    )
+
+    assert len(payloads) == 1
+    assert client.calls[0]["capacity_wait_seconds"] == 0.25
+
+
 def test_finmind_background_provider_marks_dataset_errors_as_missing() -> None:
     def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
         return _FakeFinMindResponse(

@@ -152,7 +152,10 @@ class FinMindClient:
             else _float_env("FINMIND_REQUEST_RETRY_BACKOFF_SECONDS", DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS)
         )
         self._sleep = sleep or time.sleep
-        self._request_capacity = request_capacity or _DEFAULT_REQUEST_CAPACITY
+        if request_capacity is not None:
+            self._request_capacity = request_capacity
+        else:
+            _, self._request_capacity = _ensure_default_request_capacity()
 
     @property
     def uses_static_token(self) -> bool:
@@ -166,6 +169,7 @@ class FinMindClient:
         start_date: str,
         end_date: str,
         timeout: int = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        capacity_wait_seconds: float = 0.0,
     ) -> list[dict[str, Any]]:
         try:
             token = self._token()
@@ -209,12 +213,19 @@ class FinMindClient:
         remaining = 0
         request_elapsed_seconds = 0.0
         completed_attempt = 0
+        bounded_capacity_wait_seconds = max(0.0, capacity_wait_seconds)
         for attempt in range(self._request_retries + 1):
-            if not self._request_capacity.acquire(blocking=False):
+            capacity_acquired = (
+                self._request_capacity.acquire(timeout=bounded_capacity_wait_seconds)
+                if bounded_capacity_wait_seconds > 0
+                else self._request_capacity.acquire(blocking=False)
+            )
+            if not capacity_acquired:
                 logger.warning(
-                    "[FinMindClient] request capacity exhausted dataset=%s data_id=%s",
+                    "[FinMindClient] request capacity exhausted dataset=%s data_id=%s wait_seconds=%.2f",
                     dataset,
                     data_id,
+                    bounded_capacity_wait_seconds,
                 )
                 raise FinMindClientError(
                     code="capacity_exhausted",
@@ -400,15 +411,27 @@ def _float_env(name: str, default: float) -> float:
     return value if value >= 0 else default
 
 
-_DEFAULT_MAX_CONCURRENT_REQUESTS = _int_env(
-    "FINMIND_MAX_CONCURRENT_REQUESTS",
-    DEFAULT_MAX_CONCURRENT_REQUESTS,
-)
-_DEFAULT_REQUEST_CAPACITY = BoundedSemaphore(_DEFAULT_MAX_CONCURRENT_REQUESTS)
+_DEFAULT_REQUEST_CAPACITY_LOCK = threading.Lock()
+_DEFAULT_MAX_CONCURRENT_REQUESTS: int | None = None
+_DEFAULT_REQUEST_CAPACITY: BoundedSemaphore | None = None
+
+
+def _ensure_default_request_capacity() -> tuple[int, BoundedSemaphore]:
+    global _DEFAULT_MAX_CONCURRENT_REQUESTS, _DEFAULT_REQUEST_CAPACITY
+    with _DEFAULT_REQUEST_CAPACITY_LOCK:
+        if _DEFAULT_MAX_CONCURRENT_REQUESTS is None:
+            _DEFAULT_MAX_CONCURRENT_REQUESTS = _int_env(
+                "FINMIND_MAX_CONCURRENT_REQUESTS",
+                DEFAULT_MAX_CONCURRENT_REQUESTS,
+            )
+        if _DEFAULT_REQUEST_CAPACITY is None:
+            _DEFAULT_REQUEST_CAPACITY = BoundedSemaphore(_DEFAULT_MAX_CONCURRENT_REQUESTS)
+        return _DEFAULT_MAX_CONCURRENT_REQUESTS, _DEFAULT_REQUEST_CAPACITY
 
 
 def finmind_max_concurrent_requests() -> int:
-    return _DEFAULT_MAX_CONCURRENT_REQUESTS
+    max_concurrent_requests, _ = _ensure_default_request_capacity()
+    return max_concurrent_requests
 
 
 __all__ = [

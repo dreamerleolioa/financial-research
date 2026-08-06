@@ -18,6 +18,7 @@ from ai_stock_sentinel.daily_radar.background_context import BACKGROUND_CONTEXT_
 
 FINMIND_BACKGROUND_CONTEXT_CONSUMERS = BACKGROUND_CONTEXT_ALL_CONSUMERS
 DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS = 8
+DEFAULT_FINMIND_BACKGROUND_CAPACITY_WAIT_SECONDS = 30.0
 
 _FULL_MARGIN_DATASET = "TaiwanStockMarginPurchaseShortSale"
 _LENDING_DATASET = "TaiwanStockSecuritiesLending"
@@ -54,6 +55,7 @@ class FinMindBackgroundChipContextProvider:
         lookback_trading_days: int = 10,
         stale_after_days: int = 5,
         max_workers: int | None = None,
+        capacity_wait_seconds: float = DEFAULT_FINMIND_BACKGROUND_CAPACITY_WAIT_SECONDS,
     ) -> None:
         self._static_token = api_token
         self._client = client or FinMindClient(
@@ -69,6 +71,7 @@ class FinMindBackgroundChipContextProvider:
             else max_workers
         )
         self._max_workers = max(1, configured_workers)
+        self._capacity_wait_seconds = max(0.0, capacity_wait_seconds)
 
     def fetch(
         self,
@@ -259,6 +262,7 @@ class FinMindBackgroundChipContextProvider:
                 data_id=_strip_suffix(symbol),
                 start_date=start_date.isoformat(),
                 end_date=run_date.isoformat(),
+                capacity_wait_seconds=self._capacity_wait_seconds,
             )
         except FinMindClientError as exc:
             if exc.code != "quota_or_token_error" or self._static_token:
@@ -271,6 +275,7 @@ class FinMindBackgroundChipContextProvider:
                     data_id=_strip_suffix(symbol),
                     start_date=start_date.isoformat(),
                     end_date=run_date.isoformat(),
+                    capacity_wait_seconds=self._capacity_wait_seconds,
                 )
             except FinMindClientError as retry_exc:
                 raise _dataset_error_from_client_error(retry_exc) from retry_exc
