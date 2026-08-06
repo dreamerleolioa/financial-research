@@ -14,6 +14,7 @@ from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
 )
 from ai_stock_sentinel.daily_radar.universe import (
     InstitutionalLeaderRow,
+    is_daily_radar_supported_symbol,
     select_daily_radar_universe,
     select_dual_track_universe,
 )
@@ -346,7 +347,14 @@ def test_twse_same_day_leaders_parse_comma_separated_net_values() -> None:
     assert leaders[1].score == pytest.approx(50.0)
 
 
-def test_twse_institutional_leaders_skip_warrant_like_ids_but_keep_etf_ids() -> None:
+def test_daily_radar_supported_symbol_excludes_tw_etfs() -> None:
+    assert is_daily_radar_supported_symbol("2330.TW") is True
+    assert is_daily_radar_supported_symbol("0050.TW") is False
+    assert is_daily_radar_supported_symbol("00631L.TW") is False
+    assert is_daily_radar_supported_symbol("00983A.TW") is False
+
+
+def test_twse_institutional_leaders_skip_etf_and_warrant_like_ids() -> None:
     def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
         report_id = url.rsplit("/", maxsplit=1)[-1]
         if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
@@ -355,6 +363,7 @@ def test_twse_institutional_leaders_skip_warrant_like_ids_but_keep_etf_ids() -> 
                     [
                         _twse_foreign_row(stock_id="07652U", buy="10,000", sell="0", net="10,000"),
                         _twse_foreign_row(stock_id="00983A", buy="1,000", sell="0", net="1,000"),
+                        _twse_foreign_row(stock_id="0050", buy="800", sell="0", net="800"),
                         _twse_foreign_row(stock_id="2330", buy="500", sell="0", net="500"),
                     ]
                 )
@@ -370,8 +379,18 @@ def test_twse_institutional_leaders_skip_warrant_like_ids_but_keep_etf_ids() -> 
     same_day = provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=3)
     recent = provider.recent_accumulation_leaders(run_date=date(2026, 6, 2), market="TW", limit=3)
 
-    assert [row.symbol for row in same_day] == ["00983A.TW", "2330.TW"]
-    assert [row.symbol for row in recent] == ["00983A.TW", "2330.TW"]
+    assert [row.symbol for row in same_day] == ["2330.TW"]
+    assert [row.symbol for row in recent] == ["2330.TW"]
+
+
+def test_daily_radar_universe_excludes_etf_from_technical_tracks() -> None:
+    universe = select_daily_radar_universe(
+        _provider(),
+        date(2026, 6, 2),
+        technical_records=[_technical_record("0050.TW"), _technical_record("2330.TW")],
+    )
+
+    assert [entry.symbol for entry in universe] == ["2330.TW"]
 
 
 def test_twse_same_day_leaders_support_rows_without_leading_blank_column() -> None:

@@ -27,18 +27,15 @@ TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *T
 
 def is_daily_radar_supported_symbol(symbol: str) -> bool:
     normalized = str(symbol).strip().upper()
-    if normalized.endswith(".TW"):
-        return is_daily_radar_supported_tw_stock_id(normalized.removesuffix(".TW"))
+    for suffix in (".TW", ".TWO"):
+        if normalized.endswith(suffix):
+            return is_daily_radar_supported_tw_stock_id(normalized.removesuffix(suffix))
     return True
 
 
 def is_daily_radar_supported_tw_stock_id(stock_id: str) -> bool:
     normalized = str(stock_id).strip().upper()
-    if not normalized.isalnum():
-        return False
-    if len(normalized) == 4 and normalized.isdigit():
-        return True
-    return normalized.startswith("00")
+    return len(normalized) == 4 and normalized.isdigit() and not normalized.startswith("00")
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +149,7 @@ def select_daily_radar_universe(
         _merge_technical_rows(entries, indexes_by_symbol, rows=trigger_rows)
 
     _attach_missing_technical_trace(entries, technical_metrics_by_symbol)
-    return [replace(entry, rank=index + 1) for index, entry in enumerate(entries)]
+    return _supported_ranked_entries(entries)
 
 
 def refresh_daily_radar_universe_technical_tracks(
@@ -170,7 +167,14 @@ def refresh_daily_radar_universe_technical_tracks(
         )
         _merge_technical_rows(entries, indexes_by_symbol, rows=trigger_rows)
     _attach_missing_technical_trace(entries, technical_metrics_by_symbol)
-    return [replace(entry, rank=index + 1) for index, entry in enumerate(entries)]
+    return _supported_ranked_entries(entries)
+
+
+def _supported_ranked_entries(
+    entries: Iterable[DailyRadarUniverseEntry],
+) -> list[DailyRadarUniverseEntry]:
+    supported_entries = (entry for entry in entries if is_daily_radar_supported_symbol(entry.symbol))
+    return [replace(entry, rank=index + 1) for index, entry in enumerate(supported_entries)]
 
 
 def _entry_without_technical_tracks(entry: DailyRadarUniverseEntry) -> DailyRadarUniverseEntry:
