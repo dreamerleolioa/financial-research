@@ -221,6 +221,8 @@ make install
 ANTHROPIC_API_KEY="your_api_key"
 ANTHROPIC_MODEL="claude-sonnet-4-5"
 FINMIND_API_TOKEN="your-finmind-api-token"
+FINMIND_MAX_CONCURRENT_REQUESTS="8"
+FINMIND_HOLDING_SHARES_PER_ENABLED="false"
 CORS_ORIGINS="http://localhost:5173,https://<username>.github.io"
 GOOGLE_CLIENT_ID="your_google_client_id"    # Google OAuth 登入用
 GOOGLE_CLIENT_SECRET="your_google_client_secret"
@@ -255,6 +257,8 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | `ANTHROPIC_API_KEY` | Anthropic API key                                    |
 | `ANTHROPIC_MODEL`   | `claude-sonnet-4-5`                                  |
 | `FINMIND_API_TOKEN` | FinMind 使用者頁取得的 API token                     |
+| `FINMIND_MAX_CONCURRENT_REQUESTS` | 單一 backend process 共用的 FinMind HTTP 並行上限，預設 `8` |
+| `FINMIND_HOLDING_SHARES_PER_ENABLED` | 是否啟用 sponsor 限定的持股分級資料，預設 `false` |
 | `CORS_ORIGINS`      | `http://localhost:5173,https://<username>.github.io` |
 | `GOOGLE_CLIENT_ID`  | Google OAuth client ID                               |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth code flow client secret              |

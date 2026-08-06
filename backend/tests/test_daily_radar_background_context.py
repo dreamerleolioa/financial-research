@@ -4,7 +4,7 @@ import importlib.util
 from datetime import date
 from io import StringIO
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from types import ModuleType
 
 import pytest
@@ -20,6 +20,7 @@ from ai_stock_sentinel.daily_radar.background_context import (
     build_background_context_labels,
     update_background_chip_context_cache,
 )
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
 from ai_stock_sentinel.daily_radar.finmind_background_context import (
     FINMIND_BACKGROUND_CONTEXT_CONSUMERS,
@@ -625,7 +626,9 @@ def test_finmind_background_provider_builds_full_margin_and_lending_payloads() -
     assert weekly.payload == {}
 
 
-def test_finmind_background_provider_fetches_symbols_with_bounded_concurrency() -> None:
+def test_finmind_background_provider_fetches_symbols_with_bounded_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     active_requests = 0
     max_active_requests = 0
     lock = Lock()
@@ -656,10 +659,13 @@ def test_finmind_background_provider_fetches_symbols_with_bounded_concurrency() 
             with lock:
                 active_requests -= 1
 
+    monkeypatch.setattr(
+        "ai_stock_sentinel.daily_radar.finmind_background_context.finmind_max_concurrent_requests",
+        lambda: 2,
+    )
     provider = FinMindBackgroundChipContextProvider(
         api_token="test-token",
         request_get=fake_get,
-        max_workers=2,
     )
     symbols = ["1802.TW", "2330.TW", "2454.TW", "2881.TW"]
 
@@ -674,6 +680,62 @@ def test_finmind_background_provider_fetches_symbols_with_bounded_concurrency() 
 
     assert max_active_requests == 2
     assert [payload.symbol for payload in payloads] == symbols
+
+
+def test_finmind_background_provider_does_not_schedule_full_batch_before_ordered_failure() -> None:
+    calls: list[str] = []
+    calls_lock = Lock()
+    release_first_request = Event()
+    later_request_started = Event()
+    errors: list[Exception] = []
+
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
+        data_id = str(params["data_id"])
+        with calls_lock:
+            calls.append(data_id)
+            if len(calls) >= 3:
+                later_request_started.set()
+        if data_id == "1802":
+            release_first_request.wait(timeout=1)
+            raise RuntimeError("simulated request failure")
+        return _FakeFinMindResponse(
+            {
+                "status": 200,
+                "data": [{"date": "2026-06-10", "stock_id": data_id, "volume": 100}],
+            }
+        )
+
+    client = FinMindClient(
+        api_token="test-token",
+        request_get=fake_get,
+        request_retries=0,
+    )
+    provider = FinMindBackgroundChipContextProvider(client=client, max_workers=2)
+
+    def consume_payloads() -> None:
+        try:
+            list(
+                provider.fetch(
+                    symbols=["1802.TW", "2330.TW", "2454.TW", "2881.TW"],
+                    context_types=["lending"],
+                    run_date=date(2026, 6, 11),
+                    market="TW",
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    consumer = Thread(target=consume_payloads)
+    consumer.start()
+    full_batch_advanced = later_request_started.wait(timeout=0.2)
+    release_first_request.set()
+    consumer.join(timeout=1)
+
+    assert not consumer.is_alive()
+    assert errors
+    assert not full_batch_advanced
+    assert len(calls) == 2
+    assert set(calls) == {"1802", "2330"}
 
 
 def test_finmind_background_provider_marks_dataset_errors_as_missing() -> None:

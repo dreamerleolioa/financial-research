@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
+from ai_stock_sentinel.data_sources.finmind_client import (
+    FinMindClient,
+    FinMindClientError,
+    finmind_max_concurrent_requests,
+)
 from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.daily_radar.background_context import BACKGROUND_CONTEXT_ALL_CONSUMERS, BackgroundContextPayload
 
@@ -49,7 +53,7 @@ class FinMindBackgroundChipContextProvider:
         client: FinMindClient | None = None,
         lookback_trading_days: int = 10,
         stale_after_days: int = 5,
-        max_workers: int = DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS,
+        max_workers: int | None = None,
     ) -> None:
         self._static_token = api_token
         self._client = client or FinMindClient(
@@ -59,7 +63,12 @@ class FinMindBackgroundChipContextProvider:
         )
         self._lookback_trading_days = lookback_trading_days
         self._stale_after_days = stale_after_days
-        self._max_workers = max(1, max_workers)
+        configured_workers = (
+            min(DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS, finmind_max_concurrent_requests())
+            if max_workers is None
+            else max_workers
+        )
+        self._max_workers = max(1, configured_workers)
 
     def fetch(
         self,
@@ -86,7 +95,22 @@ class FinMindBackgroundChipContextProvider:
             max_workers=min(self._max_workers, len(requests)),
             thread_name_prefix="finmind-background",
         ) as executor:
-            yield from executor.map(fetch_one, requests)
+            request_iterator = iter(requests)
+            pending: deque[Future[BackgroundContextPayload]] = deque()
+            for _ in range(min(self._max_workers, len(requests))):
+                pending.append(executor.submit(fetch_one, next(request_iterator)))
+
+            try:
+                while pending:
+                    yield pending.popleft().result()
+                    try:
+                        request = next(request_iterator)
+                    except StopIteration:
+                        continue
+                    pending.append(executor.submit(fetch_one, request))
+            finally:
+                for future in pending:
+                    future.cancel()
 
     def _payload(
         self,

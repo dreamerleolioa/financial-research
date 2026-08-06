@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from threading import BoundedSemaphore
 from typing import Any
 
 from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
@@ -22,6 +23,7 @@ DEFAULT_RESPONSE_CACHE_TTL_SECONDS = 3600
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 DEFAULT_REQUEST_RETRIES = 2
 DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS = 0.0
+DEFAULT_MAX_CONCURRENT_REQUESTS = 8
 
 
 @dataclass
@@ -124,6 +126,7 @@ class FinMindClient:
         request_retries: int | None = None,
         retry_backoff_seconds: float | None = None,
         sleep: Callable[[float], None] | None = None,
+        request_capacity: BoundedSemaphore | None = None,
     ) -> None:
         self._static_token = api_token
         self._request_get = request_get
@@ -149,6 +152,7 @@ class FinMindClient:
             else _float_env("FINMIND_REQUEST_RETRY_BACKOFF_SECONDS", DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS)
         )
         self._sleep = sleep or time.sleep
+        self._request_capacity = request_capacity or _DEFAULT_REQUEST_CAPACITY
 
     @property
     def uses_static_token(self) -> bool:
@@ -206,56 +210,74 @@ class FinMindClient:
         request_elapsed_seconds = 0.0
         completed_attempt = 0
         for attempt in range(self._request_retries + 1):
-            remaining = self._ledger.reserve(identity=identity, limit=limit)
-            if remaining < 0:
+            if not self._request_capacity.acquire(blocking=False):
+                logger.warning(
+                    "[FinMindClient] request capacity exhausted dataset=%s data_id=%s",
+                    dataset,
+                    data_id,
+                )
                 raise FinMindClientError(
-                    code="quota_exceeded",
-                    message=f"FinMind hourly request budget exhausted before dataset={dataset}",
+                    code="capacity_exhausted",
+                    message=f"FinMind request capacity exhausted before dataset={dataset}",
                     dataset=dataset,
-                    status_code=429,
+                    status_code=503,
                 )
-
-            attempt_started = time.perf_counter()
+            attempt_error: Exception | None = None
             try:
-                response = request_get(
-                    FINMIND_DATA_API,
-                    params=params,
-                    headers=headers,
-                    timeout=timeout,
-                )
+                remaining = self._ledger.reserve(identity=identity, limit=limit)
+                if remaining < 0:
+                    raise FinMindClientError(
+                        code="quota_exceeded",
+                        message=f"FinMind hourly request budget exhausted before dataset={dataset}",
+                        dataset=dataset,
+                        status_code=429,
+                    )
+
+                attempt_started = time.perf_counter()
+                try:
+                    response = request_get(
+                        FINMIND_DATA_API,
+                        params=params,
+                        headers=headers,
+                        timeout=timeout,
+                    )
+                except Exception as exc:
+                    attempt_error = exc
                 request_elapsed_seconds = time.perf_counter() - attempt_started
+            finally:
+                self._request_capacity.release()
+
+            if attempt_error is None:
                 completed_attempt = attempt + 1
                 break
-            except Exception as exc:
-                request_elapsed_seconds = time.perf_counter() - attempt_started
-                if attempt >= self._request_retries:
-                    logger.warning(
-                        "[FinMindClient] request failed dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error_type=%s",
-                        dataset,
-                        data_id,
-                        attempt + 1,
-                        self._request_retries + 1,
-                        request_elapsed_seconds,
-                        timeout,
-                        exc.__class__.__name__,
-                    )
-                    raise FinMindClientError(
-                        code="request_error",
-                        message=f"FinMind request failed for dataset={dataset}",
-                        dataset=dataset,
-                    ) from None
+            if attempt >= self._request_retries:
                 logger.warning(
-                    "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error_type=%s",
+                    "[FinMindClient] request failed dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error_type=%s",
                     dataset,
                     data_id,
                     attempt + 1,
                     self._request_retries + 1,
                     request_elapsed_seconds,
                     timeout,
-                    exc.__class__.__name__,
+                    attempt_error.__class__.__name__,
                 )
-                if self._retry_backoff_seconds > 0:
-                    self._sleep(self._retry_backoff_seconds * (attempt + 1))
+                raise FinMindClientError(
+                    code="request_error",
+                    message=f"FinMind request failed for dataset={dataset}",
+                    dataset=dataset,
+                ) from None
+            logger.warning(
+                "[FinMindClient] request retry dataset=%s data_id=%s attempt=%s/%s elapsed=%.2fs timeout=%s error_type=%s",
+                dataset,
+                data_id,
+                attempt + 1,
+                self._request_retries + 1,
+                request_elapsed_seconds,
+                timeout,
+                attempt_error.__class__.__name__,
+            )
+            if self._retry_backoff_seconds > 0:
+                self._sleep(self._retry_backoff_seconds * (attempt + 1))
 
         if response is None:
             raise FinMindClientError(
@@ -378,8 +400,20 @@ def _float_env(name: str, default: float) -> float:
     return value if value >= 0 else default
 
 
+_DEFAULT_MAX_CONCURRENT_REQUESTS = _int_env(
+    "FINMIND_MAX_CONCURRENT_REQUESTS",
+    DEFAULT_MAX_CONCURRENT_REQUESTS,
+)
+_DEFAULT_REQUEST_CAPACITY = BoundedSemaphore(_DEFAULT_MAX_CONCURRENT_REQUESTS)
+
+
+def finmind_max_concurrent_requests() -> int:
+    return _DEFAULT_MAX_CONCURRENT_REQUESTS
+
+
 __all__ = [
     "DEFAULT_ANONYMOUS_REQUESTS_PER_HOUR",
+    "DEFAULT_MAX_CONCURRENT_REQUESTS",
     "DEFAULT_REQUEST_RETRIES",
     "DEFAULT_REQUEST_RETRY_BACKOFF_SECONDS",
     "DEFAULT_REQUEST_TIMEOUT_SECONDS",
@@ -390,5 +424,6 @@ __all__ = [
     "FinMindClientError",
     "FinMindHourlyRequestLedger",
     "FinMindResponseCache",
+    "finmind_max_concurrent_requests",
     "reset_default_finmind_client_state",
 ]
