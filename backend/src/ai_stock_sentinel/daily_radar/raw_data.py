@@ -147,7 +147,11 @@ def _apply_margin_contexts(
     symbols: Sequence[str],
     margin_contexts_by_symbol: Mapping[str, Mapping[str, Any]],
 ) -> None:
-    context_symbols = [symbol for symbol in symbols if symbol in margin_contexts_by_symbol]
+    context_symbols = [
+        symbol
+        for symbol in symbols
+        if _is_fresh_full_margin_context(margin_contexts_by_symbol.get(symbol))
+    ]
     if not context_symbols:
         return
 
@@ -169,6 +173,11 @@ def _apply_margin_contexts(
             data_dates["margin"] = str(as_of_date)
         fundamental["data_dates"] = data_dates
         row.fundamental = fundamental
+
+
+def _is_fresh_full_margin_context(value: Any) -> bool:
+    context = _mapping(value)
+    return context.get("context_type") == "full_margin" and context.get("freshness") == "fresh"
 
 
 def _project_margin_context(

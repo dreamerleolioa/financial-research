@@ -50,6 +50,12 @@ _TRACK_REQUIRED_INSTITUTIONAL_FIELDS: dict[str, tuple[str, ...]] = {
     "same_day_institutional": ("same_day_actor", "same_day_net_buy"),
     "recent_accumulation": ("three_party_net_shares", "consecutive_positive_days"),
 }
+_TEXT_REQUIRED_SCORING_FIELDS = frozenset(
+    {
+        ("institutional_flow", "flow_state"),
+        ("institutional_flow", "same_day_actor"),
+    }
+)
 _KNOWN_UNIVERSE_TRACKS = frozenset(TRACK_PRIORITY)
 _REQUIRED_TECHNICAL_DATA_DATES = ("ohlcv", "technical_indicators", "technical_profile")
 
@@ -71,13 +77,15 @@ def missing_scoring_fields(
         f"{section}.{field}"
         for section, required_fields in REQUIRED_SCORING_FIELDS.items()
         for field in required_fields
-        if field not in sections[section] or sections[section].get(field) is None
+        if field not in sections[section]
+        or _missing_required_scoring_value(section, field, sections[section].get(field))
     ]
     required_institutional_fields = _required_institutional_fields(institutional_flow)
     missing_fields.extend(
         f"institutional_flow.{field}"
         for field in required_institutional_fields
-        if field not in institutional_flow or institutional_flow.get(field) is None
+        if field not in institutional_flow
+        or _missing_required_scoring_value("institutional_flow", field, institutional_flow.get(field))
     )
     if _unknown_institutional_tracks(institutional_flow):
         missing_fields.append("institutional_flow.universe_track")
@@ -93,7 +101,7 @@ def missing_technical_scoring_fields(technical: Mapping[str, Any]) -> list[str]:
         f"{section}.{field}"
         for section in ("ohlcv", "indicators")
         for field in REQUIRED_SCORING_FIELDS[section]
-        if field not in sections[section] or sections[section].get(field) is None
+        if field not in sections[section] or not _is_finite_number(sections[section].get(field))
     ]
 
 
@@ -180,6 +188,12 @@ def _is_finite_number(value: Any) -> bool:
         return math.isfinite(float(value))
     except (TypeError, ValueError):
         return False
+
+
+def _missing_required_scoring_value(section: str, field: str, value: Any) -> bool:
+    if (section, field) in _TEXT_REQUIRED_SCORING_FIELDS:
+        return not isinstance(value, str) or not value.strip()
+    return not _is_finite_number(value)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

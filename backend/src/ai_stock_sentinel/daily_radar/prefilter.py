@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -325,13 +326,15 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 def _float(value: Any) -> float:
     if isinstance(value, bool) or value is None:
         return 0.0
-    return float(value)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def _int(value: Any) -> int:
-    if isinstance(value, bool) or value is None:
-        return 0
-    return int(value)
+    return int(_float(value))
 
 
 def _parse_date(value: str | None) -> date | None:

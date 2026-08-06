@@ -261,6 +261,42 @@ def test_ensure_daily_radar_raw_rows_refetches_final_row_without_replay_evidence
     assert rows[0].technical["price_history"] == [{"date": run_date.isoformat(), "close": 106.0}]
 
 
+@pytest.mark.parametrize(
+    ("section", "field", "invalid_value"),
+    [
+        ("ohlcv", "close", "bad"),
+        ("indicators", "ma5", "NaN"),
+    ],
+)
+def test_ensure_daily_radar_raw_rows_refetches_non_finite_required_technical_values(
+    db_session: Session,
+    section: str,
+    field: str,
+    invalid_value: str,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical[section][field] = invalid_value
+    _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert rows[0].technical[section][field] != invalid_value
+
+
 def test_ensure_daily_radar_raw_rows_preserves_margin_when_repairing_existing_row(
     db_session: Session,
 ) -> None:
@@ -404,7 +440,7 @@ def test_ensure_daily_radar_raw_rows_projects_fresh_full_margin_context_for_pref
     assert fetcher.calls == []
 
 
-def test_ensure_daily_radar_raw_rows_does_not_project_stale_full_margin_context(
+def test_ensure_daily_radar_raw_rows_preserves_margin_for_stale_full_margin_context(
     db_session: Session,
 ) -> None:
     run_date = date(2026, 6, 2)
@@ -433,13 +469,8 @@ def test_ensure_daily_radar_raw_rows_does_not_project_stale_full_margin_context(
     )
 
     loaded = load_daily_radar_cache_records(rows)[0]
-    assert loaded["margin"] == {}
+    assert loaded["margin"] == {"margin_delta_pct": 1.0, "margin_to_volume": 0.2}
     assert loaded["data_dates"]["margin"] == "2026-05-20"
-    missing_fields = prefilter_record(loaded)["prefilter_reasons"][0]["details"]["missing_fields"]
-    assert [field for field in missing_fields if field.startswith("margin.")] == [
-        "margin.margin_delta_pct",
-        "margin.margin_to_volume",
-    ]
 
 
 def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker_calls(

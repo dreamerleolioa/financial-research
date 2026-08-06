@@ -218,6 +218,21 @@ def test_prefilter_rejects_unknown_universe_track() -> None:
     )
 
 
+@pytest.mark.parametrize("invalid_value", ["bad", "NaN"])
+def test_prefilter_rejects_malformed_required_margin_values(invalid_value: str) -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["margin"]["margin_delta_pct"] = invalid_value
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "rejected"
+    assert "margin.margin_delta_pct" in next(
+        reason["details"]["missing_fields"]
+        for reason in result["prefilter_reasons"]
+        if reason["code"] == "data_gap" and "missing_fields" in reason["details"]
+    )
+
+
 @pytest.mark.parametrize("symbol, expected", EDGE_CASES.items())
 def test_prefilter_rejects_fixture_edge_cases_with_stable_chinese_reasons(
     symbol: str,

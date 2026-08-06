@@ -587,15 +587,11 @@ def run_daily_radar_endpoint(
                     list(chip_context_result["context_types"]),
                     chip_context_result["errors"],
                 )
-            margin_contexts_by_symbol = {
-                symbol: context
-                for symbol, context in _full_margin_contexts_by_symbol(
-                    db,
-                    symbols=selected_symbols,
-                    run_date=run_date,
-                ).items()
-                if context.get("context_type") == "full_margin" and context.get("freshness") == "fresh"
-            }
+            margin_contexts_by_symbol = _full_margin_contexts_by_symbol(
+                db,
+                symbols=selected_symbols,
+                run_date=run_date,
+            )
         background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
             db,
             symbols=selected_symbols,
@@ -1090,9 +1086,18 @@ def _require_complete_daily_radar_raw_rows(
     selected_symbols: Iterable[str],
     run_date: date,
 ) -> list[Any]:
+    selected_symbol_list = list(selected_symbols)
+    if not selected_symbol_list:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "daily_radar_selected_universe_empty",
+                "run_date": run_date.isoformat(),
+            },
+        )
     reusable_rows = reusable_daily_radar_raw_rows(rows)
     reusable_symbols = {row.symbol for row in reusable_rows}
-    missing_symbols = [symbol for symbol in selected_symbols if symbol not in reusable_symbols]
+    missing_symbols = [symbol for symbol in selected_symbol_list if symbol not in reusable_symbols]
     if missing_symbols:
         raise HTTPException(
             status_code=409,
