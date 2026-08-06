@@ -10,6 +10,7 @@ from ai_stock_sentinel.data_sources.institutional_flow.interface import (
     InstitutionalFlowError,
 )
 from ai_stock_sentinel.data_sources.institutional_flow.finmind_provider import (
+    FinMindProvider,
     _determine_flow_label,
     _determine_flow_strength,
     _summarize_institutional_rows,
@@ -294,6 +295,55 @@ def test_finmind_institutional_summary_detects_streak_and_dominant_actor():
     assert summary["consecutive_sell_days"] == 0
     assert summary["dominant_buyer"] == "foreign"
     assert summary["foreign_net_cumulative"] > 0
+
+
+def test_finmind_provider_skips_premium_holder_dataset_by_default():
+    client = MagicMock()
+    client.uses_static_token = True
+    client.fetch_data.side_effect = _institutional_dataset_rows
+    provider = FinMindProvider(client=client)
+
+    result = provider.fetch_daily_flow("2330.TW", days=5)
+
+    requested_datasets = [call.kwargs["dataset"] for call in client.fetch_data.call_args_list]
+    assert "TaiwanStockHoldingSharesPer" not in requested_datasets
+    assert result.major_holder_ratio is None
+    assert result.major_holder_ratio_delta_pct is None
+    assert result.retail_holder_ratio_delta_pct is None
+
+
+def test_finmind_provider_fetches_premium_holder_dataset_when_enabled():
+    client = MagicMock()
+    client.uses_static_token = True
+    client.fetch_data.side_effect = _institutional_dataset_rows
+    provider = FinMindProvider(client=client, holding_shares_per_enabled=True)
+
+    provider.fetch_daily_flow("2330.TW", days=5)
+
+    requested_datasets = [call.kwargs["dataset"] for call in client.fetch_data.call_args_list]
+    assert "TaiwanStockHoldingSharesPer" in requested_datasets
+
+
+def _institutional_dataset_rows(*, dataset: str, **kwargs):
+    if dataset == "TaiwanStockInstitutionalInvestorsBuySell":
+        return [
+            {"date": "2026-06-10", "name": "Foreign_Investor", "buy": 2_000_000, "sell": 1_000_000},
+            {"date": "2026-06-10", "name": "Investment_Trust", "buy": 500_000, "sell": 300_000},
+            {"date": "2026-06-10", "name": "Dealer", "buy": 200_000, "sell": 100_000},
+        ]
+    if dataset == "TaiwanStockMarginPurchaseShortSale":
+        return [
+            {
+                "date": "2026-06-10",
+                "MarginPurchaseToday": 1100,
+                "MarginPurchaseYesterday": 1000,
+                "ShortSaleToday": 120,
+                "ShortSaleYesterday": 100,
+            }
+        ]
+    if dataset == "TaiwanStockHoldingSharesPer":
+        return [{"date": "2026-06-10", "HoldingSharesLevel": "1000以上", "percent": 60.0}]
+    return []
 
 
 def test_finmind_margin_summary_and_flow_rules_cover_short_pressure():

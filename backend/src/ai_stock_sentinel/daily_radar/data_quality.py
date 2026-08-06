@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
+from datetime import date
 from typing import Any
+
+from ai_stock_sentinel.daily_radar.universe import TRACK_PRIORITY
 
 
 REQUIRED_SCORING_FIELDS: dict[str, tuple[str, ...]] = {
@@ -28,16 +32,32 @@ REQUIRED_SCORING_FIELDS: dict[str, tuple[str, ...]] = {
         "missing_trading_days_60",
     ),
     "institutional_flow": (
-        "three_party_net_shares",
-        "consecutive_positive_days",
         "flow_state",
-        "net_flow_to_avg_volume",
     ),
     "margin": (
         "margin_delta_pct",
         "margin_to_volume",
     ),
 }
+
+_LEGACY_INSTITUTIONAL_REQUIRED_FIELDS = (
+    "three_party_net_shares",
+    "consecutive_positive_days",
+    "flow_state",
+    "net_flow_to_avg_volume",
+)
+_TRACK_REQUIRED_INSTITUTIONAL_FIELDS: dict[str, tuple[str, ...]] = {
+    "same_day_institutional": ("same_day_actor", "same_day_net_buy"),
+    "recent_accumulation": ("three_party_net_shares", "consecutive_positive_days"),
+}
+_TEXT_REQUIRED_SCORING_FIELDS = frozenset(
+    {
+        ("institutional_flow", "flow_state"),
+        ("institutional_flow", "same_day_actor"),
+    }
+)
+_KNOWN_UNIVERSE_TRACKS = frozenset(TRACK_PRIORITY)
+_REQUIRED_TECHNICAL_DATA_DATES = ("ohlcv", "technical_indicators", "technical_profile")
 
 
 def missing_scoring_fields(
@@ -53,12 +73,137 @@ def missing_scoring_fields(
         "institutional_flow": institutional_flow,
         "margin": margin,
     }
-    return [
+    missing_fields = [
         f"{section}.{field}"
         for section, required_fields in REQUIRED_SCORING_FIELDS.items()
         for field in required_fields
-        if field not in sections[section] or sections[section].get(field) is None
+        if field not in sections[section]
+        or _missing_required_scoring_value(section, field, sections[section].get(field))
+    ]
+    required_institutional_fields = _required_institutional_fields(institutional_flow)
+    missing_fields.extend(
+        f"institutional_flow.{field}"
+        for field in required_institutional_fields
+        if field not in institutional_flow
+        or _missing_required_scoring_value("institutional_flow", field, institutional_flow.get(field))
+    )
+    if _unknown_institutional_tracks(institutional_flow):
+        missing_fields.append("institutional_flow.universe_track")
+    return list(dict.fromkeys(missing_fields))
+
+
+def missing_technical_scoring_fields(technical: Mapping[str, Any]) -> list[str]:
+    sections = {
+        "ohlcv": _mapping(technical.get("ohlcv")),
+        "indicators": _mapping(technical.get("indicators")),
+    }
+    return [
+        f"{section}.{field}"
+        for section in ("ohlcv", "indicators")
+        for field in REQUIRED_SCORING_FIELDS[section]
+        if field not in sections[section] or not _is_finite_number(sections[section].get(field))
     ]
 
 
-__all__ = ["REQUIRED_SCORING_FIELDS", "missing_scoring_fields"]
+def missing_daily_radar_candidate_technical_fields(
+    technical: Mapping[str, Any],
+    *,
+    record_date: date | None = None,
+) -> list[str]:
+    missing_fields = missing_technical_scoring_fields(technical)
+    technical_profile = _mapping(technical.get("technical_profile"))
+    if not str(technical_profile.get("version") or "").strip():
+        missing_fields.append("technical_profile.version")
+
+    price_history = technical.get("price_history")
+    if not _has_replayable_price_history(price_history, record_date=record_date):
+        missing_fields.append("price_history")
+
+    data_dates = _mapping(technical.get("data_dates"))
+    for field in _REQUIRED_TECHNICAL_DATA_DATES:
+        if not _valid_data_date(data_dates.get(field), record_date=record_date):
+            missing_fields.append(f"data_dates.{field}")
+    return missing_fields
+
+
+def required_institutional_scoring_fields(
+    institutional_flow: Mapping[str, Any],
+) -> tuple[str, ...]:
+    return _required_institutional_fields(institutional_flow)
+
+
+def _required_institutional_fields(institutional_flow: Mapping[str, Any]) -> tuple[str, ...]:
+    tracks = _institutional_tracks(institutional_flow)
+    if not tracks:
+        return _LEGACY_INSTITUTIONAL_REQUIRED_FIELDS
+
+    required_fields = list(REQUIRED_SCORING_FIELDS["institutional_flow"])
+    for track in tracks:
+        required_fields.extend(_TRACK_REQUIRED_INSTITUTIONAL_FIELDS.get(track, ()))
+    return tuple(dict.fromkeys(required_fields))
+
+
+def _institutional_tracks(institutional_flow: Mapping[str, Any]) -> tuple[str, ...]:
+    tracks: list[str] = []
+    raw_tracks = institutional_flow.get("institutional_universe_tracks")
+    if isinstance(raw_tracks, (list, tuple, set, frozenset)):
+        tracks.extend(str(track).strip() for track in raw_tracks if str(track).strip())
+    primary_track = str(institutional_flow.get("universe_primary_track") or "").strip()
+    if primary_track:
+        tracks.append(primary_track)
+    return tuple(dict.fromkeys(tracks))
+
+
+def _unknown_institutional_tracks(institutional_flow: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        track
+        for track in _institutional_tracks(institutional_flow)
+        if track not in _KNOWN_UNIVERSE_TRACKS
+    )
+
+
+def _has_replayable_price_history(value: Any, *, record_date: date | None) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    for item in value:
+        if not isinstance(item, Mapping) or not _is_finite_number(item.get("close")):
+            return False
+        if not _valid_data_date(item.get("date"), record_date=record_date):
+            return False
+    return True
+
+
+def _valid_data_date(value: Any, *, record_date: date | None) -> bool:
+    try:
+        parsed = date.fromisoformat(str(value or ""))
+    except ValueError:
+        return False
+    return record_date is None or parsed <= record_date
+
+
+def _is_finite_number(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _missing_required_scoring_value(section: str, field: str, value: Any) -> bool:
+    if (section, field) in _TEXT_REQUIRED_SCORING_FIELDS:
+        return not isinstance(value, str) or not value.strip()
+    return not _is_finite_number(value)
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+__all__ = [
+    "REQUIRED_SCORING_FIELDS",
+    "missing_scoring_fields",
+    "missing_daily_radar_candidate_technical_fields",
+    "missing_technical_scoring_fields",
+    "required_institutional_scoring_fields",
+]

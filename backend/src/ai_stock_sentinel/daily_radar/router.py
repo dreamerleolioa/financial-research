@@ -28,6 +28,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
+    reusable_daily_radar_raw_rows,
 )
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
@@ -497,12 +498,11 @@ def run_daily_radar_scoring_endpoint(
             detail=f"Daily Radar market context is not prepared for {request.market} on {run_date.isoformat()}.",
         )
     selected_symbols = list(prepared.selected_symbols)
-    cache_rows = get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols)
-    if not cache_rows:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No final StockRawData rows are available for prepared Daily Radar symbols on {run_date.isoformat()}.",
-        )
+    cache_rows = _require_complete_daily_radar_raw_rows(
+        get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols),
+        selected_symbols=selected_symbols,
+        run_date=run_date,
+    )
     background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
         db,
         symbols=selected_symbols,
@@ -566,6 +566,7 @@ def run_daily_radar_endpoint(
             run_date=run_date,
             provider=phase1_avwap_provider,
         )
+        margin_contexts_by_symbol = None
         if _should_refresh_daily_run_chip_context(market):
             failure_stage = "daily_chip_context_update"
             chip_context_result = update_background_chip_context_cache(
@@ -586,6 +587,11 @@ def run_daily_radar_endpoint(
                     list(chip_context_result["context_types"]),
                     chip_context_result["errors"],
                 )
+            margin_contexts_by_symbol = _full_margin_contexts_by_symbol(
+                db,
+                symbols=selected_symbols,
+                run_date=run_date,
+            )
         background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
             db,
             symbols=selected_symbols,
@@ -601,14 +607,13 @@ def run_daily_radar_endpoint(
             selected_symbols,
             technical_fetcher=technical_fetcher,
             institutional_payloads_by_symbol=institutional_payloads_by_symbol,
+            margin_contexts_by_symbol=margin_contexts_by_symbol,
         )
-        if not cache_rows:
-            cache_rows = get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols)
-        if not cache_rows:
-            raise HTTPException(
-                status_code=409,
-                detail=f"No final StockRawData rows are available for selected Daily Radar symbols on {run_date.isoformat()}.",
-            )
+        cache_rows = _require_complete_daily_radar_raw_rows(
+            cache_rows,
+            selected_symbols=selected_symbols,
+            run_date=run_date,
+        )
         failure_stage = "market_context"
         market_context = dict(market_context_provider.build(run_date=run_date, market=market))
         failure_stage = "daily_radar_service"
@@ -1073,6 +1078,36 @@ def _supported_daily_radar_symbols(symbols: Iterable[str]) -> tuple[list[str], d
             continue
         skipped_symbol_reasons[normalized] = "unsupported_daily_radar_symbol"
     return supported_symbols, skipped_symbol_reasons
+
+
+def _require_complete_daily_radar_raw_rows(
+    rows: Iterable[Any],
+    *,
+    selected_symbols: Iterable[str],
+    run_date: date,
+) -> list[Any]:
+    selected_symbol_list = list(selected_symbols)
+    if not selected_symbol_list:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "daily_radar_selected_universe_empty",
+                "run_date": run_date.isoformat(),
+            },
+        )
+    reusable_rows = reusable_daily_radar_raw_rows(rows)
+    reusable_symbols = {row.symbol for row in reusable_rows}
+    missing_symbols = [symbol for symbol in selected_symbol_list if symbol not in reusable_symbols]
+    if missing_symbols:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "daily_radar_raw_data_incomplete",
+                "run_date": run_date.isoformat(),
+                "missing_symbols": missing_symbols,
+            },
+        )
+    return reusable_rows
 
 
 def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) -> dict[str, Any]:

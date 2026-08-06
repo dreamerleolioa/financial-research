@@ -80,7 +80,13 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv": 12_000_000,
             "obv_trend": "rising",
         },
-        "data_dates": {"ohlcv": run_date.isoformat(), "technical_indicators": run_date.isoformat()},
+        "technical_profile": {"version": "technical-layer-v1"},
+        "price_history": [{"date": run_date.isoformat(), "close": 106.0}],
+        "data_dates": {
+            "ohlcv": run_date.isoformat(),
+            "technical_indicators": run_date.isoformat(),
+            "technical_profile": run_date.isoformat(),
+        },
     }
 
 
@@ -142,6 +148,7 @@ def test_ensure_daily_radar_raw_rows_fetches_missing_symbols_once_and_preserves_
     assert loaded_by_symbol["2317.TW"]["data_dates"] == {
         "ohlcv": run_date.isoformat(),
         "technical_indicators": run_date.isoformat(),
+        "technical_profile": run_date.isoformat(),
         "institutional_flow": run_date.isoformat(),
         "margin": run_date.isoformat(),
     }
@@ -197,6 +204,131 @@ def test_ensure_daily_radar_raw_rows_does_not_call_fetcher_when_all_selected_row
 
     assert fetcher.calls == []
     assert [row.symbol for row in rows] == ["2317.TW", "2330.TW"]
+
+
+def test_ensure_daily_radar_raw_rows_refetches_incomplete_final_technical_payload(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical["ohlcv"].pop("previous_close")
+    existing_row = _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert [row.id for row in rows] == [existing_row.id]
+    assert rows[0].technical["ohlcv"]["previous_close"] == 102.0
+
+
+def test_ensure_daily_radar_raw_rows_refetches_final_row_without_replay_evidence(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical.pop("technical_profile")
+    incomplete_technical.pop("price_history")
+    _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v1"
+    assert rows[0].technical["price_history"] == [{"date": run_date.isoformat(), "close": 106.0}]
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "invalid_value"),
+    [
+        ("ohlcv", "close", "bad"),
+        ("indicators", "ma5", "NaN"),
+    ],
+)
+def test_ensure_daily_radar_raw_rows_refetches_non_finite_required_technical_values(
+    db_session: Session,
+    section: str,
+    field: str,
+    invalid_value: str,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical[section][field] = invalid_value
+    _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert rows[0].technical[section][field] != invalid_value
+
+
+def test_ensure_daily_radar_raw_rows_preserves_margin_when_repairing_existing_row(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical["ohlcv"].pop("previous_close")
+    existing_row = _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    existing_row.fundamental = {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": run_date.isoformat()},
+    }
+    db_session.flush()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=FakeBatchFetcher(),
+        institutional_payloads_by_symbol={"2330.TW": {"flow_state": "technical_trigger"}},
+    )
+
+    assert rows[0].fundamental == {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": run_date.isoformat()},
+    }
+    assert rows[0].institutional == {"flow_state": "technical_trigger"}
 
 
 def test_ensure_daily_radar_raw_rows_refreshes_existing_final_institutional_payload_without_refetch(
@@ -308,7 +440,7 @@ def test_ensure_daily_radar_raw_rows_projects_fresh_full_margin_context_for_pref
     assert fetcher.calls == []
 
 
-def test_ensure_daily_radar_raw_rows_does_not_project_stale_full_margin_context(
+def test_ensure_daily_radar_raw_rows_preserves_margin_for_stale_full_margin_context(
     db_session: Session,
 ) -> None:
     run_date = date(2026, 6, 2)
@@ -337,13 +469,8 @@ def test_ensure_daily_radar_raw_rows_does_not_project_stale_full_margin_context(
     )
 
     loaded = load_daily_radar_cache_records(rows)[0]
-    assert loaded["margin"] == {}
+    assert loaded["margin"] == {"margin_delta_pct": 1.0, "margin_to_volume": 0.2}
     assert loaded["data_dates"]["margin"] == "2026-05-20"
-    missing_fields = prefilter_record(loaded)["prefilter_reasons"][0]["details"]["missing_fields"]
-    assert [field for field in missing_fields if field.startswith("margin.")] == [
-        "margin.margin_delta_pct",
-        "margin.margin_to_volume",
-    ]
 
 
 def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker_calls(
@@ -504,7 +631,7 @@ def test_empty_yfinance_symbol_response_does_not_create_or_finalize_raw_data(
     )
 
     stored_rows = db_session.query(StockRawData).filter(StockRawData.record_date == run_date).all()
-    assert [row.symbol for row in rows] == ["2330.TW"]
+    assert rows == []
     assert [(row.symbol, row.raw_data_is_final) for row in stored_rows] == [("2330.TW", True)]
 
 

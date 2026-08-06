@@ -197,6 +197,12 @@ class RaisingBatchTechnicalFetcher(FakeBatchTechnicalFetcher):
         raise RuntimeError("simulated yfinance outage")
 
 
+class EmptyBatchTechnicalFetcher(FakeBatchTechnicalFetcher):
+    def fetch(self, symbols: list[str], *, run_date: date) -> dict[str, dict[str, Any]]:
+        self.calls.append((list(symbols), run_date))
+        return {}
+
+
 class FakeBackgroundChipContextProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -388,7 +394,13 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv": 12_000_000,
             "obv_trend": "rising",
         },
-        "data_dates": {"ohlcv": run_date.isoformat(), "technical_indicators": run_date.isoformat()},
+        "technical_profile": {"version": "technical-layer-v1"},
+        "price_history": [{"date": run_date.isoformat(), "close": 106.0}],
+        "data_dates": {
+            "ohlcv": run_date.isoformat(),
+            "technical_indicators": run_date.isoformat(),
+            "technical_profile": run_date.isoformat(),
+        },
     }
 
 
@@ -610,6 +622,11 @@ def test_daily_radar_run_endpoint_degrades_when_daily_chip_context_refresh_fails
     daily_radar_db_session: Session,
 ) -> None:
     raw_row = _persist_raw_data(daily_radar_db_session, record_date=date(2026, 5, 29))
+    raw_row.fundamental = {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": "2026-05-29"},
+    }
+    daily_radar_db_session.commit()
     client = _api_client(
         monkeypatch,
         daily_radar_db_session,
@@ -632,6 +649,11 @@ def test_daily_radar_run_endpoint_degrades_when_daily_chip_context_refresh_fails
     lending_context = next(context for context in contexts if context["context_type"] == "lending")
     assert lending_context["freshness"] == "missing"
     assert lending_context["missing_reason"] == "context_cache_missing"
+    daily_radar_db_session.refresh(raw_row)
+    assert raw_row.fundamental == {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": "2026-05-29"},
+    }
 
 
 def test_daily_radar_run_endpoint_skips_daily_chip_context_refresh_for_non_tw_market(
@@ -1075,6 +1097,56 @@ def test_daily_radar_refresh_ohlcv_projects_fresh_full_margin_cache_into_raw_row
     assert row.fundamental["data_dates"]["margin"] == run_date.isoformat()
 
 
+def test_daily_radar_refresh_ohlcv_preserves_margin_without_fresh_full_margin_context(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "track_metrics": {"same_day_institutional": {"score": 91.0}},
+            }
+        ],
+        symbol_count=1,
+    )
+    row = _persist_raw_data(
+        daily_radar_db_session,
+        record_date=run_date,
+        technical=_technical_payload("2330.TW", run_date),
+    )
+    row.fundamental = {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": run_date.isoformat()},
+    }
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    daily_radar_db_session.refresh(row)
+    assert row.fundamental == {
+        "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        "data_dates": {"margin": run_date.isoformat()},
+    }
+
+
 def test_daily_radar_refresh_ohlcv_prunes_unsupported_prepared_symbols(
     monkeypatch,
     daily_radar_db_session: Session,
@@ -1169,7 +1241,12 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
-    _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=date(2026, 6, 1))
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=date(2026, 6, 1),
+        technical=_technical_payload("2330.TW", date(2026, 6, 1)),
+    )
     prepared = DailyRadarPreparedRun(
         run_date=date(2026, 6, 1),
         market="TW",
@@ -1207,6 +1284,81 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
     assert body["status"] == "completed"
     captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
     assert [row.symbol for row in captured["cache_rows"]] == ["2330.TW"]
+
+
+def test_daily_radar_run_scoring_rejects_incomplete_selected_rows(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=date(2026, 6, 1),
+        technical={"name": "2330.TW", "ohlcv": {}, "indicators": {}},
+    )
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        market_context=_market_context(),
+        step_statuses=_completed_segmented_step_statuses(),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "daily_radar_raw_data_incomplete",
+        "run_date": "2026-06-01",
+        "missing_symbols": ["2330.TW"],
+    }
+    assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
+
+
+def test_daily_radar_run_scoring_rejects_empty_selected_universe(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=[],
+        universe=[],
+        symbol_count=0,
+        market_context=_market_context(),
+        step_statuses=_completed_segmented_step_statuses(),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "daily_radar_selected_universe_empty",
+        "run_date": "2026-06-01",
+    }
+    assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
 
 
 def test_daily_radar_run_scoring_requires_prepared_market_context(
@@ -1854,7 +2006,12 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
-    _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=date(2026, 6, 1))
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=date(2026, 6, 1),
+        technical=_technical_payload("2330.TW", date(2026, 6, 1)),
+    )
     fetcher = FakeBatchTechnicalFetcher()
     provider = FakeUniverseProvider(
         same_day=[
@@ -1905,6 +2062,56 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
         for metrics in backfilled_institutional["universe_track_metrics"].values()
         if isinstance(metrics, dict)
     }
+
+
+def test_daily_radar_run_endpoint_does_not_fallback_to_incomplete_final_rows(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        technical={"name": "2330.TW", "ohlcv": {}, "indicators": {}},
+    )
+    provider = FakeUniverseProvider(
+        same_day=[
+            InstitutionalLeaderRow(
+                "2330.TW",
+                1,
+                91.0,
+                actor="foreign",
+                net_buy=24_680.0,
+                source_dates=(run_date.isoformat(),),
+            )
+        ]
+    )
+    fetcher = EmptyBatchTechnicalFetcher()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        technical_fetcher=fetcher,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": run_date.isoformat()},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "daily_radar_raw_data_incomplete",
+        "run_date": run_date.isoformat(),
+        "missing_symbols": ["2330.TW"],
+    }
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert client.captured_daily_radar_call == {}  # type: ignore[attr-defined]
 
 
 def test_daily_radar_run_endpoint_adds_local_cache_daily_trigger_tracks_without_extra_fetch(

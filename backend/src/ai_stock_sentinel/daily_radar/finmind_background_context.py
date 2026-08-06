@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
+from ai_stock_sentinel.data_sources.finmind_client import (
+    FinMindClient,
+    FinMindClientError,
+    finmind_max_concurrent_requests,
+)
 from ai_stock_sentinel.data_sources.finmind_token import get_token_manager
 from ai_stock_sentinel.daily_radar.background_context import BACKGROUND_CONTEXT_ALL_CONSUMERS, BackgroundContextPayload
 
 
 FINMIND_BACKGROUND_CONTEXT_CONSUMERS = BACKGROUND_CONTEXT_ALL_CONSUMERS
+DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS = 8
+DEFAULT_FINMIND_BACKGROUND_CAPACITY_WAIT_SECONDS = 30.0
 
 _FULL_MARGIN_DATASET = "TaiwanStockMarginPurchaseShortSale"
 _LENDING_DATASET = "TaiwanStockSecuritiesLending"
@@ -47,6 +54,8 @@ class FinMindBackgroundChipContextProvider:
         client: FinMindClient | None = None,
         lookback_trading_days: int = 10,
         stale_after_days: int = 5,
+        max_workers: int | None = None,
+        capacity_wait_seconds: float = DEFAULT_FINMIND_BACKGROUND_CAPACITY_WAIT_SECONDS,
     ) -> None:
         self._static_token = api_token
         self._client = client or FinMindClient(
@@ -56,6 +65,13 @@ class FinMindBackgroundChipContextProvider:
         )
         self._lookback_trading_days = lookback_trading_days
         self._stale_after_days = stale_after_days
+        configured_workers = (
+            min(DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS, finmind_max_concurrent_requests())
+            if max_workers is None
+            else max_workers
+        )
+        self._max_workers = max(1, configured_workers)
+        self._capacity_wait_seconds = max(0.0, capacity_wait_seconds)
 
     def fetch(
         self,
@@ -65,25 +81,62 @@ class FinMindBackgroundChipContextProvider:
         run_date: date,
         market: str,
     ) -> Iterable[BackgroundContextPayload]:
-        for symbol in symbols:
-            for context_type in context_types:
-                if context_type == "full_margin":
-                    yield self._full_margin_payload(symbol=symbol, run_date=run_date, market=market)
-                elif context_type == "lending":
-                    yield self._lending_payload(symbol=symbol, run_date=run_date, market=market)
-                else:
-                    yield self._missing_payload(
-                        symbol=symbol,
-                        context_type=context_type,
-                        run_date=run_date,
-                        market=market,
-                        missing_reason=(
-                            "provider_deferred"
-                            if context_type == "weekly_major_holders"
-                            else "unsupported_context_type"
-                        ),
-                        source_extra={"supported_context_types": sorted(_SUPPORTED_CONTEXT_TYPES)},
-                    )
+        requests = [(symbol, context_type) for symbol in symbols for context_type in context_types]
+        if not requests:
+            return
+
+        def fetch_one(request: tuple[str, str]) -> BackgroundContextPayload:
+            symbol, context_type = request
+            return self._payload(
+                symbol=symbol,
+                context_type=context_type,
+                run_date=run_date,
+                market=market,
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=min(self._max_workers, len(requests)),
+            thread_name_prefix="finmind-background",
+        ) as executor:
+            request_iterator = iter(requests)
+            pending: deque[Future[BackgroundContextPayload]] = deque()
+            for _ in range(min(self._max_workers, len(requests))):
+                pending.append(executor.submit(fetch_one, next(request_iterator)))
+
+            try:
+                while pending:
+                    yield pending.popleft().result()
+                    try:
+                        request = next(request_iterator)
+                    except StopIteration:
+                        continue
+                    pending.append(executor.submit(fetch_one, request))
+            finally:
+                for future in pending:
+                    future.cancel()
+
+    def _payload(
+        self,
+        *,
+        symbol: str,
+        context_type: str,
+        run_date: date,
+        market: str,
+    ) -> BackgroundContextPayload:
+        if context_type == "full_margin":
+            return self._full_margin_payload(symbol=symbol, run_date=run_date, market=market)
+        if context_type == "lending":
+            return self._lending_payload(symbol=symbol, run_date=run_date, market=market)
+        return self._missing_payload(
+            symbol=symbol,
+            context_type=context_type,
+            run_date=run_date,
+            market=market,
+            missing_reason=(
+                "provider_deferred" if context_type == "weekly_major_holders" else "unsupported_context_type"
+            ),
+            source_extra={"supported_context_types": sorted(_SUPPORTED_CONTEXT_TYPES)},
+        )
 
     def _full_margin_payload(self, *, symbol: str, run_date: date, market: str) -> BackgroundContextPayload:
         try:
@@ -209,6 +262,7 @@ class FinMindBackgroundChipContextProvider:
                 data_id=_strip_suffix(symbol),
                 start_date=start_date.isoformat(),
                 end_date=run_date.isoformat(),
+                capacity_wait_seconds=self._capacity_wait_seconds,
             )
         except FinMindClientError as exc:
             if exc.code != "quota_or_token_error" or self._static_token:
@@ -221,6 +275,7 @@ class FinMindBackgroundChipContextProvider:
                     data_id=_strip_suffix(symbol),
                     start_date=start_date.isoformat(),
                     end_date=run_date.isoformat(),
+                    capacity_wait_seconds=self._capacity_wait_seconds,
                 )
             except FinMindClientError as retry_exc:
                 raise _dataset_error_from_client_error(retry_exc) from retry_exc
