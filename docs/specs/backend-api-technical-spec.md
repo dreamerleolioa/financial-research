@@ -1909,7 +1909,7 @@ Daily Radar run status：
   - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
   - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。舊候選缺少此欄位時，月報必須標記 `replay_input_incomplete`，不得猜測。
-  - Current version trace：`daily-radar-scoring-v2.3` / `daily-radar-rules-v2.2` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則。
+  - Current version trace：`daily-radar-scoring-v2.4` / `daily-radar-rules-v2.3` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則；v2.4 起，只有 `same_day_institutional` track 的候選會直接以合法的 `same_day_actor` 與正數 `same_day_net_buy` 計入同日法人淨買分數，且不與三大法人合計轉正或外資投信方向一致重複計分。
 
 - **Calibration workflow**
   - Daily Radar calibration report 可由 `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` 重跑。

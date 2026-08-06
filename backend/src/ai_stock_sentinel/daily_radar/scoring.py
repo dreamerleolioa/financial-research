@@ -14,8 +14,8 @@ from ai_stock_sentinel.daily_radar.relative_strength import (
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
 
 
-SCORING_VERSION = "daily-radar-scoring-v2.3"
-RULE_VERSION = "daily-radar-rules-v2.2"
+SCORING_VERSION = "daily-radar-scoring-v2.4"
+RULE_VERSION = "daily-radar-rules-v2.3"
 SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v1"
 
 RULE_SCORE_ADJUSTMENTS: dict[str, int] = {
@@ -24,6 +24,7 @@ RULE_SCORE_ADJUSTMENTS: dict[str, int] = {
     "institutional_early_flow": 14,
     "institutional_aligned_participants": 18,
     "institutional_net_positive": 8,
+    "institutional_same_day_net_buy": 8,
     "institutional_constructive_state": 18,
     "institutional_volume_confirmed_state": 12,
     "institutional_early_stabilization": 6,
@@ -327,12 +328,21 @@ def _score_institutional_accumulation(
     foreign_net = _float(flow.get("foreign_net_shares"))
     trust_net = _float(flow.get("investment_trust_net_shares"))
     three_party_net = _float(flow.get("three_party_net_shares"))
+    same_day_actor = str(flow.get("same_day_actor") or "").strip().lower()
+    same_day_net_buy = _float(flow.get("same_day_net_buy"))
     if foreign_net > 0 and trust_net > 0:
         score += 18
         rules.append(_rule("institutional_aligned_participants", "外資與投信方向一致", foreign_net=foreign_net, investment_trust_net=trust_net))
     elif three_party_net > 0:
         score += 8
         rules.append(_rule("institutional_net_positive", "三大法人合計轉正", three_party_net=three_party_net))
+    elif (
+        _has_universe_track(flow, "same_day_institutional")
+        and same_day_actor in {"foreign", "trust"}
+        and same_day_net_buy > 0
+    ):
+        score += 8
+        rules.append(_rule("institutional_same_day_net_buy", "單一法人當日淨買超", same_day_actor=same_day_actor, same_day_net_buy=same_day_net_buy))
 
     flow_state = str(flow.get("flow_state") or "")
     if flow_state in {"consistent_accumulation", "support_area_accumulation"}:
@@ -833,6 +843,15 @@ def _universe_trace(flow: Mapping[str, Any]) -> dict[str, Any]:
             "scores",
         )
         if key in flow
+    }
+
+
+def _has_universe_track(flow: Mapping[str, Any], track: str) -> bool:
+    if str(flow.get("universe_primary_track") or "").strip() == track:
+        return True
+    raw_tracks = flow.get("institutional_universe_tracks")
+    return isinstance(raw_tracks, (list, tuple, set, frozenset)) and track in {
+        str(value).strip() for value in raw_tracks
     }
 
 
