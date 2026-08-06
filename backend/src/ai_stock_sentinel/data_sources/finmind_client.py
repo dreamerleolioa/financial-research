@@ -214,10 +214,20 @@ class FinMindClient:
         request_elapsed_seconds = 0.0
         completed_attempt = 0
         bounded_capacity_wait_seconds = max(0.0, capacity_wait_seconds)
+        capacity_wait_deadline = (
+            time.perf_counter() + bounded_capacity_wait_seconds
+            if bounded_capacity_wait_seconds > 0
+            else None
+        )
         for attempt in range(self._request_retries + 1):
+            remaining_capacity_wait_seconds = (
+                max(0.0, capacity_wait_deadline - time.perf_counter())
+                if capacity_wait_deadline is not None
+                else 0.0
+            )
             capacity_acquired = (
-                self._request_capacity.acquire(timeout=bounded_capacity_wait_seconds)
-                if bounded_capacity_wait_seconds > 0
+                self._request_capacity.acquire(timeout=remaining_capacity_wait_seconds)
+                if remaining_capacity_wait_seconds > 0
                 else self._request_capacity.acquire(blocking=False)
             )
             if not capacity_acquired:
@@ -225,7 +235,7 @@ class FinMindClient:
                     "[FinMindClient] request capacity exhausted dataset=%s data_id=%s wait_seconds=%.2f",
                     dataset,
                     data_id,
-                    bounded_capacity_wait_seconds,
+                    remaining_capacity_wait_seconds,
                 )
                 raise FinMindClientError(
                     code="capacity_exhausted",

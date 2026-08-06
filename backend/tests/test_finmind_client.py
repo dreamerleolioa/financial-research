@@ -422,6 +422,48 @@ def test_finmind_client_can_wait_for_capacity_within_a_bounded_deadline() -> Non
     assert results == [[{"data_id": "2330"}]]
 
 
+def test_finmind_client_shares_capacity_wait_deadline_across_http_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingCapacity:
+        def __init__(self) -> None:
+            self.timeouts: list[float | None] = []
+
+        def acquire(self, *, blocking: bool = True, timeout: float | None = None) -> bool:
+            self.timeouts.append(timeout)
+            return True
+
+        def release(self) -> None:
+            return None
+
+    capacity = RecordingCapacity()
+    clock_values = iter([0.0, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 29.0, 29.0, 29.0])
+    monkeypatch.setattr(finmind_client_module.time, "perf_counter", lambda: next(clock_values))
+
+    def failing_get(url: str, *, params: dict, headers: dict, timeout: int) -> _FakeFinMindResponse:
+        raise TimeoutError("upstream timeout")
+
+    client = FinMindClient(
+        api_token="test-token",
+        request_get=failing_get,
+        request_retries=2,
+        retry_backoff_seconds=0,
+        request_capacity=capacity,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(FinMindClientError) as exc_info:
+        client.fetch_data(
+            dataset="TaiwanStockSecuritiesLending",
+            data_id="2330",
+            start_date="2026-06-01",
+            end_date="2026-06-10",
+            capacity_wait_seconds=30,
+        )
+
+    assert exc_info.value.code == "request_error"
+    assert capacity.timeouts == pytest.approx([30.0, 20.0, 1.0])
+
+
 def test_default_request_capacity_reads_environment_when_first_client_is_created(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
