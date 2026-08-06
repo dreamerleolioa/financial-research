@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
-from ai_stock_sentinel.daily_radar.data_quality import missing_technical_scoring_fields
+from ai_stock_sentinel.daily_radar.data_quality import missing_daily_radar_candidate_technical_fields
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.technical.profile import build_technical_profile_payload
@@ -76,11 +76,7 @@ def ensure_daily_radar_raw_rows(
 
     institutional_payloads = institutional_payloads_by_symbol or {}
     existing_final = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
-    reusable_final_symbols = {
-        row.symbol
-        for row in existing_final
-        if not missing_technical_scoring_fields(_mapping(row.technical))
-    }
+    reusable_final_symbols = {row.symbol for row in reusable_daily_radar_raw_rows(existing_final)}
     missing_symbols = [symbol for symbol in ordered_symbols if symbol not in reusable_final_symbols]
     if missing_symbols:
         fetcher = technical_fetcher or YFinanceBatchTechnicalFetcher()
@@ -109,10 +105,17 @@ def ensure_daily_radar_raw_rows(
         session.flush()
 
     final_rows = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
+    return reusable_daily_radar_raw_rows(final_rows)
+
+
+def reusable_daily_radar_raw_rows(rows: Iterable[StockRawData]) -> list[StockRawData]:
     return [
         row
-        for row in final_rows
-        if not missing_technical_scoring_fields(_mapping(row.technical))
+        for row in rows
+        if not missing_daily_radar_candidate_technical_fields(
+            _mapping(row.technical),
+            record_date=row.record_date,
+        )
     ]
 
 
@@ -144,10 +147,14 @@ def _apply_margin_contexts(
     symbols: Sequence[str],
     margin_contexts_by_symbol: Mapping[str, Mapping[str, Any]],
 ) -> None:
+    context_symbols = [symbol for symbol in symbols if symbol in margin_contexts_by_symbol]
+    if not context_symbols:
+        return
+
     rows = session.scalars(
         select(StockRawData).where(
             StockRawData.record_date == run_date,
-            StockRawData.symbol.in_(symbols),
+            StockRawData.symbol.in_(context_symbols),
         )
     ).all()
     for row in rows:
@@ -214,14 +221,13 @@ def _store_missing_rows(
         if payload is None:
             continue
         technical = _normalize_technical_payload(symbol, payload, run_date=run_date)
-        institutional = dict(institutional_payloads_by_symbol.get(symbol) or {})
         row = stored_by_symbol.get(symbol)
         if row is None:
             row = StockRawData(symbol=symbol, record_date=run_date)
+            row.institutional = dict(institutional_payloads_by_symbol.get(symbol) or {})
+            row.fundamental = {"margin": {}, "data_dates": {"margin": run_date.isoformat()}}
             session.add(row)
         row.technical = technical
-        row.institutional = institutional
-        row.fundamental = {"margin": {}, "data_dates": {"margin": run_date.isoformat()}}
         row.raw_data_is_final = True
 
 
@@ -478,4 +484,5 @@ __all__ = [
     "BatchTechnicalFetcher",
     "YFinanceBatchTechnicalFetcher",
     "ensure_daily_radar_raw_rows",
+    "reusable_daily_radar_raw_rows",
 ]

@@ -200,6 +200,24 @@ def test_prefilter_rejects_recent_track_without_accumulation_metrics() -> None:
     )
 
 
+def test_prefilter_rejects_unknown_universe_track() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["institutional_flow"] = {
+        "universe_primary_track": "recent_acumulation",
+        "institutional_universe_tracks": ["recent_acumulation"],
+        "flow_state": "weak_confirmation",
+    }
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "rejected"
+    assert "institutional_flow.universe_track" in next(
+        reason["details"]["missing_fields"]
+        for reason in result["prefilter_reasons"]
+        if reason["code"] == "data_gap" and "missing_fields" in reason["details"]
+    )
+
+
 @pytest.mark.parametrize("symbol, expected", EDGE_CASES.items())
 def test_prefilter_rejects_fixture_edge_cases_with_stable_chinese_reasons(
     symbol: str,
