@@ -32,7 +32,10 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     FORWARD_VALIDATION_VERSION,
     candidate_forward_validation_benchmark_symbol,
 )
-from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
+from ai_stock_sentinel.daily_radar.data_quality import (
+    missing_scoring_fields,
+    required_institutional_scoring_fields,
+)
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
 from ai_stock_sentinel.daily_radar.rule_registry import (
     SCORING_ACTIVE_TIERS,
@@ -1537,10 +1540,11 @@ def _is_complete_daily_radar_replay_input(
             "kd_k", "kd_d", "atr14", "volume_ratio",
             "missing_trading_days_60",
         )),
-        *((institutional_flow, key) for key in (
-            "three_party_net_shares", "consecutive_positive_days",
-            "net_flow_to_avg_volume",
-        )),
+        *(
+            (institutional_flow, key)
+            for key in required_institutional_scoring_fields(institutional_flow)
+            if key not in {"flow_state", "same_day_actor"}
+        ),
         *((margin, key) for key in ("margin_delta_pct", "margin_to_volume")),
     )
     if any(

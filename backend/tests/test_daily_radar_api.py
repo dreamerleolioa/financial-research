@@ -1888,7 +1888,7 @@ def test_daily_radar_run_endpoint_fetches_all_missing_selected_symbols_in_one_ba
         _clear_daily_radar_api_overrides()
 
     assert response.status_code == 200
-    assert fetcher.calls == [(["2454.TW", "2317.TW"], date(2026, 6, 1))]
+    assert fetcher.calls == [(["2330.TW", "2454.TW", "2317.TW"], date(2026, 6, 1))]
     assert [row.symbol for row in client.captured_daily_radar_call["cache_rows"]] == [  # type: ignore[attr-defined]
         "2330.TW",
         "2454.TW",

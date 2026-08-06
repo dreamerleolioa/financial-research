@@ -199,6 +199,33 @@ def test_ensure_daily_radar_raw_rows_does_not_call_fetcher_when_all_selected_row
     assert [row.symbol for row in rows] == ["2317.TW", "2330.TW"]
 
 
+def test_ensure_daily_radar_raw_rows_refetches_incomplete_final_technical_payload(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical["ohlcv"].pop("previous_close")
+    existing_row = _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert [row.id for row in rows] == [existing_row.id]
+    assert rows[0].technical["ohlcv"]["previous_close"] == 102.0
+
+
 def test_ensure_daily_radar_raw_rows_refreshes_existing_final_institutional_payload_without_refetch(
     db_session: Session,
 ) -> None:
@@ -504,7 +531,7 @@ def test_empty_yfinance_symbol_response_does_not_create_or_finalize_raw_data(
     )
 
     stored_rows = db_session.query(StockRawData).filter(StockRawData.record_date == run_date).all()
-    assert [row.symbol for row in rows] == ["2330.TW"]
+    assert rows == []
     assert [(row.symbol, row.raw_data_is_final) for row in stored_rows] == [("2330.TW", True)]
 
 

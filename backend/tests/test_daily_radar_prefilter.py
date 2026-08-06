@@ -148,6 +148,58 @@ def test_prefilter_accepts_clean_fixture_records_with_debug_and_data_dates() -> 
         assert result["debug"]["thresholds"]["min_price"] == pytest.approx(20.0)
 
 
+def test_prefilter_accepts_same_day_institutional_track_without_recent_metrics() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["institutional_flow"] = {
+        "universe_primary_track": "same_day_institutional",
+        "institutional_universe_tracks": ["same_day_institutional"],
+        "same_day_actor": "foreign",
+        "same_day_net_buy": 24_680.0,
+        "flow_state": "weak_confirmation",
+    }
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "accepted"
+    assert "data_gap" not in _reason_codes(result)
+
+
+def test_prefilter_accepts_recent_track_when_source_cannot_supply_volume_ratio() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["institutional_flow"].update(
+        {
+            "universe_primary_track": "recent_accumulation",
+            "institutional_universe_tracks": ["recent_accumulation"],
+        }
+    )
+    record["institutional_flow"].pop("net_flow_to_avg_volume")
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "accepted"
+    assert "data_gap" not in _reason_codes(result)
+
+
+def test_prefilter_rejects_recent_track_without_accumulation_metrics() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["institutional_flow"].update(
+        {
+            "universe_primary_track": "recent_accumulation",
+            "institutional_universe_tracks": ["recent_accumulation"],
+        }
+    )
+    record["institutional_flow"].pop("three_party_net_shares")
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "rejected"
+    assert "institutional_flow.three_party_net_shares" in next(
+        reason["details"]["missing_fields"]
+        for reason in result["prefilter_reasons"]
+        if reason["code"] == "data_gap" and "missing_fields" in reason["details"]
+    )
+
+
 @pytest.mark.parametrize("symbol, expected", EDGE_CASES.items())
 def test_prefilter_rejects_fixture_edge_cases_with_stable_chinese_reasons(
     symbol: str,

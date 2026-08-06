@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
+from ai_stock_sentinel.daily_radar.data_quality import missing_technical_scoring_fields
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.technical.profile import build_technical_profile_payload
@@ -75,8 +76,12 @@ def ensure_daily_radar_raw_rows(
 
     institutional_payloads = institutional_payloads_by_symbol or {}
     existing_final = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
-    existing_final_symbols = {row.symbol for row in existing_final}
-    missing_symbols = [symbol for symbol in ordered_symbols if symbol not in existing_final_symbols]
+    reusable_final_symbols = {
+        row.symbol
+        for row in existing_final
+        if not missing_technical_scoring_fields(_mapping(row.technical))
+    }
+    missing_symbols = [symbol for symbol in ordered_symbols if symbol not in reusable_final_symbols]
     if missing_symbols:
         fetcher = technical_fetcher or YFinanceBatchTechnicalFetcher()
         fetched_payloads = fetcher.fetch(missing_symbols, run_date=run_date)
@@ -103,7 +108,12 @@ def ensure_daily_radar_raw_rows(
     if missing_symbols or institutional_payloads or margin_contexts_by_symbol is not None:
         session.flush()
 
-    return get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
+    final_rows = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
+    return [
+        row
+        for row in final_rows
+        if not missing_technical_scoring_fields(_mapping(row.technical))
+    ]
 
 
 def _apply_institutional_payloads(
