@@ -4,6 +4,7 @@ import importlib.util
 from datetime import date
 from io import StringIO
 from pathlib import Path
+from threading import Event, Lock
 from types import ModuleType
 
 import pytest
@@ -622,6 +623,57 @@ def test_finmind_background_provider_builds_full_margin_and_lending_payloads() -
     assert weekly.freshness == "missing"
     assert weekly.missing_reason == "provider_deferred"
     assert weekly.payload == {}
+
+
+def test_finmind_background_provider_fetches_symbols_with_bounded_concurrency() -> None:
+    active_requests = 0
+    max_active_requests = 0
+    lock = Lock()
+    concurrent_request_seen = Event()
+
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
+        nonlocal active_requests, max_active_requests
+        with lock:
+            active_requests += 1
+            max_active_requests = max(max_active_requests, active_requests)
+            if active_requests >= 2:
+                concurrent_request_seen.set()
+        concurrent_request_seen.wait(timeout=0.5)
+        try:
+            return _FakeFinMindResponse(
+                {
+                    "status": 200,
+                    "data": [
+                        {
+                            "date": "2026-06-10",
+                            "stock_id": params["data_id"],
+                            "volume": 100,
+                        }
+                    ],
+                }
+            )
+        finally:
+            with lock:
+                active_requests -= 1
+
+    provider = FinMindBackgroundChipContextProvider(
+        api_token="test-token",
+        request_get=fake_get,
+        max_workers=2,
+    )
+    symbols = ["1802.TW", "2330.TW", "2454.TW", "2881.TW"]
+
+    payloads = list(
+        provider.fetch(
+            symbols=symbols,
+            context_types=["lending"],
+            run_date=date(2026, 6, 11),
+            market="TW",
+        )
+    )
+
+    assert max_active_requests == 2
+    assert [payload.symbol for payload in payloads] == symbols
 
 
 def test_finmind_background_provider_marks_dataset_errors_as_missing() -> None:

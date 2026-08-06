@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, timedelta
 
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
@@ -41,10 +42,20 @@ class FinMindProvider:
 
     name = "FinMind"
 
-    def __init__(self, api_token: str = "", client: FinMindClient | None = None):
+    def __init__(
+        self,
+        api_token: str = "",
+        client: FinMindClient | None = None,
+        holding_shares_per_enabled: bool | None = None,
+    ):
         # api_token 僅供測試用靜態覆蓋；正式使用時留空，由 token manager 動態取得
         self._static_token = api_token
         self._client = client or FinMindClient(api_token=api_token)
+        self._holding_shares_per_enabled = (
+            _env_flag("FINMIND_HOLDING_SHARES_PER_ENABLED")
+            if holding_shares_per_enabled is None
+            else holding_shares_per_enabled
+        )
 
     def fetch_daily_flow(self, symbol: str, days: int = 5) -> InstitutionalFlowData:
         try:
@@ -158,19 +169,20 @@ class FinMindProvider:
         major_holder_ratio: float | None = None
         major_holder_ratio_delta_pct: float | None = None
         retail_holder_ratio_delta_pct: float | None = None
-        try:
-            holder_rows = self._fetch_dataset(
-                dataset="TaiwanStockHoldingSharesPer",
-                stock_id=stock_id,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            holder_summary = _summarize_holder_rows(holder_rows)
-            major_holder_ratio = holder_summary["major_holder_ratio"]
-            major_holder_ratio_delta_pct = holder_summary["major_holder_ratio_delta_pct"]
-            retail_holder_ratio_delta_pct = holder_summary["retail_holder_ratio_delta_pct"]
-        except InstitutionalFlowError as exc:
-            warnings.append(f"FinMind: 股東持股分級資料未取得（{exc.code}）")
+        if self._holding_shares_per_enabled:
+            try:
+                holder_rows = self._fetch_dataset(
+                    dataset="TaiwanStockHoldingSharesPer",
+                    stock_id=stock_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                holder_summary = _summarize_holder_rows(holder_rows)
+                major_holder_ratio = holder_summary["major_holder_ratio"]
+                major_holder_ratio_delta_pct = holder_summary["major_holder_ratio_delta_pct"]
+                retail_holder_ratio_delta_pct = holder_summary["retail_holder_ratio_delta_pct"]
+            except InstitutionalFlowError as exc:
+                warnings.append(f"FinMind: 股東持股分級資料未取得（{exc.code}）")
 
         # ---- 彙整 ----
         three_party_net = _safe_sum(foreign_net_cum, trust_net_cum, dealer_net_cum)
@@ -241,6 +253,10 @@ class FinMindProvider:
 def _strip_suffix(symbol: str) -> str:
     """'2330.TW' → '2330'"""
     return symbol.split(".")[0]
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _institutional_error_from_client_error(exc: FinMindClientError, *, provider: str) -> InstitutionalFlowError:

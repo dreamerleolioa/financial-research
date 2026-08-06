@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -12,6 +13,7 @@ from ai_stock_sentinel.daily_radar.background_context import BACKGROUND_CONTEXT_
 
 
 FINMIND_BACKGROUND_CONTEXT_CONSUMERS = BACKGROUND_CONTEXT_ALL_CONSUMERS
+DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS = 8
 
 _FULL_MARGIN_DATASET = "TaiwanStockMarginPurchaseShortSale"
 _LENDING_DATASET = "TaiwanStockSecuritiesLending"
@@ -47,6 +49,7 @@ class FinMindBackgroundChipContextProvider:
         client: FinMindClient | None = None,
         lookback_trading_days: int = 10,
         stale_after_days: int = 5,
+        max_workers: int = DEFAULT_FINMIND_BACKGROUND_FETCH_WORKERS,
     ) -> None:
         self._static_token = api_token
         self._client = client or FinMindClient(
@@ -56,6 +59,7 @@ class FinMindBackgroundChipContextProvider:
         )
         self._lookback_trading_days = lookback_trading_days
         self._stale_after_days = stale_after_days
+        self._max_workers = max(1, max_workers)
 
     def fetch(
         self,
@@ -65,25 +69,47 @@ class FinMindBackgroundChipContextProvider:
         run_date: date,
         market: str,
     ) -> Iterable[BackgroundContextPayload]:
-        for symbol in symbols:
-            for context_type in context_types:
-                if context_type == "full_margin":
-                    yield self._full_margin_payload(symbol=symbol, run_date=run_date, market=market)
-                elif context_type == "lending":
-                    yield self._lending_payload(symbol=symbol, run_date=run_date, market=market)
-                else:
-                    yield self._missing_payload(
-                        symbol=symbol,
-                        context_type=context_type,
-                        run_date=run_date,
-                        market=market,
-                        missing_reason=(
-                            "provider_deferred"
-                            if context_type == "weekly_major_holders"
-                            else "unsupported_context_type"
-                        ),
-                        source_extra={"supported_context_types": sorted(_SUPPORTED_CONTEXT_TYPES)},
-                    )
+        requests = [(symbol, context_type) for symbol in symbols for context_type in context_types]
+        if not requests:
+            return
+
+        def fetch_one(request: tuple[str, str]) -> BackgroundContextPayload:
+            symbol, context_type = request
+            return self._payload(
+                symbol=symbol,
+                context_type=context_type,
+                run_date=run_date,
+                market=market,
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=min(self._max_workers, len(requests)),
+            thread_name_prefix="finmind-background",
+        ) as executor:
+            yield from executor.map(fetch_one, requests)
+
+    def _payload(
+        self,
+        *,
+        symbol: str,
+        context_type: str,
+        run_date: date,
+        market: str,
+    ) -> BackgroundContextPayload:
+        if context_type == "full_margin":
+            return self._full_margin_payload(symbol=symbol, run_date=run_date, market=market)
+        if context_type == "lending":
+            return self._lending_payload(symbol=symbol, run_date=run_date, market=market)
+        return self._missing_payload(
+            symbol=symbol,
+            context_type=context_type,
+            run_date=run_date,
+            market=market,
+            missing_reason=(
+                "provider_deferred" if context_type == "weekly_major_holders" else "unsupported_context_type"
+            ),
+            source_extra={"supported_context_types": sorted(_SUPPORTED_CONTEXT_TYPES)},
+        )
 
     def _full_margin_payload(self, *, symbol: str, run_date: date, market: str) -> BackgroundContextPayload:
         try:

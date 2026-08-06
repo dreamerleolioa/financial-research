@@ -58,6 +58,7 @@ make run-api
 
 - **用途**：執行股票分析流程（LangGraph 回圈：crawl → fetch_technical → fetch_institutional → judge → [data_sufficient/retry_limit: clean | requires_news_refresh: fetch_news → increment_retry → crawl | else: increment_retry → crawl] → clean → analyze）
 - **產品語義**：此端點對應 Analyze 頁的「新倉策略建議」，用於評估是否值得觀察、等待與建立新倉；**不是**持股中的續抱 / 減碼 / 出場指令端點
+- **FinMind 付費資料邊界**：`TaiwanStockHoldingSharesPer` 只開放 backer/sponsor 會員，預設不發送該 request，相關大戶／散戶持股分級欄位維持 `null`。只有部署端明確設定 `FINMIND_HOLDING_SHARES_PER_ENABLED=true` 且 token 具相應權限時才啟用，避免一般方案對每次分析固定產生 HTTP 400。
 
 - **Request Body**
 
@@ -1778,7 +1779,7 @@ Daily Radar run status：
   - TWSE RWD institutional reports：目前 live provider 讀取 `TWT38U` / `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation tracks。這是 report-level 查詢，不是 selected symbols 的逐檔法人 request。
   - TWSE-first Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時合併 selected universe、active holdings 與 watchlist symbols 後做 refresh；上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，其他 symbol 只記錄 `skipped_symbol_reasons.unsupported_phase1_avwap_market`。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，step status 會標記 failed 並輸出 per-symbol `missing_symbol_reasons`，其中 TWSE 延遲、request failure 與 parser error 需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`；但 `run-scoring` 仍可放行，候選 detail 以 `phase1_avwap_context.freshness = missing` / `missing_reason` 呈現。
   - AVWAP repair：台灣時間週二至週六 07:00 的 GitHub Actions 補修排程會對前一個 intended trading date 重跑 `refresh-avwap`；若 business status completed，立即重跑同日 `run-scoring`。Public read 以同日期最新完成 run 呈現補齊後版本，不直接改 candidate JSON。
-  - FinMind lending / full margin：正式排程分別在 `refresh-lending` / `refresh-full-margin` 小時對 selected universe symbols refresh；同一 `run_date` 已有 fresh shared context 時直接重用，不再呼叫 provider。
+  - FinMind lending / full margin：正式排程分別在 `refresh-lending` / `refresh-full-margin` 小時對 selected universe symbols refresh；同一 `run_date` 已有 fresh shared context 時直接重用，不再呼叫 provider。其餘 selected symbols 使用固定上限 8 路的 bounded concurrency，維持 per-symbol timeout、retry、quota ledger 與 deterministic response order，避免逐檔同步等待超過反向代理的單一 request 連線時間。
   - yfinance selected-symbol OHLCV：正式排程只在 `refresh-ohlcv` 小時對 selected universe 中缺少 final raw row 的 symbols 做一次 batch download，區間 bounded by `run_date`，既有 final `StockRawData` 直接重用；refresh 完成後會把技術面 tracks 回寫到 prepared universe。同一步驟會以 `run_date` 做 point-in-time 查詢，將 fresh `full_margin` shared context 投影至新建或既有 final raw row 的 `fundamental.margin`：`margin_balance_delta_pct` 對應 `margin_delta_pct`，`latest_margin_balance × 1000 / ohlcv.volume` 對應 `margin_to_volume`，並以 context `as_of_date` 寫入 `data_dates.margin`。
   - yfinance market index OHLCV：每次 run 只抓固定 benchmark。TW 使用 `TAIEX` / `^TWII`，US 使用 `SPX` / `^GSPC`，用於 market regime 與 relative strength benchmark。
   - Shared background context：正式排程把 `lending` 與 `full_margin` 拆成不同小時 refresh；`weekly_major_holders` 仍由週頻背景排程更新，不在 daily pipeline 內強行日更。
