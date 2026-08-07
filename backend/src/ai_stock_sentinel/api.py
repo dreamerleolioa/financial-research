@@ -23,6 +23,7 @@ from ai_stock_sentinel.calibration.router import router as calibration_router
 from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.daily_radar.router import router as daily_radar_router
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
+from ai_stock_sentinel.data_sources.fundamental.router import router as fundamental_router
 from ai_stock_sentinel.data_sources.institutional_flow.tools import fetch_institutional_flow
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.db.session import get_db
@@ -102,6 +103,7 @@ app.include_router(history_router)
 app.include_router(daily_radar_router)
 app.include_router(calibration_router)
 app.include_router(watchlist_router)
+app.include_router(fundamental_router)
 
 
 @app.get("/health")

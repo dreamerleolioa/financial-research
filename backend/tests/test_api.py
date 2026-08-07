@@ -970,6 +970,50 @@ def test_api_response_data_sources_includes_google_news_rss_when_raw_news_presen
     assert "google-news-rss" in response.json()["data_sources"]
 
 
+def test_api_response_data_sources_uses_actual_fundamental_provider() -> None:
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": None,
+        "fundamental_data": {
+            "symbol": "2330.TW",
+            "source_provider": "OfficialCachedFundamental",
+        },
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert "official-cached-fundamental" in response.json()["data_sources"]
+    assert "finmind-fundamental" not in response.json()["data_sources"]
+
+
+def test_api_response_data_sources_includes_composite_fundamental_providers() -> None:
+    graph = _make_graph({
+        "snapshot": asdict(_SNAPSHOT),
+        "analysis": "分析結果",
+        "cleaned_news": None,
+        "errors": [],
+        "institutional_flow": None,
+        "raw_news_items": None,
+        "fundamental_data": {
+            "symbol": "2330.TW",
+            "source_provider": "OfficialCachedFundamental+FinMindFundamental",
+        },
+    })
+    client = _client_with_graph(graph)
+
+    response = client.post("/analyze", json={"symbol": "2330.TW"})
+
+    assert response.status_code == 200
+    assert "official-cached-fundamental" in response.json()["data_sources"]
+    assert "finmind-fundamental" in response.json()["data_sources"]
+
+
 # ---------------------------------------------------------------------------
 # Task 5: POST /analyze/position
 # ---------------------------------------------------------------------------

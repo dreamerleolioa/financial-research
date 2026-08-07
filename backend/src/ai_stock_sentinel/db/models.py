@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric,
+    BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric,
     String, Text, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -386,6 +386,157 @@ class StockRawData(Base):
     fundamental:        Mapped[dict | None]  = mapped_column(JSONB, nullable=True)
     raw_data_is_final:  Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     fetched_at:         Mapped[datetime]     = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class TaiwanDailyBar(Base):
+    __tablename__ = "taiwan_daily_bars"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "trade_date",
+            "dataset",
+            "adjustment_mode",
+            name="uq_taiwan_daily_bar_symbol_date_dataset_mode",
+        ),
+        CheckConstraint("market IN ('TW', 'TWO')", name="ck_taiwan_daily_bar_market"),
+        CheckConstraint(
+            "adjustment_mode IN ('unadjusted')",
+            name="ck_taiwan_daily_bar_adjustment_mode",
+        ),
+        Index("idx_taiwan_daily_bars_symbol_date", "symbol", "trade_date"),
+        Index("idx_taiwan_daily_bars_date_market", "trade_date", "market"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    open: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    volume: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    amount: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dataset: Mapped[str] = mapped_column(String(50), nullable=False)
+    adjustment_mode: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="unadjusted",
+        server_default="unadjusted",
+    )
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_dataset: Mapped[str] = mapped_column(String(60), nullable=False)
+    is_final: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CompanyFundamentalPeriod(Base):
+    __tablename__ = "company_fundamental_periods"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "fiscal_year",
+            "fiscal_quarter",
+            "statement_scope",
+            "payload_hash",
+            name="uq_company_fundamental_period_revision",
+        ),
+        CheckConstraint(
+            "fiscal_quarter BETWEEN 1 AND 4",
+            name="ck_company_fundamental_period_quarter",
+        ),
+        CheckConstraint(
+            "availability_quality IN ('observed', 'historical_unknown')",
+            name="ck_company_fundamental_period_availability_quality",
+        ),
+        Index(
+            "idx_company_fundamental_period_symbol_period",
+            "symbol",
+            "fiscal_year",
+            "fiscal_quarter",
+        ),
+        Index("idx_company_fundamental_period_first_observed", "first_observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    fiscal_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    fiscal_quarter: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    statement_scope: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="consolidated", server_default="consolidated"
+    )
+    industry_schema: Mapped[str] = mapped_column(String(20), nullable=False)
+    cumulative_eps: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    quarter_eps: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    source_report_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    first_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    availability_quality: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_dataset: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class CompanyDividendEvent(Base):
+    __tablename__ = "company_dividend_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "source_provider",
+            "source_dataset",
+            "event_key",
+            "payload_hash",
+            name="uq_company_dividend_event_revision",
+        ),
+        Index("idx_company_dividend_event_symbol_year", "symbol", "dividend_year"),
+        Index("idx_company_dividend_event_first_observed", "first_observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    dividend_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sequence: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    decision_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    board_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    shareholder_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    ex_dividend_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    earnings_cash_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    legal_reserve_cash_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    capital_reserve_cash_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    total_cash_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_dataset: Mapped[str] = mapped_column(String(80), nullable=False)
+    event_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    first_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 class StockAnalysisCache(Base):
