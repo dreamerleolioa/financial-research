@@ -6,10 +6,12 @@ import importlib.util
 from io import StringIO
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import MagicMock
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, event
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.market_bar_provider import (
@@ -182,6 +184,26 @@ def test_market_bar_repository_upserts_same_identity_without_duplicates() -> Non
         engine.dispose()
 
 
+def test_market_bar_repository_uses_atomic_postgres_upsert() -> None:
+    session = MagicMock()
+    session.get_bind.return_value.dialect.name = "postgresql"
+
+    written = upsert_taiwan_daily_bars(
+        session,
+        [_bar("2330.TW", date(2026, 6, 10), 100)],
+    )
+
+    assert written == 1
+    session.execute.assert_called_once()
+    statement = session.execute.call_args.args[0]
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert (
+        "ON CONFLICT ON CONSTRAINT uq_taiwan_daily_bar_symbol_date_dataset_mode DO UPDATE"
+        in sql
+    )
+    session.flush.assert_called_once_with()
+
+
 class _FixtureMarketProvider:
     def __init__(self, *, fail_tpex: bool = False) -> None:
         self.fail_tpex = fail_tpex
@@ -341,3 +363,15 @@ def test_phase1_avwap_provider_reports_actual_fallback_source() -> None:
     finally:
         session.close()
         engine.dispose()
+
+
+def test_market_bar_manual_backfill_is_not_gated_by_current_market_session() -> None:
+    workflow = Path(__file__).parents[2] / ".github" / "workflows" / "daily-radar.yml"
+    text = workflow.read_text(encoding="utf-8")
+
+    assert (
+        "if: (needs.resolve-run-context.outputs.market_open == 'true' && "
+        "github.event.schedule == '30 10 * * 1-5') || "
+        "(github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars')"
+        in text
+    )

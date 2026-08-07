@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import date
+from datetime import date, datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
@@ -24,6 +26,17 @@ def upsert_taiwan_daily_bars(
     materialized = list(bars)
     if not materialized:
         return 0
+    if _is_postgresql(session):
+        session.execute(
+            _postgres_taiwan_daily_bar_upsert(
+                materialized,
+                dataset=dataset,
+                adjustment_mode=adjustment_mode,
+                fetched_at=datetime.now(timezone.utc),
+            )
+        )
+        session.flush()
+        return len(materialized)
     symbols = sorted({bar.symbol for bar in materialized})
     dates = sorted({bar.trade_date for bar in materialized})
     existing = session.scalars(
@@ -58,6 +71,60 @@ def upsert_taiwan_daily_bars(
         row.source_dataset = bar.source_dataset
         row.is_final = bar.is_final
     return len(materialized)
+
+
+def _is_postgresql(session: Session) -> bool:
+    return session.get_bind().dialect.name == "postgresql"
+
+
+def _postgres_taiwan_daily_bar_upsert(
+    bars: Iterable[MarketDailyBar],
+    *,
+    dataset: str,
+    adjustment_mode: str,
+    fetched_at: datetime,
+):
+    values_by_identity: dict[tuple[str, date, str, str], dict[str, Any]] = {}
+    for bar in bars:
+        identity = (bar.symbol, bar.trade_date, dataset, adjustment_mode)
+        values_by_identity[identity] = {
+            "symbol": bar.symbol,
+            "market": bar.market,
+            "name": bar.name,
+            "trade_date": bar.trade_date,
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "amount": bar.amount,
+            "dataset": dataset,
+            "adjustment_mode": adjustment_mode,
+            "source_provider": bar.source_provider,
+            "source_dataset": bar.source_dataset,
+            "is_final": bar.is_final,
+            "fetched_at": fetched_at,
+        }
+    statement = postgresql_insert(TaiwanDailyBar).values(
+        list(values_by_identity.values())
+    )
+    return statement.on_conflict_do_update(
+        constraint="uq_taiwan_daily_bar_symbol_date_dataset_mode",
+        set_={
+            "market": statement.excluded.market,
+            "name": statement.excluded.name,
+            "open": statement.excluded.open,
+            "high": statement.excluded.high,
+            "low": statement.excluded.low,
+            "close": statement.excluded.close,
+            "volume": statement.excluded.volume,
+            "amount": statement.excluded.amount,
+            "source_provider": statement.excluded.source_provider,
+            "source_dataset": statement.excluded.source_dataset,
+            "is_final": statement.excluded.is_final,
+            "fetched_at": statement.excluded.fetched_at,
+        },
+    )
 
 
 def get_taiwan_daily_bars(

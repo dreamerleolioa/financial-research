@@ -422,20 +422,8 @@ def _parse_lending_payload(payload: Mapping[str, Any]) -> list[tuple[date, str, 
             "official_lending_response_error",
             dataset="TWSE_t13sa710",
         )
-    tables = payload.get("tables")
-    if not isinstance(tables, Sequence) or isinstance(tables, (str, bytes)) or not tables:
-        raise OfficialBackgroundContextError(
-            "official_lending_tables_invalid",
-            dataset="TWSE_t13sa710",
-        )
-    table = tables[0]
-    if not isinstance(table, Mapping):
-        raise OfficialBackgroundContextError(
-            "official_lending_table_invalid",
-            dataset="TWSE_t13sa710",
-        )
-    fields = table.get("fields")
-    data = table.get("data")
+    fields = payload.get("fields")
+    data = payload.get("data")
     if not isinstance(fields, Sequence) or isinstance(fields, (str, bytes)):
         raise OfficialBackgroundContextError(
             "official_lending_fields_invalid",

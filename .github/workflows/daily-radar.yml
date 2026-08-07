@@ -229,7 +229,7 @@ jobs:
     name: Refresh Taiwan market bars
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars'))
+    if: (needs.resolve-run-context.outputs.market_open == 'true' && github.event.schedule == '30 10 * * 1-5') || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars')
     steps:
       - name: Trigger refresh-market-bars
         env:

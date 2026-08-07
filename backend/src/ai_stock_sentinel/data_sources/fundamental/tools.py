@@ -39,12 +39,21 @@ def fetch_fundamental_data(symbol: str, current_price: float) -> dict:
         )
         result = _fetch_with_provider(provider, symbol=symbol, current_price=current_price)
         if "error" in result:
-            session.rollback()
+            _safe_session_rollback(session)
         else:
-            session.commit()
+            try:
+                session.commit()
+            except Exception as exc:
+                logger.exception("Unable to commit fundamental cache session")
+                _safe_session_rollback(session)
+                return {
+                    "error": "FUNDAMENTAL_DATABASE_UNAVAILABLE",
+                    "message": str(exc),
+                    "symbol": symbol,
+                }
         return result
     finally:
-        session.close()
+        _safe_session_close(session)
 
 
 def _fetch_with_provider(provider, *, symbol: str, current_price: float) -> dict:
@@ -57,3 +66,17 @@ def _fetch_with_provider(provider, *, symbol: str, current_price: float) -> dict
     except Exception as e:
         logger.exception("Unexpected error in fetch_fundamental_data")
         return {"error": "FUNDAMENTAL_UNKNOWN_ERROR", "message": str(e), "symbol": symbol}
+
+
+def _safe_session_rollback(session) -> None:
+    try:
+        session.rollback()
+    except Exception:
+        logger.exception("Unable to roll back fundamental cache session")
+
+
+def _safe_session_close(session) -> None:
+    try:
+        session.close()
+    except Exception:
+        logger.exception("Unable to close fundamental cache session")

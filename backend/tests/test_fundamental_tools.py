@@ -79,3 +79,31 @@ def test_official_cache_mode_returns_error_when_database_is_unavailable(monkeypa
         result = fetch_fundamental_data("2330.TW", current_price=1000.0)
 
     assert result["error"] == "FUNDAMENTAL_DATABASE_UNAVAILABLE"
+
+
+def test_official_cache_mode_converts_commit_failure_to_error_dict(monkeypatch):
+    mock_data = FundamentalData(symbol="2330.TW", ttm_eps=40)
+    session = MagicMock()
+    session.commit.side_effect = RuntimeError("commit failed")
+    provider = MagicMock()
+    provider.fetch.return_value = mock_data
+    monkeypatch.setenv("FUNDAMENTAL_PROVIDER_MODE", "official_cache_first")
+    with (
+        patch(
+            "ai_stock_sentinel.data_sources.fundamental.tools.create_session",
+            return_value=session,
+        ),
+        patch(
+            "ai_stock_sentinel.data_sources.fundamental.tools.OfficialCachedFundamentalProvider",
+            return_value=provider,
+        ),
+    ):
+        result = fetch_fundamental_data("2330.TW", current_price=1000.0)
+
+    assert result == {
+        "error": "FUNDAMENTAL_DATABASE_UNAVAILABLE",
+        "message": "commit failed",
+        "symbol": "2330.TW",
+    }
+    session.rollback.assert_called_once_with()
+    session.close.assert_called_once_with()

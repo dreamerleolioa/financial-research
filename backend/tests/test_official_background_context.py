@@ -198,7 +198,7 @@ def test_official_tpex_margin_counts_unique_payload_dates_only() -> None:
     assert payload.payload["margin_balance_delta"] == 100.0
 
 
-def test_official_lending_aggregates_transactions_by_symbol_and_date() -> None:
+def test_official_lending_reads_live_top_level_schema_and_aggregates_by_date() -> None:
     calls = 0
 
     def fake_get(url: str, *, params: dict, **kwargs):
@@ -208,21 +208,17 @@ def test_official_lending_aggregates_transactions_by_symbol_and_date() -> None:
         return _FakeResponse(
             {
                 "stat": "OK",
-                "tables": [
-                    {
-                        "fields": [
-                            "成交日期",
-                            "證券代號名稱",
-                            "交易方式",
-                            "成交數量(交易單位)",
-                        ],
-                        "data": [
-                            ["115年06月09日", "2330 台積電", "競價", "100"],
-                            ["115年06月10日", "2330 台積電", "競價", "125"],
-                            ["115年06月10日", "2330 台積電", "議借", "25"],
-                            ["115年06月10日", "8069 元太", "競價", "80"],
-                        ],
-                    }
+                "fields": [
+                    "成交日期",
+                    "證券代號名稱",
+                    "交易方式",
+                    "成交數量(交易單位)",
+                ],
+                "data": [
+                    ["115年06月09日", "2330 台積電", "競價", "100"],
+                    ["115年06月10日", "2330 台積電", "競價", "125"],
+                    ["115年06月10日", "2330 台積電", "議借", "25"],
+                    ["115年06月10日", "8069 元太", "競價", "80"],
                 ],
             }
         )
