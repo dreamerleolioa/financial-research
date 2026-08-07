@@ -196,6 +196,62 @@ def test_repository_keeps_restatements_and_derives_discrete_quarter_eps() -> Non
         engine.dispose()
 
 
+def test_quarter_eps_as_of_read_is_not_rewritten_by_later_prior_quarter_revision() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2025, 1, "2"), _statement_row(2025, 2, "5")],
+                market="TW",
+                industry_schema="ci",
+                source_dataset="TWSE_ci",
+            ),
+        )
+        rows = session.scalars(select(CompanyFundamentalPeriod)).all()
+        for row in rows:
+            row.first_observed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2025, 1, "2.5")],
+                market="TW",
+                industry_schema="ci",
+                source_dataset="TWSE_ci",
+            ),
+        )
+        restated_q1 = max(
+            session.scalars(
+                select(CompanyFundamentalPeriod).where(
+                    CompanyFundamentalPeriod.fiscal_quarter == 1
+                )
+            ).all(),
+            key=lambda row: row.id,
+        )
+        restated_q1.first_observed_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        session.commit()
+
+        before_restatement = load_latest_fundamental_periods(
+            session,
+            symbol="2330.TW",
+            as_of_date=date(2026, 1, 15),
+        )
+        latest = load_latest_fundamental_periods(session, symbol="2330.TW")
+
+        assert [row.quarter_eps for row in before_restatement] == [Decimal("2"), Decimal("3")]
+        assert [row.quarter_eps for row in latest] == [Decimal("2.5"), Decimal("2.5")]
+        stored_q2 = session.scalar(
+            select(CompanyFundamentalPeriod).where(
+                CompanyFundamentalPeriod.fiscal_quarter == 2
+            )
+        )
+        assert stored_q2 is not None
+        assert stored_q2.quarter_eps is None
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_finmind_statement_rows_remain_discrete_quarter_eps() -> None:
     session, engine = _db_session()
     try:
@@ -310,6 +366,55 @@ def test_finmind_quarterly_dividends_form_one_complete_fiscal_year() -> None:
 
         assert result.annual_cash_dividend == 17
         assert result.dividend_yield == 17 / 360 * 100
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_official_quarterly_dividends_win_over_duplicate_finmind_periods() -> None:
+    session, engine = _db_session()
+    try:
+        official_rows = []
+        finmind_rows = []
+        quarter_ranges = (
+            ("113/01/01~113/03/31", "113年第1季", "2024-09-18"),
+            ("113/04/01~113/06/30", "113年第2季", "2024-12-18"),
+            ("113/07/01~113/09/30", "113年第3季", "2025-03-24"),
+            ("113/10/01~113/12/31", "113年第4季", "2025-06-18"),
+        )
+        for sequence, (period, label, event_date) in enumerate(quarter_ranges, 1):
+            official_rows.append(
+                {
+                    "公司代號": "2330",
+                    "股利年度": "113",
+                    "股利所屬期間": period,
+                    "股利所屬年(季)度": label,
+                    "期別": str(sequence),
+                    "股東配發-盈餘分配之現金股利(元/股)": "5",
+                }
+            )
+            finmind_rows.append(
+                {
+                    "date": event_date,
+                    "year": label,
+                    "CashEarningsDistribution": "4",
+                }
+            )
+
+        store_dividend_events(session, normalize_twse_dividend_rows(official_rows))
+        store_dividend_events(
+            session,
+            normalize_finmind_dividend_rows(finmind_rows, symbol="2330.TW"),
+        )
+
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2330.TW", 400)
+
+        assert result.annual_cash_dividend == 20
+        assert result.dividend_yield == 5
+        assert result.source_provider == "OfficialCachedFundamental+FinMindFundamental"
     finally:
         session.close()
         engine.dispose()

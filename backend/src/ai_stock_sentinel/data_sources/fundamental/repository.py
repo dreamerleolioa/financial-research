@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +15,26 @@ from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     NormalizedFundamentalPeriod,
 )
 from ai_stock_sentinel.db.models import CompanyDividendEvent, CompanyFundamentalPeriod
+
+
+@dataclass(frozen=True)
+class LoadedFundamentalPeriod:
+    id: int
+    symbol: str
+    market: str
+    fiscal_year: int
+    fiscal_quarter: int
+    period_end: date
+    statement_scope: str
+    industry_schema: str
+    cumulative_eps: Decimal | None
+    quarter_eps: Decimal | None
+    source_report_date: date | None
+    availability_quality: str
+    source_provider: str
+    source_dataset: str
+    first_observed_at: datetime
+    last_observed_at: datetime
 
 
 def store_fundamental_periods(
@@ -38,13 +60,6 @@ def store_fundamental_periods(
         session.execute(
             _postgres_fundamental_period_upsert(materialized, observed_at=now)
         )
-        session.flush()
-        latest_rows = session.scalars(
-            select(CompanyFundamentalPeriod).where(
-                CompanyFundamentalPeriod.symbol.in_(symbols)
-            )
-        ).all()
-        _update_latest_discrete_eps_rows(latest_rows)
         session.flush()
         return len(materialized)
 
@@ -78,8 +93,6 @@ def store_fundamental_periods(
         else:
             row.last_observed_at = now
         written += 1
-    session.flush()
-    _update_latest_discrete_eps_rows(by_identity.values())
     session.flush()
     return written
 
@@ -138,7 +151,7 @@ def load_latest_fundamental_periods(
     symbol: str,
     as_of_date: date | None = None,
     allow_historical_unknown: bool = True,
-) -> list[CompanyFundamentalPeriod]:
+) -> list[LoadedFundamentalPeriod]:
     statement = select(CompanyFundamentalPeriod).where(
         CompanyFundamentalPeriod.symbol == symbol.upper()
     )
@@ -155,10 +168,11 @@ def load_latest_fundamental_periods(
         current = by_period.get(key)
         if current is None or _period_revision_sort_key(row) > _period_revision_sort_key(current):
             by_period[key] = row
-    return sorted(
+    selected = sorted(
         by_period.values(),
         key=lambda row: (row.fiscal_year, row.fiscal_quarter),
     )
+    return _materialize_loaded_periods(selected)
 
 
 def load_latest_dividend_events(
@@ -184,29 +198,49 @@ def load_latest_dividend_events(
     )
 
 
-def _update_latest_discrete_eps_rows(rows: Iterable[CompanyFundamentalPeriod]) -> None:
-    latest_by_period: dict[tuple[str, int, int, str], CompanyFundamentalPeriod] = {}
+def _materialize_loaded_periods(
+    rows: Iterable[CompanyFundamentalPeriod],
+) -> list[LoadedFundamentalPeriod]:
+    materialized: list[LoadedFundamentalPeriod] = []
+    by_period: dict[tuple[str, int, int, str], CompanyFundamentalPeriod] = {}
     for row in rows:
         key = (row.symbol, row.fiscal_year, row.fiscal_quarter, row.statement_scope)
-        current = latest_by_period.get(key)
-        if current is None or _period_revision_sort_key(row) > _period_revision_sort_key(current):
-            latest_by_period[key] = row
-    for row in latest_by_period.values():
+        by_period[key] = row
         cumulative = row.cumulative_eps
         if cumulative is None:
-            # FinMind bootstrap values are already discrete single-quarter EPS.
-            continue
-        if row.fiscal_quarter == 1:
-            row.quarter_eps = cumulative
-            continue
-        previous = latest_by_period.get(
-            (row.symbol, row.fiscal_year, row.fiscal_quarter - 1, row.statement_scope)
+            quarter_eps = row.quarter_eps
+        elif row.fiscal_quarter == 1:
+            quarter_eps = cumulative
+        else:
+            previous = by_period.get(
+                (row.symbol, row.fiscal_year, row.fiscal_quarter - 1, row.statement_scope)
+            )
+            quarter_eps = (
+                cumulative - previous.cumulative_eps
+                if previous is not None and previous.cumulative_eps is not None
+                else None
+            )
+        materialized.append(
+            LoadedFundamentalPeriod(
+                id=row.id,
+                symbol=row.symbol,
+                market=row.market,
+                fiscal_year=row.fiscal_year,
+                fiscal_quarter=row.fiscal_quarter,
+                period_end=row.period_end,
+                statement_scope=row.statement_scope,
+                industry_schema=row.industry_schema,
+                cumulative_eps=row.cumulative_eps,
+                quarter_eps=quarter_eps,
+                source_report_date=row.source_report_date,
+                availability_quality=row.availability_quality,
+                source_provider=row.source_provider,
+                source_dataset=row.source_dataset,
+                first_observed_at=row.first_observed_at,
+                last_observed_at=row.last_observed_at,
+            )
         )
-        row.quarter_eps = (
-            cumulative - previous.cumulative_eps
-            if previous is not None and previous.cumulative_eps is not None
-            else None
-        )
+    return materialized
 
 
 def _observed_sort_key(row: CompanyFundamentalPeriod | CompanyDividendEvent) -> tuple[float, int]:
@@ -338,6 +372,7 @@ def _postgres_dividend_event_upsert(
 
 
 __all__ = [
+    "LoadedFundamentalPeriod",
     "load_latest_dividend_events",
     "load_latest_fundamental_periods",
     "store_dividend_events",

@@ -13,13 +13,14 @@ from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_finmind_statement_rows,
 )
 from ai_stock_sentinel.data_sources.fundamental.repository import (
+    LoadedFundamentalPeriod,
     load_latest_dividend_events,
     load_latest_fundamental_periods,
     store_dividend_events,
     store_fundamental_periods,
 )
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
-from ai_stock_sentinel.db.models import CompanyDividendEvent, CompanyFundamentalPeriod
+from ai_stock_sentinel.db.models import CompanyDividendEvent
 
 
 class OfficialCachedFundamentalProvider:
@@ -112,7 +113,7 @@ class OfficialCachedFundamentalProvider:
             annual_cash_dividend=annual_cash_dividend,
             dividend_yield=dividend_yield,
             yield_signal=yield_signal,
-            source_provider=self.name,
+            source_provider=_fundamental_source_provider(periods, dividends),
             warnings=warnings,
         )
 
@@ -120,10 +121,10 @@ class OfficialCachedFundamentalProvider:
         self,
         symbol: str,
         *,
-        periods: list[CompanyFundamentalPeriod],
+        periods: list[LoadedFundamentalPeriod],
         dividends: list[CompanyDividendEvent],
         warnings: list[str],
-    ) -> tuple[list[CompanyFundamentalPeriod], list[CompanyDividendEvent]]:
+    ) -> tuple[list[LoadedFundamentalPeriod], list[CompanyDividendEvent]]:
         if len(periods) < 7:
             try:
                 rows = self._fallback_provider.fetch_statement_rows(symbol)
@@ -152,7 +153,7 @@ class OfficialCachedFundamentalProvider:
         self,
         symbol: str,
         *,
-        periods: list[CompanyFundamentalPeriod],
+        periods: list[LoadedFundamentalPeriod],
         latest_period_index: int | None,
     ) -> list[float]:
         if latest_period_index is None or len(periods) < 4:
@@ -202,7 +203,7 @@ class OfficialCachedFundamentalProvider:
 
 
 def _latest_ttm(
-    periods: list[CompanyFundamentalPeriod],
+    periods: list[LoadedFundamentalPeriod],
 ) -> tuple[float | None, int | None]:
     if len(periods) < 4:
         return None, None
@@ -216,7 +217,7 @@ def _latest_ttm(
     return None, None
 
 
-def _periods_are_contiguous(periods: list[CompanyFundamentalPeriod]) -> bool:
+def _periods_are_contiguous(periods: list[LoadedFundamentalPeriod]) -> bool:
     if len(periods) != 4:
         return False
     indexes = [row.fiscal_year * 4 + row.fiscal_quarter for row in periods]
@@ -232,27 +233,82 @@ def _latest_complete_annual_dividend(
             by_year.setdefault(event.dividend_year, []).append(event)
     for dividend_year in sorted(by_year, reverse=True):
         year_events = by_year[dividend_year]
-        annual = [
-            event
-            for event in year_events
-            if event.period_start == date(dividend_year, 1, 1)
-            and event.period_end == date(dividend_year, 12, 31)
-        ]
-        if annual:
-            latest = max(annual, key=_observed_event_key)
-            return float(latest.total_cash_per_share), None
-        bounded = [
-            event
-            for event in year_events
-            if event.period_start is not None and event.period_end is not None
-        ]
-        if bounded:
-            ordered = sorted(bounded, key=lambda event: (event.period_start, event.period_end))
-            if _covers_full_year_without_overlap(ordered, dividend_year=dividend_year):
-                return sum(float(event.total_cash_per_share) for event in ordered), None
+        official_value = _complete_annual_dividend_for_events(
+            [event for event in year_events if event.source_provider != "finmind_bootstrap"],
+            dividend_year=dividend_year,
+        )
+        if official_value is not None:
+            return official_value, None
+        canonical_value = _complete_annual_dividend_for_events(
+            _prefer_dividend_period_sources(year_events),
+            dividend_year=dividend_year,
+        )
+        if canonical_value is not None:
+            return canonical_value, None
     if by_year:
         return None, "股利事件尚不足以證明完整年度金額，未以部分年度資料冒充年股利"
     return None, "基本面快取沒有可用的完整年度現金股利"
+
+
+def _complete_annual_dividend_for_events(
+    events: list[CompanyDividendEvent],
+    *,
+    dividend_year: int,
+) -> float | None:
+    annual = [
+        event
+        for event in events
+        if event.period_start == date(dividend_year, 1, 1)
+        and event.period_end == date(dividend_year, 12, 31)
+    ]
+    if annual:
+        latest = max(annual, key=_observed_event_key)
+        return float(latest.total_cash_per_share)
+    bounded = [
+        event
+        for event in events
+        if event.period_start is not None and event.period_end is not None
+    ]
+    ordered = sorted(bounded, key=lambda event: (event.period_start, event.period_end))
+    if ordered and _covers_full_year_without_overlap(ordered, dividend_year=dividend_year):
+        return sum(float(event.total_cash_per_share) for event in ordered)
+    return None
+
+
+def _prefer_dividend_period_sources(
+    events: list[CompanyDividendEvent],
+) -> list[CompanyDividendEvent]:
+    by_period: dict[tuple[date | None, date | None], list[CompanyDividendEvent]] = {}
+    for event in events:
+        by_period.setdefault((event.period_start, event.period_end), []).append(event)
+    preferred: list[CompanyDividendEvent] = []
+    for period_events in by_period.values():
+        priority = max(_dividend_source_priority(event) for event in period_events)
+        preferred.extend(
+            event
+            for event in period_events
+            if _dividend_source_priority(event) == priority
+        )
+    return preferred
+
+
+def _dividend_source_priority(event: CompanyDividendEvent) -> int:
+    return 0 if event.source_provider == "finmind_bootstrap" else 1
+
+
+def _fundamental_source_provider(
+    periods: list[LoadedFundamentalPeriod],
+    dividends: list[CompanyDividendEvent],
+) -> str:
+    uses_finmind = any(
+        item.source_provider == "finmind_bootstrap"
+        for item in [*periods, *dividends]
+    )
+    return (
+        "OfficialCachedFundamental+FinMindFundamental"
+        if uses_finmind
+        else "OfficialCachedFundamental"
+    )
 
 
 def _covers_full_year_without_overlap(

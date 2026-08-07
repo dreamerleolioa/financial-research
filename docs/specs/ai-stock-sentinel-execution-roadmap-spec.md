@@ -333,6 +333,7 @@
 來源與行為：
 
 - 上市融資融券使用 TWSE `MI_MARGN`，上櫃使用 TPEX 融資融券餘額；借券使用 TWSE `t13sa710`，`weekly_major_holders` 繼續使用 TDCC。
+- 融資歷史查詢依市場使用不同日期格式：TWSE 為 `YYYYMMDD`，TPEX 為 `YYYY/MM/DD`；lookback 只計入有市場資料且不重複的 payload date，避免同一交易日被重複當成多日變化。
 - 以市場級資料集取代 `selected symbols × context types` 的 FinMind 逐檔 request；full margin 最多回看 10 個交易日／37 個 calendar days，lending 依官方限制分成 7 日區間。
 - 保存既有 `shared_background_contexts` payload keys、consumer contract、單位及 replay key 語意，不新增 schema migration。
 - `DAILY_RADAR_BACKGROUND_PROVIDER_MODE` 支援 `finmind_only`、`official_first`、`official_only`。初次部署與緊急回滾使用 `finmind_only`；完成比對後切 `official_first`。
@@ -362,7 +363,7 @@
 - 新增 `OfficialCachedFundamentalProvider`；`/analyze` 與 `/analyze/position` 正常路徑只讀 DB，不直接呼叫官方 API。
 - `FUNDAMENTAL_PROVIDER_MODE` 支援 `finmind_only`、`official_cache_first`、`official_cache_only`。`official_cache_only` 資料不足時回傳 partial fundamental context 與 warning，不中止整體分析。
 
-新增 `company_fundamental_periods`：保存 symbol/market、fiscal year/quarter、statement scope、industry schema、累計與離散季度 EPS、report date、first/last observed、availability quality、來源、payload hash 與 raw payload；財報修訂追加版本，不覆蓋舊值。
+新增 `company_fundamental_periods`：保存 symbol/market、fiscal year/quarter、statement scope、industry schema、官方累計 EPS、FinMind 離散季度 EPS、report date、first/last observed、availability quality、來源、payload hash 與 raw payload；財報修訂追加版本，不覆蓋舊值。官方單季 EPS 依查詢當下選中的 point-in-time revisions 動態推導，避免前期重編回頭改寫既有後期 revision。
 
 新增 `company_dividend_events`：保存股利年度與涵蓋期間、決議狀態、董事會／股東會／除權息日期、盈餘／法定盈餘公積／資本公積現金股利、合計現金股利、first/last observed、來源、payload hash 與 raw payload；重疊期間無法消歧時 fail closed。
 
@@ -373,6 +374,7 @@
 - TTM 只使用最近四個連續離散季度；目前 PE 僅在 TTM EPS > 0 時計算。
 - 歷史 PE 最多 24 季，季末價格優先讀 DR2 `taiwan_daily_bars`，資料不足才使用 yfinance fallback；至少四個有效樣本才產生估值帶。
 - 年度股利優先使用完整年度事件，否則加總互不重疊季度／半年事件；FinMind bootstrap 必須解析 `year` 的民國年與季度範圍，無法確認期間時保持 unbounded 並 fail closed，不得把每筆配息偽裝成完整年度，也不得用股價乘殖利率反推現金股利。
+- 官方與 FinMind 同時保存相同股利涵蓋期間時，先以官方事件消除跨來源重疊；同一優先來源仍有無法消歧的重疊時維持 fail closed。基本面與 AVWAP 的公開 provenance 必須反映實際使用的 official、bootstrap 或 fallback provider，不得只標示 routing wrapper。
 - `first_observed_at` 是 point-in-time availability boundary。FinMind 歷史 bootstrap 標記 `historical_unknown`，可支援目前估值帶，不可進入要求 point-in-time 正確性的歷史 replay/backtest。
 - 保持現有 `ttm_eps`、`pe_current`、PE band/percentile、`annual_cash_dividend`、`dividend_yield`、`yield_signal`、source 與 warning public contract。
 

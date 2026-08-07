@@ -114,11 +114,11 @@ def test_official_margin_fetches_each_market_date_once_for_many_symbols() -> Non
         ),
     }
     tpex_by_date = {
-        "20260610": _tpex_margin_payload(
+        "2026/06/10": _tpex_margin_payload(
             "20260610",
             [["8069", "元太", "300", "0", "0", "0", "350", "0", "0", "0", "20", "0", "0", "0", "25", "0", "0", "0", "0", ""]],
         ),
-        "20260609": _tpex_margin_payload(
+        "2026/06/09": _tpex_margin_payload(
             "20260609",
             [["8069", "元太", "250", "0", "0", "0", "300", "0", "0", "0", "15", "0", "0", "0", "20", "0", "0", "0", "0", ""]],
         ),
@@ -156,6 +156,46 @@ def test_official_margin_fetches_each_market_date_once_for_many_symbols() -> Non
     assert by_symbol["8069.TWO"].source["dataset"] == "TPEX_margin_balance"
     assert by_symbol["8069.TWO"].source["market"] == "TWO"
     assert by_symbol["8069.TWO"].payload["unit"] == "trading_lots"
+
+
+def test_official_tpex_margin_counts_unique_payload_dates_only() -> None:
+    calls: list[str] = []
+
+    latest = _tpex_margin_payload(
+        "20260610",
+        [["8069", "元太", "300", "0", "0", "0", "350", "0", "0", "0", "20", "0", "0", "0", "25", "0", "0", "0", "0", ""]],
+    )
+    earlier = _tpex_margin_payload(
+        "20260608",
+        [["8069", "元太", "250", "0", "0", "0", "300", "0", "0", "0", "15", "0", "0", "0", "20", "0", "0", "0", "0", ""]],
+    )
+
+    def fake_get(url: str, *, params: dict, **kwargs):
+        assert url == TPEX_MARGIN_URL
+        calls.append(params["date"])
+        return _FakeResponse(
+            earlier if params["date"] == "2026/06/08" else latest
+        )
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=2,
+        max_lookback_calendar_days=3,
+    )
+
+    [payload] = list(
+        provider.fetch(
+            symbols=["8069.TWO"],
+            context_types=["full_margin"],
+            run_date=date(2026, 6, 10),
+            market="TW",
+        )
+    )
+
+    assert calls == ["2026/06/10", "2026/06/09", "2026/06/08"]
+    assert payload.payload["row_count"] == 2
+    assert payload.payload["data_dates"] == ["2026-06-08", "2026-06-10"]
+    assert payload.payload["margin_balance_delta"] == 100.0
 
 
 def test_official_lending_aggregates_transactions_by_symbol_and_date() -> None:

@@ -113,7 +113,7 @@ class OfficialBackgroundChipContextProvider:
             "TWO": [symbol for symbol in symbols if symbol.endswith(".TWO")],
         }
         observations: dict[str, list[tuple[date, Mapping[str, Any]]]] = defaultdict(list)
-        market_dates: dict[str, list[date]] = defaultdict(list)
+        market_dates: dict[str, set[date]] = defaultdict(set)
         request_get = self._request_get or _import_requests_get()
 
         for market_code, market_symbols in by_market.items():
@@ -135,9 +135,9 @@ class OfficialBackgroundChipContextProvider:
                 if parsed is None:
                     continue
                 payload_date, rows = parsed
-                if payload_date > run_date:
+                if payload_date > run_date or not rows or payload_date in market_dates[market_code]:
                     continue
-                market_dates[market_code].append(payload_date)
+                market_dates[market_code].add(payload_date)
                 for stock_id, row in rows.items():
                     symbol = requested_ids.get(stock_id)
                     if symbol is not None:
@@ -479,7 +479,14 @@ def _margin_dataset(market_code: str) -> str:
 
 
 def _margin_params(market_code: str, query_date: date) -> dict[str, str]:
-    params = {"date": query_date.strftime("%Y%m%d"), "response": "json"}
+    params = {
+        "date": (
+            query_date.strftime("%Y%m%d")
+            if market_code == "TW"
+            else query_date.strftime("%Y/%m/%d")
+        ),
+        "response": "json",
+    }
     if market_code == "TW":
         params["selectType"] = "ALL"
     return params

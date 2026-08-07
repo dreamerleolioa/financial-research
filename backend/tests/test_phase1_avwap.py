@@ -29,6 +29,7 @@ from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar, build_phase1_avwap_payload
 from ai_stock_sentinel.phase1_avwap.provider import (
     DEFAULT_PHASE1_DATASET,
+    DailyPriceHistoryResult,
     FINMIND_TAIWAN_STOCK_PRICE_DATASET,
     TWSE_STOCK_DAY_DATASET,
     FinMindDailyPriceProvider,
@@ -356,6 +357,36 @@ def test_refresh_phase1_avwap_snapshots_marks_missing_when_requested_date_row_is
     assert snapshot.missing_reason == "daily_price_row_missing_for_data_date"
     assert snapshot.payload["data_quality"]["missing_reason"] == "daily_price_row_missing_for_data_date"
     assert snapshot.payload["anchors"] == {}
+
+
+def test_refresh_phase1_avwap_snapshots_persists_routed_source_metadata(
+    db_session: Session,
+) -> None:
+    _seed_user_with_active_holding(db_session)
+    data_date = date(2026, 6, 5)
+
+    class RoutedProvider:
+        source_provider = "local_first_wrapper"
+        source_dataset = "local_or_fallback"
+
+        def fetch_history_result(self, symbol: str, *, start_date: date, end_date: date):
+            return DailyPriceHistoryResult(
+                bars=_bars_until(end_date),
+                source_provider="fixture_fallback",
+                source_dataset="fixture_fallback_dataset",
+            )
+
+    result = refresh_phase1_avwap_snapshots(
+        db_session,
+        user_id=1,
+        data_date=data_date,
+        provider=RoutedProvider(),  # type: ignore[arg-type]
+    )
+
+    snapshot = result.snapshots[0]
+    assert snapshot.source_provider == "fixture_fallback"
+    assert snapshot.payload["source"]["provider"] == "fixture_fallback"
+    assert snapshot.payload["source"]["dataset"] == "fixture_fallback_dataset"
 
 
 def test_refresh_phase1_avwap_snapshots_for_symbols_refreshes_daily_radar_selection(

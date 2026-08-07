@@ -305,7 +305,39 @@ def test_phase1_avwap_provider_reads_shared_archive_before_legacy_provider() -> 
         assert len(history) == 70
         assert history[-1].close == 169.0
         assert fallback.calls == 0
-        assert provider.source_provider("2330.TW") == "taiwan_daily_bars_local_first"
+        result = provider.fetch_history_result(
+            "2330.TW",
+            start_date=start,
+            end_date=start + timedelta(days=69),
+        )
+        assert result.source_provider == "fixture"
+        assert result.source_dataset == "fixture_dataset"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_phase1_avwap_provider_reports_actual_fallback_source() -> None:
+    session, engine = _db_session()
+    try:
+        fallback = _FallbackDailyPriceProvider()
+        provider = ArchiveFirstDailyPriceProvider(
+            session,
+            fallback_provider=fallback,
+            provider_mode="official_first",
+            min_trading_bars=60,
+        )
+
+        result = provider.fetch_history_result(
+            "2330.TW",
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 6, 10),
+        )
+
+        assert result.bars == []
+        assert result.source_provider == "fixture_fallback"
+        assert result.source_dataset == "fixture_fallback_dataset"
+        assert fallback.calls == 1
     finally:
         session.close()
         engine.dispose()
