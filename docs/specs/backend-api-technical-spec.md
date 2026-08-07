@@ -1746,7 +1746,7 @@ Daily Radar run status：
 
 #### Daily Radar segmented internal pipeline
 
-正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會用 GitHub Actions run API 讀取原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；啟動延遲、跨過台灣午夜與對舊 run 按 Re-run 都不會改變原本 intended trading date。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期。接著 workflow 先呼叫 `POST /internal/daily-radar/market-session`；TWSE 明確回報休市時所有下游 jobs skip，provider 或 payload 異常時 fail closed。
+正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會用 GitHub Actions run API 讀取原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；啟動延遲、跨過台灣午夜與對舊 run 按 Re-run 都不會改變原本 intended trading date。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期。接著 workflow 先呼叫 `POST /internal/daily-radar/market-session`；TWSE 明確回報休市時 scheduled pipeline 與一般手動 step skip，provider 或 payload 異常時 fail closed。手動 `refresh-market-bars` maintenance step 是唯一例外，可在目前 `run_date` 休市時用明確的 `start_date` / `end_date` 執行最多 180 個 calendar days 的歷史 backfill。
 
 #### `POST /internal/daily-radar/market-session`
 
@@ -1756,7 +1756,7 @@ Daily Radar run status：
 - **Fail-closed**：只有 TWSE 明確的 no-data 狀態才視為 `closed`；request failure、無效 payload、response date 不符、開市回應無 rows 或未知 status 回 `503`，不得靜默 skip。
 
 - 18:00 TWT：`POST /internal/daily-radar/prepare-universe`，保存 capped 250 selected symbols、universe trace 與 prepared step status。
-- 18:30 TWT：`POST /internal/daily-radar/refresh-market-bars`，以 TWSE/TPEX 官方整表行情刷新 `taiwan_daily_bars`。
+- 18:30 TWT：`POST /internal/daily-radar/refresh-market-bars`，以 TWSE/TPEX 官方整表行情刷新 `taiwan_daily_bars`；手動 maintenance/backfill 不受目前 `run_date` 的 `market_open` 結果阻擋，但仍受 180 calendar days range limit 與 endpoint 驗證約束。
 - 19:00 TWT：`POST /internal/daily-radar/refresh-avwap`，刷新 `phase1_avwap_snapshots`。
 - 20:00 TWT：`POST /internal/daily-radar/refresh-lending`，刷新 `shared_background_contexts` 的 `lending`。
 - 21:30 TWT：`POST /internal/daily-radar/refresh-full-margin`，等待 FinMind 21:00 更新後刷新 `full_margin`。
