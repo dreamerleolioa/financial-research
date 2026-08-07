@@ -1,16 +1,53 @@
 from __future__ import annotations
 import logging
+import os
 from dataclasses import asdict
 
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalError
+from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
+from ai_stock_sentinel.db.session import create_session
 
 logger = logging.getLogger(__name__)
 
 
 def fetch_fundamental_data(symbol: str, current_price: float) -> dict:
     """高階工具函式：取得基本面估值資料，失敗時回傳帶 error 鍵的 dict，不拋例外。"""
-    provider = FinMindFundamentalProvider()
+    provider_mode = os.getenv("FUNDAMENTAL_PROVIDER_MODE", "finmind_only")
+    if provider_mode not in {"finmind_only", "official_cache_first", "official_cache_only"}:
+        return {
+            "error": "FUNDAMENTAL_PROVIDER_MODE_INVALID",
+            "message": "Invalid FUNDAMENTAL_PROVIDER_MODE",
+            "symbol": symbol,
+        }
+    if provider_mode == "finmind_only":
+        return _fetch_with_provider(FinMindFundamentalProvider(), symbol=symbol, current_price=current_price)
+
+    try:
+        session = create_session()
+    except Exception as exc:
+        logger.exception("Unable to create fundamental cache session")
+        return {
+            "error": "FUNDAMENTAL_DATABASE_UNAVAILABLE",
+            "message": str(exc),
+            "symbol": symbol,
+        }
+    try:
+        provider = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode=provider_mode,
+        )
+        result = _fetch_with_provider(provider, symbol=symbol, current_price=current_price)
+        if "error" in result:
+            session.rollback()
+        else:
+            session.commit()
+        return result
+    finally:
+        session.close()
+
+
+def _fetch_with_provider(provider, *, symbol: str, current_price: float) -> dict:
     try:
         data = provider.fetch(symbol, current_price)
         return asdict(data)

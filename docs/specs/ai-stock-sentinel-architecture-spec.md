@@ -33,7 +33,7 @@
 | `api.py` | FastAPI app setup、middleware、router include、health check、`/internal/fetch-raw-data` |
 | `graph/` | LangGraph state、nodes、builder；負責 crawl、external data fetch、judge、clean、analyze flow |
 | `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
-| `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental provider |
+| `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
 | `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Portfolio/Daily Radar read-only projections |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
@@ -78,6 +78,9 @@
 | `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
 | `shared_background_contexts` | weekly major holders、lending、full margin 等 market-only 背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
 | `phase1_avwap_snapshots` | Phase 1 日頻 AVWAP shared market snapshot cache；以 `symbol` / `data_date` / logical `dataset` / `adjustment_mode` upsert，保存 market bars、generic anchors、data quality、missing reason 與 source trace；不得保存使用者持股 entry date、avg cost 或 holding-specific entry anchor |
+| `taiwan_daily_bars` | TWSE/TPEX 官方未還原日線行情本地歸檔；供 Daily Radar technical fetch 與 Phase 1 AVWAP local-first 讀取 |
+| `company_fundamental_periods` | 財報期間 append-only revision；保存累計 EPS、推導單季 EPS、觀察時間、payload hash 與原始 payload |
+| `company_dividend_events` | 股利事件 append-only revision；保存所屬期間、決議/除息日期、現金股利分項、payload hash 與原始 payload |
 
 ### 0.4 Workflow 與排程
 
@@ -86,6 +89,7 @@
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
 | `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時整條 pipeline skip，provider 異常時 fail closed。開市後才分段呼叫 `/internal/daily-radar/prepare-universe`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段約隔一小時且共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期；refresh status 會寫入 prepared run，scoring 只讀已落庫 cache/snapshot，對 lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT AVWAP repair-and-rescore 補修排程，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
+| `fundamental-data.yml` | 07:15 TWT 以官方 OpenAPI 更新財報/股利版本庫；手動模式才以每批最多 10 檔執行 FinMind 歷史回填 |
 | `daily-radar.yml` / `analysis-forward-validation.yml` | 分別每日累積 Daily Radar 與一般分析已成熟 5 / 10 / 20 日驗證結果 |
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
@@ -122,7 +126,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 | **消息面 (News)**          | 影響市場情緒的事件訊號（法說會、政策、產業動態、法人評等調整等），以多篇新聞聚合出 `sentiment_label` 與 `sentiment_strength`；**不涵蓋公司財務數字**（財報數字屬於基本面，需另從財報資料源取得） | Google News RSS、財經媒體 RSS                                    |
 | **技術面 (Technical)**     | MA5/20/60 均線、乖離率 (BIAS)、RSI、布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel、成交量變化、支撐壓力位                                                                             | yfinance + Pandas 計算                                           |
 | **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、連續買賣超、主導買賣方、融資融券、借券、外資持股、大戶/散戶持股結構，並以買賣超占近期均量比例判斷相對規模                                                  | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback）              |
-| **基本面 (Fundamental)**   | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS）                                                                                                                                     | FinMind `TaiwanStockFinancialStatements` + `TaiwanStockDividend` |
+| **基本面 (Fundamental)**   | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS）                                                                                                                                     | TWSE/TPEX 官方財報與股利版本庫；FinMind 只作 bounded 歷史 bootstrap |
 
 目前以 **LangGraph（LangChain 延伸）** 作為 Agent 協作框架，以支援非線性流程、條件分支與補資料回圈。
 
@@ -216,7 +220,7 @@ crawl → fetch_external_data（institutional + fundamental 並行）→ judge �
 ### 資料源建議
 
 - **基本面（估值）**
-  - 資料源：FinMind `TaiwanStockFinancialStatements`（每季 EPS）+ `TaiwanStockDividend`（現金股利）
+  - 資料源：TWSE/TPEX 官方財報 OpenAPI 與股利事件先寫入本地版本庫；FinMind `TaiwanStockFinancialStatements` / `TaiwanStockDividend` 只在 `official_cache_first` 缺歷史時執行一次性 bounded bootstrap
   - 計算項目：
     - `ttm_eps`：近四季合計 EPS（Trailing Twelve Months）
     - `pe_current`：當前本益比（`current_price / ttm_eps`）
@@ -224,7 +228,7 @@ crawl → fetch_external_data（institutional + fundamental 並行）→ judge �
     - `pe_percentile`：當前 PE 在歷史**真實** PE 分佈的百分位（0–100）
     - `dividend_yield`：現金殖利率（`annual_cash_dividend / current_price × 100`）
     - `yield_signal`：`high_yield`（≥5%）/ `mid_yield`（3–5%）/ `low_yield`（<3%）
-  - Provider 架構：`FinMindFundamentalProvider`（與籌碼面採相同 Provider 抽象模式）
+  - Provider 架構：`finmind_only` 保留既有行為；`official_cache_first` 優先讀本地版本庫、缺歷史才 bootstrap；`official_cache_only` 完全不呼叫 FinMind/yfinance
   - 無 API Key 或抓取失敗時：回傳帶 `error` 鍵的 dict，流程繼續，`fundamental_context` 顯示「基本面資料不足」
   - 歷史股價（yfinance）取得失敗時：`pe_band = "unknown"`，`pe_mean = null`，`warnings` 記錄原因，流程繼續
 

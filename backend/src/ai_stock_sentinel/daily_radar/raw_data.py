@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, timedelta
 import math
+import os
 from typing import Any, Protocol
 
 import yfinance as yf
@@ -11,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.daily_radar.data_quality import missing_daily_radar_candidate_technical_fields
+from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
-from ai_stock_sentinel.db.models import StockRawData
+from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
 from ai_stock_sentinel.technical.profile import build_technical_profile_payload
 
 
@@ -52,6 +54,82 @@ class YFinanceBatchTechnicalFetcher:
             )
             if payload is not None:
                 payloads[symbol] = payload
+        return payloads
+
+    def _safe_resolve_name(self, symbol: str) -> str | None:
+        try:
+            return self._name_resolver(symbol)
+        except Exception:
+            return None
+
+
+class LocalFirstBatchTechnicalFetcher:
+    """Build technical payloads from the shared TW/TWO bar archive before yfinance."""
+
+    _MODES = {"yfinance_only", "official_first", "official_only"}
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        fallback_fetcher: BatchTechnicalFetcher | None = None,
+        provider_mode: str | None = None,
+        min_trading_bars: int = 60,
+        name_resolver: Callable[[str], str | None] = resolve_symbol_name,
+    ) -> None:
+        self._session = session
+        self._fallback_fetcher = fallback_fetcher or YFinanceBatchTechnicalFetcher(
+            name_resolver=name_resolver
+        )
+        self._provider_mode = provider_mode or os.getenv(
+            "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
+            "yfinance_only",
+        )
+        if self._provider_mode not in self._MODES:
+            raise ValueError("invalid DAILY_RADAR_TW_OHLCV_PROVIDER_MODE")
+        self._min_trading_bars = max(1, min_trading_bars)
+        self._name_resolver = name_resolver
+
+    def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
+        ordered_symbols = _ordered_unique_symbols(symbols)
+        if not ordered_symbols:
+            return {}
+        if self._provider_mode == "yfinance_only":
+            return self._fallback_fetcher.fetch(ordered_symbols, run_date=run_date)
+
+        supported_symbols = [symbol for symbol in ordered_symbols if _is_supported_local_bar_symbol(symbol)]
+        rows = get_taiwan_daily_bars(
+            self._session,
+            symbols=supported_symbols,
+            start_date=run_date - timedelta(days=120),
+            end_date=run_date,
+        )
+        rows_by_symbol: dict[str, list[TaiwanDailyBar]] = {}
+        for row in rows:
+            rows_by_symbol.setdefault(row.symbol, []).append(row)
+
+        payloads: dict[str, Mapping[str, Any]] = {}
+        for symbol in supported_symbols:
+            symbol_rows = rows_by_symbol.get(symbol, [])
+            if (
+                len(symbol_rows) < self._min_trading_bars
+                or not symbol_rows
+                or symbol_rows[-1].trade_date != run_date
+            ):
+                continue
+            payload = _build_local_technical_payload(
+                symbol,
+                symbol_rows,
+                run_date=run_date,
+                name=symbol_rows[-1].name or self._safe_resolve_name(symbol),
+            )
+            if payload is not None:
+                payloads[symbol] = payload
+
+        if self._provider_mode == "official_first":
+            fallback_symbols = [symbol for symbol in ordered_symbols if symbol not in payloads]
+            if fallback_symbols:
+                payloads.update(self._fallback_fetcher.fetch(fallback_symbols, run_date=run_date))
         return payloads
 
     def _safe_resolve_name(self, symbol: str) -> str | None:
@@ -322,6 +400,65 @@ def _build_technical_payload(symbol: str, frame: Any, *, run_date: date, name: s
     }
 
 
+def _build_local_technical_payload(
+    symbol: str,
+    rows: Sequence[TaiwanDailyBar],
+    *,
+    run_date: date,
+    name: str | None,
+) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    closes = [float(row.close) for row in rows]
+    opens = [float(row.open) for row in rows]
+    highs = [float(row.high) for row in rows]
+    lows = [float(row.low) for row in rows]
+    volumes = [float(row.volume) for row in rows]
+    data_date = rows[-1].trade_date.isoformat()
+    close = closes[-1]
+    profile_payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        current_price=close,
+        data_date=data_date,
+        is_final=True,
+    )
+    if profile_payload is None:
+        return None
+    technical_indicators = dict(_mapping(profile_payload.get("technical_indicators")))
+    technical_profile = dict(_mapping(profile_payload.get("technical_profile")))
+    return {
+        "name": name or symbol,
+        "price_history": [
+            {"date": row.trade_date.isoformat(), "close": float(row.close)}
+            for row in rows[-80:]
+        ],
+        "ohlcv": {
+            "open": opens[-1],
+            "high": highs[-1],
+            "low": lows[-1],
+            "close": close,
+            "previous_close": closes[-2] if len(closes) >= 2 else close,
+            "volume": int(volumes[-1]),
+            "avg_volume_20": _mean(volumes[-20:]),
+        },
+        "indicators": _daily_radar_indicators_from_profile(
+            technical_indicators,
+            technical_profile=technical_profile,
+            lookback_days=len(closes),
+        ),
+        "technical_profile": technical_profile,
+        "data_dates": {
+            "ohlcv": data_date,
+            "technical_indicators": data_date,
+            "technical_profile": data_date,
+        },
+        "source_provider": "taiwan_daily_bars",
+    }
+
+
 def _daily_radar_indicators_from_profile(
     technical_indicators: Mapping[str, Any],
     *,
@@ -476,6 +613,17 @@ def _ordered_unique_symbols(symbols: Iterable[str]) -> list[str]:
     return ordered_symbols
 
 
+def _is_supported_local_bar_symbol(symbol: str) -> bool:
+    normalized = symbol.upper()
+    if normalized.endswith(".TWO"):
+        stock_id = normalized.removesuffix(".TWO")
+    elif normalized.endswith(".TW"):
+        stock_id = normalized.removesuffix(".TW")
+    else:
+        return False
+    return len(stock_id) == 4 and stock_id.isdigit() and not stock_id.startswith("0")
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
@@ -494,6 +642,7 @@ def _to_float(value: Any) -> float | None:
 
 __all__ = [
     "BatchTechnicalFetcher",
+    "LocalFirstBatchTechnicalFetcher",
     "YFinanceBatchTechnicalFetcher",
     "ensure_daily_radar_raw_rows",
     "reusable_daily_radar_raw_rows",

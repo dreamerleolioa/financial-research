@@ -36,3 +36,46 @@ def test_never_raises():
         result = fetch_fundamental_data("2330.TW", current_price=1000.0)
 
     assert "error" in result
+
+
+def test_invalid_provider_mode_fails_closed(monkeypatch):
+    monkeypatch.setenv("FUNDAMENTAL_PROVIDER_MODE", "unexpected")
+
+    result = fetch_fundamental_data("2330.TW", current_price=1000.0)
+
+    assert result["error"] == "FUNDAMENTAL_PROVIDER_MODE_INVALID"
+
+
+def test_official_cache_mode_owns_commits_and_session_lifecycle(monkeypatch):
+    mock_data = FundamentalData(symbol="2330.TW", ttm_eps=40)
+    session = MagicMock()
+    provider = MagicMock()
+    provider.fetch.return_value = mock_data
+    monkeypatch.setenv("FUNDAMENTAL_PROVIDER_MODE", "official_cache_first")
+    with (
+        patch(
+            "ai_stock_sentinel.data_sources.fundamental.tools.create_session",
+            return_value=session,
+        ),
+        patch(
+            "ai_stock_sentinel.data_sources.fundamental.tools.OfficialCachedFundamentalProvider",
+            return_value=provider,
+        ),
+    ):
+        result = fetch_fundamental_data("2330.TW", current_price=1000.0)
+
+    assert result["ttm_eps"] == 40
+    session.commit.assert_called_once_with()
+    session.rollback.assert_not_called()
+    session.close.assert_called_once_with()
+
+
+def test_official_cache_mode_returns_error_when_database_is_unavailable(monkeypatch):
+    monkeypatch.setenv("FUNDAMENTAL_PROVIDER_MODE", "official_cache_only")
+    with patch(
+        "ai_stock_sentinel.data_sources.fundamental.tools.create_session",
+        side_effect=RuntimeError("database unavailable"),
+    ):
+        result = fetch_fundamental_data("2330.TW", current_price=1000.0)
+
+    assert result["error"] == "FUNDAMENTAL_DATABASE_UNAVAILABLE"

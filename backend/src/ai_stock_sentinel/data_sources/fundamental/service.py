@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+import re
+from typing import Any
+
+import requests
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
+from ai_stock_sentinel.data_sources.fundamental.normalizers import (
+    normalize_finmind_dividend_rows,
+    normalize_finmind_statement_rows,
+    normalize_official_statement_rows,
+    normalize_tpex_ex_dividend_payload,
+    normalize_twse_dividend_rows,
+)
+from ai_stock_sentinel.data_sources.fundamental.repository import (
+    store_dividend_events,
+    store_fundamental_periods,
+)
+from ai_stock_sentinel.db.models import (
+    DailyRadarPreparedRun,
+    UserPortfolio,
+    UserWatchlist,
+)
+
+
+OFFICIAL_STATEMENT_SCHEMAS = ("basi", "bd", "ci", "fh", "ins", "mim")
+TWSE_STATEMENT_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap06_L_{schema}"
+TPEX_STATEMENT_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_{schema}"
+TWSE_DIVIDEND_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap45_L"
+TPEX_EX_DIVIDEND_URL = "https://www.tpex.org.tw/www/zh-tw/bulletin/exDailyQ"
+
+RequestGet = Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class FundamentalRefreshResult:
+    status: str
+    datasets_succeeded: int
+    datasets_failed: int
+    records_written: int
+    errors: list[str]
+
+
+@dataclass(frozen=True)
+class FundamentalBackfillResult:
+    status: str
+    symbols_processed: list[str]
+    records_written: int
+    next_after_symbol: str | None
+    errors: list[str]
+
+
+def refresh_official_fundamentals(
+    session: Session,
+    *,
+    request_get: RequestGet = requests.get,
+    max_workers: int = 4,
+) -> FundamentalRefreshResult:
+    datasets: list[tuple[str, str, str | None, str | None]] = []
+    for schema in OFFICIAL_STATEMENT_SCHEMAS:
+        datasets.append((f"TWSE_{schema}", TWSE_STATEMENT_URL.format(schema=schema), "TW", schema))
+        datasets.append((f"TPEX_{schema}", TPEX_STATEMENT_URL.format(schema=schema), "TWO", schema))
+    datasets.extend(
+        [
+            ("TWSE_dividend", TWSE_DIVIDEND_URL, None, None),
+            ("TPEX_ex_dividend", TPEX_EX_DIVIDEND_URL, None, None),
+        ]
+    )
+
+    errors: list[str] = []
+    records_written = 0
+    succeeded = 0
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 4))) as executor:
+        futures = {
+            executor.submit(_request_json, request_get, url): (name, market, schema)
+            for name, url, market, schema in datasets
+        }
+        for future in as_completed(futures):
+            name, market, schema = futures[future]
+            try:
+                payload = future.result()
+                with session.begin_nested():
+                    dataset_records = _store_official_dataset(
+                        session,
+                        name=name,
+                        market=market,
+                        schema=schema,
+                        payload=payload,
+                    )
+                records_written += dataset_records
+                succeeded += 1
+            except Exception as exc:
+                errors.append(f"{name}: refresh failed: {exc}")
+
+    failed = len(datasets) - succeeded
+    return FundamentalRefreshResult(
+        status="ok" if failed == 0 else "partial",
+        datasets_succeeded=succeeded,
+        datasets_failed=failed,
+        records_written=records_written,
+        errors=errors,
+    )
+
+
+def backfill_fundamentals(
+    session: Session,
+    *,
+    symbols: Sequence[str],
+    after_symbol: str | None = None,
+    limit: int = 10,
+    provider: FinMindFundamentalProvider | None = None,
+) -> FundamentalBackfillResult:
+    bounded_limit = max(1, min(limit, 10))
+    normalized_symbols = sorted(
+        {
+            symbol.strip().upper()
+            for symbol in symbols
+            if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", symbol.strip().upper())
+        }
+    )
+    if after_symbol:
+        normalized_symbols = [symbol for symbol in normalized_symbols if symbol > after_symbol.upper()]
+    selected = normalized_symbols[:bounded_limit]
+    fallback = provider or FinMindFundamentalProvider()
+    errors: list[str] = []
+    records_written = 0
+    for symbol in selected:
+        try:
+            statement_rows = fallback.fetch_statement_rows(symbol)
+            with session.begin_nested():
+                dataset_records = store_fundamental_periods(
+                    session,
+                    normalize_finmind_statement_rows(statement_rows, symbol=symbol),
+                )
+            records_written += dataset_records
+        except Exception as exc:
+            errors.append(f"{symbol}: statement backfill failed: {exc}")
+        try:
+            dividend_rows = fallback.fetch_dividend_rows(symbol)
+            with session.begin_nested():
+                dataset_records = store_dividend_events(
+                    session,
+                    normalize_finmind_dividend_rows(dividend_rows, symbol=symbol),
+                )
+            records_written += dataset_records
+        except Exception as exc:
+            errors.append(f"{symbol}: dividend backfill failed: {exc}")
+
+    has_more = len(normalized_symbols) > len(selected)
+    return FundamentalBackfillResult(
+        status="ok" if not errors else "partial",
+        symbols_processed=selected,
+        records_written=records_written,
+        next_after_symbol=selected[-1] if selected and has_more else None,
+        errors=errors,
+    )
+
+
+def resolve_managed_fundamental_symbols(session: Session) -> list[str]:
+    symbols = set(
+        session.scalars(
+            select(UserPortfolio.symbol).where(UserPortfolio.is_active.is_(True))
+        ).all()
+    )
+    symbols.update(session.scalars(select(UserWatchlist.symbol)).all())
+    prepared = session.scalars(
+        select(DailyRadarPreparedRun).order_by(
+            DailyRadarPreparedRun.run_date.desc(),
+            DailyRadarPreparedRun.id.desc(),
+        ).limit(1)
+    ).first()
+    if prepared is not None:
+        symbols.update(str(symbol) for symbol in prepared.selected_symbols)
+    return sorted(
+        symbol.strip().upper()
+        for symbol in symbols
+        if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
+    )
+
+
+def _request_json(request_get: RequestGet, url: str) -> Any:
+    last_error: Exception | None = None
+    for _attempt in range(3):
+        try:
+            response = request_get(url, timeout=45)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(str(last_error) if last_error is not None else "request failed")
+
+
+def _store_official_dataset(
+    session: Session,
+    *,
+    name: str,
+    market: str | None,
+    schema: str | None,
+    payload: Any,
+) -> int:
+    if market is not None and schema is not None:
+        if not _is_row_sequence(payload):
+            raise ValueError("response is not a row list")
+        return store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                payload,
+                market=market,
+                industry_schema=schema,
+                source_dataset=name,
+            ),
+        )
+    if name == "TWSE_dividend":
+        if not _is_row_sequence(payload):
+            raise ValueError("response is not a row list")
+        return store_dividend_events(session, normalize_twse_dividend_rows(payload))
+    if not isinstance(payload, Mapping):
+        raise ValueError("response is not an object")
+    return store_dividend_events(session, normalize_tpex_ex_dividend_payload(payload))
+
+
+def _is_row_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+__all__ = [
+    "FundamentalBackfillResult",
+    "FundamentalRefreshResult",
+    "backfill_fundamentals",
+    "refresh_official_fundamentals",
+    "resolve_managed_fundamental_symbols",
+]

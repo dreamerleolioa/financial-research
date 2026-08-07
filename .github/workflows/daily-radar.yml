@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - prepare-universe
+          - refresh-market-bars
           - refresh-avwap
           - refresh-lending
           - refresh-full-margin
@@ -23,11 +24,23 @@ on:
         required: false
         default: ""
         type: string
+      market_bar_start_date:
+        description: "Optional DR2 backfill start date, YYYY-MM-DD; only used by refresh-market-bars."
+        required: false
+        default: ""
+        type: string
+      market_bar_end_date:
+        description: "Optional DR2 backfill end date, YYYY-MM-DD; only used by refresh-market-bars."
+        required: false
+        default: ""
+        type: string
   schedule:
     # GitHub cron uses UTC. Taiwan time = UTC+8.
     # Scheduled jobs use the UTC cron date as the intended Taiwan trading date, so delayed starts after Taiwan midnight still target the original trading date.
     # 台灣時間週一至週五 18:00，準備 selected universe。
     - cron: "0 10 * * 1-5"
+    # 台灣時間週一至週五 18:30，歸檔上市櫃全市場 final OHLCV。
+    - cron: "30 10 * * 1-5"
     # 台灣時間週一至週五 19:00，刷新試驗版 Daily AVWAP。
     - cron: "0 11 * * 1-5"
     # 台灣時間週一至週五 20:00，刷新 lending。
@@ -210,6 +223,45 @@ jobs:
           ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             echo "AVWAP refresh is optional evidence for scoring; leaving job successful for non-completed business status."
+          fi
+
+  refresh-market-bars:
+    name: Refresh Taiwan market bars
+    runs-on: ubuntu-latest
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars'))
+    steps:
+      - name: Trigger refresh-market-bars
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+          MARKET_BAR_START_DATE: ${{ github.event.inputs.market_bar_start_date || '' }}
+          MARKET_BAR_END_DATE: ${{ github.event.inputs.market_bar_end_date || '' }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-market-bars"
+          response_file="$(mktemp)"
+          if [[ -n "${MARKET_BAR_START_DATE}" || -n "${MARKET_BAR_END_DATE}" ]]; then
+            if [[ -z "${MARKET_BAR_START_DATE}" || -z "${MARKET_BAR_END_DATE}" ]]; then
+              echo "Both market_bar_start_date and market_bar_end_date are required for backfill."
+              exit 1
+            fi
+            payload="{\"market\":\"TW\",\"start_date\":\"${MARKET_BAR_START_DATE}\",\"end_date\":\"${MARKET_BAR_END_DATE}\"}"
+          else
+            payload="{\"market\":\"TW\",\"run_date\":\"${DAILY_RADAR_RUN_DATE}\"}"
+          fi
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}")"
+          cat "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            exit 1
+          fi
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
           fi
 
   refresh-lending:

@@ -1,0 +1,70 @@
+name: Fundamental Data Refresh
+
+on:
+  schedule:
+    # 07:15 Asia/Taipei, Monday-Friday (GitHub cron uses UTC).
+    - cron: "15 23 * * 0-4"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Refresh official snapshots or backfill managed symbols from FinMind
+        required: true
+        default: refresh
+        type: choice
+        options:
+          - refresh
+          - backfill
+
+concurrency:
+  group: fundamental-data-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      API_BASE_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+      DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+    steps:
+      - name: Validate configuration
+        run: |
+          test -n "$API_BASE_URL"
+          test -n "$DAILY_RADAR_INTERNAL_TOKEN"
+
+      - name: Refresh official fundamental snapshots
+        if: github.event_name == 'schedule' || inputs.mode == 'refresh'
+        run: |
+          response=$(curl --fail-with-body --silent --show-error \
+            --retry 2 \
+            --connect-timeout 15 \
+            --max-time 300 \
+            -X POST \
+            -H "X-Internal-Token: $DAILY_RADAR_INTERNAL_TOKEN" \
+            "$API_BASE_URL/internal/fundamentals/refresh")
+          printf '%s\n' "$response"
+          printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null
+
+      - name: Backfill managed symbols in bounded batches
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'backfill'
+        run: |
+          after_symbol=""
+          for batch in 1 2 3 4 5 6; do
+            payload=$(jq -nc --arg after "$after_symbol" \
+              '{scope:"managed", limit:10} + (if $after == "" then {} else {after_symbol:$after} end)')
+            response=$(curl --fail-with-body --silent --show-error \
+              --retry 2 \
+              --connect-timeout 15 \
+              --max-time 300 \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -H "X-Internal-Token: $DAILY_RADAR_INTERNAL_TOKEN" \
+              -d "$payload" \
+              "$API_BASE_URL/internal/fundamentals/backfill")
+            printf '%s\n' "$response"
+            printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null
+            after_symbol=$(printf '%s' "$response" | jq -r '.next_after_symbol // ""')
+            if [ -z "$after_symbol" ]; then
+              break
+            fi
+          done

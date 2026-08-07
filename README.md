@@ -39,7 +39,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。結案回顧採 closed-only、以前一 completed bar、source fingerprint、版本唯讀保護與短 transaction 並行鎖為契約；review provider 補行情具 timeout／容量／TTL／可用 final trading-bar、Close 專屬日期、完整日期集合與持有期間關鍵日期 coverage 邊界，同一 review refresh 採 process-local non-blocking single-flight（重複 refresh 回 `409`／`Retry-After`，backend 透過 CORS 暴露該 header，frontend 依 header 有界重試），外部 I/O 不持有 DB lock 且不寫回正式 `StockRawData`。相同 market content 的成功 refresh 仍會推進 freshness；OHLC 先依各自日期排除事件日，再以共同交易日對齊後計算，波動分類至少需要 20 根共同交易日 OHLC，full-exit 當日收盤不納入已持有路徑；compact lifecycle evidence 遇到同日 partial outer bar 時會逐欄合併非空值，不得覆寫 trailing series 已提供的 OHLCV；provider 少於 60 根可用交易 bar 時標記 coverage insufficient，保留 24 小時後重試，真正抓取失敗或空回應仍採 5 分鐘短 TTL。Lifecycle 計算與 evidence 都只讀取 final 行情，事後補填或進場後已修改的 plan 也不參與歷史違規或決策品質評分。
 - `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、刷新試驗版 Daily AVWAP evidence snapshot、補齊 selected-symbol OHLCV、執行 deterministic Stage 1/2 scoring，並保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `phase1_avwap`：試驗版 Daily AVWAP 觀察層，針對 active holdings、watchlist 與 Daily Radar selected candidates 建立日頻 AVWAP snapshot。Snapshot 是全域市場 cache，只保存 market bars / generic anchors / data quality，不保存使用者持股 entry date 或 avg cost；Portfolio risk summary 會在 read projection 時用 portfolio domain 的持股資料計算 holding-specific state。此功能只透過既有 Analyze、Portfolio risk summary、Daily Radar response 顯示，不新增 public endpoint、不改 Daily Radar scoring。
-- `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。Daily Radar、Analyze、Position、Portfolio、Lifecycle Review 只以 read/reference 方式使用；它不覆寫 ranking、action、verdict 或 classification。
+- `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。`official_first` 模式下，融資融券與借券優先使用 TWSE/TPEX 官方整表資料，只有 dataset 失敗才退回 FinMind；各 consumer 仍只以 read/reference 方式使用。
 
 ---
 
@@ -185,7 +185,9 @@ docs/
 
 Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages。後端正式執行環境由 Zeabur URL 提供給前端與 internal workflows。
 
-Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。正式 workflow 會分段 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/*`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，且每個 step 都由 workflow 明確帶入 `run_date`。Scheduled run 會用 GitHub Actions run API 讀取該次 workflow run 不變的原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；因此 runner 延遲、跨過台灣午夜或對舊 run 按 Re-run 都會保留原本 intended trading date。手動執行可指定 `run_date`，未指定時則固定使用該 workflow run 首次建立當下的台北日期，Re-run 不會改日。在任何下游 job 啟動前，workflow 先呼叫 `POST /internal/daily-radar/market-session`，以 TWSE `MI_INDEX` 確認該 `run_date` 是否開市；週末、國定假日或颱風停市會讓整條 pipeline 正常 skip，provider 失敗或回應無法判斷則 fail closed，不會被誤當成休市。台灣時間 18:00 `prepare-universe` 保存 capped 250 selected symbols；19:00 `refresh-avwap`；20:00 `refresh-lending`；21:30 `refresh-full-margin`；22:30 `refresh-ohlcv`；23:30 `refresh-market-context`；隔日 00:30 `run-scoring` 仍對同一個 intended trading date 做 scoring，只讀 DB cache/snapshot 並持久化 Daily Radar candidates。`run-scoring` 只要求 `refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context` 完成；`refresh-avwap` 是 optional evidence step，失敗時 candidate detail 仍保留 `phase1_avwap_context.freshness` 與 `missing_reason`，不阻塞雷達發佈。另有台灣時間週二至週六 07:00 的 AVWAP 補修排程，會補跑前一個 intended trading date 的 `refresh-avwap`，成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
+Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。正式 workflow 會分段 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/*`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，且每個 step 都由 workflow 明確帶入 `run_date`。Scheduled run 會用 GitHub Actions run API 讀取該次 workflow run 不變的原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；因此 runner 延遲、跨過台灣午夜或對舊 run 按 Re-run 都會保留原本 intended trading date。手動執行可指定 `run_date`，未指定時則固定使用該 workflow run 首次建立當下的台北日期，Re-run 不會改日。在任何下游 job 啟動前，workflow 先呼叫 `POST /internal/daily-radar/market-session`，以 TWSE `MI_INDEX` 確認該 `run_date` 是否開市；週末、國定假日或颱風停市會讓整條 pipeline 正常 skip，provider 失敗或回應無法判斷則 fail closed，不會被誤當成休市。台灣時間 18:00 `prepare-universe` 保存 capped 250 selected symbols；18:30 `refresh-market-bars` 寫入 TWSE/TPEX 官方整表 OHLCV；19:00 `refresh-avwap`；20:00 `refresh-lending`；21:30 `refresh-full-margin`；22:30 `refresh-ohlcv`；23:30 `refresh-market-context`；隔日 00:30 `run-scoring` 仍對同一個 intended trading date 做 scoring，只讀 DB cache/snapshot 並持久化 Daily Radar candidates。`run-scoring` 只要求 `refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context` 完成；`refresh-avwap` 是 optional evidence step，失敗時 candidate detail 仍保留 `phase1_avwap_context.freshness` 與 `missing_reason`，不阻塞雷達發佈。另有台灣時間週二至週六 07:00 的 AVWAP 補修排程，會補跑前一個 intended trading date 的 `refresh-avwap`，成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
+
+基本面另由 `.github/workflows/fundamental-data.yml` 於台灣時間週一至週五 07:15 刷新官方快照。TWSE/TPEX 財報與股利以 payload hash 版本化保存；只有手動 backfill 才會以每批最多 10 檔使用 FinMind 補齊歷史資料。
 
 Daily Radar 的 live 資料載入有 request budget：法人 universe 目前使用 TWSE RWD fund reports `TWT38U` / `TWT44U` 的 report-level 查詢，不做逐檔法人 request；Phase 1 AVWAP 上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，正式 `refresh-avwap` 會合併 selected symbols、active holdings 與 watchlist symbols 後刷新，非 `.TW/.TWO` 會以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄而不呼叫 provider，但 snapshot 仍只保存 market data，不保存使用者持股成本或進場日；FinMind `TaiwanStockSecuritiesLending`、`TaiwanStockMarginPurchaseShortSale` 分成不同小時刷新，每段都讀同一批 selected symbols，其中 lending / full-margin 會先重用同日 fresh `shared_background_contexts`；yfinance 對 selected universe 中缺少 final raw row，或 final row 缺少必要且為有限數值的 OHLCV / compatibility indicators、canonical `technical_profile`、`price_history`、資料日期的 symbols 做一次 batch download，只有通過 candidate/replay 完整度的既有 `StockRawData` 才會重用，並在 refresh 後回寫 prepared universe 的技術面 tracks；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Portfolio AVWAP read path 可使用 requested date 當日或以前最新 fresh snapshot，但最多回看 7 個 calendar days，超過時回 `phase1_snapshot_stale`。`run-scoring` 不打外部資料源，只讀 `daily_radar_prepared_runs`、`phase1_avwap_snapshots`、`shared_background_contexts`、`stock_raw_data` 與 prepared market context，並在評分前拒絕空 selected universe、再次確認每個 selected symbol 都有完整 raw row；`weekly_major_holders` 維持週頻 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 更新 cache。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action、verdict、classification 或 lifecycle replay。
 
@@ -230,6 +232,9 @@ GOOGLE_OAUTH_REDIRECT_URIS="http://localhost:5173/login/callback,https://<userna
 JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
+DAILY_RADAR_BACKGROUND_PROVIDER_MODE="finmind_only" # finmind_only | official_first | official_only
+DAILY_RADAR_TW_OHLCV_PROVIDER_MODE="yfinance_only"  # yfinance_only | official_first | official_only
+FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_cache_first | official_cache_only
 ```
 
 > `.env` 不進版控。換電腦時複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
@@ -266,6 +271,9 @@ DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 | `JWT_SECRET`        | JWT 簽名密鑰                                         |
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
+| `DAILY_RADAR_BACKGROUND_PROVIDER_MODE` | 籌碼背景來源模式；部署初始值 `finmind_only` |
+| `DAILY_RADAR_TW_OHLCV_PROVIDER_MODE` | 台股日線來源模式；部署初始值 `yfinance_only` |
+| `FUNDAMENTAL_PROVIDER_MODE` | 基本面來源模式；部署初始值 `finmind_only` |
 
 #### Data migration 部署門檻
 
@@ -362,7 +370,10 @@ make run-api
 - `POST /internal/fetch-raw-data` — 觸發原始資料預取（內部用）
 - `POST /internal/daily-radar/market-session`：以 TWSE `MI_INDEX` 判斷指定 `run_date` 是開市或休市，供正式 workflow 在所有下游 job 前做 fail-closed guard，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `POST /internal/daily-radar/prepare-universe`：保存當日 selected universe，正式排程 capped 250 symbols，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `POST /internal/daily-radar/refresh-market-bars`：以 TWSE/TPEX 官方整表行情刷新 `taiwan_daily_bars`，支援最多 180 個 calendar days 的 bounded backfill，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `POST /internal/daily-radar/refresh-avwap` / `refresh-lending` / `refresh-full-margin` / `refresh-ohlcv` / `refresh-market-context`：分段刷新 Daily Radar 所需資料 cache，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `POST /internal/fundamentals/refresh`：刷新 TWSE/TPEX 官方財報與股利版本庫，允許 dataset-level partial success，需 `DAILY_RADAR_INTERNAL_TOKEN`
+- `POST /internal/fundamentals/backfill`：以 FinMind 對 managed/specified symbols 做歷史基本面回填，每次最多 10 檔，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `POST /internal/daily-radar/run-scoring`：只讀已準備資料並持久化 Daily Radar run/candidates；會要求 lending、full-margin、OHLCV、market context refresh step 完成，AVWAP 缺漏只保留為 optional evidence caveat，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `POST /internal/daily-radar/run`：保留一鍵手動相容入口；正式排程使用上述分段 workflow
 - `POST /internal/daily-radar/chip-context/update`：更新 shared background context cache，背景資料包含 weekly major holders、lending 與 full margin

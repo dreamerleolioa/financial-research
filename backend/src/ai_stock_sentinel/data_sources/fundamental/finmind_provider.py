@@ -72,6 +72,44 @@ class FinMindFundamentalProvider:
             logger.warning("取得歷史股價失敗：%s", exc)
             return {}
 
+    def fetch_historical_prices(self, symbol: str, quarter_dates: list[str]) -> dict[str, float]:
+        """Public compatibility boundary for cached providers that need missing period prices."""
+        return self._fetch_historical_prices(symbol, quarter_dates)
+
+    def fetch_statement_rows(self, symbol: str) -> list[dict]:
+        start_date, end_date = _six_year_range()
+        return self._fetch_dataset_with_token_retry(
+            dataset="TaiwanStockFinancialStatements",
+            stock_id=symbol.split(".")[0],
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def fetch_dividend_rows(self, symbol: str) -> list[dict]:
+        start_date, end_date = _six_year_range()
+        return self._fetch_dataset_with_token_retry(
+            dataset="TaiwanStockDividend",
+            stock_id=symbol.split(".")[0],
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def _fetch_dataset_with_token_retry(
+        self,
+        *,
+        dataset: str,
+        stock_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict]:
+        try:
+            return self._fetch_dataset(dataset, stock_id, start_date, end_date)
+        except FundamentalError as exc:
+            if exc.code != "FINMIND_TOKEN_EXPIRED" or self._static_token or self._client.uses_static_token:
+                raise
+            get_token_manager().invalidate()
+            return self._fetch_dataset(dataset, stock_id, start_date, end_date)
+
     def fetch(self, symbol: str, current_price: float) -> FundamentalData:
         try:
             return self._fetch_inner(symbol=symbol, current_price=current_price)
@@ -231,3 +269,8 @@ def _fundamental_error_from_client_error(exc: FinMindClientError, *, provider: s
         message=f"FinMind API 請求失敗（dataset={exc.dataset}）：{exc.message}",
         provider=provider,
     )
+
+
+def _six_year_range() -> tuple[str, str]:
+    today = date.today()
+    return (today - timedelta(days=365 * 6)).isoformat(), today.isoformat()
