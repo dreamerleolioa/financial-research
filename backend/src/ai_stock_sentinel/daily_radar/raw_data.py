@@ -88,6 +88,9 @@ def ensure_daily_radar_raw_rows(
             fetched_payloads=fetched_payloads,
             institutional_payloads_by_symbol=institutional_payloads,
         )
+        # Production sessions disable autoflush, so projection queries below
+        # cannot see newly added rows until they are explicitly flushed.
+        session.flush()
     _apply_institutional_payloads(
         session,
         run_date=run_date,

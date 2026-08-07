@@ -34,7 +34,7 @@ def db_session() -> Session:
         dbapi_connection.execute("PRAGMA foreign_keys=ON")
 
     Base.metadata.create_all(engine, tables=[StockRawData.__table__])
-    with Session(engine) as session:
+    with Session(engine, autoflush=False) as session:
         yield session
 
 
@@ -438,6 +438,49 @@ def test_ensure_daily_radar_raw_rows_projects_fresh_full_margin_context_for_pref
     assert loaded["data_dates"]["margin"] == run_date.isoformat()
     assert prefilter_record(loaded)["prefilter_status"] == "accepted"
     assert fetcher.calls == []
+
+
+def test_ensure_daily_radar_raw_rows_projects_fresh_full_margin_context_into_new_row(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+        margin_contexts_by_symbol={
+            "2330.TW": {
+                "context_type": "full_margin",
+                "as_of_date": run_date.isoformat(),
+                "freshness": "fresh",
+                "payload": {
+                    "latest_margin_balance": 1_200,
+                    "latest_short_balance": 80,
+                    "margin_balance_delta": 200,
+                    "margin_balance_delta_pct": 2.0,
+                    "short_balance_delta": 30,
+                    "short_balance_delta_pct": 0.5,
+                },
+            }
+        },
+    )
+
+    loaded = load_daily_radar_cache_records(rows)[0]
+    assert loaded["margin"] == {
+        "margin_balance": 1_200.0,
+        "short_balance": 80.0,
+        "margin_delta": 200.0,
+        "margin_delta_pct": 2.0,
+        "short_delta": 30.0,
+        "short_delta_pct": 0.5,
+        "margin_to_volume": 0.3,
+        "risk_flags": [],
+    }
+    assert loaded["data_dates"]["margin"] == run_date.isoformat()
+    assert fetcher.calls == [(["2330.TW"], run_date)]
 
 
 def test_ensure_daily_radar_raw_rows_preserves_margin_for_stale_full_margin_context(
