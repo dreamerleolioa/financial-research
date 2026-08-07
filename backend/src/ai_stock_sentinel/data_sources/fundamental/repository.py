@@ -166,7 +166,10 @@ def load_latest_fundamental_periods(
             continue
         key = (row.fiscal_year, row.fiscal_quarter, row.statement_scope)
         current = by_period.get(key)
-        if current is None or _period_revision_sort_key(row) > _period_revision_sort_key(current):
+        if current is None or _period_revision_sort_key(
+            row,
+            as_of_date=as_of_date,
+        ) > _period_revision_sort_key(current, as_of_date=as_of_date):
             by_period[key] = row
     selected = sorted(
         by_period.values(),
@@ -190,7 +193,10 @@ def load_latest_dividend_events(
             continue
         key = (row.source_provider, row.source_dataset, row.event_key)
         current = by_event.get(key)
-        if current is None or _observed_sort_key(row) > _observed_sort_key(current):
+        if current is None or _revision_observed_sort_key(
+            row,
+            as_of_date=as_of_date,
+        ) > _revision_observed_sort_key(current, as_of_date=as_of_date):
             by_event[key] = row
     return sorted(
         by_event.values(),
@@ -243,16 +249,26 @@ def _materialize_loaded_periods(
     return materialized
 
 
-def _observed_sort_key(row: CompanyFundamentalPeriod | CompanyDividendEvent) -> tuple[float, int]:
-    observed_at = row.first_observed_at
+def _revision_observed_sort_key(
+    row: CompanyFundamentalPeriod | CompanyDividendEvent,
+    *,
+    as_of_date: date | None,
+) -> tuple[float, int]:
+    # Current reads follow the latest observation, while historical reads must
+    # not let a future re-observation leak back into an earlier point in time.
+    observed_at = row.last_observed_at if as_of_date is None else row.first_observed_at
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     return observed_at.timestamp(), row.id
 
 
-def _period_revision_sort_key(row: CompanyFundamentalPeriod) -> tuple[int, float, int]:
+def _period_revision_sort_key(
+    row: CompanyFundamentalPeriod,
+    *,
+    as_of_date: date | None,
+) -> tuple[int, float, int]:
     quality_priority = 1 if row.availability_quality == "observed" else 0
-    observed_at, row_id = _observed_sort_key(row)
+    observed_at, row_id = _revision_observed_sort_key(row, as_of_date=as_of_date)
     return quality_priority, observed_at, row_id
 
 

@@ -34,6 +34,7 @@ from ai_stock_sentinel.data_sources.fundamental.official_provider import (
 from ai_stock_sentinel.data_sources.fundamental.repository import (
     _postgres_dividend_event_upsert,
     _postgres_fundamental_period_upsert,
+    load_latest_dividend_events,
     load_latest_fundamental_periods,
     store_dividend_events,
     store_fundamental_periods,
@@ -191,6 +192,91 @@ def test_repository_keeps_restatements_and_derives_discrete_quarter_eps() -> Non
         latest = load_latest_fundamental_periods(session, symbol="2330.TW")
         assert len(rows) == 3
         assert [row.quarter_eps for row in latest] == [Decimal("2.000000"), Decimal("3.500000")]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_current_period_revision_uses_latest_observation_after_payload_reverts() -> None:
+    session, engine = _db_session()
+    try:
+        revision_a = normalize_official_statement_rows(
+            [_statement_row(2025, 1, "2")],
+            market="TW",
+            industry_schema="ci",
+            source_dataset="TWSE_ci",
+        )
+        revision_b = normalize_official_statement_rows(
+            [_statement_row(2025, 1, "3")],
+            market="TW",
+            industry_schema="ci",
+            source_dataset="TWSE_ci",
+        )
+        with patch(
+            "ai_stock_sentinel.data_sources.fundamental.repository.datetime"
+        ) as mocked_datetime:
+            mocked_datetime.now.side_effect = [
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 2, 1, tzinfo=timezone.utc),
+                datetime(2026, 3, 1, tzinfo=timezone.utc),
+            ]
+            store_fundamental_periods(session, revision_a)
+            store_fundamental_periods(session, revision_b)
+            store_fundamental_periods(session, revision_a)
+        session.commit()
+
+        current = load_latest_fundamental_periods(session, symbol="2330.TW")
+        historical = load_latest_fundamental_periods(
+            session,
+            symbol="2330.TW",
+            as_of_date=date(2026, 2, 15),
+        )
+
+        assert [row.cumulative_eps for row in current] == [Decimal("2")]
+        assert [row.cumulative_eps for row in historical] == [Decimal("3")]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_current_dividend_revision_uses_latest_observation_after_payload_reverts() -> None:
+    session, engine = _db_session()
+    try:
+        common = {
+            "公司代號": "2330",
+            "股利年度": "114",
+            "股利所屬期間": "114/01/01~114/12/31",
+            "股利所屬年(季)度": "114年",
+            "期別": "1",
+        }
+        revision_a = normalize_twse_dividend_rows(
+            [{**common, "股東配發-盈餘分配之現金股利(元/股)": "4"}]
+        )
+        revision_b = normalize_twse_dividend_rows(
+            [{**common, "股東配發-盈餘分配之現金股利(元/股)": "5"}]
+        )
+        with patch(
+            "ai_stock_sentinel.data_sources.fundamental.repository.datetime"
+        ) as mocked_datetime:
+            mocked_datetime.now.side_effect = [
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 2, 1, tzinfo=timezone.utc),
+                datetime(2026, 3, 1, tzinfo=timezone.utc),
+            ]
+            store_dividend_events(session, revision_a)
+            store_dividend_events(session, revision_b)
+            store_dividend_events(session, revision_a)
+        session.commit()
+
+        current = load_latest_dividend_events(session, symbol="2330.TW")
+        historical = load_latest_dividend_events(
+            session,
+            symbol="2330.TW",
+            as_of_date=date(2026, 2, 15),
+        )
+
+        assert [row.total_cash_per_share for row in current] == [Decimal("4")]
+        assert [row.total_cash_per_share for row in historical] == [Decimal("5")]
     finally:
         session.close()
         engine.dispose()
