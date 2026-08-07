@@ -224,7 +224,7 @@ class _FallbackFetcher:
         return {symbol: {"name": symbol, "fallback": True} for symbol in symbols}
 
 
-def test_local_first_fetcher_uses_archive_and_falls_back_only_for_missing_symbols() -> None:
+def test_unadjusted_archive_does_not_replace_adjusted_technical_history() -> None:
     session, engine = _db_session()
     try:
         start = date(2026, 3, 1)
@@ -244,9 +244,8 @@ def test_local_first_fetcher_uses_archive_and_falls_back_only_for_missing_symbol
             run_date=start + timedelta(days=69),
         )
 
-        assert payloads["2330.TW"]["source_provider"] == "taiwan_daily_bars"
-        assert payloads["2330.TW"]["ohlcv"]["close"] == 169.0
-        assert fallback.calls == [["AAPL"]]
+        assert fallback.calls == [["2330.TW", "AAPL"]]
+        assert payloads["2330.TW"]["fallback"] is True
         assert payloads["AAPL"]["fallback"] is True
     finally:
         session.close()

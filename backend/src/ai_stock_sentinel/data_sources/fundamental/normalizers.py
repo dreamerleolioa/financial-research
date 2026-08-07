@@ -20,6 +20,7 @@ class NormalizedFundamentalPeriod:
     statement_scope: str
     industry_schema: str
     cumulative_eps: Decimal | None
+    quarter_eps: Decimal | None
     source_report_date: date | None
     availability_quality: str
     source_provider: str
@@ -86,6 +87,7 @@ def normalize_official_statement_rows(
                 statement_scope="consolidated",
                 industry_schema=industry_schema,
                 cumulative_eps=eps_value,
+                quarter_eps=None,
                 source_report_date=_optional_date(_first_text(row, "出表日期", "Date")),
                 availability_quality="observed",
                 source_provider="official_openapi",
@@ -124,7 +126,8 @@ def normalize_finmind_statement_rows(
                 period_end=_quarter_end(period_end.year, quarter),
                 statement_scope="consolidated",
                 industry_schema="finmind_bootstrap",
-                cumulative_eps=_decimal(row.get("value")),
+                cumulative_eps=None,
+                quarter_eps=_decimal(row.get("value")),
                 source_report_date=None,
                 availability_quality="historical_unknown",
                 source_provider="finmind_bootstrap",
@@ -272,19 +275,24 @@ def normalize_finmind_dividend_rows(
         if cash is None:
             continue
         raw_payload = dict(row)
+        dividend_year, period_start, period_end, period_label = _finmind_dividend_period(
+            row,
+            event_date=event_date,
+        )
+        ex_dividend_date = _optional_date(_first_text(row, "CashExDividendTradingDate"))
         normalized.append(
             NormalizedDividendEvent(
                 symbol=symbol.upper(),
                 market=market,
-                dividend_year=event_date.year,
-                period_start=date(event_date.year, 1, 1),
-                period_end=date(event_date.year, 12, 31),
-                period_label="finmind_annual",
+                dividend_year=dividend_year,
+                period_start=period_start,
+                period_end=period_end,
+                period_label=period_label,
                 sequence=None,
                 decision_status="historical_unknown",
                 board_date=None,
                 shareholder_date=None,
-                ex_dividend_date=event_date,
+                ex_dividend_date=ex_dividend_date or event_date,
                 earnings_cash_per_share=cash,
                 legal_reserve_cash_per_share=None,
                 capital_reserve_cash_per_share=None,
@@ -327,6 +335,43 @@ def _quarter_end(year: int, quarter: int) -> date:
         3: date(year, 9, 30),
         4: date(year, 12, 31),
     }[quarter]
+
+
+def _quarter_start(year: int, quarter: int) -> date:
+    return {
+        1: date(year, 1, 1),
+        2: date(year, 4, 1),
+        3: date(year, 7, 1),
+        4: date(year, 10, 1),
+    }[quarter]
+
+
+def _finmind_dividend_period(
+    row: Mapping[str, Any],
+    *,
+    event_date: date,
+) -> tuple[int, date | None, date | None, str]:
+    period_label = _first_text(row, "year")
+    if period_label:
+        matched = re.fullmatch(r"\s*(\d{2,4})\s*年(?:度)?(?:\s*第\s*([1-4])\s*季)?\s*", period_label)
+        if matched:
+            fiscal_year = _calendar_year(matched.group(1))
+            quarter_text = matched.group(2)
+            if quarter_text is None:
+                return (
+                    fiscal_year,
+                    date(fiscal_year, 1, 1),
+                    date(fiscal_year, 12, 31),
+                    period_label,
+                )
+            quarter = int(quarter_text)
+            return (
+                fiscal_year,
+                _quarter_start(fiscal_year, quarter),
+                _quarter_end(fiscal_year, quarter),
+                period_label,
+            )
+    return event_date.year, None, None, period_label or "finmind_period_unknown"
 
 
 def _optional_date(value: str | None) -> date | None:

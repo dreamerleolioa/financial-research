@@ -14,6 +14,11 @@ on:
         options:
           - refresh
           - backfill
+      backfill_after_symbol:
+        description: Optional cursor returned by a previous bounded backfill run
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: fundamental-data-${{ github.ref }}
@@ -47,8 +52,10 @@ jobs:
 
       - name: Backfill managed symbols in bounded batches
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'backfill'
+        env:
+          BACKFILL_AFTER_SYMBOL: ${{ inputs.backfill_after_symbol }}
         run: |
-          after_symbol=""
+          after_symbol="${BACKFILL_AFTER_SYMBOL}"
           for batch in 1 2 3 4 5 6; do
             payload=$(jq -nc --arg after "$after_symbol" \
               '{scope:"managed", limit:10} + (if $after == "" then {} else {after_symbol:$after} end)')
@@ -68,3 +75,9 @@ jobs:
               break
             fi
           done
+          if [ -n "$after_symbol" ]; then
+            echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
+            printf 'Backfill request budget reached. Resume with `backfill_after_symbol=%s`.\n' \
+              "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
+            exit 2
+          fi

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import importlib.util
 from io import StringIO
@@ -8,11 +8,13 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
@@ -20,6 +22,8 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
 from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
 from ai_stock_sentinel.data_sources.fundamental.normalizers import (
+    normalize_finmind_dividend_rows,
+    normalize_finmind_statement_rows,
     normalize_official_statement_rows,
     normalize_tpex_ex_dividend_payload,
     normalize_twse_dividend_rows,
@@ -28,6 +32,8 @@ from ai_stock_sentinel.data_sources.fundamental.official_provider import (
     OfficialCachedFundamentalProvider,
 )
 from ai_stock_sentinel.data_sources.fundamental.repository import (
+    _postgres_dividend_event_upsert,
+    _postgres_fundamental_period_upsert,
     load_latest_fundamental_periods,
     store_dividend_events,
     store_fundamental_periods,
@@ -190,6 +196,157 @@ def test_repository_keeps_restatements_and_derives_discrete_quarter_eps() -> Non
         engine.dispose()
 
 
+def test_finmind_statement_rows_remain_discrete_quarter_eps() -> None:
+    session, engine = _db_session()
+    try:
+        periods = normalize_finmind_statement_rows(
+            [
+                {"date": "2019-03-31", "type": "EPS", "value": "2.37"},
+                {"date": "2019-06-30", "type": "EPS", "value": "2.57"},
+                {"date": "2019-09-30", "type": "EPS", "value": "3.90"},
+                {"date": "2019-12-31", "type": "EPS", "value": "4.48"},
+            ],
+            symbol="2330.TW",
+        )
+
+        assert [period.cumulative_eps for period in periods] == [None, None, None, None]
+        assert [period.quarter_eps for period in periods] == [
+            Decimal("2.37"),
+            Decimal("2.57"),
+            Decimal("3.90"),
+            Decimal("4.48"),
+        ]
+
+        store_fundamental_periods(session, periods)
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2330.TW", 133.2)
+
+        assert result.ttm_eps == 13.32
+        assert result.pe_current == pytest.approx(10)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_observed_official_period_wins_over_later_finmind_bootstrap() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2025, 1, "2")],
+                market="TW",
+                industry_schema="ci",
+                source_dataset="TWSE_ci",
+            ),
+        )
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [{"date": "2025-03-31", "type": "EPS", "value": "99"}],
+                symbol="2330.TW",
+            ),
+        )
+
+        latest = load_latest_fundamental_periods(session, symbol="2330.TW")
+
+        assert len(latest) == 1
+        assert latest[0].availability_quality == "observed"
+        assert latest[0].quarter_eps == Decimal("2")
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_finmind_quarterly_dividends_form_one_complete_fiscal_year() -> None:
+    session, engine = _db_session()
+    try:
+        events = normalize_finmind_dividend_rows(
+            [
+                {
+                    "date": "2024-09-18",
+                    "year": "113年第1季",
+                    "CashEarningsDistribution": "4.0",
+                    "CashExDividendTradingDate": "2024-09-12",
+                },
+                {
+                    "date": "2024-12-18",
+                    "year": "113年第2季",
+                    "CashEarningsDistribution": "4.0",
+                    "CashExDividendTradingDate": "2024-12-12",
+                },
+                {
+                    "date": "2025-03-24",
+                    "year": "113年第3季",
+                    "CashEarningsDistribution": "4.5",
+                    "CashExDividendTradingDate": "2025-03-18",
+                },
+                {
+                    "date": "2025-06-18",
+                    "year": "113年第4季",
+                    "CashEarningsDistribution": "4.5",
+                    "CashExDividendTradingDate": "2025-06-12",
+                },
+            ],
+            symbol="2330.TW",
+        )
+
+        assert [event.dividend_year for event in events] == [2024, 2024, 2024, 2024]
+        assert [(event.period_start, event.period_end) for event in events] == [
+            (date(2024, 1, 1), date(2024, 3, 31)),
+            (date(2024, 4, 1), date(2024, 6, 30)),
+            (date(2024, 7, 1), date(2024, 9, 30)),
+            (date(2024, 10, 1), date(2024, 12, 31)),
+        ]
+        assert events[0].ex_dividend_date == date(2024, 9, 12)
+
+        store_dividend_events(session, events)
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2330.TW", 360)
+
+        assert result.annual_cash_dividend == 17
+        assert result.dividend_yield == 17 / 360 * 100
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_postgres_revision_writes_use_atomic_on_conflict_upserts() -> None:
+    observed_at = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    periods = normalize_finmind_statement_rows(
+        [{"date": "2025-03-31", "type": "EPS", "value": "2"}],
+        symbol="2330.TW",
+    )
+    events = normalize_finmind_dividend_rows(
+        [
+            {
+                "date": "2025-07-01",
+                "year": "114年",
+                "CashEarningsDistribution": "5",
+            }
+        ],
+        symbol="2330.TW",
+    )
+
+    period_sql = str(
+        _postgres_fundamental_period_upsert(periods, observed_at=observed_at).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+    dividend_sql = str(
+        _postgres_dividend_event_upsert(events, observed_at=observed_at).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+
+    assert "ON CONFLICT ON CONSTRAINT uq_company_fundamental_period_revision DO UPDATE" in period_sql
+    assert "ON CONFLICT ON CONSTRAINT uq_company_dividend_event_revision DO UPDATE" in dividend_sql
+
+
 def test_official_cache_provider_builds_ttm_pe_and_complete_annual_dividend() -> None:
     session, engine = _db_session()
     try:
@@ -269,8 +426,8 @@ class _BootstrapProvider:
         self.statement_calls += 1
         rows: list[dict] = []
         for year, values in {
-            2024: ("1", "3", "6", "10"),
-            2025: ("2", "5", "9", "14"),
+            2024: ("1", "2", "3", "4"),
+            2025: ("2", "3", "4", "5"),
         }.items():
             rows.extend(
                 {
@@ -284,7 +441,7 @@ class _BootstrapProvider:
 
     def fetch_dividend_rows(self, symbol: str) -> list[dict]:
         self.dividend_calls += 1
-        return [{"date": "2025-07-01", "CashEarningsDistribution": "5"}]
+        return [{"date": "2025-07-01", "year": "114年", "CashEarningsDistribution": "5"}]
 
     def fetch_historical_prices(self, symbol: str, quarter_dates: list[str]) -> dict[str, float]:
         return {period_end: 100.0 for period_end in quarter_dates}
@@ -342,10 +499,19 @@ def test_official_refresh_is_bounded_and_persists_partial_success() -> None:
         if "mopsfin_t187ap06_O_bd" in url:
             raise RuntimeError("temporary outage")
         if "t187ap45_L" in url:
-            return _Response([])
+            return _Response(
+                [
+                    {
+                        "公司代號": "2330",
+                        "股利年度": "114",
+                        "股利所屬期間": "114/01/01~114/12/31",
+                        "股東配發-盈餘分配之現金股利(元/股)": "5",
+                    }
+                ]
+            )
         if "exDailyQ" in url:
             return _Response({"tables": []})
-        return _Response([])
+        return _Response([_statement_row(2025, 4, "14")])
 
     try:
         result = refresh_official_fundamentals(session, request_get=request_get)
@@ -355,8 +521,29 @@ def test_official_refresh_is_bounded_and_persists_partial_success() -> None:
         assert result.status == "partial"
         assert result.datasets_succeeded == 13
         assert result.datasets_failed == 1
-        assert result.records_written == 1
+        assert result.records_written == 12
         assert session.scalar(select(CompanyFundamentalPeriod.symbol)) == "2330.TW"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_official_refresh_rejects_empty_required_market_datasets() -> None:
+    session, engine = _db_session()
+
+    def request_get(url: str, timeout: int):
+        if "exDailyQ" in url:
+            return _Response({"tables": []})
+        return _Response([])
+
+    try:
+        result = refresh_official_fundamentals(session, request_get=request_get)
+
+        assert result.status == "partial"
+        assert result.datasets_succeeded == 1
+        assert result.datasets_failed == 13
+        assert result.records_written == 0
+        assert all("normalized dataset is empty" in error for error in result.errors)
     finally:
         session.close()
         engine.dispose()
@@ -405,6 +592,10 @@ def test_fundamental_workflow_has_daily_refresh_and_manual_bounded_backfill() ->
     assert "/internal/fundamentals/refresh" in text
     assert "/internal/fundamentals/backfill" in text
     assert "for batch in 1 2 3 4 5 6" in text
+    assert "backfill_after_symbol:" in text
+    assert 'after_symbol="${BACKFILL_AFTER_SYMBOL}"' in text
+    assert "BACKFILL_NEXT_AFTER_SYMBOL" in text
+    assert "exit 2" in text
     assert "limit:10" in text
     assert "X-Internal-Token" in text
 

@@ -348,10 +348,10 @@
 - 上市資料使用 TWSE `MI_INDEX` 全市場日行情；上櫃資料使用 TPEX 上櫃股票每日收盤行情。
 - `POST /internal/daily-radar/refresh-market-bars` 在台灣時間 18:30 預抓，既有 22:30 `refresh-ohlcv` 在當日 market bars 不完整時自我修復。
 - `DAILY_RADAR_TW_OHLCV_PROVIDER_MODE` 支援 `yfinance_only`、`official_first`、`official_only`；正式切換前以 180 calendar days 手動 backfill 暖機。
-- Daily Radar 與 Phase 1 AVWAP 優先讀本地 120 calendar days，至少需要 60 根 final trading bars 且最新日期等於 `run_date`；不足或不支援股票才走既有 provider。
+- Phase 1 AVWAP 與基本面季末價格優先讀本地 120 calendar days，至少需要 60 根 final trading bars 且最新日期等於 `run_date`；不足或不支援股票才走既有 provider。Daily Radar technical indicators 必須維持 adjusted price 語意；目前 `taiwan_daily_bars` 僅保存 `unadjusted` 官方原始行情，因此 technical path 不得用它取代 yfinance adjusted history，直到另有可驗證的 adjusted archive。
 - `taiwan_daily_bars` 是全域市場行情，不可保存 user id、entry date、avg cost 或持股 anchor；不得重用 `phase1_avwap_snapshots`。
 
-驗收：暖機後支援股票正常 refresh 的 yfinance request 為 0；backfill 冪等、可續跑、跳過非交易日；migration 可 upgrade/downgrade；原始行情與既有 compatibility indicators / `technical_profile` contract 不回歸。
+驗收：AVWAP 與基本面季末價格暖機後可由官方 archive 供應；Daily Radar technical path 明確固定 `auto_adjust=true` 且不讀 unadjusted archive；backfill 冪等、可續跑、跳過非交易日；migration 可 upgrade/downgrade；原始行情與既有 compatibility indicators / `technical_profile` contract 不回歸。
 
 ### 7.4 DR3：基本面官方快取與版本庫
 
@@ -369,19 +369,22 @@
 計算規則：
 
 - 官方累計 EPS 轉單季：Q1 等於 Q1 累計；Q2/Q3/Q4 分別扣除前一累計期間。前期缺漏時不猜值，該季及 TTM 標記 unavailable。
+- FinMind `TaiwanStockFinancialStatements` bootstrap 的 `EPS` 是單季值，直接保存於 `quarter_eps`，不得先寫成累計值再相減。
 - TTM 只使用最近四個連續離散季度；目前 PE 僅在 TTM EPS > 0 時計算。
 - 歷史 PE 最多 24 季，季末價格優先讀 DR2 `taiwan_daily_bars`，資料不足才使用 yfinance fallback；至少四個有效樣本才產生估值帶。
-- 年度股利優先使用完整年度事件，否則加總互不重疊季度／半年事件；不得用股價乘殖利率反推現金股利。
+- 年度股利優先使用完整年度事件，否則加總互不重疊季度／半年事件；FinMind bootstrap 必須解析 `year` 的民國年與季度範圍，無法確認期間時保持 unbounded 並 fail closed，不得把每筆配息偽裝成完整年度，也不得用股價乘殖利率反推現金股利。
 - `first_observed_at` 是 point-in-time availability boundary。FinMind 歷史 bootstrap 標記 `historical_unknown`，可支援目前估值帶，不可進入要求 point-in-time 正確性的歷史 replay/backtest。
 - 保持現有 `ttm_eps`、`pe_current`、PE band/percentile、`annual_cash_dividend`、`dividend_yield`、`yield_signal`、source 與 warning public contract。
 
 內部流程：
 
 - `POST /internal/fundamentals/refresh` 每日 07:15 更新市場級財報與股利；dataset 可部分成功、冪等提交，最多四個並行 request、45 秒 timeout、兩次 retry。
-- `POST /internal/fundamentals/backfill` 以 managed symbol universe、每批最多 10 檔及 `after_symbol` 游標執行；每小時最多 120 次 FinMind request，可中斷續跑。
+- `POST /internal/fundamentals/backfill` 以 managed symbol universe、每批最多 10 檔及 `after_symbol` 游標執行；每小時最多 120 次 FinMind request。GitHub workflow 達到六批上限且仍有下一頁時必須以 `BACKFILL_NEXT_AFTER_SYMBOL` 與 step summary 回報 cursor、非零結束，下一次以 `backfill_after_symbol` 明確續跑。
+- PostgreSQL revision 寫入使用 unique constraint 對應的 `ON CONFLICT DO UPDATE`，避免同一冷快取股票併發 bootstrap 時因先查後寫競態讓其中一個分析失敗。
+- 市場級官方財報與 TWSE 股利資料若 HTTP 成功但正規化後為空，視為 dataset failure；不得把空資料集計為成功並靜默沿用舊 cache。TPEX 當日除權息事件可合法為空，維持 dataset-specific no-data 語意。
 - 沿用 `DAILY_RADAR_INTERNAL_TOKEN` 的 fail-closed internal auth，不新增 provider key 或 secret。
 
-驗收：12 種財報 schema alias、民國年與數值清理、累計轉單季、TTM 連續性、財報修訂、股利重疊、point-in-time、官方快取零 FinMind happy path、一次性 fallback 持久化、`official_cache_only` graceful degradation、DR2/yfinance 價格切換、internal auth、partial failure、migration 與既有 API contract 都有自動測試。正式切換前必須用代表性上市櫃及六種產業公司雙軌比對現行 FinMind EPS，確認目前直接加總最後四筆資料是否存在累計 EPS 重複計算。
+驗收：12 種財報 schema alias、民國年與數值清理、官方累計轉單季、FinMind 單季 EPS 保真、TTM 連續性、財報修訂、季度／年度股利期間、point-in-time、官方快取零 FinMind happy path、一次性 fallback 持久化、併發 upsert、空資料集診斷、可續跑 workflow、`official_cache_only` graceful degradation、DR2/yfinance 價格切換、internal auth、partial failure、migration 與既有 API contract 都有自動測試。正式切換前仍須用代表性上市櫃及六種產業公司雙軌比對。
 
 ### 7.5 上線順序與安全邊界
 

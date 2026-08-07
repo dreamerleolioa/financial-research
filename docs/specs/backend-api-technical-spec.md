@@ -1769,7 +1769,7 @@ Daily Radar run status：
 #### Fundamental archive internal endpoints
 
 - `POST /internal/fundamentals/refresh`：固定最多 4 路並行取得 TWSE/TPEX 六類產業財報（共 12 datasets）、TWSE 股利決議與 TPEX 除息事件。每個 dataset 最多三次 request attempt；成功資料以 payload hash append revision，單一 dataset 失敗回 `status = partial` 並保留其他成功資料。
-- `POST /internal/fundamentals/backfill`：對 request `symbols` 或 managed universe 做 FinMind 歷史 bootstrap；每次最多 10 檔，每檔最多 `TaiwanStockFinancialStatements` 與 `TaiwanStockDividend` 兩個 requests，response 以 `next_after_symbol` 續頁。
+- `POST /internal/fundamentals/backfill`：對 request `symbols` 或 managed universe 做 FinMind 歷史 bootstrap；每次最多 10 檔，每檔最多 `TaiwanStockFinancialStatements` 與 `TaiwanStockDividend` 兩個 requests，response 以 `next_after_symbol` 續頁。GitHub workflow 每次最多六批，未完成時以 `BACKFILL_NEXT_AFTER_SYMBOL` 回報並要求下一次透過 `backfill_after_symbol` 續跑，不得重新由第一頁開始。
 - 兩者皆使用 `DAILY_RADAR_INTERNAL_TOKEN`。正式 `.github/workflows/fundamental-data.yml` 只每日呼叫官方 refresh；FinMind backfill 必須手動觸發。
 - `FUNDAMENTAL_PROVIDER_MODE` 預設 `finmind_only` 以維持部署相容；切為 `official_cache_first` 後分析先讀 `company_fundamental_periods` / `company_dividend_events`，只有歷史不足才 bootstrap；`official_cache_only` 完全不呼叫 FinMind/yfinance。官方股利事件若無法證明完整涵蓋一整年，`annual_cash_dividend` 必須維持 `null`，不可把部分年度事件冒充年股利。
 

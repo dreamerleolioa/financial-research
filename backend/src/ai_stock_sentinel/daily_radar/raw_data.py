@@ -18,6 +18,9 @@ from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
 from ai_stock_sentinel.technical.profile import build_technical_profile_payload
 
 
+REQUIRED_TECHNICAL_ADJUSTMENT_MODE = "adjusted"
+
+
 class BatchTechnicalFetcher(Protocol):
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ...
@@ -40,6 +43,7 @@ class YFinanceBatchTechnicalFetcher:
             start=start_date,
             end=end_date,
             interval="1d",
+            auto_adjust=True,
             threads=True,
             progress=False,
         )
@@ -64,7 +68,7 @@ class YFinanceBatchTechnicalFetcher:
 
 
 class LocalFirstBatchTechnicalFetcher:
-    """Build technical payloads from the shared TW/TWO bar archive before yfinance."""
+    """Use an adjusted TW/TWO archive when available; never mix in unadjusted bars."""
 
     _MODES = {"yfinance_only", "official_first", "official_only"}
 
@@ -103,6 +107,7 @@ class LocalFirstBatchTechnicalFetcher:
             symbols=supported_symbols,
             start_date=run_date - timedelta(days=120),
             end_date=run_date,
+            adjustment_mode=REQUIRED_TECHNICAL_ADJUSTMENT_MODE,
         )
         rows_by_symbol: dict[str, list[TaiwanDailyBar]] = {}
         for row in rows:

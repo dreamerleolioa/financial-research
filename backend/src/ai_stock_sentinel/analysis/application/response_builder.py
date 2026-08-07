@@ -321,7 +321,7 @@ def build_response(
         data_sources.append(institutional_flow.get("provider", "institutional-api"))
     fundamental_data = result.get("fundamental_data")
     if fundamental_data and not fundamental_data.get("error"):
-        data_sources.append("finmind-fundamental")
+        data_sources.append(_fundamental_data_source(fundamental_data))
 
     position_analysis: PositionAnalysis | None = None
     if result.get("entry_price") is not None:
@@ -408,6 +408,13 @@ def build_response(
         errors=response_errors,
         strategy_version=STRATEGY_VERSION,
     )
+
+
+def _fundamental_data_source(fundamental_data: dict[str, Any]) -> str:
+    return {
+        "FinMindFundamental": "finmind-fundamental",
+        "OfficialCachedFundamental": "official-cached-fundamental",
+    }.get(str(fundamental_data.get("source_provider") or ""), "fundamental")
 
 
 def position_cache_matches(full_result: dict[str, Any], payload: PositionAnalyzeRequest) -> bool:

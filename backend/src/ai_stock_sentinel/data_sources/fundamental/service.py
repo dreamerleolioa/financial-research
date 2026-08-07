@@ -207,19 +207,25 @@ def _store_official_dataset(
     if market is not None and schema is not None:
         if not _is_row_sequence(payload):
             raise ValueError("response is not a row list")
+        periods = normalize_official_statement_rows(
+            payload,
+            market=market,
+            industry_schema=schema,
+            source_dataset=name,
+        )
+        if not periods:
+            raise ValueError("normalized dataset is empty")
         return store_fundamental_periods(
             session,
-            normalize_official_statement_rows(
-                payload,
-                market=market,
-                industry_schema=schema,
-                source_dataset=name,
-            ),
+            periods,
         )
     if name == "TWSE_dividend":
         if not _is_row_sequence(payload):
             raise ValueError("response is not a row list")
-        return store_dividend_events(session, normalize_twse_dividend_rows(payload))
+        events = normalize_twse_dividend_rows(payload)
+        if not events:
+            raise ValueError("normalized dataset is empty")
+        return store_dividend_events(session, events)
     if not isinstance(payload, Mapping):
         raise ValueError("response is not an object")
     return store_dividend_events(session, normalize_tpex_ex_dividend_payload(payload))

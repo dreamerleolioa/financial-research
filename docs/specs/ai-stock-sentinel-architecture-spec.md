@@ -78,8 +78,8 @@
 | `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
 | `shared_background_contexts` | weekly major holders、lending、full margin 等 market-only 背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
 | `phase1_avwap_snapshots` | Phase 1 日頻 AVWAP shared market snapshot cache；以 `symbol` / `data_date` / logical `dataset` / `adjustment_mode` upsert，保存 market bars、generic anchors、data quality、missing reason 與 source trace；不得保存使用者持股 entry date、avg cost 或 holding-specific entry anchor |
-| `taiwan_daily_bars` | TWSE/TPEX 官方未還原日線行情本地歸檔；供 Daily Radar technical fetch 與 Phase 1 AVWAP local-first 讀取 |
-| `company_fundamental_periods` | 財報期間 append-only revision；保存累計 EPS、推導單季 EPS、觀察時間、payload hash 與原始 payload |
+| `taiwan_daily_bars` | TWSE/TPEX 官方未還原日線行情本地歸檔；供 Phase 1 AVWAP 與基本面季末價格 local-first 讀取。Daily Radar technical history 維持 adjusted 語意，不直接讀此 unadjusted archive |
+| `company_fundamental_periods` | 財報期間 append-only revision；官方來源保存累計 EPS 並推導單季 EPS，FinMind bootstrap 直接保存單季 EPS；另保存觀察時間、payload hash 與原始 payload |
 | `company_dividend_events` | 股利事件 append-only revision；保存所屬期間、決議/除息日期、現金股利分項、payload hash 與原始 payload |
 
 ### 0.4 Workflow 與排程
