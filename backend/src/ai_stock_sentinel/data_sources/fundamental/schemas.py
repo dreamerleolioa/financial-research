@@ -15,8 +15,10 @@ class FundamentalBackfillRequest(BaseModel):
 class FundamentalRefreshResponse(BaseModel):
     status: Literal["ok", "partial"]
     datasets_succeeded: int
+    datasets_skipped: int
     datasets_failed: int
     records_written: int
+    skipped_datasets: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 
