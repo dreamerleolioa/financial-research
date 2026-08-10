@@ -129,7 +129,22 @@ def _refresh_phase1_avwap_snapshots_for_universe(
         source_provider = _provider_metadata(active_provider, "source_provider", item.symbol, default="twse")
         source_dataset = _provider_metadata(active_provider, "source_dataset", item.symbol, default=TWSE_STOCK_DAY_DATASET)
         try:
-            bars = active_provider.fetch_history(item.symbol, start_date=start_date, end_date=data_date)
+            fetch_history_result = getattr(active_provider, "fetch_history_result", None)
+            if callable(fetch_history_result):
+                history_result = fetch_history_result(
+                    item.symbol,
+                    start_date=start_date,
+                    end_date=data_date,
+                )
+                bars = history_result.bars
+                source_provider = history_result.source_provider
+                source_dataset = history_result.source_dataset
+            else:
+                bars = active_provider.fetch_history(
+                    item.symbol,
+                    start_date=start_date,
+                    end_date=data_date,
+                )
             payload = build_phase1_avwap_payload(
                 symbol=item.symbol,
                 bars=bars,

@@ -1069,6 +1069,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
 
     assert "GitHub cron uses UTC. Taiwan time = UTC+8." in text
     assert 'cron: "0 10 * * 1-5"' in text  # 18:00 TWT prepare universe
+    assert 'cron: "30 10 * * 1-5"' in text  # 18:30 TWT market bar archive
     assert 'cron: "0 11 * * 1-5"' in text  # 19:00 TWT AVWAP
     assert 'cron: "0 12 * * 1-5"' in text  # 20:00 TWT lending
     assert 'cron: "30 13 * * 1-5"' in text  # 21:30 TWT full margin
@@ -1084,11 +1085,14 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "resolve_daily_radar_run_date.py" in text
     assert "/internal/daily-radar/market-session" in text
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 9
-    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 9
+    assert text.count("needs: resolve-run-context") == 10
+    assert "/internal/daily-radar/refresh-market-bars" in text
+    assert "market_bar_start_date" in text
+    assert "market_bar_end_date" in text
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 10
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 9
+        == 10
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text

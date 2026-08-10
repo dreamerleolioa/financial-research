@@ -552,9 +552,10 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
             "kwargs": {
                 "group_by": "ticker",
                 "start": date(2026, 2, 2),
-                "end": date(2026, 6, 3),
-                "interval": "1d",
-                "threads": True,
+                    "end": date(2026, 6, 3),
+                    "interval": "1d",
+                    "auto_adjust": True,
+                    "threads": True,
                 "progress": False,
             },
         }

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date
+import os
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
+from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
 
 
@@ -17,6 +22,13 @@ TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
 DEFAULT_TWSE_MONTH_FETCH_WORKERS = 4
 
 RequestGetter = Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class DailyPriceHistoryResult:
+    bars: list[DailyPriceBar]
+    source_provider: str
+    source_dataset: str
 
 
 class DailyPriceProviderError(RuntimeError):
@@ -92,6 +104,131 @@ class TwseDailyPriceProvider:
             for bar in sorted(rows, key=lambda item: item.trade_date)
             if start_date <= bar.trade_date <= end_date
         ]
+
+
+class ArchiveFirstDailyPriceProvider:
+    _MODES = {"yfinance_only", "official_first", "official_only"}
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        fallback_provider: Any | None = None,
+        provider_mode: str | None = None,
+        min_trading_bars: int = 60,
+    ) -> None:
+        self._session = session
+        self._fallback_provider = fallback_provider or TwseDailyPriceProvider()
+        self._provider_mode = provider_mode or os.getenv(
+            "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
+            "yfinance_only",
+        )
+        if self._provider_mode not in self._MODES:
+            raise ValueError("invalid DAILY_RADAR_TW_OHLCV_PROVIDER_MODE")
+        self._min_trading_bars = max(1, min_trading_bars)
+
+    def source_provider(self, symbol: str) -> str:
+        if self._provider_mode == "yfinance_only":
+            return _provider_metadata(
+                self._fallback_provider,
+                "source_provider",
+                symbol,
+                default="legacy_daily_price_provider",
+            )
+        return "taiwan_daily_bars_local_first"
+
+    def source_dataset(self, symbol: str) -> str:
+        if self._provider_mode == "yfinance_only":
+            return _provider_metadata(
+                self._fallback_provider,
+                "source_dataset",
+                symbol,
+                default=FINMIND_TAIWAN_STOCK_PRICE_DATASET,
+            )
+        return "taiwan_market_daily_ohlcv_or_legacy_fallback"
+
+    def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
+        return self.fetch_history_result(
+            symbol,
+            start_date=start_date,
+            end_date=end_date,
+        ).bars
+
+    def fetch_history_result(
+        self,
+        symbol: str,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> DailyPriceHistoryResult:
+        if self._provider_mode == "yfinance_only":
+            return self._fallback_result(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        rows = get_taiwan_daily_bars(
+            self._session,
+            symbols=[symbol],
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if len(rows) >= self._min_trading_bars and rows[-1].trade_date == end_date:
+            return DailyPriceHistoryResult(
+                bars=[
+                    DailyPriceBar(
+                        trade_date=row.trade_date,
+                        open=float(row.open),
+                        high=float(row.high),
+                        low=float(row.low),
+                        close=float(row.close),
+                        volume=float(row.volume),
+                        amount=float(row.amount) if row.amount is not None else None,
+                        estimated_amount=row.amount is None,
+                    )
+                    for row in rows
+                ],
+                source_provider=rows[-1].source_provider,
+                source_dataset=rows[-1].source_dataset,
+            )
+        if self._provider_mode == "official_first":
+            return self._fallback_result(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        return DailyPriceHistoryResult(
+            bars=[],
+            source_provider="taiwan_daily_bars",
+            source_dataset="taiwan_market_daily_ohlcv",
+        )
+
+    def _fallback_result(
+        self,
+        symbol: str,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> DailyPriceHistoryResult:
+        return DailyPriceHistoryResult(
+            bars=self._fallback_provider.fetch_history(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+            source_provider=_provider_metadata(
+                self._fallback_provider,
+                "source_provider",
+                symbol,
+                default="legacy_daily_price_provider",
+            ),
+            source_dataset=_provider_metadata(
+                self._fallback_provider,
+                "source_dataset",
+                symbol,
+                default=FINMIND_TAIWAN_STOCK_PRICE_DATASET,
+            ),
+        )
 
 
 def _fetch_twse_month(
@@ -281,6 +418,8 @@ def _optional_number(row: Mapping[str, Any], *keys: str) -> float | None:
 
 
 __all__ = [
+    "DailyPriceHistoryResult",
+    "ArchiveFirstDailyPriceProvider",
     "DailyPriceProviderError",
     "DEFAULT_ADJUSTMENT_MODE",
     "DEFAULT_PHASE1_DATASET",

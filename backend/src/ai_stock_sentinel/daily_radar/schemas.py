@@ -92,6 +92,25 @@ class DailyRadarRefreshStepResponse(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarMarketBarsRefreshRequest(BaseModel):
+    run_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    market: str = Field(default="TW", min_length=1, max_length=20)
+
+
+class DailyRadarMarketBarsRefreshResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    start_date: date
+    end_date: date
+    market: str
+    records_written: int = 0
+    dates_attempted: list[str] = Field(default_factory=list)
+    dates_with_data: list[str] = Field(default_factory=list)
+    skipped_dates: list[str] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DailyRadarChipContextUpdateRequest(BaseModel):
     run_date: date | None = None
     market: str = Field(default="TW", min_length=1, max_length=20)

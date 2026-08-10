@@ -39,3 +39,8 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def create_session() -> Session:
+    """Create an explicitly-owned session for non-FastAPI application services."""
+    return _get_session_local()()

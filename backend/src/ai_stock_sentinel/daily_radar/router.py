@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
 from contextlib import suppress
 from datetime import date, timedelta
@@ -26,10 +27,13 @@ from ai_stock_sentinel.daily_radar.name_backfill import (
 )
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
+    LocalFirstBatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
     reusable_daily_radar_raw_rows,
 )
+from ai_stock_sentinel.daily_radar.market_bar_provider import OfficialTaiwanMarketBarProvider
+from ai_stock_sentinel.daily_radar.market_bar_service import refresh_taiwan_market_bars
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundChipContextProvider,
@@ -86,6 +90,8 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarForwardValidationRunResponse,
     DailyRadarMarketSessionRequest,
     DailyRadarMarketSessionResponse,
+    DailyRadarMarketBarsRefreshRequest,
+    DailyRadarMarketBarsRefreshResponse,
     DailyRadarMonthlyRuleReviewRequest,
     DailyRadarMonthlyRuleReviewResponse,
     DailyRadarNameBackfillRequest,
@@ -108,7 +114,7 @@ from ai_stock_sentinel.daily_radar.universe import (
 )
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.clock import today_taipei
-from ai_stock_sentinel.phase1_avwap.provider import TwseDailyPriceProvider
+from ai_stock_sentinel.phase1_avwap.provider import ArchiveFirstDailyPriceProvider, TwseDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import DailyPriceProvider, refresh_phase1_avwap_snapshots_for_symbols
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbol_set
 
@@ -129,8 +135,14 @@ def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
     return TwseRwdInstitutionalUniverseProvider()
 
 
-def get_daily_radar_technical_fetcher() -> BatchTechnicalFetcher:
-    return YFinanceBatchTechnicalFetcher()
+def get_daily_radar_technical_fetcher(
+    db: Session = Depends(get_db),
+) -> BatchTechnicalFetcher:
+    return LocalFirstBatchTechnicalFetcher(db, fallback_fetcher=YFinanceBatchTechnicalFetcher())
+
+
+def get_taiwan_market_bar_provider() -> OfficialTaiwanMarketBarProvider:
+    return OfficialTaiwanMarketBarProvider()
 
 
 def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
@@ -145,8 +157,10 @@ def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextP
     return DefaultBackgroundChipContextProvider()
 
 
-def get_phase1_avwap_daily_price_provider() -> DailyPriceProvider:
-    return TwseDailyPriceProvider()
+def get_phase1_avwap_daily_price_provider(
+    db: Session = Depends(get_db),
+) -> DailyPriceProvider:
+    return ArchiveFirstDailyPriceProvider(db, fallback_provider=TwseDailyPriceProvider())
 
 
 @router.post(
@@ -380,6 +394,61 @@ def refresh_daily_radar_full_margin_endpoint(
 
 
 @router.post(
+    "/internal/daily-radar/refresh-market-bars",
+    response_model=DailyRadarMarketBarsRefreshResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_market_bars_endpoint(
+    payload: DailyRadarMarketBarsRefreshRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: OfficialTaiwanMarketBarProvider = Depends(get_taiwan_market_bar_provider),
+) -> DailyRadarMarketBarsRefreshResponse:
+    request = payload or DailyRadarMarketBarsRefreshRequest()
+    if request.start_date is not None or request.end_date is not None:
+        if request.start_date is None or request.end_date is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "market_bar_range_incomplete"},
+            )
+        start_date = request.start_date
+        end_date = request.end_date
+    else:
+        start_date = end_date = request.run_date or _backend_today()
+    try:
+        result = refresh_taiwan_market_bars(
+            db,
+            start_date=start_date,
+            end_date=end_date,
+            provider=provider,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "market_bar_range_invalid", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Taiwan market bar refresh failed")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "market_bar_refresh_failed", "error_type": exc.__class__.__name__},
+        ) from exc
+    return DailyRadarMarketBarsRefreshResponse(
+        status=result["status"],
+        start_date=start_date,
+        end_date=end_date,
+        market=request.market,
+        records_written=result["records_written"],
+        dates_attempted=result["dates_attempted"],
+        dates_with_data=result["dates_with_data"],
+        skipped_dates=result["skipped_dates"],
+        errors=result["errors"],
+    )
+
+
+@router.post(
     "/internal/daily-radar/refresh-ohlcv",
     response_model=DailyRadarRefreshStepResponse,
     dependencies=[Depends(require_daily_radar_internal_auth)],
@@ -388,6 +457,7 @@ def refresh_daily_radar_ohlcv_endpoint(
     payload: DailyRadarRefreshStepRequest | None = None,
     db: Session = Depends(get_db),
     technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
+    market_bar_provider: OfficialTaiwanMarketBarProvider = Depends(get_taiwan_market_bar_provider),
 ) -> DailyRadarRefreshStepResponse:
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or _backend_today()
@@ -399,6 +469,14 @@ def refresh_daily_radar_ohlcv_endpoint(
         universe = [entry for entry in universe if entry.symbol not in skipped_symbols]
         prepared.selected_symbols = selected_symbols
         prepared.symbol_count = len(selected_symbols)
+    if os.getenv("DAILY_RADAR_TW_OHLCV_PROVIDER_MODE", "yfinance_only") != "yfinance_only":
+        refresh_taiwan_market_bars(
+            db,
+            start_date=run_date,
+            end_date=run_date,
+            provider=market_bar_provider,
+        )
+        db.flush()
     rows = ensure_daily_radar_raw_rows(
         db,
         run_date,

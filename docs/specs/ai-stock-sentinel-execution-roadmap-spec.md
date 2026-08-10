@@ -35,6 +35,9 @@
 | P1   | 策略卡體驗、盤中 guardrail、回測結果持久化 | Active   | 提升策略可讀性、安全性與回測結果查詢能力  |
 | P2   | LLM 輸出評測、策略版本化                   | Active   | 控制 LLM 敘事品質，讓策略版本可追蹤與比較 |
 | P3   | 新倉/持股體驗整合                          | Rejected | 2026-03-19 已否決，不實作                 |
+| DR1  | 官方籌碼背景資料                           | Approved | 解除 FinMind 融資融券與借券逐檔 request  |
+| DR2  | 台股 OHLCV 本地歸檔                        | Approved | 解除 yfinance 日線行情依賴與重複抓取      |
+| DR3  | 基本面官方快取與版本庫                     | Approved | 解除分析流程 FinMind 基本面正常路徑依賴   |
 
 ---
 
@@ -313,7 +316,88 @@
 
 ---
 
-## 7. 跨階段文件與 SOP
+## 7. 資料來源韌性三階段（2026-08-07 核准）
+
+實作狀態（2026-08-07）：DR1、DR2、DR3 程式、additive migrations、internal endpoints、GitHub Actions、環境開關與自動測試已落地；所有 provider mode 仍以既有來源為部署預設。Production 暖機、shadow comparison 與模式切換依 7.5 執行，尚未因程式合併而自動啟用。
+
+### 7.1 共同決策
+
+- 正式 runtime 不使用 MCP 作為市場資料 provider；MCP 僅能作探索或人工查詢。正式資料流採官方公開 API、正規化、本地資料庫及明確 fallback。
+- 三階段必須可以獨立 migration、部署、切換與回滾；新增資料表保留，回滾只切 provider mode，不做破壞性資料刪除。
+- 不改既有 public response contract，不把新增背景或基本面資料加入 Daily Radar ranking、confidence score、action、verdict 或 classification。
+- 支援範圍先限定四位數 `.TW` / `.TWO` 普通股；ETF、權證、海外市場保留既有 provider fallback。
+- 每個官方來源都要保存來源、資料日期、抓取時間、資料品質與 missing reason；合法的零值或 no-data 不可誤判成 provider failure。
+
+### 7.2 DR1：官方籌碼背景資料
+
+來源與行為：
+
+- 上市融資融券使用 TWSE `MI_MARGN`，上櫃使用 TPEX 融資融券餘額；借券使用 TWSE `t13sa710`，`weekly_major_holders` 繼續使用 TDCC。
+- 融資歷史查詢依市場使用不同日期格式：TWSE 為 `YYYYMMDD`，TPEX 為 `YYYY/MM/DD`；lookback 只計入有市場資料且不重複的 payload date，避免同一交易日被重複當成多日變化。
+- 以市場級資料集取代 `selected symbols × context types` 的 FinMind 逐檔 request；full margin 最多回看 10 個交易日／37 個 calendar days，lending 依官方限制分成 7 日區間。
+- 保存既有 `shared_background_contexts` payload keys、consumer contract、單位及 replay key 語意，不新增 schema migration。
+- `DAILY_RADAR_BACKGROUND_PROVIDER_MODE` 支援 `finmind_only`、`official_first`、`official_only`。初次部署與緊急回滾使用 `finmind_only`；完成比對後切 `official_first`。
+- `official_first` 只在 request、parser 或整個 market-date 失敗時 fallback；個別股票沒有合法資料時寫入 missing payload，不逐檔呼叫 FinMind。
+
+驗收：支援市場在正常刷新時 FinMind request 為 0，整體官方 request 數不隨 selected universe 250 檔線性成長；既有 background context API 與 Daily Radar scoring 測試不變。
+
+### 7.3 DR2：台股 OHLCV 本地歸檔
+
+新增 `taiwan_daily_bars`：
+
+- 唯一鍵為 `(symbol, trade_date, dataset, adjustment_mode)`；保存 market、name、OHLC、volume、amount、source provider/dataset、fetched_at、`adjustment_mode=unadjusted` 與 `is_final`。
+- 上市資料使用 TWSE `MI_INDEX` 全市場日行情；上櫃資料使用 TPEX 上櫃股票每日收盤行情。
+- `POST /internal/daily-radar/refresh-market-bars` 在台灣時間 18:30 預抓，既有 22:30 `refresh-ohlcv` 在當日 market bars 不完整時自我修復。
+- `DAILY_RADAR_TW_OHLCV_PROVIDER_MODE` 支援 `yfinance_only`、`official_first`、`official_only`；正式切換前以 180 calendar days 手動 backfill 暖機。
+- Phase 1 AVWAP 與基本面季末價格優先讀本地 120 calendar days，至少需要 60 根 final trading bars 且最新日期等於 `run_date`；不足或不支援股票才走既有 provider。Daily Radar technical indicators 必須維持 adjusted price 語意；目前 `taiwan_daily_bars` 僅保存 `unadjusted` 官方原始行情，因此 technical path 不得用它取代 yfinance adjusted history，直到另有可驗證的 adjusted archive。
+- `taiwan_daily_bars` 是全域市場行情，不可保存 user id、entry date、avg cost 或持股 anchor；不得重用 `phase1_avwap_snapshots`。
+
+驗收：AVWAP 與基本面季末價格暖機後可由官方 archive 供應；Daily Radar technical path 明確固定 `auto_adjust=true` 且不讀 unadjusted archive；backfill 冪等、可續跑、跳過非交易日；migration 可 upgrade/downgrade；原始行情與既有 compatibility indicators / `technical_profile` contract 不回歸。
+
+### 7.4 DR3：基本面官方快取與版本庫
+
+資料來源與 provider：
+
+- TWSE/TPEX 六種產業財務報表 OpenAPI 提供市場級當季累計 EPS；上市股利使用 TWSE `t187ap45_L`，上櫃已除權息現金股利使用 TPEX `bulletin/exDailyQ`。
+- TPEX `mopsfin_t187ap39_O` 抽查存在明顯資料落後，不得作唯一上櫃股利來源；尚未除息或歷史不足時，`official_cache_first` 可對單一股票做一次 FinMind bootstrap 並持久化。
+- 新增 `OfficialCachedFundamentalProvider`；`/analyze` 與 `/analyze/position` 正常路徑只讀 DB，不直接呼叫官方 API。
+- `FUNDAMENTAL_PROVIDER_MODE` 支援 `finmind_only`、`official_cache_first`、`official_cache_only`。`official_cache_only` 資料不足時回傳 partial fundamental context 與 warning，不中止整體分析。
+
+新增 `company_fundamental_periods`：保存 symbol/market、fiscal year/quarter、statement scope、industry schema、官方累計 EPS、FinMind 離散季度 EPS、report date、first/last observed、availability quality、來源、payload hash 與 raw payload；財報修訂追加版本，不覆蓋舊值。官方單季 EPS 依查詢當下選中的 point-in-time revisions 動態推導，避免前期重編回頭改寫既有後期 revision。
+
+新增 `company_dividend_events`：保存股利年度與涵蓋期間、決議狀態、董事會／股東會／除權息日期、盈餘／法定盈餘公積／資本公積現金股利、合計現金股利、first/last observed、來源、payload hash 與 raw payload；重疊期間無法消歧時 fail closed。
+
+計算規則：
+
+- 官方累計 EPS 轉單季：Q1 等於 Q1 累計；Q2/Q3/Q4 分別扣除前一累計期間。前期缺漏時不猜值，該季及 TTM 標記 unavailable。
+- FinMind `TaiwanStockFinancialStatements` bootstrap 的 `EPS` 是單季值，直接保存於 `quarter_eps`，不得先寫成累計值再相減。
+- TTM 只使用最近四個連續離散季度；目前 PE 僅在 TTM EPS > 0 時計算。
+- 歷史 PE 最多 24 季，季末價格優先讀 DR2 `taiwan_daily_bars`，資料不足才使用 yfinance fallback；至少四個有效樣本才產生估值帶。
+- 年度股利優先使用完整年度事件，否則加總互不重疊季度／半年事件；FinMind bootstrap 必須解析 `year` 的民國年與季度範圍，無法確認期間時保持 unbounded 並 fail closed，不得把每筆配息偽裝成完整年度，也不得用股價乘殖利率反推現金股利。
+- 官方與 FinMind 同時保存相同股利涵蓋期間時，先以官方事件消除跨來源重疊；同一優先來源仍有無法消歧的重疊時維持 fail closed。基本面與 AVWAP 的公開 provenance 必須反映實際使用的 official、bootstrap 或 fallback provider，不得只標示 routing wrapper。
+- `first_observed_at` 是 point-in-time availability boundary。FinMind 歷史 bootstrap 標記 `historical_unknown`，可支援目前估值帶，不可進入要求 point-in-time 正確性的歷史 replay/backtest。
+- 保持現有 `ttm_eps`、`pe_current`、PE band/percentile、`annual_cash_dividend`、`dividend_yield`、`yield_signal`、source 與 warning public contract。
+
+內部流程：
+
+- `POST /internal/fundamentals/refresh` 每日 07:15 更新市場級財報與股利；dataset 可部分成功、冪等提交，最多四個並行 request、45 秒 timeout、兩次 retry。
+- `POST /internal/fundamentals/backfill` 以 managed symbol universe、每批最多 10 檔及 `after_symbol` 游標執行；每小時最多 120 次 FinMind request。GitHub workflow 達到六批上限且仍有下一頁時必須以 `BACKFILL_NEXT_AFTER_SYMBOL` 與 step summary 回報 cursor、非零結束，下一次以 `backfill_after_symbol` 明確續跑。
+- PostgreSQL revision 寫入使用 unique constraint 對應的 `ON CONFLICT DO UPDATE`，避免同一冷快取股票併發 bootstrap 時因先查後寫競態讓其中一個分析失敗。
+- 市場級官方財報與 TWSE 股利資料若 HTTP 成功但正規化後為空，視為 dataset failure；不得把空資料集計為成功並靜默沿用舊 cache。TPEX 當日除權息事件可合法為空，維持 dataset-specific no-data 語意。
+- 沿用 `DAILY_RADAR_INTERNAL_TOKEN` 的 fail-closed internal auth，不新增 provider key 或 secret。
+
+驗收：12 種財報 schema alias、民國年與數值清理、官方累計轉單季、FinMind 單季 EPS 保真、TTM 連續性、財報修訂、季度／年度股利期間、point-in-time、官方快取零 FinMind happy path、一次性 fallback 持久化、併發 upsert、空資料集診斷、可續跑 workflow、`official_cache_only` graceful degradation、DR2/yfinance 價格切換、internal auth、partial failure、migration 與既有 API contract 都有自動測試。正式切換前仍須用代表性上市櫃及六種產業公司雙軌比對。
+
+### 7.5 上線順序與安全邊界
+
+1. DR1 先以 `finmind_only` 部署，官方 shadow refresh 通過後切 `official_first`。
+2. DR2 建表並回補至少 180 calendar days，再切 `official_first`。
+3. DR3 建表、暖機 managed universe、完成 EPS 雙軌比對，再切 `official_cache_first` 並觀察至少三個交易日。
+4. Zeabur merge 會自動部署並執行 Alembic；每個 additive migration 合併前必須在 disposable PostgreSQL 執行 upgrade/head 驗證。若 migration 需要 destructive operation 或人工資料準備，合併前必須停止並另行確認。
+
+---
+
+## 8. 跨階段文件與 SOP
 
 | 主題                | 文件                                               |
 | ------------------- | -------------------------------------------------- |
@@ -324,7 +408,7 @@
 
 ---
 
-## 8. 文件維護規則
+## 9. 文件維護規則
 
 - 新增階段需求時，優先加入本文件，不再新增 `p0-*` / `p1-*` 形式的獨立 spec。
 - 若某階段需求成為長期系統事實，移入對應長期 spec，並在本文件保留簡短決策紀錄。

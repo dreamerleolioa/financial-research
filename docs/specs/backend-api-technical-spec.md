@@ -1746,7 +1746,7 @@ Daily Radar run status：
 
 #### Daily Radar segmented internal pipeline
 
-正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會用 GitHub Actions run API 讀取原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；啟動延遲、跨過台灣午夜與對舊 run 按 Re-run 都不會改變原本 intended trading date。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期。接著 workflow 先呼叫 `POST /internal/daily-radar/market-session`；TWSE 明確回報休市時所有下游 jobs skip，provider 或 payload 異常時 fail closed。
+正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會用 GitHub Actions run API 讀取原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；啟動延遲、跨過台灣午夜與對舊 run 按 Re-run 都不會改變原本 intended trading date。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期。接著 workflow 先呼叫 `POST /internal/daily-radar/market-session`；TWSE 明確回報休市時 scheduled pipeline 與一般手動 step skip，provider 或 payload 異常時 fail closed。手動 `refresh-market-bars` maintenance step 是唯一例外，可在目前 `run_date` 休市時用明確的 `start_date` / `end_date` 執行最多 180 個 calendar days 的歷史 backfill。
 
 #### `POST /internal/daily-radar/market-session`
 
@@ -1756,6 +1756,7 @@ Daily Radar run status：
 - **Fail-closed**：只有 TWSE 明確的 no-data 狀態才視為 `closed`；request failure、無效 payload、response date 不符、開市回應無 rows 或未知 status 回 `503`，不得靜默 skip。
 
 - 18:00 TWT：`POST /internal/daily-radar/prepare-universe`，保存 capped 250 selected symbols、universe trace 與 prepared step status。
+- 18:30 TWT：`POST /internal/daily-radar/refresh-market-bars`，以 TWSE/TPEX 官方整表行情刷新 `taiwan_daily_bars`；手動 maintenance/backfill 不受目前 `run_date` 的 `market_open` 結果阻擋，但仍受 180 calendar days range limit 與 endpoint 驗證約束。
 - 19:00 TWT：`POST /internal/daily-radar/refresh-avwap`，刷新 `phase1_avwap_snapshots`。
 - 20:00 TWT：`POST /internal/daily-radar/refresh-lending`，刷新 `shared_background_contexts` 的 `lending`。
 - 21:30 TWT：`POST /internal/daily-radar/refresh-full-margin`，等待 FinMind 21:00 更新後刷新 `full_margin`。
@@ -1764,6 +1765,13 @@ Daily Radar run status：
 - 隔日 00:30 TWT：`POST /internal/daily-radar/run-scoring`，使用同一個 intended trading date 作為 `run_date`，只讀 DB cache/snapshot 並持久化 Daily Radar run/candidates。
 
 `run-scoring` 不得打 FinMind、yfinance、TWSE 或 market index provider；缺少 prepared universe、prepared market context、final raw rows、selected universe 為空，或任一 required refresh step 不是 `completed` 時回 `409`，由 workflow/monitor 顯示資料準備缺口。空 selected universe 使用 `daily_radar_selected_universe_empty`，raw row 不完整使用 `daily_radar_raw_data_incomplete`。Required refresh steps 為 `refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`。`refresh-avwap` 是 optional evidence step：失敗或缺漏不得阻塞 `run-scoring`，但 candidate detail 必須保留 `input_snapshot.phase1_avwap_context.freshness`、`missing_reason` 與 data-quality caveat。
+
+#### Fundamental archive internal endpoints
+
+- `POST /internal/fundamentals/refresh`：固定最多 4 路並行取得 TWSE/TPEX 六類產業財報（共 12 datasets）、TWSE 股利決議與 TPEX 除息事件。每個 dataset 最多三次 request attempt；成功資料以 payload hash append revision，單一 dataset 失敗回 `status = partial` 並保留其他成功資料。
+- `POST /internal/fundamentals/backfill`：對 request `symbols` 或 managed universe 做 FinMind 歷史 bootstrap；每次最多 10 檔，每檔最多 `TaiwanStockFinancialStatements` 與 `TaiwanStockDividend` 兩個 requests，response 以 `next_after_symbol` 續頁。GitHub workflow 每次最多六批，未完成時以 `BACKFILL_NEXT_AFTER_SYMBOL` 回報並要求下一次透過 `backfill_after_symbol` 續跑，不得重新由第一頁開始。
+- 兩者皆使用 `DAILY_RADAR_INTERNAL_TOKEN`。正式 `.github/workflows/fundamental-data.yml` 只每日呼叫官方 refresh；FinMind backfill 必須手動觸發。
+- `FUNDAMENTAL_PROVIDER_MODE` 預設 `finmind_only` 以維持部署相容；切為 `official_cache_first` 後分析先讀 `company_fundamental_periods` / `company_dividend_events`，只有歷史不足才 bootstrap；`official_cache_only` 完全不呼叫 FinMind/yfinance。官方股利事件若無法證明完整涵蓋一整年，`annual_cash_dividend` 必須維持 `null`，不可把部分年度事件冒充年股利。
 
 #### `POST /internal/daily-radar/run`
 
