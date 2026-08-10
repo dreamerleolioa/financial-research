@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import date
 import re
 from typing import Any
 
@@ -42,8 +43,10 @@ RequestGet = Callable[..., Any]
 class FundamentalRefreshResult:
     status: str
     datasets_succeeded: int
+    datasets_skipped: int
     datasets_failed: int
     records_written: int
+    skipped_datasets: list[str]
     errors: list[str]
 
 
@@ -74,6 +77,7 @@ def refresh_official_fundamentals(
     )
 
     errors: list[str] = []
+    skipped_datasets: list[str] = []
     records_written = 0
     succeeded = 0
     with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 4))) as executor:
@@ -85,6 +89,12 @@ def refresh_official_fundamentals(
             name, market, schema = futures[future]
             try:
                 payload = future.result()
+                if market is not None and _is_official_statement_placeholder(
+                    payload,
+                    market=market,
+                ):
+                    skipped_datasets.append(name)
+                    continue
                 with session.begin_nested():
                     dataset_records = _store_official_dataset(
                         session,
@@ -98,12 +108,16 @@ def refresh_official_fundamentals(
             except Exception as exc:
                 errors.append(f"{name}: refresh failed: {exc}")
 
-    failed = len(datasets) - succeeded
+    errors.sort()
+    skipped_datasets.sort()
+    failed = len(datasets) - succeeded - len(skipped_datasets)
     return FundamentalRefreshResult(
         status="ok" if failed == 0 else "partial",
         datasets_succeeded=succeeded,
+        datasets_skipped=len(skipped_datasets),
         datasets_failed=failed,
         records_written=records_written,
+        skipped_datasets=skipped_datasets,
         errors=errors,
     )
 
@@ -233,6 +247,59 @@ def _store_official_dataset(
 
 def _is_row_sequence(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _is_official_statement_placeholder(payload: Any, *, market: str) -> bool:
+    if market not in {"TW", "TWO"} or not _is_row_sequence(payload) or not payload:
+        return False
+
+    for row in payload:
+        if not isinstance(row, Mapping):
+            return False
+        contract = next(
+            (
+                (required_fields, report_date_field)
+                for required_fields, report_date_field in (
+                    ({"出表日期", "年度", "季別", "公司代號"}, "出表日期"),
+                    ({"Date", "Year", "Season", "SecuritiesCompanyCode"}, "Date"),
+                )
+                if required_fields.issubset(row)
+            ),
+            None,
+        )
+        if contract is None:
+            return False
+        _, report_date_field = contract
+        if not _is_known_placeholder_report_date(row.get(report_date_field)):
+            return False
+        if any(
+            _has_text(value)
+            for field, value in row.items()
+            if field != report_date_field
+        ):
+            return False
+    return True
+
+
+def _has_text(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def _is_known_placeholder_report_date(value: Any) -> bool:
+    text = str(value or "").strip()
+    try:
+        if re.fullmatch(r"\d{7}", text):
+            date(int(text[:3]) + 1911, int(text[3:5]), int(text[5:7]))
+            return True
+        if re.fullmatch(r"\d{8}", text):
+            year = int(text[:4])
+            if year <= 1911:
+                return False
+            date(year, int(text[4:6]), int(text[6:8]))
+            return True
+    except ValueError:
+        return False
+    return False
 
 
 __all__ = [

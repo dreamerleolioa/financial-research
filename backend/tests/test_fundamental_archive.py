@@ -732,9 +732,196 @@ def test_official_refresh_rejects_empty_required_market_datasets() -> None:
 
         assert result.status == "partial"
         assert result.datasets_succeeded == 1
+        assert result.datasets_skipped == 0
         assert result.datasets_failed == 13
         assert result.records_written == 0
+        assert result.skipped_datasets == []
         assert all("normalized dataset is empty" in error for error in result.errors)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_official_refresh_skips_known_unpublished_statement_placeholders() -> None:
+    session, engine = _db_session()
+
+    def request_get(url: str, timeout: int):
+        if "t187ap06_L_" in url:
+            return _Response(
+                [
+                    {
+                        "出表日期": "1150810",
+                        "年度": "",
+                        "季別": "",
+                        "公司代號": "",
+                        "公司名稱": "",
+                        "基本每股盈餘（元）": "",
+                    }
+                ]
+            )
+        if "mopsfin_t187ap06_O_fh" in url:
+            return _Response(
+                [
+                    {
+                        "出表日期": "1150809",
+                        "年度": "",
+                        "季別": "",
+                        "公司代號": "",
+                        "公司名稱": "",
+                        "基本每股盈餘（元）": "",
+                    }
+                ]
+            )
+        if "mopsfin_t187ap06_O_" in url:
+            return _Response(
+                [
+                    {
+                        "Date": "1150809",
+                        "Year": "",
+                        "Season": "",
+                        "SecuritiesCompanyCode": "",
+                        "CompanyName": "",
+                        "BasicEarningsPerShare": "",
+                    }
+                ]
+            )
+        if "t187ap45_L" in url:
+            return _Response(
+                [
+                    {
+                        "公司代號": "2330",
+                        "股利年度": "114",
+                        "股利所屬期間": "114/01/01~114/12/31",
+                        "股東配發-盈餘分配之現金股利(元/股)": "5",
+                    }
+                ]
+            )
+        return _Response({"tables": []})
+
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2025, 4, "14")],
+                market="TW",
+                industry_schema="basi",
+                source_dataset="TWSE_basi",
+            ),
+        )
+        session.commit()
+        existing = session.scalar(select(CompanyFundamentalPeriod))
+        assert existing is not None
+        previous_last_observed_at = existing.last_observed_at
+
+        result = refresh_official_fundamentals(session, request_get=request_get)
+        session.commit()
+
+        assert result.status == "ok"
+        assert result.datasets_succeeded == 2
+        assert result.datasets_skipped == 12
+        assert result.datasets_failed == 0
+        assert result.records_written == 1
+        assert result.skipped_datasets == sorted(
+            f"{exchange}_{schema}"
+            for schema in ("basi", "bd", "ci", "fh", "ins", "mim")
+            for exchange in ("TWSE", "TPEX")
+        )
+        assert result.errors == []
+        assert session.scalar(select(CompanyDividendEvent.symbol)) == "2330.TW"
+        retained = session.scalars(select(CompanyFundamentalPeriod)).all()
+        assert len(retained) == 1
+        assert retained[0].last_observed_at == previous_last_observed_at
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_official_refresh_does_not_skip_nonblank_unparseable_statement_rows() -> None:
+    session, engine = _db_session()
+
+    def request_get(url: str, timeout: int):
+        if "t187ap06_L_basi" in url:
+            return _Response(
+                [
+                    {
+                        "出表日期": "1150810",
+                        "年度": "",
+                        "季別": "",
+                        "公司代號": "",
+                        "公司名稱": "unexpected content",
+                    }
+                ]
+            )
+        if "exDailyQ" in url:
+            return _Response({"tables": []})
+        if "t187ap45_L" in url:
+            return _Response(
+                [
+                    {
+                        "公司代號": "2330",
+                        "股利年度": "114",
+                        "股利所屬期間": "114/01/01~114/12/31",
+                        "股東配發-盈餘分配之現金股利(元/股)": "5",
+                    }
+                ]
+            )
+        return _Response([_statement_row(2025, 4, "14")])
+
+    try:
+        result = refresh_official_fundamentals(session, request_get=request_get)
+
+        assert result.status == "partial"
+        assert result.datasets_succeeded == 13
+        assert result.datasets_skipped == 0
+        assert result.datasets_failed == 1
+        assert result.skipped_datasets == []
+        assert result.errors == [
+            "TWSE_basi: refresh failed: normalized dataset is empty"
+        ]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_official_refresh_does_not_skip_placeholder_with_invalid_report_date() -> None:
+    session, engine = _db_session()
+
+    def request_get(url: str, timeout: int):
+        if "t187ap06_L_basi" in url:
+            return _Response(
+                [
+                    {
+                        "出表日期": "not-a-date",
+                        "年度": "",
+                        "季別": "",
+                        "公司代號": "",
+                    }
+                ]
+            )
+        if "exDailyQ" in url:
+            return _Response({"tables": []})
+        if "t187ap45_L" in url:
+            return _Response(
+                [
+                    {
+                        "公司代號": "2330",
+                        "股利年度": "114",
+                        "股利所屬期間": "114/01/01~114/12/31",
+                        "股東配發-盈餘分配之現金股利(元/股)": "5",
+                    }
+                ]
+            )
+        return _Response([_statement_row(2025, 4, "14")])
+
+    try:
+        result = refresh_official_fundamentals(session, request_get=request_get)
+
+        assert result.status == "partial"
+        assert result.datasets_skipped == 0
+        assert result.datasets_failed == 1
+        assert result.errors == [
+            "TWSE_basi: refresh failed: normalized dataset is empty"
+        ]
     finally:
         session.close()
         engine.dispose()
@@ -797,7 +984,15 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
     app.include_router(fundamental_router)
     app.dependency_overrides[get_db] = lambda: session
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    refresh_result = FundamentalRefreshResult("ok", 14, 0, 12, [])
+    refresh_result = FundamentalRefreshResult(
+        status="ok",
+        datasets_succeeded=14,
+        datasets_skipped=0,
+        datasets_failed=0,
+        records_written=12,
+        skipped_datasets=[],
+        errors=[],
+    )
     backfill_result = FundamentalBackfillResult("ok", ["2330.TW"], 2, None, [])
     try:
         with (
@@ -828,6 +1023,8 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
             )
 
         assert refreshed.json()["datasets_succeeded"] == 14
+        assert refreshed.json()["datasets_skipped"] == 0
+        assert refreshed.json()["skipped_datasets"] == []
         assert backfilled.json()["symbols_processed"] == ["2330.TW"]
         assert commit.call_count == 2
     finally:

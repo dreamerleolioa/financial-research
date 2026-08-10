@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import re
+from threading import Lock
+import time
 from typing import Any
 
 
@@ -15,6 +17,7 @@ TPEX_MARKET_BAR_URL = (
 )
 
 RequestGetter = Callable[..., Any]
+Sleeper = Callable[[float], None]
 
 
 class OfficialMarketBarProviderError(RuntimeError):
@@ -42,9 +45,23 @@ class MarketDailyBar:
 
 
 class OfficialTaiwanMarketBarProvider:
-    def __init__(self, *, request_get: RequestGetter | None = None, timeout: int = 45) -> None:
+    def __init__(
+        self,
+        *,
+        request_get: RequestGetter | None = None,
+        timeout: int = 45,
+        max_attempts: int = 3,
+        retry_backoff_seconds: float = 1.0,
+        max_retry_delay_seconds: float = 30.0,
+        sleep: Sleeper = time.sleep,
+    ) -> None:
         self._request_get = request_get
         self._timeout = timeout
+        self._max_attempts = max(1, max_attempts)
+        self._retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self._max_retry_delay_seconds = max(0.0, max_retry_delay_seconds)
+        self._sleep = sleep
+        self._tpex_request_lock = Lock()
 
     def fetch_market(self, *, market: str, trade_date: date) -> list[MarketDailyBar]:
         request_get = self._request_get or _import_requests_get()
@@ -59,23 +76,32 @@ class OfficialTaiwanMarketBarProvider:
                 },
                 timeout=self._timeout,
                 market=market,
+                max_attempts=self._max_attempts,
+                retry_backoff_seconds=self._retry_backoff_seconds,
+                max_retry_delay_seconds=self._max_retry_delay_seconds,
+                sleep=self._sleep,
             )
             return normalize_twse_market_bars(payload, expected_date=trade_date)
         if market == "TWO":
             roc_year = trade_date.year - 1911
-            payload = _request_json(
-                request_get,
-                TPEX_MARKET_BAR_URL,
-                params={
-                    "l": "zh-tw",
-                    "o": "json",
-                    "d": f"{roc_year:03d}/{trade_date.month:02d}/{trade_date.day:02d}",
-                    "se": "AL",
-                    "s": "0,asc,0",
-                },
-                timeout=self._timeout,
-                market=market,
-            )
+            with self._tpex_request_lock:
+                payload = _request_json(
+                    request_get,
+                    TPEX_MARKET_BAR_URL,
+                    params={
+                        "l": "zh-tw",
+                        "o": "json",
+                        "d": f"{roc_year:03d}/{trade_date.month:02d}/{trade_date.day:02d}",
+                        "se": "AL",
+                        "s": "0,asc,0",
+                    },
+                    timeout=self._timeout,
+                    market=market,
+                    max_attempts=self._max_attempts,
+                    retry_backoff_seconds=self._retry_backoff_seconds,
+                    max_retry_delay_seconds=self._max_retry_delay_seconds,
+                    sleep=self._sleep,
+                )
             return normalize_tpex_market_bars(payload, expected_date=trade_date)
         raise OfficialMarketBarProviderError("unsupported_market", market=market)
 
@@ -260,22 +286,66 @@ def _request_json(
     params: Mapping[str, Any],
     timeout: int,
     market: str,
+    max_attempts: int,
+    retry_backoff_seconds: float,
+    max_retry_delay_seconds: float,
+    sleep: Sleeper,
 ) -> Mapping[str, Any]:
-    try:
-        response = request_get(
-            url,
-            params=dict(params),
-            timeout=timeout,
-            headers={"Accept": "application/json"},
-        )
-        if hasattr(response, "raise_for_status"):
-            response.raise_for_status()
-        payload = response.json() if hasattr(response, "json") else response
-    except Exception as exc:
-        raise OfficialMarketBarProviderError("market_bar_request_failed", market=market) from exc
+    for attempt in range(max_attempts):
+        response: Any = None
+        try:
+            response = request_get(
+                url,
+                params=dict(params),
+                timeout=timeout,
+                headers={"Accept": "application/json"},
+            )
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()
+            payload = response.json() if hasattr(response, "json") else response
+            break
+        except Exception as exc:
+            is_last_attempt = attempt + 1 >= max_attempts
+            if is_last_attempt or not _is_retryable_request_failure(response):
+                raise OfficialMarketBarProviderError(
+                    "market_bar_request_failed",
+                    market=market,
+                ) from exc
+            sleep(
+                _retry_delay_seconds(
+                    response,
+                    attempt,
+                    retry_backoff_seconds,
+                    max_retry_delay_seconds,
+                )
+            )
     if not isinstance(payload, Mapping):
         raise OfficialMarketBarProviderError("market_bar_response_invalid", market=market)
     return payload
+
+
+def _is_retryable_request_failure(response: Any) -> bool:
+    status_code = getattr(response, "status_code", None)
+    if not isinstance(status_code, int):
+        return True
+    return status_code < 400 or status_code in {408, 425, 429} or status_code >= 500
+
+
+def _retry_delay_seconds(
+    response: Any,
+    attempt: int,
+    backoff_seconds: float,
+    max_delay_seconds: float,
+) -> float:
+    delay = backoff_seconds * (2**attempt)
+    headers = getattr(response, "headers", None)
+    if isinstance(headers, Mapping):
+        retry_after = str(headers.get("Retry-After") or "").strip()
+        try:
+            delay = max(delay, float(retry_after))
+        except ValueError:
+            pass
+    return min(delay, max_delay_seconds)
 
 
 def _normalize_field(value: str) -> str:

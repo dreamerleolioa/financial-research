@@ -8,6 +8,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, event
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar.market_bar_provider import (
     MarketDailyBar,
     OfficialMarketBarProviderError,
+    OfficialTaiwanMarketBarProvider,
     normalize_tpex_market_bars,
     normalize_twse_market_bars,
 )
@@ -144,6 +146,111 @@ def test_tpex_market_bar_parser_treats_official_no_data_as_non_trading_day() -> 
         {"stat": "查無資料", "tables": []},
         expected_date=date(2026, 6, 11),
     ) == []
+
+
+class _HttpFailureResponse:
+    def __init__(self, status_code: int, *, retry_after: str | None = None) -> None:
+        self.status_code = status_code
+        self.headers = {"Retry-After": retry_after} if retry_after is not None else {}
+
+    def raise_for_status(self) -> None:
+        raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _twse_payload(trade_date: date) -> dict:
+    return {
+        "stat": "OK",
+        "date": trade_date.strftime("%Y%m%d"),
+        "tables": [
+            {
+                "fields": [
+                    "證券代號",
+                    "證券名稱",
+                    "成交股數",
+                    "成交金額",
+                    "開盤價",
+                    "最高價",
+                    "最低價",
+                    "收盤價",
+                ],
+                "data": [
+                    ["2330", "台積電", "10,000", "10,500,000", "1000", "1060", "995", "1050"]
+                ],
+            }
+        ],
+    }
+
+
+def test_official_market_bar_provider_retries_transient_request_failures() -> None:
+    trade_date = date(2026, 8, 6)
+    responses = [
+        RuntimeError("connection reset"),
+        _HttpFailureResponse(429, retry_after="2"),
+        _twse_payload(trade_date),
+    ]
+    sleeps: list[float] = []
+
+    def request_get(*args, **kwargs):
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    provider = OfficialTaiwanMarketBarProvider(
+        request_get=request_get,
+        max_attempts=3,
+        retry_backoff_seconds=0.25,
+        sleep=sleeps.append,
+    )
+
+    bars = provider.fetch_market(market="TW", trade_date=trade_date)
+
+    assert [bar.symbol for bar in bars] == ["2330.TW"]
+    assert responses == []
+    assert sleeps == [0.25, 2.0]
+
+
+def test_official_market_bar_provider_does_not_retry_permanent_http_errors() -> None:
+    calls = 0
+
+    def request_get(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _HttpFailureResponse(400)
+
+    provider = OfficialTaiwanMarketBarProvider(
+        request_get=request_get,
+        max_attempts=3,
+        sleep=lambda _seconds: pytest.fail("permanent failures must not sleep"),
+    )
+
+    with pytest.raises(OfficialMarketBarProviderError) as exc_info:
+        provider.fetch_market(market="TW", trade_date=date(2026, 8, 6))
+
+    assert exc_info.value.code == "market_bar_request_failed"
+    assert calls == 1
+
+
+def test_official_market_bar_provider_caps_retry_after_delay() -> None:
+    trade_date = date(2026, 8, 6)
+    responses = [
+        _HttpFailureResponse(429, retry_after="3600"),
+        _twse_payload(trade_date),
+    ]
+    sleeps: list[float] = []
+
+    def request_get(*args, **kwargs):
+        return responses.pop(0)
+
+    provider = OfficialTaiwanMarketBarProvider(
+        request_get=request_get,
+        max_attempts=2,
+        max_retry_delay_seconds=5,
+        sleep=sleeps.append,
+    )
+
+    assert provider.fetch_market(market="TW", trade_date=trade_date)
+    assert sleeps == [5]
 
 
 def _bar(symbol: str, trade_date: date, close: int, *, market: str = "TW") -> MarketDailyBar:
