@@ -1065,7 +1065,9 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
 
   const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 整體部位檢討" });
   await expect(dialog).toContainText("position-lifecycle-review-v3");
-  await expect(dialog).toContainText("暫無適用分類");
+  const overallSection = dialog.locator("article").filter({ hasText: "整體結果" });
+  await expect(overallSection.getByText("暫無適用分類", { exact: true })).toHaveCount(1);
+  await expect(dialog).not.toContainText("混合結論");
   await expect(dialog).not.toContainText("原始計畫缺失：");
   await expect(dialog).not.toContainText("事件或市場證據不足");
 

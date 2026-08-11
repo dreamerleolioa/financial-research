@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
-from ai_stock_sentinel.analysis.review_sources import market_snapshot_payload
+from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint, market_snapshot_payload
 from ai_stock_sentinel.portfolio.application import get_risk_summary as portfolio_risk_summary_app
 from ai_stock_sentinel.portfolio.application import refresh_prices as refresh_prices_module
 from ai_stock_sentinel.portfolio.application.refresh_prices import _fetch_quotes, _quote_payload
@@ -4142,6 +4142,46 @@ def test_create_position_lifecycle_review_same_fingerprint_does_not_duplicate(
     assert len(reviews) == 1
 
 
+def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_upgrade(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def stable_builder(_db: Session, *, user_id: int, position_group_id: str) -> tuple[dict, dict]:
+        return _lifecycle_payload(position_group_id)
+
+    monkeypatch.setattr(portfolio_router_module, "build_position_lifecycle_analysis", stable_builder)
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    _add_lifecycle_group(portfolio_db_session)
+    _, legacy_evidence = _lifecycle_payload()
+    legacy_fingerprint = attach_source_fingerprint(
+        legacy_evidence,
+        ruleset_version="position-lifecycle-ruleset-v3.1",
+    )
+    portfolio_db_session.add(PositionLifecycleReview(
+        id=9,
+        user_id=1,
+        position_group_id="group-life-review",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v3",
+        review_result={"legacy_copy": True},
+        evidence_payload=legacy_evidence,
+    ))
+    portfolio_db_session.commit()
+
+    response = portfolio_db_client.post("/portfolio/groups/group-life-review/lifecycle-review")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == 9
+    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_result"] == _lifecycle_payload()[0]
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["source_fingerprint"] != legacy_fingerprint
+    reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
+    assert len(reviews) == 1
+
+
 def test_create_position_lifecycle_review_recomputes_stale_existing_review_after_later_event_update(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
@@ -4187,7 +4227,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "event"
     assert data["evidence_payload"]["events"] == [{"event_type": "full_exit"}]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-review-v3"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4253,7 +4293,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "plan"
     assert data["evidence_payload"]["plan"] == {"planned_holding_period": "long_term"}
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-review-v3"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()

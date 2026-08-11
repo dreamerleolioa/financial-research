@@ -1046,8 +1046,10 @@ function LifecycleDataQualitySection({
 function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewResponse }) {
   const lifecycleReview = review.review_result.lifecycle_review;
   const classification = lifecycleReview?.classification;
-  const tier = classification?.tier;
-  const labels = classification?.labels ?? [];
+  const tier = classification?.primary_label === "unclassified" ? undefined : classification?.tier;
+  const secondaryLabels = (classification?.labels ?? []).filter(
+    (label) => label !== classification?.primary_label,
+  );
 
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -1076,9 +1078,9 @@ function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewRe
         <p className="text-sm text-text-faint">尚無整體結論。</p>
       )}
 
-      {labels.length > 0 && (
+      {secondaryLabels.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {labels.map((label) => (
+          {secondaryLabels.map((label) => (
             <span key={label} className="rounded-md bg-badge-neutral-bg px-2 py-1 text-xs text-badge-neutral-text">
               {formatLifecycleClassificationLabel(label)}
             </span>

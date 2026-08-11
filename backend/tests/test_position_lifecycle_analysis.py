@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.analysis.position_lifecycle import (
+    _lifecycle_tier,
+    _next_operation_rules,
     _point_in_time_values,
     build_position_lifecycle_analysis,
     build_position_lifecycle_analysis_from_rows,
@@ -876,6 +878,97 @@ def test_optional_planned_r_gaps_do_not_override_constructive_scale_out():
     assert classification["primary_label"] == "disciplined_scale_out"
     assert classification["tier"] == "constructive"
     assert "insufficient_data" not in classification["labels"]
+    next_rule_text = result["lifecycle_review"]["next_operation_rules"][0]["text"]
+    assert "已辨識出可追溯的正向部位管理模式" in next_rule_text
+    assert "未命中既定模式" not in next_rule_text
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_source_ref"),
+    [
+        ("ma20_pullback_supported", "event_indicator_snapshots.event_price_vs_ma20_pct"),
+        ("disciplined_scale_out", "exit_sequence.profit_protected_by_partial_exits"),
+        ("risk_reduction_exit", "exit_sequence.percentage_sold_after_breakdown"),
+        ("coherent_position_management", "advanced_internal.plan_adherence_score"),
+    ],
+)
+def test_constructive_operation_rule_fallback_acknowledges_matched_pattern(
+    label: str,
+    expected_source_ref: str,
+):
+    rules = _next_operation_rules([label], False)
+
+    assert len(rules) == 1
+    assert "已辨識出可追溯的正向部位管理模式" in rules[0]["text"]
+    assert "未命中既定模式" not in rules[0]["text"]
+    assert expected_source_ref in rules[0]["source_refs"]
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "ma20_pullback_supported",
+        "disciplined_scale_out",
+        "risk_reduction_exit",
+        "coherent_position_management",
+    ],
+)
+def test_constructive_primary_labels_use_constructive_tier(label: str):
+    assert _lifecycle_tier(label, [label]) == "constructive"
+
+
+def test_operation_rule_fallback_distinguishes_unclassified_and_insufficient_results():
+    unclassified = _next_operation_rules([], False)
+    insufficient = _next_operation_rules(["insufficient_data"], False)
+    insufficient_with_constructive = _next_operation_rules(
+        ["disciplined_scale_out", "insufficient_data"],
+        False,
+    )
+
+    assert "未命中既定模式" in unclassified[0]["text"]
+    assert "證據缺口" in insufficient[0]["text"]
+    assert "未命中既定模式" not in insufficient[0]["text"]
+    assert insufficient[0]["source_refs"] == ["data_quality.insufficient_data"]
+    assert "證據缺口" in insufficient_with_constructive[0]["text"]
+    assert "正向部位管理模式" not in insufficient_with_constructive[0]["text"]
+
+
+def test_unclassified_fallback_does_not_claim_unobserved_position_management():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 2256, 5, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "full_exit", date(2026, 1, 11), 2102, 5, fees=0, taxes=0, plan_adherence="yes"),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="3665.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [2000] * 61 + [2256]),
+            _snapshot_row(date(2026, 1, 11), [2000] * 61 + [2256, 2102]),
+        ],
+        plan=_plan(planned_risk_amount=None, planned_stop_price=None),
+    )
+
+    review = result["lifecycle_review"]
+    classification = review["classification"]
+    assert result["lifecycle_metrics"]["total_realized_pnl"] == pytest.approx(-770)
+    assert result["exit_sequence"]["partial_exit_count"] == 0
+    assert result["exit_sequence"]["profit_protected_by_partial_exits"] == pytest.approx(0)
+    assert classification["primary_label"] == "unclassified"
+    assert classification["tier"] == "mixed"
+    assert "未命中可辨識的正向或需檢討模式" in classification["reasons"][0]["text"]
+    assert "資料足以完成檢討" in review["overall_conclusion"]["text"]
+    assert "Phase C" not in str(review)
+    assert review["what_needs_review"][0]["text"].startswith("目前固定規則")
+    assert "不代表已證明操作正確" in review["what_needs_review"][0]["text"]
+    assert "分批保護獲利" not in str(review["next_operation_rules"])
+    assert "不額外推定做對或做錯" in review["next_operation_rules"][0]["text"]
+    assert review["next_operation_rules"][0]["source_refs"] == [
+        "entry_sequence",
+        "exit_sequence",
+        "decision_context",
+    ]
 
 
 def test_lifecycle_shared_context_caveat_does_not_override_classification():
