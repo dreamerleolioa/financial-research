@@ -18,8 +18,8 @@ LEGACY_ACTION_RISK_LANGUAGE = {
     "觀望": ("stable", "風險狀態穩定"),
     "Trim": ("elevated", "風險狀態升高"),
     "減碼": ("elevated", "風險狀態升高"),
-    "Exit": ("critical", "防守條件已觸發"),
-    "出場": ("critical", "防守條件已觸發"),
+    "Exit": ("critical", "風險檢查已觸發"),
+    "出場": ("critical", "風險檢查已觸發"),
 }
 
 
@@ -46,9 +46,17 @@ def _history_risk_language(row) -> dict:
     if isinstance(indicators, dict):
         risk_language = indicators.get("position_risk_language")
         if isinstance(risk_language, dict) and risk_language.get("risk_state"):
+            risk_state = str(risk_language.get("risk_state"))
+            risk_state_label = risk_language.get("risk_state_label")
+            if risk_state == "critical" and risk_state_label in {
+                None,
+                "防守條件觸發",
+                "防守條件已觸發",
+            }:
+                risk_state_label = "風險檢查已觸發"
             return {
-                "risk_state": risk_language.get("risk_state"),
-                "risk_state_label": risk_language.get("risk_state_label") or "風險狀態",
+                "risk_state": risk_state,
+                "risk_state_label": risk_state_label or "風險狀態",
                 "discipline_triggers": list(risk_language.get("discipline_triggers") or []),
                 "risk_control_reference": risk_language.get("risk_control_reference"),
                 "compatibility_source": "position_risk_language",

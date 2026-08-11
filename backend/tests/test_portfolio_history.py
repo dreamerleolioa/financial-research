@@ -127,6 +127,38 @@ def test_history_prefers_position_risk_language_snapshot():
     assert record["recommended_action"] == "Exit"
 
 
+def test_history_normalizes_legacy_critical_snapshot_label():
+    mock_portfolio = MagicMock()
+    mock_portfolio.user_id = 1
+    mock_portfolio.symbol = "2330.TW"
+
+    mock_record = MagicMock()
+    mock_record.record_date = date(2026, 3, 10)
+    mock_record.signal_confidence = 72.5
+    mock_record.action_tag = "Exit"
+    mock_record.recommended_action = "Exit"
+    mock_record.indicators = {
+        "position_risk_language": {
+            "risk_state": "critical",
+            "risk_state_label": "防守條件已觸發",
+            "discipline_triggers": ["法人籌碼轉弱，需檢查風險。"],
+            "risk_control_reference": {"reference_price": 900},
+        },
+    }
+    mock_record.final_verdict = "風險升高"
+    mock_record.prev_action_tag = None
+    mock_record.prev_confidence = None
+
+    client = _make_client(portfolio=mock_portfolio, records=[mock_record], total=1)
+    resp = client.get("/portfolio/1/history")
+
+    assert resp.status_code == 200
+    record = resp.json()["records"][0]
+    assert record["risk_state"] == "critical"
+    assert record["risk_state_label"] == "風險檢查已觸發"
+    assert record["compatibility_source"] == "position_risk_language"
+
+
 def test_history_falls_back_to_legacy_action_for_old_rows():
     mock_portfolio = MagicMock()
     mock_portfolio.user_id = 1
@@ -148,7 +180,7 @@ def test_history_falls_back_to_legacy_action_for_old_rows():
     assert resp.status_code == 200
     record = resp.json()["records"][0]
     assert record["risk_state"] == "critical"
-    assert record["risk_state_label"] == "防守條件已觸發"
+    assert record["risk_state_label"] == "風險檢查已觸發"
     assert record["compatibility_source"] == "legacy_recommended_action"
 
 

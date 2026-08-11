@@ -310,3 +310,18 @@ def test_build_position_risk_language_keeps_legacy_fields_secondary():
     assert any("降低風險" in item for item in result["discipline_triggers"])
     assert result["command_language_deprecated"]["recommended_action"] == "Trim"
     assert result["command_language_deprecated"]["exit_reason"] == "法人持續出貨，建議逢高分批減碼保護獲利"
+
+
+def test_build_position_risk_language_uses_neutral_label_for_critical_risk():
+    result = build_position_risk_language(
+        recommended_action="Exit",
+        trailing_stop=980.0,
+        trailing_stop_reason="成本邊緣震盪，防守位參考近 20 日支撐",
+        exit_reason="法人出貨且持股虧損，建議停損出場",
+        position_status="at_risk",
+        position_narrative="目前接近成本區，需評估風險控制。",
+        profit_loss_pct=-3.0,
+    )
+
+    assert result["risk_state"] == "critical"
+    assert result["risk_state_label"] == "風險檢查已觸發"

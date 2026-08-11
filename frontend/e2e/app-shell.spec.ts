@@ -42,7 +42,7 @@ test("mobile shell uses bottom navigation and keeps the selected theme", async (
   await expect(page.locator("html")).toHaveClass(/dark/);
 });
 
-for (const width of [1280, 375, 320]) {
+for (const width of [1280, 1024, 375, 320]) {
   test(`core routes do not overflow horizontally at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await authenticate(page);

@@ -574,6 +574,8 @@ make run-api
 
 > **持股診斷 LLM 邊界**：`/analyze/position` 與 `/analyze` 共用 LangGraph 分析流程與 `signal_summary`；差異是 request 內含 `entry_price` 時，`analyze_node` 會額外建立 `position_context`，讓 LLM 以成本價、損益百分比、動態防守價、距離防守線、距離支撐、未實現損益、持有天數、`recommended_action` 與 `exit_reason` 解釋持股狀態。`recommended_action` / `trailing_stop` / `exit_reason` 仍由 Python rule-based 計算，LLM 不得覆寫；使用者主要呈現必須使用 additive risk-language 欄位。
 
+> **Critical label 語義**：`risk_state = critical` 的通用 `risk_state_label` 使用「風險檢查已觸發」，不得一律寫成「防守條件已觸發」。`critical` 可能來自籌碼出貨、深度套牢、技術轉弱或跌破動態防守線；實際原因必須讀 `discipline_triggers` 與 `risk_control_reference`。Portfolio history 讀取舊 `position_risk_language` 快照時，需將既有「防守條件觸發／防守條件已觸發」正規化為新標籤。Portfolio risk-summary 的「觸及防守」則是另一個即時狀態，只在 `current_price <= defense_reference.price` 時成立。
+
 > **Shared context 邊界（Phase 2C）**：`/analyze/position` 的 `shared_context.consumer = "position_analysis"`。Shared context 只由 shared cache 讀取並附加於 response，作為 weekly major holders、lending、full margin 等背景 caveat 與資料品質說明；它不進入 position scorer，不改 `position_status`、`recommended_action`、`trailing_stop`、`trailing_stop_reason`、`exit_reason` 或任何持股診斷 rule-based 欄位。Missing/stale context 非阻塞，必須以 `freshness` / `missing_reason` / `data_quality` 表示。
 
 > **快取隔離與邊界**：
