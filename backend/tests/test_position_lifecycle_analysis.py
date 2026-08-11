@@ -849,6 +849,35 @@ def test_real_market_evidence_gaps_remain_insufficient_instead_of_unclassified()
     )
 
 
+def test_optional_planned_r_gaps_do_not_override_constructive_scale_out():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "partial_exit", date(2026, 1, 11), 120, 5, fees=0, taxes=0, plan_adherence="yes"),
+        _event(3, "full_exit", date(2026, 1, 12), 110, 5, fees=0, taxes=0, plan_adherence="yes"),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 61),
+            _snapshot_row(date(2026, 1, 11), [100] * 61 + [120]),
+            _snapshot_row(date(2026, 1, 12), [100] * 61 + [120, 110]),
+        ],
+        plan=_plan(planned_risk_amount=None, planned_stop_price=None),
+    )
+
+    classification = result["lifecycle_review"]["classification"]
+    assert result["advanced_internal"]["planned_1r_amount"] is None
+    assert result["advanced_internal"]["realized_r_multiple"] is None
+    assert "planned_1r_amount" not in result["data_quality"]["insufficient_data"]
+    assert result["data_quality"]["status"] == "ok"
+    assert classification["primary_label"] == "disciplined_scale_out"
+    assert classification["tier"] == "constructive"
+    assert "insufficient_data" not in classification["labels"]
+
+
 def test_lifecycle_shared_context_caveat_does_not_override_classification():
     events = [
         _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),

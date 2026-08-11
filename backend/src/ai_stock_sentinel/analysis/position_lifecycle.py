@@ -110,7 +110,6 @@ def build_position_lifecycle_analysis_from_rows(
         lifecycle_metrics,
         plan,
         decision_context,
-        data_quality,
     )
     detected_events = _detect_market_events(ordered_events, ordered_rows)
     market_regime_snapshots = _market_regime_snapshots(event_snapshots)
@@ -983,12 +982,9 @@ def _build_advanced_internal(
     lifecycle_metrics: dict[str, Any],
     plan: Any,
     decision_context: dict[str, Any],
-    data_quality: dict[str, Any],
 ) -> dict[str, Any]:
     historical_judgment_eligible = decision_context.get("historical_judgment_eligible") is True
     planned_r = _planned_r_amount(plan, accounting) if historical_judgment_eligible else None
-    if planned_r is None:
-        _add_note(data_quality, "planned_1r_amount", "Plan risk was unavailable; R-multiple metrics are null.")
     planned_r_value = _number(planned_r)
     realized_pnl = _number(accounting.get("total_realized_pnl"))
     weighted_entry = _number(accounting.get("weighted_average_entry_price"))
