@@ -25,6 +25,15 @@ export function formatPrice(value: number | null | undefined, symbol?: string): 
   return new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 6 }).format(value);
 }
 
+export function formatRecordedPrice(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat("zh-TW", {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  }).format(value);
+}
+
 export function formatVolume(value: unknown): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("zh-TW").format(value);

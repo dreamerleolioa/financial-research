@@ -23,7 +23,7 @@ import { buildPortfolioTechnicalCopyText } from "../features/portfolio/technical
 import { deleteAsyncMapValue, setAsyncMapValue } from "../lib/asyncMap";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, PositionResult } from "../lib/analysisTypes";
-import { formatPrice } from "../lib/formatters";
+import { formatPrice, formatRecordedPrice } from "../lib/formatters";
 import { InsightText } from "../components/InsightText";
 import {
   fetchPortfolioHistory,
@@ -232,7 +232,7 @@ function BackfillPlanModal({ item, onClose, onSaved }: BackfillPlanModalProps) {
           <div>
             <p className="font-semibold text-text-primary">補填操作計畫 · {portfolioDisplayName(item)}</p>
             <p className="mt-1 text-xs text-text-faint">
-              成本 {formatPrice(item.entry_price, item.symbol)} ｜ 進場日 {item.entry_date}
+              成本 {formatRecordedPrice(item.entry_price)} ｜ 進場日 {item.entry_date}
             </p>
           </div>
           <button
@@ -980,7 +980,7 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
           <div>
             <p className="font-semibold text-text-primary">結案批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
-              持有 {item.quantity} 股，成本 {formatPrice(item.entry_price, item.symbol)}
+              持有 {item.quantity} 股，成本 {formatRecordedPrice(item.entry_price)}
             </p>
           </div>
           <button
@@ -1249,7 +1249,7 @@ function AddEntryModal({ item, onClose, onAdded }: AddEntryModalProps) {
           <div>
             <p className="font-semibold text-text-primary">新增批次記錄 · {portfolioDisplayName(item)}</p>
             <p className="text-xs text-text-faint">
-              目前 {item.quantity} 股，平均成本 {formatPrice(item.entry_price, item.symbol)}
+              目前 {item.quantity} 股，平均成本 {formatRecordedPrice(item.entry_price)}
             </p>
           </div>
           <button
@@ -1564,14 +1564,14 @@ const RISK_STATE_CONFIG = {
     bg: "bg-yellow-50 border-yellow-200 dark:bg-yellow-950 dark:border-yellow-800",
   },
   critical: {
-    label: "防守條件觸發",
+    label: "風險檢查已觸發",
     color: "text-red-700 dark:text-red-400",
     bg: "bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800",
   },
 } as const;
 
 function legacyActionRiskLabel(action: string | null | undefined): string | null {
-  if (action === "Exit") return "防守條件觸發";
+  if (action === "Exit") return "風險檢查已觸發";
   if (action === "Trim") return "風險升高";
   if (action === "Hold") return "風險穩定";
   return action ?? null;
@@ -1866,7 +1866,7 @@ function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1Observat
         <div className="min-w-0">
           <p className="text-text-faint">成本</p>
           <p className="mt-0.5 truncate font-mono font-semibold text-text-primary">
-            {formatPrice(item.holding_avg_cost, item.symbol)}
+            {formatRecordedPrice(item.holding_avg_cost)}
           </p>
         </div>
         <div className="min-w-0">
@@ -2119,7 +2119,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 持股診斷</p>
             <p className="text-xs text-text-faint">
-              成本 {formatPrice(item.entry_price, item.symbol)}
+              成本 {formatRecordedPrice(item.entry_price)}
               {item.quantity > 0 && ` ｜ ${item.quantity} 股`}
             </p>
           </div>
@@ -2191,7 +2191,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                       <div className="text-center">
                         <div className="text-text-faint">成本</div>
                         <div className="font-mono font-medium text-text-secondary">
-                          {formatPrice(pa.entry_price, item.symbol)}
+                          {formatRecordedPrice(pa.entry_price)}
                         </div>
                       </div>
                       <div className="text-center">
@@ -2227,7 +2227,7 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                     <div className="flex justify-between text-xs text-text-muted">
                       <span>風險控制參考</span>
                       <span className="font-mono font-medium text-orange-600 dark:text-orange-400">
-                        {formatPrice(pa.risk_control_reference?.reference_price ?? pa.trailing_stop, item.symbol)}
+                        {formatRecordedPrice(pa.risk_control_reference?.reference_price ?? pa.trailing_stop)}
                       </span>
                     </div>
                     {pa.risk_control_reference?.reason && (
@@ -2343,12 +2343,16 @@ function currentPositionRiskClass(stopLossRisk: PortfolioPositionRiskItem | null
   return "bg-badge-neutral-bg text-badge-neutral-text";
 }
 
-function latestAnalysisRiskLabel(latest: HistoryEntry | null | undefined): string | null {
-  if (!latest) return null;
-  if (latest.risk_state === "critical" || latest.risk_state_label === "防守條件已觸發") {
+function analysisRiskLabel(entry: HistoryEntry | null | undefined): string | null {
+  if (!entry) return null;
+  if (
+    entry.risk_state === "critical" ||
+    entry.risk_state_label === "防守條件觸發" ||
+    entry.risk_state_label === "防守條件已觸發"
+  ) {
     return "風險檢查已觸發";
   }
-  return latest.risk_state_label ?? "分析狀態待確認";
+  return entry.risk_state_label ?? "分析狀態待確認";
 }
 
 function positionDataQualityLabel(stopLossRisk: PortfolioPositionRiskItem | null): string {
@@ -3093,10 +3097,10 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
             <PortfolioRiskSummaryPanel summary={riskSummary} error={riskSummaryError} />
 
-            <section className="lg:rounded-[14px] lg:border lg:border-border lg:bg-surface-raised lg:shadow-panel">
+            <section className="xl:rounded-[14px] xl:border xl:border-border xl:bg-surface-raised xl:shadow-panel">
               <div
                 data-portfolio-position-header
-                className="hidden grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] gap-5 rounded-t-[14px] border-b border-border bg-card-hover/40 px-5 py-3 text-xs font-medium text-text-faint lg:grid"
+                className="hidden grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] gap-5 rounded-t-[14px] border-b border-border bg-card-hover/40 px-5 py-3 text-xs font-medium text-text-faint xl:grid"
               >
                 <span>持股</span>
                 <span>狀態／計畫</span>
@@ -3106,7 +3110,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 <span className="text-right">操作</span>
               </div>
 
-              <div className="space-y-3 lg:space-y-0 lg:divide-y lg:divide-border-subtle">
+              <div className="space-y-3 xl:space-y-0 xl:divide-y xl:divide-border-subtle">
                 {items.map((item) => {
                   const itemKey = portfolioIdKey(item.id);
                   const latest = latestMap[itemKey];
@@ -3130,12 +3134,12 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                     <article
                       key={item.id}
                       data-portfolio-position-id={item.id}
-                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel lg:grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] lg:items-start lg:gap-x-5 lg:rounded-none lg:border-0 lg:px-5 lg:py-4 lg:shadow-none"
+                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel xl:grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] xl:items-start xl:gap-x-5 xl:rounded-none xl:border-0 xl:px-5 xl:py-4 xl:shadow-none"
                     >
-                      <div className="col-span-2 min-w-0 lg:col-span-1">
+                      <div className="col-span-2 min-w-0 xl:col-span-1">
                         <p className="truncate text-sm font-semibold text-text-primary">{displayName.primary}</p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
-                          {displayName.secondary ?? item.symbol} · 成本 {formatPrice(item.entry_price, item.symbol)}
+                          {displayName.secondary ?? item.symbol} · 成本 {formatRecordedPrice(item.entry_price)}
                         </p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
                           {item.quantity > 0 ? `${item.quantity} 股 · ` : ""}
@@ -3143,7 +3147,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         </p>
                       </div>
 
-                      <div className="col-span-2 min-w-0 lg:col-span-1">
+                      <div className="col-span-2 min-w-0 xl:col-span-1">
                         <span
                           className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${currentPositionRiskClass(stopLossRisk)}`}
                         >
@@ -3163,23 +3167,23 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         )}
                       </div>
 
-                      <div className="min-w-0 lg:text-right">
-                        <p className="text-xs text-text-faint lg:hidden">未實現損益</p>
+                      <div className="min-w-0 xl:text-right">
+                        <p className="text-xs text-text-faint xl:hidden">未實現損益</p>
                         <p
-                          className={`mt-1 text-sm font-semibold tabular-nums lg:mt-0 ${
+                          className={`mt-1 text-sm font-semibold tabular-nums xl:mt-0 ${
                             plPct == null ? "text-text-faint" : plPct >= 0 ? "text-positive" : "text-negative"
                           }`}
                         >
                           {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
                         </p>
                         <dl className="mt-1 space-y-1 text-xs tabular-nums">
-                          <div className="flex items-baseline justify-between gap-2 lg:justify-end">
+                          <div className="flex items-baseline justify-between gap-2 xl:justify-end">
                             <dt className="text-text-faint">現價 </dt>
                             <dd className="font-medium text-text-secondary">
                               {currentPrice == null ? "未提供" : formatPrice(currentPrice, item.symbol)}
                             </dd>
                           </div>
-                          <div className="flex items-baseline justify-between gap-2 lg:justify-end">
+                          <div className="flex items-baseline justify-between gap-2 xl:justify-end">
                             <dt className="text-text-faint">損益 </dt>
                             <dd className="font-medium text-text-secondary">
                               {unrealizedPnl == null
@@ -3190,10 +3194,10 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         </dl>
                       </div>
 
-                      <div className="min-w-0 lg:text-right">
-                        <p className="text-xs text-text-faint lg:hidden">防守緩衝</p>
+                      <div className="min-w-0 xl:text-right">
+                        <p className="text-xs text-text-faint xl:hidden">防守緩衝</p>
                         <p
-                          className={`mt-1 text-sm font-semibold tabular-nums lg:mt-0 ${
+                          className={`mt-1 text-sm font-semibold tabular-nums xl:mt-0 ${
                             stopLossPullbackPctValue == null
                               ? "text-text-faint"
                               : stopLossPullbackPctValue <= 0
@@ -3207,17 +3211,17 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                               ? "已觸及"
                               : `尚有 ${formatPortfolioPct(stopLossPullbackPctValue)}`}
                         </p>
-                        <div className="mt-1 flex items-baseline justify-between gap-2 text-xs tabular-nums lg:justify-end">
+                        <div className="mt-1 flex items-baseline justify-between gap-2 text-xs tabular-nums xl:justify-end">
                           <span className="text-text-faint">計畫防守價 </span>
                           <span className="font-medium text-text-secondary">
                             {stopLossRisk?.defense_reference.price == null
                               ? "未設定"
-                              : formatPrice(stopLossRisk.defense_reference.price, item.symbol)}
+                              : formatRecordedPrice(stopLossRisk.defense_reference.price)}
                           </span>
                         </div>
                       </div>
 
-                      <div className="col-span-2 min-w-0 lg:col-span-1">
+                      <div className="col-span-2 min-w-0 xl:col-span-1">
                         <p className="text-xs tabular-nums text-text-secondary">{priceFreshnessLabel(stopLossRisk)}</p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
                           {latest ? `上次 AI ${latest.record_date}` : "尚無 AI 分析"}
@@ -3232,7 +3236,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                                   : "text-text-faint"
                             }`}
                           >
-                            {latestAnalysisRiskLabel(latest)}
+                            {analysisRiskLabel(latest)}
                           </p>
                         )}
                         {riskQualityLabel !== "風險資料完整" && (
@@ -3243,7 +3247,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         )}
                       </div>
 
-                      <div className="col-span-2 flex items-center justify-end gap-2 lg:col-span-1">
+                      <div className="col-span-2 flex items-center justify-end gap-2 xl:col-span-1">
                         <button
                           type="button"
                           onClick={() => void refreshPrices([item.id])}
@@ -3300,7 +3304,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                                   {history.map((row) => {
                                     const action = row.recommended_action;
                                     const actionColor = historyRiskTextClass(row.risk_state, action);
-                                    const actionLabel = row.risk_state_label ?? legacyActionRiskLabel(action) ?? "—";
+                                    const actionLabel = analysisRiskLabel(row) ?? legacyActionRiskLabel(action) ?? "—";
                                     const historyClosePrice = row.indicators?.close_price;
                                     const historyPlPct =
                                       historyClosePrice != null

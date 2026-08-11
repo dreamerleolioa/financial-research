@@ -318,8 +318,8 @@ def test_build_position_risk_language_uses_neutral_label_for_critical_risk():
         trailing_stop=980.0,
         trailing_stop_reason="成本邊緣震盪，防守位參考近 20 日支撐",
         exit_reason="法人出貨且持股虧損，建議停損出場",
-        position_status="under_water",
-        position_narrative="目前處於套牢狀態，需評估風險控制。",
+        position_status="at_risk",
+        position_narrative="目前接近成本區，需評估風險控制。",
         profit_loss_pct=-3.0,
     )
 
