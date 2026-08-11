@@ -140,7 +140,7 @@ const CLASSIFICATION_LABEL: Record<string, string> = {
 };
 
 const LIFECYCLE_CLASSIFICATION_LABEL: Record<string, string> = {
-  insufficient_data: "資料或事件證據不足",
+  insufficient_data: "檢討證據不足",
   unclassified: "暫無適用分類",
   averaging_down_into_weakness: "弱勢中新增批次",
   disciplined_scale_out: "分批降低曝險保護獲利",
@@ -576,9 +576,8 @@ function hasMissingLifecycleDecisionContext(review: PositionLifecycleReviewRespo
 }
 
 function hasLifecycleClassificationDataWarning(review: PositionLifecycleReviewResponse | null): boolean {
-  const result = review?.review_result;
-  const labels = result?.lifecycle_review?.classification?.labels ?? [];
-  return result?.decision_context?.status === "present" && labels.includes("insufficient_data");
+  const insufficientData = getStringArray(review?.review_result.data_quality?.insufficient_data);
+  return insufficientData.some((key) => key !== "decision_context");
 }
 
 function hasBackfilledLifecyclePlanCaveat(review: PositionLifecycleReviewResponse | null): boolean {

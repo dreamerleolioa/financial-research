@@ -824,6 +824,31 @@ def test_declared_plan_adherence_does_not_create_coherent_classification():
     assert result["lifecycle_review"]["classification"]["tier"] != "constructive"
 
 
+def test_real_market_evidence_gaps_remain_insufficient_instead_of_unclassified():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "full_exit", date(2026, 1, 11), 110, 10, fees=0, taxes=0, plan_adherence="yes"),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[_row(date(2026, 1, 10), 100), _row(date(2026, 1, 11), 110)],
+        plan=_plan(),
+    )
+
+    classification = result["lifecycle_review"]["classification"]
+    assert result["decision_context"]["status"] == "present"
+    assert result["data_quality"]["status"] == "insufficient"
+    assert classification["primary_label"] == "insufficient_data"
+    assert "insufficient_data" in classification["labels"]
+    assert any(
+        "部分事件、ledger 或市場證據不足" in caveat["text"]
+        for caveat in classification["caveats"]
+    )
+
+
 def test_lifecycle_shared_context_caveat_does_not_override_classification():
     events = [
         _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),

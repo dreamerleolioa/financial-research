@@ -1512,6 +1512,44 @@ def test_close_portfolio_distinguishes_legacy_omission_from_explicit_not_recorde
     ) == expected_context
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("reason_code", "price_went_down"),
+        ("plan_adherence", "mostly"),
+        ("confidence_level", "certain"),
+    ],
+)
+def test_close_portfolio_rejects_invalid_decision_context_without_event(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+    field: str,
+    invalid_value: str,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(UserPortfolio(
+        id=42,
+        user_id=1,
+        position_group_id="group-invalid-close-context",
+        symbol="2330.TW",
+        entry_price=900,
+        quantity=100,
+        entry_date=date(2026, 1, 1),
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.post("/portfolio/42/close", json={
+        "exit_date": "2026-01-11",
+        "exit_price": 950.0,
+        "exit_quantity": 100,
+        field: invalid_value,
+    })
+
+    assert resp.status_code == 422
+    assert portfolio_db_session.get(UserPortfolio, 42).is_active is True
+    assert portfolio_db_session.execute(select(PositionEvent)).scalars().all() == []
+
+
 def test_decision_context_status_reports_missing_plan_without_changing_portfolio_response(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,

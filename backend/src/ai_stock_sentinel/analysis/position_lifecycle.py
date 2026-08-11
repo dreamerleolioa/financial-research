@@ -245,6 +245,20 @@ def _build_lifecycle_review(
         caveats.append(item)
         data_quality_notes.append(item)
 
+    evidence_gaps = [
+        key
+        for key in data_quality.get("insufficient_data", [])
+        if key != "decision_context"
+    ]
+    if evidence_gaps:
+        _append_label(labels, "insufficient_data")
+        item = _text_item(
+            "部分事件、ledger 或市場證據不足；請依資料品質欄位確認缺口，不把缺少的證據解讀為已記錄事實。",
+            ["data_quality.insufficient_data"],
+        )
+        caveats.append(item)
+        data_quality_notes.append(item)
+
     shared_context_note = _shared_context_data_quality_note(shared_context)
     if shared_context_note is not None:
         caveats.append(shared_context_note)

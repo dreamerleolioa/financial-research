@@ -176,6 +176,7 @@ test("Portfolio close records exit reason, plan adherence, and confidence", asyn
   const dialog = page.getByRole("dialog", { name: "結案 台積電 2330.TW 批次" });
   await dialog.getByLabel("結案價格").fill("950");
   await dialog.getByLabel("結案原因").selectOption("stop_loss");
+  await expect(dialog.getByLabel("是否符合原計畫").locator('option[value="no"]')).toHaveText("不符合原始計畫");
   await dialog.getByLabel("是否符合原計畫").selectOption("no");
   await dialog.getByLabel("決策信心").selectOption("medium");
   await dialog.getByRole("button", { name: "確認結案" }).click();
@@ -987,6 +988,9 @@ test("Closed Portfolio presents a populated realized-PnL group", async ({ page }
 test("Closed Portfolio presents a neutral lifecycle classification without a missing-context warning", async ({
   page,
 }) => {
+  let decisionContextStatus = "present";
+  let backfilledPlan = false;
+  let insufficientData: string[] = [];
   await authenticate(page);
   await installApiMocks(page, { closedPortfolio: [closedPortfolioItem] });
   await page.route("http://127.0.0.1:8001/portfolio/groups/closed-tsmc-e2e/lifecycle-review", async (route) => {
@@ -1016,21 +1020,25 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
             },
           ],
           decision_context: {
-            status: "present",
+            status: decisionContextStatus,
             has_plan: true,
-            historical_judgment_eligible: true,
-            source: "user_recorded_at_event_time",
-            created_after_entry: false,
+            historical_judgment_eligible: !backfilledPlan,
+            source: backfilledPlan ? "user_backfilled" : "user_recorded_at_event_time",
+            created_after_entry: backfilledPlan,
             planned_holding_period: "swing",
             default_stop_rule: "fixed_price",
             add_entry_condition: "data_quality_complete_only",
           },
-          data_quality: { status: "ok", notes: [], insufficient_data: [] },
+          data_quality: {
+            status: insufficientData.length > 0 ? "insufficient" : "ok",
+            notes: insufficientData.map((key) => `Missing ${key}`),
+            insufficient_data: insufficientData,
+          },
           lifecycle_review: {
             classification: {
-              primary_label: "unclassified",
-              labels: ["unclassified"],
-              tier: "mixed",
+              primary_label: insufficientData.length > 0 ? "insufficient_data" : "unclassified",
+              labels: [insufficientData.length > 0 ? "insufficient_data" : "unclassified"],
+              tier: insufficientData.length > 0 ? "insufficient_context" : "mixed",
               reasons: [{ text: "目前沒有命中既定生命週期分類。", source_refs: ["lifecycle_metrics"] }],
               caveats: [],
               source_refs: ["lifecycle_metrics"],
@@ -1058,8 +1066,20 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
   const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 整體部位檢討" });
   await expect(dialog).toContainText("position-lifecycle-review-v3");
   await expect(dialog).toContainText("暫無適用分類");
-  await expect(dialog).not.toContainText("原始計畫缺失");
+  await expect(dialog).not.toContainText("原始計畫缺失：");
   await expect(dialog).not.toContainText("事件或市場證據不足");
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  decisionContextStatus = "retrospective_only";
+  backfilledPlan = true;
+  insufficientData = ["full_exit_2026-05-10_ma20"];
+  await closedPosition.getByRole("button", { name: "整體部位檢討" }).click();
+
+  await expect(dialog).toContainText("檢討證據不足");
+  await expect(dialog).toContainText("事件或市場證據不足");
+  await expect(dialog).toContainText("事後補填計畫提示");
+  await expect(dialog).not.toContainText("原始計畫缺失：");
 });
 
 test("Closed Portfolio upgrades a saved v1 trade review before presenting it", async ({ page }) => {

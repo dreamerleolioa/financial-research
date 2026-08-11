@@ -94,7 +94,7 @@ export const CLOSE_EXIT_REASON_CODE_LABEL = {
 export const PLAN_ADHERENCE_LABEL = {
   yes: "符合原始計畫",
   partial: "部分符合原始計畫",
-  no: "否，記錄為違反原始新增批次計畫",
+  no: "不符合原始計畫",
   not_recorded: "未記錄",
 } satisfies Record<PlanAdherence, string>;
 
