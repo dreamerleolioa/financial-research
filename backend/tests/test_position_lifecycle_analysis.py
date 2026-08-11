@@ -402,6 +402,8 @@ def test_evidence_payload_is_compact_and_excludes_forbidden_raw_context():
     assert 0 < len(evidence["detected_events"]) <= 8
     assert evidence["market_regime_snapshots"]
     assert evidence["data_quality"]["notes"]
+    assert "benchmark_relative_return_pct" not in evidence["data_quality"]["insufficient_data"]
+    assert "sector_relative_return_pct" not in evidence["data_quality"]["insufficient_data"]
     assert not _contains_forbidden_key(evidence)
     assert not _contains_forbidden_key(result)
 
@@ -806,13 +808,19 @@ def test_declared_plan_adherence_does_not_create_coherent_classification():
         position_group_id="group-life",
         symbol="2330.TW",
         events=events,
-        market_rows=[_row(date(2026, 1, 10), 100), _row(date(2026, 1, 11), 110)],
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 61),
+            _snapshot_row(date(2026, 1, 11), [100] * 61 + [110]),
+        ],
         plan=_plan(),
     )
 
     assert result["advanced_internal"]["declared_plan_adherence_score"] == pytest.approx(100)
     assert result["advanced_internal"]["observed_plan_adherence_score"] is None
     assert "coherent_position_management" not in result["lifecycle_review"]["classification"]["labels"]
+    assert result["lifecycle_review"]["classification"]["primary_label"] == "unclassified"
+    assert result["lifecycle_review"]["classification"]["labels"] == ["unclassified"]
+    assert result["data_quality"] == {"status": "ok", "notes": [], "insufficient_data": []}
     assert result["lifecycle_review"]["classification"]["tier"] != "constructive"
 
 

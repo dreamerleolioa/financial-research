@@ -6,6 +6,7 @@ import {
   PLANNED_HOLDING_PERIOD_VALUES,
   type AddEntryCondition,
   type AddEntryReasonCode,
+  type CloseExitReasonCode,
   type DecisionConfidenceLevel,
   type DefaultStopRule,
   type EntryRecordReason,
@@ -73,6 +74,22 @@ export const ADD_ENTRY_REASON_CODE_LABEL = {
   chasing_momentum: "追價動能",
   not_recorded: "未記錄",
 } satisfies Record<AddEntryReasonCode, string>;
+
+export const CLOSE_EXIT_REASON_CODE_LABEL = {
+  target_reached: "達到目標",
+  trailing_stop_hit: "觸及移動停利",
+  support_broken: "支撐跌破",
+  ma20_lost: "跌破 20 日線",
+  institutional_flow_weakened: "法人籌碼轉弱",
+  fundamental_thesis_broken: "基本面假設破壞",
+  news_risk_increased: "消息風險升高",
+  risk_reduction: "降低風險",
+  profit_protection: "保護獲利",
+  planned_scale_out: "依計畫分批降低曝險",
+  stop_loss: "執行風險控制",
+  emotional_exit: "情緒性出場",
+  not_recorded: "未記錄",
+} satisfies Record<CloseExitReasonCode, string>;
 
 export const PLAN_ADHERENCE_LABEL = {
   yes: "符合原始計畫",

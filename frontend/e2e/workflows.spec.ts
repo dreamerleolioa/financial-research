@@ -153,6 +153,44 @@ test("Portfolio destructive action requires confirmation before DELETE", async (
   await expect.poll(() => requestLog).toContain("DELETE /portfolio/11");
 });
 
+test("Portfolio close records exit reason, plan adherence, and confidence", async ({ page }) => {
+  let closeRequestBody: Record<string, unknown> | null = null;
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: populatedRiskSummary,
+  });
+  await page.route("http://127.0.0.1:8001/portfolio/11/close", async (route) => {
+    closeRequestBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...portfolioItem, is_active: false }),
+    });
+  });
+
+  await page.goto("/portfolio");
+  await page.getByRole("button", { name: "開啟 台積電 2330.TW 更多操作" }).click();
+  await page.getByRole("button", { name: "結案持股" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "結案 台積電 2330.TW 批次" });
+  await dialog.getByLabel("結案價格").fill("950");
+  await dialog.getByLabel("結案原因").selectOption("stop_loss");
+  await dialog.getByLabel("是否符合原計畫").selectOption("no");
+  await dialog.getByLabel("決策信心").selectOption("medium");
+  await dialog.getByRole("button", { name: "確認結案" }).click();
+
+  await expect
+    .poll(() => closeRequestBody)
+    .toMatchObject({
+      exit_price: 950,
+      exit_quantity: 1000,
+      reason_code: "stop_loss",
+      plan_adherence: "no",
+      confidence_level: "medium",
+    });
+});
+
 test("Portfolio prepares and copies neutral technical snapshots for every holding", async ({ page, context }) => {
   const requestLog: string[] = [];
   const requestBodies: unknown[] = [];
@@ -944,6 +982,84 @@ test("Closed Portfolio presents a populated realized-PnL group", async ({ page }
   await expect(closedPosition).toContainText("+41,634");
   await expect(closedPosition.getByRole("button", { name: "整體部位檢討" })).toBeVisible();
   await expect(closedPosition.getByRole("button", { name: "事件時間線" })).toBeVisible();
+});
+
+test("Closed Portfolio presents a neutral lifecycle classification without a missing-context warning", async ({
+  page,
+}) => {
+  await authenticate(page);
+  await installApiMocks(page, { closedPortfolio: [closedPortfolioItem] });
+  await page.route("http://127.0.0.1:8001/portfolio/groups/closed-tsmc-e2e/lifecycle-review", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: 301,
+        user_id: 1,
+        position_group_id: "closed-tsmc-e2e",
+        symbol: "2330.TW",
+        review_version: "position-lifecycle-review-v3",
+        review_result: {
+          lifecycle_metrics: {},
+          entry_sequence: {},
+          exit_sequence: {},
+          advanced_internal: {},
+          event_indicator_snapshots: [],
+          event_facts: [
+            {
+              event_key: "id:1",
+              event_type: "initial_entry",
+              event_date: "2026-05-08",
+              price: 1018,
+              quantity: 600,
+              source: "user_recorded_at_event_time",
+            },
+          ],
+          decision_context: {
+            status: "present",
+            has_plan: true,
+            historical_judgment_eligible: true,
+            source: "user_recorded_at_event_time",
+            created_after_entry: false,
+            planned_holding_period: "swing",
+            default_stop_rule: "fixed_price",
+            add_entry_condition: "data_quality_complete_only",
+          },
+          data_quality: { status: "ok", notes: [], insufficient_data: [] },
+          lifecycle_review: {
+            classification: {
+              primary_label: "unclassified",
+              labels: ["unclassified"],
+              tier: "mixed",
+              reasons: [{ text: "目前沒有命中既定生命週期分類。", source_refs: ["lifecycle_metrics"] }],
+              caveats: [],
+              source_refs: ["lifecycle_metrics"],
+            },
+            overall_conclusion: { text: "目前沒有命中既定生命週期分類。", source_refs: ["lifecycle_metrics"] },
+            what_worked: [],
+            what_needs_review: [],
+            event_level_evidence: [],
+            next_operation_rules: [],
+            data_quality_notes: [],
+          },
+        },
+        evidence_payload: {},
+        llm_summary: null,
+        created_at: "2026-08-11T00:00:00Z",
+        updated_at: "2026-08-11T00:00:00Z",
+      }),
+    });
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "整體部位檢討" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 整體部位檢討" });
+  await expect(dialog).toContainText("position-lifecycle-review-v3");
+  await expect(dialog).toContainText("暫無適用分類");
+  await expect(dialog).not.toContainText("原始計畫缺失");
+  await expect(dialog).not.toContainText("事件或市場證據不足");
 });
 
 test("Closed Portfolio upgrades a saved v1 trade review before presenting it", async ({ page }) => {

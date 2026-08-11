@@ -469,7 +469,7 @@ def _primary_lifecycle_label(labels: list[str]) -> str:
     ):
         if label in labels:
             return label
-    return "insufficient_data"
+    return "unclassified"
 
 
 def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
@@ -492,6 +492,7 @@ def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
 def _lifecycle_label_text(label: str) -> str:
     return {
         "insufficient_data": "資料不足",
+        "unclassified": "暫無適用分類",
         "averaging_down_into_weakness": "弱勢中新增批次",
         "add_entry_plan_violation": "新增批次計畫偏離",
         "ma20_pullback_supported": "拉回守住 MA20 支撐",
@@ -985,9 +986,6 @@ def _build_advanced_internal(
     declared_plan_score = _plan_adherence_score(events, plan)
     observed_plan_score = None
     capture_rate = _round_pct(_safe_div(realized_pnl, mfe_amount) * 100) if mfe_amount and mfe_amount > 0 else None
-
-    _add_note(data_quality, "benchmark_relative_return_pct", "Benchmark market data was unavailable for this lifecycle analysis.")
-    _add_note(data_quality, "sector_relative_return_pct", "Sector market data was unavailable for this lifecycle analysis.")
 
     return {
         "planned_1r_amount": _round_money(planned_r),

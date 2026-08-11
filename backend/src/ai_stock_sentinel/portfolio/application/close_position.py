@@ -10,6 +10,8 @@ from ai_stock_sentinel.db.models import UserPortfolio
 from ai_stock_sentinel.portfolio.application.events import (
     add_position_event,
     ensure_position_event_ledger,
+    exit_reason_category,
+    exit_reason_code,
     ledger_open_quantity,
 )
 from ai_stock_sentinel.portfolio.fees import calculate_broker_fee, calculate_sell_transaction_tax
@@ -108,6 +110,10 @@ def close_position(
             fees=row_fees,
             taxes=row_taxes,
             source_portfolio_id=item.id,
+            reason_category=exit_reason_category(payload.reason_code),
+            reason_code=exit_reason_code(payload.reason_code),
+            plan_adherence=payload.plan_adherence,
+            confidence_level=payload.confidence_level,
         )
         db.commit()
         db.refresh(item)
@@ -145,6 +151,10 @@ def close_position(
         fees=row_fees,
         taxes=row_taxes,
         source_portfolio_id=closed_item.id,
+        reason_category=exit_reason_category(payload.reason_code),
+        reason_code=exit_reason_code(payload.reason_code),
+        plan_adherence=payload.plan_adherence,
+        confidence_level=payload.confidence_level,
     )
     db.commit()
     db.refresh(closed_item)

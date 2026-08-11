@@ -60,9 +60,10 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 TRADE_REVIEW_VERSION = "trade-review-v3"
 KNOWN_TRADE_REVIEW_VERSIONS = {"trade-review-v1", "trade-review-v2", TRADE_REVIEW_VERSION}
-POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v2"
+POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v3"
 KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
     "position-lifecycle-review-v1",
+    "position-lifecycle-review-v2",
     POSITION_LIFECYCLE_REVIEW_VERSION,
 }
 TRADE_REVIEW_SUCCESS_REFRESH_TTL = timedelta(hours=6)

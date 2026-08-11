@@ -34,6 +34,23 @@ class ClosePortfolioRequest(BaseModel):
     exit_quantity: int = Field(gt=0, le=POSTGRES_INTEGER_MAX)
     fees: PositionEventMoney | None = None
     taxes: PositionEventMoney | None = None
+    reason_code: Literal[
+        "target_reached",
+        "trailing_stop_hit",
+        "support_broken",
+        "ma20_lost",
+        "institutional_flow_weakened",
+        "fundamental_thesis_broken",
+        "news_risk_increased",
+        "risk_reduction",
+        "profit_protection",
+        "planned_scale_out",
+        "stop_loss",
+        "emotional_exit",
+        "not_recorded",
+    ] | None = None
+    plan_adherence: Literal["yes", "partial", "no", "not_recorded"] | None = None
+    confidence_level: Literal["high", "medium", "low", "not_recorded"] | None = None
 
 
 AddEntryReasonCode = Literal[
