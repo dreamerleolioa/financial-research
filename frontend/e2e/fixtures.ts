@@ -271,6 +271,7 @@ interface ApiMockOptions {
   riskSummary?: unknown;
   priceRefreshSummary?: unknown;
   priceRefreshSummaries?: unknown[];
+  latestHistory?: Record<string, unknown | null>;
   priceRefreshDelayMs?: number;
   dailyRadar?: unknown | null;
   analyzeResult?: unknown;
@@ -300,6 +301,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   const closedPortfolio = options.closedPortfolio ?? [];
   const riskSummary = options.riskSummary ?? emptyRiskSummary;
   const priceRefreshSummary = options.priceRefreshSummary ?? riskSummary;
+  const latestHistory = options.latestHistory ?? {};
   let priceRefreshResponseIndex = 0;
   let tradeReviewPostResponseIndex = 0;
   const dailyRadar = options.dailyRadar === undefined ? null : options.dailyRadar;
@@ -352,7 +354,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
       }
       return json(route, queuedSummary ?? priceRefreshSummary);
     }
-    if (method === "GET" && pathname === "/portfolio/latest-history") return json(route, {});
+    if (method === "GET" && pathname === "/portfolio/latest-history") return json(route, latestHistory);
     if (method === "GET" && pathname === "/portfolio/decision-context-status") return json(route, {});
     if (method === "GET" && /^\/portfolio\/\d+\/lifecycle-plan$/.test(pathname)) {
       return json(route, {

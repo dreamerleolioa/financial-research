@@ -18,8 +18,8 @@ LEGACY_ACTION_RISK_LANGUAGE = {
     "觀望": ("stable", "風險狀態穩定"),
     "Trim": ("elevated", "風險狀態升高"),
     "減碼": ("elevated", "風險狀態升高"),
-    "Exit": ("critical", "防守條件已觸發"),
-    "出場": ("critical", "防守條件已觸發"),
+    "Exit": ("critical", "風險檢查已觸發"),
+    "出場": ("critical", "風險檢查已觸發"),
 }
 
 

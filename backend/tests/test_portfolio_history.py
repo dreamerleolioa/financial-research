@@ -148,7 +148,7 @@ def test_history_falls_back_to_legacy_action_for_old_rows():
     assert resp.status_code == 200
     record = resp.json()["records"][0]
     assert record["risk_state"] == "critical"
-    assert record["risk_state_label"] == "防守條件已觸發"
+    assert record["risk_state_label"] == "風險檢查已觸發"
     assert record["compatibility_source"] == "legacy_recommended_action"
 
 

@@ -668,15 +668,50 @@ test("Portfolio loads fresh prices on first visit without a manual refresh", asy
     portfolio: [portfolioItem],
     riskSummary: populatedRiskSummary,
     priceRefreshSummary: refreshedRiskSummary,
+    latestHistory: {
+      "11": {
+        record_date: "2026-07-30",
+        action_tag: "Exit",
+        signal_confidence: 72,
+        recommended_action: "Exit",
+        indicators: null,
+        risk_state: "critical",
+        risk_state_label: "防守條件已觸發",
+        discipline_triggers: ["法人籌碼轉弱，需檢查風險。"],
+        risk_control_reference: { reference_price: 1025 },
+        compatibility_source: "position_risk_language",
+      },
+    },
     requestLog,
   });
 
   await page.goto("/portfolio");
 
   const position = page.locator('[data-portfolio-position-id="11"]');
+  const positionHeader = page.locator("[data-portfolio-position-header]");
   await expect.poll(() => requestLog).toContain("POST /portfolio/risk-summary/refresh-prices");
   await expect(position).toContainText("現價 1100");
   await expect(position).toContainText("盤中價格 10:30");
+  await expect(positionHeader).toContainText("狀態／計畫");
+  await expect(positionHeader).toContainText("防守緩衝");
+  await expect(position).toContainText("防守可控");
+  await expect(position).toContainText("尚有 4.73%");
+  await expect(position).toContainText("計畫防守價 1050");
+  await expect(position).toContainText("AI 2026-07-30");
+  await expect(position).toContainText("風險檢查已觸發");
+  await expect(position).not.toContainText("防守條件已觸發");
+
+  const [headerColumns, rowColumns, rowCellTops] = await Promise.all([
+    positionHeader.evaluate((element) => getComputedStyle(element).gridTemplateColumns),
+    position.evaluate((element) => getComputedStyle(element).gridTemplateColumns),
+    position.evaluate((element) =>
+      Array.from(element.children)
+        .slice(0, 6)
+        .map((child) => Math.round(child.getBoundingClientRect().top)),
+    ),
+  ]);
+  expect(rowColumns).toBe(headerColumns);
+  expect(new Set(rowCellTops).size).toBe(1);
   expect(requestLog).not.toContain("POST /analyze/position");
 });
 

@@ -2318,12 +2318,7 @@ function portfolioCardDisplayName(
   return name ? { primary: name, secondary: item.symbol } : { primary: item.symbol, secondary: null };
 }
 
-function positionRiskLabel(
-  latest: HistoryEntry | null | undefined,
-  stopLossRisk: PortfolioPositionRiskItem | null,
-): string {
-  if (latest?.risk_state_label) return latest.risk_state_label;
-
+function currentPositionRiskLabel(stopLossRisk: PortfolioPositionRiskItem | null): string {
   const labels: Record<PortfolioPositionRiskItem["risk_state"], string> = {
     contained: "防守可控",
     watch: "留意防守",
@@ -2331,24 +2326,29 @@ function positionRiskLabel(
     defense_reference_touched: "觸及防守",
     data_incomplete: "資料不足",
   };
-  return stopLossRisk ? labels[stopLossRisk.risk_state] : "尚未分析";
+  return stopLossRisk ? labels[stopLossRisk.risk_state] : "風險資料未載入";
 }
 
-function positionRiskClass(
-  latest: HistoryEntry | null | undefined,
-  stopLossRisk: PortfolioPositionRiskItem | null,
-): string {
-  const riskState = latest?.risk_state ?? stopLossRisk?.risk_state;
-  if (riskState === "critical" || riskState === "defense_reference_touched") {
+function currentPositionRiskClass(stopLossRisk: PortfolioPositionRiskItem | null): string {
+  const riskState = stopLossRisk?.risk_state;
+  if (riskState === "defense_reference_touched") {
     return "bg-red-50 text-red-700 dark:bg-red-950/45 dark:text-red-300";
   }
   if (riskState === "elevated" || riskState === "watch") {
     return "bg-amber-50 text-amber-700 dark:bg-amber-950/45 dark:text-amber-300";
   }
-  if (riskState === "stable" || riskState === "contained") {
+  if (riskState === "contained") {
     return "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/45 dark:text-emerald-300";
   }
   return "bg-badge-neutral-bg text-badge-neutral-text";
+}
+
+function latestAnalysisRiskLabel(latest: HistoryEntry | null | undefined): string | null {
+  if (!latest) return null;
+  if (latest.risk_state === "critical" || latest.risk_state_label === "防守條件已觸發") {
+    return "風險檢查已觸發";
+  }
+  return latest.risk_state_label ?? "分析狀態待確認";
 }
 
 function positionDataQualityLabel(stopLossRisk: PortfolioPositionRiskItem | null): string {
@@ -3093,17 +3093,20 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
 
             <PortfolioRiskSummaryPanel summary={riskSummary} error={riskSummaryError} />
 
-            <section className="md:rounded-[14px] md:border md:border-border md:bg-surface-raised md:shadow-panel">
-              <div className="hidden grid-cols-[minmax(160px,1.35fr)_minmax(118px,0.95fr)_minmax(88px,0.65fr)_minmax(96px,0.7fr)_minmax(118px,0.85fr)_auto] gap-4 border-b border-border-subtle px-5 py-3 text-xs font-medium text-text-faint md:grid">
+            <section className="lg:rounded-[14px] lg:border lg:border-border lg:bg-surface-raised lg:shadow-panel">
+              <div
+                data-portfolio-position-header
+                className="hidden grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] gap-5 rounded-t-[14px] border-b border-border bg-card-hover/40 px-5 py-3 text-xs font-medium text-text-faint lg:grid"
+              >
                 <span>持股</span>
-                <span>目前狀態</span>
+                <span>狀態／計畫</span>
                 <span className="text-right">未實現損益</span>
-                <span className="text-right">距防守</span>
-                <span>價格／分析新鮮度</span>
+                <span className="text-right">防守緩衝</span>
+                <span>價格／AI 紀錄</span>
                 <span className="text-right">操作</span>
               </div>
 
-              <div className="space-y-3 md:space-y-0 md:divide-y md:divide-border-subtle">
+              <div className="space-y-3 lg:space-y-0 lg:divide-y lg:divide-border-subtle">
                 {items.map((item) => {
                   const itemKey = portfolioIdKey(item.id);
                   const latest = latestMap[itemKey];
@@ -3127,9 +3130,9 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                     <article
                       key={item.id}
                       data-portfolio-position-id={item.id}
-                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel md:grid-cols-[minmax(160px,1.35fr)_minmax(118px,0.95fr)_minmax(88px,0.65fr)_minmax(96px,0.7fr)_minmax(118px,0.85fr)_auto] md:items-center md:rounded-none md:border-0 md:p-5 md:shadow-none"
+                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel lg:grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] lg:items-start lg:gap-x-5 lg:rounded-none lg:border-0 lg:px-5 lg:py-4 lg:shadow-none"
                     >
-                      <div className="col-span-2 min-w-0 md:col-span-1">
+                      <div className="col-span-2 min-w-0 lg:col-span-1">
                         <p className="truncate text-sm font-semibold text-text-primary">{displayName.primary}</p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
                           {displayName.secondary ?? item.symbol} · 成本 {formatPrice(item.entry_price, item.symbol)}
@@ -3140,46 +3143,57 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         </p>
                       </div>
 
-                      <div className="col-span-2 min-w-0 md:col-span-1">
+                      <div className="col-span-2 min-w-0 lg:col-span-1">
                         <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${positionRiskClass(latest, stopLossRisk)}`}
+                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${currentPositionRiskClass(stopLossRisk)}`}
                         >
-                          {positionRiskLabel(latest, stopLossRisk)}
+                          {currentPositionRiskLabel(stopLossRisk)}
                         </span>
                         {decisionStatus && (
-                          <p
-                            className={`mt-2 text-xs font-medium ${
-                              operationPlanMissing ? "text-amber-600 dark:text-amber-300" : "text-text-faint"
-                            }`}
-                          >
-                            {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
-                          </p>
+                          <div className="mt-2 flex min-w-0 items-baseline gap-1.5 text-xs">
+                            <span className="shrink-0 text-text-faint">計畫</span>
+                            <span
+                              className={`min-w-0 font-medium ${
+                                operationPlanMissing ? "text-amber-600 dark:text-amber-300" : "text-text-secondary"
+                              }`}
+                            >
+                              {OPERATION_PLAN_STATUS_LABEL[decisionStatus.operation_plan_status]}
+                            </span>
+                          </div>
                         )}
                       </div>
 
-                      <div className="min-w-0 md:text-right">
-                        <p className="text-xs text-text-faint md:hidden">未實現損益</p>
+                      <div className="min-w-0 lg:text-right">
+                        <p className="text-xs text-text-faint lg:hidden">未實現損益</p>
                         <p
-                          className={`mt-1 text-sm font-semibold tabular-nums md:mt-0 ${
+                          className={`mt-1 text-sm font-semibold tabular-nums lg:mt-0 ${
                             plPct == null ? "text-text-faint" : plPct >= 0 ? "text-positive" : "text-negative"
                           }`}
                         >
                           {plPct == null ? "—" : `${plPct > 0 ? "+" : ""}${plPct.toFixed(2)}%`}
                         </p>
-                        <p className="mt-1 text-xs tabular-nums text-text-faint">
-                          {currentPrice == null ? "現價未提供" : `現價 ${formatPrice(currentPrice, item.symbol)}`}
-                        </p>
-                        <p className="mt-1 text-xs tabular-nums text-text-faint">
-                          {unrealizedPnl == null
-                            ? "金額未提供"
-                            : `${unrealizedPnl > 0 ? "+" : ""}${formatPortfolioMoney(unrealizedPnl)}`}
-                        </p>
+                        <dl className="mt-1 space-y-1 text-xs tabular-nums">
+                          <div className="flex items-baseline justify-between gap-2 lg:justify-end">
+                            <dt className="text-text-faint">現價 </dt>
+                            <dd className="font-medium text-text-secondary">
+                              {currentPrice == null ? "未提供" : formatPrice(currentPrice, item.symbol)}
+                            </dd>
+                          </div>
+                          <div className="flex items-baseline justify-between gap-2 lg:justify-end">
+                            <dt className="text-text-faint">損益 </dt>
+                            <dd className="font-medium text-text-secondary">
+                              {unrealizedPnl == null
+                                ? "未提供"
+                                : `${unrealizedPnl > 0 ? "+" : ""}${formatPortfolioMoney(unrealizedPnl)}`}
+                            </dd>
+                          </div>
+                        </dl>
                       </div>
 
-                      <div className="min-w-0 md:text-right">
-                        <p className="text-xs text-text-faint md:hidden">距防守</p>
+                      <div className="min-w-0 lg:text-right">
+                        <p className="text-xs text-text-faint lg:hidden">防守緩衝</p>
                         <p
-                          className={`mt-1 text-sm font-semibold tabular-nums md:mt-0 ${
+                          className={`mt-1 text-sm font-semibold tabular-nums lg:mt-0 ${
                             stopLossPullbackPctValue == null
                               ? "text-text-faint"
                               : stopLossPullbackPctValue <= 0
@@ -3191,20 +3205,36 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                             ? "未設定"
                             : stopLossPullbackPctValue <= 0
                               ? "已觸及"
-                              : formatPortfolioPct(stopLossPullbackPctValue)}
+                              : `尚有 ${formatPortfolioPct(stopLossPullbackPctValue)}`}
                         </p>
-                        <p className="mt-1 text-xs tabular-nums text-text-faint">
-                          {stopLossRisk?.defense_reference.price == null
-                            ? "無防守價"
-                            : `防守 ${formatPrice(stopLossRisk.defense_reference.price, item.symbol)}`}
-                        </p>
+                        <div className="mt-1 flex items-baseline justify-between gap-2 text-xs tabular-nums lg:justify-end">
+                          <span className="text-text-faint">計畫防守價 </span>
+                          <span className="font-medium text-text-secondary">
+                            {stopLossRisk?.defense_reference.price == null
+                              ? "未設定"
+                              : formatPrice(stopLossRisk.defense_reference.price, item.symbol)}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="col-span-2 min-w-0 md:col-span-1">
+                      <div className="col-span-2 min-w-0 lg:col-span-1">
                         <p className="text-xs tabular-nums text-text-secondary">{priceFreshnessLabel(stopLossRisk)}</p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
-                          {latest ? `AI 分析 ${latest.record_date}` : "尚無 AI 分析"}
+                          {latest ? `上次 AI ${latest.record_date}` : "尚無 AI 分析"}
                         </p>
+                        {latest && (
+                          <p
+                            className={`mt-1 text-xs font-medium ${
+                              latest.risk_state === "critical"
+                                ? "text-negative"
+                                : latest.risk_state === "elevated" || latest.risk_state === "watch"
+                                  ? "text-amber-600 dark:text-amber-300"
+                                  : "text-text-faint"
+                            }`}
+                          >
+                            {latestAnalysisRiskLabel(latest)}
+                          </p>
+                        )}
                         {riskQualityLabel !== "風險資料完整" && (
                           <p className="mt-1 text-xs text-text-faint">{riskQualityLabel}</p>
                         )}
@@ -3213,7 +3243,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         )}
                       </div>
 
-                      <div className="col-span-2 flex items-center justify-end gap-2 md:col-span-1">
+                      <div className="col-span-2 flex items-center justify-end gap-2 lg:col-span-1">
                         <button
                           type="button"
                           onClick={() => void refreshPrices([item.id])}

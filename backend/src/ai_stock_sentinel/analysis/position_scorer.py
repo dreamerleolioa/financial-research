@@ -191,7 +191,7 @@ def build_position_risk_language(
     risk_state_map = {
         "Hold": ("stable", "風險狀態穩定"),
         "Trim": ("elevated", "風險狀態升高"),
-        "Exit": ("critical", "防守條件已觸發"),
+        "Exit": ("critical", "風險檢查已觸發"),
     }
     risk_state, risk_state_label = risk_state_map.get(
         str(recommended_action or ""),
@@ -237,7 +237,7 @@ def _risk_state_from_position_status(position_status: str | None) -> tuple[str, 
     if position_status == "profitable_safe":
         return "stable", "風險狀態穩定"
     if position_status == "under_water":
-        return "critical", "防守條件已觸發"
+        return "critical", "風險檢查已觸發"
     return "watch", "需要觀察"
 
 
