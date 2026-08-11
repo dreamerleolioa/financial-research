@@ -878,6 +878,44 @@ def test_optional_planned_r_gaps_do_not_override_constructive_scale_out():
     assert "insufficient_data" not in classification["labels"]
 
 
+def test_unclassified_fallback_does_not_claim_unobserved_position_management():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 2256, 5, fees=0, taxes=0, plan_adherence="yes"),
+        _event(2, "full_exit", date(2026, 1, 11), 2102, 5, fees=0, taxes=0, plan_adherence="yes"),
+    ]
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="3665.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [2000] * 61 + [2256]),
+            _snapshot_row(date(2026, 1, 11), [2000] * 61 + [2256, 2102]),
+        ],
+        plan=_plan(planned_risk_amount=None, planned_stop_price=None),
+    )
+
+    review = result["lifecycle_review"]
+    classification = review["classification"]
+    assert result["lifecycle_metrics"]["total_realized_pnl"] == pytest.approx(-770)
+    assert result["exit_sequence"]["partial_exit_count"] == 0
+    assert result["exit_sequence"]["profit_protected_by_partial_exits"] == pytest.approx(0)
+    assert classification["primary_label"] == "unclassified"
+    assert classification["tier"] == "mixed"
+    assert "未命中可辨識的正向或需檢討模式" in classification["reasons"][0]["text"]
+    assert "資料足以完成檢討" in review["overall_conclusion"]["text"]
+    assert "Phase C" not in str(review)
+    assert review["what_needs_review"][0]["text"].startswith("目前固定規則")
+    assert "不代表已證明操作正確" in review["what_needs_review"][0]["text"]
+    assert "分批保護獲利" not in str(review["next_operation_rules"])
+    assert "不額外推定做對或做錯" in review["next_operation_rules"][0]["text"]
+    assert review["next_operation_rules"][0]["source_refs"] == [
+        "entry_sequence",
+        "exit_sequence",
+        "decision_context",
+    ]
+
+
 def test_lifecycle_shared_context_caveat_does_not_override_classification():
     events = [
         _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0, plan_adherence="yes"),
