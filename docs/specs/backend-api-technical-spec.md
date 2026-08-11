@@ -1252,7 +1252,10 @@ make run-api
   "exit_price": 980.0,
   "exit_quantity": 1000,
   "fees": 142.0,
-  "taxes": 2940.0
+  "taxes": 2940.0,
+  "reason_code": "stop_loss",
+  "plan_adherence": "yes",
+  "confidence_level": "medium"
 }
 ```
 
@@ -1262,6 +1265,9 @@ make run-api
   - `exit_quantity`：出場股數，必填，需介於 1–`2,147,483,647`，且不可大於目前 active 持有股數。
   - `fees`：手續費，選填，需介於 0–`99,999,999.99` 且最多 2 位小數；未提供時依 broker fee rule 自動估算，若提供則視為使用者覆寫值。
   - `taxes`：交易稅，選填，需介於 0–`99,999,999.99` 且最多 2 位小數；未提供時依 sell transaction tax rule 自動估算，若提供則視為使用者覆寫值。
+  - `reason_code`：結案原因，舊 client 可不提供；新版 UI 必須明確送出 `target_reached` / `trailing_stop_hit` / `support_broken` / `ma20_lost` / `institutional_flow_weakened` / `fundamental_thesis_broken` / `news_risk_increased` / `risk_reduction` / `profit_protection` / `planned_scale_out` / `stop_loss` / `emotional_exit` / `not_recorded` 之一。
+  - `plan_adherence`：`yes` / `partial` / `no` / `not_recorded`；舊 client 可不提供，新版 UI 必須明確送出。
+  - `confidence_level`：`high` / `medium` / `low` / `not_recorded`；舊 client 可不提供，新版 UI 必須明確送出。
 
 - **計算邏輯**
   - 已實現損益採平均成本法計算：`realized_pnl = (exit_price - entry_price) * exit_quantity - fees - taxes`，其中 `fees` / `taxes` 使用同一組寫入 closed portfolio row 與 `position_event` 的實際成本值。
@@ -1270,6 +1276,7 @@ make run-api
   - `holding_days = exit_date - entry_date` 的天數
   - `exit_quantity == quantity` 時為全數平倉：原持股設定 `is_active = FALSE`，並回傳該筆 closed portfolio。
   - `exit_quantity < quantity` 時為部分平倉：原 active 持股保留並扣減 `quantity`，另建立一筆 `is_active = FALSE` 的 closed portfolio 紀錄，該 inactive 紀錄代表本次出場股數，response 回傳新建立的 closed portfolio。
+  - `full_exit` 與 `partial_exit` event 會保存 request 中的結案原因、計畫遵循與信心水準；`reason_code = not_recorded` 只保存為未記錄類別，不推論使用者意圖。舊 client 未提供三欄時維持 `null` 相容語意。
   - Event ledger 的 open quantity 必須等於 active portfolio row 的剩餘 `quantity`。既有 migration 產生的純 `synthetic_from_portfolio_row` 分批群組，若 initial-entry 誤存為剩餘股數，後續修補 migration 只處理可證明形狀：仍持有群組以「單一 active row + 單一 synthetic initial-entry + 每個 inactive portfolio row 恰好各有一筆 synthetic partial-exit」修正為 `active quantity + partial-exit quantity sum`；完全結案群組以「無 active row + 單一 synthetic initial-entry + 至少一筆 synthetic partial-exit + 最後單一 synthetic full-exit，且 initial/full exit 來自同一最後結案 row」修正為全部 exit quantity 總和。所有 active/source row、synthetic initial/exit event 與計算後 initial quantity 都必須嚴格大於 0，且計算後 initial quantity 不得超過 PostgreSQL `INTEGER` 上限 `2,147,483,647`；超出時跳過該群組，不執行可能中止 migration 的溢位更新。exit events 必須對全部 portfolio rows 形成不遺漏、不重複的一對一 source coverage，每筆來源 row 的 `quantity`、`exit_quantity`（null 時回退 `quantity`）與對應 exit event quantity 必須一致，且 synthetic initial event 的 entry price/date 必須與群組內所有來源 portfolio rows 一致。所有 portfolio rows 與 events 必須具有同一個非空 symbol；active row 若在 synthetic initial event 建立後又被更新，視為可能含有舊版 PUT 的人工修正而跳過。真正更新 initial event 前，migration 必須按 row id 對所有 contributing portfolio rows 與整組 initial/partial/full events 的 observed facts/timestamps 做 compare-and-lock，再對 initial event 做 compare-and-set；任一來源事實在 snapshot 後遭並行更正都跳過該群組，不得用 stale snapshot 覆寫。這些鎖只保護同一 transaction；部署 `1b2c3d4e5f6a` 時必須先停止舊版 portfolio writers，明確執行 migration，確認舊 instances 已退出後才開放新版流量，不能把 transaction lock 視為 commit 後的跨版本保護。含人工、補填、混合來源、多 active rows、source coverage 不完整、非正數、數量不一致、symbol 分裂、post-backfill mutation、entry price/date 分裂或其他事件形狀的群組不自動改寫，且修補可安全重跑。
 
 - **Response 200**：回傳欄位同 `GET /portfolio/closed` 的 closed portfolio 物件。
@@ -1566,8 +1573,8 @@ make run-api
 
 - **用途**：為同一 `position_group_id` 建立或更新 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在且來源資料未變，直接回傳既有 review。
 - **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
-- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v2 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 可讀，但 POST 會建立 v2，避免以單一 `updated_at` 漏掉行情或 shared-context 變更。
-- **版本策略**：`review_version` 為 `position-lifecycle-review-v2`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。若資料庫已有不在已知 v1/v2 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v2 或降級覆寫。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v3 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 / v2 可讀，但 POST 會建立 v3，避免舊版分類語意與新規則混用。
+- **版本策略**：`review_version` 為 `position-lifecycle-review-v3`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。v3 將「事件與原始計畫完整、但未命中任何 deterministic pattern」分類為 `unclassified`，不再誤標為 `insufficient_data`；預留但尚未實作的 benchmark / sector relative-return 欄位可維持 `null`，不得因此把 `data_quality` 標為不足。`planned_risk_amount` 與 `planned_stop_price` 都是選填欄位，兩者皆未提供時 `planned_1r_amount` 與 R-multiple 指標維持 `null`，但不構成事件、ledger 或市場證據缺口，也不得單獨觸發 `insufficient_data`。若資料庫已有不在已知 v1/v2/v3 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v3 或降級覆寫。
 - **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
 - **Evidence 邊界**：`evidence_payload` 只存 compact event facts、review-relevant plan snapshot、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、compact market snapshot、Phase 2D point-in-time shared context references、source summary、data quality、ruleset 與 fingerprint；不存 raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。正式 lifecycle market query 從首次進場前 120 個日曆日開始，保留完整持有期間直到最後 lifecycle event；較早歷史不得無界載入。寫入 evidence 前，具有日期的重疊 trailing series 會攤平成依交易日去重的單日 bars，且全部先於 outer bars 合併；同日重疊的 trailing history 以較新非空值更新並保留其缺少的 completed 欄位，outer bar 只補缺，不得用盤中／partial quote 覆蓋完整 OHLCV；legacy 無日期 series 只保留最長一份，避免每個 `StockRawData` row 重複保存整段歷史。`quality.row_count` 表示來源 rows，`quality.persisted_bar_count` 表示 compact 後實際保存的 bars。
 - **Shared context point-in-time 邊界（Phase 2D）**：`review_result.shared_context` 與 `evidence_payload.shared_context` 以每個 `PositionEvent.event_date` 作為 `reference_date`，只引用適用目標 consumer 且 `as_of_date <= event_date` 的 shared background context。`shared_background_contexts` 以 `symbol` / `context_type` / `replay_key` 保留歷史 trace；若沒有可用歷史 context 且只存在晚於事件日的 context，會以 `missing_reason = "future_context_excluded"` 保留 caveat，並保留原始 excluded `as_of_date` trace；不得使用該未來資料批評 entry/exit-time decision。Shared context 只作 evidence/caveat/data quality，不改 `lifecycle_review.classification.primary_label`、tier、deterministic metrics 或 fixed-option decision-context 判讀。
@@ -1579,7 +1586,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "position-lifecycle-review-v2",
+  "review_version": "position-lifecycle-review-v3",
   "review_result": {
     "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
@@ -1707,7 +1714,7 @@ make run-api
 ```
 
 - **主要欄位說明**
-  - `review_result.lifecycle_review.classification.primary_label`：主要 lifecycle 分類，例如 `averaging_down_into_weakness`、`disciplined_scale_out`、`risk_reduction_exit`、`premature_scale_out`、`late_scale_out`、`coherent_position_management`、`insufficient_data`。
+  - `review_result.lifecycle_review.classification.primary_label`：主要 lifecycle 分類，例如 `averaging_down_into_weakness`、`disciplined_scale_out`、`risk_reduction_exit`、`premature_scale_out`、`late_scale_out`、`coherent_position_management`、`insufficient_data`、`unclassified`。`unclassified` 表示資料足以完成檢討但沒有命中既定 pattern，不是資料缺漏或決策脈絡不足。
   - `review_result.lifecycle_review.classification.tier`：前端預設 summary 使用的 tier，例如 `needs_review`、`insufficient_context`、`constructive`、`mixed`。
   - `review_result.lifecycle_review.*.source_refs`：每段固定模板文字的來源指標、事件或分類 trace。前端可顯示來源，但不應要求使用者解讀 raw score。
   - `review_result.event_indicator_snapshots`：每個 entry/exit event 的 point-in-time 技術指標與 market regime snapshot，不包含完整 K 線序列。

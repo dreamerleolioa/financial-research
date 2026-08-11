@@ -406,6 +406,24 @@ export type ExitReasonCode =
   | "emotional_exit"
   | "manual_record_correction";
 
+export const CLOSE_EXIT_REASON_CODE_VALUES = [
+  "target_reached",
+  "trailing_stop_hit",
+  "support_broken",
+  "ma20_lost",
+  "institutional_flow_weakened",
+  "fundamental_thesis_broken",
+  "news_risk_increased",
+  "risk_reduction",
+  "profit_protection",
+  "planned_scale_out",
+  "stop_loss",
+  "emotional_exit",
+  "not_recorded",
+] as const;
+
+export type CloseExitReasonCode = (typeof CLOSE_EXIT_REASON_CODE_VALUES)[number];
+
 export const PLAN_ADHERENCE_VALUES = ["yes", "partial", "no", "not_recorded"] as const;
 
 export type PlanAdherence = (typeof PLAN_ADHERENCE_VALUES)[number];

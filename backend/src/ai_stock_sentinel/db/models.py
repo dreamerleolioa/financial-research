@@ -339,7 +339,7 @@ class PositionLifecycleReview(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     position_group_id: Mapped[str] = mapped_column(String(36), nullable=False)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
-    review_version: Mapped[str] = mapped_column(String(40), nullable=False, default="position-lifecycle-review-v2")
+    review_version: Mapped[str] = mapped_column(String(40), nullable=False, default="position-lifecycle-review-v3")
     review_result: Mapped[dict] = mapped_column(JSONB, nullable=False)
     evidence_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)

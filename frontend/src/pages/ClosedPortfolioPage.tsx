@@ -140,7 +140,8 @@ const CLASSIFICATION_LABEL: Record<string, string> = {
 };
 
 const LIFECYCLE_CLASSIFICATION_LABEL: Record<string, string> = {
-  insufficient_data: "決策脈絡不足",
+  insufficient_data: "檢討證據不足",
+  unclassified: "暫無適用分類",
   averaging_down_into_weakness: "弱勢中新增批次",
   disciplined_scale_out: "分批降低曝險保護獲利",
   risk_reduction_exit: "破位後降低風險",
@@ -570,10 +571,13 @@ function getLifecycleProvenance(
   return "mixed provenance";
 }
 
-function hasLifecycleDecisionContextWarning(review: PositionLifecycleReviewResponse | null): boolean {
-  const result = review?.review_result;
-  const labels = result?.lifecycle_review?.classification?.labels ?? [];
-  return result?.decision_context?.status !== "present" || labels.includes("insufficient_data");
+function hasMissingLifecycleDecisionContext(review: PositionLifecycleReviewResponse | null): boolean {
+  return review?.review_result.decision_context?.status === "insufficient";
+}
+
+function hasLifecycleClassificationDataWarning(review: PositionLifecycleReviewResponse | null): boolean {
+  const insufficientData = getStringArray(review?.review_result.data_quality?.insufficient_data);
+  return insufficientData.some((key) => key !== "decision_context");
 }
 
 function hasBackfilledLifecyclePlanCaveat(review: PositionLifecycleReviewResponse | null): boolean {
@@ -1640,7 +1644,8 @@ function LifecycleReviewModal({
   const eventFacts = result?.event_facts ?? [];
   const snapshots = result?.event_indicator_snapshots ?? [];
   const provenance = getLifecycleProvenance(eventFacts);
-  const hasDecisionWarning = hasLifecycleDecisionContextWarning(review);
+  const hasMissingDecisionContext = hasMissingLifecycleDecisionContext(review);
+  const hasClassificationDataWarning = hasLifecycleClassificationDataWarning(review);
   const hasBackfilledCaveat = hasBackfilledLifecyclePlanCaveat(review);
 
   return (
@@ -1732,10 +1737,15 @@ function LifecycleReviewModal({
                 </button>
               </div>
 
-              {hasDecisionWarning && (
+              {hasMissingDecisionContext && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  決策脈絡限制：原始計畫缺失、屬於事後補填，或分類包含資料不足。此檢討只使用已保存事件、ledger 費稅與
-                  前一個完整交易日指標，不推論未記錄意圖，也不以事後計畫改寫歷史判斷。
+                  原始計畫缺失：此檢討只使用已保存事件、ledger 費稅與前一個完整交易日指標，不推論未記錄意圖。
+                </div>
+              )}
+
+              {hasClassificationDataWarning && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  事件或市場證據不足：請依下方資料品質欄位判斷缺口；這不代表原始計畫缺失或屬於事後補填。
                 </div>
               )}
 

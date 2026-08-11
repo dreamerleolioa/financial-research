@@ -29,10 +29,12 @@ import {
   fetchPortfolioHistory,
   runPortfolioPositionAnalysis,
   type AddEntryRequest,
+  type ClosePortfolioRequest,
   type PortfolioHistoryEntry,
 } from "../lib/portfolioApi";
 import {
   ADD_ENTRY_REASON_CODE_VALUES,
+  CLOSE_EXIT_REASON_CODE_VALUES,
   DECISION_CONFIDENCE_LEVEL_VALUES,
   PLAN_ADHERENCE_VALUES,
 } from "../lib/portfolioTypes";
@@ -41,6 +43,7 @@ import type {
   AddEntryReasonCode,
   BackfillLifecyclePlanRequest,
   BackfillLifecyclePlanResponse,
+  CloseExitReasonCode,
   ClosedPortfolioItem,
   DecisionConfidenceLevel,
   DefaultStopRule,
@@ -56,6 +59,7 @@ import {
   ADD_ENTRY_CONDITION_LABEL,
   ADD_ENTRY_CONDITION_OPTIONS,
   ADD_ENTRY_REASON_CODE_LABEL,
+  CLOSE_EXIT_REASON_CODE_LABEL,
   CONFIDENCE_LEVEL_LABEL,
   DEFAULT_STOP_RULE_OPTIONS,
   LIFECYCLE_SETUP_TYPE_OPTIONS,
@@ -886,6 +890,9 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
   const [exitQuantity, setExitQuantity] = useState(String(item.quantity));
   const [fees, setFees] = useState("");
   const [taxes, setTaxes] = useState("");
+  const [reasonCode, setReasonCode] = useState<CloseExitReasonCode>("not_recorded");
+  const [planAdherence, setPlanAdherence] = useState<PlanAdherence>("not_recorded");
+  const [confidenceLevel, setConfidenceLevel] = useState<DecisionConfidenceLevel>("not_recorded");
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -929,16 +936,13 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
       return;
     }
 
-    const body: {
-      exit_date: string;
-      exit_price: number;
-      exit_quantity: number;
-      fees?: number;
-      taxes?: number;
-    } = {
+    const body: ClosePortfolioRequest = {
       exit_date: exitDate,
       exit_price: parsedExitPrice,
       exit_quantity: parsedExitQuantity,
+      reason_code: reasonCode,
+      plan_adherence: planAdherence,
+      confidence_level: confidenceLevel,
     };
     if (parsedFees !== undefined) body.fees = parsedFees;
     if (parsedTaxes !== undefined) body.taxes = parsedTaxes;
@@ -1061,6 +1065,55 @@ function ClosePositionModal({ item, onClose, onClosed }: ClosePositionModalProps
           <p className="text-xs leading-relaxed text-text-faint">
             留空時使用後端台股預設費率估算；實際券商折扣或特殊稅率可手動覆寫。
           </p>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-text-muted">結案原因</span>
+            <select
+              value={reasonCode}
+              onChange={(e) => setReasonCode(e.target.value as CloseExitReasonCode)}
+              className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            >
+              {CLOSE_EXIT_REASON_CODE_VALUES.map((value) => (
+                <option key={value} value={value}>
+                  {CLOSE_EXIT_REASON_CODE_LABEL[value]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">是否符合原計畫</span>
+              <select
+                value={planAdherence}
+                onChange={(e) => setPlanAdherence(e.target.value as PlanAdherence)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                {PLAN_ADHERENCE_VALUES.map((value) => (
+                  <option key={value} value={value}>
+                    {PLAN_ADHERENCE_LABEL[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">決策信心</span>
+              <select
+                value={confidenceLevel}
+                onChange={(e) => setConfidenceLevel(e.target.value as DecisionConfidenceLevel)}
+                className="w-full rounded-lg border border-input-border bg-input-bg px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                {DECISION_CONFIDENCE_LEVEL_VALUES.map((value) => (
+                  <option key={value} value={value}>
+                    {CONFIDENCE_LEVEL_LABEL[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {planAdherence === "no" && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              此結案會明確記錄為未符合原計畫，供後續生命週期檢討使用。
+            </div>
+          )}
           {error && (
             <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
               {error}

@@ -6,6 +6,7 @@ import type {
   BackfillLifecyclePlanRequest,
   BackfillLifecyclePlanResponse,
   ClosedPortfolioItem,
+  CloseExitReasonCode,
   DecisionConfidenceLevel,
   LifecyclePlanResponse,
   PlanAdherence,
@@ -57,6 +58,9 @@ export interface ClosePortfolioRequest {
   exit_quantity: number;
   fees?: number;
   taxes?: number;
+  reason_code: CloseExitReasonCode;
+  plan_adherence: PlanAdherence;
+  confidence_level: DecisionConfidenceLevel;
 }
 
 export interface AddEntryRequest {

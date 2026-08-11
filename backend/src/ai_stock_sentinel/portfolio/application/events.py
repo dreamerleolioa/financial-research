@@ -23,6 +23,21 @@ ENTRY_REASON_CATEGORIES = {
     "other": "plan_execution",
 }
 
+EXIT_REASON_CATEGORIES = {
+    "target_reached": "plan_execution",
+    "trailing_stop_hit": "risk_control",
+    "support_broken": "technical",
+    "ma20_lost": "technical",
+    "institutional_flow_weakened": "institutional_flow",
+    "fundamental_thesis_broken": "fundamental",
+    "news_risk_increased": "news",
+    "risk_reduction": "risk_control",
+    "profit_protection": "risk_control",
+    "planned_scale_out": "plan_execution",
+    "stop_loss": "risk_control",
+    "emotional_exit": "emotional",
+}
+
 
 def add_position_event(
     db: Session,
@@ -38,6 +53,8 @@ def add_position_event(
     note: str | None = None,
     reason_category: str | None = None,
     reason_code: str | None = None,
+    plan_adherence: str | None = None,
+    confidence_level: str | None = None,
     source: str = "user_recorded_at_event_time",
     data_quality_note: str | None = None,
 ) -> PositionEvent:
@@ -55,6 +72,8 @@ def add_position_event(
         note=item.notes if note is None else note,
         reason_category=reason_category,
         reason_code=reason_code,
+        plan_adherence=plan_adherence,
+        confidence_level=confidence_level,
         source=source,
         data_quality_note=data_quality_note,
     )
@@ -140,6 +159,18 @@ def add_entry_reason_category(reason_code: str) -> str:
 
 def add_entry_reason_code(reason_code: str) -> str | None:
     return None if reason_code == "not_recorded" else reason_code
+
+
+def exit_reason_category(reason_code: str | None) -> str | None:
+    if reason_code is None:
+        return None
+    if reason_code == "not_recorded":
+        return "not_recorded"
+    return EXIT_REASON_CATEGORIES[reason_code]
+
+
+def exit_reason_code(reason_code: str | None) -> str | None:
+    return None if reason_code in (None, "not_recorded") else reason_code
 
 
 def entry_record_has_lifecycle_plan(entry_record: EntryRecordContext) -> bool:

@@ -91,10 +91,10 @@ def add_entry_to_position(
         note=payload.note,
         reason_category=add_entry_reason_category(payload.reason_code),
         reason_code=add_entry_reason_code(payload.reason_code),
+        plan_adherence=payload.plan_adherence,
+        confidence_level=payload.confidence_level,
         source="user_recorded_at_event_time",
     )
-    event.plan_adherence = payload.plan_adherence
-    event.confidence_level = payload.confidence_level
     db.commit()
     db.refresh(item)
     db.refresh(event)

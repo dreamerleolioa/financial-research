@@ -110,7 +110,6 @@ def build_position_lifecycle_analysis_from_rows(
         lifecycle_metrics,
         plan,
         decision_context,
-        data_quality,
     )
     detected_events = _detect_market_events(ordered_events, ordered_rows)
     market_regime_snapshots = _market_regime_snapshots(event_snapshots)
@@ -241,6 +240,20 @@ def _build_lifecycle_review(
         item = _text_item(
             "此操作計畫為使用者事後補填，可改善未來檢討脈絡，但不視為原始進場當下已存在的計畫。",
             ["decision_context.source", "decision_context.created_after_entry"],
+        )
+        caveats.append(item)
+        data_quality_notes.append(item)
+
+    evidence_gaps = [
+        key
+        for key in data_quality.get("insufficient_data", [])
+        if key != "decision_context"
+    ]
+    if evidence_gaps:
+        _append_label(labels, "insufficient_data")
+        item = _text_item(
+            "部分事件、ledger 或市場證據不足；請依資料品質欄位確認缺口，不把缺少的證據解讀為已記錄事實。",
+            ["data_quality.insufficient_data"],
         )
         caveats.append(item)
         data_quality_notes.append(item)
@@ -469,7 +482,7 @@ def _primary_lifecycle_label(labels: list[str]) -> str:
     ):
         if label in labels:
             return label
-    return "insufficient_data"
+    return "unclassified"
 
 
 def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
@@ -492,6 +505,7 @@ def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
 def _lifecycle_label_text(label: str) -> str:
     return {
         "insufficient_data": "資料不足",
+        "unclassified": "暫無適用分類",
         "averaging_down_into_weakness": "弱勢中新增批次",
         "add_entry_plan_violation": "新增批次計畫偏離",
         "ma20_pullback_supported": "拉回守住 MA20 支撐",
@@ -968,12 +982,9 @@ def _build_advanced_internal(
     lifecycle_metrics: dict[str, Any],
     plan: Any,
     decision_context: dict[str, Any],
-    data_quality: dict[str, Any],
 ) -> dict[str, Any]:
     historical_judgment_eligible = decision_context.get("historical_judgment_eligible") is True
     planned_r = _planned_r_amount(plan, accounting) if historical_judgment_eligible else None
-    if planned_r is None:
-        _add_note(data_quality, "planned_1r_amount", "Plan risk was unavailable; R-multiple metrics are null.")
     planned_r_value = _number(planned_r)
     realized_pnl = _number(accounting.get("total_realized_pnl"))
     weighted_entry = _number(accounting.get("weighted_average_entry_price"))
@@ -985,9 +996,6 @@ def _build_advanced_internal(
     declared_plan_score = _plan_adherence_score(events, plan)
     observed_plan_score = None
     capture_rate = _round_pct(_safe_div(realized_pnl, mfe_amount) * 100) if mfe_amount and mfe_amount > 0 else None
-
-    _add_note(data_quality, "benchmark_relative_return_pct", "Benchmark market data was unavailable for this lifecycle analysis.")
-    _add_note(data_quality, "sector_relative_return_pct", "Sector market data was unavailable for this lifecycle analysis.")
 
     return {
         "planned_1r_amount": _round_money(planned_r),
