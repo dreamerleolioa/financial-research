@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.analysis.position_lifecycle import (
+    _lifecycle_tier,
+    _next_operation_rules,
     _point_in_time_values,
     build_position_lifecycle_analysis,
     build_position_lifecycle_analysis_from_rows,
@@ -876,6 +878,59 @@ def test_optional_planned_r_gaps_do_not_override_constructive_scale_out():
     assert classification["primary_label"] == "disciplined_scale_out"
     assert classification["tier"] == "constructive"
     assert "insufficient_data" not in classification["labels"]
+    next_rule_text = result["lifecycle_review"]["next_operation_rules"][0]["text"]
+    assert "已辨識出可追溯的正向部位管理模式" in next_rule_text
+    assert "未命中既定模式" not in next_rule_text
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_source_ref"),
+    [
+        ("ma20_pullback_supported", "event_indicator_snapshots.event_price_vs_ma20_pct"),
+        ("disciplined_scale_out", "exit_sequence.profit_protected_by_partial_exits"),
+        ("risk_reduction_exit", "exit_sequence.percentage_sold_after_breakdown"),
+        ("coherent_position_management", "advanced_internal.plan_adherence_score"),
+    ],
+)
+def test_constructive_operation_rule_fallback_acknowledges_matched_pattern(
+    label: str,
+    expected_source_ref: str,
+):
+    rules = _next_operation_rules([label], False)
+
+    assert len(rules) == 1
+    assert "已辨識出可追溯的正向部位管理模式" in rules[0]["text"]
+    assert "未命中既定模式" not in rules[0]["text"]
+    assert expected_source_ref in rules[0]["source_refs"]
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "ma20_pullback_supported",
+        "disciplined_scale_out",
+        "risk_reduction_exit",
+        "coherent_position_management",
+    ],
+)
+def test_constructive_primary_labels_use_constructive_tier(label: str):
+    assert _lifecycle_tier(label, [label]) == "constructive"
+
+
+def test_operation_rule_fallback_distinguishes_unclassified_and_insufficient_results():
+    unclassified = _next_operation_rules([], False)
+    insufficient = _next_operation_rules(["insufficient_data"], False)
+    insufficient_with_constructive = _next_operation_rules(
+        ["disciplined_scale_out", "insufficient_data"],
+        False,
+    )
+
+    assert "未命中既定模式" in unclassified[0]["text"]
+    assert "證據缺口" in insufficient[0]["text"]
+    assert "未命中既定模式" not in insufficient[0]["text"]
+    assert insufficient[0]["source_refs"] == ["data_quality.insufficient_data"]
+    assert "證據缺口" in insufficient_with_constructive[0]["text"]
+    assert "正向部位管理模式" not in insufficient_with_constructive[0]["text"]
 
 
 def test_unclassified_fallback_does_not_claim_unobserved_position_management():

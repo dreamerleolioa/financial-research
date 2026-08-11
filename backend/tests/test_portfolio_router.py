@@ -4156,7 +4156,7 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     _, legacy_evidence = _lifecycle_payload()
     legacy_fingerprint = attach_source_fingerprint(
         legacy_evidence,
-        ruleset_version="position-lifecycle-review-v3",
+        ruleset_version="position-lifecycle-ruleset-v3.1",
     )
     portfolio_db_session.add(PositionLifecycleReview(
         id=9,
@@ -4176,7 +4176,7 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     assert data["id"] == 9
     assert data["review_version"] == "position-lifecycle-review-v3"
     assert data["review_result"] == _lifecycle_payload()[0]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.1"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
     assert data["evidence_payload"]["source_fingerprint"] != legacy_fingerprint
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
@@ -4227,7 +4227,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "event"
     assert data["evidence_payload"]["events"] == [{"event_type": "full_exit"}]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.1"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4293,7 +4293,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "plan"
     assert data["evidence_payload"]["plan"] == {"planned_holding_period": "long_term"}
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.1"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()

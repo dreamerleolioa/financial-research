@@ -433,8 +433,8 @@ def _build_lifecycle_review(
             ["data_quality.status"],
         ))
 
-    next_operation_rules.extend(_next_operation_rules(labels, decision_context_insufficient))
     primary_label = _primary_lifecycle_label(labels)
+    next_operation_rules.extend(_next_operation_rules(labels, decision_context_insufficient))
     tier = _lifecycle_tier(primary_label, labels)
     source_refs = _unique_refs([ref for item in reasons + caveats for ref in item["source_refs"]])
     if not source_refs:
@@ -514,7 +514,12 @@ def _lifecycle_tier(primary_label: str, labels: list[str]) -> str:
         return "needs_review"
     if primary_label == "insufficient_data" or "insufficient_data" in labels:
         return "insufficient_context"
-    if primary_label in {"ma20_pullback_supported", "disciplined_scale_out", "coherent_position_management"}:
+    if primary_label in {
+        "ma20_pullback_supported",
+        "risk_reduction_exit",
+        "disciplined_scale_out",
+        "coherent_position_management",
+    }:
         return "constructive"
     return "mixed"
 
@@ -557,7 +562,11 @@ def _event_evidence_item(event: dict[str, Any], snapshot: dict[str, Any] | None)
     )
 
 
-def _next_operation_rules(labels: list[str], decision_context_insufficient: bool) -> list[dict[str, Any]]:
+def _next_operation_rules(
+    labels: list[str],
+    decision_context_insufficient: bool,
+) -> list[dict[str, Any]]:
+    primary_label = _primary_lifecycle_label(labels)
     rules: list[dict[str, Any]] = []
     if "add_entry_plan_violation" in labels:
         rules.append(_text_item(
@@ -595,10 +604,44 @@ def _next_operation_rules(labels: list[str], decision_context_insufficient: bool
             ["decision_context.status"],
         ))
     if not rules:
-        rules.append(_text_item(
-            "未命中既定模式時，不額外推定做對或做錯；下次仍應記錄可核對的部位調整與最終出場觸發條件。",
-            ["entry_sequence", "exit_sequence", "decision_context"],
-        ))
+        constructive_source_refs = {
+            "ma20_pullback_supported": [
+                "event_facts.reason_code",
+                "event_indicator_snapshots.event_price_vs_ma20_pct",
+            ],
+            "disciplined_scale_out": [
+                "exit_sequence.partial_exit_count",
+                "exit_sequence.profit_protected_by_partial_exits",
+            ],
+            "risk_reduction_exit": [
+                "exit_sequence.percentage_sold_after_breakdown",
+                "exit_sequence.final_exit_return_pct",
+            ],
+            "coherent_position_management": [
+                "advanced_internal.plan_adherence_score",
+                "lifecycle_metrics.total_realized_pnl",
+            ],
+        }.get(primary_label)
+        if constructive_source_refs is not None:
+            rules.append(_text_item(
+                "本次已辨識出可追溯的正向部位管理模式；下次可繼續保留相同類型的觸發條件與執行紀錄，供後續檢討核對。",
+                constructive_source_refs,
+            ))
+        elif primary_label == "unclassified":
+            rules.append(_text_item(
+                "未命中既定模式時，不額外推定做對或做錯；下次仍應記錄可核對的部位調整與最終出場觸發條件。",
+                ["entry_sequence", "exit_sequence", "decision_context"],
+            ))
+        elif primary_label == "insufficient_data":
+            rules.append(_text_item(
+                "本次仍有事件、ledger 或市場證據缺口；下次先補齊資料品質提示中的缺失，再判讀部位管理模式。",
+                ["data_quality.insufficient_data"],
+            ))
+        else:
+            rules.append(_text_item(
+                "下次仍應記錄可核對的部位調整與最終出場觸發條件，供後續檢討核對。",
+                ["entry_sequence", "exit_sequence", "decision_context"],
+            ))
     return rules
 
 
