@@ -1,4 +1,4 @@
 interface:
   display_name: "Daily Radar AI Research"
-  short_description: "使用正式唯讀資料產出每日盤前 AI 雷達、持股互動與風險研究報告"
-  default_prompt: "Use $daily-radar-ai-research to run or backfill today’s premarket AI radar report."
+  short_description: "從正式唯讀完整原始資料池建立每日 AI 候選與持股互動報告"
+  default_prompt: "Use $daily-radar-ai-research to build or backfill today’s AI candidate list from every final raw row for the source date."
