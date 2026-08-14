@@ -55,6 +55,7 @@ Do not require every optional lane. State `資料缺失` when a reliable dated v
 - Start from every exported `raw_universe` row. Never use array order as priority.
 - Treat `raw_pool.symbol_count` as date-scoped ingestion coverage, not a fixed target or cumulative historical count. It may increase when more final raw rows are ingested for future source dates.
 - Do not equate `raw_data_is_final` with analytical completeness. Report how many rows lack essential evidence and keep those rows out of the shortlist until the required raw fields are available.
+- Prefer `raw_pool.analytical_completeness` as the export-time lane audit for technical, price history, institutional, margin, fundamental, and AVWAP evidence. AVWAP is reported as optional context and is not part of aggregate eligibility; missing required lanes still exclude a row. Recheck the actual row before shortlisting; the summary is a completeness aid, never a rank, prefilter, or candidate source.
 - Check finality, dates, missing values, liquidity, and stale contexts before interpreting positive evidence.
 - Select and rank only from raw values. Do not reconstruct or imitate the canonical Daily Radar score.
 - Build the independent shortlist before reading portfolio and watchlist interaction.

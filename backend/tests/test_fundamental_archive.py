@@ -372,6 +372,44 @@ def test_finmind_statement_rows_remain_discrete_quarter_eps() -> None:
         engine.dispose()
 
 
+def test_official_cached_fundamental_fetch_as_of_excludes_future_observations() -> None:
+    session, engine = _db_session()
+    try:
+        periods = normalize_finmind_statement_rows(
+            [
+                {"date": "2025-03-31", "type": "EPS", "value": "2"},
+                {"date": "2025-06-30", "type": "EPS", "value": "3"},
+                {"date": "2025-09-30", "type": "EPS", "value": "4"},
+                {"date": "2025-12-31", "type": "EPS", "value": "5"},
+            ],
+            symbol="2330.TW",
+        )
+        store_fundamental_periods(session, periods)
+        future_observed_at = datetime(2026, 8, 14, tzinfo=timezone.utc)
+        for row in session.scalars(select(CompanyFundamentalPeriod)).all():
+            row.first_observed_at = future_observed_at
+            row.last_observed_at = future_observed_at
+        session.flush()
+        provider = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        )
+
+        current = provider.fetch("2330.TW", 140)
+        historical = provider.fetch_as_of(
+            "2330.TW",
+            140,
+            as_of_date=date(2026, 8, 13),
+        )
+
+        assert current.ttm_eps == 14
+        assert historical.ttm_eps is None
+        assert historical.pe_current is None
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_observed_official_period_wins_over_later_finmind_bootstrap() -> None:
     session, engine = _db_session()
     try:

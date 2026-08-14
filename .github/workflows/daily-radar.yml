@@ -15,6 +15,7 @@ on:
           - refresh-lending
           - refresh-full-margin
           - refresh-ohlcv
+          - refresh-ai-evidence
           - refresh-market-context
           - run-forward-validation
           - run-scoring
@@ -49,6 +50,8 @@ on:
     - cron: "30 13 * * 1-5"
     # 台灣時間週一至週五 22:30，刷新 selected-symbol OHLCV。
     - cron: "30 14 * * 1-5"
+    # 台灣時間週一至週五 23:00，補齊完整 AI raw pool 的獨立分析證據。
+    - cron: "0 15 * * 1-5"
     # 台灣時間週一至週五 23:30，刷新 market context。
     - cron: "30 15 * * 1-5"
     # 台灣時間週一至週五 23:50，評估已成熟的 5 / 10 / 20 交易日窗口。
@@ -384,6 +387,51 @@ jobs:
             "symbol_count: \(.symbol_count // "n/a")",
             "records_written: \(.records_written // "n/a")",
             "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+            exit 1
+          fi
+
+  refresh-ai-evidence:
+    name: Refresh complete Daily Radar AI evidence
+    runs-on: ubuntu-latest
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ai-evidence'))
+    steps:
+      - name: Trigger refresh-ai-evidence
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-ai-evidence
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
+          response_file="$(mktemp)"
+          run_date="${DAILY_RADAR_RUN_DATE}"
+          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+          echo "Daily Radar refresh-ai-evidence run_date: ${run_date}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "selected_symbol_count: \(.selected_symbol_count // "n/a")",
+            "technical_missing: \(.missing_by_lane.technical | length)",
+            "institutional_missing: \(.missing_by_lane.institutional | length)",
+            "margin_missing: \(.missing_by_lane.margin | length)",
+            "fundamental_missing: \(.missing_by_lane.fundamental | length)",
+            "errors_count: \(.errors | length)"
           ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1

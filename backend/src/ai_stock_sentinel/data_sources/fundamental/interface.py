@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Protocol, runtime_checkable
 
 
@@ -42,4 +43,16 @@ class FundamentalProvider(Protocol):
         Raises:
             FundamentalError: 無法取得資料
         """
+        ...
+
+
+@runtime_checkable
+class PointInTimeFundamentalProvider(FundamentalProvider, Protocol):
+    def fetch_as_of(
+        self,
+        symbol: str,
+        current_price: float,
+        *,
+        as_of_date: date,
+    ) -> FundamentalData:
         ...

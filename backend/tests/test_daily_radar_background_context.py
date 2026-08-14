@@ -1074,6 +1074,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert 'cron: "0 12 * * 1-5"' in text  # 20:00 TWT lending
     assert 'cron: "30 13 * * 1-5"' in text  # 21:30 TWT full margin
     assert 'cron: "30 14 * * 1-5"' in text  # 22:30 TWT OHLCV
+    assert 'cron: "0 15 * * 1-5"' in text  # 23:00 TWT complete AI evidence
     assert 'cron: "30 15 * * 1-5"' in text  # 23:30 TWT market context
     assert 'cron: "50 15 * * 1-5"' in text  # 23:50 TWT forward validation
     assert 'cron: "30 16 * * 1-5"' in text  # 00:30 TWT next day scoring
@@ -1085,14 +1086,14 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "resolve_daily_radar_run_date.py" in text
     assert "/internal/daily-radar/market-session" in text
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 10
+    assert text.count("needs: resolve-run-context") == 11
     assert "/internal/daily-radar/refresh-market-bars" in text
     assert "market_bar_start_date" in text
     assert "market_bar_end_date" in text
-    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 10
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 11
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 10
+        == 11
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text
@@ -1107,6 +1108,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "/internal/daily-radar/refresh-lending" in text
     assert "/internal/daily-radar/refresh-full-margin" in text
     assert "/internal/daily-radar/refresh-ohlcv" in text
+    assert "/internal/daily-radar/refresh-ai-evidence" in text
     assert "/internal/daily-radar/refresh-market-context" in text
     assert "/internal/daily-radar/forward-validation/run" in text
     assert "/internal/daily-radar/run-scoring" in text
@@ -1123,3 +1125,12 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
 
     repair_job = text.split("  repair-avwap-and-rescore:", 1)[1]
     assert repair_job.index('if [[ ! "$refresh_http_status"') < repair_job.index("jq -r '")
+
+
+def test_daily_radar_workflow_schedules_independent_full_ai_evidence_refresh() -> None:
+    workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
+    text = workflow.read_text(encoding="utf-8")
+
+    assert "- refresh-ai-evidence" in text
+    assert 'cron: "0 15 * * 1-5"' in text
+    assert "/internal/daily-radar/refresh-ai-evidence" in text

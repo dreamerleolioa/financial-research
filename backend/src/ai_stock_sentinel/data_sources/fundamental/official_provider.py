@@ -40,11 +40,39 @@ class OfficialCachedFundamentalProvider:
         self._provider_mode = provider_mode
 
     def fetch(self, symbol: str, current_price: float) -> FundamentalData:
+        return self._fetch(symbol, current_price, as_of_date=None)
+
+    def fetch_as_of(
+        self,
+        symbol: str,
+        current_price: float,
+        *,
+        as_of_date: date,
+    ) -> FundamentalData:
+        return self._fetch(symbol, current_price, as_of_date=as_of_date)
+
+    def _fetch(
+        self,
+        symbol: str,
+        current_price: float,
+        *,
+        as_of_date: date | None,
+    ) -> FundamentalData:
         normalized_symbol = symbol.strip().upper()
         warnings: list[str] = []
-        periods = load_latest_fundamental_periods(self._session, symbol=normalized_symbol)
-        dividends = load_latest_dividend_events(self._session, symbol=normalized_symbol)
+        periods = load_latest_fundamental_periods(
+            self._session,
+            symbol=normalized_symbol,
+            as_of_date=as_of_date,
+        )
+        dividends = load_latest_dividend_events(
+            self._session,
+            symbol=normalized_symbol,
+            as_of_date=as_of_date,
+        )
         if self._provider_mode == "official_cache_first":
+            if as_of_date is not None:
+                raise ValueError("point-in-time fundamental reads cannot bootstrap future history")
             periods, dividends = self._bootstrap_missing_history(
                 normalized_symbol,
                 periods=periods,

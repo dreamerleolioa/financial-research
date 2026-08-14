@@ -256,6 +256,7 @@ def export_daily_radar(
             "record_date": source_run["run_date"],
             "selection": "all_final_supported_tw_stock_raw_rows_for_source_date",
             "symbol_count": len(raw_universe),
+            "analytical_completeness": _analytical_completeness(raw_universe),
         },
         "raw_universe": raw_universe,
         "portfolio": {"active_positions": positions},
@@ -543,6 +544,73 @@ def _project_avwap_context(context: Mapping[str, Any] | None) -> dict[str, Any] 
             for name, anchor in sorted(anchors.items())
         },
         "data_quality": payload.get("data_quality"),
+    }
+
+
+def _analytical_completeness(raw_universe: list[dict[str, Any]]) -> dict[str, Any]:
+    missing_by_lane: dict[str, list[str]] = {
+        "technical": [],
+        "price_history": [],
+        "institutional": [],
+        "margin": [],
+        "fundamental": [],
+        "avwap": [],
+    }
+    for row in raw_universe:
+        symbol = str(row.get("symbol") or "")
+        ohlcv = _mapping(row.get("ohlcv"))
+        indicators = _mapping(row.get("indicators"))
+        institutional = _mapping(row.get("institutional"))
+        fundamental = _mapping(row.get("fundamental"))
+        margin = _mapping(fundamental.get("margin"))
+        price_history = _mapping(row.get("price_history"))
+        avwap = _mapping(row.get("avwap_context"))
+        anchors = _mapping(avwap.get("anchors"))
+        if not all(
+            _finite_number(ohlcv.get(field))
+            for field in ("open", "high", "low", "close", "previous_close", "volume", "avg_volume_20")
+        ) or not all(
+            _finite_number(indicators.get(field))
+            for field in ("ma20", "atr14", "volume_ratio", "obv")
+        ):
+            missing_by_lane["technical"].append(symbol)
+        if int(price_history.get("point_count") or 0) < 21:
+            missing_by_lane["price_history"].append(symbol)
+        if not all(
+            _finite_number(institutional.get(field))
+            for field in ("foreign_net_shares", "investment_trust_net_shares", "three_party_net_shares")
+        ) or str(
+            _mapping(_mapping(row.get("data_dates")).get("institutional")).get("institutional_flow") or ""
+        ) != str(row.get("record_date") or ""):
+            missing_by_lane["institutional"].append(symbol)
+        if not all(
+            _finite_number(margin.get(field))
+            for field in ("margin_delta_pct", "margin_to_volume")
+        ):
+            missing_by_lane["margin"].append(symbol)
+        if not _finite_number(fundamental.get("ttm_eps")) or str(
+            _mapping(_mapping(row.get("data_dates")).get("fundamental")).get("fundamental") or ""
+        ) != str(row.get("record_date") or ""):
+            missing_by_lane["fundamental"].append(symbol)
+        if not any(bool(_mapping(anchor).get("available")) for anchor in anchors.values()):
+            missing_by_lane["avwap"].append(symbol)
+    eligibility_required_lanes = ("technical", "price_history", "institutional", "margin", "fundamental")
+    missing_symbols = sorted(
+        {
+            symbol
+            for lane in eligibility_required_lanes
+            for symbol in missing_by_lane[lane]
+        }
+    )
+    return {
+        "semantics": "analysis_evidence_audit_not_persistence_finality",
+        "eligibility_required_lanes": list(eligibility_required_lanes),
+        "eligible_symbol_count": len(raw_universe) - len(missing_symbols),
+        "missing_any_symbol_count": len(missing_symbols),
+        "lanes": {
+            lane: {"missing_symbol_count": len(symbols), "missing_symbols": symbols}
+            for lane, symbols in missing_by_lane.items()
+        },
     }
 
 

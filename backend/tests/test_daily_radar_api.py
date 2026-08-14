@@ -17,6 +17,7 @@ from sqlalchemy.pool import StaticPool
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
+from ai_stock_sentinel.daily_radar.institutional_evidence import InstitutionalEvidenceResult
 from ai_stock_sentinel.daily_radar.market_session import MarketSessionProviderError, MarketSessionResult
 from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -34,6 +35,7 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
+from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalData
 
 
 @compiles(JSONB, "sqlite")
@@ -240,6 +242,76 @@ class FakeBackgroundChipContextProvider:
         ]
 
 
+class FakeInstitutionalEvidenceProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], date]] = []
+
+    def fetch(self, symbols: list[str], *, run_date: date) -> InstitutionalEvidenceResult:
+        self.calls.append((list(symbols), run_date))
+        payloads: dict[str, dict[str, Any]] = {}
+        for symbol in symbols:
+            flat = {
+                "foreign_net_shares": 1000.0,
+                "investment_trust_net_shares": 200.0,
+                "three_party_net_shares": 1300.0,
+                "consecutive_positive_days": 2,
+                "flow_state": "consistent_accumulation",
+                "data_dates": {"institutional_flow": run_date.isoformat()},
+                "source_provider": "official_fixture",
+            }
+            payloads[symbol] = flat | {"institutional_flow": dict(flat)}
+        return InstitutionalEvidenceResult(payloads_by_symbol=payloads)
+
+
+class FakeFundamentalProvider:
+    name = "FakeFundamentalProvider"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, float]] = []
+
+    def fetch(self, symbol: str, current_price: float) -> FundamentalData:
+        self.calls.append((symbol, current_price))
+        return FundamentalData(
+            symbol=symbol,
+            ttm_eps=10.0,
+            pe_current=current_price / 10.0,
+            pe_mean=15.0,
+            pe_std=2.0,
+            pe_band="fair",
+            pe_percentile=55.0,
+            annual_cash_dividend=4.0,
+            dividend_yield=4.0,
+            yield_signal="mid_yield",
+            source_provider="official_fixture",
+        )
+
+    def fetch_as_of(
+        self,
+        symbol: str,
+        current_price: float,
+        *,
+        as_of_date: date,
+    ) -> FundamentalData:
+        assert as_of_date == date(2026, 6, 1)
+        return self.fetch(symbol, current_price)
+
+
+class MissingPointInTimeFundamentalProvider(FakeFundamentalProvider):
+    def fetch_as_of(
+        self,
+        symbol: str,
+        current_price: float,
+        *,
+        as_of_date: date,
+    ) -> FundamentalData:
+        self.calls.append((symbol, current_price))
+        return FundamentalData(
+            symbol=symbol,
+            source_provider="official_fixture",
+            warnings=[f"missing as of {as_of_date.isoformat()}"],
+        )
+
+
 class RaisingBackgroundChipContextProvider:
     def fetch(
         self,
@@ -283,6 +355,8 @@ def _clear_daily_radar_api_overrides() -> None:
         daily_radar_router.get_daily_radar_market_context_provider,
         daily_radar_router.get_daily_radar_market_session_provider,
         daily_radar_router.get_daily_radar_background_chip_context_provider,
+        daily_radar_router.get_daily_radar_institutional_evidence_provider,
+        daily_radar_router.get_daily_radar_fundamental_provider,
         daily_radar_router.get_phase1_avwap_daily_price_provider,
         get_daily_radar_symbol_name_resolver,
     ):
@@ -299,7 +373,14 @@ def _api_client(
     market_context_provider: FakeMarketIndexContextProvider | None = None,
     market_session_provider: FakeMarketSessionProvider | RaisingMarketSessionProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
-    phase1_avwap_provider: FakePhase1AvwapDailyPriceProvider | RaisingPhase1AvwapDailyPriceProvider | MissingPhase1AvwapDailyPriceProvider | None = None,
+    institutional_evidence_provider: FakeInstitutionalEvidenceProvider | None = None,
+    fundamental_provider: FakeFundamentalProvider | None = None,
+    phase1_avwap_provider: (
+        FakePhase1AvwapDailyPriceProvider
+        | RaisingPhase1AvwapDailyPriceProvider
+        | MissingPhase1AvwapDailyPriceProvider
+        | None
+    ) = None,
     raise_server_exceptions: bool = True,
     run_error: Exception | None = None,
 ) -> TestClient:
@@ -312,6 +393,8 @@ def _api_client(
     context_provider = market_context_provider or FakeMarketIndexContextProvider()
     session_provider = market_session_provider or FakeMarketSessionProvider()
     chip_context_provider = background_context_provider or FakeBackgroundChipContextProvider()
+    institutional_provider = institutional_evidence_provider or FakeInstitutionalEvidenceProvider()
+    business_provider = fundamental_provider or FakeFundamentalProvider()
     phase1_provider = phase1_avwap_provider or FakePhase1AvwapDailyPriceProvider()
 
     def fake_run_daily_radar(run_date: date, market: str, **kwargs: Any) -> SimpleNamespace:
@@ -329,7 +412,13 @@ def _api_client(
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_context_provider] = lambda: context_provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_session_provider] = lambda: session_provider
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: chip_context_provider
+    api.app.dependency_overrides[
+        daily_radar_router.get_daily_radar_background_chip_context_provider
+    ] = lambda: chip_context_provider
+    api.app.dependency_overrides[
+        daily_radar_router.get_daily_radar_institutional_evidence_provider
+    ] = lambda: institutional_provider
+    api.app.dependency_overrides[daily_radar_router.get_daily_radar_fundamental_provider] = lambda: business_provider
     api.app.dependency_overrides[daily_radar_router.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
@@ -338,6 +427,8 @@ def _api_client(
     client.fake_market_context_provider = context_provider  # type: ignore[attr-defined]
     client.fake_market_session_provider = session_provider  # type: ignore[attr-defined]
     client.fake_background_context_provider = chip_context_provider  # type: ignore[attr-defined]
+    client.fake_institutional_evidence_provider = institutional_provider  # type: ignore[attr-defined]
+    client.fake_fundamental_provider = business_provider  # type: ignore[attr-defined]
     client.fake_phase1_avwap_provider = phase1_provider  # type: ignore[attr-defined]
     return client
 
@@ -1144,6 +1235,133 @@ def test_daily_radar_refresh_ohlcv_preserves_margin_without_fresh_full_margin_co
     assert row.fundamental == {
         "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
         "data_dates": {"margin": run_date.isoformat()},
+    }
+
+
+def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing_scoring_membership(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[
+            {
+                "symbol": "2330.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "same_day_rank": 1,
+                "same_day_score": 91.0,
+                "track_metrics": {
+                    "same_day_institutional": {
+                        "actor": "foreign",
+                        "net_buy": 5000.0,
+                        "source_dates": [run_date.isoformat()],
+                    }
+                },
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        technical=_technical_payload("2330.TW", run_date),
+    )
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2454.TW",
+        record_date=run_date,
+        technical={"name": "2454 fixture", "ohlcv": {}, "indicators": {}},
+    )
+    for symbol in ("2330.TW", "2454.TW"):
+        upsert_shared_background_context(
+            daily_radar_db_session,
+            symbol=symbol,
+            context_type="full_margin",
+            applicable_consumers=("daily_radar",),
+            source={"domain": "background_context", "provider": "fixture_provider"},
+            as_of_date=run_date,
+            freshness="fresh",
+            payload={
+                "latest_margin_balance": 1200,
+                "margin_balance_delta_pct": 2.0,
+            },
+            replay_key=f"background_context:{symbol}:full_margin:{run_date.isoformat()}",
+        )
+    daily_radar_db_session.commit()
+    fetcher = FakeBatchTechnicalFetcher()
+    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ai-evidence",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["symbol_count"] == 2
+    assert body["selected_symbol_count"] == 1
+    assert body["missing_by_lane"] == {
+        "technical": [],
+        "institutional": [],
+        "margin": [],
+        "fundamental": [],
+    }
+    assert fetcher.calls == [(["2454.TW"], run_date)]
+    rows = {
+        row.symbol: row
+        for row in daily_radar_db_session.query(StockRawData).filter_by(record_date=run_date).all()
+    }
+    assert rows["2454.TW"].technical["indicators"]["obv"] == 12_000_000
+    assert rows["2454.TW"].institutional["source_provider"] == "official_fixture"
+    assert rows["2454.TW"].fundamental["ttm_eps"] == 10.0
+    assert rows["2454.TW"].fundamental["margin"]["margin_delta_pct"] == 2.0
+    assert rows["2330.TW"].institutional["source_provider"] == "daily_radar_universe"
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.selected_symbols == ["2330.TW"]
+    assert "refresh-ai-evidence" not in daily_radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS
+
+
+def test_ai_fundamental_materialization_clears_future_values_for_historical_as_of() -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    row = SimpleNamespace(
+        symbol="2454.TW",
+        technical={"ohlcv": {"close": 100.0}},
+        fundamental={
+            "ttm_eps": 99.0,
+            "pe_current": 1.0,
+            "margin": {"margin_delta_pct": 2.0, "margin_to_volume": 0.3},
+            "data_dates": {"margin": "2026-06-01", "fundamental": "2026-06-02"},
+        },
+    )
+
+    errors = daily_radar_router._materialize_ai_business_fundamentals(
+        [row],
+        provider=MissingPointInTimeFundamentalProvider(),
+        as_of_date=date(2026, 6, 1),
+    )
+
+    assert errors == []
+    assert row.fundamental["ttm_eps"] is None
+    assert row.fundamental["pe_current"] is None
+    assert row.fundamental["margin"] == {"margin_delta_pct": 2.0, "margin_to_volume": 0.3}
+    assert row.fundamental["data_dates"] == {
+        "margin": "2026-06-01",
+        "fundamental": "2026-06-01",
     }
 
 

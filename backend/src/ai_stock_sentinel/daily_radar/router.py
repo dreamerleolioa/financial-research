@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Iterable
 from contextlib import suppress
@@ -10,7 +11,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.clock import today_taipei
+from ai_stock_sentinel.data_sources.fundamental.interface import PointInTimeFundamentalProvider
+from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
+from ai_stock_sentinel.daily_radar.data_quality import missing_daily_radar_candidate_technical_fields
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
+from ai_stock_sentinel.daily_radar.institutional_evidence import (
+    InstitutionalEvidenceProvider,
+    OfficialInstitutionalEvidenceProvider,
+)
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
     YFinanceMarketIndexContextProvider,
@@ -36,6 +45,7 @@ from ai_stock_sentinel.daily_radar.market_bar_provider import OfficialTaiwanMark
 from ai_stock_sentinel.daily_radar.market_bar_service import refresh_taiwan_market_bars
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
+    BackgroundContextPayload,
     BackgroundChipContextProvider,
     update_background_chip_context_cache,
 )
@@ -70,6 +80,7 @@ from ai_stock_sentinel.daily_radar.repository import (
     get_final_raw_data_rows_for_date,
     get_final_raw_data_rows_for_symbols,
     get_latest_daily_radar_run,
+    get_shared_background_context_rows,
     get_shared_background_context_trace_by_symbol,
     get_symbol_candidate_history,
     update_daily_radar_prepared_market_context,
@@ -113,7 +124,6 @@ from ai_stock_sentinel.daily_radar.universe import (
     select_daily_radar_universe,
 )
 from ai_stock_sentinel.db.session import get_db
-from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.phase1_avwap.provider import ArchiveFirstDailyPriceProvider, TwseDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import DailyPriceProvider, refresh_phase1_avwap_snapshots_for_symbols
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbol_set
@@ -155,6 +165,16 @@ def get_daily_radar_market_session_provider() -> MarketSessionProvider:
 
 def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextProvider:
     return DefaultBackgroundChipContextProvider()
+
+
+def get_daily_radar_institutional_evidence_provider() -> InstitutionalEvidenceProvider:
+    return OfficialInstitutionalEvidenceProvider()
+
+
+def get_daily_radar_fundamental_provider(
+    db: Session = Depends(get_db),
+) -> PointInTimeFundamentalProvider:
+    return OfficialCachedFundamentalProvider(db, provider_mode="official_cache_only")
 
 
 def get_phase1_avwap_daily_price_provider(
@@ -518,6 +538,166 @@ def refresh_daily_radar_ohlcv_endpoint(
         missing_symbols=missing_symbols,
         skipped_symbols=list(skipped_symbol_reasons),
         skipped_symbol_reasons=skipped_symbol_reasons,
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-ai-evidence",
+    response_model=DailyRadarRefreshStepResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_ai_evidence_endpoint(
+    payload: DailyRadarRefreshStepRequest | None = None,
+    db: Session = Depends(get_db),
+    technical_fetcher: BatchTechnicalFetcher = Depends(get_daily_radar_technical_fetcher),
+    institutional_provider: InstitutionalEvidenceProvider = Depends(
+        get_daily_radar_institutional_evidence_provider
+    ),
+    fundamental_provider: PointInTimeFundamentalProvider = Depends(
+        get_daily_radar_fundamental_provider
+    ),
+    background_provider: BackgroundChipContextProvider = Depends(
+        get_daily_radar_background_chip_context_provider
+    ),
+) -> DailyRadarRefreshStepResponse:
+    """Materialize evidence for the complete AI raw pool without changing scoring membership."""
+
+    request = payload or DailyRadarRefreshStepRequest()
+    run_date = request.run_date or _backend_today()
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    pool_rows = [
+        row
+        for row in get_final_raw_data_rows_for_date(db, run_date=run_date)
+        if is_daily_radar_supported_symbol(row.symbol)
+    ]
+    symbols = [row.symbol for row in pool_rows]
+    if not symbols:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "daily_radar_ai_raw_pool_empty", "run_date": run_date.isoformat()},
+        )
+
+    selected_symbols = set(prepared.selected_symbols or [])
+    canonical_payloads = _institutional_payloads_by_symbol(
+        _prepared_universe_entries(prepared.universe),
+        run_date=run_date,
+    )
+    reusable_symbols = {row.symbol for row in reusable_daily_radar_raw_rows(pool_rows)}
+    missing_technical_symbols = [symbol for symbol in symbols if symbol not in reusable_symbols]
+    fresh_background_pairs = {
+        (row.symbol, row.context_type)
+        for row in get_shared_background_context_rows(
+            db,
+            symbols=symbols,
+            context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+            reference_date=run_date,
+            point_in_time=True,
+        )
+        if row.as_of_date == run_date and row.freshness == "fresh"
+    }
+    # Do not hold a database transaction open while external providers run.
+    db.rollback()
+    evidence_result = institutional_provider.fetch(symbols, run_date=run_date)
+    technical_payloads = technical_fetcher.fetch(missing_technical_symbols, run_date=run_date)
+    background_payloads, background_fetch_errors = _prefetch_ai_background_evidence(
+        background_provider,
+        symbols=symbols,
+        context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+        fresh_pairs=fresh_background_pairs,
+        run_date=run_date,
+        market=request.market,
+    )
+    institutional_payloads = {
+        symbol: dict(evidence_result.payloads_by_symbol[symbol])
+        for symbol in symbols
+        if symbol in evidence_result.payloads_by_symbol
+    }
+    # Canonical selected-universe evidence remains owned by prepare-universe.
+    for symbol, canonical in canonical_payloads.items():
+        institutional_payloads[symbol] = _merge_institutional_evidence(
+            institutional_payloads.get(symbol),
+            canonical,
+        )
+
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    pool_rows = [
+        row
+        for row in get_final_raw_data_rows_for_date(db, run_date=run_date)
+        if is_daily_radar_supported_symbol(row.symbol)
+    ]
+
+    background_result = update_background_chip_context_cache(
+        db,
+        run_date=run_date,
+        market=request.market,
+        provider=_PreparedBackgroundContextProvider(background_payloads),
+        symbols=symbols,
+        context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+        reuse_same_day_fresh=True,
+    )
+    rows = ensure_daily_radar_raw_rows(
+        db,
+        run_date,
+        symbols,
+        technical_fetcher=_PreparedBatchTechnicalFetcher(technical_payloads),
+        institutional_payloads_by_symbol=institutional_payloads,
+        margin_contexts_by_symbol=_full_margin_contexts_by_symbol(
+            db,
+            symbols=symbols,
+            run_date=run_date,
+        ),
+    )
+    _add_institutional_volume_ratios(rows, selected_symbols=selected_symbols)
+    fundamental_errors = _materialize_ai_business_fundamentals(
+        pool_rows,
+        provider=fundamental_provider,
+        as_of_date=run_date,
+    )
+    db.flush()
+    refreshed_rows = [
+        row
+        for row in get_final_raw_data_rows_for_date(db, run_date=run_date)
+        if is_daily_radar_supported_symbol(row.symbol)
+    ]
+    missing_by_lane = _ai_evidence_missing_by_lane(refreshed_rows)
+    errors = (
+        list(evidence_result.errors)
+        + background_fetch_errors
+        + list(background_result["errors"])
+        + fundamental_errors
+    )
+    status = "failed" if errors else "completed"
+    details = {
+        "symbol_count": len(symbols),
+        "selected_symbol_count": len(selected_symbols.intersection(symbols)),
+        "records_written": len(rows),
+        "missing_by_lane": missing_by_lane,
+        "provider_counts": {
+            "institutional": len(evidence_result.payloads_by_symbol),
+            "fundamental": len(refreshed_rows) - len(missing_by_lane["fundamental"]),
+            "background_context": int(background_result["records_written"]),
+        },
+        "errors": errors,
+    }
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="refresh-ai-evidence",
+        status=status,
+        details=details,
+    )
+    db.commit()
+    return DailyRadarRefreshStepResponse(
+        status=status,
+        step="refresh-ai-evidence",
+        run_date=run_date,
+        market=request.market,
+        symbol_count=len(symbols),
+        selected_symbol_count=len(selected_symbols.intersection(symbols)),
+        records_written=len(rows),
+        missing_by_lane=missing_by_lane,
+        provider_counts=details["provider_counts"],
+        errors=errors,
     )
 
 
@@ -1142,6 +1322,204 @@ def _full_margin_contexts_by_symbol(
         symbol: dict(contexts[0]) if contexts else {}
         for symbol, contexts in traces.items()
     }
+
+
+def _add_institutional_volume_ratios(
+    rows: Iterable[Any],
+    *,
+    selected_symbols: set[str],
+) -> None:
+    for row in rows:
+        if row.symbol in selected_symbols:
+            continue
+        institutional = dict(_mapping(row.institutional))
+        flow = dict(_mapping(institutional.get("institutional_flow")))
+        avg_volume = _mapping(row.technical).get("ohlcv", {}).get("avg_volume_20")
+        net_flow = flow.get("three_party_net_shares")
+        if _finite_number(avg_volume) and float(avg_volume) > 0 and _finite_number(net_flow):
+            ratio = float(net_flow) / float(avg_volume)
+            institutional["net_flow_to_avg_volume"] = ratio
+            flow["net_flow_to_avg_volume"] = ratio
+            institutional["institutional_flow"] = flow
+            row.institutional = institutional
+
+
+def _merge_institutional_evidence(
+    official: Mapping[str, Any] | None,
+    canonical: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = dict(_mapping(official))
+    merged.update({key: value for key, value in canonical.items() if key != "institutional_flow"})
+    flow = dict(_mapping(official).get("institutional_flow"))
+    flow.update(_mapping(canonical.get("institutional_flow")))
+    merged["institutional_flow"] = flow
+    return merged
+
+
+class _PreparedBatchTechnicalFetcher:
+    def __init__(self, payloads: Mapping[str, Mapping[str, Any]]) -> None:
+        self._payloads = payloads
+
+    def fetch(
+        self,
+        symbols: Iterable[str],
+        *,
+        run_date: date,
+    ) -> Mapping[str, Mapping[str, Any]]:
+        del run_date
+        return {
+            symbol: self._payloads[symbol]
+            for symbol in symbols
+            if symbol in self._payloads
+        }
+
+
+class _PreparedBackgroundContextProvider:
+    def __init__(self, payloads: Iterable[BackgroundContextPayload]) -> None:
+        self._payloads = list(payloads)
+
+    def fetch(
+        self,
+        *,
+        symbols: list[str],
+        context_types: list[str],
+        run_date: date,
+        market: str,
+    ) -> Iterable[BackgroundContextPayload]:
+        del run_date, market
+        symbol_set = set(symbols)
+        context_type_set = set(context_types)
+        return [
+            payload
+            for payload in self._payloads
+            if payload.symbol in symbol_set and payload.context_type in context_type_set
+        ]
+
+
+def _prefetch_ai_background_evidence(
+    provider: BackgroundChipContextProvider,
+    *,
+    symbols: list[str],
+    context_types: Iterable[str],
+    fresh_pairs: set[tuple[str, str]],
+    run_date: date,
+    market: str,
+) -> tuple[list[BackgroundContextPayload], list[dict[str, Any]]]:
+    batches: dict[tuple[str, ...], list[str]] = {}
+    for context_type in context_types:
+        missing_symbols = tuple(
+            symbol
+            for symbol in symbols
+            if (symbol, context_type) not in fresh_pairs
+        )
+        if missing_symbols:
+            batches.setdefault(missing_symbols, []).append(context_type)
+
+    payloads: list[BackgroundContextPayload] = []
+    errors: list[dict[str, Any]] = []
+    for fetch_symbols, fetch_context_types in batches.items():
+        try:
+            payloads.extend(
+                provider.fetch(
+                    symbols=list(fetch_symbols),
+                    context_types=fetch_context_types,
+                    run_date=run_date,
+                    market=market,
+                )
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "code": "background_context_provider_failed",
+                    "message": str(exc),
+                    "error_type": exc.__class__.__name__,
+                }
+            )
+    return payloads, errors
+
+
+def _materialize_ai_business_fundamentals(
+    rows: Iterable[Any],
+    *,
+    provider: PointInTimeFundamentalProvider,
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for row in rows:
+        technical = _mapping(row.technical)
+        close = _mapping(technical.get("ohlcv")).get("close")
+        if not _finite_number(close) or float(close) <= 0:
+            continue
+        try:
+            data = provider.fetch_as_of(row.symbol, float(close), as_of_date=as_of_date)
+        except Exception as exc:
+            errors.append(
+                {
+                    "symbol": row.symbol,
+                    "lane": "fundamental",
+                    "error_type": exc.__class__.__name__,
+                }
+            )
+            continue
+        existing = dict(_mapping(row.fundamental))
+        projected = {
+            "ttm_eps": data.ttm_eps,
+            "annual_cash_dividend": data.annual_cash_dividend,
+            "dividend_yield": data.dividend_yield,
+            "pe_current": data.pe_current,
+            "pe_mean": data.pe_mean,
+            "pe_std": data.pe_std,
+            "pe_percentile": data.pe_percentile,
+            "pe_band": data.pe_band,
+            "yield_signal": data.yield_signal,
+            "source_provider": data.source_provider,
+            "warnings": list(data.warnings),
+        }
+        existing.update(projected)
+        data_dates = dict(_mapping(existing.get("data_dates")))
+        data_dates["fundamental"] = as_of_date.isoformat()
+        existing["data_dates"] = data_dates
+        row.fundamental = existing
+    return errors
+
+
+def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
+    missing: dict[str, list[str]] = {
+        "technical": [],
+        "institutional": [],
+        "margin": [],
+        "fundamental": [],
+    }
+    for row in rows:
+        technical = _mapping(row.technical)
+        institutional = _mapping(row.institutional)
+        flow = _mapping(institutional.get("institutional_flow")) or institutional
+        fundamental = _mapping(row.fundamental)
+        margin = _mapping(fundamental.get("margin"))
+        if missing_daily_radar_candidate_technical_fields(technical, record_date=row.record_date):
+            missing["technical"].append(row.symbol)
+        if not all(
+            _finite_number(flow.get(field))
+            for field in ("foreign_net_shares", "investment_trust_net_shares", "three_party_net_shares")
+        ):
+            missing["institutional"].append(row.symbol)
+        else:
+            institutional_date = _mapping(flow.get("data_dates")).get("institutional_flow")
+            if str(institutional_date or "") != row.record_date.isoformat():
+                missing["institutional"].append(row.symbol)
+        if not all(_finite_number(margin.get(field)) for field in ("margin_delta_pct", "margin_to_volume")):
+            missing["margin"].append(row.symbol)
+        if (
+            not _finite_number(fundamental.get("ttm_eps"))
+            or str(_mapping(fundamental.get("data_dates")).get("fundamental") or "")
+            != row.record_date.isoformat()
+        ):
+            missing["fundamental"].append(row.symbol)
+    return missing
+
+
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def _supported_daily_radar_symbols(symbols: Iterable[str]) -> tuple[list[str], dict[str, str]]:

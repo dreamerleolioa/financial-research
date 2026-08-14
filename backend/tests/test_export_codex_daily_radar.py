@@ -103,6 +103,43 @@ def test_project_price_history_builds_neutral_horizons() -> None:
     assert projected["horizons"]["60d"] is None
 
 
+def test_analytical_completeness_distinguishes_missing_evidence_from_finality() -> None:
+    complete = {
+        "symbol": "2330.TW",
+        "ohlcv": {
+            field: 1.0
+            for field in ("open", "high", "low", "close", "previous_close", "volume", "avg_volume_20")
+        },
+        "indicators": {field: 1.0 for field in ("ma20", "atr14", "volume_ratio", "obv")},
+        "price_history": {"point_count": 60},
+        "institutional": {
+            "foreign_net_shares": 1.0,
+            "investment_trust_net_shares": 1.0,
+            "three_party_net_shares": 1.0,
+        },
+        "data_dates": {
+            "institutional": {"institutional_flow": str(date.today())},
+            "fundamental": {"fundamental": str(date.today())},
+        },
+        "record_date": date.today(),
+        "fundamental": {
+            "ttm_eps": 10.0,
+            "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
+        },
+        "avwap_context": {"anchors": {"event": {"available": True}}},
+    }
+    incomplete = {"symbol": "2454.TW", "raw_data_is_final": True}
+
+    audit = exporter._analytical_completeness([complete, incomplete])
+
+    assert audit["semantics"] == "analysis_evidence_audit_not_persistence_finality"
+    assert audit["eligible_symbol_count"] == 1
+    assert "avwap" not in audit["eligibility_required_lanes"]
+    assert audit["missing_any_symbol_count"] == 1
+    assert audit["lanes"]["technical"]["missing_symbols"] == ["2454.TW"]
+    assert audit["lanes"]["fundamental"]["missing_symbols"] == ["2454.TW"]
+
+
 def test_secure_output_is_restricted_to_private_temp_file() -> None:
     target = Path(tempfile.gettempdir()) / f"codex-radar-test-{uuid4().hex}.json"
     try:
