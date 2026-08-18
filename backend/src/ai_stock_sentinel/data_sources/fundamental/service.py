@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import date
 import re
 from typing import Any
+import uuid
 
 import requests
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
@@ -19,12 +20,22 @@ from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_tpex_ex_dividend_payload,
     normalize_twse_dividend_rows,
 )
+from ai_stock_sentinel.data_sources.fundamental.official_provider import (
+    dividend_history_is_sufficient,
+    fundamental_period_history_is_sufficient,
+)
 from ai_stock_sentinel.data_sources.fundamental.repository import (
+    load_latest_dividend_events,
+    load_latest_dividend_events_for_symbols,
+    load_latest_fundamental_periods,
+    load_latest_fundamental_periods_for_symbols,
     store_dividend_events,
     store_fundamental_periods,
 )
 from ai_stock_sentinel.db.models import (
     DailyRadarPreparedRun,
+    FundamentalBackfillJob,
+    StockRawData,
     UserPortfolio,
     UserWatchlist,
 )
@@ -145,38 +156,99 @@ def backfill_fundamentals(
     errors: list[str] = []
     records_written = 0
     for symbol in selected:
-        try:
-            statement_rows = fallback.fetch_statement_rows(symbol)
-            with session.begin_nested():
-                dataset_records = store_fundamental_periods(
-                    session,
-                    normalize_finmind_statement_rows(statement_rows, symbol=symbol),
-                )
-            records_written += dataset_records
-        except Exception as exc:
-            errors.append(f"{symbol}: statement backfill failed: {exc}")
-        try:
-            dividend_rows = fallback.fetch_dividend_rows(symbol)
-            with session.begin_nested():
-                dataset_records = store_dividend_events(
-                    session,
-                    normalize_finmind_dividend_rows(dividend_rows, symbol=symbol),
-                )
-            records_written += dataset_records
-        except Exception as exc:
-            errors.append(f"{symbol}: dividend backfill failed: {exc}")
+        periods = load_latest_fundamental_periods(session, symbol=symbol)
+        if not fundamental_period_history_is_sufficient(periods):
+            try:
+                statement_rows = fallback.fetch_statement_rows(symbol)
+                with session.begin_nested():
+                    dataset_records = store_fundamental_periods(
+                        session,
+                        normalize_finmind_statement_rows(statement_rows, symbol=symbol),
+                    )
+                records_written += dataset_records
+            except Exception as exc:
+                errors.append(f"{symbol}: statement backfill failed: {exc}")
+        dividends = load_latest_dividend_events(session, symbol=symbol)
+        if not dividend_history_is_sufficient(dividends):
+            try:
+                dividend_rows = fallback.fetch_dividend_rows(symbol)
+                with session.begin_nested():
+                    dataset_records = store_dividend_events(
+                        session,
+                        normalize_finmind_dividend_rows(dividend_rows, symbol=symbol),
+                    )
+                records_written += dataset_records
+            except Exception as exc:
+                errors.append(f"{symbol}: dividend backfill failed: {exc}")
 
     has_more = len(normalized_symbols) > len(selected)
     return FundamentalBackfillResult(
         status="ok" if not errors else "partial",
         symbols_processed=selected,
         records_written=records_written,
-        next_after_symbol=selected[-1] if selected and has_more else None,
+        next_after_symbol=selected[-1] if selected and has_more and not errors else None,
         errors=errors,
     )
 
 
-def resolve_managed_fundamental_symbols(session: Session) -> list[str]:
+def resolve_latest_fundamental_raw_pool_date(session: Session) -> date | None:
+    prepared_runs = session.scalars(
+        select(DailyRadarPreparedRun).order_by(
+            DailyRadarPreparedRun.run_date.desc(),
+            DailyRadarPreparedRun.id.desc(),
+        )
+    ).all()
+    for prepared in prepared_runs:
+        ai_evidence = dict(prepared.step_statuses or {}).get("refresh-ai-evidence") or {}
+        if ai_evidence.get("status") == "completed":
+            return prepared.run_date
+    return None
+
+
+def fundamental_raw_pool_date_is_completed(
+    session: Session,
+    *,
+    record_date: date,
+) -> bool:
+    prepared_runs = session.scalars(
+        select(DailyRadarPreparedRun).where(
+            DailyRadarPreparedRun.run_date == record_date,
+        )
+    ).all()
+    return any(
+        (dict(prepared.step_statuses or {}).get("refresh-ai-evidence") or {}).get(
+            "status"
+        )
+        == "completed"
+        for prepared in prepared_runs
+    )
+
+
+def resolve_fundamental_raw_pool_symbols(
+    session: Session,
+    *,
+    record_date: date,
+) -> list[str]:
+    supported_raw_symbol = or_(
+        StockRawData.symbol.like("%.TW"),
+        StockRawData.symbol.like("%.TWO"),
+    )
+    return list(
+        session.scalars(
+            select(StockRawData.symbol).where(
+                StockRawData.record_date == record_date,
+                StockRawData.raw_data_is_final.is_(True),
+                supported_raw_symbol,
+            )
+        ).all()
+    )
+
+
+def resolve_managed_fundamental_symbols(
+    session: Session,
+    *,
+    raw_pool_date: date | None = None,
+) -> list[str]:
     symbols = set(
         session.scalars(
             select(UserPortfolio.symbol).where(UserPortfolio.is_active.is_(True))
@@ -191,11 +263,85 @@ def resolve_managed_fundamental_symbols(session: Session) -> list[str]:
     ).first()
     if prepared is not None:
         symbols.update(str(symbol) for symbol in prepared.selected_symbols)
+    effective_raw_pool_date = (
+        raw_pool_date
+        if raw_pool_date is not None
+        else resolve_latest_fundamental_raw_pool_date(session)
+    )
+    if effective_raw_pool_date is not None:
+        symbols.update(
+            resolve_fundamental_raw_pool_symbols(
+                session,
+                record_date=effective_raw_pool_date,
+            )
+        )
     return sorted(
         symbol.strip().upper()
         for symbol in symbols
         if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
     )
+
+
+def resolve_pending_fundamental_backfill_symbols(
+    session: Session,
+    *,
+    symbols: Sequence[str],
+) -> list[str]:
+    pending: list[str] = []
+    normalized_symbols = sorted(
+        {
+            str(symbol).strip().upper()
+            for symbol in symbols
+            if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
+        }
+    )
+    periods_by_symbol = load_latest_fundamental_periods_for_symbols(
+        session,
+        symbols=normalized_symbols,
+    )
+    dividends_by_symbol = load_latest_dividend_events_for_symbols(
+        session,
+        symbols=normalized_symbols,
+    )
+    for symbol in normalized_symbols:
+        periods = periods_by_symbol.get(symbol, [])
+        dividends = dividends_by_symbol.get(symbol, [])
+        if (
+            not fundamental_period_history_is_sufficient(periods)
+            or not dividend_history_is_sufficient(dividends)
+        ):
+            pending.append(symbol)
+    return pending
+
+
+def create_fundamental_backfill_job(
+    session: Session,
+    *,
+    symbols: Sequence[str],
+    raw_pool_date: date | None,
+) -> FundamentalBackfillJob:
+    job = FundamentalBackfillJob(
+        id=str(uuid.uuid4()),
+        raw_pool_date=raw_pool_date,
+        symbols=list(symbols),
+        next_after_symbol=None,
+        status="running",
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+def get_fundamental_backfill_job(
+    session: Session,
+    *,
+    job_id: str,
+    for_update: bool = False,
+) -> FundamentalBackfillJob | None:
+    statement = select(FundamentalBackfillJob).where(FundamentalBackfillJob.id == job_id)
+    if for_update:
+        statement = statement.with_for_update()
+    return session.scalar(statement)
 
 
 def _request_json(request_get: RequestGet, url: str) -> Any:
@@ -306,6 +452,12 @@ __all__ = [
     "FundamentalBackfillResult",
     "FundamentalRefreshResult",
     "backfill_fundamentals",
+    "create_fundamental_backfill_job",
+    "fundamental_raw_pool_date_is_completed",
+    "get_fundamental_backfill_job",
     "refresh_official_fundamentals",
+    "resolve_fundamental_raw_pool_symbols",
+    "resolve_latest_fundamental_raw_pool_date",
     "resolve_managed_fundamental_symbols",
+    "resolve_pending_fundamental_backfill_symbols",
 ]

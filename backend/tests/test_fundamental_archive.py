@@ -5,8 +5,8 @@ from decimal import Decimal
 import importlib.util
 from io import StringIO
 from pathlib import Path
-from types import ModuleType
-from unittest.mock import patch
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from alembic.migration import MigrationContext
@@ -43,15 +43,26 @@ from ai_stock_sentinel.data_sources.fundamental.service import (
     FundamentalBackfillResult,
     FundamentalRefreshResult,
     backfill_fundamentals,
+    create_fundamental_backfill_job,
+    fundamental_raw_pool_date_is_completed,
+    get_fundamental_backfill_job,
     refresh_official_fundamentals,
+    resolve_managed_fundamental_symbols,
+    resolve_pending_fundamental_backfill_symbols,
 )
 from ai_stock_sentinel.data_sources.fundamental.router import router as fundamental_router
 from ai_stock_sentinel.db.models import (
     CompanyDividendEvent,
     CompanyFundamentalPeriod,
+    DailyRadarPreparedRun,
+    FundamentalBackfillJob,
+    StockRawData,
     TaiwanDailyBar,
+    UserPortfolio,
+    UserWatchlist,
 )
 from ai_stock_sentinel.db.session import Base, get_db
+from ai_stock_sentinel.user_models.user import User
 
 
 @compiles(JSONB, "sqlite")
@@ -67,27 +78,48 @@ def _db_session() -> tuple[Session, object]:
             TaiwanDailyBar.__table__,
             CompanyFundamentalPeriod.__table__,
             CompanyDividendEvent.__table__,
+            FundamentalBackfillJob.__table__,
         ],
     )
     return Session(engine), engine
 
 
-def _load_migration() -> ModuleType:
+def _managed_symbol_db_session() -> tuple[Session, object]:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            User.__table__,
+            UserPortfolio.__table__,
+            UserWatchlist.__table__,
+            DailyRadarPreparedRun.__table__,
+            StockRawData.__table__,
+        ],
+    )
+    return Session(engine), engine
+
+
+def _load_migration(
+    filename: str = "4e5f6a7b8c9d_add_fundamental_version_tables.py",
+) -> ModuleType:
     path = (
         Path(__file__).parents[1]
         / "alembic"
         / "versions"
-        / "4e5f6a7b8c9d_add_fundamental_version_tables.py"
+        / filename
     )
-    spec = importlib.util.spec_from_file_location("fundamental_version_migration", path)
+    spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def _migration_sql(direction: str) -> str:
-    migration = _load_migration()
+def _migration_sql(
+    direction: str,
+    filename: str = "4e5f6a7b8c9d_add_fundamental_version_tables.py",
+) -> str:
+    migration = _load_migration(filename)
     buffer = StringIO()
     context = MigrationContext.configure(
         dialect_name="postgresql",
@@ -124,6 +156,17 @@ def test_fundamental_migration_is_additive_and_reversible() -> None:
     assert downgrade_sql.index("DROP TABLE company_dividend_events") < downgrade_sql.index(
         "DROP TABLE company_fundamental_periods"
     )
+
+
+def test_fundamental_backfill_job_migration_is_additive_and_reversible() -> None:
+    filename = "5f6a7b8c9d0e_add_fundamental_backfill_jobs.py"
+    upgrade_sql = _migration_sql("upgrade", filename)
+    downgrade_sql = _migration_sql("downgrade", filename)
+
+    assert "CREATE TABLE fundamental_backfill_jobs" in upgrade_sql
+    assert "ck_fundamental_backfill_job_status" in upgrade_sql
+    assert "next_after_symbol VARCHAR(20)" in upgrade_sql
+    assert "DROP TABLE fundamental_backfill_jobs" in downgrade_sql
 
 
 def test_official_normalizers_preserve_period_and_dividend_provenance() -> None:
@@ -410,6 +453,49 @@ def test_official_cached_fundamental_fetch_as_of_excludes_future_observations() 
         engine.dispose()
 
 
+def test_as_of_date_uses_taipei_observation_date() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [
+                    {"date": "2025-09-30", "type": "EPS", "value": "2"},
+                    {"date": "2025-12-31", "type": "EPS", "value": "3"},
+                    {"date": "2026-03-31", "type": "EPS", "value": "4"},
+                    {"date": "2026-06-30", "type": "EPS", "value": "5"},
+                ],
+                symbol="2330.TW",
+            ),
+        )
+        next_taipei_day = datetime(2026, 8, 17, 23, 35, tzinfo=timezone.utc)
+        for row in session.scalars(select(CompanyFundamentalPeriod)).all():
+            row.first_observed_at = next_taipei_day
+            row.last_observed_at = next_taipei_day
+        session.flush()
+        provider = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        )
+
+        prior_day = provider.fetch_as_of(
+            "2330.TW",
+            140,
+            as_of_date=date(2026, 8, 17),
+        )
+        observed_day = provider.fetch_as_of(
+            "2330.TW",
+            140,
+            as_of_date=date(2026, 8, 18),
+        )
+
+        assert prior_day.ttm_eps is None
+        assert observed_day.ttm_eps == 14
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_observed_official_period_wins_over_later_finmind_bootstrap() -> None:
     session, engine = _db_session()
     try:
@@ -435,6 +521,125 @@ def test_observed_official_period_wins_over_later_finmind_bootstrap() -> None:
         assert len(latest) == 1
         assert latest[0].availability_quality == "observed"
         assert latest[0].quarter_eps == Decimal("2")
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_bootstrap_q1_anchors_official_q2_cumulative_gap() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [
+                    {"date": "2025-09-30", "type": "EPS", "value": "3"},
+                    {"date": "2025-12-31", "type": "EPS", "value": "4"},
+                    {"date": "2026-03-31", "type": "EPS", "value": "5"},
+                    {"date": "2026-06-30", "type": "EPS", "value": "6"},
+                ],
+                symbol="2330.TW",
+            ),
+        )
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2026, 2, "11")],
+                market="TW",
+                industry_schema="ci",
+                source_dataset="TWSE_ci",
+            ),
+        )
+
+        periods = load_latest_fundamental_periods(session, symbol="2330.TW")
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2330.TW", 180)
+
+        assert periods[-1].quarter_eps == Decimal("6")
+        assert periods[-1].cumulative_eps == Decimal("11")
+        assert periods[-1].source_provider == "official_openapi"
+        assert result.ttm_eps == 18
+        assert result.source_provider == "OfficialCachedFundamental+FinMindFundamental"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_direct_bootstrap_quarter_fills_later_official_cumulative_gap() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [
+                    {"date": "2025-12-31", "type": "EPS", "value": "3"},
+                    {"date": "2026-03-31", "type": "EPS", "value": "4"},
+                    {"date": "2026-06-30", "type": "EPS", "value": "5"},
+                    {"date": "2026-09-30", "type": "EPS", "value": "6"},
+                ],
+                symbol="2330.TW",
+            ),
+        )
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2026, 3, "15")],
+                market="TW",
+                industry_schema="ci",
+                source_dataset="TWSE_ci",
+            ),
+        )
+
+        periods = load_latest_fundamental_periods(session, symbol="2330.TW")
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2330.TW", 180)
+
+        assert periods[-1].quarter_eps == Decimal("6")
+        assert periods[-1].source_provider == "official_openapi"
+        assert periods[-1].quarter_eps_source_provider == "finmind_bootstrap"
+        assert result.ttm_eps == 18
+        assert result.source_provider == "OfficialCachedFundamental+FinMindFundamental"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_provider_does_not_use_stale_ttm_when_latest_period_is_incomplete() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [
+                    {"date": "2025-06-30", "type": "EPS", "value": "2"},
+                    {"date": "2025-09-30", "type": "EPS", "value": "3"},
+                    {"date": "2025-12-31", "type": "EPS", "value": "4"},
+                    {"date": "2026-03-31", "type": "EPS", "value": "5"},
+                ],
+                symbol="2330.TW",
+            ),
+        )
+        store_fundamental_periods(
+            session,
+            normalize_official_statement_rows(
+                [_statement_row(2026, 3, "18")],
+                market="TW",
+                industry_schema="ci",
+                source_dataset="TWSE_ci",
+            ),
+        )
+
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2330.TW", 140)
+
+        assert result.ttm_eps is None
+        assert "基本面快取缺少四個連續單季 EPS，TTM EPS 無法計算" in result.warnings
     finally:
         session.close()
         engine.dispose()
@@ -979,6 +1184,114 @@ class _BackfillProvider:
         return [{"date": "2025-07-01", "CashEarningsDistribution": "4"}]
 
 
+def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
+    session, engine = _managed_symbol_db_session()
+    try:
+        user = User(google_sub="fixture", email="fixture@example.com")
+        session.add(user)
+        session.flush()
+        session.add_all(
+            [
+                UserPortfolio(
+                    user_id=user.id,
+                    symbol="2330.TW",
+                    entry_price=100,
+                    quantity=1,
+                    entry_date=date(2026, 8, 1),
+                ),
+                UserWatchlist(user_id=user.id, symbol="2454.TW"),
+                DailyRadarPreparedRun(
+                    run_date=date(2026, 8, 17),
+                    market="TW",
+                    selected_symbols=["3008.TW", "SPY"],
+                    universe=[],
+                    symbol_count=2,
+                    step_statuses={"refresh-ai-evidence": {"status": "completed"}},
+                ),
+                StockRawData(
+                    symbol="1304.TW",
+                    record_date=date(2026, 8, 17),
+                    technical={},
+                    raw_data_is_final=True,
+                ),
+                StockRawData(
+                    symbol="1319.TW",
+                    record_date=date(2026, 8, 16),
+                    technical={},
+                    raw_data_is_final=True,
+                ),
+                StockRawData(
+                    symbol="1440.TW",
+                    record_date=date(2026, 8, 17),
+                    technical={},
+                    raw_data_is_final=False,
+                ),
+                StockRawData(
+                    symbol="AAPL",
+                    record_date=date(2026, 8, 18),
+                    technical={},
+                    raw_data_is_final=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        symbols = resolve_managed_fundamental_symbols(session)
+
+        assert symbols == ["1304.TW", "2330.TW", "2454.TW", "3008.TW"]
+
+        session.add(
+            StockRawData(
+                symbol="1504.TW",
+                record_date=date(2026, 8, 18),
+                technical={},
+                raw_data_is_final=True,
+            )
+        )
+        session.commit()
+
+        assert resolve_managed_fundamental_symbols(session) == [
+            "1304.TW",
+            "2330.TW",
+            "2454.TW",
+            "3008.TW",
+        ]
+        assert resolve_managed_fundamental_symbols(
+            session,
+            raw_pool_date=date(2026, 8, 17),
+        ) == ["1304.TW", "2330.TW", "2454.TW", "3008.TW"]
+        assert fundamental_raw_pool_date_is_completed(
+            session,
+            record_date=date(2026, 8, 17),
+        )
+        assert not fundamental_raw_pool_date_is_completed(
+            session,
+            record_date=date(2026, 8, 18),
+        )
+
+        session.add(
+            DailyRadarPreparedRun(
+                run_date=date(2026, 8, 18),
+                market="TW",
+                selected_symbols=["3008.TW"],
+                universe=[],
+                symbol_count=1,
+                step_statuses={"refresh-ai-evidence": {"status": "completed"}},
+            )
+        )
+        session.commit()
+
+        assert resolve_managed_fundamental_symbols(session) == [
+            "1504.TW",
+            "2330.TW",
+            "2454.TW",
+            "3008.TW",
+        ]
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_finmind_backfill_limits_symbols_and_returns_cursor() -> None:
     session, engine = _db_session()
     provider = _BackfillProvider()
@@ -1000,6 +1313,132 @@ def test_finmind_backfill_limits_symbols_and_returns_cursor() -> None:
         engine.dispose()
 
 
+def test_finmind_backfill_does_not_advance_cursor_after_partial_failure() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    provider.fetch_statement_rows = MagicMock(side_effect=RuntimeError("temporary outage"))
+    try:
+        result = backfill_fundamentals(
+            session,
+            symbols=["2330.TW", "2454.TW"],
+            limit=1,
+            provider=provider,
+        )
+
+        assert result.status == "partial"
+        assert result.next_after_symbol is None
+        assert result.errors == [
+            "2330.TW: statement backfill failed: temporary outage"
+        ]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_finmind_backfill_skips_already_sufficient_cached_lanes() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [
+                    {
+                        "date": date(year, quarter * 3, 31 if quarter in {1, 4} else 30).isoformat(),
+                        "type": "EPS",
+                        "value": str(quarter),
+                    }
+                    for year in (2025, 2026)
+                    for quarter in range(1, 5)
+                ],
+                symbol="2330.TW",
+            ),
+        )
+        store_dividend_events(
+            session,
+            normalize_finmind_dividend_rows(
+                [
+                    {
+                        "date": "2026-07-01",
+                        "year": "115年",
+                        "CashEarningsDistribution": "4",
+                    }
+                ],
+                symbol="2330.TW",
+            ),
+        )
+
+        result = backfill_fundamentals(
+            session,
+            symbols=["2330.TW"],
+            provider=provider,
+        )
+
+        assert result.status == "ok"
+        assert result.records_written == 0
+        assert provider.statement_calls == []
+        assert provider.dividend_calls == []
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_fundamental_backfill_job_freezes_only_pending_symbols() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [
+                    {
+                        "date": date(year, quarter * 3, 31 if quarter in {1, 4} else 30).isoformat(),
+                        "type": "EPS",
+                        "value": str(quarter),
+                    }
+                    for year in (2025, 2026)
+                    for quarter in range(1, 5)
+                ],
+                symbol="2330.TW",
+            ),
+        )
+        store_dividend_events(
+            session,
+            normalize_finmind_dividend_rows(
+                [
+                    {
+                        "date": "2026-07-01",
+                        "year": "115年",
+                        "CashEarningsDistribution": "4",
+                    }
+                ],
+                symbol="2330.TW",
+            ),
+        )
+
+        pending = resolve_pending_fundamental_backfill_symbols(
+            session,
+            symbols=["2330.TW", "1304.TW"],
+        )
+        job = create_fundamental_backfill_job(
+            session,
+            symbols=pending,
+            raw_pool_date=date(2026, 8, 17),
+        )
+        session.commit()
+
+        loaded = get_fundamental_backfill_job(session, job_id=job.id)
+
+        assert pending == ["1304.TW"]
+        assert loaded is not None
+        assert loaded.symbols == ["1304.TW"]
+        assert loaded.raw_pool_date == date(2026, 8, 17)
+        assert loaded.next_after_symbol is None
+        assert loaded.status == "running"
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_fundamental_workflow_has_daily_refresh_and_manual_bounded_backfill() -> None:
     workflow = Path(__file__).parents[2] / ".github" / "workflows" / "fundamental-data.yml"
     text = workflow.read_text(encoding="utf-8")
@@ -1009,8 +1448,12 @@ def test_fundamental_workflow_has_daily_refresh_and_manual_bounded_backfill() ->
     assert "/internal/fundamentals/backfill" in text
     assert "for batch in 1 2 3 4 5 6" in text
     assert "backfill_after_symbol:" in text
+    assert "backfill_job_id:" in text
     assert 'after_symbol="${BACKFILL_AFTER_SYMBOL}"' in text
+    assert 'job_id="${BACKFILL_JOB_ID}"' in text
     assert "BACKFILL_NEXT_AFTER_SYMBOL" in text
+    assert "BACKFILL_JOB_ID" in text
+    assert "Backfill partially failed" in text
     assert "exit 2" in text
     assert "limit:10" in text
     assert "X-Internal-Token" in text
@@ -1032,6 +1475,20 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
         errors=[],
     )
     backfill_result = FundamentalBackfillResult("ok", ["2330.TW"], 2, None, [])
+    created_job = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000001",
+        raw_pool_date=date(2026, 8, 17),
+        symbols=["2330.TW"],
+        next_after_symbol=None,
+        status="running",
+    )
+    resumed_job = SimpleNamespace(
+        id=created_job.id,
+        raw_pool_date=date(2026, 8, 17),
+        symbols=["2330.TW", "2454.TW"],
+        next_after_symbol="2330.TW",
+        status="running",
+    )
     try:
         with (
             patch(
@@ -1039,13 +1496,38 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
                 return_value=refresh_result,
             ),
             patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.resolve_latest_fundamental_raw_pool_date",
+                return_value=date(2026, 8, 17),
+            ),
+            patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.resolve_fundamental_raw_pool_symbols",
+                return_value=["2330.TW"],
+            ),
+            patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.fundamental_raw_pool_date_is_completed",
+                return_value=True,
+            ) as completed_pool,
+            patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.resolve_managed_fundamental_symbols",
                 return_value=["2330.TW"],
+            ),
+            patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.resolve_pending_fundamental_backfill_symbols",
+                return_value=["2330.TW"],
+            ),
+            patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.create_fundamental_backfill_job",
+                return_value=created_job,
+            ),
+            patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.get_fundamental_backfill_job",
+                return_value=resumed_job,
             ),
             patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.backfill_fundamentals",
                 return_value=backfill_result,
             ),
+            patch.object(session, "add"),
             patch.object(session, "commit", wraps=session.commit) as commit,
         ):
             client = TestClient(app)
@@ -1054,16 +1536,62 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
                 "/internal/fundamentals/refresh",
                 headers={"X-Internal-Token": "test-token"},
             )
+            unpinned_resume = client.post(
+                "/internal/fundamentals/backfill",
+                headers={"X-Internal-Token": "test-token"},
+                json={"scope": "managed", "after_symbol": "1802.TW"},
+            )
             backfilled = client.post(
                 "/internal/fundamentals/backfill",
                 headers={"X-Internal-Token": "test-token"},
                 json={"scope": "managed", "limit": 10},
             )
+            completed_pool.return_value = False
+            incomplete_pool = client.post(
+                "/internal/fundamentals/backfill",
+                headers={"X-Internal-Token": "test-token"},
+                json={"scope": "managed", "raw_pool_date": "2026-08-16"},
+            )
+            mismatched_cursor = client.post(
+                "/internal/fundamentals/backfill",
+                headers={"X-Internal-Token": "test-token"},
+                json={
+                    "scope": "managed",
+                    "job_id": resumed_job.id,
+                    "after_symbol": "2454.TW",
+                },
+            )
+            resumed_job.status = "completed"
+            completed_job = client.post(
+                "/internal/fundamentals/backfill",
+                headers={"X-Internal-Token": "test-token"},
+                json={"scope": "managed", "job_id": resumed_job.id},
+            )
 
         assert refreshed.json()["datasets_succeeded"] == 14
         assert refreshed.json()["datasets_skipped"] == 0
         assert refreshed.json()["skipped_datasets"] == []
+        assert unpinned_resume.status_code == 422
+        assert unpinned_resume.json()["detail"]["code"] == (
+            "fundamental_backfill_job_id_required"
+        )
         assert backfilled.json()["symbols_processed"] == ["2330.TW"]
+        assert backfilled.json()["job_id"]
+        assert backfilled.json()["raw_pool_date"] == "2026-08-17"
+        assert incomplete_pool.status_code == 409
+        assert incomplete_pool.json()["detail"] == {
+            "code": "fundamental_backfill_raw_pool_not_completed",
+            "raw_pool_date": "2026-08-16",
+        }
+        assert mismatched_cursor.status_code == 409
+        assert mismatched_cursor.json()["detail"] == {
+            "code": "fundamental_backfill_cursor_mismatch",
+            "expected_after_symbol": "2330.TW",
+        }
+        assert completed_job.status_code == 409
+        assert completed_job.json()["detail"] == {
+            "code": "fundamental_backfill_job_completed"
+        }
         assert commit.call_count == 2
     finally:
         session.close()

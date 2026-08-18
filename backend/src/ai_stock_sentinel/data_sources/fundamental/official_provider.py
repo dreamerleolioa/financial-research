@@ -153,7 +153,7 @@ class OfficialCachedFundamentalProvider:
         dividends: list[CompanyDividendEvent],
         warnings: list[str],
     ) -> tuple[list[LoadedFundamentalPeriod], list[CompanyDividendEvent]]:
-        if len(periods) < 7:
+        if not fundamental_period_history_is_sufficient(periods):
             try:
                 rows = self._fallback_provider.fetch_statement_rows(symbol)
                 store_fundamental_periods(
@@ -164,7 +164,7 @@ class OfficialCachedFundamentalProvider:
                 warnings.append("歷史 EPS 由 FinMind 一次性 bootstrap 補入本地版本庫")
             except FundamentalError as exc:
                 warnings.append(f"歷史 EPS bootstrap 失敗：{exc.code}")
-        if not dividends or _latest_complete_annual_dividend(dividends)[0] is None:
+        if not dividend_history_is_sufficient(dividends):
             try:
                 rows = self._fallback_provider.fetch_dividend_rows(symbol)
                 store_dividend_events(
@@ -235,14 +235,14 @@ def _latest_ttm(
 ) -> tuple[float | None, int | None]:
     if len(periods) < 4:
         return None, None
-    for index in range(len(periods) - 1, 2, -1):
-        window = periods[index - 3 : index + 1]
-        if not _periods_are_contiguous(window):
-            continue
-        values = [float(row.quarter_eps) for row in window if row.quarter_eps is not None]
-        if len(values) == 4:
-            return sum(values), index
-    return None, None
+    latest_period_index = len(periods) - 1
+    window = periods[-4:]
+    if not _periods_are_contiguous(window):
+        return None, None
+    values = [float(row.quarter_eps) for row in window if row.quarter_eps is not None]
+    if len(values) != 4:
+        return None, None
+    return sum(values), latest_period_index
 
 
 def _periods_are_contiguous(periods: list[LoadedFundamentalPeriod]) -> bool:
@@ -276,6 +276,16 @@ def _latest_complete_annual_dividend(
     if by_year:
         return None, "股利事件尚不足以證明完整年度金額，未以部分年度資料冒充年股利"
     return None, "基本面快取沒有可用的完整年度現金股利"
+
+
+def fundamental_period_history_is_sufficient(
+    periods: list[LoadedFundamentalPeriod],
+) -> bool:
+    return len(periods) >= 7 and _latest_ttm(periods)[0] is not None
+
+
+def dividend_history_is_sufficient(events: list[CompanyDividendEvent]) -> bool:
+    return _latest_complete_annual_dividend(events)[0] is not None
 
 
 def _complete_annual_dividend_for_events(
@@ -329,8 +339,12 @@ def _fundamental_source_provider(
     dividends: list[CompanyDividendEvent],
 ) -> str:
     uses_finmind = any(
-        item.source_provider == "finmind_bootstrap"
-        for item in [*periods, *dividends]
+        period.source_provider == "finmind_bootstrap"
+        or period.quarter_eps_source_provider == "finmind_bootstrap"
+        for period in periods
+    ) or any(
+        dividend.source_provider == "finmind_bootstrap"
+        for dividend in dividends
     )
     return (
         "OfficialCachedFundamental+FinMindFundamental"
@@ -361,4 +375,8 @@ def _observed_event_key(event: CompanyDividendEvent) -> tuple[float, int]:
     return observed_at.timestamp(), event.id
 
 
-__all__ = ["OfficialCachedFundamentalProvider"]
+__all__ = [
+    "OfficialCachedFundamentalProvider",
+    "dividend_history_is_sufficient",
+    "fundamental_period_history_is_sufficient",
+]

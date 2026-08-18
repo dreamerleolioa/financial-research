@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -9,6 +10,8 @@ class FundamentalBackfillRequest(BaseModel):
     scope: Literal["managed"] = "managed"
     symbols: list[str] | None = Field(default=None, max_length=250)
     after_symbol: str | None = Field(default=None, max_length=20)
+    job_id: str | None = Field(default=None, max_length=36)
+    raw_pool_date: date | None = None
     limit: int = Field(default=10, ge=1, le=10)
 
 
@@ -27,6 +30,8 @@ class FundamentalBackfillResponse(BaseModel):
     symbols_processed: list[str] = Field(default_factory=list)
     records_written: int
     next_after_symbol: str | None = None
+    job_id: str
+    raw_pool_date: date | None = None
     errors: list[str] = Field(default_factory=list)
 
 

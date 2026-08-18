@@ -372,17 +372,17 @@
 
 - 官方累計 EPS 轉單季：Q1 等於 Q1 累計；Q2/Q3/Q4 分別扣除前一累計期間。前期缺漏時不猜值，該季及 TTM 標記 unavailable。
 - FinMind `TaiwanStockFinancialStatements` bootstrap 的 `EPS` 是單季值，直接保存於 `quarter_eps`，不得先寫成累計值再相減。
-- TTM 只使用最近四個連續離散季度；目前 PE 僅在 TTM EPS > 0 時計算。
+- TTM 只使用最新四個連續離散季度，不得因最新季度缺值而退回更舊的四季窗口並偽裝成最新 TTM；目前 PE 僅在 TTM EPS > 0 時計算。Q1 單季 EPS 等同當年 Q1 累計，因此可作為官方 Q2 累計的前期基準；其他官方累計季度因缺少前期官方累計而無法推導時，若同期間已有 FinMind bootstrap 的直接單季 EPS，可使用該直接值並保留 FinMind provenance，沒有直接值時維持 unavailable。
 - 歷史 PE 最多 24 季，季末價格優先讀 DR2 `taiwan_daily_bars`，資料不足才使用 yfinance fallback；至少四個有效樣本才產生估值帶。
 - 年度股利優先使用完整年度事件，否則加總互不重疊季度／半年事件；FinMind bootstrap 必須解析 `year` 的民國年與季度範圍，無法確認期間時保持 unbounded 並 fail closed，不得把每筆配息偽裝成完整年度，也不得用股價乘殖利率反推現金股利。
 - 官方與 FinMind 同時保存相同股利涵蓋期間時，先以官方事件消除跨來源重疊；同一優先來源仍有無法消歧的重疊時維持 fail closed。基本面與 AVWAP 的公開 provenance 必須反映實際使用的 official、bootstrap 或 fallback provider，不得只標示 routing wrapper。
-- `first_observed_at` 是 point-in-time availability boundary。FinMind 歷史 bootstrap 標記 `historical_unknown`，可支援目前估值帶，不可進入要求 point-in-time 正確性的歷史 replay/backtest。
+- `first_observed_at` 是 point-in-time availability boundary；資料庫以 UTC 保存，但與 Daily Radar `run_date` 比較前必須換算成 `Asia/Taipei` 日期，避免台北隔日早晨取得的 revision 洩漏到前一交易日。FinMind 歷史 bootstrap 標記 `historical_unknown`，可支援目前估值帶，不可進入要求 point-in-time 正確性的歷史 replay/backtest。
 - 保持現有 `ttm_eps`、`pe_current`、PE band/percentile、`annual_cash_dividend`、`dividend_yield`、`yield_signal`、source 與 warning public contract。
 
 內部流程：
 
 - `POST /internal/fundamentals/refresh` 每日 07:15 更新市場級財報與股利；dataset 可部分成功、冪等提交，最多四個並行 request、45 秒 timeout、兩次 retry。
-- `POST /internal/fundamentals/backfill` 以 managed symbol universe、每批最多 10 檔及 `after_symbol` 游標執行；每小時最多 120 次 FinMind request。GitHub workflow 達到六批上限且仍有下一頁時必須以 `BACKFILL_NEXT_AFTER_SYMBOL` 與 step summary 回報 cursor、非零結束，下一次以 `backfill_after_symbol` 明確續跑。
+- `POST /internal/fundamentals/backfill` 以 managed symbol universe、每批最多 10 檔及 server-owned `after_symbol` 游標執行；managed universe 必須合併 active holdings、watchlist、最新 prepared universe 與最近一次已完成 `refresh-ai-evidence` 日期的 final 支援台股 AI raw pool。第一頁以批次 archive queries 只保留至少一個 history lane 不完整的 symbol，並把完整 symbol snapshot、raw-pool 日期及下一個 cursor 持久化為 `fundamental_backfill_jobs`；所有後續頁必須以 `job_id` 鎖定同一 job、驗證 request cursor 與 job cursor 一致，只有整頁成功才能原子前移，不得重新查詢 live universe，completed job 不得重新執行。指定 raw-pool 日期也必須對應已完成的 `refresh-ai-evidence`；日期未完成、job 不存在、cursor 未帶 job、job 已完成或 cursor 不一致時 fail closed。已具備足夠 EPS 歷史或完整年度股利的 lane 不得重複呼叫 FinMind。每小時最多 120 次 FinMind request。GitHub workflow 必須在 partial failure 前先輸出 job/cursor；達到六批上限且仍有下一頁時必須以 `BACKFILL_NEXT_AFTER_SYMBOL`、`BACKFILL_JOB_ID` 與 step summary 回報 cursor/job、非零結束，下一次以 `backfill_after_symbol`、`backfill_job_id` 明確續跑。
 - PostgreSQL revision 寫入使用 unique constraint 對應的 `ON CONFLICT DO UPDATE`，避免同一冷快取股票併發 bootstrap 時因先查後寫競態讓其中一個分析失敗。
 - 市場級官方財報若回傳已知 schema、只有報表日期非空且公司／期間／財務欄位全空的官方占位列，視為尚未發布並回報 `datasets_skipped` / `skipped_datasets`，保留既有 cache；完全空 payload、缺少已知 identity fields、含非空業務欄位卻無法正規化，仍視為 dataset failure，不得靜默沿用舊 cache。TPEX 當日除權息事件可合法為空，維持 dataset-specific no-data 語意。
 - 沿用 `DAILY_RADAR_INTERNAL_TOKEN` 的 fail-closed internal auth，不新增 provider key 或 secret。
