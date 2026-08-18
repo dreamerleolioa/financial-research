@@ -495,6 +495,31 @@ class CompanyFundamentalPeriod(Base):
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
+class FundamentalBackfillJob(Base):
+    __tablename__ = "fundamental_backfill_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'completed')",
+            name="ck_fundamental_backfill_job_status",
+        ),
+        Index("idx_fundamental_backfill_job_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    raw_pool_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    symbols: Mapped[list] = mapped_column(JSONB, nullable=False)
+    next_after_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="running", server_default="running"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class CompanyDividendEvent(Base):
     __tablename__ = "company_dividend_events"
     __table_args__ = (

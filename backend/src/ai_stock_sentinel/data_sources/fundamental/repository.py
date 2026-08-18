@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.clock import TAIPEI_TZ
 from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     NormalizedDividendEvent,
     NormalizedFundamentalPeriod,
@@ -29,6 +30,8 @@ class LoadedFundamentalPeriod:
     industry_schema: str
     cumulative_eps: Decimal | None
     quarter_eps: Decimal | None
+    quarter_eps_source_provider: str
+    quarter_eps_source_dataset: str
     source_report_date: date | None
     availability_quality: str
     source_provider: str
@@ -152,18 +155,59 @@ def load_latest_fundamental_periods(
     as_of_date: date | None = None,
     allow_historical_unknown: bool = True,
 ) -> list[LoadedFundamentalPeriod]:
+    return load_latest_fundamental_periods_for_symbols(
+        session,
+        symbols=[symbol],
+        as_of_date=as_of_date,
+        allow_historical_unknown=allow_historical_unknown,
+    ).get(symbol.upper(), [])
+
+
+def load_latest_fundamental_periods_for_symbols(
+    session: Session,
+    *,
+    symbols: Iterable[str],
+    as_of_date: date | None = None,
+    allow_historical_unknown: bool = True,
+) -> dict[str, list[LoadedFundamentalPeriod]]:
+    normalized_symbols = sorted({symbol.upper() for symbol in symbols})
+    if not normalized_symbols:
+        return {}
     statement = select(CompanyFundamentalPeriod).where(
-        CompanyFundamentalPeriod.symbol == symbol.upper()
+        CompanyFundamentalPeriod.symbol.in_(normalized_symbols)
     )
     if not allow_historical_unknown:
         statement = statement.where(
             CompanyFundamentalPeriod.availability_quality == "observed"
         )
-    rows = session.scalars(statement).all()
+    rows_by_symbol: dict[str, list[CompanyFundamentalPeriod]] = {
+        symbol: [] for symbol in normalized_symbols
+    }
+    for row in session.scalars(statement).all():
+        rows_by_symbol[row.symbol].append(row)
+    return {
+        symbol: _select_latest_fundamental_periods(
+            rows,
+            as_of_date=as_of_date,
+        )
+        for symbol, rows in rows_by_symbol.items()
+    }
+
+
+def _select_latest_fundamental_periods(
+    rows: Iterable[CompanyFundamentalPeriod],
+    *,
+    as_of_date: date | None,
+) -> list[LoadedFundamentalPeriod]:
     by_period: dict[tuple[int, int, str], CompanyFundamentalPeriod] = {}
+    visible_rows: list[CompanyFundamentalPeriod] = []
     for row in rows:
-        if as_of_date is not None and row.first_observed_at.date() > as_of_date:
+        if (
+            as_of_date is not None
+            and _taipei_observation_date(row.first_observed_at) > as_of_date
+        ):
             continue
+        visible_rows.append(row)
         key = (row.fiscal_year, row.fiscal_quarter, row.statement_scope)
         current = by_period.get(key)
         if current is None or _period_revision_sort_key(
@@ -175,7 +219,11 @@ def load_latest_fundamental_periods(
         by_period.values(),
         key=lambda row: (row.fiscal_year, row.fiscal_quarter),
     )
-    return _materialize_loaded_periods(selected)
+    return _materialize_loaded_periods(
+        selected,
+        direct_quarter_candidates=visible_rows,
+        as_of_date=as_of_date,
+    )
 
 
 def load_latest_dividend_events(
@@ -184,12 +232,49 @@ def load_latest_dividend_events(
     symbol: str,
     as_of_date: date | None = None,
 ) -> list[CompanyDividendEvent]:
+    return load_latest_dividend_events_for_symbols(
+        session,
+        symbols=[symbol],
+        as_of_date=as_of_date,
+    ).get(symbol.upper(), [])
+
+
+def load_latest_dividend_events_for_symbols(
+    session: Session,
+    *,
+    symbols: Iterable[str],
+    as_of_date: date | None = None,
+) -> dict[str, list[CompanyDividendEvent]]:
+    normalized_symbols = sorted({symbol.upper() for symbol in symbols})
+    if not normalized_symbols:
+        return {}
+    rows_by_symbol: dict[str, list[CompanyDividendEvent]] = {
+        symbol: [] for symbol in normalized_symbols
+    }
     rows = session.scalars(
-        select(CompanyDividendEvent).where(CompanyDividendEvent.symbol == symbol.upper())
+        select(CompanyDividendEvent).where(
+            CompanyDividendEvent.symbol.in_(normalized_symbols)
+        )
     ).all()
+    for row in rows:
+        rows_by_symbol[row.symbol].append(row)
+    return {
+        symbol: _select_latest_dividend_events(rows, as_of_date=as_of_date)
+        for symbol, rows in rows_by_symbol.items()
+    }
+
+
+def _select_latest_dividend_events(
+    rows: Iterable[CompanyDividendEvent],
+    *,
+    as_of_date: date | None,
+) -> list[CompanyDividendEvent]:
     by_event: dict[tuple[str, str, str], CompanyDividendEvent] = {}
     for row in rows:
-        if as_of_date is not None and row.first_observed_at.date() > as_of_date:
+        if (
+            as_of_date is not None
+            and _taipei_observation_date(row.first_observed_at) > as_of_date
+        ):
             continue
         key = (row.source_provider, row.source_dataset, row.event_key)
         current = by_event.get(key)
@@ -206,12 +291,32 @@ def load_latest_dividend_events(
 
 def _materialize_loaded_periods(
     rows: Iterable[CompanyFundamentalPeriod],
+    *,
+    direct_quarter_candidates: Iterable[CompanyFundamentalPeriod] = (),
+    as_of_date: date | None = None,
 ) -> list[LoadedFundamentalPeriod]:
     materialized: list[LoadedFundamentalPeriod] = []
     by_period: dict[tuple[str, int, int, str], CompanyFundamentalPeriod] = {}
+    direct_by_period: dict[tuple[str, int, int, str], CompanyFundamentalPeriod] = {}
+    for candidate in direct_quarter_candidates:
+        if candidate.quarter_eps is None:
+            continue
+        key = (
+            candidate.symbol,
+            candidate.fiscal_year,
+            candidate.fiscal_quarter,
+            candidate.statement_scope,
+        )
+        current = direct_by_period.get(key)
+        if current is None or _period_revision_sort_key(
+            candidate,
+            as_of_date=as_of_date,
+        ) > _period_revision_sort_key(current, as_of_date=as_of_date):
+            direct_by_period[key] = candidate
     for row in rows:
         key = (row.symbol, row.fiscal_year, row.fiscal_quarter, row.statement_scope)
         by_period[key] = row
+        quarter_value_source = row
         cumulative = row.cumulative_eps
         if cumulative is None:
             quarter_eps = row.quarter_eps
@@ -221,11 +326,23 @@ def _materialize_loaded_periods(
             previous = by_period.get(
                 (row.symbol, row.fiscal_year, row.fiscal_quarter - 1, row.statement_scope)
             )
+            previous_cumulative = previous.cumulative_eps if previous is not None else None
+            if (
+                previous is not None
+                and previous.fiscal_quarter == 1
+                and previous_cumulative is None
+            ):
+                # Q1 discrete EPS is also its year-to-date cumulative EPS, so a
+                # bootstrap Q1 can safely anchor an official Q2 cumulative row.
+                previous_cumulative = previous.quarter_eps
             quarter_eps = (
-                cumulative - previous.cumulative_eps
-                if previous is not None and previous.cumulative_eps is not None
+                cumulative - previous_cumulative
+                if previous_cumulative is not None
                 else None
             )
+            if quarter_eps is None and (fallback := direct_by_period.get(key)) is not None:
+                quarter_eps = fallback.quarter_eps
+                quarter_value_source = fallback
         materialized.append(
             LoadedFundamentalPeriod(
                 id=row.id,
@@ -238,6 +355,8 @@ def _materialize_loaded_periods(
                 industry_schema=row.industry_schema,
                 cumulative_eps=row.cumulative_eps,
                 quarter_eps=quarter_eps,
+                quarter_eps_source_provider=quarter_value_source.source_provider,
+                quarter_eps_source_dataset=quarter_value_source.source_dataset,
                 source_report_date=row.source_report_date,
                 availability_quality=row.availability_quality,
                 source_provider=row.source_provider,
@@ -260,6 +379,12 @@ def _revision_observed_sort_key(
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     return observed_at.timestamp(), row.id
+
+
+def _taipei_observation_date(observed_at: datetime) -> date:
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    return observed_at.astimezone(TAIPEI_TZ).date()
 
 
 def _period_revision_sort_key(

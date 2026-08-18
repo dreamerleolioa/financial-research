@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Refresh official snapshots or backfill managed symbols from FinMind
+        description: Refresh official snapshots or backfill managed/latest AI-pool symbols from FinMind
         required: true
         default: refresh
         type: choice
@@ -16,6 +16,11 @@ on:
           - backfill
       backfill_after_symbol:
         description: Optional cursor returned by a previous bounded backfill run
+        required: false
+        default: ""
+        type: string
+      backfill_job_id:
+        description: Immutable job id returned with the cursor; required when resuming
         required: false
         default: ""
         type: string
@@ -50,15 +55,19 @@ jobs:
           printf '%s\n' "$response"
           printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null
 
-      - name: Backfill managed symbols in bounded batches
+      - name: Backfill managed and latest AI-pool symbols in bounded batches
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'backfill'
         env:
           BACKFILL_AFTER_SYMBOL: ${{ inputs.backfill_after_symbol }}
+          BACKFILL_JOB_ID: ${{ inputs.backfill_job_id }}
         run: |
           after_symbol="${BACKFILL_AFTER_SYMBOL}"
+          job_id="${BACKFILL_JOB_ID}"
           for batch in 1 2 3 4 5 6; do
-            payload=$(jq -nc --arg after "$after_symbol" \
-              '{scope:"managed", limit:10} + (if $after == "" then {} else {after_symbol:$after} end)')
+            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" \
+              '{scope:"managed", limit:10}
+              + (if $after == "" then {} else {after_symbol:$after} end)
+              + (if $job == "" then {} else {job_id:$job} end)')
             response=$(curl --fail-with-body --silent --show-error \
               --retry 2 \
               --connect-timeout 15 \
@@ -69,7 +78,23 @@ jobs:
               -d "$payload" \
               "$API_BASE_URL/internal/fundamentals/backfill")
             printf '%s\n' "$response"
-            printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null
+            response_job_id=$(printf '%s' "$response" | jq -r '.job_id // ""')
+            if [ -z "$response_job_id" ]; then
+              echo "Backfill response did not include a job id" >&2
+              exit 1
+            fi
+            if [ -n "$job_id" ] && [ "$response_job_id" != "$job_id" ]; then
+              echo "Backfill job changed during pagination" >&2
+              exit 1
+            fi
+            job_id="$response_job_id"
+            if ! printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null; then
+              echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
+              echo "BACKFILL_JOB_ID=$job_id"
+              printf 'Backfill partially failed. Retry with `backfill_after_symbol=%s` and `backfill_job_id=%s`.\n' \
+                "$after_symbol" "$job_id" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             after_symbol=$(printf '%s' "$response" | jq -r '.next_after_symbol // ""')
             if [ -z "$after_symbol" ]; then
               break
@@ -77,7 +102,8 @@ jobs:
           done
           if [ -n "$after_symbol" ]; then
             echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
-            printf 'Backfill request budget reached. Resume with `backfill_after_symbol=%s`.\n' \
-              "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
+            echo "BACKFILL_JOB_ID=$job_id"
+            printf 'Backfill request budget reached. Resume with `backfill_after_symbol=%s` and `backfill_job_id=%s`.\n' \
+              "$after_symbol" "$job_id" >> "$GITHUB_STEP_SUMMARY"
             exit 2
           fi
