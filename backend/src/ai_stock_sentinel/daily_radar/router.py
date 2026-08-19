@@ -50,6 +50,7 @@ from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundContextPayload,
     BackgroundChipContextProvider,
+    same_day_background_context_is_reusable,
     update_background_chip_context_cache,
 )
 from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
@@ -596,7 +597,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
             reference_date=run_date,
             point_in_time=True,
         )
-        if row.as_of_date == run_date and row.freshness == "fresh"
+        if same_day_background_context_is_reusable(row, run_date=run_date)
     }
     # Do not hold a database transaction open while external providers run.
     db.rollback()

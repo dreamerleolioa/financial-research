@@ -242,6 +242,55 @@ class FakeBackgroundChipContextProvider:
         ]
 
 
+class BaselineZeroBackgroundChipContextProvider(FakeBackgroundChipContextProvider):
+    def fetch(
+        self,
+        *,
+        symbols: list[str],
+        context_types: list[str],
+        run_date: date,
+        market: str,
+    ) -> list[BackgroundContextPayload]:
+        self.calls.append(
+            {
+                "symbols": list(symbols),
+                "context_types": list(context_types),
+                "run_date": run_date,
+                "market": market,
+            }
+        )
+        payloads: list[BackgroundContextPayload] = []
+        for symbol in symbols:
+            for context_type in context_types:
+                payload = {"label": f"{context_type}_fixture"}
+                if context_type == "full_margin":
+                    payload = {
+                        "latest_margin_balance": 1_200,
+                        "latest_short_balance": 0,
+                        "margin_balance_delta": 1_200,
+                        "margin_balance_delta_pct": None,
+                        "margin_balance_delta_pct_unavailable_reason": "baseline_zero",
+                        "short_balance_delta": 0,
+                        "short_balance_delta_pct": None,
+                    }
+                payloads.append(
+                    BackgroundContextPayload(
+                        symbol=symbol,
+                        context_type=context_type,
+                        applicable_consumers=("daily_radar",),
+                        source={"domain": "background_context", "provider": "fixture_provider"},
+                        as_of_date=run_date,
+                        freshness="fresh",
+                        payload=payload,
+                        missing_reason=None,
+                        replay_key=(
+                            f"background_context:{symbol}:{context_type}:{run_date.isoformat()}"
+                        ),
+                    )
+                )
+        return payloads
+
+
 class FakeInstitutionalEvidenceProvider:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], date]] = []
@@ -1282,6 +1331,16 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
         technical={"name": "2454 fixture", "ohlcv": {}, "indicators": {}},
     )
     for symbol in ("2330.TW", "2454.TW"):
+        margin_payload = {
+            "latest_margin_balance": 1200,
+            "margin_balance_delta_pct": 2.0,
+        }
+        if symbol == "2454.TW":
+            margin_payload = {
+                "latest_margin_balance": 1200,
+                "margin_balance_delta": 1200,
+                "margin_balance_delta_pct": None,
+            }
         upsert_shared_background_context(
             daily_radar_db_session,
             symbol=symbol,
@@ -1290,15 +1349,18 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
             source={"domain": "background_context", "provider": "fixture_provider"},
             as_of_date=run_date,
             freshness="fresh",
-            payload={
-                "latest_margin_balance": 1200,
-                "margin_balance_delta_pct": 2.0,
-            },
+            payload=margin_payload,
             replay_key=f"background_context:{symbol}:full_margin:{run_date.isoformat()}",
         )
     daily_radar_db_session.commit()
     fetcher = FakeBatchTechnicalFetcher()
-    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+    background_provider = BaselineZeroBackgroundChipContextProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        technical_fetcher=fetcher,
+        background_context_provider=background_provider,
+    )
 
     try:
         response = client.post(
@@ -1328,7 +1390,13 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
     assert rows["2454.TW"].technical["indicators"]["obv"] == 12_000_000
     assert rows["2454.TW"].institutional["source_provider"] == "official_fixture"
     assert rows["2454.TW"].fundamental["ttm_eps"] == 10.0
-    assert rows["2454.TW"].fundamental["margin"]["margin_delta_pct"] == 2.0
+    assert rows["2454.TW"].fundamental["margin"]["margin_delta_pct_unavailable_reason"] == (
+        "baseline_zero"
+    )
+    assert any(
+        call["symbols"] == ["2454.TW"] and call["context_types"] == ["full_margin"]
+        for call in background_provider.calls
+    )
     assert rows["2330.TW"].institutional["source_provider"] == "daily_radar_universe"
     daily_radar_db_session.refresh(prepared)
     assert prepared.selected_symbols == ["2330.TW"]

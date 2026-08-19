@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -96,6 +97,18 @@ class StubBackgroundChipContextProvider:
                 )
 
 
+def same_day_background_context_is_reusable(row: Any, *, run_date: date) -> bool:
+    if row.as_of_date != run_date or row.freshness != "fresh":
+        return False
+    if row.context_type != "full_margin":
+        return True
+
+    payload = _mapping(row.payload)
+    return _is_finite_number(payload.get("margin_balance_delta_pct")) or (
+        payload.get("margin_balance_delta_pct_unavailable_reason") == "baseline_zero"
+    )
+
+
 def update_background_chip_context_cache(
     session: Session,
     *,
@@ -153,7 +166,7 @@ def update_background_chip_context_cache(
         reused_pairs = {
             (row.symbol, row.context_type)
             for row in fresh_rows
-            if row.as_of_date == run_date and row.freshness == "fresh"
+            if same_day_background_context_is_reusable(row, run_date=run_date)
         }
         fetch_symbols_by_context_type = {
             context_type: [
@@ -366,6 +379,15 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return {}
 
 
+def _is_finite_number(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def _list_of_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -380,5 +402,6 @@ __all__ = [
     "BackgroundContextPayload",
     "StubBackgroundChipContextProvider",
     "build_background_context_labels",
+    "same_day_background_context_is_reusable",
     "update_background_chip_context_cache",
 ]
