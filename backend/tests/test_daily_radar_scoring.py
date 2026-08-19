@@ -666,6 +666,11 @@ def test_zero_baseline_margin_does_not_invent_percentage_in_scoring_trace() -> N
     )
     assert "margin_delta_pct" not in penalty["details"]
     assert penalty["details"]["margin_delta_pct_unavailable_reason"] == "baseline_zero"
+    replay_margin_debug = result["input_snapshot"]["replay_input"]["prefilter_result"]["debug"][
+        "margin"
+    ]
+    assert replay_margin_debug["margin_delta_pct"] is None
+    assert replay_margin_debug["margin_delta_pct_unavailable_reason"] == "baseline_zero"
     assert not {
         "institutional_margin_contained",
         "bottoming_margin_easing",

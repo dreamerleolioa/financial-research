@@ -241,6 +241,11 @@ def test_prefilter_accepts_undefined_margin_percentage_with_zero_baseline_reason
     result = prefilter_record(record)
 
     assert result["prefilter_status"] == "accepted"
+    assert result["debug"]["margin"]["margin_delta_pct"] is None
+    assert (
+        result["debug"]["margin"]["margin_delta_pct_unavailable_reason"]
+        == "baseline_zero"
+    )
 
 
 @pytest.mark.parametrize("symbol, expected", EDGE_CASES.items())
