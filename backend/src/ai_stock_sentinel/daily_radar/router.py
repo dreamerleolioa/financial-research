@@ -14,7 +14,10 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.data_sources.fundamental.interface import PointInTimeFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
-from ai_stock_sentinel.daily_radar.data_quality import missing_daily_radar_candidate_technical_fields
+from ai_stock_sentinel.daily_radar.data_quality import (
+    margin_evidence_is_complete,
+    missing_daily_radar_candidate_technical_fields,
+)
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
     InstitutionalEvidenceProvider,
@@ -1507,7 +1510,7 @@ def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
             institutional_date = _mapping(flow.get("data_dates")).get("institutional_flow")
             if str(institutional_date or "") != row.record_date.isoformat():
                 missing["institutional"].append(row.symbol)
-        if not all(_finite_number(margin.get(field)) for field in ("margin_delta_pct", "margin_to_volume")):
+        if not margin_evidence_is_complete(margin):
             missing["margin"].append(row.symbol)
         if (
             not _finite_number(fundamental.get("ttm_eps"))

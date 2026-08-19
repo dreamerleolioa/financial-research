@@ -9,6 +9,8 @@ from threading import Lock
 import time
 from typing import Any
 
+from ai_stock_sentinel.data_sources.official_http import official_request_get
+
 
 TWSE_MARKET_BAR_URL = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
 TPEX_MARKET_BAR_URL = (
@@ -382,11 +384,7 @@ def _is_no_data_status(stat: str) -> bool:
 
 
 def _import_requests_get() -> RequestGetter:
-    try:
-        import requests
-    except ImportError as exc:
-        raise OfficialMarketBarProviderError("missing_dependency", market="TW") from exc
-    return requests.get
+    return official_request_get
 
 
 __all__ = [

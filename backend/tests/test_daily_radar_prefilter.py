@@ -233,6 +233,16 @@ def test_prefilter_rejects_malformed_required_margin_values(invalid_value: str) 
     )
 
 
+def test_prefilter_accepts_undefined_margin_percentage_with_zero_baseline_reason() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["margin"].pop("margin_delta_pct")
+    record["margin"]["margin_delta_pct_unavailable_reason"] = "baseline_zero"
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "accepted"
+
+
 @pytest.mark.parametrize("symbol, expected", EDGE_CASES.items())
 def test_prefilter_rejects_fixture_edge_cases_with_stable_chinese_reasons(
     symbol: str,

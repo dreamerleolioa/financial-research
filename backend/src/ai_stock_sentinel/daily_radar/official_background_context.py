@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import re
 from typing import Any
 
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.daily_radar.background_context import (
     BACKGROUND_CONTEXT_ALL_CONSUMERS,
     BackgroundContextPayload,
@@ -186,6 +187,9 @@ class OfficialBackgroundChipContextProvider:
                     "latest_short_balance": short_latest,
                     "margin_balance_delta": _delta(margin_latest, margin_start),
                     "margin_balance_delta_pct": _delta_pct(margin_latest, margin_start),
+                    "margin_balance_delta_pct_unavailable_reason": (
+                        _delta_pct_unavailable_reason(margin_latest, margin_start)
+                    ),
                     "short_balance_delta": _delta(short_latest, short_start),
                     "short_balance_delta_pct": _delta_pct(short_latest, short_start),
                     "data_dates": [row_date.isoformat() for row_date, _row in rows],
@@ -567,19 +571,18 @@ def _delta_pct(latest: float | None, start: float | None) -> float | None:
     return (latest - start) / start * 100
 
 
+def _delta_pct_unavailable_reason(latest: float | None, start: float | None) -> str | None:
+    if latest is not None and start == 0:
+        return "baseline_zero"
+    return None
+
+
 def _replay_key(symbol: str, context_type: str, as_of_date: date) -> str:
     return f"background_context:{symbol}:{context_type}:{as_of_date.isoformat()}"
 
 
 def _import_requests_get() -> RequestGetter:
-    try:
-        import requests
-    except ImportError as exc:
-        raise OfficialBackgroundContextError(
-            "missing_dependency",
-            dataset="official_background_context",
-        ) from exc
-    return requests.get
+    return official_request_get
 
 
 __all__ = [

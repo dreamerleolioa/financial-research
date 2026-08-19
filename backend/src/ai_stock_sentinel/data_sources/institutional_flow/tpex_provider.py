@@ -1,17 +1,21 @@
 """TpexProvider：Fallback #2，上櫃標的資料源（TPEX / OTC OpenAPI）。"""
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
+from typing import Any
 
 from ai_stock_sentinel.data_sources.institutional_flow.interface import (
     InstitutionalFlowData,
     InstitutionalFlowError,
 )
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 logger = logging.getLogger(__name__)
 
 # TPEX 三大法人 OpenAPI
 _TPEX_INST_API = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_three_institutions_trading"
+RequestGetter = Callable[..., Any]
 
 
 class TpexProvider:
@@ -26,20 +30,14 @@ class TpexProvider:
 
     name = "Tpex"
 
-    def fetch_daily_flow(self, symbol: str, days: int = 5) -> InstitutionalFlowData:
-        try:
-            import requests
-        except ImportError as e:
-            raise InstitutionalFlowError(
-                code="MISSING_DEPENDENCY",
-                message="requests 套件未安裝",
-                provider=self.name,
-            ) from e
+    def __init__(self, *, request_get: RequestGetter | None = None) -> None:
+        self._request_get = request_get or official_request_get
 
+    def fetch_daily_flow(self, symbol: str, days: int = 5) -> InstitutionalFlowData:
         stock_id = _strip_suffix(symbol)
         warnings: list[str] = []
 
-        row = self._fetch_institution_row(requests=requests, stock_id=stock_id)
+        row = self._fetch_institution_row(request_get=self._request_get, stock_id=stock_id)
         if row is None:
             raise InstitutionalFlowError(
                 code="TPEX_NO_DATA",
@@ -103,9 +101,14 @@ class TpexProvider:
             warnings=warnings,
         )
 
-    def _fetch_institution_row(self, *, requests, stock_id: str) -> dict | None:
+    def _fetch_institution_row(
+        self,
+        *,
+        request_get: RequestGetter,
+        stock_id: str,
+    ) -> dict | None:
         try:
-            resp = requests.get(_TPEX_INST_API, timeout=15, headers={"Accept": "application/json"})
+            resp = request_get(_TPEX_INST_API, timeout=15, headers={"Accept": "application/json"})
             resp.raise_for_status()
             rows: list[dict] = resp.json()
         except Exception as exc:

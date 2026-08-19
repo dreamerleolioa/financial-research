@@ -1449,8 +1449,11 @@ def test_fundamental_workflow_has_daily_refresh_and_manual_bounded_backfill() ->
     assert "for batch in 1 2 3 4 5 6" in text
     assert "backfill_after_symbol:" in text
     assert "backfill_job_id:" in text
+    assert "backfill_raw_pool_date:" in text
     assert 'after_symbol="${BACKFILL_AFTER_SYMBOL}"' in text
     assert 'job_id="${BACKFILL_JOB_ID}"' in text
+    assert 'raw_pool_date="${BACKFILL_RAW_POOL_DATE}"' in text
+    assert "{raw_pool_date:$raw_pool_date}" in text
     assert "BACKFILL_NEXT_AFTER_SYMBOL" in text
     assert "BACKFILL_JOB_ID" in text
     assert "Backfill partially failed" in text
