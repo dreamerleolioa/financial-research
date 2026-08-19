@@ -433,6 +433,19 @@ jobs:
             "fundamental_missing: \(.missing_by_lane.fundamental | length)",
             "errors_count: \(.errors | length)"
           ' "$response_file"
+          jq -r '
+            .errors[]?
+            | {
+                code: .code,
+                lane: .lane,
+                symbol: .symbol,
+                market: .market,
+                query_date: .query_date,
+                error_type: .error_type
+              }
+            | with_entries(select(.value != null))
+            | "error: \(. | @json)"
+          ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
           fi

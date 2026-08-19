@@ -1134,3 +1134,11 @@ def test_daily_radar_workflow_schedules_independent_full_ai_evidence_refresh() -
     assert "- refresh-ai-evidence" in text
     assert 'cron: "0 15 * * 1-5"' in text
     assert "/internal/daily-radar/refresh-ai-evidence" in text
+    refresh_job = text.split("  refresh-ai-evidence:", 1)[1].split(
+        "  refresh-market-context:",
+        1,
+    )[0]
+    assert ".errors[]?" in refresh_job
+    assert '"error: \\(. | @json)"' in refresh_job
+    assert "query_date: .query_date" in refresh_job
+    assert "error_type: .error_type" in refresh_job
