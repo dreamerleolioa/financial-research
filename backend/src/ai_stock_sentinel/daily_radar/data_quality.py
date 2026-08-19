@@ -77,15 +77,13 @@ def missing_scoring_fields(
         f"{section}.{field}"
         for section, required_fields in REQUIRED_SCORING_FIELDS.items()
         for field in required_fields
-        if field not in sections[section]
-        or _missing_required_scoring_value(section, field, sections[section].get(field))
+        if _missing_required_scoring_value(section, field, sections[section])
     ]
     required_institutional_fields = _required_institutional_fields(institutional_flow)
     missing_fields.extend(
         f"institutional_flow.{field}"
         for field in required_institutional_fields
-        if field not in institutional_flow
-        or _missing_required_scoring_value("institutional_flow", field, institutional_flow.get(field))
+        if _missing_required_scoring_value("institutional_flow", field, institutional_flow)
     )
     if _unknown_institutional_tracks(institutional_flow):
         missing_fields.append("institutional_flow.universe_track")
@@ -190,7 +188,24 @@ def _is_finite_number(value: Any) -> bool:
         return False
 
 
-def _missing_required_scoring_value(section: str, field: str, value: Any) -> bool:
+def margin_evidence_is_complete(margin: Mapping[str, Any]) -> bool:
+    delta_pct_available = _is_finite_number(margin.get("margin_delta_pct")) or (
+        margin.get("margin_delta_pct_unavailable_reason") == "baseline_zero"
+    )
+    return delta_pct_available and _is_finite_number(margin.get("margin_to_volume"))
+
+
+def _missing_required_scoring_value(
+    section: str,
+    field: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    value = payload.get(field)
+    if section == "margin" and field == "margin_delta_pct":
+        return not (
+            _is_finite_number(value)
+            or payload.get("margin_delta_pct_unavailable_reason") == "baseline_zero"
+        )
     if (section, field) in _TEXT_REQUIRED_SCORING_FIELDS:
         return not isinstance(value, str) or not value.strip()
     return not _is_finite_number(value)
@@ -202,6 +217,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 __all__ = [
     "REQUIRED_SCORING_FIELDS",
+    "margin_evidence_is_complete",
     "missing_scoring_fields",
     "missing_daily_radar_candidate_technical_fields",
     "missing_technical_scoring_fields",

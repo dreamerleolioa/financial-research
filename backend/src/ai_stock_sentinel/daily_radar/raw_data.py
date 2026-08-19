@@ -287,6 +287,9 @@ def _project_margin_context(
         "short_balance": _to_float(payload.get("latest_short_balance")),
         "margin_delta": _to_float(payload.get("margin_balance_delta")),
         "margin_delta_pct": _to_float(payload.get("margin_balance_delta_pct")),
+        "margin_delta_pct_unavailable_reason": payload.get(
+            "margin_balance_delta_pct_unavailable_reason"
+        ),
         "short_delta": _to_float(payload.get("short_balance_delta")),
         "short_delta_pct": _to_float(payload.get("short_balance_delta_pct")),
         "margin_to_volume": margin_to_volume,

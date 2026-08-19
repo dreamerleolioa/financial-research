@@ -647,6 +647,37 @@ def test_daily_radar_scoring_applies_fixture_risk_penalties_and_labels(
     assert any(penalty["label"] == expected_label for penalty in risky["score_breakdown"]["risk_penalties"])
 
 
+def test_zero_baseline_margin_does_not_invent_percentage_in_scoring_trace() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2330.TW"])
+    record["margin"].pop("margin_delta_pct")
+    record["margin"]["margin_delta_pct_unavailable_reason"] = "baseline_zero"
+    record["margin"]["margin_to_volume"] = 4.5
+
+    result = score_daily_radar_record(
+        record,
+        market_context=_market_context(),
+        prefilter_result=prefilter_record(record),
+    )
+
+    penalty = next(
+        item
+        for item in result["score_breakdown"]["risk_penalties"]
+        if item["label"] == "margin_crowding"
+    )
+    assert "margin_delta_pct" not in penalty["details"]
+    assert penalty["details"]["margin_delta_pct_unavailable_reason"] == "baseline_zero"
+    replay_margin_debug = result["input_snapshot"]["replay_input"]["prefilter_result"]["debug"][
+        "margin"
+    ]
+    assert replay_margin_debug["margin_delta_pct"] is None
+    assert replay_margin_debug["margin_delta_pct_unavailable_reason"] == "baseline_zero"
+    assert not {
+        "institutional_margin_contained",
+        "bottoming_margin_easing",
+        "support_retest_margin_not_expanding",
+    }.intersection(rule["rule_id"] for rule in result["matched_rules"])
+
+
 def test_daily_radar_scoring_applies_flow_conflict_and_market_weakness_penalties() -> None:
     record = deepcopy(_joined_records_by_symbol()["2330.TW"])
     clean = score_daily_radar_record(record, market_context=_market_context())

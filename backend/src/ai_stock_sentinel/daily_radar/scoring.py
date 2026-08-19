@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import date
+import math
 from typing import Any, cast
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS, DAILY_RADAR_RISK_LABELS
@@ -573,8 +574,30 @@ def _risk_penalties(
     if _has_flow_conflict(flow):
         penalties.append(_penalty("flow_conflict", config.flow_conflict_penalty, "法人方向分歧", flow_state=str(flow.get("flow_state") or ""), three_party_net_shares=_float(flow.get("three_party_net_shares"))))
 
-    if "margin_crowding" in risk_flags or _float(margin.get("margin_delta_pct")) >= 10 or _float(margin.get("margin_to_volume")) >= 4:
-        penalties.append(_penalty("margin_crowding", config.margin_crowding_penalty, "融資籌碼擁擠", margin_delta_pct=_float(margin.get("margin_delta_pct")), margin_to_volume=_float(margin.get("margin_to_volume"))))
+    margin_delta_pct = _finite_float_or_none(margin.get("margin_delta_pct"))
+    margin_to_volume = _finite_float_or_none(margin.get("margin_to_volume"))
+    if (
+        "margin_crowding" in risk_flags
+        or (margin_delta_pct is not None and margin_delta_pct >= 10)
+        or (margin_to_volume is not None and margin_to_volume >= 4)
+    ):
+        details: dict[str, Any] = {}
+        if margin_delta_pct is not None:
+            details["margin_delta_pct"] = margin_delta_pct
+        else:
+            details["margin_delta_pct_unavailable_reason"] = str(
+                margin.get("margin_delta_pct_unavailable_reason") or "missing"
+            )
+        if margin_to_volume is not None:
+            details["margin_to_volume"] = margin_to_volume
+        penalties.append(
+            _penalty(
+                "margin_crowding",
+                config.margin_crowding_penalty,
+                "融資籌碼擁擠",
+                **details,
+            )
+        )
 
     if _has_market_weakness(market_context):
         penalties.append(_penalty("market_weakness", config.market_weakness_penalty, "大盤背景轉弱", market=_mapping(_mapping(market_context).get("market"))))
@@ -993,6 +1016,16 @@ def _float(value: Any) -> float:
     if isinstance(value, bool) or value is None:
         return 0.0
     return float(value)
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _has_numbers(payload: Mapping[str, Any], *keys: str) -> bool:

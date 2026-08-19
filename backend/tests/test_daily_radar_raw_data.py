@@ -483,6 +483,45 @@ def test_ensure_daily_radar_raw_rows_projects_fresh_full_margin_context_into_new
     assert fetcher.calls == [(["2330.TW"], run_date)]
 
 
+def test_ensure_daily_radar_raw_rows_preserves_zero_baseline_margin_reason(
+    db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["4590.TW"],
+        technical_fetcher=fetcher,
+        margin_contexts_by_symbol={
+            "4590.TW": {
+                "context_type": "full_margin",
+                "as_of_date": run_date.isoformat(),
+                "freshness": "fresh",
+                "payload": {
+                    "latest_margin_balance": 262,
+                    "latest_short_balance": 0,
+                    "margin_balance_delta": 262,
+                    "margin_balance_delta_pct": None,
+                    "margin_balance_delta_pct_unavailable_reason": "baseline_zero",
+                },
+            }
+        },
+    )
+
+    loaded = load_daily_radar_cache_records(rows)[0]
+    assert loaded["margin"]["margin_delta_pct_unavailable_reason"] == "baseline_zero"
+    assert "margin_delta_pct" not in loaded["margin"]
+    result = prefilter_record(loaded)
+    missing_fields = [
+        field
+        for reason in result["prefilter_reasons"]
+        for field in reason.get("details", {}).get("missing_fields", [])
+    ]
+    assert "margin.margin_delta_pct" not in missing_fields
+
+
 def test_ensure_daily_radar_raw_rows_preserves_margin_for_stale_full_margin_context(
     db_session: Session,
 ) -> None:

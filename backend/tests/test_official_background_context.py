@@ -198,6 +198,40 @@ def test_official_tpex_margin_counts_unique_payload_dates_only() -> None:
     assert payload.payload["margin_balance_delta"] == 100.0
 
 
+def test_official_margin_marks_zero_baseline_percentage_as_not_applicable() -> None:
+    latest = _twse_margin_payload(
+        "20260818",
+        [["4590", "富田", "0", "0", "0", "0", "262", "0", "0", "0", "0", "0", "0", "0", "0", "0"]],
+    )
+    earlier = _twse_margin_payload(
+        "20260817",
+        [["4590", "富田", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"]],
+    )
+
+    def fake_get(_url: str, *, params: dict, **_kwargs):
+        return _FakeResponse(latest if params["date"] == "20260818" else earlier)
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=2,
+        max_lookback_calendar_days=2,
+    )
+    [payload] = list(
+        provider.fetch(
+            symbols=["4590.TW"],
+            context_types=["full_margin"],
+            run_date=date(2026, 8, 18),
+            market="TW",
+        )
+    )
+
+    assert payload.freshness == "fresh"
+    assert payload.payload["latest_margin_balance"] == 262.0
+    assert payload.payload["margin_balance_delta"] == 262.0
+    assert payload.payload["margin_balance_delta_pct"] is None
+    assert payload.payload["margin_balance_delta_pct_unavailable_reason"] == "baseline_zero"
+
+
 def test_official_lending_reads_live_top_level_schema_and_aggregates_by_date() -> None:
     calls = 0
 

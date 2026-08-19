@@ -221,7 +221,10 @@ def _build_debug(
         },
         "structure": _weak_structure(close, indicators),
         "margin": {
-            "margin_delta_pct": _float(margin.get("margin_delta_pct")),
+            "margin_delta_pct": _finite_float_or_none(margin.get("margin_delta_pct")),
+            "margin_delta_pct_unavailable_reason": margin.get(
+                "margin_delta_pct_unavailable_reason"
+            ),
             "margin_to_volume": _float(margin.get("margin_to_volume")),
         },
     }
@@ -331,6 +334,16 @@ def _float(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return parsed if math.isfinite(parsed) else 0.0
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _int(value: Any) -> int:

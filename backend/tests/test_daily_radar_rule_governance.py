@@ -1500,6 +1500,15 @@ def _governance_replay_row(
     }
 
 
+def test_governance_replay_accepts_zero_baseline_margin_reason() -> None:
+    row = _governance_replay_row(1, with_replay_input=True)
+    record = row["candidate_snapshot"]["input_snapshot"]["replay_input"]["record"]
+    record["margin"].pop("margin_delta_pct")
+    record["margin"]["margin_delta_pct_unavailable_reason"] = "baseline_zero"
+
+    assert rule_governance_module._is_complete_daily_radar_replay_input(row)
+
+
 def _replay_record(symbol: str, *, positive_days: int) -> dict[str, Any]:
     return {
         "symbol": symbol,

@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ai_stock_sentinel.data_sources.official_http import official_request_get
+
 logger = logging.getLogger(__name__)
 
 TWSE_STOCK_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
@@ -134,11 +136,7 @@ def _row_stock_name(row: Mapping[str, Any]) -> str | None:
 
 
 def _import_requests_get() -> RequestGetter:
-    try:
-        import requests
-    except ImportError as exc:
-        raise RuntimeError("requests package is required for symbol metadata requests") from exc
-    return requests.get
+    return official_request_get
 
 
 _DEFAULT_RESOLVER = SymbolMetadataResolver()

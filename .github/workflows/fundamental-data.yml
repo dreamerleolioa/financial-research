@@ -24,6 +24,11 @@ on:
         required: false
         default: ""
         type: string
+      backfill_raw_pool_date:
+        description: Optional completed refresh-ai-evidence date (YYYY-MM-DD) for a new backfill job
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: fundamental-data-${{ github.ref }}
@@ -60,14 +65,17 @@ jobs:
         env:
           BACKFILL_AFTER_SYMBOL: ${{ inputs.backfill_after_symbol }}
           BACKFILL_JOB_ID: ${{ inputs.backfill_job_id }}
+          BACKFILL_RAW_POOL_DATE: ${{ inputs.backfill_raw_pool_date }}
         run: |
           after_symbol="${BACKFILL_AFTER_SYMBOL}"
           job_id="${BACKFILL_JOB_ID}"
+          raw_pool_date="${BACKFILL_RAW_POOL_DATE}"
           for batch in 1 2 3 4 5 6; do
-            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" \
+            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" --arg raw_pool_date "$raw_pool_date" \
               '{scope:"managed", limit:10}
               + (if $after == "" then {} else {after_symbol:$after} end)
-              + (if $job == "" then {} else {job_id:$job} end)')
+              + (if $job == "" then {} else {job_id:$job} end)
+              + (if $job != "" or $raw_pool_date == "" then {} else {raw_pool_date:$raw_pool_date} end)')
             response=$(curl --fail-with-body --silent --show-error \
               --retry 2 \
               --connect-timeout 15 \

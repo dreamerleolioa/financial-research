@@ -33,6 +33,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     candidate_forward_validation_benchmark_symbol,
 )
 from ai_stock_sentinel.daily_radar.data_quality import (
+    margin_evidence_is_complete,
     missing_scoring_fields,
     required_institutional_scoring_fields,
 )
@@ -1530,6 +1531,8 @@ def _is_complete_daily_radar_replay_input(
         margin=margin,
     ):
         return False
+    if not margin_evidence_is_complete(margin):
+        return False
     numeric_fields = (
         *((ohlcv, key) for key in (
             "open", "high", "low", "close", "previous_close", "volume",
@@ -1545,7 +1548,7 @@ def _is_complete_daily_radar_replay_input(
             for key in required_institutional_scoring_fields(institutional_flow)
             if key not in {"flow_state", "same_day_actor"}
         ),
-        *((margin, key) for key in ("margin_delta_pct", "margin_to_volume")),
+        (margin, "margin_to_volume"),
     )
     if any(
         not _is_finite_replay_number(payload.get(key))

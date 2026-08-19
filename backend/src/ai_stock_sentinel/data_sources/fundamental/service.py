@@ -8,7 +8,6 @@ import re
 from typing import Any
 import uuid
 
-import requests
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -32,6 +31,7 @@ from ai_stock_sentinel.data_sources.fundamental.repository import (
     store_dividend_events,
     store_fundamental_periods,
 )
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.db.models import (
     DailyRadarPreparedRun,
     FundamentalBackfillJob,
@@ -73,9 +73,10 @@ class FundamentalBackfillResult:
 def refresh_official_fundamentals(
     session: Session,
     *,
-    request_get: RequestGet = requests.get,
+    request_get: RequestGet | None = None,
     max_workers: int = 4,
 ) -> FundamentalRefreshResult:
+    request_get = request_get or official_request_get
     datasets: list[tuple[str, str, str | None, str | None]] = []
     for schema in OFFICIAL_STATEMENT_SCHEMAS:
         datasets.append((f"TWSE_{schema}", TWSE_STATEMENT_URL.format(schema=schema), "TW", schema))
