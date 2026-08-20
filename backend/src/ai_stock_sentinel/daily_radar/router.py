@@ -21,6 +21,7 @@ from ai_stock_sentinel.daily_radar.data_quality import (
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
     InstitutionalEvidenceProvider,
+    InstitutionalEvidenceResult,
     OfficialInstitutionalEvidenceProvider,
 )
 from ai_stock_sentinel.daily_radar.market_context import (
@@ -601,7 +602,23 @@ def refresh_daily_radar_ai_evidence_endpoint(
     }
     # Do not hold a database transaction open while external providers run.
     db.rollback()
-    evidence_result = institutional_provider.fetch(symbols, run_date=run_date)
+    try:
+        evidence_result = institutional_provider.fetch(symbols, run_date=run_date)
+    except Exception as exc:
+        logger.exception(
+            "Daily Radar institutional evidence provider failed run_date=%s market=%s",
+            run_date,
+            request.market,
+        )
+        evidence_result = InstitutionalEvidenceResult(
+            errors=[
+                {
+                    "code": "institutional_evidence_provider_failed",
+                    "message": str(exc),
+                    "error_type": exc.__class__.__name__,
+                }
+            ]
+        )
     technical_payloads = technical_fetcher.fetch(missing_technical_symbols, run_date=run_date)
     background_payloads, background_fetch_errors = _prefetch_ai_background_evidence(
         background_provider,

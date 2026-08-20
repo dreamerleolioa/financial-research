@@ -312,6 +312,12 @@ class FakeInstitutionalEvidenceProvider:
         return InstitutionalEvidenceResult(payloads_by_symbol=payloads)
 
 
+class RaisingInstitutionalEvidenceProvider(FakeInstitutionalEvidenceProvider):
+    def fetch(self, symbols: list[str], *, run_date: date) -> InstitutionalEvidenceResult:
+        self.calls.append((list(symbols), run_date))
+        raise TypeError("'NoneType' object is not iterable")
+
+
 class FakeFundamentalProvider:
     name = "FakeFundamentalProvider"
 
@@ -422,7 +428,9 @@ def _api_client(
     market_context_provider: FakeMarketIndexContextProvider | None = None,
     market_session_provider: FakeMarketSessionProvider | RaisingMarketSessionProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
-    institutional_evidence_provider: FakeInstitutionalEvidenceProvider | None = None,
+    institutional_evidence_provider: (
+        FakeInstitutionalEvidenceProvider | RaisingInstitutionalEvidenceProvider | None
+    ) = None,
     fundamental_provider: FakeFundamentalProvider | None = None,
     phase1_avwap_provider: (
         FakePhase1AvwapDailyPriceProvider
@@ -1401,6 +1409,55 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
     daily_radar_db_session.refresh(prepared)
     assert prepared.selected_symbols == ["2330.TW"]
     assert "refresh-ai-evidence" not in daily_radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS
+
+
+def test_daily_radar_refresh_ai_evidence_records_unexpected_institutional_provider_error(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    _persist_raw_data(
+        daily_radar_db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        technical=_technical_payload("2330.TW", run_date),
+    )
+    provider = RaisingInstitutionalEvidenceProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        institutional_evidence_provider=provider,
+        raise_server_exceptions=False,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ai-evidence",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["errors"][0] == {
+        "code": "institutional_evidence_provider_failed",
+        "message": "'NoneType' object is not iterable",
+        "error_type": "TypeError",
+    }
+    assert provider.calls == [(["2330.TW"], run_date)]
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-ai-evidence"]["status"] == "failed"
 
 
 def test_ai_fundamental_materialization_clears_future_values_for_historical_as_of() -> None:
