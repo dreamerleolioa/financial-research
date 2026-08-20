@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import date
 from typing import Any
@@ -25,8 +26,63 @@ class _Response:
         return self._payload
 
 
-def test_twse_institutional_evidence_uses_responsive_official_route() -> None:
+def test_twse_institutional_evidence_uses_official_report_route() -> None:
     assert TWSE_T86_URL == "https://www.twse.com.tw/fund/T86"
+
+
+def test_twse_institutional_evidence_retries_transient_timeout() -> None:
+    calls = 0
+    timeouts: list[float] = []
+
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        nonlocal calls
+        calls += 1
+        timeouts.append(timeout)
+        assert url == TWSE_T86_URL
+        if calls == 1:
+            raise TimeoutError("temporary TWSE timeout")
+        row: list[Any] = [""] * 19
+        row[0] = "2330"
+        return _Response({"stat": "OK", "data": [row]})
+
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        recent_market_days=1,
+        calendar_window_days=0,
+    ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
+
+    assert calls == 2
+    assert timeouts == [5.0, 5.0]
+    assert result.errors == []
+    assert set(result.payloads_by_symbol) == {"2330.TW"}
+
+
+def test_twse_institutional_evidence_retries_invalid_json() -> None:
+    calls = 0
+
+    class InvalidJsonResponse(_Response):
+        def json(self) -> dict[str, Any]:
+            raise json.JSONDecodeError("temporary non-JSON body", "<html>", 0)
+
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        nonlocal calls
+        calls += 1
+        assert url == TWSE_T86_URL
+        if calls == 1:
+            return InvalidJsonResponse({})
+        row: list[Any] = [""] * 19
+        row[0] = "2330"
+        return _Response({"stat": "OK", "data": [row]})
+
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        recent_market_days=1,
+        calendar_window_days=0,
+    ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
+
+    assert calls == 2
+    assert result.errors == []
+    assert set(result.payloads_by_symbol) == {"2330.TW"}
 
 
 def test_official_institutional_evidence_projects_twse_and_tpex_rows() -> None:
@@ -45,7 +101,7 @@ def test_official_institutional_evidence_projects_twse_and_tpex_rows() -> None:
     tpex_row[23] = "2,200"
 
     def request_get(url: str, *, params: dict[str, str], timeout: int) -> _Response:
-        assert timeout == 10
+        assert timeout == 5
         calls.append((url, params))
         if url == TWSE_T86_URL:
             return _Response({"stat": "OK", "data": [twse_row]})
@@ -101,7 +157,7 @@ def test_institutional_evidence_stops_after_each_market_has_recent_days() -> Non
     calls: list[tuple[str, str]] = []
 
     def request_get(url: str, *, params: dict[str, str], timeout: int) -> _Response:
-        assert timeout == 10
+        assert timeout == 5
         query_date = params.get("date") or params["d"]
         calls.append((url, query_date))
         if url == TWSE_T86_URL:
@@ -133,7 +189,7 @@ def test_institutional_evidence_tolerates_replaced_historical_timeout() -> None:
     calls: list[tuple[str, str]] = []
 
     def request_get(url: str, *, params: dict[str, str], timeout: int) -> _Response:
-        assert timeout == 10
+        assert timeout == 5
         query_date = params.get("date") or params["d"]
         calls.append((url, query_date))
         if url == TWSE_T86_URL and params["date"] == "20260812":
@@ -164,7 +220,7 @@ def test_institutional_evidence_tolerates_replaced_historical_timeout() -> None:
 
 def test_institutional_evidence_keeps_non_transport_historical_error() -> None:
     def request_get(url: str, *, params: dict[str, str], timeout: int) -> _Response:
-        assert timeout == 10
+        assert timeout == 5
         if url == TWSE_T86_URL and params["date"] == "20260812":
             raise ValueError("invalid historical payload")
         if url == TWSE_T86_URL:
@@ -215,7 +271,7 @@ def test_institutional_evidence_caps_request_timeout_to_remaining_deadline(
     ).fetch(["2330.TW", "2454.TWO"], run_date=date(2026, 8, 13))
 
     assert result.errors == []
-    assert timeouts == [1.0, 1.0]
+    assert timeouts == [0.5, 0.5]
 
 
 def test_institutional_evidence_recomputes_deadline_for_queued_markets() -> None:
@@ -246,7 +302,7 @@ def test_institutional_evidence_recomputes_deadline_for_queued_markets() -> None
 
 def test_institutional_evidence_keeps_current_date_timeout_as_error() -> None:
     def request_get(url: str, *, params: dict[str, str], timeout: int) -> _Response:
-        assert timeout == 10
+        assert timeout == 5
         if url == TWSE_T86_URL and params["date"] == "20260813":
             raise TimeoutError("current TWSE timeout")
         if url == TWSE_T86_URL:
@@ -272,7 +328,7 @@ def test_institutional_evidence_keeps_current_date_timeout_as_error() -> None:
     ]
 
 
-def test_institutional_evidence_default_client_uses_one_attempt_per_date(
+def test_institutional_evidence_default_client_uses_two_bounded_attempts_per_date(
     monkeypatch,
 ) -> None:
     calls = 0
@@ -289,7 +345,7 @@ def test_institutional_evidence_default_client_uses_one_attempt_per_date(
         total_timeout=5,
     ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
 
-    assert calls == 1
+    assert calls == 2
     assert result.errors == [
         {
             "market": "TWSE",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -15,11 +16,15 @@ from ai_stock_sentinel.data_sources.official_http import official_request_get
 TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 TPEX_3I_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
 _MAX_REQUEST_TIMEOUT_SECONDS = 10
+_INSTITUTIONAL_REQUEST_ATTEMPTS = 2
 _RETRYABLE_TRANSPORT_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
     curl_requests.exceptions.Timeout,
     curl_requests.exceptions.ConnectionError,
+)
+_RETRYABLE_INSTITUTIONAL_EXCEPTIONS = _RETRYABLE_TRANSPORT_EXCEPTIONS + (
+    json.JSONDecodeError,
 )
 
 RequestGetter = Callable[..., Any]
@@ -277,13 +282,24 @@ class OfficialInstitutionalEvidenceProvider:
         timeout: float,
     ) -> Any:
         request_get = self._request_get or _import_requests_get()
-        request_kwargs: dict[str, Any] = {"params": params, "timeout": timeout}
-        if request_get is official_request_get:
-            request_kwargs["max_attempts"] = 1
-        response = request_get(url, **request_kwargs)
-        if hasattr(response, "raise_for_status"):
-            response.raise_for_status()
-        return response.json() if hasattr(response, "json") else response
+        attempts = _INSTITUTIONAL_REQUEST_ATTEMPTS
+        attempt_timeout = timeout / attempts
+        for attempt in range(1, attempts + 1):
+            request_kwargs: dict[str, Any] = {
+                "params": params,
+                "timeout": attempt_timeout,
+            }
+            if request_get is official_request_get:
+                request_kwargs["max_attempts"] = 1
+            try:
+                response = request_get(url, **request_kwargs)
+                if hasattr(response, "raise_for_status"):
+                    response.raise_for_status()
+                return response.json() if hasattr(response, "json") else response
+            except _RETRYABLE_INSTITUTIONAL_EXCEPTIONS:
+                if attempt >= attempts:
+                    raise
+        raise RuntimeError("official request retry loop exhausted")
 
 
 def _timeout_error(market: str, query_date: date) -> dict[str, Any]:
