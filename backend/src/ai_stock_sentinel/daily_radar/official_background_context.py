@@ -14,11 +14,14 @@ from ai_stock_sentinel.daily_radar.background_context import (
 
 
 TWSE_MARGIN_URL = "https://www.twse.com.tw/exchangeReport/MI_MARGN"
+TWSE_MARGIN_FALLBACK_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 TPEX_MARGIN_URL = "https://www.tpex.org.tw/www/zh-tw/margin/balance"
 TWSE_LENDING_URL = "https://www.twse.com.tw/rwd/zh/lending/t13sa710"
 
 OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS = BACKGROUND_CONTEXT_ALL_CONSUMERS
 SUPPORTED_CONTEXT_TYPES = {"full_margin", "lending"}
+_HISTORICAL_MARGIN_TIMEOUT_SECONDS = 10
+_MAX_HISTORICAL_MARGIN_REQUEST_FAILURES = 2
 
 RequestGetter = Callable[..., Any]
 
@@ -115,6 +118,7 @@ class OfficialBackgroundChipContextProvider:
         }
         observations: dict[str, list[tuple[date, Mapping[str, Any]]]] = defaultdict(list)
         market_dates: dict[str, set[date]] = defaultdict(set)
+        market_request_failures: dict[str, int] = defaultdict(int)
         request_get = self._request_get or _import_requests_get()
 
         for market_code, market_symbols in by_market.items():
@@ -125,13 +129,30 @@ class OfficialBackgroundChipContextProvider:
                 if len(market_dates[market_code]) >= self._lookback_trading_days:
                     break
                 query_date = run_date - timedelta(days=offset)
-                payload = _request_json(
-                    request_get,
-                    _margin_url(market_code),
-                    params=_margin_params(market_code, query_date),
-                    timeout=self._timeout,
-                    dataset=_margin_dataset(market_code),
-                )
+                try:
+                    payload = _request_margin_json(
+                        request_get,
+                        market_code=market_code,
+                        query_date=query_date,
+                        timeout=(
+                            self._timeout
+                            if offset == 0
+                            else min(self._timeout, _HISTORICAL_MARGIN_TIMEOUT_SECONDS)
+                        ),
+                    )
+                except OfficialBackgroundContextError as exc:
+                    if exc.code != "official_request_failed" or offset == 0:
+                        raise
+                    market_request_failures[market_code] += 1
+                    if (
+                        market_request_failures[market_code]
+                        >= _MAX_HISTORICAL_MARGIN_REQUEST_FAILURES
+                    ):
+                        raise OfficialBackgroundContextError(
+                            "official_margin_request_failure_budget_exceeded",
+                            dataset=_margin_dataset(market_code),
+                        ) from exc
+                    continue
                 parsed = _parse_margin_payload(payload, market_code=market_code)
                 if parsed is None:
                     continue
@@ -144,6 +165,13 @@ class OfficialBackgroundChipContextProvider:
                     if symbol is not None:
                         observations[symbol].append((payload_date, row))
 
+            if market_request_failures[market_code] and (
+                len(market_dates[market_code]) < self._lookback_trading_days
+            ):
+                raise OfficialBackgroundContextError(
+                    "official_margin_lookback_incomplete",
+                    dataset=_margin_dataset(market_code),
+                )
             if not market_dates[market_code]:
                 raise OfficialBackgroundContextError(
                     "official_margin_market_date_unavailable",
@@ -319,14 +347,17 @@ def _request_json(
     params: Mapping[str, Any],
     timeout: int,
     dataset: str,
+    max_attempts: int | None = None,
 ) -> Mapping[str, Any]:
     try:
-        response = request_get(
-            url,
-            params=dict(params),
-            timeout=timeout,
-            headers={"Accept": "application/json"},
-        )
+        request_kwargs: dict[str, Any] = {
+            "params": dict(params),
+            "timeout": timeout,
+            "headers": {"Accept": "application/json"},
+        }
+        if max_attempts is not None and request_get is official_request_get:
+            request_kwargs["max_attempts"] = max_attempts
+        response = request_get(url, **request_kwargs)
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         payload = response.json() if hasattr(response, "json") else response
@@ -341,6 +372,38 @@ def _request_json(
             dataset=dataset,
         )
     return payload
+
+
+def _request_margin_json(
+    request_get: RequestGetter,
+    *,
+    market_code: str,
+    query_date: date,
+    timeout: int,
+) -> Mapping[str, Any]:
+    urls = (
+        (TWSE_MARGIN_URL, TWSE_MARGIN_FALLBACK_URL)
+        if market_code == "TW"
+        else (TPEX_MARGIN_URL,)
+    )
+    last_error: OfficialBackgroundContextError | None = None
+    for index, url in enumerate(urls):
+        try:
+            return _request_json(
+                request_get,
+                url,
+                params=_margin_params(market_code, query_date),
+                timeout=timeout,
+                dataset=_margin_dataset(market_code),
+                max_attempts=(1 if index == 0 else 2) if len(urls) > 1 else None,
+            )
+        except OfficialBackgroundContextError as exc:
+            if exc.code != "official_request_failed":
+                raise
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("official margin URL list is empty")
 
 
 def _parse_margin_payload(
@@ -460,10 +523,6 @@ def _parse_lending_payload(payload: Mapping[str, Any]) -> list[tuple[date, str, 
         if stock_id:
             normalized.append((row_date, stock_id, volume))
     return normalized
-
-
-def _margin_url(market_code: str) -> str:
-    return TWSE_MARGIN_URL if market_code == "TW" else TPEX_MARGIN_URL
 
 
 def _margin_dataset(market_code: str) -> str:
@@ -590,6 +649,7 @@ __all__ = [
     "OfficialBackgroundChipContextProvider",
     "OfficialBackgroundContextError",
     "TPEX_MARGIN_URL",
+    "TWSE_MARGIN_FALLBACK_URL",
     "TWSE_LENDING_URL",
     "TWSE_MARGIN_URL",
     "is_official_background_supported_symbol",

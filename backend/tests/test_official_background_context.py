@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from ai_stock_sentinel.data_sources import official_http
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
 from ai_stock_sentinel.daily_radar.default_background_context import DefaultBackgroundChipContextProvider
 from ai_stock_sentinel.daily_radar.official_background_context import (
@@ -28,6 +29,209 @@ class _FakeResponse:
 
 def test_twse_margin_uses_responsive_official_route() -> None:
     assert TWSE_MARGIN_URL == "https://www.twse.com.tw/exchangeReport/MI_MARGN"
+
+
+def test_twse_margin_falls_back_to_rwd_route_for_same_date() -> None:
+    fallback_url = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+    calls: list[tuple[str, str]] = []
+
+    def fake_get(url: str, *, params: dict, **_kwargs):
+        calls.append((url, params["date"]))
+        if url == TWSE_MARGIN_URL:
+            raise TimeoutError("primary route timed out")
+        assert url == fallback_url
+        return _FakeResponse(
+            _twse_margin_payload(
+                params["date"],
+                [["2330", "台積電", "0", "0", "0", "900", "1,000", "0", "0", "0", "0", "40", "50", "0", "0", ""]],
+            )
+        )
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=1,
+        max_lookback_calendar_days=1,
+    )
+
+    [payload] = list(
+        provider.fetch(
+            symbols=["2330.TW"],
+            context_types=["full_margin"],
+            run_date=date(2026, 6, 10),
+            market="TW",
+        )
+    )
+
+    assert calls == [
+        (TWSE_MARGIN_URL, "20260610"),
+        (fallback_url, "20260610"),
+    ]
+    assert payload.payload["latest_margin_balance"] == 1000.0
+
+
+def test_twse_margin_skips_failed_historical_date_after_latest_succeeds() -> None:
+    fallback_url = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+
+    def fake_get(url: str, *, params: dict, **_kwargs):
+        if params["date"] == "20260609":
+            raise TimeoutError(f"{url} timed out")
+        return _FakeResponse(
+            _twse_margin_payload(
+                params["date"],
+                [["2330", "台積電", "0", "0", "0", "900", "1,000", "0", "0", "0", "0", "40", "50", "0", "0", ""]],
+            )
+        )
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=2,
+        max_lookback_calendar_days=3,
+    )
+
+    [payload] = list(
+        provider.fetch(
+            symbols=["2330.TW"],
+            context_types=["full_margin"],
+            run_date=date(2026, 6, 10),
+            market="TW",
+        )
+    )
+
+    assert fallback_url != TWSE_MARGIN_URL
+    assert payload.payload["data_dates"] == ["2026-06-08", "2026-06-10"]
+
+
+def test_twse_margin_keeps_latest_date_failure_fail_closed() -> None:
+    def fake_get(url: str, *, params: dict, **_kwargs):
+        raise TimeoutError(f"{url} timed out for {params['date']}")
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=1,
+        max_lookback_calendar_days=1,
+    )
+
+    with pytest.raises(OfficialBackgroundContextError, match="official_request_failed"):
+        list(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["full_margin"],
+                run_date=date(2026, 6, 10),
+                market="TW",
+            )
+        )
+
+
+def test_twse_margin_fails_when_request_gaps_leave_lookback_incomplete() -> None:
+    def fake_get(url: str, *, params: dict, **_kwargs):
+        if params["date"] != "20260610":
+            raise TimeoutError(f"{url} timed out for {params['date']}")
+        return _FakeResponse(
+            _twse_margin_payload(
+                params["date"],
+                [["2330", "台積電", "0", "0", "0", "900", "1,000", "0", "0", "0", "0", "40", "50", "0", "0", ""]],
+            )
+        )
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=2,
+        max_lookback_calendar_days=2,
+    )
+
+    with pytest.raises(
+        OfficialBackgroundContextError,
+        match="official_margin_lookback_incomplete",
+    ):
+        list(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["full_margin"],
+                run_date=date(2026, 6, 10),
+                market="TW",
+            )
+        )
+
+
+def test_twse_margin_retries_fallback_with_total_three_attempt_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_url = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+    calls: list[str] = []
+
+    def curl_get(url: str, **kwargs):
+        calls.append(url)
+        if url == TWSE_MARGIN_URL or calls.count(fallback_url) == 1:
+            raise official_http.curl_requests.exceptions.Timeout("temporary timeout")
+        return _FakeResponse(
+            _twse_margin_payload(
+                kwargs["params"]["date"],
+                [["2330", "台積電", "0", "0", "0", "900", "1,000", "0", "0", "0", "0", "40", "50", "0", "0", ""]],
+            )
+        )
+
+    monkeypatch.setattr(official_http.curl_requests, "get", curl_get)
+    monkeypatch.setattr(official_http.time, "sleep", lambda _seconds: None)
+    provider = OfficialBackgroundChipContextProvider(
+        lookback_trading_days=1,
+        max_lookback_calendar_days=1,
+    )
+
+    [payload] = list(
+        provider.fetch(
+            symbols=["2330.TW"],
+            context_types=["full_margin"],
+            run_date=date(2026, 6, 10),
+            market="TW",
+        )
+    )
+
+    assert calls == [TWSE_MARGIN_URL, fallback_url, fallback_url]
+    assert payload.payload["latest_margin_balance"] == 1000.0
+
+
+def test_twse_margin_stops_after_historical_request_failure_budget() -> None:
+    calls: list[tuple[str, str, int]] = []
+
+    def fake_get(url: str, *, params: dict, timeout: int, **_kwargs):
+        calls.append((url, params["date"], timeout))
+        if params["date"] != "20260610":
+            raise TimeoutError(f"{url} timed out for {params['date']}")
+        return _FakeResponse(
+            _twse_margin_payload(
+                params["date"],
+                [["2330", "台積電", "0", "0", "0", "900", "1,000", "0", "0", "0", "0", "40", "50", "0", "0", ""]],
+            )
+        )
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=3,
+        max_lookback_calendar_days=37,
+        timeout=30,
+    )
+
+    with pytest.raises(
+        OfficialBackgroundContextError,
+        match="official_margin_request_failure_budget_exceeded",
+    ):
+        list(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["full_margin"],
+                run_date=date(2026, 6, 10),
+                market="TW",
+            )
+        )
+
+    assert [call[1] for call in calls] == [
+        "20260610",
+        "20260609",
+        "20260609",
+        "20260608",
+        "20260608",
+    ]
+    assert [call[2] for call in calls] == [30, 10, 10, 10, 10]
 
 
 def _twse_margin_payload(

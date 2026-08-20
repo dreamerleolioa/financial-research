@@ -86,3 +86,27 @@ def test_official_request_raises_after_bounded_timeout_retries(
 
     assert calls == 3
     assert sleeps == [0.25, 0.5]
+
+
+def test_official_request_can_limit_attempts_for_route_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def request_get(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        raise curl_requests.exceptions.Timeout("route timed out")
+
+    monkeypatch.setattr(official_http.curl_requests, "get", request_get)
+    monkeypatch.setattr(official_http.time, "sleep", sleeps.append)
+
+    with pytest.raises(curl_requests.exceptions.Timeout, match="route timed out"):
+        official_http.official_request_get(
+            "https://official.example.test/data",
+            max_attempts=1,
+        )
+
+    assert calls == 1
+    assert sleeps == []

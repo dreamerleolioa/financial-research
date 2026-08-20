@@ -15,19 +15,25 @@ _RETRYABLE_EXCEPTIONS = (
 )
 
 
-def official_request_get(url: str, **kwargs: Any) -> Any:
+def official_request_get(
+    url: str,
+    *,
+    max_attempts: int | None = None,
+    **kwargs: Any,
+) -> Any:
     """Call official market endpoints with bounded retries and TLS verification enabled."""
 
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    attempts = _MAX_ATTEMPTS if max_attempts is None else max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
         try:
             response = curl_requests.get(url, **kwargs)
         except _RETRYABLE_EXCEPTIONS:
-            if attempt >= _MAX_ATTEMPTS:
+            if attempt >= attempts:
                 raise
             _sleep_before_retry(attempt)
             continue
 
-        if _is_retryable_response(response) and attempt < _MAX_ATTEMPTS:
+        if _is_retryable_response(response) and attempt < attempts:
             _sleep_before_retry(attempt)
             continue
         return response
