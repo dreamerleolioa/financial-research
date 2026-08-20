@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -14,9 +16,9 @@ from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 
 TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
+TWSE_T86_FALLBACK_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
 TPEX_3I_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
 _MAX_REQUEST_TIMEOUT_SECONDS = 10
-_INSTITUTIONAL_REQUEST_ATTEMPTS = 2
 _RETRYABLE_TRANSPORT_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
@@ -26,8 +28,10 @@ _RETRYABLE_TRANSPORT_EXCEPTIONS = (
 _RETRYABLE_INSTITUTIONAL_EXCEPTIONS = _RETRYABLE_TRANSPORT_EXCEPTIONS + (
     json.JSONDecodeError,
 )
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 425, 429, *range(500, 600)})
 
 RequestGetter = Callable[..., Any]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -212,6 +216,9 @@ class OfficialInstitutionalEvidenceProvider:
     ) -> dict[str, dict[str, float]]:
         payload = self._get_json(
             TWSE_T86_URL,
+            fallback_url=TWSE_T86_FALLBACK_URL,
+            market="TWSE",
+            query_date=query_date,
             params={
                 "response": "json",
                 "date": query_date.strftime("%Y%m%d"),
@@ -248,6 +255,8 @@ class OfficialInstitutionalEvidenceProvider:
         roc_date = f"{query_date.year - 1911}/{query_date.month:02d}/{query_date.day:02d}"
         payload = self._get_json(
             TPEX_3I_URL,
+            market="TPEX",
+            query_date=query_date,
             params={"l": "zh-tw", "o": "json", "d": roc_date},
             timeout=timeout,
         )
@@ -278,28 +287,128 @@ class OfficialInstitutionalEvidenceProvider:
         self,
         url: str,
         *,
+        market: str,
+        query_date: date,
         params: dict[str, str],
         timeout: float,
+        fallback_url: str | None = None,
     ) -> Any:
         request_get = self._request_get or _import_requests_get()
-        attempts = _INSTITUTIONAL_REQUEST_ATTEMPTS
+        attempt_urls = (url, fallback_url or url)
+        attempts = len(attempt_urls)
         attempt_timeout = timeout / attempts
-        for attempt in range(1, attempts + 1):
+        for attempt, attempt_url in enumerate(attempt_urls, start=1):
             request_kwargs: dict[str, Any] = {
                 "params": params,
                 "timeout": attempt_timeout,
             }
             if request_get is official_request_get:
                 request_kwargs["max_attempts"] = 1
+            response: Any = None
+            started_at = time.perf_counter()
             try:
-                response = request_get(url, **request_kwargs)
+                response = request_get(attempt_url, **request_kwargs)
                 if hasattr(response, "raise_for_status"):
                     response.raise_for_status()
-                return response.json() if hasattr(response, "json") else response
-            except _RETRYABLE_INSTITUTIONAL_EXCEPTIONS:
-                if attempt >= attempts:
-                    raise
+                payload = response.json() if hasattr(response, "json") else response
+            except Exception as exc:
+                retryable = isinstance(
+                    exc,
+                    _RETRYABLE_INSTITUTIONAL_EXCEPTIONS,
+                ) or _is_retryable_http_response(response)
+                event = (
+                    "institutional_evidence_request_retry"
+                    if retryable and attempt < attempts
+                    else "institutional_evidence_request_failed"
+                )
+                _log_request_diagnostic(
+                    event,
+                    market=market,
+                    query_date=query_date,
+                    endpoint_url=attempt_url,
+                    attempt=attempt,
+                    max_attempts=attempts,
+                    started_at=started_at,
+                    response=response,
+                    error=exc,
+                )
+                if retryable and attempt < attempts:
+                    continue
+                raise
+            if attempt > 1:
+                _log_request_diagnostic(
+                    "institutional_evidence_request_recovered",
+                    market=market,
+                    query_date=query_date,
+                    endpoint_url=attempt_url,
+                    attempt=attempt,
+                    max_attempts=attempts,
+                    started_at=started_at,
+                    response=response,
+                )
+            return payload
         raise RuntimeError("official request retry loop exhausted")
+
+
+def _is_retryable_http_response(response: Any) -> bool:
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, bool):
+        return False
+    try:
+        return int(status_code) in _RETRYABLE_HTTP_STATUS_CODES
+    except (TypeError, ValueError):
+        return False
+
+
+def _log_request_diagnostic(
+    event: str,
+    *,
+    market: str,
+    query_date: date,
+    endpoint_url: str,
+    attempt: int,
+    max_attempts: int,
+    started_at: float,
+    response: Any,
+    error: Exception | None = None,
+) -> None:
+    diagnostic: dict[str, Any] = {
+        "event": event,
+        "provider": "official_twse_tpex",
+        "market": market,
+        "dataset": "institutional_flow",
+        "query_date": query_date.isoformat(),
+        "endpoint_url": endpoint_url,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "elapsed_ms": max(0, round((time.perf_counter() - started_at) * 1000)),
+    }
+    status_code, content_type, response_bytes = _response_metadata(response)
+    if status_code is not None:
+        diagnostic["http_status"] = status_code
+    if content_type:
+        diagnostic["content_type"] = content_type
+    if response_bytes is not None:
+        diagnostic["response_bytes"] = response_bytes
+    if error is not None:
+        diagnostic["error_type"] = error.__class__.__name__
+    logger.warning(json.dumps(diagnostic, sort_keys=True))
+
+
+def _response_metadata(response: Any) -> tuple[int | None, str | None, int | None]:
+    status_code: int | None = None
+    raw_status = getattr(response, "status_code", None)
+    if not isinstance(raw_status, bool):
+        try:
+            status_code = int(raw_status)
+        except (TypeError, ValueError):
+            pass
+    headers = getattr(response, "headers", None)
+    header_get = getattr(headers, "get", None)
+    content_type = str(header_get("content-type") or "").strip() if header_get else ""
+    content = getattr(response, "content", None)
+    response_bytes = len(content) if isinstance(content, (bytes, bytearray)) else None
+    return status_code, content_type or None, response_bytes
 
 
 def _timeout_error(market: str, query_date: date) -> dict[str, Any]:

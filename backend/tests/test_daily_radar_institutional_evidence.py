@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import date
 from typing import Any
@@ -10,14 +11,24 @@ from ai_stock_sentinel.daily_radar import institutional_evidence
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
     TPEX_3I_URL,
+    TWSE_T86_FALLBACK_URL,
     TWSE_T86_URL,
     _build_payload,
 )
 
 
 class _Response:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        content: bytes = b"{}",
+        content_type: str = "application/json",
+    ) -> None:
         self._payload = payload
+        self.content = content
+        self.headers = {"content-type": content_type}
+        self.status_code = 200
 
     def raise_for_status(self) -> None:
         return None
@@ -28,61 +39,125 @@ class _Response:
 
 def test_twse_institutional_evidence_uses_official_report_route() -> None:
     assert TWSE_T86_URL == "https://www.twse.com.tw/fund/T86"
+    assert TWSE_T86_FALLBACK_URL == "https://www.twse.com.tw/rwd/zh/fund/T86"
 
 
-def test_twse_institutional_evidence_retries_transient_timeout() -> None:
-    calls = 0
+def test_twse_institutional_evidence_retries_transient_timeout(
+    caplog,
+) -> None:
+    calls: list[str] = []
     timeouts: list[float] = []
 
     def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
-        nonlocal calls
-        calls += 1
+        calls.append(url)
         timeouts.append(timeout)
-        assert url == TWSE_T86_URL
-        if calls == 1:
+        if len(calls) == 1:
             raise TimeoutError("temporary TWSE timeout")
         row: list[Any] = [""] * 19
         row[0] = "2330"
         return _Response({"stat": "OK", "data": [row]})
 
-    result = OfficialInstitutionalEvidenceProvider(
-        request_get=request_get,
-        recent_market_days=1,
-        calendar_window_days=0,
-    ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
+    with caplog.at_level(logging.WARNING):
+        result = OfficialInstitutionalEvidenceProvider(
+            request_get=request_get,
+            recent_market_days=1,
+            calendar_window_days=0,
+        ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
 
-    assert calls == 2
+    assert calls == [TWSE_T86_URL, TWSE_T86_FALLBACK_URL]
     assert timeouts == [5.0, 5.0]
     assert result.errors == []
     assert set(result.payloads_by_symbol) == {"2330.TW"}
+    events = [json.loads(record.message) for record in caplog.records]
+    assert [event["event"] for event in events] == [
+        "institutional_evidence_request_retry",
+        "institutional_evidence_request_recovered",
+    ]
+    shared_fields = {
+        "provider": "official_twse_tpex",
+        "market": "TWSE",
+        "dataset": "institutional_flow",
+        "query_date": "2026-08-13",
+        "max_attempts": 2,
+    }
+    assert all(shared_fields.items() <= event.items() for event in events)
+    assert events[0]["endpoint_url"] == TWSE_T86_URL
+    assert events[0]["error_type"] == "TimeoutError"
+    assert events[1]["endpoint_url"] == TWSE_T86_FALLBACK_URL
 
 
-def test_twse_institutional_evidence_retries_invalid_json() -> None:
-    calls = 0
+def test_twse_institutional_evidence_retries_invalid_json(caplog) -> None:
+    calls: list[str] = []
 
     class InvalidJsonResponse(_Response):
         def json(self) -> dict[str, Any]:
             raise json.JSONDecodeError("temporary non-JSON body", "<html>", 0)
 
     def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
-        nonlocal calls
-        calls += 1
-        assert url == TWSE_T86_URL
-        if calls == 1:
-            return InvalidJsonResponse({})
+        calls.append(url)
+        if len(calls) == 1:
+            return InvalidJsonResponse(
+                {},
+                content=b"<html>upstream failure</html>",
+                content_type="text/html",
+            )
         row: list[Any] = [""] * 19
         row[0] = "2330"
         return _Response({"stat": "OK", "data": [row]})
 
-    result = OfficialInstitutionalEvidenceProvider(
-        request_get=request_get,
-        recent_market_days=1,
-        calendar_window_days=0,
-    ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
+    with caplog.at_level(logging.WARNING):
+        result = OfficialInstitutionalEvidenceProvider(
+            request_get=request_get,
+            recent_market_days=1,
+            calendar_window_days=0,
+        ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
 
-    assert calls == 2
+    assert calls == [TWSE_T86_URL, TWSE_T86_FALLBACK_URL]
     assert result.errors == []
     assert set(result.payloads_by_symbol) == {"2330.TW"}
+    retry_event = json.loads(caplog.records[0].message)
+    assert retry_event["content_type"] == "text/html"
+    assert retry_event["response_bytes"] == 29
+    assert "upstream failure" not in caplog.text
+    assert "response_body" not in caplog.text
+
+
+def test_twse_institutional_evidence_retries_transient_http_status(caplog) -> None:
+    calls: list[str] = []
+
+    class ServiceUnavailableResponse(_Response):
+        def __init__(self) -> None:
+            super().__init__(
+                {},
+                content=b"service unavailable",
+                content_type="text/plain",
+            )
+            self.status_code = 503
+
+        def raise_for_status(self) -> None:
+            raise RuntimeError("HTTP 503")
+
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        calls.append(url)
+        if len(calls) == 1:
+            return ServiceUnavailableResponse()
+        row: list[Any] = [""] * 19
+        row[0] = "2330"
+        return _Response({"stat": "OK", "data": [row]})
+
+    with caplog.at_level(logging.WARNING):
+        result = OfficialInstitutionalEvidenceProvider(
+            request_get=request_get,
+            recent_market_days=1,
+            calendar_window_days=0,
+        ).fetch(["2330.TW"], run_date=date(2026, 8, 13))
+
+    assert result.errors == []
+    assert calls == [TWSE_T86_URL, TWSE_T86_FALLBACK_URL]
+    retry_event = json.loads(caplog.records[0].message)
+    assert retry_event["http_status"] == 503
+    assert retry_event["content_type"] == "text/plain"
+    assert retry_event["response_bytes"] == 19
 
 
 def test_official_institutional_evidence_projects_twse_and_tpex_rows() -> None:
@@ -192,7 +267,10 @@ def test_institutional_evidence_tolerates_replaced_historical_timeout() -> None:
         assert timeout == 5
         query_date = params.get("date") or params["d"]
         calls.append((url, query_date))
-        if url == TWSE_T86_URL and params["date"] == "20260812":
+        if (
+            url in {TWSE_T86_URL, TWSE_T86_FALLBACK_URL}
+            and params["date"] == "20260812"
+        ):
             raise TimeoutError("historical TWSE timeout")
         if url == TWSE_T86_URL:
             row: list[Any] = [""] * 19
@@ -303,7 +381,10 @@ def test_institutional_evidence_recomputes_deadline_for_queued_markets() -> None
 def test_institutional_evidence_keeps_current_date_timeout_as_error() -> None:
     def request_get(url: str, *, params: dict[str, str], timeout: int) -> _Response:
         assert timeout == 5
-        if url == TWSE_T86_URL and params["date"] == "20260813":
+        if (
+            url in {TWSE_T86_URL, TWSE_T86_FALLBACK_URL}
+            and params["date"] == "20260813"
+        ):
             raise TimeoutError("current TWSE timeout")
         if url == TWSE_T86_URL:
             row: list[Any] = [""] * 19
