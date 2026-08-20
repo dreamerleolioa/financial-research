@@ -26,6 +26,10 @@ class _FakeResponse:
         return self._payload
 
 
+def test_twse_margin_uses_responsive_official_route() -> None:
+    assert TWSE_MARGIN_URL == "https://www.twse.com.tw/exchangeReport/MI_MARGN"
+
+
 def _twse_margin_payload(
     payload_date: str,
     rows: list[list[str]],

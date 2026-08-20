@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 
-TWSE_T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
+TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 TPEX_3I_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
 
 RequestGetter = Callable[..., Any]

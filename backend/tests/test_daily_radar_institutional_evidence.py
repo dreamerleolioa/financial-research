@@ -24,6 +24,10 @@ class _Response:
         return self._payload
 
 
+def test_twse_institutional_evidence_uses_responsive_official_route() -> None:
+    assert TWSE_T86_URL == "https://www.twse.com.tw/fund/T86"
+
+
 def test_official_institutional_evidence_projects_twse_and_tpex_rows() -> None:
     calls: list[tuple[str, dict[str, str]]] = []
     twse_row: list[Any] = [""] * 19

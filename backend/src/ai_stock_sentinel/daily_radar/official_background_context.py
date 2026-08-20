@@ -13,7 +13,7 @@ from ai_stock_sentinel.daily_radar.background_context import (
 )
 
 
-TWSE_MARGIN_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+TWSE_MARGIN_URL = "https://www.twse.com.tw/exchangeReport/MI_MARGN"
 TPEX_MARGIN_URL = "https://www.tpex.org.tw/www/zh-tw/margin/balance"
 TWSE_LENDING_URL = "https://www.twse.com.tw/rwd/zh/lending/t13sa710"
 
