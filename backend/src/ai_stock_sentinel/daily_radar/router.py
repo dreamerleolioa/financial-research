@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.data_sources.fundamental.interface import PointInTimeFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.daily_radar.data_quality import (
     margin_evidence_is_complete,
     missing_daily_radar_candidate_technical_fields,
@@ -176,7 +177,14 @@ def get_daily_radar_background_chip_context_provider() -> BackgroundChipContextP
 
 
 def get_daily_radar_institutional_evidence_provider() -> InstitutionalEvidenceProvider:
-    return OfficialInstitutionalEvidenceProvider()
+    finmind_api_token = os.getenv("FINMIND_API_TOKEN", "")
+    return OfficialInstitutionalEvidenceProvider(
+        finmind_client=FinMindClient(
+            api_token=finmind_api_token,
+            token_getter=lambda: finmind_api_token,
+            request_retries=0,
+        ),
+    )
 
 
 def get_daily_radar_fundamental_provider(

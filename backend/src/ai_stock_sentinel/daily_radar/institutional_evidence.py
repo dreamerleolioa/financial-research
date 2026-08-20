@@ -35,7 +35,13 @@ _RETRYABLE_INSTITUTIONAL_EXCEPTIONS = _RETRYABLE_TRANSPORT_EXCEPTIONS + (
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 425, 429, *range(500, 600)})
 
 RequestGetter = Callable[..., Any]
-CachedDailyRows = Mapping[str, Mapping[date, Mapping[str, float]]]
+CachedDailyRows = Mapping[str, Mapping[date, Mapping[str, Any]]]
+_FINMIND_INSTITUTIONAL_DATASET = "TaiwanStockInstitutionalInvestorsBuySell"
+_FINMIND_FALLBACK_PROVIDER = "finmind"
+_OFFICIAL_PROVIDER = "official_twse_tpex"
+_ALLOWED_DAILY_FLOW_PROVIDERS = frozenset(
+    {_OFFICIAL_PROVIDER, _FINMIND_FALLBACK_PROVIDER}
+)
 logger = logging.getLogger(__name__)
 
 
@@ -65,8 +71,22 @@ class InstitutionalEvidenceProvider(Protocol):
         ...
 
 
+class FinMindInstitutionalClient(Protocol):
+    def fetch_data(
+        self,
+        *,
+        dataset: str,
+        data_id: str,
+        start_date: str,
+        end_date: str,
+        timeout: float,
+        capacity_wait_seconds: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        ...
+
+
 class OfficialInstitutionalEvidenceProvider:
-    """Build neutral, date-scoped institutional evidence from official batch reports."""
+    """Build date-scoped evidence from official reports with bounded FinMind fallback."""
 
     def __init__(
         self,
@@ -78,6 +98,8 @@ class OfficialInstitutionalEvidenceProvider:
         max_workers: int = 6,
         total_timeout: int = 60,
         min_request_interval_seconds: float = _MIN_DEFAULT_REQUEST_INTERVAL_SECONDS,
+        finmind_client: FinMindInstitutionalClient | None = None,
+        finmind_max_workers: int = 4,
     ) -> None:
         self._request_get = request_get
         self._timeout = min(max(1, timeout), _MAX_REQUEST_TIMEOUT_SECONDS)
@@ -86,6 +108,8 @@ class OfficialInstitutionalEvidenceProvider:
         self._max_workers = max(1, max_workers)
         self._total_timeout = max(1, total_timeout)
         self._min_request_interval_seconds = max(0.0, min_request_interval_seconds)
+        self._finmind_client = finmind_client
+        self._finmind_max_workers = max(1, finmind_max_workers)
 
     def fetch(
         self,
@@ -254,6 +278,72 @@ class OfficialInstitutionalEvidenceProvider:
                 with suppress(Exception):
                     session.close()
 
+        fallback_errors: dict[str, list[dict[str, Any]]] = {
+            market: [] for market in markets
+        }
+        market_days = {
+            market: _fully_cached_market_dates(
+                [symbol for symbol in requested if _symbol_market(symbol) == market],
+                daily_by_symbol,
+            )
+            for market in markets
+        }
+        if self._finmind_client is not None:
+            incomplete_markets = [
+                market
+                for market in markets
+                if len(market_days[market]) < required_market_days
+                or (
+                    run_date.weekday() < 5
+                    and run_date not in market_days[market]
+                )
+            ]
+            if incomplete_markets:
+                fallback_errors = self._fetch_finmind_fallback(
+                    requested=requested,
+                    markets=incomplete_markets,
+                    daily_by_symbol=daily_by_symbol,
+                    earliest_date=earliest_date,
+                    run_date=run_date,
+                    deadline=deadline,
+                )
+                market_days = {
+                    market: _fully_cached_market_dates(
+                        [
+                            symbol
+                            for symbol in requested
+                            if _symbol_market(symbol) == market
+                        ],
+                        daily_by_symbol,
+                    )
+                    for market in markets
+                }
+                recovered_markets = {
+                    market
+                    for market in incomplete_markets
+                    if len(market_days[market]) >= required_market_days
+                    and (
+                        run_date.weekday() >= 5
+                        or run_date in market_days[market]
+                    )
+                }
+                if recovered_markets:
+                    errors = [
+                        error
+                        for error in errors
+                        if error.get("market") not in recovered_markets
+                    ]
+                    for market in recovered_markets:
+                        historical_errors[market].clear()
+                        _log_fallback_recovered(
+                            market=market,
+                            symbol_count=sum(
+                                1
+                                for symbol in requested
+                                if _symbol_market(symbol) == market
+                            ),
+                        )
+
         for market in markets:
             current_date_missing = run_date.weekday() < 5 and run_date not in market_days[market]
             if current_date_missing and not any(
@@ -270,6 +360,7 @@ class OfficialInstitutionalEvidenceProvider:
                 )
             if len(market_days[market]) >= required_market_days:
                 continue
+            errors.extend(fallback_errors[market])
             errors.extend(historical_errors[market])
             errors.append(
                 {
@@ -295,6 +386,151 @@ class OfficialInstitutionalEvidenceProvider:
             if rows
         }
         return InstitutionalEvidenceResult(payloads_by_symbol=payloads, errors=errors)
+
+    def _fetch_finmind_fallback(
+        self,
+        *,
+        requested: set[str],
+        markets: Sequence[str],
+        daily_by_symbol: dict[str, dict[date, dict[str, Any]]],
+        earliest_date: date,
+        run_date: date,
+        deadline: float,
+    ) -> dict[str, list[dict[str, Any]]]:
+        errors: dict[str, list[dict[str, Any]]] = {market: [] for market in markets}
+        symbols = [
+            symbol
+            for symbol in sorted(requested)
+            if _symbol_market(symbol) in markets
+            and (
+                run_date not in daily_by_symbol.get(symbol, {})
+                or len(daily_by_symbol.get(symbol, {})) < self._recent_market_days
+            )
+        ]
+        if not symbols:
+            return errors
+        worker_count = min(self._finmind_max_workers, len(symbols))
+        executor = ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="institutional-finmind-fallback",
+        )
+        try:
+            for batch_start in range(0, len(symbols), worker_count):
+                batch = symbols[batch_start : batch_start + worker_count]
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    for symbol in symbols[batch_start:]:
+                        errors[_symbol_market(symbol)].append(
+                            _finmind_timeout_error(symbol)
+                        )
+                    break
+                request_timeout = max(
+                    0.1,
+                    min(float(_MAX_REQUEST_TIMEOUT_SECONDS), remaining),
+                )
+                futures: dict[Future[dict[date, dict[str, Any]]], str] = {
+                    executor.submit(
+                        self._fetch_finmind_symbol,
+                        symbol,
+                        earliest_date,
+                        run_date,
+                        request_timeout,
+                    ): symbol
+                    for symbol in batch
+                }
+                done, pending = wait(futures, timeout=remaining)
+                batch_failures: list[tuple[str, Exception]] = []
+                for future in pending:
+                    future.cancel()
+                    symbol = futures[future]
+                    errors[_symbol_market(symbol)].append(
+                        _finmind_timeout_error(symbol)
+                    )
+                for future in done:
+                    symbol = futures[future]
+                    try:
+                        rows = future.result()
+                    except Exception as exc:
+                        batch_failures.append((symbol, exc))
+                        errors[_symbol_market(symbol)].append(
+                            {
+                                "market": _symbol_market(symbol),
+                                "symbol": symbol,
+                                "provider": _FINMIND_FALLBACK_PROVIDER,
+                                "error_type": exc.__class__.__name__,
+                            }
+                        )
+                        _log_fallback_failed(symbol=symbol, error=exc)
+                        continue
+                    for source_date, values in rows.items():
+                        daily_by_symbol.setdefault(symbol, {}).setdefault(
+                            source_date,
+                            values,
+                        )
+                if pending:
+                    for symbol in symbols[batch_start + worker_count :]:
+                        errors[_symbol_market(symbol)].append(
+                            _finmind_timeout_error(symbol)
+                        )
+                    break
+                systemic_error = _finmind_systemic_error(
+                    batch_failures,
+                    completed_count=len(done),
+                )
+                if systemic_error is not None:
+                    remaining_symbols = symbols[batch_start + worker_count :]
+                    for market in {
+                        _symbol_market(symbol) for symbol in remaining_symbols
+                    }:
+                        skipped_count = sum(
+                            1
+                            for symbol in remaining_symbols
+                            if _symbol_market(symbol) == market
+                        )
+                        errors[market].append(
+                            {
+                                "market": market,
+                                "provider": _FINMIND_FALLBACK_PROVIDER,
+                                "error_type": "institutional_evidence_fallback_circuit_open",
+                                "provider_error_code": _finmind_error_code(
+                                    systemic_error
+                                ),
+                                "skipped_symbol_count": skipped_count,
+                            }
+                        )
+                        _log_fallback_circuit_open(
+                            market=market,
+                            error=systemic_error,
+                            skipped_symbol_count=skipped_count,
+                        )
+                    break
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+        return errors
+
+    def _fetch_finmind_symbol(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+        timeout: float,
+    ) -> dict[date, dict[str, Any]]:
+        if self._finmind_client is None:
+            return {}
+        rows = self._finmind_client.fetch_data(
+            dataset=_FINMIND_INSTITUTIONAL_DATASET,
+            data_id=symbol.split(".", maxsplit=1)[0],
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            timeout=timeout,
+            capacity_wait_seconds=0.0,
+        )
+        return _normalize_finmind_rows(
+            rows,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def _fetch_market_date(
         self,
@@ -360,6 +596,7 @@ class OfficialInstitutionalEvidenceProvider:
                 "trust": _number(row[10]),
                 "dealer": _number(row[11]),
                 "total": _number(row[18]),
+                "source_provider": _OFFICIAL_PROVIDER,
             }
         return result
 
@@ -402,6 +639,7 @@ class OfficialInstitutionalEvidenceProvider:
                 "trust": _number(row[13]),
                 "dealer": _number(row[22]),
                 "total": _number(row[23]),
+                "source_provider": _OFFICIAL_PROVIDER,
             }
         return result
 
@@ -485,10 +723,11 @@ class OfficialInstitutionalEvidenceProvider:
 
 def cached_daily_rows_from_raw_rows(
     rows: Sequence[Any],
-) -> dict[str, dict[date, dict[str, float]]]:
-    """Recover official single-day flow values from prior final raw-data snapshots."""
+) -> dict[str, dict[date, dict[str, Any]]]:
+    """Recover point-in-time single-day flow values from prior final snapshots."""
 
-    cached: dict[str, dict[date, dict[str, float]]] = {}
+    cached: dict[str, dict[date, dict[str, Any]]] = {}
+    priorities: dict[tuple[str, date], tuple[int, int, int]] = {}
     for row in rows:
         symbol = str(getattr(row, "symbol", "") or "").strip().upper()
         record_date = getattr(row, "record_date", None)
@@ -496,27 +735,42 @@ def cached_daily_rows_from_raw_rows(
             continue
         institutional = _mapping(getattr(row, "institutional", None))
         flow = _mapping(institutional.get("institutional_flow")) or institutional
-        official_history = _mapping(
-            institutional.get("official_daily_flow")
+        daily_history = _mapping(
+            institutional.get("institutional_daily_flow")
+            or flow.get("institutional_daily_flow")
+            or institutional.get("official_daily_flow")
             or flow.get("official_daily_flow")
         )
-        if str(official_history.get("source_provider") or "") == "official_twse_tpex":
-            for history_row in _as_mapping_rows(official_history.get("rows")):
-                source_date = _parse_iso_date(history_row.get("source_date"))
-                values = {
-                    "foreign": history_row.get("foreign_net_shares"),
-                    "trust": history_row.get("investment_trust_net_shares"),
-                    "dealer": history_row.get("dealer_net_shares"),
-                    "total": history_row.get("three_party_net_shares"),
-                }
-                if source_date is None or source_date > record_date or not all(
-                    _is_finite_number(value) for value in values.values()
-                ):
-                    continue
-                cached.setdefault(symbol, {})[source_date] = {
-                    key: float(value) for key, value in values.items()
-                }
-        if str(flow.get("source_provider") or "") != "official_twse_tpex":
+        history_provider = str(daily_history.get("source_provider") or "")
+        for history_row in _as_mapping_rows(daily_history.get("rows")):
+            source_provider = str(
+                history_row.get("source_provider") or history_provider
+            )
+            if source_provider not in _ALLOWED_DAILY_FLOW_PROVIDERS:
+                continue
+            source_date = _parse_iso_date(history_row.get("source_date"))
+            values = {
+                "foreign": history_row.get("foreign_net_shares"),
+                "trust": history_row.get("investment_trust_net_shares"),
+                "dealer": history_row.get("dealer_net_shares"),
+                "total": history_row.get("three_party_net_shares"),
+            }
+            if source_date is None or source_date > record_date or not all(
+                _is_finite_number(value) for value in values.values()
+            ):
+                continue
+            _store_cached_daily_row(
+                cached,
+                priorities,
+                symbol=symbol,
+                source_date=source_date,
+                observed_on=record_date,
+                source_provider=source_provider,
+                values=values,
+                exact_snapshot=source_date == record_date,
+            )
+        flow_provider = str(flow.get("source_provider") or "")
+        if flow_provider not in _ALLOWED_DAILY_FLOW_PROVIDERS:
             continue
         source_date = _mapping(flow.get("data_dates")).get("institutional_flow")
         if str(source_date or "") != record_date.isoformat():
@@ -529,10 +783,44 @@ def cached_daily_rows_from_raw_rows(
         }
         if not all(_is_finite_number(value) for value in values.values()):
             continue
-        cached.setdefault(symbol, {})[record_date] = {
-            key: float(value) for key, value in values.items()
-        }
+        _store_cached_daily_row(
+            cached,
+            priorities,
+            symbol=symbol,
+            source_date=record_date,
+            observed_on=record_date,
+            source_provider=flow_provider,
+            values=values,
+            exact_snapshot=True,
+        )
     return cached
+
+
+def _store_cached_daily_row(
+    cached: dict[str, dict[date, dict[str, Any]]],
+    priorities: dict[tuple[str, date], tuple[int, int, int]],
+    *,
+    symbol: str,
+    source_date: date,
+    observed_on: date,
+    source_provider: str,
+    values: Mapping[str, Any],
+    exact_snapshot: bool,
+) -> None:
+    provider_priority = 2 if source_provider == _OFFICIAL_PROVIDER else 1
+    priority = (
+        provider_priority,
+        observed_on.toordinal(),
+        int(exact_snapshot),
+    )
+    key = (symbol, source_date)
+    if priority <= priorities.get(key, (-1, -1, -1)):
+        return
+    priorities[key] = priority
+    cached.setdefault(symbol, {})[source_date] = {
+        **{name: float(value) for name, value in values.items()},
+        "source_provider": source_provider,
+    }
 
 
 def _normalize_cached_daily_rows(
@@ -541,8 +829,8 @@ def _normalize_cached_daily_rows(
     requested: set[str],
     earliest_date: date,
     run_date: date,
-) -> dict[str, dict[date, dict[str, float]]]:
-    normalized: dict[str, dict[date, dict[str, float]]] = {}
+) -> dict[str, dict[date, dict[str, Any]]]:
+    normalized: dict[str, dict[date, dict[str, Any]]] = {}
     for raw_symbol, rows in (cached_daily_rows or {}).items():
         symbol = str(raw_symbol).strip().upper()
         if symbol not in requested:
@@ -561,15 +849,20 @@ def _normalize_cached_daily_rows(
             ):
                 continue
             normalized.setdefault(symbol, {})[source_date] = {
-                key: float(values[key])
-                for key in ("foreign", "trust", "dealer", "total")
+                **{
+                    key: float(values[key])
+                    for key in ("foreign", "trust", "dealer", "total")
+                },
+                "source_provider": _normalized_source_provider(
+                    values.get("source_provider")
+                ),
             }
     return normalized
 
 
 def _fully_cached_market_dates(
     symbols: Sequence[str],
-    daily_by_symbol: Mapping[str, Mapping[date, Mapping[str, float]]],
+    daily_by_symbol: Mapping[str, Mapping[date, Mapping[str, Any]]],
 ) -> set[date]:
     if not symbols:
         return set()
@@ -622,6 +915,194 @@ def _wait_for_request_interval(
     )
     if wait_seconds > 0:
         time.sleep(min(wait_seconds, max(0.0, max_wait_seconds)))
+
+
+def _normalize_finmind_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    symbol: str,
+    start_date: date,
+    end_date: date,
+) -> dict[date, dict[str, Any]]:
+    stock_id = symbol.split(".", maxsplit=1)[0]
+    daily: dict[date, dict[str, float]] = {}
+    categories_by_date: dict[date, set[str]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        row_stock_id = str(row.get("stock_id") or row.get("stock_id_code") or "").strip()
+        if row_stock_id and row_stock_id != stock_id:
+            continue
+        source_date = _parse_iso_date(row.get("date"))
+        category = _finmind_category(str(row.get("name") or ""))
+        if (
+            source_date is None
+            or source_date < start_date
+            or source_date > end_date
+            or source_date.weekday() >= 5
+            or category is None
+        ):
+            continue
+        buy = _finite_float(row.get("buy"))
+        sell = _finite_float(row.get("sell"))
+        if buy is None or sell is None:
+            continue
+        values = daily.setdefault(
+            source_date,
+            {
+                "foreign": 0.0,
+                "foreign_dealer": 0.0,
+                "trust": 0.0,
+                "dealer_self": 0.0,
+                "dealer_hedging": 0.0,
+            },
+        )
+        values[category] += buy - sell
+        categories_by_date.setdefault(source_date, set()).add(category)
+
+    normalized: dict[date, dict[str, Any]] = {}
+    required_categories = {
+        "foreign",
+        "foreign_dealer",
+        "trust",
+        "dealer_self",
+        "dealer_hedging",
+    }
+    for source_date, values in daily.items():
+        if categories_by_date.get(source_date) != required_categories:
+            continue
+        dealer = values["dealer_self"] + values["dealer_hedging"]
+        normalized[source_date] = {
+            "foreign": values["foreign"],
+            "trust": values["trust"],
+            "dealer": dealer,
+            "total": values["foreign"] + values["trust"] + dealer,
+            "source_provider": _FINMIND_FALLBACK_PROVIDER,
+        }
+    return normalized
+
+
+def _finmind_category(name: str) -> str | None:
+    if name == "Foreign_Investor":
+        return "foreign"
+    if name == "Foreign_Dealer_Self":
+        return "foreign_dealer"
+    if name == "Investment_Trust":
+        return "trust"
+    if name == "Dealer_self":
+        return "dealer_self"
+    if name == "Dealer_Hedging":
+        return "dealer_hedging"
+    return None
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _normalized_source_provider(value: Any) -> str:
+    source_provider = str(value or "").strip()
+    return (
+        source_provider
+        if source_provider in _ALLOWED_DAILY_FLOW_PROVIDERS
+        else _OFFICIAL_PROVIDER
+    )
+
+
+def _finmind_timeout_error(symbol: str) -> dict[str, Any]:
+    return {
+        "market": _symbol_market(symbol),
+        "symbol": symbol,
+        "provider": _FINMIND_FALLBACK_PROVIDER,
+        "error_type": "institutional_evidence_fallback_timeout",
+    }
+
+
+def _finmind_systemic_error(
+    failures: Sequence[tuple[str, Exception]],
+    *,
+    completed_count: int,
+) -> Exception | None:
+    explicit_systemic_codes = {
+        "capacity_exhausted",
+        "quota_exceeded",
+        "quota_or_token_error",
+        "token_error",
+    }
+    for _, error in failures:
+        if _finmind_error_code(error) in explicit_systemic_codes:
+            return error
+    if not failures or len(failures) != completed_count:
+        return None
+    batch_codes = {_finmind_error_code(error) for _, error in failures}
+    if len(batch_codes) == 1 and next(iter(batch_codes)) in {
+        "api_error",
+        "request_error",
+        "response_error",
+    }:
+        return failures[0][1]
+    return None
+
+
+def _finmind_error_code(error: Exception) -> str:
+    return str(getattr(error, "code", "") or "").strip()
+
+
+def _log_fallback_recovered(*, market: str, symbol_count: int) -> None:
+    logger.warning(
+        json.dumps(
+            {
+                "event": "institutional_evidence_provider_fallback_recovered",
+                "provider": _FINMIND_FALLBACK_PROVIDER,
+                "market": market,
+                "dataset": _FINMIND_INSTITUTIONAL_DATASET,
+                "symbol_count": symbol_count,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _log_fallback_failed(*, symbol: str, error: Exception) -> None:
+    logger.warning(
+        json.dumps(
+            {
+                "event": "institutional_evidence_provider_fallback_failed",
+                "provider": _FINMIND_FALLBACK_PROVIDER,
+                "market": _symbol_market(symbol),
+                "dataset": _FINMIND_INSTITUTIONAL_DATASET,
+                "symbol": symbol,
+                "error_type": error.__class__.__name__,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _log_fallback_circuit_open(
+    *,
+    market: str,
+    error: Exception,
+    skipped_symbol_count: int,
+) -> None:
+    logger.warning(
+        json.dumps(
+            {
+                "event": "institutional_evidence_provider_fallback_circuit_open",
+                "provider": _FINMIND_FALLBACK_PROVIDER,
+                "market": market,
+                "dataset": _FINMIND_INSTITUTIONAL_DATASET,
+                "provider_error_code": _finmind_error_code(error),
+                "error_type": error.__class__.__name__,
+                "skipped_symbol_count": skipped_symbol_count,
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def _log_circuit_open(
@@ -766,7 +1247,7 @@ def _symbol_market(symbol: str) -> str:
 
 def _build_payload(
     symbol: str,
-    rows: Mapping[date, Mapping[str, float]],
+    rows: Mapping[date, Mapping[str, Any]],
     *,
     run_date: date,
     active_dates: Sequence[date],
@@ -781,11 +1262,23 @@ def _build_payload(
         ((key, float(latest.get(key, 0.0))) for key in ("foreign", "trust", "dealer")),
         key=lambda item: abs(item[1]),
     )
-    official_daily_flow = {
-        "source_provider": "official_twse_tpex",
+    source_providers = sorted(
+        {
+            _normalized_source_provider(rows[source_date].get("source_provider"))
+            for source_date in ordered_dates
+        }
+    )
+    latest_source_provider = _normalized_source_provider(
+        latest.get("source_provider")
+    )
+    institutional_daily_flow = {
+        "source_providers": source_providers,
         "rows": [
             {
                 "source_date": source_date.isoformat(),
+                "source_provider": _normalized_source_provider(
+                    rows[source_date].get("source_provider")
+                ),
                 "foreign_net_shares": float(rows[source_date].get("foreign", 0.0)),
                 "investment_trust_net_shares": float(
                     rows[source_date].get("trust", 0.0)
@@ -808,11 +1301,12 @@ def _build_payload(
         "consecutive_negative_days": consecutive_negative,
         "recent_source_dates": [item.isoformat() for item in sorted(ordered_dates)],
         "flow_state": _flow_state(consecutive_positive, consecutive_negative, float(latest.get("total", 0.0))),
-        "source_provider": "official_twse_tpex",
+        "source_provider": latest_source_provider,
+        "source_providers": source_providers,
         "source_symbol": symbol,
         "data_dates": {"institutional_flow": latest_date.isoformat()},
         "requested_run_date": run_date.isoformat(),
-        "official_daily_flow": official_daily_flow,
+        "institutional_daily_flow": institutional_daily_flow,
     }
     if latest_date == run_date:
         flat.update(

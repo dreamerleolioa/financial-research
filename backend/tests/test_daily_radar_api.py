@@ -1508,8 +1508,15 @@ def test_daily_radar_refresh_ai_evidence_reuses_official_raw_history(
         item.isoformat() for item in reversed(source_dates)
     ]
     assert current_row.institutional["source_provider"] == "daily_radar_universe"
+    assert current_row.institutional["institutional_daily_flow"]["source_providers"] == [
+        "official_twse_tpex"
+    ]
     round_trip_cache = cached_daily_rows_from_raw_rows([current_row])
     assert set(round_trip_cache["2454.TW"]) == set(source_dates)
+    assert {
+        values["source_provider"]
+        for values in round_trip_cache["2454.TW"].values()
+    } == {"official_twse_tpex"}
     second_result = provider.fetch(
         ["2454.TW"],
         run_date=run_date,
@@ -1517,6 +1524,20 @@ def test_daily_radar_refresh_ai_evidence_reuses_official_raw_history(
     )
     assert second_result.errors == []
     assert provider_calls == []
+
+
+def test_daily_radar_default_institutional_provider_enables_bounded_finmind_fallback(
+    monkeypatch,
+) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    monkeypatch.delenv("FINMIND_API_TOKEN", raising=False)
+    provider = daily_radar_router.get_daily_radar_institutional_evidence_provider()
+
+    assert isinstance(provider, OfficialInstitutionalEvidenceProvider)
+    assert provider._finmind_client is not None
+    assert provider._finmind_client._request_retries == 0
+    assert provider._finmind_client._token_getter() == ""
 
 
 def test_daily_radar_refresh_ai_evidence_records_unexpected_institutional_provider_error(

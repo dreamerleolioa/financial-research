@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ai_stock_sentinel.data_sources import official_http
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClientError
 from ai_stock_sentinel.daily_radar import institutional_evidence
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
@@ -366,6 +367,89 @@ def test_cached_daily_rows_rejects_future_observations() -> None:
     assert cached_daily_rows_from_raw_rows([raw_row]) == {}
 
 
+def test_cached_daily_rows_round_trips_finmind_provenance() -> None:
+    raw_row = SimpleNamespace(
+        symbol="2330.TW",
+        record_date=date(2026, 8, 19),
+        institutional={
+            "institutional_daily_flow": {
+                "source_providers": ["finmind"],
+                "rows": [
+                    {
+                        "source_date": "2026-08-19",
+                        "source_provider": "finmind",
+                        "foreign_net_shares": 10.0,
+                        "investment_trust_net_shares": 20.0,
+                        "dealer_net_shares": 30.0,
+                        "three_party_net_shares": 60.0,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert cached_daily_rows_from_raw_rows([raw_row]) == {
+        "2330.TW": {
+            date(2026, 8, 19): {
+                "foreign": 10.0,
+                "trust": 20.0,
+                "dealer": 30.0,
+                "total": 60.0,
+                "source_provider": "finmind",
+            }
+        }
+    }
+
+
+def test_cached_daily_rows_prefers_official_source_independent_of_row_order() -> None:
+    finmind_history_row = SimpleNamespace(
+        symbol="2330.TW",
+        record_date=date(2026, 8, 19),
+        institutional={
+            "institutional_daily_flow": {
+                "rows": [
+                    {
+                        "source_date": "2026-08-18",
+                        "source_provider": "finmind",
+                        "foreign_net_shares": 10.0,
+                        "investment_trust_net_shares": 20.0,
+                        "dealer_net_shares": 30.0,
+                        "three_party_net_shares": 60.0,
+                    }
+                ]
+            }
+        },
+    )
+    official_exact_row = SimpleNamespace(
+        symbol="2330.TW",
+        record_date=date(2026, 8, 18),
+        institutional={
+            "source_provider": "official_twse_tpex",
+            "data_dates": {"institutional_flow": "2026-08-18"},
+            "foreign_net_shares": 100.0,
+            "investment_trust_net_shares": 200.0,
+            "dealer_net_shares": 300.0,
+            "three_party_net_shares": 600.0,
+        },
+    )
+
+    forward = cached_daily_rows_from_raw_rows(
+        [finmind_history_row, official_exact_row]
+    )
+    reverse = cached_daily_rows_from_raw_rows(
+        [official_exact_row, finmind_history_row]
+    )
+
+    assert forward == reverse
+    assert forward["2330.TW"][date(2026, 8, 18)] == {
+        "foreign": 100.0,
+        "trust": 200.0,
+        "dealer": 300.0,
+        "total": 600.0,
+        "source_provider": "official_twse_tpex",
+    }
+
+
 def test_institutional_evidence_skips_weekends() -> None:
     called_dates: list[str] = []
 
@@ -490,6 +574,250 @@ def test_institutional_evidence_fails_closed_when_current_date_has_no_rows() -> 
     assert result.payloads_by_symbol["2330.TW"]["data_dates"] == {
         "institutional_flow": "2026-08-18"
     }
+
+
+def test_institutional_evidence_uses_independent_finmind_fallback_after_official_circuit(
+    caplog,
+) -> None:
+    official_calls: list[str] = []
+
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        official_calls.append(url)
+        raise TimeoutError("official host unavailable")
+
+    class FakeFinMindClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def fetch_data(self, **kwargs: Any) -> list[dict[str, Any]]:
+            self.calls.append(kwargs)
+            return [
+                {"date": source_date, "name": actor, "buy": buy, "sell": sell}
+                for source_date in ("2026-08-18", "2026-08-19")
+                for actor, buy, sell in (
+                    ("Foreign_Investor", 120.0, 20.0),
+                    ("Foreign_Dealer_Self", 5.0, 0.0),
+                    ("Investment_Trust", 40.0, 10.0),
+                    ("Dealer_self", 15.0, 5.0),
+                    ("Dealer_Hedging", 7.0, 2.0),
+                )
+            ]
+
+    finmind_client = FakeFinMindClient()
+    with caplog.at_level(logging.WARNING):
+        result = OfficialInstitutionalEvidenceProvider(
+            request_get=request_get,
+            finmind_client=finmind_client,
+            recent_market_days=2,
+            calendar_window_days=2,
+        ).fetch(["2330.TW"], run_date=date(2026, 8, 19))
+
+    assert official_calls == [TWSE_T86_URL, TWSE_T86_FALLBACK_URL]
+    assert len(finmind_client.calls) == 1
+    assert finmind_client.calls[0] == {
+        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+        "data_id": "2330",
+        "start_date": "2026-08-17",
+        "end_date": "2026-08-19",
+        "timeout": 10.0,
+        "capacity_wait_seconds": 0.0,
+    }
+    assert result.errors == []
+    payload = result.payloads_by_symbol["2330.TW"]
+    assert payload["source_provider"] == "finmind"
+    assert payload["source_providers"] == ["finmind"]
+    assert payload["foreign_net_shares"] == 100.0
+    assert payload["dealer_net_shares"] == 15.0
+    assert payload["three_party_net_shares"] == 145.0
+    assert {
+        row["source_provider"]
+        for row in payload["institutional_daily_flow"]["rows"]
+    } == {"finmind"}
+    assert any(
+        json.loads(record.message).get("event")
+        == "institutional_evidence_provider_fallback_recovered"
+        for record in caplog.records
+    )
+
+
+def test_institutional_evidence_finmind_fallback_does_not_overwrite_official_cache() -> None:
+    cached = {
+        "2330.TW": {
+            date(2026, 8, 19): {
+                "foreign": 10.0,
+                "trust": 20.0,
+                "dealer": 30.0,
+                "total": 60.0,
+                "source_provider": "official_twse_tpex",
+            }
+        }
+    }
+
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        raise TimeoutError("official history unavailable")
+
+    class FakeFinMindClient:
+        def fetch_data(self, **_kwargs: Any) -> list[dict[str, Any]]:
+            return [
+                {"date": source_date, "name": actor, "buy": 100.0, "sell": 0.0}
+                for source_date in ("2026-08-18", "2026-08-19")
+                for actor in (
+                    "Foreign_Investor",
+                    "Foreign_Dealer_Self",
+                    "Investment_Trust",
+                    "Dealer_self",
+                    "Dealer_Hedging",
+                )
+            ]
+
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        finmind_client=FakeFinMindClient(),
+        recent_market_days=2,
+        calendar_window_days=2,
+    ).fetch(
+        ["2330.TW"],
+        run_date=date(2026, 8, 19),
+        cached_daily_rows=cached,
+    )
+
+    assert result.errors == []
+    payload = result.payloads_by_symbol["2330.TW"]
+    assert payload["source_provider"] == "official_twse_tpex"
+    assert payload["three_party_net_shares"] == 60.0
+    assert payload["source_providers"] == ["finmind", "official_twse_tpex"]
+
+
+def test_institutional_evidence_fallback_fills_symbol_missing_from_official_report() -> None:
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        row: list[Any] = [""] * 19
+        row[0] = "2330"
+        return _Response({"stat": "OK", "data": [row]})
+
+    class FakeFinMindClient:
+        def __init__(self) -> None:
+            self.data_ids: list[str] = []
+
+        def fetch_data(self, **kwargs: Any) -> list[dict[str, Any]]:
+            self.data_ids.append(kwargs["data_id"])
+            return [
+                {"date": "2026-08-19", "name": actor, "buy": 100.0, "sell": 0.0}
+                for actor in (
+                    "Foreign_Investor",
+                    "Foreign_Dealer_Self",
+                    "Investment_Trust",
+                    "Dealer_self",
+                    "Dealer_Hedging",
+                )
+            ]
+
+    finmind_client = FakeFinMindClient()
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        finmind_client=finmind_client,
+        recent_market_days=1,
+        calendar_window_days=0,
+    ).fetch(["2330.TW", "2454.TW"], run_date=date(2026, 8, 19))
+
+    assert result.errors == []
+    assert finmind_client.data_ids == ["2454"]
+    assert result.payloads_by_symbol["2330.TW"]["source_provider"] == "official_twse_tpex"
+    assert result.payloads_by_symbol["2454.TW"]["source_provider"] == "finmind"
+
+
+def test_institutional_evidence_finmind_fallback_requires_all_actor_rows() -> None:
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        raise TimeoutError("official host unavailable")
+
+    class IncompleteFinMindClient:
+        def fetch_data(self, **_kwargs: Any) -> list[dict[str, Any]]:
+            return [
+                {
+                    "date": "2026-08-19",
+                    "name": "Foreign_Investor",
+                    "buy": 100.0,
+                    "sell": 0.0,
+                },
+                {
+                    "date": "2026-08-19",
+                    "name": "Investment_Trust",
+                    "buy": 20.0,
+                    "sell": 0.0,
+                },
+            ]
+
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        finmind_client=IncompleteFinMindClient(),
+        recent_market_days=1,
+        calendar_window_days=0,
+    ).fetch(["2330.TW"], run_date=date(2026, 8, 19))
+
+    assert result.payloads_by_symbol == {}
+    assert any(
+        error["error_type"] == "institutional_evidence_lookback_incomplete"
+        for error in result.errors
+    )
+
+
+def test_institutional_evidence_finmind_fallback_reports_provider_failure() -> None:
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        raise TimeoutError("official host unavailable")
+
+    class FailedFinMindClient:
+        def fetch_data(self, **_kwargs: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("fallback unavailable")
+
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        finmind_client=FailedFinMindClient(),
+        recent_market_days=1,
+        calendar_window_days=0,
+    ).fetch(["2330.TW"], run_date=date(2026, 8, 19))
+
+    assert {
+        "market": "TWSE",
+        "symbol": "2330.TW",
+        "provider": "finmind",
+        "error_type": "RuntimeError",
+    } in result.errors
+
+
+def test_institutional_evidence_opens_finmind_circuit_on_quota_exhaustion() -> None:
+    def request_get(url: str, *, params: dict[str, str], timeout: float) -> _Response:
+        raise TimeoutError("official host unavailable")
+
+    class QuotaExhaustedFinMindClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fetch_data(self, **_kwargs: Any) -> list[dict[str, Any]]:
+            self.calls += 1
+            raise FinMindClientError(
+                code="quota_exceeded",
+                message="quota exhausted",
+                dataset="TaiwanStockInstitutionalInvestorsBuySell",
+                status_code=429,
+            )
+
+    finmind_client = QuotaExhaustedFinMindClient()
+    symbols = [f"{stock_id}.TW" for stock_id in range(1101, 1113)]
+    result = OfficialInstitutionalEvidenceProvider(
+        request_get=request_get,
+        finmind_client=finmind_client,
+        finmind_max_workers=4,
+        recent_market_days=1,
+        calendar_window_days=0,
+    ).fetch(symbols, run_date=date(2026, 8, 19))
+
+    assert finmind_client.calls == 4
+    assert {
+        "market": "TWSE",
+        "provider": "finmind",
+        "error_type": "institutional_evidence_fallback_circuit_open",
+        "provider_error_code": "quota_exceeded",
+        "skipped_symbol_count": 8,
+    } in result.errors
 
 
 def test_institutional_evidence_keeps_non_transport_historical_error() -> None:
