@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal, Protocol
 
+from ai_stock_sentinel.data_sources.official_http import official_request_get
+
 
 TWSE_MI_INDEX_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 TWSE_MI_INDEX_DATASET = "MI_INDEX"
@@ -41,7 +43,7 @@ class TwseMarketSessionProvider:
     def resolve(self, *, run_date: date, market: str) -> MarketSessionResult:
         if market.upper() != "TW":
             raise MarketSessionProviderError("unsupported_market_session_market")
-        request_get = self._request_get or _import_requests_get()
+        request_get = self._request_get or official_request_get
         try:
             response = request_get(
                 TWSE_MI_INDEX_URL,
@@ -95,14 +97,6 @@ def _has_market_rows(value: object) -> bool:
         if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)) and rows:
             return True
     return False
-
-
-def _import_requests_get() -> RequestGetter:
-    try:
-        import requests
-    except ImportError as exc:
-        raise RuntimeError("requests package is required for TWSE market-session requests") from exc
-    return requests.get
 
 
 __all__ = [
