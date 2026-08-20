@@ -4,13 +4,23 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from time import monotonic
 from typing import Any, Protocol
+
+from curl_cffi import requests as curl_requests
 
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 
 TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 TPEX_3I_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
+_MAX_REQUEST_TIMEOUT_SECONDS = 10
+_RETRYABLE_TRANSPORT_EXCEPTIONS = (
+    TimeoutError,
+    ConnectionError,
+    curl_requests.exceptions.Timeout,
+    curl_requests.exceptions.ConnectionError,
+)
 
 RequestGetter = Callable[..., Any]
 
@@ -45,9 +55,9 @@ class OfficialInstitutionalEvidenceProvider:
         total_timeout: int = 60,
     ) -> None:
         self._request_get = request_get
-        self._timeout = timeout
-        self._recent_market_days = recent_market_days
-        self._calendar_window_days = calendar_window_days
+        self._timeout = min(max(1, timeout), _MAX_REQUEST_TIMEOUT_SECONDS)
+        self._recent_market_days = max(1, recent_market_days)
+        self._calendar_window_days = max(0, calendar_window_days)
         self._max_workers = max(1, max_workers)
         self._total_timeout = max(1, total_timeout)
 
@@ -60,60 +70,141 @@ class OfficialInstitutionalEvidenceProvider:
         requested = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
         daily_by_symbol: dict[str, dict[date, dict[str, float]]] = {}
         errors: list[dict[str, Any]] = []
-        market_days: set[date] = set()
-        tasks = [
-            (market, run_date - timedelta(days=offset))
-            for offset in range(self._calendar_window_days + 1)
-            for market in ("TWSE", "TPEX")
+        markets = [
+            market
+            for market, suffix in (("TWSE", ".TW"), ("TPEX", ".TWO"))
+            if any(symbol.endswith(suffix) for symbol in requested)
         ]
-        executor = ThreadPoolExecutor(max_workers=min(self._max_workers, len(tasks)))
-        futures: dict[Future[dict[str, dict[str, float]]], tuple[str, date]] = {
-            executor.submit(self._fetch_market_date, market, query_date): (market, query_date)
-            for market, query_date in tasks
+        if not markets:
+            return InstitutionalEvidenceResult()
+        required_market_days = min(
+            self._recent_market_days,
+            self._calendar_window_days + 1,
+        )
+        market_days: dict[str, set[date]] = {market: set() for market in markets}
+        historical_errors: dict[str, list[dict[str, Any]]] = {
+            market: [] for market in markets
         }
-        done, pending = wait(futures, timeout=self._total_timeout)
-        for future in pending:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
-        for future, (market, query_date) in futures.items():
-            if future in pending:
-                errors.append(
-                    {
-                        "market": market,
-                        "query_date": query_date.isoformat(),
-                        "error_type": "institutional_evidence_total_timeout",
+        deadline = monotonic() + self._total_timeout
+        worker_count = min(self._max_workers, len(markets))
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        deadline_exhausted = False
+        try:
+            for offset in range(self._calendar_window_days + 1):
+                active_markets = [
+                    market
+                    for market in markets
+                    if len(market_days[market]) < required_market_days
+                ]
+                if not active_markets:
+                    break
+                query_date = run_date - timedelta(days=offset)
+                for batch_start in range(0, len(active_markets), worker_count):
+                    batch_markets = active_markets[
+                        batch_start : batch_start + worker_count
+                    ]
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        for market in active_markets[batch_start:]:
+                            errors.append(_timeout_error(market, query_date))
+                        deadline_exhausted = True
+                        break
+                    request_timeout = min(float(self._timeout), remaining)
+                    futures: dict[Future[dict[str, dict[str, float]]], str] = {
+                        executor.submit(
+                            self._fetch_market_date,
+                            market,
+                            query_date,
+                            request_timeout,
+                        ): market
+                        for market in batch_markets
                     }
-                )
-                continue
-            try:
-                rows = future.result()
-            except Exception as exc:
-                errors.append(
-                    {
-                        "market": market,
-                        "query_date": query_date.isoformat(),
-                        "error_type": exc.__class__.__name__,
-                    }
-                )
-                continue
-            if rows:
-                market_days.add(query_date)
-            for symbol, values in rows.items():
-                if symbol in requested:
-                    daily_by_symbol.setdefault(symbol, {})[query_date] = values
+                    done, pending = wait(futures, timeout=remaining)
+                    for future in pending:
+                        future.cancel()
+                        errors.append(_timeout_error(futures[future], query_date))
+                    for future in done:
+                        market = futures[future]
+                        try:
+                            rows = future.result()
+                        except Exception as exc:
+                            error = {
+                                "market": market,
+                                "query_date": query_date.isoformat(),
+                                "error_type": exc.__class__.__name__,
+                            }
+                            if query_date == run_date or not isinstance(
+                                exc,
+                                _RETRYABLE_TRANSPORT_EXCEPTIONS,
+                            ):
+                                errors.append(error)
+                            else:
+                                historical_errors[market].append(error)
+                            continue
+                        if rows:
+                            market_days[market].add(query_date)
+                        for symbol, values in rows.items():
+                            if symbol in requested:
+                                daily_by_symbol.setdefault(symbol, {})[
+                                    query_date
+                                ] = values
+                    if pending:
+                        for market in active_markets[batch_start + worker_count :]:
+                            errors.append(_timeout_error(market, query_date))
+                        deadline_exhausted = True
+                        break
+                if deadline_exhausted:
+                    break
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
 
-        active_dates = sorted(market_days, reverse=True)[: self._recent_market_days]
+        for market in markets:
+            if len(market_days[market]) >= required_market_days:
+                continue
+            errors.extend(historical_errors[market])
+            errors.append(
+                {
+                    "market": market,
+                    "error_type": "institutional_evidence_lookback_incomplete",
+                    "market_day_count": len(market_days[market]),
+                    "required_market_day_count": required_market_days,
+                }
+            )
+
+        active_dates_by_market = {
+            market: sorted(dates, reverse=True)[:required_market_days]
+            for market, dates in market_days.items()
+        }
         payloads = {
-            symbol: _build_payload(symbol, rows, run_date=run_date, active_dates=active_dates)
+            symbol: _build_payload(
+                symbol,
+                rows,
+                run_date=run_date,
+                active_dates=active_dates_by_market[_symbol_market(symbol)],
+            )
             for symbol, rows in daily_by_symbol.items()
             if rows
         }
         return InstitutionalEvidenceResult(payloads_by_symbol=payloads, errors=errors)
 
-    def _fetch_market_date(self, market: str, query_date: date) -> dict[str, dict[str, float]]:
-        return self._fetch_twse(query_date) if market == "TWSE" else self._fetch_tpex(query_date)
+    def _fetch_market_date(
+        self,
+        market: str,
+        query_date: date,
+        timeout: float,
+    ) -> dict[str, dict[str, float]]:
+        return (
+            self._fetch_twse(query_date, timeout=timeout)
+            if market == "TWSE"
+            else self._fetch_tpex(query_date, timeout=timeout)
+        )
 
-    def _fetch_twse(self, query_date: date) -> dict[str, dict[str, float]]:
+    def _fetch_twse(
+        self,
+        query_date: date,
+        *,
+        timeout: float,
+    ) -> dict[str, dict[str, float]]:
         payload = self._get_json(
             TWSE_T86_URL,
             params={
@@ -121,6 +212,7 @@ class OfficialInstitutionalEvidenceProvider:
                 "date": query_date.strftime("%Y%m%d"),
                 "selectType": "ALLBUT0999",
             },
+            timeout=timeout,
         )
         if not isinstance(payload, Mapping) or payload.get("stat") != "OK":
             return {}
@@ -142,11 +234,17 @@ class OfficialInstitutionalEvidenceProvider:
             }
         return result
 
-    def _fetch_tpex(self, query_date: date) -> dict[str, dict[str, float]]:
+    def _fetch_tpex(
+        self,
+        query_date: date,
+        *,
+        timeout: float,
+    ) -> dict[str, dict[str, float]]:
         roc_date = f"{query_date.year - 1911}/{query_date.month:02d}/{query_date.day:02d}"
         payload = self._get_json(
             TPEX_3I_URL,
             params={"l": "zh-tw", "o": "json", "d": roc_date},
+            timeout=timeout,
         )
         if not isinstance(payload, Mapping) or str(payload.get("stat") or "").lower() != "ok":
             return {}
@@ -171,12 +269,33 @@ class OfficialInstitutionalEvidenceProvider:
             }
         return result
 
-    def _get_json(self, url: str, *, params: dict[str, str]) -> Any:
+    def _get_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, str],
+        timeout: float,
+    ) -> Any:
         request_get = self._request_get or _import_requests_get()
-        response = request_get(url, params=params, timeout=self._timeout)
+        request_kwargs: dict[str, Any] = {"params": params, "timeout": timeout}
+        if request_get is official_request_get:
+            request_kwargs["max_attempts"] = 1
+        response = request_get(url, **request_kwargs)
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         return response.json() if hasattr(response, "json") else response
+
+
+def _timeout_error(market: str, query_date: date) -> dict[str, Any]:
+    return {
+        "market": market,
+        "query_date": query_date.isoformat(),
+        "error_type": "institutional_evidence_total_timeout",
+    }
+
+
+def _symbol_market(symbol: str) -> str:
+    return "TPEX" if symbol.endswith(".TWO") else "TWSE"
 
 
 def _build_payload(
