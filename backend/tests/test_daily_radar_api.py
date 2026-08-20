@@ -17,7 +17,11 @@ from sqlalchemy.pool import StaticPool
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
-from ai_stock_sentinel.daily_radar.institutional_evidence import InstitutionalEvidenceResult
+from ai_stock_sentinel.daily_radar.institutional_evidence import (
+    InstitutionalEvidenceResult,
+    OfficialInstitutionalEvidenceProvider,
+    cached_daily_rows_from_raw_rows,
+)
 from ai_stock_sentinel.daily_radar.market_session import MarketSessionProviderError, MarketSessionResult
 from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -429,7 +433,10 @@ def _api_client(
     market_session_provider: FakeMarketSessionProvider | RaisingMarketSessionProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
     institutional_evidence_provider: (
-        FakeInstitutionalEvidenceProvider | RaisingInstitutionalEvidenceProvider | None
+        FakeInstitutionalEvidenceProvider
+        | RaisingInstitutionalEvidenceProvider
+        | OfficialInstitutionalEvidenceProvider
+        | None
     ) = None,
     fundamental_provider: FakeFundamentalProvider | None = None,
     phase1_avwap_provider: (
@@ -1409,6 +1416,107 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
     daily_radar_db_session.refresh(prepared)
     assert prepared.selected_symbols == ["2330.TW"]
     assert "refresh-ai-evidence" not in daily_radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS
+
+
+def test_daily_radar_refresh_ai_evidence_reuses_official_raw_history(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2454.TW"],
+        universe=[
+            {
+                "symbol": "2454.TW",
+                "rank": 1,
+                "primary_track": "same_day_institutional",
+                "tracks": ["same_day_institutional"],
+                "same_day_rank": 1,
+                "same_day_score": 91.0,
+                "track_metrics": {
+                    "same_day_institutional": {
+                        "actor": "foreign",
+                        "net_buy": 5000.0,
+                        "source_dates": [run_date.isoformat()],
+                    }
+                },
+            }
+        ],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    source_dates = [
+        run_date,
+        date(2026, 5, 29),
+        date(2026, 5, 28),
+        date(2026, 5, 27),
+        date(2026, 5, 26),
+    ]
+    for source_date in source_dates:
+        row = _persist_raw_data(
+            daily_radar_db_session,
+            symbol="2454.TW",
+            record_date=source_date,
+            technical=_technical_payload("2454.TW", source_date),
+        )
+        flat = {
+            "foreign_net_shares": 1000.0,
+            "investment_trust_net_shares": 200.0,
+            "dealer_net_shares": 100.0,
+            "three_party_net_shares": 1300.0,
+            "source_provider": "official_twse_tpex",
+            "data_dates": {"institutional_flow": source_date.isoformat()},
+        }
+        row.institutional = flat | {"institutional_flow": dict(flat)}
+    daily_radar_db_session.commit()
+
+    provider_calls: list[str] = []
+
+    def request_get(*_args: Any, **_kwargs: Any) -> Any:
+        provider_calls.append("unexpected")
+        raise AssertionError("complete raw-data history must avoid TWSE requests")
+
+    provider = OfficialInstitutionalEvidenceProvider(request_get=request_get)
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        institutional_evidence_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ai-evidence",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["missing_by_lane"]["institutional"] == []
+    assert body["errors"] == []
+    assert provider_calls == []
+    current_row = daily_radar_db_session.query(StockRawData).filter_by(
+        symbol="2454.TW",
+        record_date=run_date,
+    ).one()
+    assert current_row.institutional["recent_source_dates"] == [
+        item.isoformat() for item in reversed(source_dates)
+    ]
+    assert current_row.institutional["source_provider"] == "daily_radar_universe"
+    round_trip_cache = cached_daily_rows_from_raw_rows([current_row])
+    assert set(round_trip_cache["2454.TW"]) == set(source_dates)
+    second_result = provider.fetch(
+        ["2454.TW"],
+        run_date=run_date,
+        cached_daily_rows=round_trip_cache,
+    )
+    assert second_result.errors == []
+    assert provider_calls == []
 
 
 def test_daily_radar_refresh_ai_evidence_records_unexpected_institutional_provider_error(

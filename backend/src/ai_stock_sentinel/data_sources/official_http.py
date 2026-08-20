@@ -19,14 +19,16 @@ def official_request_get(
     url: str,
     *,
     max_attempts: int | None = None,
+    session: Any | None = None,
     **kwargs: Any,
 ) -> Any:
     """Call official market endpoints with bounded retries and TLS verification enabled."""
 
     attempts = _MAX_ATTEMPTS if max_attempts is None else max(1, max_attempts)
+    transport = session or curl_requests
     for attempt in range(1, attempts + 1):
         try:
-            response = curl_requests.get(url, **kwargs)
+            response = transport.get(url, **kwargs)
         except _RETRYABLE_EXCEPTIONS:
             if attempt >= attempts:
                 raise

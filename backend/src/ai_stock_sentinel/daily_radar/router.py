@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.clock import today_taipei
@@ -23,6 +24,7 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
     InstitutionalEvidenceProvider,
     InstitutionalEvidenceResult,
     OfficialInstitutionalEvidenceProvider,
+    cached_daily_rows_from_raw_rows,
 )
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
@@ -128,6 +130,7 @@ from ai_stock_sentinel.daily_radar.universe import (
     refresh_daily_radar_universe_technical_tracks,
     select_daily_radar_universe,
 )
+from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.phase1_avwap.provider import ArchiveFirstDailyPriceProvider, TwseDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import DailyPriceProvider, refresh_phase1_avwap_snapshots_for_symbols
@@ -588,6 +591,15 @@ def refresh_daily_radar_ai_evidence_endpoint(
         run_date=run_date,
     )
     reusable_symbols = {row.symbol for row in reusable_daily_radar_raw_rows(pool_rows)}
+    cached_institutional_rows = db.scalars(
+        select(StockRawData).where(
+            StockRawData.record_date >= run_date - timedelta(days=10),
+            StockRawData.record_date <= run_date,
+            StockRawData.raw_data_is_final.is_(True),
+            StockRawData.symbol.in_(symbols),
+        )
+    ).all()
+    cached_daily_rows = cached_daily_rows_from_raw_rows(cached_institutional_rows)
     missing_technical_symbols = [symbol for symbol in symbols if symbol not in reusable_symbols]
     fresh_background_pairs = {
         (row.symbol, row.context_type)
@@ -603,7 +615,14 @@ def refresh_daily_radar_ai_evidence_endpoint(
     # Do not hold a database transaction open while external providers run.
     db.rollback()
     try:
-        evidence_result = institutional_provider.fetch(symbols, run_date=run_date)
+        if isinstance(institutional_provider, OfficialInstitutionalEvidenceProvider):
+            evidence_result = institutional_provider.fetch(
+                symbols,
+                run_date=run_date,
+                cached_daily_rows=cached_daily_rows,
+            )
+        else:
+            evidence_result = institutional_provider.fetch(symbols, run_date=run_date)
     except Exception as exc:
         logger.exception(
             "Daily Radar institutional evidence provider failed run_date=%s market=%s",
