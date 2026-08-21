@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import socket
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -8,9 +10,13 @@ from typing import Any
 import pytest
 
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
+    InstitutionalUniverseProviderError,
     TWSE_FOREIGN_BUY_TOP_REPORT,
     TWSE_TRUST_BUY_TOP_REPORT,
     TwseRwdInstitutionalUniverseProvider,
+    _DEADLINE_WORKER_SLOTS,
+    _MAX_IN_FLIGHT_DEADLINE_WORKERS,
+    _request_payload_with_deadline,
 )
 from ai_stock_sentinel.daily_radar.universe import (
     InstitutionalLeaderRow,
@@ -63,6 +69,19 @@ class _FakeTwseResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+def _wait_for_deadline_workers(*, at_most: int, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = sum(
+            thread.name == "twse-institutional-universe-request" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+        if active <= at_most:
+            return
+        time.sleep(0.01)
+    raise AssertionError("deadline request workers did not exit in time")
 
 
 def _twse_foreign_row(*, stock_id: str, buy: str | int, sell: str | int, net: str | int) -> list[str]:
@@ -281,9 +300,11 @@ def test_twse_rwd_provider_fetches_top_buy_reports_and_feeds_selector() -> None:
         (TWSE_FOREIGN_BUY_TOP_REPORT, "20260529"): _twse_payload(
             [_twse_foreign_row(stock_id="3711", buy=30, sell=0, net=30)]
         ),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260529"): _twse_payload([]),
         (TWSE_FOREIGN_BUY_TOP_REPORT, "20260601"): _twse_payload(
             [_twse_foreign_row(stock_id="3711", buy=40, sell=0, net=40)]
         ),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260601"): _twse_payload([]),
     }
 
     def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
@@ -322,6 +343,376 @@ def test_twse_rwd_provider_returns_empty_for_non_ok_stat() -> None:
     leaders = provider.same_day_institutional_leaders(run_date=date(2026, 6, 6), market="TW", limit=50)
 
     assert leaders == []
+
+
+def test_twse_rwd_provider_fails_closed_when_current_market_date_is_unavailable() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        return _FakeTwseResponse(_twse_payload([], stat="很抱歉，沒有符合條件的資料!"))
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
+
+    with pytest.raises(InstitutionalUniverseProviderError) as raised:
+        provider.same_day_institutional_leaders(
+            run_date=date(2026, 6, 2),
+            market="TW",
+            limit=50,
+        )
+
+    assert raised.value.code == "institutional_universe_current_date_unavailable"
+    assert raised.value.error_type == "InstitutionalUniverseEmptyResponse"
+
+
+def test_twse_rwd_provider_retries_unknown_current_status_before_success() -> None:
+    calls = 0
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        nonlocal calls
+        calls += 1
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if calls == 1:
+            return _FakeTwseResponse(_twse_payload([], stat="SYSTEM_ERROR"))
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        retry_backoff_seconds=0,
+    )
+
+    leaders = provider.same_day_institutional_leaders(
+        run_date=date(2026, 6, 2),
+        market="TW",
+        limit=1,
+    )
+
+    assert [row.symbol for row in leaders] == ["2330.TW"]
+    assert calls == 3
+
+
+def test_twse_rwd_provider_retries_transient_timeout_before_success() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        calls.append((report_id, params["date"]))
+        if len(calls) == 1:
+            raise TimeoutError("temporary TWSE timeout")
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=fake_get)
+
+    leaders = provider.same_day_institutional_leaders(
+        run_date=date(2026, 6, 2),
+        market="TW",
+        limit=1,
+    )
+
+    assert [row.symbol for row in leaders] == ["2330.TW"]
+    assert calls == [
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260602"),
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260602"),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260602"),
+    ]
+
+
+def test_twse_rwd_provider_retry_budget_respects_total_deadline() -> None:
+    elapsed = 0.0
+    request_timeouts: list[float] = []
+
+    def clock() -> float:
+        return elapsed
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    def timeout_get(url: str, *, params: dict[str, str], timeout: float) -> _FakeTwseResponse:
+        nonlocal elapsed
+        request_timeouts.append(timeout)
+        elapsed += timeout
+        raise TimeoutError("persistent TWSE timeout")
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=timeout_get,
+        timeout=15,
+        max_attempts=5,
+        total_timeout_seconds=20,
+        retry_backoff_seconds=0.25,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(InstitutionalUniverseProviderError) as raised:
+        provider.same_day_institutional_leaders(
+            run_date=date(2026, 6, 2),
+            market="TW",
+            limit=1,
+        )
+
+    assert raised.value.error_type == "TimeoutError"
+    assert elapsed == pytest.approx(20.0)
+    assert request_timeouts == pytest.approx([15.0, 4.75])
+
+
+def test_twse_rwd_provider_enforces_deadline_when_transport_ignores_timeout() -> None:
+    release_request = threading.Event()
+
+    def blocking_get(url: str, *, params: dict[str, str], timeout: float) -> _FakeTwseResponse:
+        release_request.wait(timeout=2)
+        return _FakeTwseResponse(
+            _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+        )
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=blocking_get,
+        max_attempts=1,
+        total_timeout_seconds=1,
+        retry_backoff_seconds=0,
+    )
+
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(InstitutionalUniverseProviderError) as raised:
+            provider.same_day_institutional_leaders(
+                run_date=date(2026, 6, 2),
+                market="TW",
+                limit=1,
+            )
+        elapsed = time.monotonic() - started_at
+    finally:
+        release_request.set()
+        _wait_for_deadline_workers(at_most=0)
+
+    assert raised.value.error_type == "TimeoutError"
+    assert elapsed < 1.3
+
+
+def test_twse_rwd_provider_enforces_deadline_during_response_parsing() -> None:
+    release_parsing = threading.Event()
+
+    class _SlowJsonResponse(_FakeTwseResponse):
+        def json(self) -> dict[str, Any]:
+            release_parsing.wait(timeout=2)
+            return super().json()
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: float) -> _FakeTwseResponse:
+        return _SlowJsonResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        max_attempts=1,
+        total_timeout_seconds=1,
+        retry_backoff_seconds=0,
+    )
+
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(InstitutionalUniverseProviderError) as raised:
+            provider.same_day_institutional_leaders(
+                run_date=date(2026, 6, 2),
+                market="TW",
+                limit=1,
+            )
+        elapsed = time.monotonic() - started_at
+    finally:
+        release_parsing.set()
+        _wait_for_deadline_workers(at_most=0)
+
+    assert raised.value.error_type == "TimeoutError"
+    assert elapsed < 1.3
+
+
+def test_twse_rwd_deadline_workers_are_process_wide_bounded() -> None:
+    release_requests = threading.Event()
+
+    def blocking_get(url: str, *, timeout: float) -> _FakeTwseResponse:
+        release_requests.wait(timeout=2)
+        return _FakeTwseResponse(_twse_payload([]))
+
+    _wait_for_deadline_workers(at_most=0)
+    baseline_workers = sum(
+        thread.name == "twse-institutional-universe-request" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+    try:
+        for _ in range(_MAX_IN_FLIGHT_DEADLINE_WORKERS + 1):
+            with pytest.raises(TimeoutError):
+                _request_payload_with_deadline(
+                    blocking_get,
+                    "https://example.invalid/twse-test",
+                    request_kwargs={"timeout": 0.03},
+                    deadline=time.monotonic() + 0.03,
+                    clock=time.monotonic,
+                )
+
+        active_workers = sum(
+            thread.name == "twse-institutional-universe-request" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+        assert active_workers - baseline_workers == _MAX_IN_FLIGHT_DEADLINE_WORKERS
+    finally:
+        release_requests.set()
+        _wait_for_deadline_workers(at_most=baseline_workers)
+
+
+def test_twse_rwd_worker_admission_reclamps_transport_timeout() -> None:
+    observed_timeouts: list[float] = []
+    release_one_slot = threading.Thread(
+        target=lambda: (time.sleep(0.08), _DEADLINE_WORKER_SLOTS.release()),
+        daemon=True,
+    )
+    held_slots = 0
+    try:
+        for _ in range(_MAX_IN_FLIGHT_DEADLINE_WORKERS):
+            assert _DEADLINE_WORKER_SLOTS.acquire(blocking=False)
+            held_slots += 1
+        release_one_slot.start()
+
+        def fake_get(url: str, *, timeout: float) -> _FakeTwseResponse:
+            observed_timeouts.append(timeout)
+            return _FakeTwseResponse(_twse_payload([]))
+
+        started_at = time.monotonic()
+        succeeded, _, _ = _request_payload_with_deadline(
+            fake_get,
+            "https://example.invalid/twse-test",
+            request_kwargs={"timeout": 0.15},
+            deadline=started_at + 0.15,
+            clock=time.monotonic,
+        )
+
+        assert succeeded is True
+        assert observed_timeouts[0] < 0.1
+        assert observed_timeouts[0] > 0
+    finally:
+        release_one_slot.join(timeout=1)
+        for _ in range(max(0, held_slots - 1)):
+            _DEADLINE_WORKER_SLOTS.release()
+
+
+def test_twse_rwd_provider_retries_current_ok_empty_payload_before_success() -> None:
+    calls: list[str] = []
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: float) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        calls.append(report_id)
+        if len(calls) <= 2:
+            return _FakeTwseResponse(_twse_payload([]))
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        max_attempts=3,
+        retry_backoff_seconds=0,
+    )
+
+    leaders = provider.same_day_institutional_leaders(
+        run_date=date(2026, 6, 2),
+        market="TW",
+        limit=1,
+    )
+
+    assert [row.symbol for row in leaders] == ["2330.TW"]
+    assert calls == [
+        TWSE_FOREIGN_BUY_TOP_REPORT,
+        TWSE_TRUST_BUY_TOP_REPORT,
+        TWSE_FOREIGN_BUY_TOP_REPORT,
+        TWSE_TRUST_BUY_TOP_REPORT,
+    ]
+
+
+def test_twse_rwd_provider_reuses_current_report_rows_for_recent_track() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        calls.append((report_id, params["date"]))
+        if params["date"] == "20260602" and report_id == TWSE_FOREIGN_BUY_TOP_REPORT:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+            )
+        if params["date"] == "20260602":
+            return _FakeTwseResponse(_twse_payload([]))
+        return _FakeTwseResponse(_twse_payload([], stat="很抱歉，沒有符合條件的資料!"))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        recent_market_days=1,
+        recent_calendar_window_days=2,
+    )
+
+    provider.same_day_institutional_leaders(run_date=date(2026, 6, 2), market="TW", limit=1)
+    provider.recent_accumulation_leaders(run_date=date(2026, 6, 2), market="TW", limit=1)
+
+    assert calls.count((TWSE_FOREIGN_BUY_TOP_REPORT, "20260602")) == 1
+    assert calls.count((TWSE_TRUST_BUY_TOP_REPORT, "20260602")) == 1
+
+
+def test_twse_recent_accumulation_does_not_bridge_unknown_historical_date() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if params["date"] == "20260601":
+            raise TimeoutError("unknown historical trading date")
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT and params["date"] in {"20260529", "20260602"}:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        recent_market_days=5,
+        recent_calendar_window_days=4,
+        retry_backoff_seconds=0,
+    )
+
+    leaders = provider.recent_accumulation_leaders(
+        run_date=date(2026, 6, 2),
+        market="TW",
+        limit=1,
+    )
+
+    assert len(leaders) == 1
+    assert leaders[0].source_dates == ("2026-06-02",)
+    assert leaders[0].consecutive_buy_days == 1
+
+
+def test_twse_recent_accumulation_zero_flow_day_breaks_consecutive_buying() -> None:
+    def fake_get(url: str, *, params: dict[str, str], timeout: float) -> _FakeTwseResponse:
+        report_id = url.rsplit("/", maxsplit=1)[-1]
+        if report_id == TWSE_FOREIGN_BUY_TOP_REPORT and params["date"] in {"20260529", "20260602"}:
+            return _FakeTwseResponse(
+                _twse_payload([_twse_foreign_row(stock_id="2330", buy=100, sell=0, net=100)])
+            )
+        return _FakeTwseResponse(_twse_payload([]))
+
+    provider = TwseRwdInstitutionalUniverseProvider(
+        request_get=fake_get,
+        recent_market_days=2,
+        recent_calendar_window_days=4,
+        retry_backoff_seconds=0,
+    )
+
+    leaders = provider.recent_accumulation_leaders(
+        run_date=date(2026, 6, 2),
+        market="TW",
+        limit=1,
+    )
+
+    assert len(leaders) == 1
+    assert leaders[0].source_dates == ("2026-06-02",)
+    assert leaders[0].consecutive_buy_days == 1
 
 
 def test_twse_same_day_leaders_parse_comma_separated_net_values() -> None:
@@ -501,12 +892,15 @@ def test_twse_recent_accumulation_queries_calendar_window_and_uses_available_mar
                 _twse_foreign_row(stock_id="2201", buy=20, sell=0, net=20),
             ]
         ),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260601"): _twse_payload([]),
+        (TWSE_FOREIGN_BUY_TOP_REPORT, "20260602"): _twse_payload([]),
         (TWSE_TRUST_BUY_TOP_REPORT, "20260602"): _twse_payload(
             [
                 _twse_trust_row(stock_id="3711", buy=35, sell=0, net=35),
                 _twse_trust_row(stock_id="2201", buy=20, sell=0, net=20),
             ]
         ),
+        (TWSE_TRUST_BUY_TOP_REPORT, "20260529"): _twse_payload([]),
     }
 
     def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
@@ -524,4 +918,5 @@ def test_twse_recent_accumulation_queries_calendar_window_and_uses_available_mar
     assert leaders[0].cumulative_net_buy == pytest.approx(105.0)
     assert leaders[0].concentration is None
     assert leaders[0].source_dates == ("2026-05-29", "2026-06-01", "2026-06-02")
-    assert len(calls) == 22
+    assert len(calls) == 14
+    assert {query_date for _, query_date in calls}.isdisjoint({"20260523", "20260524", "20260530", "20260531"})

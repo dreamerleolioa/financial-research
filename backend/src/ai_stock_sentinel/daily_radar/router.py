@@ -20,7 +20,10 @@ from ai_stock_sentinel.daily_radar.data_quality import (
     margin_evidence_is_complete,
     missing_daily_radar_candidate_technical_fields,
 )
-from ai_stock_sentinel.daily_radar.institutional_universe_provider import TwseRwdInstitutionalUniverseProvider
+from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
+    InstitutionalUniverseProviderError,
+    TwseRwdInstitutionalUniverseProvider,
+)
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
     InstitutionalEvidenceProvider,
     InstitutionalEvidenceResult,
@@ -292,13 +295,44 @@ def prepare_daily_radar_universe_endpoint(
     request = payload or DailyRadarPreparedRunRequest()
     run_date = request.run_date or _backend_today()
     existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
-    universe = select_daily_radar_universe(
-        universe_provider,
-        run_date=run_date,
-        market=request.market,
-        track_limit=50,
-        technical_records=existing_technical_rows,
-    )
+    try:
+        universe = select_daily_radar_universe(
+            universe_provider,
+            run_date=run_date,
+            market=request.market,
+            track_limit=50,
+            technical_records=existing_technical_rows,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            db.rollback()
+        error_type = (
+            exc.error_type
+            if isinstance(exc, InstitutionalUniverseProviderError)
+            else exc.__class__.__name__
+        )
+        if isinstance(exc, InstitutionalUniverseProviderError):
+            logger.warning(
+                "Daily Radar universe provider failed provider=twse_rwd report_id=%s query_date=%s error_type=%s",
+                exc.report_id,
+                exc.query_date.isoformat(),
+                error_type,
+            )
+        else:
+            logger.exception(
+                "Daily Radar universe selection failed provider=%s error_type=%s",
+                universe_provider.__class__.__name__,
+                error_type,
+            )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "daily_radar_universe_provider_failed",
+                "message": "Daily Radar universe provider request failed.",
+                "error_type": error_type,
+                "provider": "twse_rwd",
+            },
+        ) from exc
     capped_universe = universe[: request.max_symbols]
     if not capped_universe:
         raise HTTPException(

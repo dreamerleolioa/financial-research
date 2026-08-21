@@ -22,6 +22,9 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
     cached_daily_rows_from_raw_rows,
 )
+from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
+    TwseRwdInstitutionalUniverseProvider,
+)
 from ai_stock_sentinel.daily_radar.market_session import MarketSessionProviderError, MarketSessionResult
 from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -958,6 +961,77 @@ def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
     assert prepared.run_date == date(2026, 6, 1)
     assert prepared.selected_symbols == ["2330.TW", "2454.TW"]
     assert prepared.universe[0]["primary_track"] == "same_day_institutional"
+
+
+def test_daily_radar_prepare_universe_reports_official_provider_failure_as_503(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    def timeout_get(url: str, *, params: dict[str, str], timeout: int):
+        raise TimeoutError("temporary TWSE timeout")
+
+    provider = TwseRwdInstitutionalUniverseProvider(request_get=timeout_get)
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        raise_server_exceptions=False,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW", "max_symbols": 2},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {
+            "code": "daily_radar_universe_provider_failed",
+            "message": "Daily Radar universe provider request failed.",
+            "error_type": "TimeoutError",
+            "provider": "twse_rwd",
+        }
+    }
+    assert daily_radar_db_session.query(DailyRadarPreparedRun).count() == 0
+
+
+def test_daily_radar_prepare_universe_maps_protocol_provider_timeout_to_503(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeUniverseProvider()
+
+    def timeout_same_day(*, run_date: date, market: str, limit: int):
+        raise TimeoutError("alternate provider timeout")
+
+    provider.same_day_institutional_leaders = timeout_same_day  # type: ignore[method-assign]
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+        raise_server_exceptions=False,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW", "max_symbols": 2},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "daily_radar_universe_provider_failed",
+        "message": "Daily Radar universe provider request failed.",
+        "error_type": "TimeoutError",
+        "provider": "twse_rwd",
+    }
 
 
 def test_daily_radar_refresh_avwap_endpoint_uses_prepared_symbols(

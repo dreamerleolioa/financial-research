@@ -8,6 +8,7 @@ from ai_stock_sentinel.data_sources.institutional_flow.interface import (
     InstitutionalFlowData,
     InstitutionalFlowError,
 )
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +38,11 @@ class TwseOpenApiProvider:
         注意：TWSE OpenAPI TWT38U 回傳「當日所有上市股票」的三大法人資料，
         需在本地過濾指定 stock_id。
         """
-        try:
-            import requests
-        except ImportError as e:
-            raise InstitutionalFlowError(
-                code="MISSING_DEPENDENCY",
-                message="requests 套件未安裝",
-                provider=self.name,
-            ) from e
-
         stock_id = _strip_suffix(symbol)
         warnings: list[str] = []
 
         # ---- 三大法人 ----
-        inst_row = self._fetch_institution_row(requests=requests, stock_id=stock_id)
+        inst_row = self._fetch_institution_row(request_get=official_request_get, stock_id=stock_id)
         if inst_row is None:
             raise InstitutionalFlowError(
                 code="TWSE_NO_DATA",
@@ -104,10 +96,10 @@ class TwseOpenApiProvider:
             warnings=warnings,
         )
 
-    def _fetch_institution_row(self, *, requests, stock_id: str) -> dict | None:
+    def _fetch_institution_row(self, *, request_get, stock_id: str) -> dict | None:
         """從 TWSE TWT38U API 取回指定股票的當日法人資料列。"""
         try:
-            resp = requests.get(_TWSE_INST_API, timeout=15, headers={"Accept": "application/json"})
+            resp = request_get(_TWSE_INST_API, timeout=15, headers={"Accept": "application/json"})
             resp.raise_for_status()
             rows: list[dict] = resp.json()
         except Exception as exc:

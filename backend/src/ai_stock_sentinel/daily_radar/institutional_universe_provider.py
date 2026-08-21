@@ -1,15 +1,39 @@
 from __future__ import annotations
 
+import json
+import logging
+import queue
+import threading
+import time
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
+from time import monotonic
 from typing import Any
 
+from curl_cffi import requests as curl_requests
+
 from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow, is_daily_radar_supported_tw_stock_id
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 TWSE_FUND_RWD_URL_TEMPLATE = "https://www.twse.com.tw/rwd/zh/fund/{report_id}"
 TWSE_FOREIGN_BUY_TOP_REPORT = "TWT38U"
 TWSE_TRUST_BUY_TOP_REPORT = "TWT44U"
+
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 425, 429, *range(500, 600)})
+_RETRYABLE_EXCEPTIONS = (
+    TimeoutError,
+    ConnectionError,
+    curl_requests.exceptions.Timeout,
+    curl_requests.exceptions.ConnectionError,
+    json.JSONDecodeError,
+)
+_DEFAULT_MAX_ATTEMPTS = 3
+_DEFAULT_TOTAL_TIMEOUT_SECONDS = 45.0
+_DEFAULT_RETRY_BACKOFF_SECONDS = 0.25
+_MARKET_DAY_COMPLETE_KEY = "_market_day_complete"
+_MAX_IN_FLIGHT_DEADLINE_WORKERS = 4
+_DEADLINE_WORKER_SLOTS = threading.BoundedSemaphore(_MAX_IN_FLIGHT_DEADLINE_WORKERS)
 
 _REQUIRED_ACTORS = frozenset({"foreign", "trust"})
 _ACTOR_ORDER = ("foreign", "trust")
@@ -51,6 +75,29 @@ _BUY_SHARE_FIELDS = ("buy", "Buy", "buy_volume", "BuyVolume")
 _SELL_SHARE_FIELDS = ("sell", "Sell", "sell_volume", "SellVolume")
 
 RequestGetter = Callable[..., Any]
+Sleeper = Callable[[float], None]
+Clock = Callable[[], float]
+logger = logging.getLogger(__name__)
+
+
+class InstitutionalUniverseProviderError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        *,
+        error_type: str,
+        report_id: str,
+        query_date: date,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.error_type = error_type
+        self.report_id = report_id
+        self.query_date = query_date
+
+
+class InstitutionalUniverseEmptyResponse(ValueError):
+    pass
 
 
 class TwseRwdInstitutionalUniverseProvider:
@@ -64,12 +111,27 @@ class TwseRwdInstitutionalUniverseProvider:
         timeout: int = 15,
         recent_market_days: int = 5,
         recent_calendar_window_days: int = 10,
+        max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+        total_timeout_seconds: float = _DEFAULT_TOTAL_TIMEOUT_SECONDS,
+        retry_backoff_seconds: float = _DEFAULT_RETRY_BACKOFF_SECONDS,
+        sleep: Sleeper = time.sleep,
+        clock: Clock = monotonic,
     ) -> None:
         self._ignored_api_token = api_token
         self._request_get = request_get
-        self._timeout = timeout
-        self._recent_market_days = recent_market_days
-        self._recent_calendar_window_days = recent_calendar_window_days
+        self._timeout = max(1, timeout)
+        self._recent_market_days = max(1, recent_market_days)
+        self._recent_calendar_window_days = max(0, recent_calendar_window_days)
+        self._max_attempts = max(1, max_attempts)
+        self._total_timeout_seconds = max(1.0, total_timeout_seconds)
+        self._retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self._sleep = sleep
+        self._clock = clock
+        self._report_rows_cache: dict[
+            tuple[str, date],
+            tuple[bool, list[dict[str, Any]]],
+        ] = {}
+        self._deadlines_by_run_date: dict[date, float] = {}
 
     def same_day_institutional_leaders(
         self,
@@ -78,7 +140,13 @@ class TwseRwdInstitutionalUniverseProvider:
         market: str,
         limit: int,
     ) -> Sequence[InstitutionalLeaderRow]:
-        rows = self._fetch_market_rows(start_date=run_date, end_date=run_date)
+        deadline = self._deadline_for(run_date)
+        rows = self._fetch_market_rows(
+            start_date=run_date,
+            end_date=run_date,
+            deadline=deadline,
+            max_market_days=1,
+        )
         return _rank_same_day(rows, market=market, actor_limit=limit)
 
     def recent_accumulation_leaders(
@@ -89,7 +157,13 @@ class TwseRwdInstitutionalUniverseProvider:
         limit: int,
     ) -> Sequence[InstitutionalLeaderRow]:
         start_date = run_date - timedelta(days=self._recent_calendar_window_days)
-        rows = self._fetch_market_rows(start_date=start_date, end_date=run_date)
+        deadline = self._deadline_for(run_date)
+        rows = self._fetch_market_rows(
+            start_date=start_date,
+            end_date=run_date,
+            deadline=deadline,
+            max_market_days=self._recent_market_days,
+        )
         ranked = _rank_recent_accumulation(
             rows,
             market=market,
@@ -97,26 +171,210 @@ class TwseRwdInstitutionalUniverseProvider:
         )
         return ranked[:limit]
 
-    def _fetch_market_rows(self, *, start_date: date, end_date: date) -> list[dict[str, Any]]:
+    def _deadline_for(self, run_date: date) -> float:
+        return self._deadlines_by_run_date.setdefault(
+            run_date,
+            self._clock() + self._total_timeout_seconds,
+        )
+
+    def _fetch_market_rows(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        deadline: float,
+        max_market_days: int,
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for query_date in _date_range(start_date, end_date):
-            rows.extend(self._fetch_report_rows(TWSE_FOREIGN_BUY_TOP_REPORT, query_date, actor="foreign"))
-            rows.extend(self._fetch_report_rows(TWSE_TRUST_BUY_TOP_REPORT, query_date, actor="trust"))
+        completed_market_days = 0
+        for query_date in reversed(_date_range(start_date, end_date)):
+            if query_date.weekday() >= 5:
+                continue
+            date_rows: list[dict[str, Any]] = []
+            try:
+                foreign_ok, trust_ok, date_rows = self._fetch_date_rows(
+                    query_date=query_date,
+                    deadline=deadline,
+                    require_available=query_date == end_date,
+                )
+            except InstitutionalUniverseProviderError as exc:
+                if query_date == end_date:
+                    self._evict_report_date(query_date)
+                    raise
+                _log_historical_date_skipped(exc)
+                break
+            if not (foreign_ok and trust_ok):
+                if query_date == end_date:
+                    raise InstitutionalUniverseProviderError(
+                        "institutional_universe_current_date_unavailable",
+                        error_type="InstitutionalUniverseEmptyResponse",
+                        report_id=(
+                            TWSE_FOREIGN_BUY_TOP_REPORT
+                            if not foreign_ok
+                            else TWSE_TRUST_BUY_TOP_REPORT
+                        ),
+                        query_date=query_date,
+                    )
+                continue
+            rows.extend(date_rows)
+            rows.append(_market_day_complete_marker(query_date))
+            completed_market_days += 1
+            if completed_market_days >= max_market_days:
+                break
         return rows
 
-    def _fetch_report_rows(self, report_id: str, query_date: date, *, actor: str) -> list[dict[str, Any]]:
+    def _fetch_date_rows(
+        self,
+        *,
+        query_date: date,
+        deadline: float,
+        require_available: bool,
+    ) -> tuple[bool, bool, list[dict[str, Any]]]:
+        for attempt in range(1, self._max_attempts + 1):
+            foreign_ok, foreign_rows = self._fetch_report_rows(
+                TWSE_FOREIGN_BUY_TOP_REPORT,
+                query_date,
+                actor="foreign",
+                deadline=deadline,
+                require_available=require_available,
+            )
+            trust_ok, trust_rows = self._fetch_report_rows(
+                TWSE_TRUST_BUY_TOP_REPORT,
+                query_date,
+                actor="trust",
+                deadline=deadline,
+                require_available=require_available,
+            )
+            date_rows = [*foreign_rows, *trust_rows]
+            if not require_available or date_rows:
+                return foreign_ok, trust_ok, date_rows
+
+            self._evict_report_date(query_date)
+            _log_current_date_empty(
+                query_date=query_date,
+                attempt=attempt,
+                retrying=attempt < self._max_attempts,
+            )
+            if attempt >= self._max_attempts:
+                break
+            self._sleep_before_retry(attempt=attempt, deadline=deadline)
+
+        raise InstitutionalUniverseProviderError(
+            "institutional_universe_current_date_unavailable",
+            error_type="InstitutionalUniverseEmptyResponse",
+            report_id=TWSE_FOREIGN_BUY_TOP_REPORT,
+            query_date=query_date,
+        )
+
+    def _evict_report_date(self, query_date: date) -> None:
+        self._report_rows_cache.pop((TWSE_FOREIGN_BUY_TOP_REPORT, query_date), None)
+        self._report_rows_cache.pop((TWSE_TRUST_BUY_TOP_REPORT, query_date), None)
+
+    def _sleep_before_retry(self, *, attempt: int, deadline: float) -> None:
+        delay = min(
+            self._retry_backoff_seconds * (2 ** (attempt - 1)),
+            max(0.0, deadline - self._clock()),
+        )
+        if delay > 0:
+            self._sleep(delay)
+
+    def _fetch_report_rows(
+        self,
+        report_id: str,
+        query_date: date,
+        *,
+        actor: str,
+        deadline: float,
+        require_available: bool,
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        cache_key = (report_id, query_date)
+        cached = self._report_rows_cache.get(cache_key)
+        if cached is not None:
+            status_ok, cached_rows = cached
+            if require_available and not status_ok:
+                raise InstitutionalUniverseProviderError(
+                    "institutional_universe_current_date_unavailable",
+                    error_type="InstitutionalUniverseEmptyResponse",
+                    report_id=report_id,
+                    query_date=query_date,
+                )
+            return status_ok, list(cached_rows)
         params = {"response": "json", "date": query_date.strftime("%Y%m%d")}
         request_get = self._request_get or _import_requests_get()
-        response = request_get(_twse_report_url(report_id), params=params, timeout=self._timeout)
-        if hasattr(response, "raise_for_status"):
-            response.raise_for_status()
-        payload = response.json() if hasattr(response, "json") else response
-        if not isinstance(payload, Mapping) or payload.get("stat") != "OK":
-            return []
-        data = payload.get("data", [])
-        if not isinstance(data, Sequence) or isinstance(data, (str, bytes)):
-            return []
-        return [_normalize_twse_row(row, query_date=query_date, actor=actor) for row in data if _is_twse_row(row)]
+        for attempt in range(1, self._max_attempts + 1):
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                raise InstitutionalUniverseProviderError(
+                    "institutional_universe_total_timeout",
+                    error_type="TimeoutError",
+                    report_id=report_id,
+                    query_date=query_date,
+                )
+            response: Any = None
+            try:
+                request_kwargs: dict[str, Any] = {
+                    "params": params,
+                    "timeout": min(float(self._timeout), remaining),
+                }
+                if request_get is official_request_get:
+                    request_kwargs["max_attempts"] = 1
+                succeeded, response, result = _request_payload_with_deadline(
+                    request_get,
+                    _twse_report_url(report_id),
+                    request_kwargs=request_kwargs,
+                    deadline=deadline,
+                    clock=self._clock,
+                )
+                if not succeeded:
+                    if isinstance(result, Exception):
+                        raise result
+                    raise RuntimeError("institutional universe request terminated unexpectedly")
+                payload = result
+                if not isinstance(payload, Mapping):
+                    raise ValueError("TWSE institutional universe payload is not an object")
+                status = str(payload.get("stat") or "").strip()
+                if status != "OK":
+                    if _is_no_data_status(status):
+                        if require_available:
+                            raise InstitutionalUniverseEmptyResponse(
+                                "TWSE institutional universe current date is unavailable"
+                            )
+                        self._report_rows_cache[cache_key] = (False, [])
+                        return False, []
+                    raise ValueError("TWSE institutional universe status is unknown")
+                data = payload.get("data", [])
+                if not isinstance(data, Sequence) or isinstance(data, (str, bytes)):
+                    raise ValueError("TWSE institutional universe data is not a sequence")
+                normalized = [
+                    _normalize_twse_row(row, query_date=query_date, actor=actor)
+                    for row in data
+                    if _is_twse_row(row)
+                ]
+                self._report_rows_cache[cache_key] = (True, normalized)
+                return True, list(normalized)
+            except Exception as exc:
+                retryable = _is_retryable_request_failure(exc, response=response)
+                _log_request_failure(
+                    report_id=report_id,
+                    query_date=query_date,
+                    attempt=attempt,
+                    error=exc,
+                    response=response,
+                    retrying=retryable and attempt < self._max_attempts,
+                )
+                if not retryable or attempt >= self._max_attempts:
+                    raise InstitutionalUniverseProviderError(
+                        (
+                            "institutional_universe_current_date_unavailable"
+                            if isinstance(exc, InstitutionalUniverseEmptyResponse)
+                            else "institutional_universe_request_failed"
+                        ),
+                        error_type=exc.__class__.__name__,
+                        report_id=report_id,
+                        query_date=query_date,
+                    ) from exc
+                self._sleep_before_retry(attempt=attempt, deadline=deadline)
+        raise RuntimeError("institutional universe retry loop exhausted")
 
 
 class FinMindMarketInstitutionalUniverseProvider(TwseRwdInstitutionalUniverseProvider):
@@ -124,11 +382,143 @@ class FinMindMarketInstitutionalUniverseProvider(TwseRwdInstitutionalUniversePro
 
 
 def _import_requests_get() -> RequestGetter:
+    return official_request_get
+
+
+def _request_payload_with_deadline(
+    request_get: RequestGetter,
+    url: str,
+    *,
+    request_kwargs: Mapping[str, Any],
+    deadline: float,
+    clock: Clock,
+) -> tuple[bool, Any, Any]:
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise TimeoutError("institutional universe request deadline exhausted")
+    if not _DEADLINE_WORKER_SLOTS.acquire(timeout=remaining):
+        raise TimeoutError("institutional universe request worker capacity exhausted")
+    remaining = deadline - clock()
+    if remaining <= 0:
+        _DEADLINE_WORKER_SLOTS.release()
+        raise TimeoutError("institutional universe request deadline exhausted")
+    bounded_request_kwargs = dict(request_kwargs)
+    bounded_request_kwargs["timeout"] = min(
+        float(bounded_request_kwargs.get("timeout", remaining)),
+        remaining,
+    )
+
+    result_queue: queue.Queue[tuple[bool, Any, Any]] = queue.Queue(maxsize=1)
+
+    def run_request() -> None:
+        response: Any = None
+        try:
+            response = request_get(url, **bounded_request_kwargs)
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()
+            payload = response.json() if hasattr(response, "json") else response
+            result_queue.put((True, response, payload))
+        except BaseException as exc:
+            result_queue.put((False, response, exc))
+        finally:
+            _DEADLINE_WORKER_SLOTS.release()
+
+    worker = threading.Thread(
+        target=run_request,
+        name="twse-institutional-universe-request",
+        daemon=True,
+    )
     try:
-        import requests
-    except ImportError as exc:
-        raise RuntimeError("requests package is required for TWSE universe requests") from exc
-    return requests.get
+        worker.start()
+    except BaseException:
+        _DEADLINE_WORKER_SLOTS.release()
+        raise
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise TimeoutError("institutional universe request deadline exhausted")
+    try:
+        outcome = result_queue.get(timeout=remaining)
+    except queue.Empty as exc:
+        raise TimeoutError("institutional universe request exceeded total deadline") from exc
+    if clock() >= deadline:
+        raise TimeoutError("institutional universe request exceeded total deadline")
+    return outcome
+
+
+def _is_retryable_request_failure(exc: Exception, *, response: Any) -> bool:
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        if status_code >= 400:
+            return status_code in _RETRYABLE_HTTP_STATUS_CODES
+    return isinstance(exc, _RETRYABLE_EXCEPTIONS) or isinstance(exc, ValueError)
+
+
+def _is_no_data_status(status: str) -> bool:
+    normalized = status.lower()
+    return any(
+        marker in normalized
+        for marker in ("沒有符合條件", "查無資料", "no data")
+    )
+
+
+def _log_request_failure(
+    *,
+    report_id: str,
+    query_date: date,
+    attempt: int,
+    error: Exception,
+    response: Any,
+    retrying: bool,
+) -> None:
+    status_code = getattr(response, "status_code", None)
+    logger.warning(
+        json.dumps(
+            {
+                "event": "institutional_universe_request_retry" if retrying else "institutional_universe_request_failed",
+                "provider": "twse_rwd",
+                "report_id": report_id,
+                "query_date": query_date.isoformat(),
+                "attempt": attempt,
+                "error_type": error.__class__.__name__,
+                "status_code": status_code if isinstance(status_code, int) else None,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _log_historical_date_skipped(error: InstitutionalUniverseProviderError) -> None:
+    logger.warning(
+        json.dumps(
+            {
+                "event": "institutional_universe_historical_date_skipped",
+                "provider": "twse_rwd",
+                "report_id": error.report_id,
+                "query_date": error.query_date.isoformat(),
+                "error_type": error.error_type,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _log_current_date_empty(*, query_date: date, attempt: int, retrying: bool) -> None:
+    logger.warning(
+        json.dumps(
+            {
+                "event": (
+                    "institutional_universe_empty_retry"
+                    if retrying
+                    else "institutional_universe_empty_failed"
+                ),
+                "provider": "twse_rwd",
+                "query_date": query_date.isoformat(),
+                "attempt": attempt,
+                "error_type": "InstitutionalUniverseEmptyResponse",
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def _twse_report_url(report_id: str) -> str:
@@ -140,6 +530,13 @@ def _date_range(start_date: date, end_date: date) -> Sequence[date]:
         return []
     days = (end_date - start_date).days
     return [start_date + timedelta(days=offset) for offset in range(days + 1)]
+
+
+def _market_day_complete_marker(query_date: date) -> dict[str, Any]:
+    return {
+        "date": query_date.isoformat(),
+        _MARKET_DAY_COMPLETE_KEY: True,
+    }
 
 
 def _is_twse_row(row: Any) -> bool:
@@ -411,6 +808,7 @@ def _format_symbol(stock_id: str, market: str) -> str:
 
 __all__ = [
     "FinMindMarketInstitutionalUniverseProvider",
+    "InstitutionalUniverseProviderError",
     "TWSE_FOREIGN_BUY_TOP_REPORT",
     "TWSE_FUND_RWD_URL_TEMPLATE",
     "TWSE_TRUST_BUY_TOP_REPORT",
