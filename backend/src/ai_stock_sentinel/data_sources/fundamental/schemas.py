@@ -12,6 +12,7 @@ class FundamentalBackfillRequest(BaseModel):
     after_symbol: str | None = Field(default=None, max_length=20)
     job_id: str | None = Field(default=None, max_length=36)
     raw_pool_date: date | None = None
+    resume_running_job: bool = False
     limit: int = Field(default=10, ge=1, le=10)
 
 

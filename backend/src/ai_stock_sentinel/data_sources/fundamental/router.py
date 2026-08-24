@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.data_sources.fundamental.service import (
+    acquire_fundamental_backfill_scheduler_lock,
     backfill_fundamentals,
     create_fundamental_backfill_job,
     fundamental_raw_pool_date_is_completed,
     get_fundamental_backfill_job,
+    get_oldest_running_fundamental_backfill_job,
     refresh_official_fundamentals,
     resolve_fundamental_raw_pool_symbols,
     resolve_latest_fundamental_raw_pool_date,
@@ -49,7 +51,7 @@ def backfill_fundamentals_endpoint(
     db: Session = Depends(get_db),
 ) -> dict:
     if payload.job_id:
-        if payload.symbols or payload.raw_pool_date is not None:
+        if payload.symbols or payload.raw_pool_date is not None or payload.resume_running_job:
             raise HTTPException(
                 status_code=422,
                 detail={"code": "fundamental_backfill_job_arguments_conflict"},
@@ -87,15 +89,35 @@ def backfill_fundamentals_endpoint(
                     "code": "fundamental_backfill_job_id_required",
                 },
             )
-        raw_pool_date = payload.raw_pool_date
-        if payload.symbols:
-            if raw_pool_date is not None:
+        if payload.resume_running_job and (payload.symbols or payload.raw_pool_date is not None):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "fundamental_backfill_resume_arguments_conflict"},
+            )
+        acquire_fundamental_backfill_scheduler_lock(db)
+        job = get_oldest_running_fundamental_backfill_job(db, for_update=True)
+        if job is not None and not payload.resume_running_job:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "fundamental_backfill_job_running",
+                    "job_id": job.id,
+                    "expected_after_symbol": job.next_after_symbol,
+                },
+            )
+        if job is not None:
+            symbols = list(job.symbols)
+            raw_pool_date = job.raw_pool_date
+        elif payload.symbols:
+            if payload.raw_pool_date is not None:
                 raise HTTPException(
                     status_code=422,
                     detail={"code": "fundamental_backfill_arguments_conflict"},
                 )
+            raw_pool_date = None
             candidates = payload.symbols
         else:
+            raw_pool_date = payload.raw_pool_date
             raw_pool_date = raw_pool_date or resolve_latest_fundamental_raw_pool_date(db)
             if raw_pool_date is not None and not fundamental_raw_pool_date_is_completed(
                 db,
@@ -123,23 +145,23 @@ def backfill_fundamentals_endpoint(
                 db,
                 raw_pool_date=raw_pool_date,
             )
-        symbols = resolve_pending_fundamental_backfill_symbols(db, symbols=candidates)
-        job = create_fundamental_backfill_job(
-            db,
-            symbols=symbols,
-            raw_pool_date=raw_pool_date,
-        )
+        if job is None:
+            symbols = resolve_pending_fundamental_backfill_symbols(db, symbols=candidates)
+            job = create_fundamental_backfill_job(
+                db,
+                symbols=symbols,
+                raw_pool_date=raw_pool_date,
+            )
     result = backfill_fundamentals(
         db,
         symbols=symbols,
         after_symbol=job.next_after_symbol,
         limit=payload.limit,
     )
-    if result.status == "ok":
-        job.next_after_symbol = result.next_after_symbol
-        if result.next_after_symbol is None:
-            job.status = "completed"
-        db.add(job)
+    job.next_after_symbol = result.next_after_symbol
+    if result.next_after_symbol is None:
+        job.status = "completed"
+    db.add(job)
     db.commit()
     return {
         **asdict(result),

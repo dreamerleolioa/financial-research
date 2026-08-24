@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any, Protocol
@@ -31,32 +32,74 @@ class YFinanceMarketIndexContextProvider:
         index_symbol, yfinance_symbol = self._index_config(market)
         start_date = run_date - timedelta(days=120)
         end_date = run_date + timedelta(days=1)
-        try:
-            history = yf.download(
-                yfinance_symbol,
-                start=start_date,
-                end=end_date,
-                interval="1d",
-                threads=False,
-                progress=False,
-            )
-        except Exception:
-            return _missing_context(
-                run_date=run_date,
-                index_symbol=index_symbol,
-                yfinance_symbol=yfinance_symbol,
-                freshness="missing",
-                missing_reason="market_index_fetch_failed",
-                data_date=None,
-            )
-        frame = _frame_on_or_before_run_date(history, run_date=run_date)
-        payload = _build_technical_payload(index_symbol, frame, run_date=run_date)
-        return build_market_context_from_technical_payload(
-            payload,
+        attempts = (
+            (
+                "download",
+                lambda: yf.download(
+                    yfinance_symbol,
+                    start=start_date,
+                    end=end_date,
+                    interval="1d",
+                    threads=False,
+                    progress=False,
+                ),
+            ),
+            (
+                "ticker_history",
+                lambda: yf.Ticker(yfinance_symbol).history(
+                    start=start_date,
+                    end=end_date,
+                    interval="1d",
+                    actions=False,
+                    auto_adjust=False,
+                ),
+            ),
+        )
+        last_context: dict[str, Any] | None = None
+        fallback_triggered = False
+        for fetch_method, fetch_history in attempts:
+            fallback_triggered = fetch_method != "download"
+            try:
+                history = fetch_history()
+                frame = _frame_on_or_before_run_date(history, run_date=run_date)
+                payload = _build_technical_payload(index_symbol, frame, run_date=run_date)
+                context = build_market_context_from_technical_payload(
+                    payload,
+                    run_date=run_date,
+                    index_symbol=index_symbol,
+                    yfinance_symbol=yfinance_symbol,
+                )
+            except Exception:
+                continue
+            context["provider_trace"] = {
+                "provider": "yfinance",
+                "fetch_method": fetch_method,
+                "fallback_triggered": fallback_triggered,
+            }
+            if last_context is None or _context_freshness_rank(context) > _context_freshness_rank(
+                last_context
+            ):
+                last_context = context
+            if market_context_refresh_error(context, run_date=run_date) is None:
+                return context
+
+        if last_context is not None:
+            last_context["provider_trace"]["fallback_triggered"] = fallback_triggered
+            return last_context
+        context = _missing_context(
             run_date=run_date,
             index_symbol=index_symbol,
             yfinance_symbol=yfinance_symbol,
+            freshness="missing",
+            missing_reason="market_index_fetch_failed",
+            data_date=None,
         )
+        context["provider_trace"] = {
+            "provider": "yfinance",
+            "fetch_method": None,
+            "fallback_triggered": True,
+        }
+        return context
 
     def _index_config(self, market: str) -> tuple[str, str]:
         return self._index_symbols.get(market.upper(), self._index_symbols["TW"])
@@ -144,6 +187,60 @@ def build_market_context_from_technical_payload(
             "market_risk_flags": risk_flags,
         },
     }
+
+
+def market_context_refresh_error(
+    context: Mapping[str, Any],
+    *,
+    run_date: date,
+) -> dict[str, Any] | None:
+    market = _mapping(context.get("market"))
+    freshness = str(market.get("freshness") or "missing")
+    missing_reason = str(market.get("missing_reason") or "").strip() or None
+    if context.get("record_date") != run_date.isoformat():
+        return {
+            "code": "daily_radar_market_context_incomplete",
+            "freshness": "stale",
+            "missing_reason": "market_context_record_date_mismatch",
+        }
+    if freshness != "fresh":
+        return {
+            "code": "daily_radar_market_context_incomplete",
+            "freshness": freshness,
+            "missing_reason": missing_reason or "market_context_not_fresh",
+        }
+    data_date_value = market.get("data_date")
+    try:
+        data_date = date.fromisoformat(str(data_date_value))
+    except (TypeError, ValueError):
+        return {
+            "code": "daily_radar_market_context_incomplete",
+            "freshness": "missing",
+            "missing_reason": "market_index_data_date_missing",
+        }
+    if data_date > run_date or (run_date - data_date).days > MAX_MARKET_INDEX_LAG_DAYS:
+        return {
+            "code": "daily_radar_market_context_incomplete",
+            "freshness": "stale",
+            "missing_reason": "market_index_stale",
+        }
+    required_values = (
+        market.get("close"),
+        market.get("previous_close"),
+        market.get("ma20"),
+        market.get("ma60"),
+    )
+    if (
+        any(_float(value) is None for value in required_values)
+        or market.get("volatility_state") == "unknown"
+        or market.get("regime") not in {"constructive", "neutral", "risk_off"}
+    ):
+        return {
+            "code": "daily_radar_market_context_incomplete",
+            "freshness": freshness,
+            "missing_reason": "market_index_indicators_incomplete",
+        }
+    return None
 
 
 def _missing_context(
@@ -238,13 +335,20 @@ def _float(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
+
+
+def _context_freshness_rank(context: Mapping[str, Any]) -> int:
+    freshness = _mapping(context.get("market")).get("freshness")
+    return {"fresh": 2, "stale": 1, "missing": 0}.get(str(freshness), -1)
 
 
 __all__ = [
     "MarketIndexContextProvider",
     "YFinanceMarketIndexContextProvider",
     "build_market_context_from_technical_payload",
+    "market_context_refresh_error",
 ]

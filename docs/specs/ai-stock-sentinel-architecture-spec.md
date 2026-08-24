@@ -89,7 +89,7 @@
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
 | `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時 scheduled pipeline 與一般手動 step skip，provider 異常時 fail closed。手動 `refresh-market-bars` maintenance/backfill 是唯一不受目前 `run_date` 的 `market_open` 結果阻擋的例外；未提供 backfill range 時刷新 resolved `run_date`，歷史 backfill 則必須同時提供 start/end date 並受 180 calendar days 上限約束。開市後才分段呼叫 `/internal/daily-radar/prepare-universe`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context`、`run-scoring`；每段共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期。23:00 的 AI evidence step 補同日完整 final 台股 raw pool 並留下 lane 缺漏，但不改 prepared universe 或 scoring required steps；scoring 只讀已落庫 cache/snapshot，對 lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT AVWAP repair-and-rescore 補修排程，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
-| `fundamental-data.yml` | 07:15 TWT 以官方 OpenAPI 更新財報/股利版本庫；手動模式才以每批最多 10 檔執行 FinMind 歷史回填 |
+| `fundamental-data.yml` | 07:15 TWT 先以官方 OpenAPI 更新財報/股利版本庫，再以六批 × 十檔上限執行 FinMind 歷史回填；未完成 job 由後續排程接續，手動模式亦可建立或續跑指定 job |
 | `daily-radar.yml` / `analysis-forward-validation.yml` | 分別每日累積 Daily Radar 與一般分析已成熟 5 / 10 / 20 日驗證結果 |
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
 | `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |

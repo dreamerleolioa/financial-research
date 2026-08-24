@@ -22,10 +22,18 @@ def _safe_float(v) -> float | None:
 class FinMindFundamentalProvider:
     name = "FinMindFundamental"
 
-    def __init__(self, api_token: str = "", client: FinMindClient | None = None) -> None:
+    def __init__(
+        self,
+        api_token: str = "",
+        client: FinMindClient | None = None,
+        request_timeout_seconds: int = 30,
+        retry_expired_token: bool = True,
+    ) -> None:
         # api_token 僅供測試用靜態覆蓋；正式使用時留空，由 token manager 動態取得
         self._static_token = api_token
         self._client = client or FinMindClient(api_token=api_token)
+        self._request_timeout_seconds = max(1, request_timeout_seconds)
+        self._retry_expired_token = retry_expired_token
 
     def _fetch_dataset(self, dataset: str, stock_id: str, start_date: str, end_date: str) -> list[dict]:
         try:
@@ -34,6 +42,7 @@ class FinMindFundamentalProvider:
                 data_id=stock_id,
                 start_date=start_date,
                 end_date=end_date,
+                timeout=self._request_timeout_seconds,
             )
         except FinMindClientError as exc:
             raise _fundamental_error_from_client_error(exc, provider=self.name) from exc
@@ -105,7 +114,12 @@ class FinMindFundamentalProvider:
         try:
             return self._fetch_dataset(dataset, stock_id, start_date, end_date)
         except FundamentalError as exc:
-            if exc.code != "FINMIND_TOKEN_EXPIRED" or self._static_token or self._client.uses_static_token:
+            if (
+                exc.code != "FINMIND_TOKEN_EXPIRED"
+                or not self._retry_expired_token
+                or self._static_token
+                or self._client.uses_static_token
+            ):
                 raise
             get_token_manager().invalidate()
             return self._fetch_dataset(dataset, stock_id, start_date, end_date)

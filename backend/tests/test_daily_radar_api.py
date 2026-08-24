@@ -8,7 +8,7 @@ from typing import Any, Literal
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
@@ -671,6 +671,121 @@ def test_daily_radar_market_session_endpoint_does_not_convert_provider_errors_to
     assert response.json()["detail"]["code"] == "twse_market_session_request_failed"
 
 
+def test_daily_radar_refresh_market_context_fails_closed_and_blocks_scoring(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        step_statuses=_completed_segmented_step_statuses(),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    provider = FakeMarketIndexContextProvider(
+        {
+            "record_date": "2026-06-01",
+            "data_dates": {},
+            "market": {
+                "index_symbol": "TAIEX",
+                "regime": "unknown",
+                "freshness": "missing",
+                "data_date": None,
+                "missing_reason": "market_index_ohlcv_missing",
+            },
+        }
+    )
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        market_context_provider=provider,
+    )
+
+    try:
+        refreshed = client.post(
+            "/internal/daily-radar/refresh-market-context",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        scoring = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert refreshed.status_code == 200
+    assert refreshed.json()["status"] == "failed"
+    assert refreshed.json()["errors"] == [
+        {
+            "code": "daily_radar_market_context_incomplete",
+            "freshness": "missing",
+            "missing_reason": "market_index_ohlcv_missing",
+        }
+    ]
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-market-context"]["status"] == "failed"
+    assert scoring.status_code == 409
+    assert scoring.json()["detail"]["incomplete_steps"] == ["refresh-market-context"]
+
+
+def test_daily_radar_refresh_market_context_preserves_valid_existing_context_on_outage(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    existing_context = _market_context()
+    existing_context["record_date"] = "2026-06-01"
+    existing_context["data_dates"] = {"market_index": "2026-06-01"}
+    existing_context["market"]["data_date"] = "2026-06-01"
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        market_context=existing_context,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    missing_context = {
+        "record_date": "2026-06-01",
+        "data_dates": {},
+        "market": {
+            "index_symbol": "TAIEX",
+            "regime": "unknown",
+            "freshness": "missing",
+            "data_date": None,
+            "missing_reason": "market_index_fetch_failed",
+        },
+        "provider_trace": {"provider": "yfinance", "fallback_triggered": True},
+    }
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        market_context_provider=FakeMarketIndexContextProvider(missing_context),
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-market-context",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["records_written"] == 0
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.market_context == existing_context
+    assert prepared.step_statuses["refresh-market-context"]["reused_existing_context"] is True
+
+
 def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkeypatch, daily_radar_db_session: Session) -> None:
     raw_row = _persist_raw_data(daily_radar_db_session, record_date=date(2026, 5, 29))
     client = _api_client(monkeypatch, daily_radar_db_session)
@@ -1226,6 +1341,153 @@ def test_daily_radar_refresh_lending_reuses_same_day_fresh_cache(
     assert provider.calls == []
     daily_radar_db_session.refresh(prepared)
     assert prepared.step_statuses["refresh-lending"]["status"] == "completed"
+
+
+def test_daily_radar_refresh_lending_rejects_stale_market_dataset(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    class StaleLendingProvider:
+        def fetch(
+            self,
+            *,
+            symbols: list[str],
+            context_types: list[str],
+            run_date: date,
+            market: str,
+        ) -> list[BackgroundContextPayload]:
+            return [
+                BackgroundContextPayload(
+                    symbol=symbol,
+                    context_type="lending",
+                    applicable_consumers=("daily_radar",),
+                    source={"provider": "official"},
+                    as_of_date=date(2026, 5, 29),
+                    freshness="stale",
+                    payload={"data_dates": ["2026-05-29"]},
+                    missing_reason="source_stale",
+                    replay_key=f"background_context:{symbol}:lending:2026-05-29",
+                )
+                for symbol in symbols
+            ]
+
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        step_statuses=_completed_segmented_step_statuses(),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        background_context_provider=StaleLendingProvider(),  # type: ignore[arg-type]
+    )
+
+    try:
+        refreshed = client.post(
+            "/internal/daily-radar/refresh-lending",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        scoring = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert refreshed.status_code == 200
+    assert refreshed.json()["status"] == "failed"
+    assert refreshed.json()["missing_symbols"] == ["2330.TW"]
+    assert refreshed.json()["missing_symbol_reasons"] == {"2330.TW": "source_stale"}
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-lending"]["status"] == "failed"
+    assert scoring.status_code == 409
+    assert scoring.json()["detail"]["incomplete_steps"] == ["refresh-lending"]
+
+
+def test_daily_radar_refresh_full_margin_rejects_incomplete_same_day_payload(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    class IncompleteMarginProvider:
+        def fetch(
+            self,
+            *,
+            symbols: list[str],
+            context_types: list[str],
+            run_date: date,
+            market: str,
+        ) -> list[BackgroundContextPayload]:
+            return [
+                BackgroundContextPayload(
+                    symbol=symbol,
+                    context_type="full_margin",
+                    applicable_consumers=("daily_radar",),
+                    source={"provider": "fallback"},
+                    as_of_date=run_date,
+                    freshness="fresh",
+                    payload={"margin_balance_delta_pct": None},
+                    missing_reason=None,
+                    replay_key=f"background_context:{symbol}:full_margin:{run_date.isoformat()}",
+                )
+                for symbol in symbols
+            ]
+
+    prepared = DailyRadarPreparedRun(
+        run_date=date(2026, 6, 1),
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+        step_statuses=_completed_segmented_step_statuses(),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        background_context_provider=IncompleteMarginProvider(),  # type: ignore[arg-type]
+    )
+
+    try:
+        refreshed = client.post(
+            "/internal/daily-radar/refresh-full-margin",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        scoring = client.post(
+            "/internal/daily-radar/run-scoring",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert refreshed.status_code == 200
+    assert refreshed.json()["status"] == "failed"
+    assert refreshed.json()["missing_symbol_reasons"] == {
+        "2330.TW": "context_payload_incomplete"
+    }
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-full-margin"]["status"] == "failed"
+    cached = daily_radar_db_session.scalar(
+        select(SharedBackgroundContext).where(
+            SharedBackgroundContext.symbol == "2330.TW",
+            SharedBackgroundContext.context_type == "full_margin",
+        )
+    )
+    assert cached is not None
+    assert cached.freshness == "missing"
+    assert cached.missing_reason == "context_payload_incomplete"
+    assert cached.payload == {}
+    assert scoring.status_code == 409
+    assert scoring.json()["detail"]["incomplete_steps"] == ["refresh-full-margin"]
 
 
 def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(

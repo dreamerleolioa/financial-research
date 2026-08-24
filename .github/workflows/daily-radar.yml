@@ -302,8 +302,11 @@ jobs:
             "run_date: \(.run_date // "n/a")",
             "symbol_count: \(.symbol_count // "n/a")",
             "records_written: \(.records_written // "n/a")",
+            "missing_symbols_count: \((.missing_symbols // []) | length)",
+            "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)",
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
-            "detail: \(.detail // "n/a")"
+            "detail: \(.detail // "n/a")",
+            (.errors[]? | "error: \(. | @json)")
           ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
@@ -344,8 +347,11 @@ jobs:
             "run_date: \(.run_date // "n/a")",
             "symbol_count: \(.symbol_count // "n/a")",
             "records_written: \(.records_written // "n/a")",
+            "missing_symbols_count: \((.missing_symbols // []) | length)",
+            "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)",
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
-            "detail: \(.detail // "n/a")"
+            "detail: \(.detail // "n/a")",
+            (.errors[]? | "error: \(. | @json)")
           ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1
@@ -484,7 +490,9 @@ jobs:
             "step: \(.step // "n/a")",
             "run_date: \(.run_date // "n/a")",
             "records_written: \(.records_written // "n/a")",
-            "detail: \(.detail // "n/a")"
+            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+            "detail: \(.detail // "n/a")",
+            (.errors[]? | "error: \(. | @json)")
           ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
             exit 1

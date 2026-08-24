@@ -489,6 +489,45 @@ def test_official_lending_reads_live_top_level_schema_and_aggregates_by_date() -
     assert by_symbol["2330.TW"].payload["unit"] == "twse_lending_trading_unit"
 
 
+def test_official_lending_zero_fills_market_dates_without_symbol_activity() -> None:
+    def fake_get(url: str, *, params: dict, **kwargs):
+        return _FakeResponse(
+            {
+                "stat": "OK",
+                "fields": ["成交日期", "證券代號名稱", "成交數量(交易單位)"],
+                "data": [
+                    ["115年06月09日", "2330 台積電", "100"],
+                    ["115年06月10日", "2330 台積電", "125"],
+                ],
+            }
+        )
+
+    provider = OfficialBackgroundChipContextProvider(
+        request_get=fake_get,
+        lookback_trading_days=2,
+        max_lookback_calendar_days=2,
+    )
+
+    payload = next(
+        item
+        for item in provider.fetch(
+            symbols=["2454.TW"],
+            context_types=["lending"],
+            run_date=date(2026, 6, 10),
+            market="TW",
+        )
+        if item.symbol == "2454.TW"
+    )
+
+    assert payload.freshness == "fresh"
+    assert payload.missing_reason is None
+    assert payload.as_of_date == date(2026, 6, 10)
+    assert payload.payload["data_dates"] == ["2026-06-09", "2026-06-10"]
+    assert payload.payload["latest_daily_lending_volume"] == 0.0
+    assert payload.payload["period_lending_volume"] == 0.0
+    assert payload.payload["zero_filled_day_count"] == 2
+
+
 class _MissingOfficialProvider:
     def fetch(self, *, symbols: list[str], context_types: list[str], run_date: date, market: str):
         return [

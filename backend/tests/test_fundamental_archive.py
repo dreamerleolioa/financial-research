@@ -11,13 +11,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
 from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
@@ -42,15 +43,21 @@ from ai_stock_sentinel.data_sources.fundamental.repository import (
 from ai_stock_sentinel.data_sources.fundamental.service import (
     FundamentalBackfillResult,
     FundamentalRefreshResult,
+    acquire_fundamental_backfill_scheduler_lock,
     backfill_fundamentals,
     create_fundamental_backfill_job,
     fundamental_raw_pool_date_is_completed,
     get_fundamental_backfill_job,
+    get_oldest_running_fundamental_backfill_job,
     refresh_official_fundamentals,
     resolve_managed_fundamental_symbols,
     resolve_pending_fundamental_backfill_symbols,
 )
-from ai_stock_sentinel.data_sources.fundamental.router import router as fundamental_router
+from ai_stock_sentinel.data_sources.fundamental.router import (
+    backfill_fundamentals_endpoint,
+    router as fundamental_router,
+)
+from ai_stock_sentinel.data_sources.fundamental.schemas import FundamentalBackfillRequest
 from ai_stock_sentinel.db.models import (
     CompanyDividendEvent,
     CompanyFundamentalPeriod,
@@ -1313,7 +1320,7 @@ def test_finmind_backfill_limits_symbols_and_returns_cursor() -> None:
         engine.dispose()
 
 
-def test_finmind_backfill_does_not_advance_cursor_after_partial_failure() -> None:
+def test_finmind_backfill_defers_partial_failure_without_starving_later_symbols() -> None:
     session, engine = _db_session()
     provider = _BackfillProvider()
     provider.fetch_statement_rows = MagicMock(side_effect=RuntimeError("temporary outage"))
@@ -1326,7 +1333,7 @@ def test_finmind_backfill_does_not_advance_cursor_after_partial_failure() -> Non
         )
 
         assert result.status == "partial"
-        assert result.next_after_symbol is None
+        assert result.next_after_symbol == "2330.TW"
         assert result.errors == [
             "2330.TW: statement backfill failed: temporary outage"
         ]
@@ -1439,13 +1446,24 @@ def test_fundamental_backfill_job_freezes_only_pending_symbols() -> None:
         engine.dispose()
 
 
-def test_fundamental_workflow_has_daily_refresh_and_manual_bounded_backfill() -> None:
+def test_fundamental_workflow_has_daily_refresh_and_scheduled_bounded_backfill() -> None:
     workflow = Path(__file__).parents[2] / ".github" / "workflows" / "fundamental-data.yml"
     text = workflow.read_text(encoding="utf-8")
 
     assert 'cron: "15 23 * * 0-4"' in text
     assert "/internal/fundamentals/refresh" in text
     assert "/internal/fundamentals/backfill" in text
+    assert "github.event_name == 'schedule' || inputs.mode == 'backfill'" in text
+    assert "continue-on-error: true" in text
+    assert "steps.refresh_official.outcome == 'failure'" in text
+    assert "timeout-minutes: 30" in text
+    assert "--retry 2" not in text
+    assert '-w "%{http_code}"' in text
+    assert 'cat "$response_file"' in text
+    assert 'if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]' in text
+    assert "Official fundamental refresh failed or was partial." in text
+    assert "resume_running_job=true" in text
+    assert "{resume_running_job:true}" in text
     assert "for batch in 1 2 3 4 5 6" in text
     assert "backfill_after_symbol:" in text
     assert "backfill_job_id:" in text
@@ -1457,6 +1475,8 @@ def test_fundamental_workflow_has_daily_refresh_and_manual_bounded_backfill() ->
     assert "BACKFILL_NEXT_AFTER_SYMBOL" in text
     assert "BACKFILL_JOB_ID" in text
     assert "Backfill partially failed" in text
+    assert "will resume automatically" in text
+    assert 'if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then' in text
     assert "exit 2" in text
     assert "limit:10" in text
     assert "X-Internal-Token" in text
@@ -1525,6 +1545,10 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
             patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.get_fundamental_backfill_job",
                 return_value=resumed_job,
+            ),
+            patch(
+                "ai_stock_sentinel.data_sources.fundamental.router.get_oldest_running_fundamental_backfill_job",
+                return_value=None,
             ),
             patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.backfill_fundamentals",
@@ -1596,6 +1620,131 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
             "code": "fundamental_backfill_job_completed"
         }
         assert commit.call_count == 2
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_scheduled_fundamental_backfill_resumes_oldest_running_job(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[FundamentalBackfillJob.__table__])
+    session = Session(engine)
+    app = FastAPI()
+    app.include_router(fundamental_router)
+    app.dependency_overrides[get_db] = lambda: session
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    try:
+        job = create_fundamental_backfill_job(
+            session,
+            symbols=["2330.TW", "2454.TW"],
+            raw_pool_date=date(2026, 8, 17),
+        )
+        job.next_after_symbol = "2330.TW"
+        session.commit()
+        result = FundamentalBackfillResult("ok", ["2454.TW"], 2, None, [])
+
+        with patch(
+            "ai_stock_sentinel.data_sources.fundamental.router.backfill_fundamentals",
+            return_value=result,
+        ) as backfill:
+            response = TestClient(app).post(
+                "/internal/fundamentals/backfill",
+                headers={"X-Internal-Token": "test-token"},
+                json={"scope": "managed", "resume_running_job": True, "limit": 10},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == job.id
+        assert response.json()["raw_pool_date"] == "2026-08-17"
+        assert response.json()["next_after_symbol"] is None
+        backfill.assert_called_once_with(
+            session,
+            symbols=["2330.TW", "2454.TW"],
+            after_symbol="2330.TW",
+            limit=10,
+        )
+        resumed = get_oldest_running_fundamental_backfill_job(session)
+        assert resumed is None
+        session.refresh(job)
+        assert job.status == "completed"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_fundamental_scheduler_lock_uses_postgres_transaction_advisory_lock() -> None:
+    session = MagicMock(spec=Session)
+    session.get_bind.return_value.dialect.name = "postgresql"
+
+    acquire_fundamental_backfill_scheduler_lock(session)
+
+    statement, parameters = session.execute.call_args.args
+    assert "pg_advisory_xact_lock" in str(statement)
+    assert parameters == {"lock_key": 4_601_846_331_778_201_001}
+
+
+def test_partial_backfill_page_advances_job_cursor_to_prevent_starvation() -> None:
+    session, engine = _db_session()
+    try:
+        job = create_fundamental_backfill_job(
+            session,
+            symbols=["2330.TW", "2454.TW"],
+            raw_pool_date=date(2026, 8, 17),
+        )
+        session.commit()
+        result = FundamentalBackfillResult(
+            "partial",
+            ["2330.TW"],
+            0,
+            "2330.TW",
+            ["2330.TW: statement backfill failed: permanent error"],
+        )
+
+        with patch(
+            "ai_stock_sentinel.data_sources.fundamental.router.backfill_fundamentals",
+            return_value=result,
+        ):
+            response = backfill_fundamentals_endpoint(
+                FundamentalBackfillRequest(job_id=job.id, limit=1),
+                db=session,
+            )
+
+        assert response["status"] == "partial"
+        assert response["next_after_symbol"] == "2330.TW"
+        session.refresh(job)
+        assert job.next_after_symbol == "2330.TW"
+        assert job.status == "running"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_new_fundamental_backfill_rejects_while_running_job_exists() -> None:
+    session, engine = _db_session()
+    try:
+        job = create_fundamental_backfill_job(
+            session,
+            symbols=["2330.TW"],
+            raw_pool_date=date(2026, 8, 17),
+        )
+        session.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            backfill_fundamentals_endpoint(
+                FundamentalBackfillRequest(symbols=["2454.TW"]),
+                db=session,
+            )
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == {
+            "code": "fundamental_backfill_job_running",
+            "job_id": job.id,
+            "expected_after_symbol": None,
+        }
     finally:
         session.close()
         engine.dispose()

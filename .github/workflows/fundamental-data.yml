@@ -37,31 +37,40 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       API_BASE_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
       DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
     steps:
       - name: Validate configuration
+        id: validate_configuration
         run: |
           test -n "$API_BASE_URL"
           test -n "$DAILY_RADAR_INTERNAL_TOKEN"
 
       - name: Refresh official fundamental snapshots
+        id: refresh_official
         if: github.event_name == 'schedule' || inputs.mode == 'refresh'
+        continue-on-error: true
         run: |
-          response=$(curl --fail-with-body --silent --show-error \
-            --retry 2 \
+          response_file=$(mktemp)
+          http_status=$(curl --silent --show-error \
             --connect-timeout 15 \
             --max-time 300 \
+            -o "$response_file" \
+            -w "%{http_code}" \
             -X POST \
             -H "X-Internal-Token: $DAILY_RADAR_INTERNAL_TOKEN" \
             "$API_BASE_URL/internal/fundamentals/refresh")
-          printf '%s\n' "$response"
-          printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null
+          echo "HTTP status: $http_status"
+          cat "$response_file"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            exit 1
+          fi
+          jq -e '.status == "ok"' "$response_file" >/dev/null
 
       - name: Backfill managed and latest AI-pool symbols in bounded batches
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'backfill'
+        if: ${{ !cancelled() && steps.validate_configuration.outcome == 'success' && (github.event_name == 'schedule' || inputs.mode == 'backfill') }}
         env:
           BACKFILL_AFTER_SYMBOL: ${{ inputs.backfill_after_symbol }}
           BACKFILL_JOB_ID: ${{ inputs.backfill_job_id }}
@@ -70,23 +79,34 @@ jobs:
           after_symbol="${BACKFILL_AFTER_SYMBOL}"
           job_id="${BACKFILL_JOB_ID}"
           raw_pool_date="${BACKFILL_RAW_POOL_DATE}"
+          resume_running_job=false
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            resume_running_job=true
+          fi
           for batch in 1 2 3 4 5 6; do
-            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" --arg raw_pool_date "$raw_pool_date" \
+            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" --arg raw_pool_date "$raw_pool_date" --argjson resume "$resume_running_job" \
               '{scope:"managed", limit:10}
               + (if $after == "" then {} else {after_symbol:$after} end)
               + (if $job == "" then {} else {job_id:$job} end)
+              + (if $job == "" and $resume then {resume_running_job:true} else {} end)
               + (if $job != "" or $raw_pool_date == "" then {} else {raw_pool_date:$raw_pool_date} end)')
-            response=$(curl --fail-with-body --silent --show-error \
-              --retry 2 \
+            response_file=$(mktemp)
+            http_status=$(curl --silent --show-error \
               --connect-timeout 15 \
               --max-time 300 \
+              -o "$response_file" \
+              -w "%{http_code}" \
               -X POST \
               -H "Content-Type: application/json" \
               -H "X-Internal-Token: $DAILY_RADAR_INTERNAL_TOKEN" \
               -d "$payload" \
               "$API_BASE_URL/internal/fundamentals/backfill")
-            printf '%s\n' "$response"
-            response_job_id=$(printf '%s' "$response" | jq -r '.job_id // ""')
+            echo "HTTP status: $http_status"
+            cat "$response_file"
+            if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+              exit 1
+            fi
+            response_job_id=$(jq -r '.job_id // ""' "$response_file")
             if [ -z "$response_job_id" ]; then
               echo "Backfill response did not include a job id" >&2
               exit 1
@@ -96,14 +116,19 @@ jobs:
               exit 1
             fi
             job_id="$response_job_id"
-            if ! printf '%s' "$response" | jq -e '.status == "ok"' >/dev/null; then
+            after_symbol=$(jq -r '.next_after_symbol // ""' "$response_file")
+            if ! jq -e '.status == "ok"' "$response_file" >/dev/null; then
               echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
               echo "BACKFILL_JOB_ID=$job_id"
-              printf 'Backfill partially failed. Retry with `backfill_after_symbol=%s` and `backfill_job_id=%s`.\n' \
-                "$after_symbol" "$job_id" >> "$GITHUB_STEP_SUMMARY"
+              if [ -n "$after_symbol" ]; then
+                printf 'Backfill partially failed. Successful symbols were committed; resume job `%s` from `%s` to avoid starving later symbols.\n' \
+                  "$job_id" "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
+              else
+                printf 'Backfill partially failed on its final page. The failed symbols remain pending and will enter a new job on the next schedule.\n' \
+                  >> "$GITHUB_STEP_SUMMARY"
+              fi
               exit 1
             fi
-            after_symbol=$(printf '%s' "$response" | jq -r '.next_after_symbol // ""')
             if [ -z "$after_symbol" ]; then
               break
             fi
@@ -111,7 +136,22 @@ jobs:
           if [ -n "$after_symbol" ]; then
             echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
             echo "BACKFILL_JOB_ID=$job_id"
+            if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+              printf 'Scheduled backfill request budget reached. Running job `%s` will resume automatically from `%s` on the next schedule.\n' \
+                "$job_id" "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             printf 'Backfill request budget reached. Resume with `backfill_after_symbol=%s` and `backfill_job_id=%s`.\n' \
               "$after_symbol" "$job_id" >> "$GITHUB_STEP_SUMMARY"
             exit 2
           fi
+
+      - name: Report official refresh failure after scheduled backfill
+        if: ${{ always() && steps.refresh_official.outcome == 'failure' }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            echo "Official fundamental refresh failed or was partial; bounded backfill was still attempted." >&2
+          else
+            echo "Official fundamental refresh failed or was partial." >&2
+          fi
+          exit 1

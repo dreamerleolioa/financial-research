@@ -190,6 +190,9 @@ class FinMindBackgroundChipContextProvider:
                 "latest_short_balance": short_latest,
                 "margin_balance_delta": _delta(margin_latest, margin_start),
                 "margin_balance_delta_pct": _delta_pct(margin_latest, margin_start),
+                "margin_balance_delta_pct_unavailable_reason": (
+                    _delta_pct_unavailable_reason(margin_latest, margin_start)
+                ),
                 "short_balance_delta": _delta(short_latest, short_start),
                 "short_balance_delta_pct": _delta_pct(short_latest, short_start),
                 "data_dates": [row["date"] for row in recent_rows if row.get("date")],
@@ -411,6 +414,12 @@ def _delta_pct(latest: float | None, start: float | None) -> float | None:
     if latest is None or start in (None, 0):
         return None
     return (latest - start) / start * 100
+
+
+def _delta_pct_unavailable_reason(latest: float | None, start: float | None) -> str | None:
+    if latest is not None and start == 0:
+        return "baseline_zero"
+    return None
 
 
 def _replay_key(symbol: str, context_type: str, as_of_date: date | None) -> str:

@@ -118,6 +118,7 @@ def update_background_chip_context_cache(
     symbols: Iterable[str] | None = None,
     context_types: Iterable[str] | None = None,
     reuse_same_day_fresh: bool = False,
+    require_same_day_fresh: bool = False,
 ) -> dict[str, Any]:
     active_provider = provider or StubBackgroundChipContextProvider()
     active_context_types = _ordered_unique(context_types or BACKGROUND_CONTEXT_TYPES)
@@ -151,6 +152,8 @@ def update_background_chip_context_cache(
     records_written = 0
     reused_pairs: set[tuple[str, str]] = set()
     errors: list[dict[str, Any]] = list(source_errors)
+    returned_pairs: set[tuple[str, str]] = set()
+    incomplete_reasons: dict[tuple[str, str], str] = {}
     fetch_symbols_by_context_type = {
         context_type: list(selected_symbols_by_context_type.get(context_type, []))
         for context_type in active_context_types
@@ -176,6 +179,11 @@ def update_background_chip_context_cache(
             ]
             for context_type, context_symbols in fetch_symbols_by_context_type.items()
         }
+    expected_pairs = {
+        (symbol, context_type)
+        for context_type, context_symbols in fetch_symbols_by_context_type.items()
+        for symbol in context_symbols
+    }
     try:
         for fetch_symbols, fetch_context_types in _context_fetch_batches(
             fetch_symbols_by_context_type,
@@ -187,6 +195,36 @@ def update_background_chip_context_cache(
                 run_date=run_date,
                 market=market,
             ):
+                pair = (payload.symbol, payload.context_type)
+                if pair not in expected_pairs:
+                    errors.append(
+                        {
+                            "code": "background_context_provider_unexpected_payload",
+                            "symbol": payload.symbol,
+                            "context_type": payload.context_type,
+                        }
+                    )
+                    continue
+                returned_pairs.add(pair)
+                if require_same_day_fresh and not same_day_background_context_is_reusable(
+                    payload,
+                    run_date=run_date,
+                ):
+                    incomplete_reasons[pair] = (
+                        payload.missing_reason
+                        or (
+                            "source_stale"
+                            if payload.freshness != "fresh" or payload.as_of_date != run_date
+                            else "context_payload_incomplete"
+                        )
+                    )
+                persisted_freshness = payload.freshness
+                persisted_payload = payload.payload
+                persisted_missing_reason = payload.missing_reason
+                if incomplete_reasons.get(pair) == "context_payload_incomplete":
+                    persisted_freshness = "missing"
+                    persisted_payload = {}
+                    persisted_missing_reason = "context_payload_incomplete"
                 upsert_shared_background_context(
                     session,
                     symbol=payload.symbol,
@@ -194,9 +232,9 @@ def update_background_chip_context_cache(
                     applicable_consumers=payload.applicable_consumers,
                     source=payload.source,
                     as_of_date=payload.as_of_date,
-                    freshness=payload.freshness,
-                    payload=payload.payload,
-                    missing_reason=payload.missing_reason,
+                    freshness=persisted_freshness,
+                    payload=persisted_payload,
+                    missing_reason=persisted_missing_reason,
                     replay_key=payload.replay_key,
                 )
                 records_written += 1
@@ -209,14 +247,25 @@ def update_background_chip_context_cache(
             }
         )
 
+    if require_same_day_fresh:
+        for pair in expected_pairs - returned_pairs:
+            incomplete_reasons.setdefault(pair, "provider_payload_missing")
+
+    missing_symbol_reasons = {
+        symbol: reason
+        for (symbol, _context_type), reason in sorted(incomplete_reasons.items())
+    }
+
     return {
-        "status": "completed" if not errors else "failed",
+        "status": "completed" if not errors and not incomplete_reasons else "failed",
         "market": market,
         "run_date": run_date.isoformat(),
         "symbol_count": len(selected_symbols),
         "context_types": active_context_types,
         "records_written": records_written,
         "reused_symbols": sorted({symbol for symbol, _context_type in reused_pairs}),
+        "missing_symbols": sorted(missing_symbol_reasons),
+        "missing_symbol_reasons": missing_symbol_reasons,
         "errors": errors,
     }
 

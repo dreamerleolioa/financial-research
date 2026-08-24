@@ -626,6 +626,44 @@ def test_finmind_background_provider_builds_full_margin_and_lending_payloads() -
     assert weekly.payload == {}
 
 
+def test_finmind_full_margin_marks_zero_baseline_as_explicitly_unavailable() -> None:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: int):
+        return _FakeFinMindResponse(
+            {
+                "status": 200,
+                "data": [
+                    {
+                        "date": "2026-06-10",
+                        "stock_id": "2330",
+                        "MarginPurchaseTodayBalance": 100,
+                        "MarginPurchaseYesterdayBalance": 0,
+                        "ShortSaleTodayBalance": 10,
+                        "ShortSaleYesterdayBalance": 5,
+                    }
+                ],
+            }
+        )
+
+    provider = FinMindBackgroundChipContextProvider(
+        api_token="test-token",
+        request_get=fake_get,
+    )
+
+    payload = next(
+        iter(
+            provider.fetch(
+                symbols=["2330.TW"],
+                context_types=["full_margin"],
+                run_date=date(2026, 6, 10),
+                market="TW",
+            )
+        )
+    )
+
+    assert payload.payload["margin_balance_delta_pct"] is None
+    assert payload.payload["margin_balance_delta_pct_unavailable_reason"] == "baseline_zero"
+
+
 def test_finmind_background_provider_fetches_symbols_with_bounded_concurrency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1122,6 +1160,22 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
 
     refresh_avwap_job = text.split("  refresh-avwap:", 1)[1].split("  refresh-lending:", 1)[0]
     assert refresh_avwap_job.index('if [[ ! "$http_status"') < refresh_avwap_job.index("jq -r '")
+
+    refresh_lending_job = text.split("  refresh-lending:", 1)[1].split(
+        "  refresh-full-margin:", 1
+    )[0]
+    refresh_full_margin_job = text.split("  refresh-full-margin:", 1)[1].split(
+        "  refresh-ohlcv:", 1
+    )[0]
+    refresh_market_context_job = text.split("  refresh-market-context:", 1)[1].split(
+        "  run-scoring:", 1
+    )[0]
+    for context_job in (refresh_lending_job, refresh_full_margin_job):
+        assert "missing_symbols_count" in context_job
+        assert "missing_symbol_reasons" in context_job
+        assert ".errors[]?" in context_job
+    assert "errors_count" in refresh_market_context_job
+    assert ".errors[]?" in refresh_market_context_job
 
     repair_job = text.split("  repair-avwap-and-rescore:", 1)[1]
     assert repair_job.index('if [[ ! "$refresh_http_status"') < repair_job.index("jq -r '")

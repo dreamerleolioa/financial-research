@@ -236,6 +236,7 @@ class OfficialBackgroundChipContextProvider:
         request_get = self._request_get or _import_requests_get()
         requested_ids = {_stock_id(symbol): symbol for symbol in symbols}
         daily: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+        market_dates: set[date] = set()
         start_date = run_date - timedelta(days=self._max_lookback_calendar_days - 1)
         cursor = start_date
         while cursor <= run_date:
@@ -254,23 +255,21 @@ class OfficialBackgroundChipContextProvider:
             for row_date, stock_id, volume in _parse_lending_payload(payload):
                 if row_date > run_date:
                     continue
+                market_dates.add(row_date)
                 symbol = requested_ids.get(stock_id)
                 if symbol is not None:
                     daily[symbol][row_date] += volume
             cursor = window_end + timedelta(days=1)
 
+        if not market_dates:
+            raise OfficialBackgroundContextError(
+                "official_lending_market_date_unavailable",
+                dataset="TWSE_t13sa710",
+            )
+        data_dates = sorted(market_dates)[-self._lookback_trading_days :]
         for symbol in symbols:
-            daily_points = sorted(daily.get(symbol, {}).items())[-self._lookback_trading_days :]
-            if not daily_points:
-                yield self._missing_payload(
-                    symbol=symbol,
-                    context_type="lending",
-                    run_date=run_date,
-                    market=market,
-                    missing_reason="official_no_data",
-                    dataset="TWSE_t13sa710",
-                )
-                continue
+            symbol_daily = daily.get(symbol, {})
+            daily_points = [(row_date, symbol_daily.get(row_date, 0.0)) for row_date in data_dates]
             latest_date, latest_volume = daily_points[-1]
             first_volume = daily_points[0][1]
             freshness, missing_reason = self._freshness(as_of_date=latest_date, run_date=run_date)
@@ -287,6 +286,8 @@ class OfficialBackgroundChipContextProvider:
                     "lookback_trading_days": self._lookback_trading_days,
                     "row_count": len(daily_points),
                     "daily_point_count": len(daily_points),
+                    "activity_day_count": sum(row_date in symbol_daily for row_date in data_dates),
+                    "zero_filled_day_count": sum(row_date not in symbol_daily for row_date in data_dates),
                     "unit": "twse_lending_trading_unit",
                     "latest_daily_lending_volume": latest_volume,
                     "period_lending_volume": sum(volume for _dt, volume in daily_points),

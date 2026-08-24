@@ -33,6 +33,7 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
     YFinanceMarketIndexContextProvider,
+    market_context_refresh_error,
 )
 from ai_stock_sentinel.daily_radar.market_session import (
     MarketSessionProvider,
@@ -796,26 +797,51 @@ def refresh_daily_radar_market_context_endpoint(
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or _backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
-    update_daily_radar_prepared_market_context(
-        db,
-        prepared,
-        market_context=dict(market_context_provider.build(run_date=run_date, market=request.market)),
+    market_context = dict(
+        market_context_provider.build(run_date=run_date, market=request.market)
     )
+    error = market_context_refresh_error(market_context, run_date=run_date)
+    reused_existing_context = False
+    if error is not None and prepared.market_context:
+        reused_existing_context = (
+            market_context_refresh_error(dict(prepared.market_context), run_date=run_date) is None
+        )
+    status = "completed" if error is None or reused_existing_context else "failed"
+    errors = [] if status == "completed" else [error]
+    records_written = 0 if reused_existing_context else 1
+    if not reused_existing_context:
+        update_daily_radar_prepared_market_context(
+            db,
+            prepared,
+            market_context=market_context,
+            status=(
+                "market_context_ready"
+                if status == "completed"
+                else f"market_context_{error['freshness']}"
+            ),
+        )
     update_daily_radar_prepared_step_status(
         db,
         prepared,
         step="refresh-market-context",
-        status="completed",
-        details={"symbol_count": len(prepared.selected_symbols), "records_written": 1},
+        status=status,
+        details={
+            "symbol_count": len(prepared.selected_symbols),
+            "records_written": records_written,
+            "reused_existing_context": reused_existing_context,
+            "provider_trace": market_context.get("provider_trace", {}),
+            "errors": errors,
+        },
     )
     db.commit()
     return DailyRadarRefreshStepResponse(
-        status="completed",
+        status=status,
         step="refresh-market-context",
         run_date=run_date,
         market=request.market,
         symbol_count=len(prepared.selected_symbols),
-        records_written=1,
+        records_written=records_written,
+        errors=errors,
     )
 
 
@@ -1041,6 +1067,7 @@ def _refresh_daily_radar_context_step(
         symbols=list(prepared.selected_symbols),
         context_types=[context_type],
         reuse_same_day_fresh=True,
+        require_same_day_fresh=True,
     )
     update_daily_radar_prepared_step_status(
         db,
@@ -1051,6 +1078,8 @@ def _refresh_daily_radar_context_step(
             "symbol_count": int(result["symbol_count"]),
             "records_written": int(result["records_written"]),
             "reused_symbols": list(result.get("reused_symbols") or []),
+            "missing_symbols": list(result.get("missing_symbols") or []),
+            "missing_symbol_reasons": dict(result.get("missing_symbol_reasons") or {}),
             "errors": list(result["errors"]),
         },
     )
@@ -1063,6 +1092,8 @@ def _refresh_daily_radar_context_step(
         symbol_count=int(result["symbol_count"]),
         records_written=int(result["records_written"]),
         reused_symbols=list(result.get("reused_symbols") or []),
+        missing_symbols=list(result.get("missing_symbols") or []),
+        missing_symbol_reasons=dict(result.get("missing_symbol_reasons") or {}),
         errors=list(result["errors"]),
     )
 

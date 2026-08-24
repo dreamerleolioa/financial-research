@@ -8,9 +8,10 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_finmind_dividend_rows,
@@ -153,7 +154,7 @@ def backfill_fundamentals(
     if after_symbol:
         normalized_symbols = [symbol for symbol in normalized_symbols if symbol > after_symbol.upper()]
     selected = normalized_symbols[:bounded_limit]
-    fallback = provider or FinMindFundamentalProvider()
+    fallback = provider or _bounded_fundamental_backfill_provider()
     errors: list[str] = []
     records_written = 0
     for symbol in selected:
@@ -187,8 +188,20 @@ def backfill_fundamentals(
         status="ok" if not errors else "partial",
         symbols_processed=selected,
         records_written=records_written,
-        next_after_symbol=selected[-1] if selected and has_more and not errors else None,
+        next_after_symbol=selected[-1] if selected and has_more else None,
         errors=errors,
+    )
+
+
+def _bounded_fundamental_backfill_provider() -> FinMindFundamentalProvider:
+    return FinMindFundamentalProvider(
+        client=FinMindClient(
+            token_request_limit=120,
+            anonymous_request_limit=120,
+            request_retries=0,
+        ),
+        request_timeout_seconds=10,
+        retry_expired_token=False,
     )
 
 
@@ -345,6 +358,32 @@ def get_fundamental_backfill_job(
     return session.scalar(statement)
 
 
+def get_oldest_running_fundamental_backfill_job(
+    session: Session,
+    *,
+    for_update: bool = False,
+) -> FundamentalBackfillJob | None:
+    statement = (
+        select(FundamentalBackfillJob)
+        .where(FundamentalBackfillJob.status == "running")
+        .order_by(FundamentalBackfillJob.created_at.asc(), FundamentalBackfillJob.id.asc())
+        .limit(1)
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return session.scalar(statement)
+
+
+def acquire_fundamental_backfill_scheduler_lock(session: Session) -> None:
+    """Serialize scheduled select-or-create on PostgreSQL for idempotent POST retries."""
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": 4_601_846_331_778_201_001},
+    )
+
+
 def _request_json(request_get: RequestGet, url: str) -> Any:
     last_error: Exception | None = None
     for _attempt in range(3):
@@ -453,9 +492,11 @@ __all__ = [
     "FundamentalBackfillResult",
     "FundamentalRefreshResult",
     "backfill_fundamentals",
+    "acquire_fundamental_backfill_scheduler_lock",
     "create_fundamental_backfill_job",
     "fundamental_raw_pool_date_is_completed",
     "get_fundamental_backfill_job",
+    "get_oldest_running_fundamental_backfill_job",
     "refresh_official_fundamentals",
     "resolve_fundamental_raw_pool_symbols",
     "resolve_latest_fundamental_raw_pool_date",

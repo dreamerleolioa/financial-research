@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalData, FundamentalError
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClientError
 
 MOCK_FINANCIAL_ROWS = [
     # 近 8 季 EPS（簡化）
@@ -23,6 +24,37 @@ MOCK_DIVIDEND_ROWS = [
 
 def _make_provider(token="fake-token"):
     return FinMindFundamentalProvider(api_token=token)
+
+
+def test_bounded_provider_can_disable_expired_token_retry() -> None:
+    class ExpiredTokenClient:
+        uses_static_token = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fetch_data(self, **kwargs):
+            self.calls += 1
+            assert kwargs["timeout"] == 10
+            raise FinMindClientError(
+                code="quota_or_token_error",
+                message="expired",
+                dataset=kwargs["dataset"],
+                status_code=402,
+            )
+
+    client = ExpiredTokenClient()
+    provider = FinMindFundamentalProvider(
+        client=client,  # type: ignore[arg-type]
+        request_timeout_seconds=10,
+        retry_expired_token=False,
+    )
+
+    with pytest.raises(FundamentalError) as exc_info:
+        provider.fetch_statement_rows("2330.TW")
+
+    assert exc_info.value.code == "FINMIND_TOKEN_EXPIRED"
+    assert client.calls == 1
 
 
 @patch("ai_stock_sentinel.data_sources.fundamental.finmind_provider.FinMindFundamentalProvider._fetch_dataset")
