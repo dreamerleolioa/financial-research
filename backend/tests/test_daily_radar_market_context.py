@@ -170,6 +170,30 @@ def test_market_context_refresh_validation_rejects_partial_indicator_history() -
     }
 
 
+def test_market_context_refresh_validation_rejects_future_volatility_date() -> None:
+    payload = _payload(
+        close=22_000.0,
+        previous_close=21_800.0,
+        ma20=21_400.0,
+        ma60=20_800.0,
+    )
+    payload["data_dates"]["market_volatility"] = "2026-06-03"
+    context = build_market_context_from_technical_payload(
+        payload,
+        run_date=date(2026, 6, 2),
+        index_symbol="TAIEX",
+        yfinance_symbol="^TWII",
+    )
+
+    error = market_context_refresh_error(context, run_date=date(2026, 6, 2))
+
+    assert error == {
+        "code": "daily_radar_market_context_incomplete",
+        "freshness": "stale",
+        "missing_reason": "market_index_volatility_date_invalid",
+    }
+
+
 def test_yfinance_market_index_provider_fetches_single_configured_index_without_ticker_calls(
     monkeypatch,
 ) -> None:
@@ -190,7 +214,9 @@ def test_yfinance_market_index_provider_fetches_single_configured_index_without_
 
     monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
 
-    context = YFinanceMarketIndexContextProvider().build(run_date=date(2026, 6, 2), market="TW")
+    context = YFinanceMarketIndexContextProvider().build(
+        run_date=date(2026, 6, 2), market="TW"
+    )
 
     assert calls == [
         {
@@ -208,6 +234,38 @@ def test_yfinance_market_index_provider_fetches_single_configured_index_without_
     assert context["market"]["yfinance_symbol"] == "^TWII"
     assert context["data_dates"] == {"market_index": "2026-06-02"}
     assert len(context["benchmark"]["price_history"]) == 60
+
+
+def test_yfinance_market_index_provider_normalizes_single_symbol_multiindex_download(
+    monkeypatch,
+) -> None:
+    class FakeYFinance:
+        def download(self, symbol: str, **kwargs: Any) -> pd.DataFrame:
+            dates = pd.bdate_range(end="2026-06-02", periods=60)
+            columns = pd.MultiIndex.from_product(
+                [["Open", "High", "Low", "Close", "Volume"], [symbol]]
+            )
+            data = []
+            for index in range(60):
+                price = 21_000.0 + index
+                data.append([price - 40, price + 80, price - 120, price, 1_000_000 + index])
+            return pd.DataFrame(data, index=dates, columns=columns)
+
+        def Ticker(self, symbol: str) -> object:
+            raise AssertionError(f"valid download must not fall back to Ticker.history: {symbol}")
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
+
+    context = YFinanceMarketIndexContextProvider().build(
+        run_date=date(2026, 6, 2), market="TW"
+    )
+
+    assert market_context_refresh_error(context, run_date=date(2026, 6, 2)) is None
+    assert context["provider_trace"] == {
+        "provider": "yfinance",
+        "fetch_method": "download",
+        "fallback_triggered": False,
+    }
 
 
 def test_yfinance_market_index_provider_marks_fetch_failure_as_missing(monkeypatch) -> None:
@@ -274,6 +332,200 @@ def test_yfinance_market_index_provider_falls_back_to_ticker_history(monkeypatch
     }
 
 
+def test_yfinance_market_index_provider_uses_official_close_for_incomplete_latest_row(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    dates = pd.bdate_range(end="2026-06-02", periods=61)
+    prior_closes = [21_000.0 + index for index in range(60)]
+
+    class FakeYFinance:
+        def download(self, symbol: str, **kwargs: Any) -> pd.DataFrame:
+            calls.append("download")
+            raise RuntimeError("simulated batch download outage")
+
+        def Ticker(self, symbol: str) -> object:
+            class PartialTicker:
+                def history(self, **kwargs: Any) -> pd.DataFrame:
+                    calls.append("ticker_history")
+                    return pd.DataFrame(
+                        {
+                            "Open": [value - 20 for value in prior_closes] + [21_060.0],
+                            "High": [value + 80 for value in prior_closes] + [21_100.0],
+                            "Low": [value - 120 for value in prior_closes] + [20_900.0],
+                            "Close": prior_closes + [float("nan")],
+                            "Volume": [1_000_000 + index for index in range(60)] + [0],
+                        },
+                        index=dates,
+                    )
+
+            return PartialTicker()
+
+    def official_request_getter(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append("twse_mi_index")
+        return {
+            "stat": "OK",
+            "date": "20260602",
+            "tables": [
+                {
+                    "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數"],
+                    "data": [
+                        [
+                            "發行量加權股價指數",
+                            "21,050.00",
+                            "<p style='color:green'>-</p>",
+                            "9.00",
+                        ]
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
+
+    context = YFinanceMarketIndexContextProvider(
+        official_request_getter=official_request_getter
+    ).build(run_date=date(2026, 6, 2), market="TW")
+
+    assert calls == ["download", "ticker_history", "twse_mi_index"]
+    assert market_context_refresh_error(context, run_date=date(2026, 6, 2)) is None
+    assert context["data_dates"] == {"market_index": "2026-06-02"}
+    assert context["benchmark"]["data_dates"] == {
+        "market_index": "2026-06-02",
+        "market_volatility": "2026-06-01",
+    }
+    assert context["market"]["close"] == 21_050.0
+    assert context["market"]["previous_close"] == 21_059.0
+    assert context["market"]["volatility_state"] != "unknown"
+    assert context["benchmark"]["price_history"][-1] == {
+        "date": "2026-06-02",
+        "close": 21_050.0,
+    }
+    assert context["provider_trace"] == {
+        "provider": "twse",
+        "dataset": "MI_INDEX",
+        "fetch_method": "official_close_with_yfinance_history",
+        "history_provider": "yfinance",
+        "history_fetch_method": "ticker_history",
+        "fallback_triggered": True,
+    }
+
+
+def test_yfinance_market_index_provider_rejects_official_close_when_previous_close_mismatches(
+    monkeypatch,
+) -> None:
+    dates = pd.bdate_range(end="2026-06-02", periods=61)
+
+    class FakeYFinance:
+        def download(self, symbol: str, **kwargs: Any) -> pd.DataFrame:
+            raise RuntimeError("simulated batch download outage")
+
+        def Ticker(self, symbol: str) -> object:
+            class PartialTicker:
+                def history(self, **kwargs: Any) -> pd.DataFrame:
+                    closes = [21_000.0 + index for index in range(60)]
+                    return pd.DataFrame(
+                        {
+                            "Open": [value - 20 for value in closes] + [21_060.0],
+                            "High": [value + 80 for value in closes] + [21_100.0],
+                            "Low": [value - 120 for value in closes] + [20_900.0],
+                            "Close": closes + [float("nan")],
+                            "Volume": [1_000_000 + index for index in range(60)] + [0],
+                        },
+                        index=dates,
+                    )
+
+            return PartialTicker()
+
+    def official_request_getter(url: str, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "stat": "OK",
+            "date": "20260602",
+            "tables": [
+                {
+                    "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數"],
+                    "data": [
+                        [
+                            "發行量加權股價指數",
+                            "21,051.00",
+                            "<p style='color:green'>-</p>",
+                            "9.00",
+                        ]
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
+
+    context = YFinanceMarketIndexContextProvider(
+        official_request_getter=official_request_getter
+    ).build(run_date=date(2026, 6, 2), market="TW")
+
+    assert context["market"]["freshness"] == "stale"
+    assert context["market"]["data_date"] == "2026-06-01"
+    assert context["provider_trace"]["official_fallback_error"] == (
+        "twse_market_index_previous_close_mismatch"
+    )
+
+
+def test_yfinance_market_index_provider_rejects_official_overlay_with_old_history(
+    monkeypatch,
+) -> None:
+    dates = pd.bdate_range(end="2026-05-01", periods=60)
+    closes = [21_000.0 + index for index in range(60)]
+
+    class FakeYFinance:
+        def download(self, symbol: str, **kwargs: Any) -> pd.DataFrame:
+            raise RuntimeError("simulated batch download outage")
+
+        def Ticker(self, symbol: str) -> object:
+            class StaleTicker:
+                def history(self, **kwargs: Any) -> pd.DataFrame:
+                    return pd.DataFrame(
+                        {
+                            "Open": [value - 20 for value in closes],
+                            "High": [value + 80 for value in closes],
+                            "Low": [value - 120 for value in closes],
+                            "Close": closes,
+                            "Volume": [1_000_000 + index for index in range(60)],
+                        },
+                        index=dates,
+                    )
+
+            return StaleTicker()
+
+    def official_request_getter(url: str, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "stat": "OK",
+            "date": "20260602",
+            "tables": [
+                {
+                    "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數"],
+                    "data": [
+                        [
+                            "發行量加權股價指數",
+                            "21,050.00",
+                            "<p style='color:green'>-</p>",
+                            "9.00",
+                        ]
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
+
+    context = YFinanceMarketIndexContextProvider(
+        official_request_getter=official_request_getter
+    ).build(run_date=date(2026, 6, 2), market="TW")
+
+    assert context["market"]["freshness"] == "stale"
+    assert context["provider_trace"]["official_fallback_error"] == (
+        "twse_market_index_history_stale"
+    )
+
+
 def test_yfinance_market_index_provider_preserves_stale_diagnostic_over_empty_fallback(
     monkeypatch,
 ) -> None:
@@ -300,7 +552,12 @@ def test_yfinance_market_index_provider_preserves_stale_diagnostic_over_empty_fa
 
     monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
 
-    context = YFinanceMarketIndexContextProvider().build(run_date=date(2026, 6, 2), market="TW")
+    def failing_official_request_getter(url: str, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("simulated official market index outage")
+
+    context = YFinanceMarketIndexContextProvider(
+        official_request_getter=failing_official_request_getter
+    ).build(run_date=date(2026, 6, 2), market="TW")
 
     assert context["market"]["freshness"] == "stale"
     assert context["market"]["data_date"] == "2026-05-20"
@@ -308,6 +565,8 @@ def test_yfinance_market_index_provider_preserves_stale_diagnostic_over_empty_fa
         "provider": "yfinance",
         "fetch_method": "download",
         "fallback_triggered": True,
+        "official_fallback_attempted": True,
+        "official_fallback_error": "twse_market_index_request_failed",
     }
 
 

@@ -50,6 +50,7 @@ class YFinanceBatchTechnicalFetcher:
         payloads: dict[str, Mapping[str, Any]] = {}
         for symbol in ordered_symbols:
             frame = _frame_on_or_before_run_date(_symbol_frame(history, symbol), run_date=run_date)
+            frame = _trim_trailing_incomplete_ohlcv_rows(frame)
             payload = _build_technical_payload(
                 symbol,
                 frame,
@@ -534,6 +535,30 @@ def _frame_on_or_before_run_date(frame: Any, *, run_date: date) -> Any:
     if hasattr(frame, "loc"):
         return frame.loc[mask]
     return frame
+
+
+def _trim_trailing_incomplete_ohlcv_rows(frame: Any) -> Any:
+    if getattr(frame, "empty", False) or not hasattr(frame, "iloc"):
+        return frame
+    columns = {
+        field_name: _matching_column_name(frame, field_name)
+        for field_name in ("Open", "High", "Low", "Close", "Volume")
+    }
+    if any(column_name is None for column_name in columns.values()):
+        return frame.iloc[0:0]
+    for position in range(len(frame) - 1, -1, -1):
+        row = frame.iloc[position]
+        values = {
+            field_name: _to_float(row[column_name])
+            for field_name, column_name in columns.items()
+        }
+        if all(
+            value is not None
+            and (value >= 0 if field_name == "Volume" else value > 0)
+            for field_name, value in values.items()
+        ):
+            return frame.iloc[: position + 1]
+    return frame.iloc[0:0]
 
 
 def _has_required_ohlcv_data(frame: Any) -> bool:

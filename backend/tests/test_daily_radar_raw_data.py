@@ -747,3 +747,36 @@ def test_yfinance_batch_fetcher_drops_non_finite_price_history_values(
         {"date": "2026-06-10", "close": 10.5},
         {"date": "2026-06-12", "close": 11.5},
     ]
+
+
+def test_yfinance_batch_fetcher_does_not_label_trailing_incomplete_row_as_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeYFinance:
+        def download(self, symbols: list[str], **kwargs: Any) -> pd.DataFrame:
+            dates = pd.bdate_range(end="2026-06-12", periods=61)
+            columns = pd.MultiIndex.from_product(
+                [["2330.TW"], ["Open", "High", "Low", "Close", "Volume"]]
+            )
+            data = []
+            for index in range(60):
+                price = 100.0 + index
+                data.append([price - 1, price + 2, price - 3, price, 1_000_000 + index])
+            data.append([160.0, 163.0, 159.0, float("nan"), 1_100_000])
+            return pd.DataFrame(data, index=dates, columns=columns)
+
+        def Ticker(self, symbol: str) -> object:
+            raise AssertionError(f"per-symbol yfinance Ticker call is forbidden: {symbol}")
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf", FakeYFinance())
+
+    payloads = YFinanceBatchTechnicalFetcher(
+        name_resolver=lambda _symbol: "台積電"
+    ).fetch(["2330.TW"], run_date=date(2026, 6, 12))
+
+    assert payloads["2330.TW"]["data_dates"]["ohlcv"] == "2026-06-11"
+    assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
+    assert payloads["2330.TW"]["price_history"][-1] == {
+        "date": "2026-06-11",
+        "close": 159.0,
+    }
