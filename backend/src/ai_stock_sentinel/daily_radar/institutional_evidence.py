@@ -16,11 +16,13 @@ from typing import Any, Protocol
 from curl_cffi import requests as curl_requests
 
 from ai_stock_sentinel.data_sources.official_http import official_request_get
+from ai_stock_sentinel.daily_radar.institutional_flow_provider import (
+    TPEX_3I_URL,
+    TWSE_T86_FALLBACK_URL,
+    TWSE_T86_URL,
+)
 
 
-TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
-TWSE_T86_FALLBACK_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
-TPEX_3I_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
 _MAX_REQUEST_TIMEOUT_SECONDS = 10
 _MIN_DEFAULT_REQUEST_INTERVAL_SECONDS = 0.75
 _RETRYABLE_TRANSPORT_EXCEPTIONS = (
