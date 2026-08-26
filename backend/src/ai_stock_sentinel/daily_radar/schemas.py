@@ -114,6 +114,31 @@ class DailyRadarMarketBarsRefreshResponse(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarInstitutionalFlowsRefreshRequest(BaseModel):
+    run_date: date | None = None
+    market: Literal["TW"] = "TW"
+
+
+class DailyRadarInstitutionalSnapshotResponse(BaseModel):
+    market: Literal["TW", "TWO"]
+    row_count: int = Field(ge=1)
+    source_provider: str = Field(min_length=1)
+    source_dataset: str = Field(min_length=1)
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DailyRadarInstitutionalFlowsRefreshResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    step: Literal["refresh-institutional-flows"] = "refresh-institutional-flows"
+    run_date: date
+    market: Literal["TW"] = "TW"
+    records_written: int = Field(default=0, ge=0)
+    markets_attempted: list[Literal["TW", "TWO"]] = Field(default_factory=list)
+    markets_completed: list[Literal["TW", "TWO"]] = Field(default_factory=list)
+    snapshots: list[DailyRadarInstitutionalSnapshotResponse] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DailyRadarChipContextUpdateRequest(BaseModel):
     run_date: date | None = None
     market: str = Field(default="TW", min_length=1, max_length=20)

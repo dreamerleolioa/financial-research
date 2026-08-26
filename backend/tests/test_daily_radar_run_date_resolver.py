@@ -46,6 +46,20 @@ def test_delayed_schedule_resolves_the_original_cron_slot_date() -> None:
     )
 
 
+def test_delayed_institutional_refresh_keeps_original_taiwan_trade_date() -> None:
+    assert (
+        _resolve_run_date(
+            "--event-name",
+            "schedule",
+            "--schedule",
+            "30 9 * * 1-5",
+            "--run-created-at",
+            "2026-08-26T17:15:00Z",
+        )
+        == "2026-08-26"
+    )
+
+
 def test_manual_dispatch_preserves_explicit_run_date() -> None:
     assert (
         _resolve_run_date(

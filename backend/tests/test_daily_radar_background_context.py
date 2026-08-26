@@ -1124,14 +1124,15 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "resolve_daily_radar_run_date.py" in text
     assert "/internal/daily-radar/market-session" in text
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 11
+    assert text.count("needs: resolve-run-context") == 12
+    assert "/internal/daily-radar/refresh-institutional-flows" in text
     assert "/internal/daily-radar/refresh-market-bars" in text
     assert "market_bar_start_date" in text
     assert "market_bar_end_date" in text
-    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 11
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 12
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 11
+        == 12
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text
@@ -1196,3 +1197,26 @@ def test_daily_radar_workflow_schedules_independent_full_ai_evidence_refresh() -
     assert '"error: \\(. | @json)"' in refresh_job
     assert "query_date: .query_date" in refresh_job
     assert "error_type: .error_type" in refresh_job
+
+
+def test_daily_radar_workflow_refreshes_institutional_archive_before_universe() -> None:
+    workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
+    text = workflow.read_text(encoding="utf-8")
+
+    assert "- refresh-institutional-flows" in text
+    assert 'cron: "30 9 * * 1-5"' in text
+    assert text.index('cron: "30 9 * * 1-5"') < text.index('cron: "0 10 * * 1-5"')
+    refresh_job = text.split("  refresh-institutional-flows:", 1)[1].split(
+        "  prepare-universe:",
+        1,
+    )[0]
+    assert "/internal/daily-radar/refresh-institutional-flows" in refresh_job
+    assert "markets_completed" in refresh_job
+    assert ".errors[]?" in refresh_job
+    assert (
+        "market_open == 'true' && (github.event.schedule == '30 9 * * 1-5' || "
+        "(github.event_name == 'workflow_dispatch' && "
+        "inputs.step == 'refresh-institutional-flows')"
+    ) in refresh_job
+    assert refresh_job.index('if [[ ! "$http_status"') < refresh_job.index("jq -r '")
+    assert refresh_job.index("jq -r '") < refresh_job.index("jq -e '.status ==")

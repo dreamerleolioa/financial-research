@@ -35,6 +35,9 @@ from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
     get_institutional_flows,
     get_market_institutional_flows,
 )
+from ai_stock_sentinel.daily_radar.institutional_flow_service import (
+    refresh_taiwan_institutional_flows,
+)
 from ai_stock_sentinel.db.models import (
     TaiwanInstitutionalFlow,
     TaiwanInstitutionalReportSnapshot,
@@ -554,6 +557,132 @@ def test_archive_rejects_symbol_suffix_that_does_not_match_market() -> None:
             archive_institutional_report(session, _report(mismatched_symbol))
 
         assert session.scalar(select(TaiwanInstitutionalReportSnapshot)) is None
+    finally:
+        session.close()
+        engine.dispose()
+
+
+class _FixtureInstitutionalReportProvider:
+    def __init__(
+        self,
+        *,
+        fail_market: str | None = None,
+        mismatched_market: str | None = None,
+        missing_source_market: str | None = None,
+    ) -> None:
+        self.fail_market = fail_market
+        self.mismatched_market = mismatched_market
+        self.missing_source_market = missing_source_market
+        self.calls: list[tuple[str, date]] = []
+
+    def fetch_market(self, *, market: str, trade_date: date) -> InstitutionalReport:
+        self.calls.append((market, trade_date))
+        if market == self.fail_market:
+            raise OfficialInstitutionalReportError("fixture_failed", market=market)
+        report_market = market
+        if market == self.mismatched_market:
+            report_market = "TWO" if market == "TW" else "TW"
+        symbol = "6488.TWO" if report_market == "TWO" else "2330.TW"
+        return InstitutionalReport(
+            market=report_market,
+            trade_date=trade_date,
+            source_provider="" if market == self.missing_source_market else "fixture",
+            source_dataset=f"fixture_{market}",
+            rows=(
+                _flow(
+                    symbol,
+                    market=report_market,
+                    trade_date=trade_date,
+                ),
+            ),
+        )
+
+
+def test_institutional_flow_refresh_archives_both_markets() -> None:
+    session, engine = _db_session()
+    provider = _FixtureInstitutionalReportProvider()
+    try:
+        result = refresh_taiwan_institutional_flows(
+            session,
+            trade_date=date(2026, 8, 24),
+            provider=provider,
+        )
+        session.commit()
+
+        assert result["status"] == "completed"
+        assert result["markets_attempted"] == ["TW", "TWO"]
+        assert result["markets_completed"] == ["TW", "TWO"]
+        assert result["records_written"] == 2
+        assert result["errors"] == []
+        assert sorted(provider.calls) == [
+            ("TW", date(2026, 8, 24)),
+            ("TWO", date(2026, 8, 24)),
+        ]
+        assert session.query(TaiwanInstitutionalReportSnapshot).count() == 2
+        assert session.query(TaiwanInstitutionalFlow).count() == 2
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_refresh_persists_partial_success_with_safe_error() -> None:
+    session, engine = _db_session()
+    try:
+        result = refresh_taiwan_institutional_flows(
+            session,
+            trade_date=date(2026, 8, 24),
+            provider=_FixtureInstitutionalReportProvider(fail_market="TWO"),
+        )
+        session.commit()
+
+        assert result["status"] == "failed"
+        assert result["markets_completed"] == ["TW"]
+        assert result["records_written"] == 1
+        assert result["errors"] == [
+            {
+                "code": "fixture_failed",
+                "market": "TWO",
+                "trade_date": "2026-08-24",
+                "error_type": "OfficialInstitutionalReportError",
+            }
+        ]
+        assert session.query(TaiwanInstitutionalReportSnapshot).one().market == "TW"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_refresh_rejects_provider_identity_mismatch() -> None:
+    session, engine = _db_session()
+    try:
+        result = refresh_taiwan_institutional_flows(
+            session,
+            trade_date=date(2026, 8, 24),
+            provider=_FixtureInstitutionalReportProvider(mismatched_market="TW"),
+        )
+
+        assert result["status"] == "failed"
+        assert result["markets_completed"] == ["TWO"]
+        assert result["errors"][0]["code"] == "institutional_report_identity_mismatch"
+        assert result["errors"][0]["market"] == "TW"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_refresh_rejects_missing_provider_source() -> None:
+    session, engine = _db_session()
+    try:
+        result = refresh_taiwan_institutional_flows(
+            session,
+            trade_date=date(2026, 8, 24),
+            provider=_FixtureInstitutionalReportProvider(missing_source_market="TWO"),
+        )
+
+        assert result["status"] == "failed"
+        assert result["markets_completed"] == ["TW"]
+        assert result["errors"][0]["code"] == "institutional_report_metadata_invalid"
+        assert result["errors"][0]["market"] == "TWO"
     finally:
         session.close()
         engine.dispose()

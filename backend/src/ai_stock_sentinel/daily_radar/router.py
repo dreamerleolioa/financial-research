@@ -30,6 +30,16 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
     cached_daily_rows_from_raw_rows,
 )
+from ai_stock_sentinel.daily_radar.institutional_flow_provider import (
+    OfficialTaiwanInstitutionalReportProvider,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
+    get_completed_institutional_snapshot,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_service import (
+    InstitutionalReportProvider,
+    refresh_taiwan_institutional_flows,
+)
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
     YFinanceMarketIndexContextProvider,
@@ -111,6 +121,8 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarChipContextUpdateResponse,
     DailyRadarForwardValidationRunRequest,
     DailyRadarForwardValidationRunResponse,
+    DailyRadarInstitutionalFlowsRefreshRequest,
+    DailyRadarInstitutionalFlowsRefreshResponse,
     DailyRadarMarketSessionRequest,
     DailyRadarMarketSessionResponse,
     DailyRadarMarketBarsRefreshRequest,
@@ -147,6 +159,7 @@ logger = logging.getLogger(__name__)
 
 DAILY_RUN_REFRESH_CONTEXT_TYPES = ("lending", "full_margin")
 DAILY_RADAR_REQUIRED_REFRESH_STEPS = (
+    "refresh-institutional-flows",
     "refresh-lending",
     "refresh-full-margin",
     "refresh-ohlcv",
@@ -166,6 +179,10 @@ def get_daily_radar_technical_fetcher(
 
 def get_taiwan_market_bar_provider() -> OfficialTaiwanMarketBarProvider:
     return OfficialTaiwanMarketBarProvider()
+
+
+def get_taiwan_institutional_report_provider() -> InstitutionalReportProvider:
+    return OfficialTaiwanInstitutionalReportProvider()
 
 
 def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
@@ -295,6 +312,10 @@ def prepare_daily_radar_universe_endpoint(
 ) -> DailyRadarPreparedRunResponse:
     request = payload or DailyRadarPreparedRunRequest()
     run_date = request.run_date or _backend_today()
+    institutional_archive = _required_institutional_archive_details(
+        db,
+        run_date=run_date,
+    )
     existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
     try:
         universe = select_daily_radar_universe(
@@ -349,6 +370,13 @@ def prepare_daily_radar_universe_endpoint(
         universe=[_universe_entry_payload(entry) for entry in capped_universe],
         status="prepared",
         errors=[],
+    )
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="refresh-institutional-flows",
+        status="completed",
+        details=institutional_archive,
     )
     update_daily_radar_prepared_step_status(
         db,
@@ -461,6 +489,49 @@ def refresh_daily_radar_full_margin_endpoint(
         provider=provider,
         context_type="full_margin",
         step="refresh-full-margin",
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-institutional-flows",
+    response_model=DailyRadarInstitutionalFlowsRefreshResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_institutional_flows_endpoint(
+    payload: DailyRadarInstitutionalFlowsRefreshRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: InstitutionalReportProvider = Depends(
+        get_taiwan_institutional_report_provider
+    ),
+) -> DailyRadarInstitutionalFlowsRefreshResponse:
+    request = payload or DailyRadarInstitutionalFlowsRefreshRequest()
+    run_date = request.run_date or _backend_today()
+    try:
+        result = refresh_taiwan_institutional_flows(
+            db,
+            trade_date=run_date,
+            provider=provider,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Taiwan institutional flow archive refresh failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "institutional_flow_archive_refresh_failed",
+                "error_type": exc.__class__.__name__,
+            },
+        ) from exc
+    return DailyRadarInstitutionalFlowsRefreshResponse(
+        status=result["status"],
+        run_date=run_date,
+        market=request.market,
+        records_written=result["records_written"],
+        markets_attempted=result["markets_attempted"],
+        markets_completed=result["markets_completed"],
+        snapshots=result["snapshots"],
+        errors=result["errors"],
     )
 
 
@@ -1388,6 +1459,60 @@ def _backend_today() -> date:
 
 def _should_refresh_daily_run_chip_context(market: str) -> bool:
     return market.upper() == "TW"
+
+
+def _required_institutional_archive_details(
+    db: Session,
+    *,
+    run_date: date,
+) -> dict[str, Any]:
+    snapshots: dict[str, Any] = {}
+    missing_markets: list[str] = []
+    for market in ("TW", "TWO"):
+        snapshot = get_completed_institutional_snapshot(
+            db,
+            market=market,
+            trade_date=run_date,
+        )
+        payload_hash = snapshot.payload_hash if snapshot is not None else None
+        if (
+            snapshot is None
+            or snapshot.row_count <= 0
+            or not snapshot.source_provider.strip()
+            or not snapshot.source_dataset.strip()
+            or payload_hash is None
+            or len(payload_hash) != 64
+            or any(character not in "0123456789abcdef" for character in payload_hash)
+        ):
+            missing_markets.append(market)
+            continue
+        snapshots[market] = {
+            "snapshot_id": snapshot.id,
+            "row_count": snapshot.row_count,
+            "source_provider": snapshot.source_provider,
+            "source_dataset": snapshot.source_dataset,
+            "payload_hash": snapshot.payload_hash,
+        }
+    if missing_markets:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "daily_radar_institutional_archive_incomplete",
+                "message": (
+                    "Daily Radar institutional archive is incomplete; "
+                    "prepare-universe is blocked."
+                ),
+                "run_date": run_date.isoformat(),
+                "required_markets": ["TW", "TWO"],
+                "missing_markets": missing_markets,
+            },
+        )
+    return {
+        "records_written": sum(
+            int(details["row_count"]) for details in snapshots.values()
+        ),
+        "markets": snapshots,
+    }
 
 
 def _raise_if_required_refresh_steps_missing(prepared: Any) -> None:

@@ -9,6 +9,7 @@ on:
         default: prepare-universe
         type: choice
         options:
+          - refresh-institutional-flows
           - prepare-universe
           - refresh-market-bars
           - refresh-avwap
@@ -38,7 +39,9 @@ on:
   schedule:
     # GitHub cron uses UTC. Taiwan time = UTC+8.
     # Scheduled jobs use the UTC cron date as the intended Taiwan trading date, so delayed starts after Taiwan midnight still target the original trading date.
-    # 台灣時間週一至週五 18:00，準備 selected universe。
+    # 台灣時間週一至週五 17:30，先歸檔上市櫃全市場法人買賣超。
+    - cron: "30 9 * * 1-5"
+    # 台灣時間週一至週五 18:00，驗證法人歸檔後準備 selected universe。
     - cron: "0 10 * * 1-5"
     # 台灣時間週一至週五 18:30，歸檔上市櫃全市場 final OHLCV。
     - cron: "30 10 * * 1-5"
@@ -141,6 +144,47 @@ jobs:
               exit 1
               ;;
           esac
+
+  refresh-institutional-flows:
+    name: Refresh Taiwan institutional flows
+    runs-on: ubuntu-latest
+    needs: resolve-run-context
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 9 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-institutional-flows'))
+    steps:
+      - name: Trigger refresh-institutional-flows
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-institutional-flows"
+          response_file="$(mktemp)"
+          payload="{\"market\":\"TW\",\"run_date\":\"${DAILY_RADAR_RUN_DATE}\"}"
+          echo "Daily Radar refresh-institutional-flows run_date: ${DAILY_RADAR_RUN_DATE}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}")"
+          echo "HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          jq -r '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "markets_completed: \((.markets_completed // []) | join(","))",
+            "records_written: \(.records_written // 0)",
+            "errors_count: \((.errors // []) | length)",
+            (.snapshots[]? | "snapshot: market=\(.market) rows=\(.row_count) provider=\(.source_provider) dataset=\(.source_dataset)"),
+            (.errors[]? | "error: \({code, market, trade_date, error_type} | @json)")
+          ' "$response_file"
+          if ! jq -e '.status == "completed" and ((.markets_completed // []) | sort) == ["TW", "TWO"]' "$response_file" >/dev/null; then
+            exit 1
+          fi
 
   prepare-universe:
     name: Prepare Daily Radar universe

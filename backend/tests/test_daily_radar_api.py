@@ -22,6 +22,16 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
     cached_daily_rows_from_raw_rows,
 )
+from ai_stock_sentinel.daily_radar.institutional_flow import (
+    InstitutionalFlowRow,
+    InstitutionalReport,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_provider import (
+    OfficialInstitutionalReportError,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
+    archive_institutional_report,
+)
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
     TwseRwdInstitutionalUniverseProvider,
 )
@@ -36,6 +46,8 @@ from ai_stock_sentinel.db.models import (
     Phase1AvwapSnapshot,
     SharedBackgroundContext,
     StockRawData,
+    TaiwanInstitutionalFlow,
+    TaiwanInstitutionalReportSnapshot,
     User,
     UserPortfolio,
     UserWatchlist,
@@ -319,6 +331,44 @@ class FakeInstitutionalEvidenceProvider:
         return InstitutionalEvidenceResult(payloads_by_symbol=payloads)
 
 
+class FakeInstitutionalFlowProvider:
+    def __init__(
+        self,
+        *,
+        fail_market: str | None = None,
+        unexpected_market: str | None = None,
+    ) -> None:
+        self.fail_market = fail_market
+        self.unexpected_market = unexpected_market
+        self.calls: list[tuple[str, date]] = []
+
+    def fetch_market(self, *, market: str, trade_date: date) -> InstitutionalReport:
+        self.calls.append((market, trade_date))
+        if market == self.fail_market:
+            raise OfficialInstitutionalReportError("fixture_failed", market=market)
+        if market == self.unexpected_market:
+            raise RuntimeError("unexpected fixture failure")
+        symbol = "2330.TW" if market == "TW" else "6488.TWO"
+        return InstitutionalReport(
+            market=market,
+            trade_date=trade_date,
+            source_provider="fixture",
+            source_dataset=f"fixture_{market}",
+            rows=(
+                InstitutionalFlowRow(
+                    symbol=symbol,
+                    market=market,
+                    name="fixture",
+                    trade_date=trade_date,
+                    foreign_net_shares=1000,
+                    investment_trust_net_shares=200,
+                    dealer_net_shares=100,
+                    total_net_shares=1300,
+                ),
+            ),
+        )
+
+
 class RaisingInstitutionalEvidenceProvider(FakeInstitutionalEvidenceProvider):
     def fetch(self, symbols: list[str], *, run_date: date) -> InstitutionalEvidenceResult:
         self.calls.append((list(symbols), run_date))
@@ -418,6 +468,7 @@ def _clear_daily_radar_api_overrides() -> None:
         daily_radar_router.get_daily_radar_market_session_provider,
         daily_radar_router.get_daily_radar_background_chip_context_provider,
         daily_radar_router.get_daily_radar_institutional_evidence_provider,
+        daily_radar_router.get_taiwan_institutional_report_provider,
         daily_radar_router.get_daily_radar_fundamental_provider,
         daily_radar_router.get_phase1_avwap_daily_price_provider,
         get_daily_radar_symbol_name_resolver,
@@ -441,6 +492,7 @@ def _api_client(
         | OfficialInstitutionalEvidenceProvider
         | None
     ) = None,
+    institutional_flow_provider: FakeInstitutionalFlowProvider | None = None,
     fundamental_provider: FakeFundamentalProvider | None = None,
     phase1_avwap_provider: (
         FakePhase1AvwapDailyPriceProvider
@@ -461,6 +513,7 @@ def _api_client(
     session_provider = market_session_provider or FakeMarketSessionProvider()
     chip_context_provider = background_context_provider or FakeBackgroundChipContextProvider()
     institutional_provider = institutional_evidence_provider or FakeInstitutionalEvidenceProvider()
+    institutional_archive_provider = institutional_flow_provider or FakeInstitutionalFlowProvider()
     business_provider = fundamental_provider or FakeFundamentalProvider()
     phase1_provider = phase1_avwap_provider or FakePhase1AvwapDailyPriceProvider()
 
@@ -485,6 +538,9 @@ def _api_client(
     api.app.dependency_overrides[
         daily_radar_router.get_daily_radar_institutional_evidence_provider
     ] = lambda: institutional_provider
+    api.app.dependency_overrides[
+        daily_radar_router.get_taiwan_institutional_report_provider
+    ] = lambda: institutional_archive_provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_fundamental_provider] = lambda: business_provider
     api.app.dependency_overrides[daily_radar_router.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
@@ -495,6 +551,7 @@ def _api_client(
     client.fake_market_session_provider = session_provider  # type: ignore[attr-defined]
     client.fake_background_context_provider = chip_context_provider  # type: ignore[attr-defined]
     client.fake_institutional_evidence_provider = institutional_provider  # type: ignore[attr-defined]
+    client.fake_institutional_flow_provider = institutional_archive_provider  # type: ignore[attr-defined]
     client.fake_fundamental_provider = business_provider  # type: ignore[attr-defined]
     client.fake_phase1_avwap_provider = phase1_provider  # type: ignore[attr-defined]
     return client
@@ -586,6 +643,7 @@ def _market_context() -> dict[str, Any]:
 
 def _completed_segmented_step_statuses() -> dict[str, dict[str, Any]]:
     return {
+        "refresh-institutional-flows": {"status": "completed"},
         "refresh-avwap": {"status": "completed"},
         "refresh-lending": {"status": "completed"},
         "refresh-full-margin": {"status": "completed"},
@@ -613,6 +671,20 @@ def _persist_raw_data(
     session.add(row)
     session.commit()
     return row
+
+
+def _persist_required_institutional_archive(
+    session: Session,
+    *,
+    run_date: date = date(2026, 6, 1),
+) -> None:
+    provider = FakeInstitutionalFlowProvider()
+    for market in ("TW", "TWO"):
+        archive_institutional_report(
+            session,
+            provider.fetch_market(market=market, trade_date=run_date),
+        )
+    session.commit()
 
 
 @pytest.mark.parametrize("status", ["open", "closed"])
@@ -669,6 +741,104 @@ def test_daily_radar_market_session_endpoint_does_not_convert_provider_errors_to
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "twse_market_session_request_failed"
+
+
+def test_daily_radar_institutional_flow_refresh_archives_both_markets_before_universe(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeInstitutionalFlowProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        institutional_flow_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-institutional-flows",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["step"] == "refresh-institutional-flows"
+    assert body["markets_attempted"] == ["TW", "TWO"]
+    assert body["markets_completed"] == ["TW", "TWO"]
+    assert body["records_written"] == 2
+    assert body["errors"] == []
+    assert daily_radar_db_session.query(TaiwanInstitutionalReportSnapshot).count() == 2
+    assert daily_radar_db_session.query(TaiwanInstitutionalFlow).count() == 2
+    assert daily_radar_db_session.query(DailyRadarPreparedRun).count() == 0
+
+
+def test_daily_radar_institutional_flow_refresh_commits_partial_success(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        institutional_flow_provider=FakeInstitutionalFlowProvider(fail_market="TWO"),
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-institutional-flows",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["markets_completed"] == ["TW"]
+    assert body["records_written"] == 1
+    assert body["errors"] == [
+        {
+            "code": "fixture_failed",
+            "market": "TWO",
+            "trade_date": "2026-06-01",
+            "error_type": "OfficialInstitutionalReportError",
+        }
+    ]
+    assert daily_radar_db_session.query(TaiwanInstitutionalReportSnapshot).one().market == "TW"
+
+
+def test_daily_radar_institutional_flow_refresh_rolls_back_unexpected_failure(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        institutional_flow_provider=FakeInstitutionalFlowProvider(
+            unexpected_market="TWO"
+        ),
+        raise_server_exceptions=False,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-institutional-flows",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "institutional_flow_archive_refresh_failed",
+        "error_type": "RuntimeError",
+    }
+    assert daily_radar_db_session.query(TaiwanInstitutionalReportSnapshot).count() == 0
 
 
 def test_daily_radar_refresh_market_context_fails_closed_and_blocks_scoring(
@@ -1049,6 +1219,7 @@ def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
+    _persist_required_institutional_archive(daily_radar_db_session)
     provider = FakeUniverseProvider(
         same_day=[
             InstitutionalLeaderRow("2330.TW", 1, 91.0),
@@ -1076,12 +1247,119 @@ def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
     assert prepared.run_date == date(2026, 6, 1)
     assert prepared.selected_symbols == ["2330.TW", "2454.TW"]
     assert prepared.universe[0]["primary_track"] == "same_day_institutional"
+    assert prepared.step_statuses["refresh-institutional-flows"]["status"] == "completed"
+    assert set(
+        prepared.step_statuses["refresh-institutional-flows"]["markets"]
+    ) == {"TW", "TWO"}
+
+
+def test_daily_radar_prepare_universe_requires_complete_institutional_archive(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeUniverseProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "daily_radar_institutional_archive_incomplete",
+        "message": (
+            "Daily Radar institutional archive is incomplete; "
+            "prepare-universe is blocked."
+        ),
+        "run_date": "2026-06-01",
+        "required_markets": ["TW", "TWO"],
+        "missing_markets": ["TW", "TWO"],
+    }
+    assert provider.calls == []
+
+
+def test_daily_radar_prepare_universe_reports_only_missing_institutional_market(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeUniverseProvider()
+    institutional_provider = FakeInstitutionalFlowProvider()
+    archive_institutional_report(
+        daily_radar_db_session,
+        institutional_provider.fetch_market(
+            market="TW",
+            trade_date=date(2026, 6, 1),
+        ),
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["missing_markets"] == ["TWO"]
+    assert provider.calls == []
+    assert daily_radar_db_session.query(DailyRadarPreparedRun).count() == 0
+
+
+def test_daily_radar_prepare_universe_rejects_empty_completed_snapshot(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_required_institutional_archive(daily_radar_db_session)
+    snapshot = (
+        daily_radar_db_session.query(TaiwanInstitutionalReportSnapshot)
+        .filter_by(market="TWO")
+        .one()
+    )
+    snapshot.row_count = 0
+    daily_radar_db_session.commit()
+    provider = FakeUniverseProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["missing_markets"] == ["TWO"]
+    assert provider.calls == []
 
 
 def test_daily_radar_prepare_universe_reports_official_provider_failure_as_503(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
+    _persist_required_institutional_archive(daily_radar_db_session)
     def timeout_get(url: str, *, params: dict[str, str], timeout: int):
         raise TimeoutError("temporary TWSE timeout")
 
@@ -1118,6 +1396,7 @@ def test_daily_radar_prepare_universe_maps_protocol_provider_timeout_to_503(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
+    _persist_required_institutional_archive(daily_radar_db_session)
     provider = FakeUniverseProvider()
 
     def timeout_same_day(*, run_date: date, market: str, limit: int):
@@ -2053,7 +2332,12 @@ def test_daily_radar_run_scoring_requires_completed_refresh_steps(
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["code"] == "daily_radar_refresh_steps_incomplete"
-    assert detail["incomplete_steps"] == ["refresh-lending", "refresh-full-margin", "refresh-ohlcv"]
+    assert detail["incomplete_steps"] == [
+        "refresh-institutional-flows",
+        "refresh-lending",
+        "refresh-full-margin",
+        "refresh-ohlcv",
+    ]
 
 
 def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
@@ -2074,6 +2358,7 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
         symbol_count=1,
         market_context=_market_context(),
         step_statuses={
+            "refresh-institutional-flows": {"status": "completed"},
             "refresh-avwap": {
                 "status": "failed",
                 "missing_symbols": ["2330.TW"],
@@ -2560,6 +2845,8 @@ def daily_radar_db_session() -> Session:
             Phase1AvwapSnapshot.__table__,
             SharedBackgroundContext.__table__,
             StockRawData.__table__,
+            TaiwanInstitutionalReportSnapshot.__table__,
+            TaiwanInstitutionalFlow.__table__,
             User.__table__,
             UserPortfolio.__table__,
             UserWatchlist.__table__,
