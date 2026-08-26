@@ -1131,7 +1131,7 @@ def _technical_values(row: StockRawData, key: str) -> list[float]:
     return values
 
 
-def _latest_row_at_or_before(rows: list[StockRawData], as_of: date | None) -> StockRawData | None:
+def _latest_row_before(rows: list[StockRawData], as_of: date | None) -> StockRawData | None:
     if as_of is None:
         return None
     for row in reversed(rows):
@@ -1164,7 +1164,7 @@ def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[
         )
         if completed is not None:
             completed_candidates.append(completed)
-    latest_row = _latest_row_at_or_before(rows, as_of)
+    latest_row = _latest_row_before(rows, as_of)
     if latest_row is not None:
         closes = _technical_values(latest_row, "recent_closes")
         if closes and as_of is not None:
@@ -1242,11 +1242,13 @@ def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[
 def _completed_indicator_snapshot(rows: list[StockRawData], as_of: date | None) -> dict[str, float]:
     if as_of is None:
         return {}
-    latest_row = _latest_row_at_or_before(rows, as_of)
-    return completed_technical_indicator_values(
-        latest_row.technical if latest_row is not None else None,
-        as_of,
-    )
+    for row in reversed(rows):
+        if row.record_date > as_of:
+            continue
+        indicators = completed_technical_indicator_values(row.technical, as_of)
+        if indicators:
+            return indicators
+    return {}
 
 
 def _technical_section(row: StockRawData, key: str) -> dict[str, Any]:

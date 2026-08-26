@@ -543,6 +543,39 @@ def test_lifecycle_does_not_use_indicator_snapshot_without_completed_indicator_d
     assert "initial_entry_2026-01-10_volume_ratio" in result["data_quality"]["insufficient_data"]
 
 
+def test_lifecycle_uses_completed_indicators_from_same_day_stale_cache():
+    as_of = date(2026, 1, 10)
+    row = _daily_radar_row(
+        as_of,
+        [98, 99, 100],
+        ma20=96.5,
+        ma60=91.5,
+        rsi14=58.2,
+        volume_ratio=1.15,
+    )
+    row.technical["data_dates"] = {
+        "ohlcv": "2026-01-09",
+        "technical_indicators": "2026-01-09",
+    }
+
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[_event(1, "initial_entry", as_of, 100, 10)],
+        market_rows=[row],
+    )
+
+    snapshot = result["event_indicator_snapshots"][0]
+    assert snapshot["ma20"] == pytest.approx(96.5)
+    assert snapshot["ma60"] == pytest.approx(91.5)
+    assert snapshot["rsi14"] == pytest.approx(58.2)
+    assert snapshot["volume_ratio"] == pytest.approx(1.15)
+    assert not any(
+        key.startswith("initial_entry_2026-01-10_")
+        for key in result["data_quality"]["insufficient_data"]
+    )
+
+
 def test_lifecycle_same_day_stale_snapshot_keeps_last_completed_bar():
     row = _snapshot_row(date(2026, 3, 2), [10, 11, 12])
     row.technical["data_dates"] = {"ohlcv": "2026-03-01"}

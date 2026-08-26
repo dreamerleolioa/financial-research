@@ -905,7 +905,7 @@ Portfolio 寫入必須在 application commit 前符合 PostgreSQL 實際欄位 p
 
 **Deterministic lifecycle review 邊界：**
 
-- Lifecycle review 只讀 final persisted rows，不套用 Single Trade Review 的 provider refresh TTL。Daily Radar `price_history` 必須以每筆日期嚴格排除事件日與未來日期；同日短歷史不得覆蓋前一筆 final row 的較完整歷史。Persisted indicators 只有在 `technical_indicators` 或相容 `ohlcv` data date 早於事件日時才可補足缺少的 MA／RSI／量比。
+- Lifecycle review 只讀 final persisted rows，不套用 Single Trade Review 的 provider refresh TTL。Daily Radar `price_history` 必須以每筆日期嚴格排除事件日與未來日期；同日短歷史不得覆蓋前一筆 final row 的較完整歷史。Persisted indicator 候選可包含事件日保存的 final `StockRawData`，但只有 `technical_indicators` 或相容 `ohlcv` data date 早於事件日時才可補足缺少的 MA／RSI／量比；同日候選不符合此邊界時必須繼續尋找更早的有效快照。
 - 結案回顧的 `high_volatility` 分類至少需要 20 根依共同交易日對齊的 Close／High／Low；少於 20 根時不得以少數極端 bar 推定高波動，應回退到其他可用趨勢分類。
 - Lifecycle review 使用 event ledger、point-in-time indicator snapshots、fixed option plan facts 與 source refs 產生 labels、reasons、caveats、next-operation rules。
 - Market evidence gap 只影響實際依賴該行情的 review dimension；它不能把 `record_quality` 判為不足，也不能產生要求使用者補記操作原因的 action。只有 plan、event、ledger、費稅或部位事實缺漏才屬於 record gap。

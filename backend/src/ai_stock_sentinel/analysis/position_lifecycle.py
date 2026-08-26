@@ -1775,19 +1775,17 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
 def _completed_indicator_snapshot(rows: list[Any], as_of: date | None) -> dict[str, float]:
     if as_of is None:
         return {}
-    latest_row = next(
-        (
-            row
-            for row in reversed(rows)
-            if isinstance(_event_value(row, "record_date"), date)
-            and _event_value(row, "record_date") < as_of
-        ),
-        None,
-    )
-    return completed_technical_indicator_values(
-        _event_value(latest_row, "technical"),
-        as_of,
-    )
+    for row in reversed(rows):
+        row_date = _event_value(row, "record_date")
+        if not isinstance(row_date, date) or row_date > as_of:
+            continue
+        indicators = completed_technical_indicator_values(
+            _event_value(row, "technical"),
+            as_of,
+        )
+        if indicators:
+            return indicators
+    return {}
 
 
 def _classify_market_regime(

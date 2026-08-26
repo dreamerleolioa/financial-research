@@ -1496,6 +1496,42 @@ def test_trade_review_fallback_uses_daily_radar_price_history_and_indicators(db_
     assert evidence["market_snapshot"]["quality"]["trading_bar_count"] >= 60
 
 
+def test_trade_review_uses_completed_indicators_from_same_day_stale_cache(db_session: Session):
+    as_of = date(2026, 3, 2)
+    portfolio = _portfolio(
+        entry_date=as_of,
+        exit_date=date(2026, 3, 3),
+        entry_price=100,
+        exit_price=105,
+        holding_days=1,
+    )
+    row = _snapshot_raw_row("2330.TW", as_of, [98, 99, 100], volumes=[100, 200, 300])
+    row.technical["indicators"] = {
+        "ma20": 96.5,
+        "ma60": 91.5,
+        "rsi14": 58.2,
+        "volume_ratio": 1.15,
+    }
+    row.technical["data_dates"] = {
+        "ohlcv": "2026-03-01",
+        "technical_indicators": "2026-03-01",
+    }
+    db_session.add_all([portfolio, row])
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    entry_indicators = review_result["trade_result"]["entry_indicators"]
+    assert entry_indicators["ma20"] == pytest.approx(96.5)
+    assert entry_indicators["ma60"] == pytest.approx(91.5)
+    assert entry_indicators["rsi14"] == pytest.approx(58.2)
+    assert entry_indicators["volume_ratio"] == pytest.approx(1.15)
+    assert not any(
+        key.startswith("entry_")
+        for key in review_result["data_quality"]["insufficient_data"]
+    )
+
+
 def _contains_forbidden_ohlcv_key(value) -> bool:
     if isinstance(value, dict):
         for key, child in value.items():
