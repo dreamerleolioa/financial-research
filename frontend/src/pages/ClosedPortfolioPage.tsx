@@ -254,7 +254,7 @@ const INSUFFICIENT_DATA_LABEL: Record<string, string> = {
   missing_ledger_fees: "交易手續費紀錄",
   missing_ledger_taxes: "交易稅費紀錄",
   weighted_entry_price: "加權進場成本",
-  exit_quantity_exceeds_position: "出場數量與持倉紀錄",
+  exit_quantity_exceeds_position: "結案數量與持倉紀錄",
   manual_adjustment_not_accounted: "手動調整的成本影響",
 };
 

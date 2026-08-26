@@ -1682,6 +1682,7 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
         (row for row in reversed(rows) if _event_value(row, "record_date") == as_of),
         None,
     )
+    completed_candidates: list[dict[str, list[float]]] = []
     same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
     if same_day_closes:
         completed = completed_trailing_series(
@@ -1693,7 +1694,7 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
             volumes=_technical_values(same_day_row, "recent_volumes"),
         )
         if completed is not None:
-            return completed
+            completed_candidates.append(completed)
     latest_row = None
     for row in rows:
         row_date = _event_value(row, "record_date")
@@ -1711,7 +1712,7 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
                 volumes=_technical_values(latest_row, "recent_volumes"),
             )
             if completed is not None:
-                return completed
+                completed_candidates.append(completed)
     point_rows = [row for row in rows if isinstance(_event_value(row, "record_date"), date) and _event_value(row, "record_date") < as_of]
     same_day_history_closes = completed_price_history_closes(
         _event_value(same_day_row, "technical"),
@@ -1721,24 +1722,53 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
         _event_value(latest_row, "technical"),
         as_of,
     )
-    price_history_closes = max(
-        (same_day_history_closes, prior_history_closes),
-        key=len,
-    )
     aligned_ohlc = [
         (close, high, low)
         for row in point_rows
         for close, high, low in [(_close(row), _high(row), _low(row))]
         if close is not None and high is not None and low is not None
     ]
+    point_closes = [value for row in point_rows for value in [_close(row)] if value is not None]
+    point_volumes = [value for row in point_rows for value in [_volume(row)] if value is not None]
+    best_completed_ohlc = max(
+        completed_candidates,
+        key=lambda candidate: (
+            len(candidate["ohlc_closes"]),
+            min(len(candidate["highs"]), len(candidate["lows"])),
+        ),
+        default=None,
+    )
+    point_ohlc_closes = [close for close, _high_value, _low_value in aligned_ohlc]
+    if best_completed_ohlc and len(best_completed_ohlc["ohlc_closes"]) >= len(point_ohlc_closes):
+        ohlc_closes = best_completed_ohlc["ohlc_closes"]
+        highs = best_completed_ohlc["highs"]
+        lows = best_completed_ohlc["lows"]
+    elif point_ohlc_closes:
+        ohlc_closes = point_ohlc_closes
+        highs = [high for _close_value, high, _low_value in aligned_ohlc]
+        lows = [low for _close_value, _high_value, low in aligned_ohlc]
+    else:
+        best_independent_ranges = max(
+            completed_candidates,
+            key=lambda candidate: min(len(candidate["highs"]), len(candidate["lows"])),
+            default=None,
+        )
+        ohlc_closes = []
+        highs = best_independent_ranges["highs"] if best_independent_ranges else []
+        lows = best_independent_ranges["lows"] if best_independent_ranges else []
     return {
-        "closes": price_history_closes or [
-            value for row in point_rows for value in [_close(row)] if value is not None
-        ],
-        "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
-        "highs": [high for _close_value, high, _low_value in aligned_ohlc],
-        "lows": [low for _close_value, _high_value, low in aligned_ohlc],
-        "volumes": [value for row in point_rows for value in [_volume(row)] if value is not None],
+        "closes": max(
+            [candidate["closes"] for candidate in completed_candidates]
+            + [same_day_history_closes, prior_history_closes, point_closes],
+            key=len,
+        ),
+        "ohlc_closes": ohlc_closes,
+        "highs": highs,
+        "lows": lows,
+        "volumes": max(
+            [candidate["volumes"] for candidate in completed_candidates] + [point_volumes],
+            key=len,
+        ),
     }
 
 

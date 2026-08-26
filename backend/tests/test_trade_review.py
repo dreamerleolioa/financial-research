@@ -125,6 +125,11 @@ def _daily_radar_raw_row(
         symbol="2330.TW",
         record_date=record_date,
         technical={
+            "recent_closes": closes[-20:],
+            "recent_close_dates": [
+                (start_date + timedelta(days=index)).isoformat()
+                for index in range(max(0, len(closes) - 20), len(closes))
+            ],
             "price_history": [
                 {
                     "date": (start_date + timedelta(days=index)).isoformat(),

@@ -451,23 +451,24 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     lows = technical.get("recent_lows") if isinstance(technical.get("recent_lows"), list) else []
     volumes = technical.get("recent_volumes") if isinstance(technical.get("recent_volumes"), list) else []
     close_series = _dated_series(closes, technical.get("recent_close_dates"))
-    if close_series is None or not close_series:
-        price_history = technical.get("price_history")
-        dated_price_history = []
-        if isinstance(price_history, list):
-            for item in price_history:
-                if not isinstance(item, dict):
-                    continue
-                item_date = _parse_date(item.get("date"))
-                close = _finite_number(item.get("close"))
-                if item_date is not None and close is not None:
-                    dated_price_history.append((item_date, close))
-        if dated_price_history:
-            deduplicated_history = dict(dated_price_history)
-            close_series = [
-                (item_date, deduplicated_history[item_date])
-                for item_date in sorted(deduplicated_history)
-            ]
+    price_history = technical.get("price_history")
+    dated_price_history = []
+    if isinstance(price_history, list):
+        for item in price_history:
+            if not isinstance(item, dict):
+                continue
+            item_date = _parse_date(item.get("date"))
+            close = _finite_number(item.get("close"))
+            if item_date is not None and close is not None:
+                dated_price_history.append((item_date, close))
+    if dated_price_history:
+        deduplicated_history = dict(dated_price_history)
+        price_history_series = [
+            (item_date, deduplicated_history[item_date])
+            for item_date in sorted(deduplicated_history)
+        ]
+        if close_series is None or len(price_history_series) > len(close_series):
+            close_series = price_history_series
             closes = [value for _item_date, value in close_series]
     high_series = _dated_series(highs, technical.get("recent_high_dates"))
     low_series = _dated_series(lows, technical.get("recent_low_dates"))
