@@ -4968,7 +4968,7 @@ def test_list_closed_portfolio_returns_realized_fields():
     assert resp.json()[0]["position_group_id"] == "group-42"
 
 
-def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_labels(
+def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_labels_and_ledger_pnl(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
 ):
@@ -5031,7 +5031,7 @@ def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_l
             event_date=date(2026, 1, 4),
             price=950,
             quantity=20,
-            fees=0,
+            fees=200,
             taxes=0,
             source_portfolio_id=43,
             reason_category="plan_execution",
@@ -5084,7 +5084,7 @@ def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_l
         review_version="position-lifecycle-review-v4",
         review_result={
             "lifecycle_review": {
-                "outcome": {"status": "profit", "label": "結果獲利"},
+                "outcome": {"status": "profit", "label": "結果獲利", "total_realized_pnl": 3500.0},
                 "process_quality": {"status": "mixed", "label": "流程有好有壞"},
                 "feedback": {
                     "improve": [{
@@ -5113,13 +5113,14 @@ def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_l
     assert lifecycle["add_entry_count"] == 1
     assert lifecycle["exit_event_count"] == 2
     assert lifecycle["total_closed_quantity"] == 100
-    assert lifecycle["total_realized_pnl"] == 3800.0
+    assert lifecycle["total_realized_pnl"] == 3500.0
+    assert lifecycle["total_realized_pnl"] == lifecycle["review_summary"]["outcome"]["total_realized_pnl"]
     assert [batch["display_label"] for batch in lifecycle["exit_batches"]] == ["第 1 次減碼", "最終出清"]
     assert lifecycle["exit_batches"][0]["reason_code"] == "profit_protection"
     assert lifecycle["exit_batches"][1]["plan_adherence"] == "partial"
     assert lifecycle["review_summary"] == {
         "review_version": "position-lifecycle-review-v4",
-        "outcome": {"status": "profit", "label": "結果獲利"},
+        "outcome": {"status": "profit", "label": "結果獲利", "total_realized_pnl": 3500.0},
         "process_quality": {"status": "mixed", "label": "流程有好有壞"},
         "key_feedback": {
             "title": "提前定義風險出口",

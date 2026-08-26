@@ -23,6 +23,16 @@ MAX_DETECTED_EVENTS = 8
 POSITION_LIFECYCLE_LOOKBACK_DAYS = 120
 
 
+def build_lifecycle_accounting(
+    events,
+    *,
+    data_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build deterministic lifecycle accounting from the ordered event ledger."""
+    quality = data_quality if data_quality is not None else _empty_data_quality()
+    return _build_accounting_timeline(_sort_events(list(events or ())), quality)
+
+
 def build_position_lifecycle_analysis(
     db: Session,
     *,
@@ -97,7 +107,7 @@ def build_position_lifecycle_analysis_from_rows(
     if not ordered_events:
         _add_note(data_quality, "events_missing", "No PositionEvent rows were available for this position_group_id.")
 
-    accounting = _build_accounting_timeline(ordered_events, data_quality)
+    accounting = build_lifecycle_accounting(ordered_events, data_quality=data_quality)
     event_snapshots = _build_event_indicator_snapshots(ordered_events, ordered_rows, data_quality)
     lifecycle_metrics = _build_lifecycle_metrics(ordered_events, ordered_rows, accounting, data_quality)
     entry_sequence = _build_entry_sequence(ordered_events, accounting, event_snapshots)

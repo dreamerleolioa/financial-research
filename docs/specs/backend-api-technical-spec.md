@@ -737,6 +737,7 @@ make run-api
 - **用途**：提供結案頁所需的完整交易生命週期清單；`GET /portfolio/closed` 保留為相容的逐列 API。
 - **完整結案邊界**：group 內不得有 active portfolio row，事件帳本必須包含 `full_exit`，且 ledger open quantity 必須為 0。不完整的部分結案 group 不出現在此清單。
 - **期間語義**：前端以 `lifecycle_end_date`，也就是最終出清事件日，決定交易屬於哪個期間；一旦該交易入選，`exit_batches` 必須保留整個生命週期的所有出場，不得先按單批 `exit_date` 截斷。
+- **完整交易損益**：`total_realized_pnl` 必須由完整事件帳本重算，與 lifecycle review 共用加權成本會計口徑；初始進場與新增批次的手續費／稅費計入成本基礎，結案事件的手續費／稅費自收入扣除。不得直接加總 closed portfolio rows 的 `realized_pnl`，避免遺漏只記錄於 entry event 的成本。
 - **批次識別**：`exit_batches` 依事件日、建立時間與 event id 排序，依序顯示 `第 N 次減碼`，`full_exit` 固定顯示 `最終出清`；不得把 portfolio row id 當成人類可讀的交易序號。
 - **卡片摘要**：若 group 已有目前版本的 v4 lifecycle review，`review_summary` 回傳 `outcome`、`process_quality` 與優先取 `improve`、其次 `keep`、最後 `next_actions` 的 `key_feedback`。沒有 v4 review 時回傳 `null`，GET 不主動建立 review。
 

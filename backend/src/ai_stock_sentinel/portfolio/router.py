@@ -11,7 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.analysis.position_lifecycle import build_position_lifecycle_analysis
+from ai_stock_sentinel.analysis.position_lifecycle import (
+    build_lifecycle_accounting,
+    build_position_lifecycle_analysis,
+)
 from ai_stock_sentinel.analysis.review_sources import attach_source_fingerprint, market_snapshot_regressed
 from ai_stock_sentinel.analysis.trade_review import (
     TRADE_REVIEW_PROVIDER_UPGRADE_MIN_COVERAGE_RATIO,
@@ -208,6 +211,7 @@ def _build_closed_lifecycle_summaries(
         initial_event = entry_events[0] if entry_events else None
         completed_event = full_exit_events[-1]
         first_row = min(closed_rows, key=lambda row: (row.entry_date, row.id))
+        lifecycle_accounting = build_lifecycle_accounting(group_events)
         review = review_by_group.get(position_group_id)
         lifecycle_review = (
             review.review_result.get("lifecycle_review")
@@ -236,7 +240,7 @@ def _build_closed_lifecycle_summaries(
             "add_entry_count": sum(event.event_type == "add_entry" for event in entry_events),
             "exit_event_count": len(exit_events),
             "total_closed_quantity": sum(int(row.exit_quantity or 0) for row in closed_rows),
-            "total_realized_pnl": sum(float(row.realized_pnl or 0) for row in closed_rows),
+            "total_realized_pnl": lifecycle_accounting["total_realized_pnl"],
             "exit_batches": exit_batches,
             "review_summary": (
                 {
