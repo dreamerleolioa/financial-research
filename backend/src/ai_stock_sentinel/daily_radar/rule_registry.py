@@ -91,7 +91,7 @@ RULE_REGISTRY: Final[dict[str, RuleRegistryEntry]] = {
         _entry("institutional_multi_day_flow", "法人多日累積。", "driver", "daily_radar.scoring", ablation_group="institutional_flow"),
         _entry("institutional_early_flow", "法人初步累積。", "confirming_evidence", "daily_radar.scoring", ablation_group="institutional_flow"),
         _entry("institutional_aligned_participants", "外資與投信方向一致。", "driver", "daily_radar.scoring", ablation_group="institutional_flow"),
-        _entry("institutional_net_positive", "三大法人合計轉正。", "confirming_evidence", "daily_radar.scoring", ablation_group="institutional_flow"),
+        _entry("institutional_net_positive", "三大法人合計或單一法人近期累積淨買超。", "confirming_evidence", "daily_radar.scoring", ablation_group="institutional_flow"),
         _entry(
             "institutional_same_day_net_buy",
             "外資或投信當日淨買超。",

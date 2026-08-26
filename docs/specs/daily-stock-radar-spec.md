@@ -65,8 +65,8 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 | ---- | -------------- | ---- |
 | OHLCV | yfinance 日線開高低收量 | 趨勢、波動、量價結構、均線與支撐壓力 |
 | 技術指標 | MA、EMA、RSI、MACD、KD、ATR、OBV、MFI、布林通道、Donchian | bucket 訊號與風險扣分 |
-| 法人買賣超 | TWSE RWD fund reports（`TWT38U` / `TWT44U`） | 外資、投信方向與連續性；以 report-level source trace 保存來源 |
-| 市場級法人日報歸檔 | TWSE `T86` / TPEX `3itrade_hedge` | 逐市場、逐交易日保存完整報表快照與外資／投信／自營商分列淨買賣超；17:30 refresh 必須先完成 TW/TWO，18:00 `prepare-universe` 才可繼續。現行 universe 與 scoring 規則尚未改讀此 archive |
+| 法人買賣超 | TWSE `T86` / TPEX `3itrade_hedge` archive | 外資、投信分開判斷當日買超與近期連續累積；每條軌道保留 actor、rank、淨買超、來源日期與 streak trace |
+| 市場級法人日報歸檔 | TWSE `T86` / TPEX `3itrade_hedge` | 逐市場、逐交易日保存完整報表快照與外資／投信／自營商分列淨買賣超；17:30 refresh 必須先完成 TW/TWO，18:00 `prepare-universe` 才可從 archive 建立上市櫃共同 universe |
 | 融資融券 | Minimal margin summary / future full margin context | 散戶追價、融資風險、軋空或籌碼壓力觀察；目前 live run 不宣稱完整融資融券已取得 |
 | 大盤指數 | 加權指數或等價 market index OHLCV | 市場風險濾網與相對強弱基準 |
 
@@ -107,15 +107,15 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 原則：Stage 1 不應對全市場逐檔打昂貴外部 API。GitHub Actions 以分段 internal endpoints 準備資料；正式 scoring 階段不得再打 FinMind、yfinance、TWSE 或 market index provider，只能讀已落庫的 cache/snapshot。若未來需要新增資料源，應新增獨立 refresh step，不得直接重用 `/internal/fetch-raw-data`。
 
-目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時 scheduled pipeline 與一般手動 step skip，但 provider 錯誤或無法判斷時 fail closed；手動 `refresh-market-bars` maintenance/backfill 是唯一不受目前 `run_date` 休市結果阻擋的例外。開市後 17:30 的 `refresh-institutional-flows` 先抓取並歸檔 TWSE/TPEX 完整法人日報；18:00 的 `prepare-universe` 必須確認同日 TW/TWO 都有 completed snapshot，才呼叫現行 multi-track universe 選股、保存 capped 250 selected symbols，並把 archive 來源與列數寫入 required step status。18:30 的 `refresh-market-bars` 再把 TWSE/TPEX 官方整表 OHLCV 寫入 `taiwan_daily_bars`，其後 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context` 分別準備資料並寫入 prepared run step status。23:00 的 `refresh-ai-evidence` 以同日全部 final 支援台股 raw rows 為 pool，補齊技術、TWSE/TPEX 官方法人、full-margin projection 與 `official_cache_only` 基本面，並輸出各 evidence lane 缺漏；它不得改 selected symbols、universe tracks 或 candidate/scoring 結論，也不列入 required refresh steps。`run-scoring` 只讀 DB cache/snapshot，且必須看到 institutional-flow archive、lending、full-margin、OHLCV、market context required steps 都是 `completed`，拒絕空 selected universe，並再次確認每個 selected symbol 的 final raw row 同時具備 scoring 與 replay 必要資料，才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
+目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時 scheduled pipeline 與一般手動 step skip，但 provider 錯誤或無法判斷時 fail closed；手動 `refresh-market-bars` maintenance/backfill 是唯一不受目前 `run_date` 休市結果阻擋的例外。開市後 17:30 的 `refresh-institutional-flows` 先抓取並歸檔 TWSE/TPEX 完整法人日報；18:00 的 `prepare-universe` 必須確認同日 TW/TWO 都有 completed snapshot，才從 archive 建立 `foreign_same_day`、`trust_same_day`、`foreign_recent_accumulation`、`trust_recent_accumulation` 四條法人軌道，加上既有技術軌道後保存 capped 250 selected symbols，並把 archive 來源與列數寫入 required step status。近期軌道最多讀最近 5 個同時具備 TW/TWO 完整 snapshot 的市場日，只有截至 `run_date` 仍連續買超至少 2 日且窗口累計淨買超為正才入選；已在當日轉賣超的舊 streak 不得入選，也不得跨越缺少 completed archive 的平日拼接 streak（週末可自然銜接）。18:30 的 `refresh-market-bars` 再把 TWSE/TPEX 官方整表 OHLCV 寫入 `taiwan_daily_bars`，其後 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context` 分別準備資料並寫入 prepared run step status。23:00 的 `refresh-ai-evidence` 以同日全部 final 支援台股 raw rows 為 pool，補齊技術、TWSE/TPEX 官方法人、full-margin projection 與 `official_cache_only` 基本面，並輸出各 evidence lane 缺漏；它不得改 selected symbols、universe tracks 或 candidate/scoring 結論，也不列入 required refresh steps。`run-scoring` 只讀 DB cache/snapshot，且必須看到 institutional-flow archive、lending、full-margin、OHLCV、market context required steps 都是 `completed`，拒絕空 selected universe，並再次確認每個 selected symbol 的 final raw row 同時具備 scoring 與 replay 必要資料，才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
 
 ### 4.3 外部資料 request budget
 
 | 資料源 | 目前 live 規則 |
 | ------ | -------------- |
 | TWSE RWD `MI_INDEX` market session | 使用 `/rwd/zh/afterTrading/MI_INDEX` 的 `tables[*].data` payload，每次 workflow 先以 intended `run_date` 查詢交易日狀態；明確無資料代表休市，scheduled pipeline 與一般手動 step skip。手動 `refresh-market-bars` maintenance/backfill 是唯一不受 `market_open` 結果阻擋的例外。HTTP、payload、日期或未知 status 異常都 fail closed，不當成休市。Legacy `/exchangeReport/MI_INDEX` 的 `data1…data9` shape 不得與 RWD parser 混用。 |
-| TWSE RWD institutional reports | 目前 live provider 讀取 `TWT38U` 與 `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation universe。這是 report-level all-report 查詢，不是 selected symbols 的逐檔法人 request。 |
-| TWSE/TPEX institutional flow archive | `T86` 與 `3itrade_hedge` parser 必須驗證市場、交易日、欄位位置、官方宣告列數、重複代號與數字格式，成功後才可寫入 `completed` snapshot。相同市場／日期／dataset 重抓時以同一交易更新 snapshot 並重建 flow rows，避免官方更正後殘留舊列。17:30 workflow 同時要求 TW/TWO 成功；部分成功會保留可重用 snapshot 並回報 safe per-market error，但 `prepare-universe` 仍 fail closed。現行 universe provider 與 scoring 尚未改讀此 archive。 |
+| Legacy TWSE RWD institutional reports | `TWT38U` / `TWT44U` provider 與舊 `same_day_institutional` / `recent_accumulation` prepared payload 只保留相容讀取與測試，不再是 live `prepare-universe` 的資料源。 |
+| TWSE/TPEX institutional flow archive | `T86` 與 `3itrade_hedge` parser 必須驗證市場、交易日、欄位位置、官方宣告列數、重複代號與數字格式，成功後才可寫入 `completed` snapshot。相同市場／日期／dataset 重抓時以同一交易更新 snapshot 並重建 flow rows，避免官方更正後殘留舊列。17:30 workflow 同時要求 TW/TWO 成功；部分成功會保留可重用 snapshot 並回報 safe per-market error，但 `prepare-universe` 仍 fail closed。Live universe 只讀 completed archive，並在 repository 邊界再次驗證 snapshot metadata、子資料市場／日期／dataset／symbol 身份、實際 flow row count，以及依完整內容重算的 payload hash。 |
 | TWSE/TPEX official market bars | 台灣時間 18:30 以兩個 market-wide request 歸檔當日未還原 OHLCV；手動 backfill 最多 180 個 calendar days。未還原資料供 AVWAP 與基本面季末價格使用，不得直接取代 adjusted technical history。 |
 | TWSE-first Phase 1 Daily AVWAP | 合併 selected universe symbols、active holdings 與 watchlist symbols 做 refresh；正式排程台灣時間 19:00 執行。上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，同一 symbol 的月份請求以最多 4 路 bounded concurrency 執行，避免完整 universe 的同步 HTTP request 超過服務 timeout；上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback；其他 symbol 以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄，不呼叫 AVWAP provider。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，會寫入 missing snapshot trace，並將 `refresh-avwap` step 標記為 `failed` 與輸出 per-symbol missing reason；TWSE 延遲、request failure、parser error 與 FinMind token acquisition/auth failure 至少需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`、`token_error`，不得讓單一 provider error 升級成 endpoint 500；`run-scoring` 不因此阻塞，候選 detail 保留 `freshness = missing` / `missing_reason`。 |
 | adjusted selected-symbol technical OHLCV | 正式排程台灣時間 22:30 執行。technical indicators 明確使用 yfinance `auto_adjust=true`；目前只有 `unadjusted` 的 `taiwan_daily_bars` 不符合 adjusted contract，因此即使完成官方 archive 暖機也不會被 technical fetcher 採用。未來若新增 adjusted archive，仍須至少 60 根且最新日等於 `run_date` 才能切換。 |
@@ -396,8 +396,8 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
       "risk_labels": ["market_weakness"],
       "repeat_status": "new",
       "explanation": "量價轉強觀察...",
-      "scoring_version": "daily-radar-scoring-v2.4",
-      "rule_version": "daily-radar-rules-v2.3",
+      "scoring_version": "daily-radar-scoring-v2.5",
+      "rule_version": "daily-radar-rules-v2.4",
       "bucket_scores": {},
       "score_breakdown": {
         "relative_strength": {

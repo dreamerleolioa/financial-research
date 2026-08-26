@@ -6,6 +6,10 @@ from datetime import date
 from typing import Any, Literal, Protocol, Sequence, TypeAlias
 
 DailyRadarUniverseTrack: TypeAlias = Literal[
+    "foreign_same_day",
+    "trust_same_day",
+    "foreign_recent_accumulation",
+    "trust_recent_accumulation",
     "same_day_institutional",
     "recent_accumulation",
     "price_volume",
@@ -13,9 +17,35 @@ DailyRadarUniverseTrack: TypeAlias = Literal[
     "support_retake",
 ]
 
-INSTITUTIONAL_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
+SegmentedInstitutionalUniverseTrack: TypeAlias = Literal[
+    "foreign_same_day",
+    "trust_same_day",
+    "foreign_recent_accumulation",
+    "trust_recent_accumulation",
+]
+SEGMENTED_INSTITUTIONAL_TRACKS: tuple[SegmentedInstitutionalUniverseTrack, ...] = (
+    "foreign_same_day",
+    "trust_same_day",
+    "foreign_recent_accumulation",
+    "trust_recent_accumulation",
+)
+LEGACY_INSTITUTIONAL_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
     "same_day_institutional",
     "recent_accumulation",
+)
+INSTITUTIONAL_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
+    *SEGMENTED_INSTITUTIONAL_TRACKS,
+    *LEGACY_INSTITUTIONAL_TRACKS,
+)
+SAME_DAY_INSTITUTIONAL_TRACKS = frozenset(
+    {"foreign_same_day", "trust_same_day", "same_day_institutional"}
+)
+RECENT_INSTITUTIONAL_TRACKS = frozenset(
+    {
+        "foreign_recent_accumulation",
+        "trust_recent_accumulation",
+        "recent_accumulation",
+    }
 )
 TECHNICAL_TRIGGER_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
     "price_volume",
@@ -66,7 +96,7 @@ class DailyRadarUniverseEntry:
     track_metrics: dict[DailyRadarUniverseTrack, dict[str, Any]] = field(default_factory=dict)
 
 
-class DailyRadarUniverseProvider(Protocol):
+class LegacyDailyRadarUniverseProvider(Protocol):
     def same_day_institutional_leaders(
         self,
         *,
@@ -82,6 +112,22 @@ class DailyRadarUniverseProvider(Protocol):
         market: str,
         limit: int,
     ) -> Sequence[InstitutionalLeaderRow]: ...
+
+
+class SegmentedDailyRadarUniverseProvider(Protocol):
+    def institutional_track_leaders(
+        self,
+        *,
+        track: SegmentedInstitutionalUniverseTrack,
+        run_date: date,
+        market: str,
+        limit: int,
+    ) -> Sequence[InstitutionalLeaderRow]: ...
+
+
+DailyRadarUniverseProvider: TypeAlias = (
+    LegacyDailyRadarUniverseProvider | SegmentedDailyRadarUniverseProvider
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,26 +164,42 @@ def select_daily_radar_universe(
     entries: list[DailyRadarUniverseEntry] = []
     indexes_by_symbol: dict[str, int] = {}
 
-    _merge_institutional_rows(
-        entries,
-        indexes_by_symbol,
-        track="same_day_institutional",
-        rows=provider.same_day_institutional_leaders(
-            run_date=run_date,
-            market=market,
-            limit=track_limit,
-        ),
-    )
-    _merge_institutional_rows(
-        entries,
-        indexes_by_symbol,
-        track="recent_accumulation",
-        rows=provider.recent_accumulation_leaders(
-            run_date=run_date,
-            market=market,
-            limit=track_limit,
-        ),
-    )
+    segmented_leaders = getattr(provider, "institutional_track_leaders", None)
+    if callable(segmented_leaders):
+        for track in SEGMENTED_INSTITUTIONAL_TRACKS:
+            _merge_institutional_rows(
+                entries,
+                indexes_by_symbol,
+                track=track,
+                rows=segmented_leaders(
+                    track=track,
+                    run_date=run_date,
+                    market=market,
+                    limit=track_limit,
+                ),
+            )
+    else:
+        legacy_provider = provider
+        _merge_institutional_rows(
+            entries,
+            indexes_by_symbol,
+            track="same_day_institutional",
+            rows=legacy_provider.same_day_institutional_leaders(
+                run_date=run_date,
+                market=market,
+                limit=track_limit,
+            ),
+        )
+        _merge_institutional_rows(
+            entries,
+            indexes_by_symbol,
+            track="recent_accumulation",
+            rows=legacy_provider.recent_accumulation_leaders(
+                run_date=run_date,
+                market=market,
+                limit=track_limit,
+            ),
+        )
 
     technical_metrics_by_symbol = _technical_track_metrics_by_symbol(technical_records)
     for track in TECHNICAL_TRIGGER_TRACKS:
@@ -219,10 +281,10 @@ def _institutional_entry(
     *,
     rank: int,
 ) -> DailyRadarUniverseEntry:
-    same_day_rank = row.rank if track == "same_day_institutional" else None
-    same_day_score = row.score if track == "same_day_institutional" else None
-    recent_rank = row.rank if track == "recent_accumulation" else None
-    recent_score = row.score if track == "recent_accumulation" else None
+    same_day_rank = row.rank if track in SAME_DAY_INSTITUTIONAL_TRACKS else None
+    same_day_score = row.score if track in SAME_DAY_INSTITUTIONAL_TRACKS else None
+    recent_rank = row.rank if track in RECENT_INSTITUTIONAL_TRACKS else None
+    recent_score = row.score if track in RECENT_INSTITUTIONAL_TRACKS else None
     return DailyRadarUniverseEntry(
         symbol=row.symbol,
         rank=rank,
@@ -248,10 +310,26 @@ def _entry_with_institutional_track(
     return replace(
         entry,
         tracks=_ordered_tracks((*entry.tracks, track)),
-        same_day_rank=row.rank if track == "same_day_institutional" else entry.same_day_rank,
-        same_day_score=row.score if track == "same_day_institutional" else entry.same_day_score,
-        recent_accumulation_rank=row.rank if track == "recent_accumulation" else entry.recent_accumulation_rank,
-        recent_accumulation_score=row.score if track == "recent_accumulation" else entry.recent_accumulation_score,
+        same_day_rank=(
+            _minimum_optional(entry.same_day_rank, row.rank)
+            if track in SAME_DAY_INSTITUTIONAL_TRACKS
+            else entry.same_day_rank
+        ),
+        same_day_score=(
+            _maximum_optional(entry.same_day_score, row.score)
+            if track in SAME_DAY_INSTITUTIONAL_TRACKS
+            else entry.same_day_score
+        ),
+        recent_accumulation_rank=(
+            _minimum_optional(entry.recent_accumulation_rank, row.rank)
+            if track in RECENT_INSTITUTIONAL_TRACKS
+            else entry.recent_accumulation_rank
+        ),
+        recent_accumulation_score=(
+            _maximum_optional(entry.recent_accumulation_score, row.score)
+            if track in RECENT_INSTITUTIONAL_TRACKS
+            else entry.recent_accumulation_score
+        ),
         track_metrics=track_metrics,
     )
 
@@ -537,7 +615,8 @@ def _ordered_tracks(tracks: Iterable[DailyRadarUniverseTrack]) -> tuple[DailyRad
 
 
 def _leader_metrics(row: InstitutionalLeaderRow) -> dict[str, Any]:
-    metrics: dict[str, Any] = {}
+    metrics: dict[str, Any] = {"rank": row.rank}
+    _add_metric(metrics, "score", row.score)
     _add_metric(metrics, "actor", row.actor)
     _add_metric(metrics, "net_buy", row.net_buy)
     _add_metric(metrics, "cumulative_net_buy", row.cumulative_net_buy)
@@ -551,6 +630,16 @@ def _leader_metrics(row: InstitutionalLeaderRow) -> dict[str, Any]:
     return metrics
 
 
+def _minimum_optional(current: int | None, incoming: int) -> int:
+    return incoming if current is None else min(current, incoming)
+
+
+def _maximum_optional(current: float | None, incoming: float | None) -> float | None:
+    if incoming is None:
+        return current
+    return incoming if current is None else max(current, incoming)
+
+
 def _add_metric(metrics: dict[str, Any], key: str, value: Any) -> None:
     if value is not None:
         metrics[key] = value
@@ -561,6 +650,8 @@ __all__ = [
     "DailyRadarUniverseProvider",
     "DailyRadarUniverseTrack",
     "InstitutionalLeaderRow",
+    "SEGMENTED_INSTITUTIONAL_TRACKS",
+    "SegmentedInstitutionalUniverseTrack",
     "TECHNICAL_TRIGGER_TRACKS",
     "TechnicalTriggerRow",
     "refresh_daily_radar_universe_technical_tracks",

@@ -164,6 +164,56 @@ def test_prefilter_accepts_same_day_institutional_track_without_recent_metrics()
     assert "data_gap" not in _reason_codes(result)
 
 
+@pytest.mark.parametrize(
+    ("track", "metric"),
+    [
+        ("foreign_same_day", "foreign_same_day_net_shares"),
+        ("trust_same_day", "trust_same_day_net_shares"),
+        ("foreign_recent_accumulation", "foreign_cumulative_net_shares"),
+        ("trust_recent_accumulation", "trust_cumulative_net_shares"),
+    ],
+)
+def test_prefilter_accepts_complete_segmented_institutional_track(
+    track: str,
+    metric: str,
+) -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    institutional_flow = {
+        "universe_primary_track": track,
+        "institutional_universe_tracks": [track],
+        "flow_state": "consistent_accumulation",
+        metric: 1000.0,
+    }
+    if track.endswith("recent_accumulation"):
+        actor = "foreign" if track.startswith("foreign") else "trust"
+        institutional_flow[f"{actor}_consecutive_buy_days"] = 2
+    record["institutional_flow"] = institutional_flow
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "accepted"
+    assert "data_gap" not in _reason_codes(result)
+
+
+def test_prefilter_rejects_segmented_recent_track_without_actor_streak() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["institutional_flow"] = {
+        "universe_primary_track": "foreign_recent_accumulation",
+        "institutional_universe_tracks": ["foreign_recent_accumulation"],
+        "flow_state": "consistent_accumulation",
+        "foreign_cumulative_net_shares": 1000.0,
+    }
+
+    result = prefilter_record(record)
+
+    assert result["prefilter_status"] == "rejected"
+    assert "institutional_flow.foreign_consecutive_buy_days" in next(
+        reason["details"]["missing_fields"]
+        for reason in result["prefilter_reasons"]
+        if reason["code"] == "data_gap" and "missing_fields" in reason["details"]
+    )
+
+
 def test_prefilter_accepts_recent_track_when_source_cannot_supply_volume_ratio() -> None:
     record = copy.deepcopy(_records_by_symbol()["2330.TW"])
     record["institutional_flow"].update(

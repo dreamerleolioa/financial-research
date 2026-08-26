@@ -22,6 +22,9 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
     cached_daily_rows_from_raw_rows,
 )
+from ai_stock_sentinel.daily_radar.institutional_archive_universe import (
+    ArchivedInstitutionalUniverseProvider,
+)
 from ai_stock_sentinel.daily_radar.institutional_flow import (
     InstitutionalFlowRow,
     InstitutionalReport,
@@ -38,7 +41,11 @@ from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
 from ai_stock_sentinel.daily_radar.market_session import MarketSessionProviderError, MarketSessionResult
 from ai_stock_sentinel.daily_radar.name_backfill import get_daily_radar_symbol_name_resolver
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
-from ai_stock_sentinel.daily_radar.universe import InstitutionalLeaderRow
+from ai_stock_sentinel.daily_radar.universe import (
+    DailyRadarUniverseEntry,
+    DailyRadarUniverseProvider,
+    InstitutionalLeaderRow,
+)
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarPreparedRun,
@@ -130,6 +137,8 @@ def test_daily_radar_internal_auth_accepts_x_internal_token(monkeypatch) -> None
 
 
 class FakeUniverseProvider:
+    name = "twse_rwd"
+
     def __init__(
         self,
         *,
@@ -481,7 +490,7 @@ def _api_client(
     db_session: Session,
     run: SimpleNamespace | None = None,
     *,
-    universe_provider: FakeUniverseProvider | None = None,
+    universe_provider: DailyRadarUniverseProvider | None = None,
     technical_fetcher: FakeBatchTechnicalFetcher | None = None,
     market_context_provider: FakeMarketIndexContextProvider | None = None,
     market_session_provider: FakeMarketSessionProvider | RaisingMarketSessionProvider | None = None,
@@ -1251,6 +1260,151 @@ def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
     assert set(
         prepared.step_statuses["refresh-institutional-flows"]["markets"]
     ) == {"TW", "TWO"}
+
+
+def test_daily_radar_universe_cap_remains_250_after_track_expansion() -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    universe = [
+        DailyRadarUniverseEntry(
+            symbol=f"{1000 + index}.TW",
+            rank=index + 1,
+            primary_track="foreign_same_day",
+            tracks=("foreign_same_day",),
+        )
+        for index in range(300)
+    ]
+
+    capped = daily_radar_router._capped_daily_radar_universe(
+        universe,
+        max_symbols=daily_radar_router.DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
+    )
+
+    assert len(capped) == 250
+    assert capped[-1].symbol == "1249.TW"
+
+
+def test_daily_radar_prepare_universe_uses_segmented_archive_tracks_for_both_markets(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_required_institutional_archive(daily_radar_db_session)
+    provider = ArchivedInstitutionalUniverseProvider(daily_radar_db_session)
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    prepared = daily_radar_db_session.query(DailyRadarPreparedRun).one()
+    assert prepared.selected_symbols == ["2330.TW", "6488.TWO"]
+    assert prepared.universe[0]["tracks"] == ["foreign_same_day", "trust_same_day"]
+    assert prepared.universe[1]["tracks"] == ["foreign_same_day", "trust_same_day"]
+    assert prepared.universe[0]["track_metrics"]["foreign_same_day"]["actor"] == "foreign"
+    assert prepared.universe[0]["track_metrics"]["trust_same_day"]["actor"] == "trust"
+
+
+def test_daily_radar_prepare_universe_reports_archive_integrity_error(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    _persist_required_institutional_archive(daily_radar_db_session)
+    flow = (
+        daily_radar_db_session.query(TaiwanInstitutionalFlow)
+        .filter_by(symbol="2330.TW")
+        .one()
+    )
+    flow.foreign_net_shares = 999
+    daily_radar_db_session.commit()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=ArchivedInstitutionalUniverseProvider(
+            daily_radar_db_session
+        ),
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/prepare-universe",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "daily_radar_universe_provider_failed",
+        "message": "Daily Radar universe provider request failed.",
+        "error_type": "institutional_archive_snapshot_payload_hash_mismatch",
+        "provider": "institutional_archive",
+    }
+
+
+def test_daily_radar_run_projects_segmented_same_day_and_recent_archive_tracks(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    historical_provider = FakeInstitutionalFlowProvider()
+    for market in ("TW", "TWO"):
+        archive_institutional_report(
+            daily_radar_db_session,
+            historical_provider.fetch_market(
+                market=market,
+                trade_date=date(2026, 5, 29),
+            ),
+        )
+    daily_radar_db_session.commit()
+    _persist_required_institutional_archive(daily_radar_db_session)
+    provider = ArchivedInstitutionalUniverseProvider(daily_radar_db_session)
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        universe_provider=provider,
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/run",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
+    rows_by_symbol = {row.symbol: row for row in captured["cache_rows"]}
+    institutional = rows_by_symbol["2330.TW"].institutional
+    assert institutional["institutional_universe_tracks"] == [
+        "foreign_same_day",
+        "trust_same_day",
+        "foreign_recent_accumulation",
+        "trust_recent_accumulation",
+    ]
+    assert institutional["same_day_actor"] == "mixed"
+    assert institutional["same_day_net_buy"] == pytest.approx(1200.0)
+    assert institutional["foreign_same_day_net_shares"] == pytest.approx(1000.0)
+    assert institutional["trust_same_day_net_shares"] == pytest.approx(200.0)
+    assert institutional["foreign_net_shares"] == pytest.approx(1000.0)
+    assert institutional["investment_trust_net_shares"] == pytest.approx(200.0)
+    assert institutional["foreign_cumulative_net_shares"] == pytest.approx(2000.0)
+    assert institutional["trust_cumulative_net_shares"] == pytest.approx(400.0)
+    assert institutional["foreign_consecutive_buy_days"] == 2
+    assert institutional["trust_consecutive_buy_days"] == 2
+    assert institutional["consecutive_positive_days"] == 2
+    assert institutional["source_provider"] == "taiwan_institutional_flow_archive"
 
 
 def test_daily_radar_prepare_universe_requires_complete_institutional_archive(

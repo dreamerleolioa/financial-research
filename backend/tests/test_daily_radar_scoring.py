@@ -382,6 +382,67 @@ def test_daily_radar_scores_same_day_only_institutional_net_buy_signal() -> None
     )
 
 
+def test_daily_radar_scores_segmented_same_day_net_buy_signal() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2330.TW"])
+    record["institutional_flow"] = {
+        "universe_primary_track": "foreign_same_day",
+        "institutional_universe_tracks": ["foreign_same_day"],
+        "foreign_same_day_net_shares": 24_680.0,
+        "same_day_actor": "foreign",
+        "same_day_net_buy": 24_680.0,
+        "foreign_net_shares": 24_680.0,
+        "flow_state": "same_day_net_buy",
+    }
+    prefilter = prefilter_record(record)
+
+    result = score_daily_radar_record(
+        record,
+        market_context=_market_context(),
+        prefilter_result=prefilter,
+    )
+    ablated = score_daily_radar_record(
+        record,
+        market_context=_market_context(),
+        prefilter_result=prefilter,
+        excluded_rule_codes={"institutional_same_day_net_buy"},
+    )
+
+    assert prefilter["prefilter_status"] == "accepted"
+    assert result["bucket_scores"]["institutional_accumulation"] == (
+        ablated["bucket_scores"]["institutional_accumulation"] + 8
+    )
+
+
+def test_daily_radar_scores_actor_specific_recent_net_positive() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2330.TW"])
+    record["institutional_flow"] = {
+        "universe_primary_track": "foreign_recent_accumulation",
+        "institutional_universe_tracks": ["foreign_recent_accumulation"],
+        "foreign_cumulative_net_shares": 12_000.0,
+        "foreign_consecutive_buy_days": 2,
+        "consecutive_positive_days": 2,
+        "foreign_net_shares": 4_000.0,
+        "flow_state": "consistent_accumulation",
+    }
+    prefilter = prefilter_record(record)
+
+    result = score_daily_radar_record(
+        record,
+        market_context=_market_context(),
+        prefilter_result=prefilter,
+    )
+
+    assert prefilter["prefilter_status"] == "accepted"
+    net_rule = next(
+        rule
+        for rule in result["matched_rules"]
+        if rule["rule_id"] == "institutional_net_positive"
+    )
+    assert net_rule["details"]["three_party_net"] == 0.0
+    assert net_rule["details"]["foreign_cumulative_net"] == 12_000.0
+    assert net_rule["details"]["trust_cumulative_net"] == 0.0
+
+
 def test_daily_radar_same_day_signal_does_not_double_count_existing_flow_rule() -> None:
     record = deepcopy(_joined_records_by_symbol()["2330.TW"])
     record["institutional_flow"].update(
@@ -482,10 +543,10 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["risk_penalties"] == []
     assert result["data_dates"]["market_index"] == "2026-05-29"
     assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
-    assert result["scoring_version"] == "daily-radar-scoring-v2.4"
-    assert result["rule_version"] == "daily-radar-rules-v2.3"
-    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.4"
-    assert breakdown["rule_version"] == "daily-radar-rules-v2.3"
+    assert result["scoring_version"] == "daily-radar-scoring-v2.5"
+    assert result["rule_version"] == "daily-radar-rules-v2.4"
+    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.5"
+    assert breakdown["rule_version"] == "daily-radar-rules-v2.4"
 
 
 def test_daily_radar_counterfactual_exclusion_uses_same_input_without_mutating_default_score() -> None:
@@ -585,8 +646,8 @@ def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_
     assert result["data_dates"]["relative_strength"] == "2026-05-29"
     assert result["input_snapshot"]["relative_strength"] == relative_strength
     assert result["input_snapshot"]["versions"] == {
-        "scoring_version": "daily-radar-scoring-v2.4",
-        "rule_version": "daily-radar-rules-v2.3",
+        "scoring_version": "daily-radar-scoring-v2.5",
+        "rule_version": "daily-radar-rules-v2.4",
         "config_version": "daily-radar-scoring-config-v1",
     }
     assert result["input_snapshot"]["replay_input"]["schema_version"] == "daily-radar-replay-input-v1"
