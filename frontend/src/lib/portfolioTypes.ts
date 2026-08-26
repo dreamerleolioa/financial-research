@@ -222,6 +222,12 @@ export interface ClosedPortfolioLifecycle {
   total_closed_quantity: number;
   total_realized_pnl: number;
   exit_batches: ClosedPortfolioExitBatch[];
+  review_summary: {
+    review_version: string;
+    outcome: PositionLifecycleOutcome | null;
+    process_quality: PositionLifecycleProcessQuality | null;
+    key_feedback: PositionLifecycleFeedbackItem | null;
+  } | null;
 }
 
 export interface TradeReviewDataQuality {

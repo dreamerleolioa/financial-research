@@ -300,33 +300,38 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   const watchlist = options.watchlist ?? [];
   const portfolio = options.portfolio ?? [];
   const closedPortfolio = options.closedPortfolio ?? [];
-  const closedLifecycles = options.closedLifecycles ?? closedPortfolio.map((value) => {
-    const item = value as typeof closedPortfolioItem;
-    return {
-      position_group_id: item.position_group_id,
-      symbol: item.symbol,
-      name: item.name,
-      lifecycle_start_date: item.entry_date,
-      lifecycle_end_date: item.exit_date,
-      initial_entry_price: item.entry_price,
-      entry_event_count: 1,
-      add_entry_count: 0,
-      exit_event_count: 1,
-      total_closed_quantity: item.exit_quantity,
-      total_realized_pnl: item.realized_pnl,
-      exit_batches: [{
-        ...item,
-        sequence_number: 1,
-        display_label: "最終出清",
-        event_id: item.id,
-        event_type: "full_exit",
-        reason_category: "plan_execution",
-        reason_code: "target_reached",
-        plan_adherence: "yes",
-        confidence_level: "high",
-      }],
-    };
-  });
+  const closedLifecycles =
+    options.closedLifecycles ??
+    closedPortfolio.map((value) => {
+      const item = value as typeof closedPortfolioItem;
+      return {
+        position_group_id: item.position_group_id,
+        symbol: item.symbol,
+        name: item.name,
+        lifecycle_start_date: item.entry_date,
+        lifecycle_end_date: item.exit_date,
+        initial_entry_price: item.entry_price,
+        entry_event_count: 1,
+        add_entry_count: 0,
+        exit_event_count: 1,
+        total_closed_quantity: item.exit_quantity,
+        total_realized_pnl: item.realized_pnl,
+        review_summary: null,
+        exit_batches: [
+          {
+            ...item,
+            sequence_number: 1,
+            display_label: "最終出清",
+            event_id: item.id,
+            event_type: "full_exit",
+            reason_category: "plan_execution",
+            reason_code: "target_reached",
+            plan_adherence: "yes",
+            confidence_level: "high",
+          },
+        ],
+      };
+    });
   const riskSummary = options.riskSummary ?? emptyRiskSummary;
   const priceRefreshSummary = options.priceRefreshSummary ?? riskSummary;
   const latestHistory = options.latestHistory ?? {};

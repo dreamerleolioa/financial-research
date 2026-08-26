@@ -5077,6 +5077,28 @@ def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_l
             source="user_recorded_at_event_time",
         ),
     ])
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-complete-lifecycle",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v4",
+        review_result={
+            "lifecycle_review": {
+                "outcome": {"status": "profit", "label": "結果獲利"},
+                "process_quality": {"status": "mixed", "label": "流程有好有壞"},
+                "feedback": {
+                    "improve": [{
+                        "title": "提前定義風險出口",
+                        "action": "下次進場前先定義破位條件。",
+                        "source_refs": ["exit_sequence.percentage_sold_after_breakdown"],
+                    }],
+                    "keep": [],
+                    "next_actions": [],
+                },
+            },
+        },
+        evidence_payload={},
+    ))
     portfolio_db_session.commit()
 
     resp = portfolio_db_client.get("/portfolio/closed-lifecycles")
@@ -5095,6 +5117,31 @@ def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_l
     assert [batch["display_label"] for batch in lifecycle["exit_batches"]] == ["第 1 次減碼", "最終出清"]
     assert lifecycle["exit_batches"][0]["reason_code"] == "profit_protection"
     assert lifecycle["exit_batches"][1]["plan_adherence"] == "partial"
+    assert lifecycle["review_summary"] == {
+        "review_version": "position-lifecycle-review-v4",
+        "outcome": {"status": "profit", "label": "結果獲利"},
+        "process_quality": {"status": "mixed", "label": "流程有好有壞"},
+        "key_feedback": {
+            "title": "提前定義風險出口",
+            "action": "下次進場前先定義破位條件。",
+            "source_refs": ["exit_sequence.percentage_sold_after_breakdown"],
+        },
+    }
+
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-complete-lifecycle",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v5",
+        review_result={"future": True},
+        evidence_payload={"future": True},
+    ))
+    portfolio_db_session.commit()
+
+    response_with_future_review = portfolio_db_client.get("/portfolio/closed-lifecycles")
+
+    assert response_with_future_review.status_code == 200
+    assert response_with_future_review.json()[0]["review_summary"] is None
 
 
 def test_list_closed_lifecycles_excludes_group_that_still_has_an_active_position(

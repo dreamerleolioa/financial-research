@@ -135,6 +135,7 @@ def _serialize_portfolio(item: UserPortfolio) -> dict:
 def _build_closed_lifecycle_summaries(
     portfolio_rows: list[UserPortfolio],
     events: list[PositionEvent],
+    reviews: list[PositionLifecycleReview] | None = None,
 ) -> list[dict]:
     rows_by_group: dict[str, list[UserPortfolio]] = {}
     events_by_group: dict[str, list[PositionEvent]] = {}
@@ -142,6 +143,15 @@ def _build_closed_lifecycle_summaries(
         rows_by_group.setdefault(row.position_group_id, []).append(row)
     for event in events:
         events_by_group.setdefault(event.position_group_id, []).append(event)
+    review_by_group: dict[str, PositionLifecycleReview] = {}
+    groups_with_unknown_review: set[str] = set()
+    for review in reviews or []:
+        if review.review_version not in KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS:
+            groups_with_unknown_review.add(review.position_group_id)
+        elif review.review_version == POSITION_LIFECYCLE_REVIEW_VERSION:
+            review_by_group.setdefault(review.position_group_id, review)
+    for position_group_id in groups_with_unknown_review:
+        review_by_group.pop(position_group_id, None)
 
     summaries = []
     for position_group_id, group_rows in rows_by_group.items():
@@ -198,6 +208,21 @@ def _build_closed_lifecycle_summaries(
         initial_event = entry_events[0] if entry_events else None
         completed_event = full_exit_events[-1]
         first_row = min(closed_rows, key=lambda row: (row.entry_date, row.id))
+        review = review_by_group.get(position_group_id)
+        lifecycle_review = (
+            review.review_result.get("lifecycle_review")
+            if review is not None and isinstance(review.review_result, dict)
+            else None
+        )
+        feedback = lifecycle_review.get("feedback") if isinstance(lifecycle_review, dict) else None
+        key_feedback = None
+        if isinstance(feedback, dict):
+            for key in ("improve", "keep", "next_actions"):
+                candidates = feedback.get(key)
+                if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict):
+                    key_feedback = candidates[0]
+                    break
+
         summaries.append({
             "position_group_id": position_group_id,
             "symbol": first_row.symbol,
@@ -213,6 +238,16 @@ def _build_closed_lifecycle_summaries(
             "total_closed_quantity": sum(int(row.exit_quantity or 0) for row in closed_rows),
             "total_realized_pnl": sum(float(row.realized_pnl or 0) for row in closed_rows),
             "exit_batches": exit_batches,
+            "review_summary": (
+                {
+                    "review_version": review.review_version,
+                    "outcome": lifecycle_review.get("outcome"),
+                    "process_quality": lifecycle_review.get("process_quality"),
+                    "key_feedback": key_feedback,
+                }
+                if review is not None and isinstance(lifecycle_review, dict)
+                else None
+            ),
         })
 
     return sorted(
@@ -627,7 +662,15 @@ def list_closed_lifecycles(
         user_id=current_user.id,
         position_group_ids=group_ids,
     )
-    return _build_closed_lifecycle_summaries(portfolio_rows, events)
+    reviews = []
+    if group_ids:
+        reviews = db.execute(
+            select(PositionLifecycleReview).where(
+                PositionLifecycleReview.user_id == current_user.id,
+                PositionLifecycleReview.position_group_id.in_(group_ids),
+            ).order_by(PositionLifecycleReview.created_at.desc(), PositionLifecycleReview.id.desc())
+        ).scalars().all()
+    return _build_closed_lifecycle_summaries(portfolio_rows, events, reviews)
 
 
 @router.get("/decision-context-status")
