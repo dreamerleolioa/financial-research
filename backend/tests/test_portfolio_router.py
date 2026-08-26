@@ -3406,7 +3406,7 @@ def test_create_position_lifecycle_review_first_post_saves_result_and_evidence_p
     assert data["user_id"] == 1
     assert data["position_group_id"] == "group-life-review"
     assert data["symbol"] == "2330.TW"
-    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_version"] == "position-lifecycle-review-v4"
     assert data["llm_summary"] is None
     assert data["review_result"]["lifecycle_review"]["classification"]["tier"] == "constructive"
     assert data["evidence_payload"]["events"] == [{"event_type": "initial_entry"}]
@@ -3526,7 +3526,7 @@ def test_position_lifecycle_review_preserves_unknown_newer_version(
         user_id=1,
         position_group_id="group-life-review",
         symbol="2330.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"current": True},
         evidence_payload={"current": True},
         llm_summary=None,
@@ -3535,7 +3535,7 @@ def test_position_lifecycle_review_preserves_unknown_newer_version(
         user_id=1,
         position_group_id="group-life-review",
         symbol="2330.TW",
-        review_version="position-lifecycle-review-v4",
+        review_version="position-lifecycle-review-v5",
         review_result={"future": True},
         evidence_payload={"future": True},
         llm_summary="future summary",
@@ -3547,8 +3547,8 @@ def test_position_lifecycle_review_preserves_unknown_newer_version(
 
     assert post_resp.status_code == 200
     assert get_resp.status_code == 200
-    assert post_resp.json()["review_version"] == "position-lifecycle-review-v4"
-    assert get_resp.json()["review_version"] == "position-lifecycle-review-v4"
+    assert post_resp.json()["review_version"] == "position-lifecycle-review-v5"
+    assert get_resp.json()["review_version"] == "position-lifecycle-review-v5"
     assert len(portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()) == 2
 
 
@@ -4049,7 +4049,7 @@ def test_position_lifecycle_review_missing_shared_context_is_nonblocking(
     assert shared_context["consumer"] == "lifecycle_review"
     assert shared_context["data_quality"]["blocking"] is False
     assert "context_cache_missing" in shared_context["data_quality"]["missing_reasons"]
-    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_version"] == "position-lifecycle-review-v4"
 
 
 def test_get_position_lifecycle_review_returns_existing_review(
@@ -4072,8 +4072,11 @@ def test_get_position_lifecycle_review_returns_existing_review(
     assert resp.json() == created
 
 
-@pytest.mark.parametrize("saved_version", ["position-lifecycle-review-v1", "position-lifecycle-review-v2"])
-def test_get_position_lifecycle_review_can_read_saved_version_until_post_upgrades_to_v3(
+@pytest.mark.parametrize(
+    "saved_version",
+    ["position-lifecycle-review-v1", "position-lifecycle-review-v2", "position-lifecycle-review-v3"],
+)
+def test_get_position_lifecycle_review_can_read_saved_version_until_post_upgrades_to_v4(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
     saved_version: str,
@@ -4097,9 +4100,9 @@ def test_get_position_lifecycle_review_can_read_saved_version_until_post_upgrade
     assert get_resp.json()["review_version"] == saved_version
     assert get_resp.json()["review_result"] == {"legacy": True}
     assert post_resp.status_code == 200
-    assert post_resp.json()["review_version"] == "position-lifecycle-review-v3"
+    assert post_resp.json()["review_version"] == "position-lifecycle-review-v4"
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
-    assert {review.review_version for review in reviews} == {saved_version, "position-lifecycle-review-v3"}
+    assert {review.review_version for review in reviews} == {saved_version, "position-lifecycle-review-v4"}
 
 
 def test_get_position_lifecycle_review_missing_owned_group_returns_404(
@@ -4156,14 +4159,14 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     _, legacy_evidence = _lifecycle_payload()
     legacy_fingerprint = attach_source_fingerprint(
         legacy_evidence,
-        ruleset_version="position-lifecycle-ruleset-v3.1",
+        ruleset_version="position-lifecycle-ruleset-v3.2",
     )
     portfolio_db_session.add(PositionLifecycleReview(
         id=9,
         user_id=1,
         position_group_id="group-life-review",
         symbol="2330.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"legacy_copy": True},
         evidence_payload=legacy_evidence,
     ))
@@ -4174,9 +4177,9 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == 9
-    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_version"] == "position-lifecycle-review-v4"
     assert data["review_result"] == _lifecycle_payload()[0]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
     assert data["evidence_payload"]["source_fingerprint"] != legacy_fingerprint
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
@@ -4208,7 +4211,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
         user_id=1,
         position_group_id="group-life-review",
         symbol="OLD.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary="old summary",
@@ -4227,7 +4230,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "event"
     assert data["evidence_payload"]["events"] == [{"event_type": "full_exit"}]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4274,7 +4277,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
         user_id=1,
         position_group_id="group-life-review",
         symbol="OLD.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary="old summary",
@@ -4293,7 +4296,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "plan"
     assert data["evidence_payload"]["plan"] == {"planned_holding_period": "long_term"}
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4461,7 +4464,7 @@ def test_position_lifecycle_review_does_not_change_single_trade_review_behavior(
 
     assert lifecycle_resp.status_code == 200
     assert trade_resp.status_code == 200
-    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v3"
+    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v4"
     assert trade_resp.json()["review_version"] == "trade-review-v3"
     assert trade_resp.json()["portfolio_id"] == 42
     assert trade_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"

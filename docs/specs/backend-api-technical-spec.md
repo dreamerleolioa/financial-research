@@ -1575,8 +1575,8 @@ make run-api
 
 - **用途**：為同一 `position_group_id` 建立或更新 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在且來源資料未變，直接回傳既有 review。
 - **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
-- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v3 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 / v2 可讀，但 POST 會建立 v3，避免舊版分類語意與新規則混用。
-- **版本策略**：`review_version` 為 `position-lifecycle-review-v3`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。v3 將「事件與原始計畫完整、但未命中任何 deterministic pattern」分類為 `unclassified`，不再誤標為 `insufficient_data`；此分類的使用者可讀文案只能描述未命中規則，不得宣稱已發生計畫遵循、分批保護獲利或其他未被證據支持的行為，前端也不把內部 `mixed` tier 額外顯示成「混合結論」。操作規則 fallback 必須依主要分類分流：只有 `unclassified` 可描述未命中模式，constructive labels 必須承認已辨識出的正向模式，`insufficient_data` 則只提示證據缺口。規則與模板修訂另以 `evidence_payload.ruleset_version` 版本化；`position-lifecycle-ruleset-v3.2` 會讓舊 v3.1 review 在下次 POST refresh 時原地重建，即使事件、計畫與市場資料未變也不沿用舊模板。預留但尚未實作的 benchmark / sector relative-return 欄位可維持 `null`，不得因此把 `data_quality` 標為不足。`planned_risk_amount` 與 `planned_stop_price` 都是選填欄位，兩者皆未提供時 `planned_1r_amount` 與 R-multiple 指標維持 `null`，但不構成事件、ledger 或市場證據缺口，也不得單獨觸發 `insufficient_data`。若資料庫已有不在已知 v1/v2/v3 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v3 或降級覆寫。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v4 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 / v2 / v3 可讀，但 POST 會建立 v4，避免舊版分類語意與新規則混用。
+- **版本策略**：`review_version` 為 `position-lifecycle-review-v4`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。v4 在保留 v3 deterministic classification 的同時，新增獨立的 `outcome` 與 `process_quality`，禁止用獲利或虧損直接代替操作品質判斷；另以 `dimensions` 分開呈現進場、部位管理、風險與出場、紀錄品質，狀態採類別而非 0–100 分數。`feedback.keep` 與 `feedback.improve` 只可由實際命中的 positive / risk labels 產生，`feedback.next_actions` 必須附來源引用；只有 `insufficient_data` 而沒有其他有效模式時，不提供交易技巧，只要求補齊操作計畫、事件帳本或事件當下證據。規則版本為 `position-lifecycle-ruleset-v4.0`。預留但尚未實作的 benchmark / sector relative-return 欄位可維持 `null`，不得因此把 `data_quality` 標為不足。`planned_risk_amount` 與 `planned_stop_price` 都是選填欄位，兩者皆未提供時 `planned_1r_amount` 與 R-multiple 指標維持 `null`，但不構成事件、ledger 或市場證據缺口，也不得單獨觸發 `insufficient_data`。若資料庫已有不在已知 v1/v2/v3/v4 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v4 或降級覆寫。
 - **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
 - **Evidence 邊界**：`evidence_payload` 只存 compact event facts、review-relevant plan snapshot、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、compact market snapshot、Phase 2D point-in-time shared context references、source summary、data quality、ruleset 與 fingerprint；不存 raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。正式 lifecycle market query 從首次進場前 120 個日曆日開始，保留完整持有期間直到最後 lifecycle event；較早歷史不得無界載入。寫入 evidence 前，具有日期的重疊 trailing series 會攤平成依交易日去重的單日 bars，且全部先於 outer bars 合併；同日重疊的 trailing history 以較新非空值更新並保留其缺少的 completed 欄位，outer bar 只補缺，不得用盤中／partial quote 覆蓋完整 OHLCV；legacy 無日期 series 只保留最長一份，避免每個 `StockRawData` row 重複保存整段歷史。`quality.row_count` 表示來源 rows，`quality.persisted_bar_count` 表示 compact 後實際保存的 bars。
 - **Shared context point-in-time 邊界（Phase 2D）**：`review_result.shared_context` 與 `evidence_payload.shared_context` 以每個 `PositionEvent.event_date` 作為 `reference_date`，只引用適用目標 consumer 且 `as_of_date <= event_date` 的 shared background context。`shared_background_contexts` 以 `symbol` / `context_type` / `replay_key` 保留歷史 trace；若沒有可用歷史 context 且只存在晚於事件日的 context，會以 `missing_reason = "future_context_excluded"` 保留 caveat，並保留原始 excluded `as_of_date` trace；不得使用該未來資料批評 entry/exit-time decision。Shared context 只作 evidence/caveat/data quality，不改 `lifecycle_review.classification.primary_label`、tier、deterministic metrics 或 fixed-option decision-context 判讀。
@@ -1588,7 +1588,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "position-lifecycle-review-v3",
+  "review_version": "position-lifecycle-review-v4",
   "review_result": {
     "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
@@ -1660,6 +1660,33 @@ make run-api
       "insufficient_data": []
     },
     "lifecycle_review": {
+      "outcome": {
+        "status": "profit",
+        "label": "結果獲利",
+        "summary": "這筆完整交易最終為獲利；獲利結果不等同於操作流程必然正確。",
+        "total_realized_pnl": 12000.0,
+        "total_return_pct": 5.42,
+        "source_refs": ["lifecycle_metrics.total_realized_pnl", "lifecycle_metrics.total_return_pct_on_weighted_cost"]
+      },
+      "process_quality": {
+        "status": "disciplined",
+        "label": "流程大致有紀律",
+        "summary": "已辨識出可重複的正向操作模式，仍應持續保留觸發條件與執行紀錄。",
+        "strength_labels": ["disciplined_scale_out"],
+        "risk_labels": [],
+        "source_refs": ["exit_sequence.partial_exit_count", "exit_sequence.profit_protected_by_partial_exits"]
+      },
+      "dimensions": {
+        "entry": {"label": "進場品質", "status": "not_observed", "summary": "目前固定規則未命中此面向的明確模式。", "source_refs": ["entry_sequence"]},
+        "position_management": {"label": "部位管理", "status": "strength", "summary": "部位調整呈現可追溯的紀律或一致性。", "source_refs": ["exit_sequence"]},
+        "risk_exit": {"label": "風險與出場", "status": "strength", "summary": "降低曝險或風險處理有明確可追溯的效果。", "source_refs": ["exit_sequence"]},
+        "record_quality": {"label": "紀錄品質", "status": "sufficient", "summary": "目前紀錄足以支持這次規則化判讀。", "source_refs": ["data_quality", "decision_context"]}
+      },
+      "feedback": {
+        "keep": [{"label": "disciplined_scale_out", "title": "保留分批保護獲利", "observation": "部分結案先鎖定獲利。", "action": "下次沿用事前定義的分批條件。", "source_refs": ["exit_sequence.partial_exit_count"]}],
+        "improve": [],
+        "next_actions": [{"title": "下次操作規則", "action": "延續可追溯的正向部位管理模式。", "source_refs": ["exit_sequence.partial_exit_count"]}]
+      },
       "classification": {
         "primary_label": "disciplined_scale_out",
         "labels": ["disciplined_scale_out"],
