@@ -18,6 +18,7 @@ from ai_stock_sentinel.analysis.position_lifecycle import (
     build_position_lifecycle_analysis,
     build_position_lifecycle_analysis_from_rows,
 )
+from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, SharedBackgroundContext, StockRawData
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.user_models.user import User
@@ -109,6 +110,47 @@ def _snapshot_row(record_date: date, closes: list[float], symbol: str = "2330.TW
             "recent_highs": [close + 1 for close in closes],
             "recent_lows": [close - 1 for close in closes],
             "recent_volumes": [1000 + index for index, _close in enumerate(closes)],
+            "data_dates": {"ohlcv": record_date.isoformat()},
+        },
+    )
+
+
+def _daily_radar_row(
+    record_date: date,
+    closes: list[float],
+    *,
+    ma20: float,
+    ma60: float,
+    rsi14: float,
+    volume_ratio: float,
+    symbol: str = "2330.TW",
+):
+    start_date = record_date - timedelta(days=len(closes) - 1)
+    return SimpleNamespace(
+        symbol=symbol,
+        record_date=record_date,
+        raw_data_is_final=True,
+        technical={
+            "price_history": [
+                {
+                    "date": (start_date + timedelta(days=index)).isoformat(),
+                    "close": close,
+                }
+                for index, close in enumerate(closes)
+            ],
+            "ohlcv": {
+                "open": closes[-1],
+                "high": closes[-1] + 1,
+                "low": closes[-1] - 1,
+                "close": closes[-1],
+                "volume": 1_000,
+            },
+            "indicators": {
+                "ma20": ma20,
+                "ma60": ma60,
+                "rsi14": rsi14,
+                "volume_ratio": volume_ratio,
+            },
             "data_dates": {"ohlcv": record_date.isoformat()},
         },
     )
@@ -257,6 +299,87 @@ def test_entry_and_exit_sequence_metrics():
     assert exit_sequence["residual_position_giveback_pct"] == pytest.approx(0)
 
 
+def test_lifecycle_uses_daily_radar_price_history_and_completed_indicator_snapshot():
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=0, taxes=0),
+        _event(2, "full_exit", date(2026, 1, 11), 105, 10, fees=0, taxes=0),
+    ]
+    prior_closes = [80 + index * 0.25 for index in range(80)]
+    entry_day_closes = prior_closes[1:] + [100]
+    rows = [
+        _daily_radar_row(
+            date(2026, 1, 9),
+            prior_closes,
+            ma20=96.5,
+            ma60=91.5,
+            rsi14=58.2,
+            volume_ratio=1.15,
+        ),
+        _daily_radar_row(
+            date(2026, 1, 10),
+            entry_day_closes,
+            ma20=97.2,
+            ma60=92.1,
+            rsi14=61.4,
+            volume_ratio=1.32,
+        ),
+    ]
+
+    result, evidence = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=rows,
+        plan=_plan(),
+    )
+
+    entry_snapshot, exit_snapshot = result["event_indicator_snapshots"]
+    assert entry_snapshot["ma20"] == pytest.approx(ma(prior_closes, 20))
+    assert entry_snapshot["ma60"] == pytest.approx(ma(prior_closes, 60))
+    assert entry_snapshot["rsi14"] == pytest.approx(calc_rsi(prior_closes, period=14))
+    assert entry_snapshot["volume_ratio"] == pytest.approx(1.15)
+    assert exit_snapshot["ma20"] == pytest.approx(ma(entry_day_closes, 20))
+    assert exit_snapshot["ma60"] == pytest.approx(ma(entry_day_closes, 60))
+    assert exit_snapshot["rsi14"] == pytest.approx(calc_rsi(entry_day_closes, period=14))
+    assert exit_snapshot["volume_ratio"] == pytest.approx(1.32)
+    assert not any(
+        key.endswith(("_ma20", "_ma60", "_rsi14", "_volume_ratio"))
+        for key in result["data_quality"]["insufficient_data"]
+    )
+    assert evidence["market_snapshot"]["quality"]["trading_bar_count"] >= 60
+    prior_bar = next(
+        bar
+        for bar in evidence["market_snapshot"]["bars"]
+        if bar["record_date"] == "2026-01-09"
+    )
+    assert prior_bar["bar"]["indicators"] == {
+        "ma20": 96.5,
+        "ma60": 91.5,
+        "rsi14": 58.2,
+        "volume_ratio": 1.15,
+    }
+
+
+def test_market_gap_only_marks_affected_dimension_and_preserves_record_quality():
+    review = _build_review_framework(
+        labels=["insufficient_data"],
+        lifecycle_metrics={"total_realized_pnl": -100, "total_return_pct_on_weighted_cost": -1},
+        next_operation_rules=[],
+        source_refs=["data_quality.insufficient_data"],
+        decision_context_insufficient=False,
+        evidence_gaps=["full_exit_2026-01-11_ma60"],
+    )
+
+    assert review["dimensions"]["entry"]["status"] == "not_observed"
+    assert review["dimensions"]["position_management"]["status"] == "not_observed"
+    assert review["dimensions"]["risk_exit"]["status"] == "insufficient"
+    assert review["dimensions"]["record_quality"]["status"] == "sufficient"
+    assert review["dimensions"]["record_quality"]["summary"] == (
+        "操作原因、事件與計畫紀錄可用；技術行情缺口只限制受影響的判讀面向。"
+    )
+    assert [item["title"] for item in review["feedback"]["next_actions"]] == ["系統補齊技術行情"]
+
+
 def test_entry_sequence_add_entry_count_is_zero_for_initial_entry_only():
     result, _ = build_position_lifecycle_analysis_from_rows(
         position_group_id="group-life",
@@ -361,6 +484,58 @@ def test_point_in_time_indicators_do_not_use_future_market_data():
     assert snapshot["ma60"] == pytest.approx(33.5)
     assert snapshot["rsi14"] == pytest.approx(100)
     assert snapshot["event_price_vs_ma20_pct"] == pytest.approx(19.6262)
+
+
+def test_lifecycle_prefers_longer_prior_price_history_over_short_same_day_history():
+    prior_closes = [80 + index * 0.25 for index in range(80)]
+    short_same_day_closes = [98, 99, 100]
+    rows = [
+        _daily_radar_row(
+            date(2026, 1, 9),
+            prior_closes,
+            ma20=96.5,
+            ma60=91.5,
+            rsi14=58.2,
+            volume_ratio=1.15,
+        ),
+        _daily_radar_row(
+            date(2026, 1, 10),
+            short_same_day_closes,
+            ma20=99,
+            ma60=99,
+            rsi14=50,
+            volume_ratio=1,
+        ),
+    ]
+
+    values = _point_in_time_values(rows, date(2026, 1, 10))
+
+    assert values["closes"] == prior_closes
+
+
+def test_lifecycle_does_not_use_indicator_snapshot_without_completed_indicator_date():
+    row = _daily_radar_row(
+        date(2026, 1, 9),
+        [90 + index for index in range(10)],
+        ma20=95,
+        ma60=90,
+        rsi14=60,
+        volume_ratio=1.5,
+    )
+    row.technical["data_dates"]["technical_indicators"] = "2026-01-10"
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[_event(1, "initial_entry", date(2026, 1, 10), 100, 10)],
+        market_rows=[row],
+    )
+
+    snapshot = result["event_indicator_snapshots"][0]
+    assert snapshot["ma20"] is None
+    assert snapshot["ma60"] is None
+    assert snapshot["rsi14"] is None
+    assert snapshot["volume_ratio"] is None
+    assert "initial_entry_2026-01-10_volume_ratio" in result["data_quality"]["insufficient_data"]
 
 
 def test_lifecycle_same_day_stale_snapshot_keeps_last_completed_bar():
@@ -512,7 +687,7 @@ def test_insufficient_market_data_preserves_ledger_metrics_and_marks_context_ins
     assert review["process_quality"]["status"] == "mixed"
     assert review["feedback"]["keep"][0]["label"] == "disciplined_scale_out"
     assert review["feedback"]["improve"] == []
-    assert review["feedback"]["next_actions"][0]["title"] == "先補齊證據"
+    assert review["feedback"]["next_actions"][0]["title"] == "系統補齊技術行情"
 
 
 def test_review_framework_with_only_insufficient_evidence_gives_capture_feedback():
@@ -530,7 +705,7 @@ def test_review_framework_with_only_insufficient_evidence_gives_capture_feedback
     assert review["feedback"]["keep"] == []
     assert review["feedback"]["improve"] == []
     assert [item["title"] for item in review["feedback"]["next_actions"]] == [
-        "先補齊證據",
+        "先補交易紀錄",
         "先補操作計畫",
     ]
 
@@ -888,7 +1063,7 @@ def test_real_market_evidence_gaps_remain_insufficient_instead_of_unclassified()
     assert classification["primary_label"] == "insufficient_data"
     assert "insufficient_data" in classification["labels"]
     assert any(
-        "部分事件、ledger 或市場證據不足" in caveat["text"]
+        "事件當下的技術行情覆蓋不足" in caveat["text"]
         for caveat in classification["caveats"]
     )
 

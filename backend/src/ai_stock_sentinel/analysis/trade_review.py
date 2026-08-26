@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
 from ai_stock_sentinel.analysis.review_sources import (
+    completed_price_history_closes,
+    completed_technical_indicator_values,
     completed_trailing_series,
     market_snapshot_payload,
     market_snapshot_regressed,
@@ -792,11 +794,18 @@ def _build_point_in_time_indicators(
     point_values = _point_in_time_values(rows, as_of)
     valid_closes = point_values["closes"]
     valid_volumes = point_values["volumes"]
+    completed_indicators = _completed_indicator_snapshot(rows, as_of)
 
     result: dict[str, Any] = {"as_of_date": _date_to_iso(as_of)}
     ma20 = ma(valid_closes, 20)
+    if ma20 is None:
+        ma20 = completed_indicators.get("ma20")
     ma60 = ma(valid_closes, 60)
+    if ma60 is None:
+        ma60 = completed_indicators.get("ma60")
     rsi14 = calc_rsi(valid_closes, period=14)
+    if rsi14 is None:
+        rsi14 = completed_indicators.get("rsi14")
     result["ma20"] = _round_price(ma20)
     result["ma60"] = _round_price(ma60)
     result["rsi14"] = _round_pct(rsi14)
@@ -808,11 +817,19 @@ def _build_point_in_time_indicators(
         avg_volume_20 = sum(valid_volumes[-20:]) / 20
         if avg_volume_20:
             volume_ratio = valid_volumes[-1] / avg_volume_20
+    if volume_ratio is None:
+        volume_ratio = completed_indicators.get("volume_ratio")
     result["volume_ratio"] = _round_pct(volume_ratio)
 
+    resolved_values = {
+        "ma20": ma20,
+        "ma60": ma60,
+        "rsi14": rsi14,
+        "volume_ratio": volume_ratio,
+    }
     required_lengths = {"ma20": 20, "ma60": 60, "rsi14": 15, "volume_ratio": 20}
     for key, required_length in required_lengths.items():
-        if len(valid_closes if key != "volume_ratio" else valid_volumes) < required_length:
+        if resolved_values[key] is None:
             _add_insufficient(
                 data_quality,
                 f"{label}_{key}",
@@ -1124,6 +1141,15 @@ def _latest_row_at_or_before(rows: list[StockRawData], as_of: date | None) -> St
 
 
 def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[str, Any]:
+    if as_of is None:
+        return {
+            "closes": [],
+            "ohlc_closes": [],
+            "highs": [],
+            "lows": [],
+            "volumes": [],
+            "from_snapshot": False,
+        }
     same_day_row = next((row for row in reversed(rows) if row.record_date == as_of), None)
     same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
     if same_day_closes:
@@ -1153,6 +1179,18 @@ def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[
                 return {**completed, "from_snapshot": True}
 
     point_rows = _rows_up_to(rows, as_of)
+    same_day_history_closes = completed_price_history_closes(
+        same_day_row.technical if same_day_row is not None else None,
+        as_of,
+    )
+    prior_history_closes = completed_price_history_closes(
+        latest_row.technical if latest_row is not None else None,
+        as_of,
+    )
+    price_history_closes = max(
+        (same_day_history_closes, prior_history_closes),
+        key=len,
+    )
     aligned_ohlc = [
         (close, high, low)
         for row in point_rows
@@ -1160,13 +1198,25 @@ def _point_in_time_values(rows: list[StockRawData], as_of: date | None) -> dict[
         if close is not None and high is not None and low is not None
     ]
     return {
-        "closes": [close for row in point_rows for close in [_close(row)] if close is not None],
+        "closes": price_history_closes or [
+            close for row in point_rows for close in [_close(row)] if close is not None
+        ],
         "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
         "highs": [high for _close_value, high, _low_value in aligned_ohlc],
         "lows": [low for _close_value, _high_value, low in aligned_ohlc],
         "volumes": [volume for row in point_rows for volume in [_volume(row)] if volume is not None],
         "from_snapshot": False,
     }
+
+
+def _completed_indicator_snapshot(rows: list[StockRawData], as_of: date | None) -> dict[str, float]:
+    if as_of is None:
+        return {}
+    latest_row = _latest_row_at_or_before(rows, as_of)
+    return completed_technical_indicator_values(
+        latest_row.technical if latest_row is not None else None,
+        as_of,
+    )
 
 
 def _technical_section(row: StockRawData, key: str) -> dict[str, Any]:

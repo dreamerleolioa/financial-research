@@ -3880,6 +3880,7 @@ def test_trade_review_cache_uses_distinct_success_and_failure_ttls(
     review = SimpleNamespace(
         review_version="trade-review-v3",
         evidence_payload={
+            "ruleset_version": portfolio_router_module.TRADE_REVIEW_RULESET_VERSION,
             "trade": portfolio_router_module.trade_review_source_payload(item),
             "market_snapshot": {
                 "fetched_at": (now - age).isoformat(),
@@ -3889,6 +3890,24 @@ def test_trade_review_cache_uses_distinct_success_and_failure_ttls(
     )
 
     assert portfolio_router_module._trade_review_cache_reusable(review, item, now=now) is expected
+
+
+def test_trade_review_cache_rejects_stale_ruleset():
+    now = datetime(2026, 8, 4, 8, tzinfo=timezone.utc)
+    item = _trade_review_item()
+    review = SimpleNamespace(
+        review_version="trade-review-v3",
+        evidence_payload={
+            "ruleset_version": "trade-review-v3",
+            "trade": portfolio_router_module.trade_review_source_payload(item),
+            "market_snapshot": {
+                "fetched_at": (now - timedelta(minutes=1)).isoformat(),
+                "quality": {"row_count": 80, "missing_reason": None},
+            },
+        },
+    )
+
+    assert portfolio_router_module._trade_review_cache_reusable(review, item, now=now) is False
 
 
 def test_trade_review_fresh_fallback_does_not_supersede_better_provider_snapshot():
@@ -3903,6 +3922,7 @@ def test_trade_review_fresh_fallback_does_not_supersede_better_provider_snapshot
     existing = SimpleNamespace(
         review_version="trade-review-v3",
         evidence_payload={
+            "ruleset_version": portfolio_router_module.TRADE_REVIEW_RULESET_VERSION,
             "trade": portfolio_router_module.trade_review_source_payload(item),
             "market_snapshot": {
                 "fetched_at": now.isoformat(),
@@ -3935,6 +3955,7 @@ def test_trade_review_newer_saved_snapshot_supersedes_older_equal_quality_fetch(
     existing = SimpleNamespace(
         review_version="trade-review-v3",
         evidence_payload={
+            "ruleset_version": portfolio_router_module.TRADE_REVIEW_RULESET_VERSION,
             "trade": portfolio_router_module.trade_review_source_payload(item),
             "market_snapshot": {"fetched_at": now.isoformat(), "quality": quality},
         },
@@ -4179,7 +4200,7 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     assert data["id"] == 9
     assert data["review_version"] == "position-lifecycle-review-v4"
     assert data["review_result"] == _lifecycle_payload()[0]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.1"
     assert data["evidence_payload"]["source_fingerprint"] != legacy_fingerprint
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
@@ -4230,7 +4251,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "event"
     assert data["evidence_payload"]["events"] == [{"event_type": "full_exit"}]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.1"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4296,7 +4317,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "plan"
     assert data["evidence_payload"]["plan"] == {"planned_holding_period": "long_term"}
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.1"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4626,6 +4647,7 @@ def test_create_trade_review_rechecks_freshness_after_provider_fetch(
         saved = db.execute(select(TradeReview).where(TradeReview.portfolio_id == item.id)).scalar_one()
         saved.review_result = {"generation": "fresh-from-concurrent-request"}
         saved.evidence_payload = {
+            "ruleset_version": portfolio_router_module.TRADE_REVIEW_RULESET_VERSION,
             "trade": trade_payload,
             "market_snapshot": {
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -4670,7 +4692,7 @@ def test_create_trade_review_upgrades_v2_review_using_current_sources(
     assert resp.status_code == 200
     assert resp.json()["review_version"] == "trade-review-v3"
     assert resp.json()["review_result"] != {"existing": True}
-    assert resp.json()["evidence_payload"]["ruleset_version"] == "trade-review-v3"
+    assert resp.json()["evidence_payload"]["ruleset_version"] == "trade-review-ruleset-v3.1"
 
 
 def test_create_trade_review_rebuilds_legacy_review_version_in_place(

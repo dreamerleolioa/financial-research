@@ -67,9 +67,10 @@ from ai_stock_sentinel.user_models.user import User
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 TRADE_REVIEW_VERSION = "trade-review-v3"
+TRADE_REVIEW_RULESET_VERSION = "trade-review-ruleset-v3.1"
 KNOWN_TRADE_REVIEW_VERSIONS = {"trade-review-v1", "trade-review-v2", TRADE_REVIEW_VERSION}
 POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v4"
-POSITION_LIFECYCLE_RULESET_VERSION = "position-lifecycle-ruleset-v4.0"
+POSITION_LIFECYCLE_RULESET_VERSION = "position-lifecycle-ruleset-v4.1"
 KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
     "position-lifecycle-review-v1",
     "position-lifecycle-review-v2",
@@ -572,6 +573,8 @@ def _trade_review_cache_reusable(
     if review.review_version != TRADE_REVIEW_VERSION:
         return False
     evidence = review.evidence_payload if isinstance(review.evidence_payload, dict) else {}
+    if evidence.get("ruleset_version") != TRADE_REVIEW_RULESET_VERSION:
+        return False
     if evidence.get("trade") != trade_review_source_payload(item):
         return False
     market = evidence.get("market_snapshot")
@@ -1052,7 +1055,7 @@ def create_trade_review(
             return _serialize_trade_review(existing_review)
         source_fingerprint = attach_source_fingerprint(
             evidence_payload,
-            ruleset_version=TRADE_REVIEW_VERSION,
+            ruleset_version=TRADE_REVIEW_RULESET_VERSION,
         )
         if (
             existing_review
