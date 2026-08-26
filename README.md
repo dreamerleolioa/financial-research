@@ -36,7 +36,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
 - `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入，並在列表內單筆或一鍵批次快速查看技術指標與複製摘要；它不代表進場、部位或交易紀錄。
-- `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。結案事件可明確保存原因、計畫遵循與信心水準；group lifecycle review v3 以 `unclassified` 區分「未命中既定模式」與真正資料不足。結案回顧採 closed-only、以前一 completed bar、source fingerprint、版本唯讀保護與短 transaction 並行鎖為契約；review provider 補行情具 timeout／容量／TTL／可用 final trading-bar、Close 專屬日期、完整日期集合與持有期間關鍵日期 coverage 邊界，同一 review refresh 採 process-local non-blocking single-flight（重複 refresh 回 `409`／`Retry-After`，backend 透過 CORS 暴露該 header，frontend 依 header 有界重試），外部 I/O 不持有 DB lock 且不寫回正式 `StockRawData`。相同 market content 的成功 refresh 仍會推進 freshness；OHLC 先依各自日期排除事件日，再以共同交易日對齊後計算，波動分類至少需要 20 根共同交易日 OHLC，full-exit 當日收盤不納入已持有路徑；compact lifecycle evidence 遇到同日 partial outer bar 時會逐欄合併非空值，不得覆寫 trailing series 已提供的 OHLCV；provider 少於 60 根可用交易 bar 時標記 coverage insufficient，保留 24 小時後重試，真正抓取失敗或空回應仍採 5 分鐘短 TTL。Lifecycle 計算與 evidence 都只讀取 final 行情，事後補填或進場後已修改的 plan 也不參與歷史違規或決策品質評分。
+- `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。結案事件可明確保存原因、計畫遵循與信心水準；group lifecycle review v4 以獨立 `outcome`、`process_quality` 與四面向狀態區分交易結果、操作品質與真正資料不足。結案回顧採 closed-only、事件日前 completed data、source fingerprint、版本唯讀保護與短 transaction 並行鎖為契約。Single Trade Review 的 request-scoped provider refresh 具 timeout／容量／TTL／final trading-bar coverage 邊界，重複 refresh 回 `409`／`Retry-After`，外部 I/O 不持有 DB lock 且不寫回正式 `StockRawData`；Lifecycle Review 不另抓 provider，只讀 Daily Radar 已保存的 final `price_history` 與 completed indicators。OHLC 先依各自日期排除事件日，再以共同交易日對齊；full-exit 當日收盤不納入已持有路徑。事後補填或進場後已修改的 plan 不參與歷史違規或決策品質評分，市場行情缺口也不得被描述成使用者未記錄原因。
 - `/daily-radar`：盤後觀察雷達，內部 workflow 產生 multi-track universe、刷新試驗版 Daily AVWAP evidence snapshot、歸檔官方未還原市場行情，並以 adjusted selected-symbol OHLCV 執行 deterministic Stage 1/2 scoring；官方 unadjusted archive 不直接取代 adjusted technical history。流程保存 run、candidate、score breakdown、replayable evidence 與 forward validation 結果。
 - `phase1_avwap`：試驗版 Daily AVWAP 觀察層，針對 active holdings、watchlist 與 Daily Radar selected candidates 建立日頻 AVWAP snapshot。Snapshot 是全域市場 cache，只保存 market bars / generic anchors / data quality，不保存使用者持股 entry date 或 avg cost；Portfolio risk summary 會在 read projection 時用 portfolio domain 的持股資料計算 holding-specific state。此功能只透過既有 Analyze、Portfolio risk summary、Daily Radar response 顯示，不新增 public endpoint、不改 Daily Radar scoring。
 - `shared_background_contexts`：共用背景脈絡 cache，保存 weekly major holders、lending、full margin 等背景資料。`official_first` 模式下，融資融券與借券優先使用 TWSE/TPEX 官方整表資料，只有 dataset 失敗才退回 FinMind；各 consumer 仍只以 read/reference 方式使用。
@@ -339,7 +339,10 @@ pnpm dev
 
 - 獨立頁面保留結案紀錄與歷史診斷，不再把出場等同刪除追蹤
 - 期間篩選：1天 / 1週 / 1月 / 1季 / 1年，並顯示篩選後的 `已實現損益` 總計
-- Trade Review 與 Lifecycle Review 使用原始 final rows 計算，但持久化的 `StockRawData` market evidence 會依交易日 compact；所有 dated trailing series 會先於 outer bars 合併，同日重疊的 trailing history 以較新非空值更新並保留其缺少欄位，partial outer bar 則只能補缺，避免盤中 outer quote 覆蓋治理使用的 completed OHLCV、重複保存整段歷史或扭曲 source fingerprint
+- 完整交易復盤顯示在固定視窗中，標題、交易識別與上一筆／下一筆控制不隨內容捲動；只有復盤內容區捲動，關閉後焦點回到目前交易的觸發按鈕
+- Trade Review 可建立 request-scoped provider snapshot；Lifecycle Review 不另行抓取 provider，而是唯讀使用 Daily Radar 每日盤後保存的 final `StockRawData`。事件日前指標先使用 completed `recent_*`，不足時回退到有日期的 `technical.price_history`，仍不足才使用資料日早於事件日的 persisted `technical.indicators`
+- Trade Review 與 Lifecycle Review 的持久化 market evidence 會依交易日 compact；所有 dated trailing series 先於 outer bars 合併，同日重疊歷史以較新非空值更新並保留缺少欄位，partial outer bar 只能補缺。`price_history` 與可作 fallback 的 MA20、MA60、RSI14、量比也納入 evidence 與 source fingerprint，避免畫面可用來源和保存來源不一致
+- 市場行情缺口只讓受影響的進場、部位管理或風險出場面向顯示證據不足，不得把已記錄的操作原因誤判為紀錄品質不足；資料品質欄位會顯示事件類型、事件日期與缺少的指標
 
 **Daily Radar（`/daily-radar`）**
 

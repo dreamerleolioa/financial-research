@@ -287,6 +287,13 @@ class PositionState(TypedDict, total=False):
 | 風險控制參考   | `stop_loss`（靜態相容欄位） | **`risk_control_reference`**       |
 | 新增元件       | —                          | **損益對照卡**、**紀律觸發框**     |
 
+### 6.4 已結案完整交易復盤
+
+- `/portfolio/closed` 以 `position_group_id` 顯示完整生命週期，不以單一出場 row 作為主要交易識別。
+- 完整交易復盤使用 fixed viewport dialog。標的、日期範圍、目前筆數與上一筆／下一筆控制固定在 header，只有復盤內容區捲動；背景頁面鎖定且不可互動，Esc 關閉後焦點回到目前交易的觸發按鈕。
+- `outcome` 與 `process_quality` 必須分開呈現。損益結果不能直接代表操作品質；四面向品質、保持做法、改善事項與下次規則都必須保留來源引用。
+- 技術行情缺口與操作紀錄缺口必須分開。市場缺口顯示事件類型、日期與缺少指標，且只限制依賴該資料的面向；已保存的原因、事件與 plan 不得因此被標成紀錄品質不足。
+
 ---
 
 ## 7. 驗收標準（Definition of Done）
@@ -297,6 +304,8 @@ class PositionState(TypedDict, total=False):
 - 當 `flow_label = distribution` 且獲利中，`exit_reason` 不得為 null
 - 前端損益對照卡正確標註成本價、防守位、支撐壓力位
 - 前端主要呈現使用 `risk_state`、`discipline_triggers`、`observation_conditions` 與 `risk_control_reference`，不得把 `Hold` / `Trim` / `Exit` 當作 primary copy
+- 已結案復盤在 375px 與桌面 viewport 都不得造成頁面橫向溢位；內容捲到底時 header 與交易切換仍可見，上一筆／下一筆不需要先回到清單
+- Lifecycle Review 必須優先使用事件日前已保存的 Daily Radar `price_history` 與 completed indicators，禁止使用事件日或未來技術資料；市場缺口不得誤判為使用者沒有記錄操作原因
 - 所有技術指標數值與籌碼數據沿用現有 `calculate_technical_indicators` 與 `fetch_institutional_flow` 工具；技術面包含 ATR / MFI / Donchian，籌碼面包含連續買賣超、主導買賣方、融資融券、借券、外資持股與大戶/散戶持股結構（資料可得時）
 
 ---
