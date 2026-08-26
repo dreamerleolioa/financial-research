@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.analysis.position_lifecycle import (
+    _build_review_framework,
     _lifecycle_tier,
     _next_operation_rules,
     _point_in_time_values,
@@ -506,6 +507,32 @@ def test_insufficient_market_data_preserves_ledger_metrics_and_marks_context_ins
     assert result["lifecycle_review"]["classification"]["primary_label"] == "insufficient_data"
     assert "insufficient_data" in result["lifecycle_review"]["classification"]["labels"]
     assert "premature_scale_out" not in result["lifecycle_review"]["classification"]["labels"]
+    review = result["lifecycle_review"]
+    assert review["outcome"]["status"] == "loss"
+    assert review["process_quality"]["status"] == "mixed"
+    assert review["feedback"]["keep"][0]["label"] == "disciplined_scale_out"
+    assert review["feedback"]["improve"] == []
+    assert review["feedback"]["next_actions"][0]["title"] == "先補齊證據"
+
+
+def test_review_framework_with_only_insufficient_evidence_gives_capture_feedback():
+    review = _build_review_framework(
+        labels=["insufficient_data"],
+        lifecycle_metrics={"total_realized_pnl": None, "total_return_pct_on_weighted_cost": None},
+        next_operation_rules=[],
+        source_refs=["data_quality.insufficient_data"],
+        decision_context_insufficient=True,
+        evidence_gaps=["event_facts"],
+    )
+
+    assert review["outcome"]["status"] == "insufficient"
+    assert review["process_quality"]["status"] == "insufficient"
+    assert review["feedback"]["keep"] == []
+    assert review["feedback"]["improve"] == []
+    assert [item["title"] for item in review["feedback"]["next_actions"]] == [
+        "先補齊證據",
+        "先補操作計畫",
+    ]
 
 
 def test_lifecycle_review_classifies_phase_d_patterns_and_template_refs():
@@ -543,6 +570,21 @@ def test_lifecycle_review_classifies_phase_d_patterns_and_template_refs():
     assert any("降低曝險或結案觸發條件" in item["text"] for item in review["next_operation_rules"])
     assert any("資料品質" in item["text"] for item in review["data_quality_notes"])
     assert any("發生 initial_entry" in item["text"] for item in review["event_level_evidence"])
+    assert review["outcome"]["status"] == "loss"
+    assert review["outcome"]["label"] == "結果虧損"
+    assert review["process_quality"]["status"] == "mixed"
+    assert review["process_quality"]["label"] == "流程有好有壞"
+    assert set(review["dimensions"]) == {"entry", "position_management", "risk_exit", "record_quality"}
+    assert review["dimensions"]["entry"]["status"] == "needs_review"
+    assert review["dimensions"]["risk_exit"]["status"] == "mixed"
+    assert {item["label"] for item in review["feedback"]["keep"]} >= {
+        "disciplined_scale_out",
+        "risk_reduction_exit",
+    }
+    assert {item["label"] for item in review["feedback"]["improve"]} >= {
+        "averaging_down_into_weakness",
+        "late_scale_out",
+    }
 
 
 def test_lifecycle_review_includes_backfilled_plan_provenance_caveat():
@@ -881,6 +923,12 @@ def test_optional_planned_r_gaps_do_not_override_constructive_scale_out():
     next_rule_text = result["lifecycle_review"]["next_operation_rules"][0]["text"]
     assert "已辨識出可追溯的正向部位管理模式" in next_rule_text
     assert "未命中既定模式" not in next_rule_text
+    review = result["lifecycle_review"]
+    assert review["outcome"]["status"] == "profit"
+    assert review["process_quality"]["status"] == "disciplined"
+    assert review["process_quality"]["risk_labels"] == []
+    assert review["feedback"]["improve"] == []
+    assert review["feedback"]["keep"][0]["label"] == "disciplined_scale_out"
 
 
 @pytest.mark.parametrize(

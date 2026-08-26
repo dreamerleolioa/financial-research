@@ -1,6 +1,7 @@
 import { ApiError, requestJson } from "./apiClient";
 import type {
   ClosedPortfolioItem,
+  ClosedPortfolioLifecycle,
   PositionGroupEventsResponse,
   PositionLifecycleReviewResponse,
   TradeReviewResponse,
@@ -13,6 +14,10 @@ const TRADE_REVIEW_MAX_RETRY_SECONDS = 5;
 
 export function fetchClosedPortfolioItems(): Promise<ClosedPortfolioItem[]> {
   return requestJson<ClosedPortfolioItem[]>("/portfolio/closed");
+}
+
+export function fetchClosedPortfolioLifecycles(): Promise<ClosedPortfolioLifecycle[]> {
+  return requestJson<ClosedPortfolioLifecycle[]>("/portfolio/closed-lifecycles");
 }
 
 export async function fetchOrCreateTradeReview(portfolioId: number): Promise<TradeReviewResponse> {

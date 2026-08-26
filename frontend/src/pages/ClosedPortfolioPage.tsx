@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import { setAsyncMapValue } from "../lib/asyncMap";
 import {
   createPositionLifecycleReview,
-  fetchClosedPortfolioItems,
+  fetchClosedPortfolioLifecycles,
   fetchOrCreateTradeReview,
   fetchPositionGroupEvents,
 } from "../lib/closedPortfolioApi";
 import { formatPrice } from "../lib/formatters";
 import type {
   ClosedPortfolioItem,
+  ClosedPortfolioLifecycle,
   LifecycleTextItem,
   PositionEvent,
   PositionGroupEventsResponse,
@@ -45,19 +45,7 @@ interface PeriodOption {
   days: number;
 }
 
-interface ClosedPortfolioGroup {
-  position_group_id: string;
-  symbol: string;
-  name?: string | null;
-  entry_date: string;
-  entry_price: number;
-  totalClosedQuantity: number;
-  totalRealizedPnl: number;
-  exitBatchCount: number;
-  items: ClosedPortfolioItem[];
-}
-
-interface ReviewModalProps {
+interface ExitDecisionReviewProps {
   item: ClosedPortfolioItem;
   review: TradeReviewResponse | null;
   loading: boolean;
@@ -67,16 +55,15 @@ interface ReviewModalProps {
   onClose: () => void;
 }
 
-interface TimelineModalProps {
-  group: ClosedPortfolioGroup;
+interface LifecycleLedgerProps {
+  group: ClosedPortfolioLifecycle;
   timeline: PositionGroupEventsResponse | null;
   loading: boolean;
   error: string | null;
-  onClose: () => void;
 }
 
-interface LifecycleReviewModalProps {
-  group: ClosedPortfolioGroup;
+interface LifecycleReviewWorkspaceProps {
+  group: ClosedPortfolioLifecycle;
   review: PositionLifecycleReviewResponse | null;
   loading: boolean;
   error: string | null;
@@ -396,37 +383,6 @@ function isWithinPeriod(exitDate: string, days: number, today: Date): boolean {
   const start = new Date(today);
   start.setDate(today.getDate() - days + 1);
   return date >= start && date <= today;
-}
-
-function groupClosedItems(items: ClosedPortfolioItem[]): ClosedPortfolioGroup[] {
-  const groups: ClosedPortfolioGroup[] = [];
-  const groupMap = new Map<string, ClosedPortfolioGroup>();
-
-  for (const item of items) {
-    let group = groupMap.get(item.position_group_id);
-    if (!group) {
-      group = {
-        position_group_id: item.position_group_id,
-        symbol: item.symbol,
-        name: item.name,
-        entry_date: item.entry_date,
-        entry_price: item.entry_price,
-        totalClosedQuantity: 0,
-        totalRealizedPnl: 0,
-        exitBatchCount: 0,
-        items: [],
-      };
-      groupMap.set(item.position_group_id, group);
-      groups.push(group);
-    }
-
-    group.totalClosedQuantity += item.exit_quantity;
-    group.totalRealizedPnl += item.realized_pnl;
-    group.exitBatchCount += 1;
-    group.items.push(item);
-  }
-
-  return groups;
 }
 
 function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
@@ -1047,9 +1003,7 @@ function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewRe
   const lifecycleReview = review.review_result.lifecycle_review;
   const classification = lifecycleReview?.classification;
   const tier = classification?.primary_label === "unclassified" ? undefined : classification?.tier;
-  const secondaryLabels = (classification?.labels ?? []).filter(
-    (label) => label !== classification?.primary_label,
-  );
+  const secondaryLabels = (classification?.labels ?? []).filter((label) => label !== classification?.primary_label);
 
   return (
     <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -1095,6 +1049,116 @@ function LifecycleOverallSection({ review }: { review: PositionLifecycleReviewRe
         </div>
       )}
     </article>
+  );
+}
+
+const REVIEW_STATUS_STYLE: Record<string, string> = {
+  profit:
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  disciplined:
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  strength:
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  sufficient:
+    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+  loss: "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300",
+  needs_review:
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  mixed: "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300",
+  breakeven: "border-border bg-card text-text-secondary",
+  insufficient:
+    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  not_observed: "border-border bg-card text-text-secondary",
+};
+
+const REVIEW_DIMENSION_STATUS_LABEL: Record<string, string> = {
+  strength: "可保持",
+  needs_review: "需改善",
+  mixed: "有好有壞",
+  insufficient: "證據不足",
+  not_observed: "未命中模式",
+  sufficient: "紀錄足夠",
+};
+
+function LifecycleDecisionSummary({ review }: { review: PositionLifecycleReviewResponse }) {
+  const lifecycleReview = review.review_result.lifecycle_review;
+  const outcome = lifecycleReview?.outcome;
+  const processQuality = lifecycleReview?.process_quality;
+  const dimensions = lifecycleReview?.dimensions;
+  const feedback = lifecycleReview?.feedback;
+  if (!outcome || !processQuality || !dimensions || !feedback) return null;
+
+  const feedbackGroups = [
+    { key: "keep", title: "做得好，繼續保持", items: feedback.keep, tone: "text-emerald-700 dark:text-emerald-300" },
+    { key: "improve", title: "需要改善", items: feedback.improve, tone: "text-amber-700 dark:text-amber-300" },
+    { key: "next", title: "下次直接照做", items: feedback.next_actions, tone: "text-accent" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 lg:grid-cols-2">
+        <article className={`rounded-xl border p-4 ${REVIEW_STATUS_STYLE[outcome.status]}`}>
+          <p className="text-xs font-semibold tracking-[0.12em] uppercase">交易結果</p>
+          <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
+            <h3 className="text-lg font-semibold">{outcome.label}</h3>
+            <p className="text-xl font-semibold tabular-nums">
+              {getSignedRoundedMoneyText(outcome.total_realized_pnl)}
+              <span className="ml-2 text-sm">{getSignedPercentText(outcome.total_return_pct)}</span>
+            </p>
+          </div>
+          <p className="mt-2 text-sm leading-relaxed opacity-90">{outcome.summary}</p>
+        </article>
+        <article className={`rounded-xl border p-4 ${REVIEW_STATUS_STYLE[processQuality.status]}`}>
+          <p className="text-xs font-semibold tracking-[0.12em] uppercase">操作流程</p>
+          <h3 className="mt-2 text-lg font-semibold">{processQuality.label}</h3>
+          <p className="mt-2 text-sm leading-relaxed opacity-90">{processQuality.summary}</p>
+        </article>
+      </div>
+
+      <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h3 className="text-sm font-semibold text-text-primary">交易品質四面向</h3>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {Object.entries(dimensions).map(([key, dimension]) => (
+            <div key={key} className="rounded-lg border border-border-subtle bg-surface px-3 py-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-medium text-text-primary">{dimension.label}</p>
+                <span
+                  className={`rounded-md border px-2 py-0.5 text-[0.6875rem] font-medium ${REVIEW_STATUS_STYLE[dimension.status]}`}
+                >
+                  {REVIEW_DIMENSION_STATUS_LABEL[dimension.status] ?? dimension.status}
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-text-muted">{dimension.summary}</p>
+            </div>
+          ))}
+        </div>
+      </article>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        {feedbackGroups.map((group) => (
+          <article key={group.key} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <h3 className={`text-sm font-semibold ${group.tone}`}>{group.title}</h3>
+            {group.items.length > 0 ? (
+              <div className="mt-3 space-y-3">
+                {group.items.map((item, index) => (
+                  <div key={`${group.key}-${item.label ?? index}`} className="border-l-2 border-border pl-3">
+                    <p className="text-sm font-medium text-text-primary">{item.title}</p>
+                    {item.observation && (
+                      <p className="mt-1 text-xs leading-relaxed text-text-muted">{item.observation}</p>
+                    )}
+                    <p className="mt-1 text-sm leading-relaxed text-text-secondary">{item.action}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm leading-relaxed text-text-faint">
+                {group.key === "improve" ? "目前沒有命中具體的改善規則。" : "目前沒有足夠證據產生此類回饋。"}
+              </p>
+            )}
+          </article>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1220,10 +1284,6 @@ function LifecycleEventTimeline({
                     {formatPositionEventSourceHelper(event.source)}
                   </p>
                 </div>
-                <div className="rounded-lg border border-border-subtle bg-card px-3 py-2 text-left md:text-right">
-                  <p className="text-xs text-text-faint">Event Key</p>
-                  <p className="mt-1 font-mono text-sm font-medium text-text-primary">{event.event_key}</p>
-                </div>
               </div>
 
               <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -1294,325 +1354,249 @@ function LifecycleEventTimeline({
   );
 }
 
-function ReviewModal({ item, review, loading, error, copyStatus, onCopyEvidence, onClose }: ReviewModalProps) {
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const mouseDownOnBackdrop = useRef(false);
-
-  function handleBackdropMouseDown(event: MouseEvent<HTMLDivElement>) {
-    mouseDownOnBackdrop.current = event.target === backdropRef.current;
-  }
-
-  function handleBackdropClick(event: MouseEvent<HTMLDivElement>) {
-    if (mouseDownOnBackdrop.current && event.target === backdropRef.current) onClose();
-    mouseDownOnBackdrop.current = false;
-  }
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
+function ExitDecisionReview({
+  item,
+  review,
+  loading,
+  error,
+  copyStatus,
+  onCopyEvidence,
+  onClose,
+}: ExitDecisionReviewProps) {
   const result = review?.review_result;
 
   return (
-    <div
-      ref={backdropRef}
-      onMouseDown={handleBackdropMouseDown}
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
+    <section
+      id="closed-exit-decision"
+      aria-label={`${portfolioDisplayName(item)} 個別批次復盤`}
+      className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${portfolioDisplayName(item)} 檢討分析`}
-        className="max-h-[92dvh] w-full max-w-3xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
-      >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
-          <div>
-            <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 檢討分析</p>
-            <p className="mt-1 text-xs text-text-faint">
-              {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜{" "}
-              {getSignedRoundedMoneyText(item.realized_pnl)}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ui-icon-button shrink-0 border border-border"
-            aria-label="關閉檢討分析"
+      <div className="flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
+        <div>
+          <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 本次處分</p>
+          <p className="mt-1 text-xs text-text-faint">
+            {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜{" "}
+            {getSignedRoundedMoneyText(item.realized_pnl)}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="ui-icon-button shrink-0 border border-border"
+          aria-label="收合個別批次復盤"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-5 w-5"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                fillRule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-        </div>
-
-        <div className="space-y-4 p-5">
-          {loading && (
-            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
-              <p className="text-sm font-medium text-text-primary">載入檢討分析中</p>
-              <p className="text-xs text-text-muted">若尚未產生，會建立這筆結案批次的檢討。</p>
-            </div>
-          )}
-
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
-              {error}
-            </div>
-          )}
-
-          {review && result && (
-            <>
-              <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-xs font-medium text-text-muted">檢討版本</p>
-                  <p className="mt-1 text-sm text-text-primary">{review.review_version}</p>
-                </div>
-                <button type="button" onClick={onCopyEvidence} className="ui-button-secondary">
-                  {copyStatus === "success" ? "已複製指標資料" : copyStatus === "error" ? "複製失敗" : "複製指標資料"}
-                </button>
-              </div>
-
-              <UserReadableConclusionCard conclusion={result.user_readable_conclusion} />
-              <TradeResultSection metrics={result.trade_result} symbol={item.symbol} />
-              <ReviewSectionCard title="進場檢討" section={result.entry_review} />
-              <ReviewSectionCard title="持有期間檢討" section={result.holding_review} />
-              <ReviewSectionCard title="結案與風險處理檢討" section={result.exit_review} />
-              <ReviewSectionCard title="整體執行紀律檢討" section={result.operation_review} />
-              {hasDataQualityPrompt(result.data_quality) && result.data_quality && (
-                <DataQualitySection dataQuality={result.data_quality} />
-              )}
-            </>
-          )}
-        </div>
+            <path
+              fillRule="evenodd"
+              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
       </div>
-    </div>
+
+      <div className="space-y-4 p-5">
+        {loading && (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
+            <p className="text-sm font-medium text-text-primary">載入檢討分析中</p>
+            <p className="text-xs text-text-muted">若尚未產生，會建立這筆結案批次的檢討。</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+            {error}
+          </div>
+        )}
+
+        {review && result && (
+          <>
+            <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-medium text-text-muted">檢討版本</p>
+                <p className="mt-1 text-sm text-text-primary">{review.review_version}</p>
+              </div>
+              <button type="button" onClick={onCopyEvidence} className="ui-button-secondary">
+                {copyStatus === "success" ? "已複製指標資料" : copyStatus === "error" ? "複製失敗" : "複製指標資料"}
+              </button>
+            </div>
+
+            <UserReadableConclusionCard conclusion={result.user_readable_conclusion} />
+            <TradeResultSection metrics={result.trade_result} symbol={item.symbol} />
+            <ReviewSectionCard title="進場檢討" section={result.entry_review} />
+            <ReviewSectionCard title="持有期間檢討" section={result.holding_review} />
+            <ReviewSectionCard title="結案與風險處理檢討" section={result.exit_review} />
+            <ReviewSectionCard title="整體執行紀律檢討" section={result.operation_review} />
+            {hasDataQualityPrompt(result.data_quality) && result.data_quality && (
+              <DataQualitySection dataQuality={result.data_quality} />
+            )}
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
-function TimelineModal({ group, timeline, loading, error, onClose }: TimelineModalProps) {
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const mouseDownOnBackdrop = useRef(false);
-
-  function handleBackdropMouseDown(event: MouseEvent<HTMLDivElement>) {
-    mouseDownOnBackdrop.current = event.target === backdropRef.current;
-  }
-
-  function handleBackdropClick(event: MouseEvent<HTMLDivElement>) {
-    if (mouseDownOnBackdrop.current && event.target === backdropRef.current) onClose();
-    mouseDownOnBackdrop.current = false;
-  }
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
+function LifecycleLedger({ group, timeline, loading, error }: LifecycleLedgerProps) {
   return (
-    <div
-      ref={backdropRef}
-      onMouseDown={handleBackdropMouseDown}
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${portfolioDisplayName(group)} 事件時間線`}
-        className="max-h-[92dvh] w-full max-w-4xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
-      >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
-          <div>
-            <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件時間線</p>
-            <p className="mt-1 text-xs text-text-faint">
-              部位事件時間線 ｜ Group {group.position_group_id.slice(0, 8)} ｜ {group.exitBatchCount} 筆結案批次
-            </p>
+    <details className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
+        <div>
+          <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件與來源細節</p>
+          <p className="mt-1 text-xs text-text-faint">
+            部位事件時間線 ｜ {group.lifecycle_start_date} 至 {group.lifecycle_end_date} ｜ {group.exit_event_count}{" "}
+            次處分
+          </p>
+        </div>
+        <span className="text-xs font-medium text-accent">展開／收合</span>
+      </summary>
+
+      <div className="space-y-4 p-5">
+        <div className="rounded-xl border border-border bg-surface p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs font-medium text-text-muted">事件 Ledger</p>
+              <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                此區只呈現部位事件時間線與資料來源，不進行績效判斷或意圖推論。
+              </p>
+            </div>
+            <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+              {timeline ? `${timeline.events.length} 筆事件` : "事件載入中"}
+            </span>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ui-icon-button shrink-0 border border-border"
-            aria-label="關閉事件時間線"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                fillRule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
         </div>
 
-        <div className="space-y-4 p-5">
-          <div className="rounded-xl border border-border bg-surface p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-xs font-medium text-text-muted">事件 Ledger</p>
-                <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                  此視窗只呈現部位事件時間線與資料來源，不進行生命週期檢討、績效判斷或意圖推論。
-                </p>
-              </div>
-              <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                {timeline ? `${timeline.events.length} 筆事件` : "事件載入中"}
-              </span>
-            </div>
+        {loading && (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
+            <p className="text-sm font-medium text-text-primary">載入事件時間線中</p>
+            <p className="text-xs text-text-muted">正在讀取這個部位群組的事件紀錄。</p>
           </div>
+        )}
 
-          {loading && (
-            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
-              <p className="text-sm font-medium text-text-primary">載入事件時間線中</p>
-              <p className="text-xs text-text-muted">正在讀取這個部位群組的事件紀錄。</p>
-            </div>
-          )}
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+            {error}
+          </div>
+        )}
 
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
-              {error}
-            </div>
-          )}
+        {timeline && timeline.events.length === 0 && !loading && (
+          <div className="rounded-xl border border-border bg-surface px-4 py-8 text-center text-sm text-text-faint">
+            此部位尚無事件時間線紀錄。
+          </div>
+        )}
 
-          {timeline && timeline.events.length === 0 && !loading && (
-            <div className="rounded-xl border border-border bg-surface px-4 py-8 text-center text-sm text-text-faint">
-              此部位尚無事件時間線紀錄。
-            </div>
-          )}
-
-          {timeline && timeline.events.length > 0 && (
-            <div className="space-y-3 border-l border-border-subtle pl-3 sm:pl-4">
-              {timeline.events.map((timelineEvent) => {
-                const decisionContextInsufficient = hasInsufficientDecisionContext(timelineEvent);
-                return (
-                  <article key={timelineEvent.id} className="rounded-xl border border-border bg-surface p-4 shadow-sm">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span
-                            className={`rounded-md border px-2 py-0.5 text-xs font-medium ${POSITION_EVENT_TYPE_CLASS[timelineEvent.event_type]}`}
-                          >
-                            {POSITION_EVENT_TYPE_LABEL[timelineEvent.event_type]}
-                          </span>
-                          <span className="font-mono text-sm font-semibold text-text-primary">
-                            {timelineEvent.event_date}
-                          </span>
-                          <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                            Event #{timelineEvent.id}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-xs leading-relaxed text-text-muted">
-                          來源：{POSITION_EVENT_SOURCE_LABEL[timelineEvent.source]}。
-                          {POSITION_EVENT_SOURCE_HELPER[timelineEvent.source]}
-                        </p>
+        {timeline && timeline.events.length > 0 && (
+          <div className="space-y-3 border-l border-border-subtle pl-3 sm:pl-4">
+            {timeline.events.map((timelineEvent) => {
+              const decisionContextInsufficient = hasInsufficientDecisionContext(timelineEvent);
+              return (
+                <article key={timelineEvent.id} className="rounded-xl border border-border bg-surface p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${POSITION_EVENT_TYPE_CLASS[timelineEvent.event_type]}`}
+                        >
+                          {POSITION_EVENT_TYPE_LABEL[timelineEvent.event_type]}
+                        </span>
+                        <span className="font-mono text-sm font-semibold text-text-primary">
+                          {timelineEvent.event_date}
+                        </span>
+                        <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
+                          Event #{timelineEvent.id}
+                        </span>
                       </div>
-                      <div className="rounded-lg border border-border-subtle bg-card px-3 py-2 text-left md:text-right">
-                        <p className="text-xs text-text-faint">來源 Portfolio ID</p>
-                        <p className="mt-1 font-mono text-sm font-medium text-text-primary">
-                          {formatPlainValue(timelineEvent.source_portfolio_id)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
-                      <TimelineMetric label="價格" value={formatPrice(timelineEvent.price, timelineEvent.symbol)} />
-                      <TimelineMetric label="數量" value={`${timelineEvent.quantity} 股`} />
-                      <TimelineMetric
-                        label="手續費（系統計算/已保存）"
-                        value={formatRoundedMoney(timelineEvent.fees)}
-                      />
-                      <TimelineMetric
-                        label="交易稅（系統計算/已保存）"
-                        value={formatRoundedMoney(timelineEvent.taxes)}
-                      />
-                    </div>
-
-                    <div className="mt-3 grid gap-2 md:grid-cols-3">
-                      <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
-                        <p className="text-xs text-text-faint">原因分類</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">
-                          {formatTimelineReasonCategory(timelineEvent.reason_category)}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
-                        <p className="text-xs text-text-faint">原因代碼</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">
-                          {formatTimelineReasonCode(timelineEvent.reason_code)}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
-                        <p className="text-xs text-text-faint">信心水準</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">
-                          {formatTimelineConfidence(timelineEvent.confidence_level)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 rounded-lg border border-border-subtle bg-card px-3 py-2">
-                      <p className="text-xs text-text-faint">計畫遵循</p>
-                      <p className="mt-1 text-sm font-medium text-text-primary">
-                        {formatTimelinePlanAdherence(timelineEvent.plan_adherence)}
+                      <p className="mt-2 text-xs leading-relaxed text-text-muted">
+                        來源：{POSITION_EVENT_SOURCE_LABEL[timelineEvent.source]}。
+                        {POSITION_EVENT_SOURCE_HELPER[timelineEvent.source]}
                       </p>
                     </div>
+                    <div className="rounded-lg border border-border-subtle bg-card px-3 py-2 text-left md:text-right">
+                      <p className="text-xs text-text-faint">來源 Portfolio ID</p>
+                      <p className="mt-1 font-mono text-sm font-medium text-text-primary">
+                        {formatPlainValue(timelineEvent.source_portfolio_id)}
+                      </p>
+                    </div>
+                  </div>
 
-                    {decisionContextInsufficient && (
-                      <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                        決策脈絡不足：計畫遵循、原因代碼或信心水準未完整記錄。本時間線只顯示已保存事件，不推論當時意圖。
-                      </div>
-                    )}
+                  <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+                    <TimelineMetric label="價格" value={formatPrice(timelineEvent.price, timelineEvent.symbol)} />
+                    <TimelineMetric label="數量" value={`${timelineEvent.quantity} 股`} />
+                    <TimelineMetric label="手續費（系統計算/已保存）" value={formatRoundedMoney(timelineEvent.fees)} />
+                    <TimelineMetric label="交易稅（系統計算/已保存）" value={formatRoundedMoney(timelineEvent.taxes)} />
+                  </div>
 
-                    {(timelineEvent.note || timelineEvent.data_quality_note) && (
-                      <div className="mt-3 space-y-2">
-                        {timelineEvent.note && (
-                          <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
-                            <p className="text-xs text-text-faint">備註</p>
-                            <p className="mt-1 text-sm leading-relaxed text-text-secondary">{timelineEvent.note}</p>
-                          </div>
-                        )}
-                        {timelineEvent.data_quality_note && (
-                          <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
-                            <p className="text-xs text-text-faint">資料品質備註</p>
-                            <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                              {timelineEvent.data_quality_note}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
+                      <p className="text-xs text-text-faint">原因分類</p>
+                      <p className="mt-1 text-sm font-medium text-text-primary">
+                        {formatTimelineReasonCategory(timelineEvent.reason_category)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
+                      <p className="text-xs text-text-faint">原因代碼</p>
+                      <p className="mt-1 text-sm font-medium text-text-primary">
+                        {formatTimelineReasonCode(timelineEvent.reason_code)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
+                      <p className="text-xs text-text-faint">信心水準</p>
+                      <p className="mt-1 text-sm font-medium text-text-primary">
+                        {formatTimelineConfidence(timelineEvent.confidence_level)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 rounded-lg border border-border-subtle bg-card px-3 py-2">
+                    <p className="text-xs text-text-faint">計畫遵循</p>
+                    <p className="mt-1 text-sm font-medium text-text-primary">
+                      {formatTimelinePlanAdherence(timelineEvent.plan_adherence)}
+                    </p>
+                  </div>
+
+                  {decisionContextInsufficient && (
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                      決策脈絡不足：計畫遵循、原因代碼或信心水準未完整記錄。本時間線只顯示已保存事件，不推論當時意圖。
+                    </div>
+                  )}
+
+                  {(timelineEvent.note || timelineEvent.data_quality_note) && (
+                    <div className="mt-3 space-y-2">
+                      {timelineEvent.note && (
+                        <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
+                          <p className="text-xs text-text-faint">備註</p>
+                          <p className="mt-1 text-sm leading-relaxed text-text-secondary">{timelineEvent.note}</p>
+                        </div>
+                      )}
+                      {timelineEvent.data_quality_note && (
+                        <div className="rounded-lg border border-border-subtle bg-card px-3 py-2">
+                          <p className="text-xs text-text-faint">資料品質備註</p>
+                          <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                            {timelineEvent.data_quality_note}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
       </div>
-    </div>
+    </details>
   );
 }
 
-function LifecycleReviewModal({
+function LifecycleReviewWorkspace({
   group,
   review,
   loading,
@@ -1620,27 +1604,7 @@ function LifecycleReviewModal({
   copyStatus,
   onCopyEvidence,
   onClose,
-}: LifecycleReviewModalProps) {
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const mouseDownOnBackdrop = useRef(false);
-
-  function handleBackdropMouseDown(event: MouseEvent<HTMLDivElement>) {
-    mouseDownOnBackdrop.current = event.target === backdropRef.current;
-  }
-
-  function handleBackdropClick(event: MouseEvent<HTMLDivElement>) {
-    if (mouseDownOnBackdrop.current && event.target === backdropRef.current) onClose();
-    mouseDownOnBackdrop.current = false;
-  }
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
+}: LifecycleReviewWorkspaceProps) {
   const result = review?.review_result;
   const lifecycleReview = result?.lifecycle_review;
   const eventFacts = result?.event_facts ?? [];
@@ -1651,154 +1615,157 @@ function LifecycleReviewModal({
   const hasBackfilledCaveat = hasBackfilledLifecyclePlanCaveat(review);
 
   return (
-    <div
-      ref={backdropRef}
-      onMouseDown={handleBackdropMouseDown}
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
+    <section
+      aria-label={`${portfolioDisplayName(group)} 完整交易復盤`}
+      className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${portfolioDisplayName(group)} 整體部位檢討`}
-        className="max-h-[92dvh] w-full max-w-5xl overscroll-contain overflow-y-auto rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[85dvh] sm:rounded-[14px]"
-      >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
-          <div>
-            <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 整體部位檢討</p>
-            <p className="mt-1 text-xs text-text-faint">
-              整體生命週期檢討 ｜ 群組 {group.position_group_id.slice(0, 8)} ｜ 多次進場/新增批次/分批降低曝險整體檢討
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ui-icon-button shrink-0 border border-border"
-            aria-label="關閉整體部位檢討"
+      <div className="flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
+        <div>
+          <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 完整交易復盤</p>
+          <p className="mt-1 text-xs text-text-faint">
+            {group.lifecycle_start_date} 至 {group.lifecycle_end_date} ｜ {group.entry_event_count} 次進場 ｜{" "}
+            {group.exit_event_count} 次處分
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="ui-icon-button shrink-0 border border-border"
+          aria-label="關閉完整交易復盤"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-5 w-5"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
+            <path
+              fillRule="evenodd"
+              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+      </div>
+
+      <div className="space-y-4 p-5">
+        <div className="rounded-xl border border-border bg-surface p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs font-medium text-text-muted">整體部位生命週期檢討</p>
+              <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                先看結果與操作流程，再檢查要保持、要改善與下次規則；個別處分決策與事件證據收在同一工作區內。
+              </p>
+            </div>
+            <span
+              className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}
             >
-              <path
-                fillRule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
+              {provenance}
+            </span>
+          </div>
         </div>
 
-        <div className="space-y-4 p-5">
-          <div className="rounded-xl border border-border bg-surface p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-xs font-medium text-text-muted">整體部位生命週期檢討</p>
-                <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                  此視窗檢討整個部位群組的進場序列、持有路徑、部位管理與結案序列；每一列結案批次的「檢討分析」仍是單筆交易檢討。
-                </p>
-              </div>
-              <span
-                className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}
-              >
-                {provenance}
-              </span>
-            </div>
+        {loading && (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
+            <p className="text-sm font-medium text-text-primary">載入完整交易復盤中</p>
+            <p className="text-xs text-text-muted">若尚未產生，會建立這個部位群組的生命週期檢討。</p>
           </div>
+        )}
 
-          {loading && (
-            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-accent" />
-              <p className="text-sm font-medium text-text-primary">載入整體部位檢討中</p>
-              <p className="text-xs text-text-muted">若尚未產生，會建立這個部位群組的生命週期檢討。</p>
-            </div>
-          )}
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+            {error}
+          </div>
+        )}
 
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
-              {error}
-            </div>
-          )}
+        {review && result && (
+          <>
+            <LifecycleDecisionSummary review={review} />
 
-          {review && result && (
-            <>
-              <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-xs font-medium text-text-muted">檢討版本</p>
-                  <p className="mt-1 text-sm text-text-primary">{review.review_version}</p>
-                </div>
-                <button type="button" onClick={onCopyEvidence} className="ui-button-secondary">
-                  {copyStatus === "success"
-                    ? "已複製生命週期證據"
-                    : copyStatus === "error"
-                      ? "複製失敗"
-                      : "複製生命週期證據"}
-                </button>
+            {hasMissingDecisionContext && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                原始計畫缺失：此檢討只使用已保存事件、ledger 費稅與前一個完整交易日指標，不推論未記錄意圖。
               </div>
+            )}
 
-              {hasMissingDecisionContext && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  原始計畫缺失：此檢討只使用已保存事件、ledger 費稅與前一個完整交易日指標，不推論未記錄意圖。
-                </div>
-              )}
-
-              {hasClassificationDataWarning && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  事件或市場證據不足：請依下方資料品質欄位判斷缺口；這不代表原始計畫缺失或屬於事後補填。
-                </div>
-              )}
-
-              {hasBackfilledCaveat && (
-                <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 shadow-sm dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300">
-                  事後補填計畫提示：這份計畫只作回顧脈絡，不參與歷史違規、客觀遵循度或決策品質評分，也不代表原始進場當下已存在同一份計畫。
-                </div>
-              )}
-
-              <LifecyclePlanReviewRelationSection review={review} />
-              <LifecycleOverallSection review={review} />
-              <LifecyclePerspectives
-                metrics={result.lifecycle_metrics}
-                entrySequence={result.entry_sequence}
-                exitSequence={result.exit_sequence}
-              />
-              <div className="grid gap-3 md:grid-cols-2">
-                <LifecycleTextItemList label="做得好的地方" items={lifecycleReview?.what_worked} />
-                <LifecycleTextItemList label="需要檢討的地方" items={lifecycleReview?.what_needs_review} />
+            {hasClassificationDataWarning && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                事件或市場證據不足：請依下方資料品質欄位判斷缺口；這不代表原始計畫缺失或屬於事後補填。
               </div>
-              <LifecycleTextItemList label="下次紀律規則" items={lifecycleReview?.next_operation_rules} />
-              <LifecycleEventTimeline
-                events={eventFacts}
-                snapshots={snapshots}
-                evidenceItems={lifecycleReview?.event_level_evidence}
-                symbol={review.symbol}
-              />
-              <LifecycleDataQualitySection
-                dataQuality={result.data_quality}
-                notes={lifecycleReview?.data_quality_notes}
-              />
-              {result.advanced_internal && (
-                <details className="rounded-xl border border-border bg-card p-4 shadow-sm">
-                  <summary className="cursor-pointer text-sm font-semibold text-text-primary">
-                    進階 trace（內部指標與分數）
-                  </summary>
-                  <pre className="mt-3 max-h-80 overflow-auto rounded-lg border border-border-subtle bg-surface p-3 text-xs leading-relaxed text-text-secondary">
+            )}
+
+            {hasBackfilledCaveat && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 shadow-sm dark:border-blue-900 dark:bg-blue-950 dark:text-blue-300">
+                事後補填計畫提示：這份計畫只作回顧脈絡，不參與歷史違規、客觀遵循度或決策品質評分，也不代表原始進場當下已存在同一份計畫。
+              </div>
+            )}
+
+            {!lifecycleReview?.outcome && <LifecycleOverallSection review={review} />}
+            <LifecyclePerspectives
+              metrics={result.lifecycle_metrics}
+              entrySequence={result.entry_sequence}
+              exitSequence={result.exit_sequence}
+            />
+            {!lifecycleReview?.feedback && (
+              <>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <LifecycleTextItemList label="做得好的地方" items={lifecycleReview?.what_worked} />
+                  <LifecycleTextItemList label="需要檢討的地方" items={lifecycleReview?.what_needs_review} />
+                </div>
+                <LifecycleTextItemList label="下次紀律規則" items={lifecycleReview?.next_operation_rules} />
+              </>
+            )}
+            <LifecycleEventTimeline
+              events={eventFacts}
+              snapshots={snapshots}
+              evidenceItems={lifecycleReview?.event_level_evidence}
+              symbol={review.symbol}
+            />
+            <LifecycleDataQualitySection
+              dataQuality={result.data_quality}
+              notes={lifecycleReview?.data_quality_notes}
+            />
+            <details className="rounded-xl border border-border bg-card p-4 shadow-sm">
+              <summary className="cursor-pointer text-sm font-semibold text-text-primary">技術細節與來源</summary>
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-surface p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs text-text-faint">檢討版本</p>
+                      <p className="mt-1 font-mono text-sm text-text-primary">{review.review_version}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-text-faint">內部生命週期 ID</p>
+                      <p className="mt-1 break-all font-mono text-xs text-text-muted">{group.position_group_id}</p>
+                    </div>
+                  </div>
+                  <button type="button" onClick={onCopyEvidence} className="ui-button-secondary">
+                    {copyStatus === "success"
+                      ? "已複製生命週期證據"
+                      : copyStatus === "error"
+                        ? "複製失敗"
+                        : "複製生命週期證據"}
+                  </button>
+                </div>
+                <LifecyclePlanReviewRelationSection review={review} />
+                {result.advanced_internal && (
+                  <pre className="max-h-80 overflow-auto rounded-lg border border-border-subtle bg-surface p-3 text-xs leading-relaxed text-text-secondary">
                     {JSON.stringify(result.advanced_internal, null, 2)}
                   </pre>
-                </details>
-              )}
-            </>
-          )}
-        </div>
+                )}
+              </div>
+            </details>
+          </>
+        )}
       </div>
-    </div>
+    </section>
   );
 }
 
 export default function ClosedPortfolioPage() {
-  const [items, setItems] = useState<ClosedPortfolioItem[]>([]);
+  const [lifecycles, setLifecycles] = useState<ClosedPortfolioLifecycle[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>(readStoredPeriod);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1807,11 +1774,10 @@ export default function ClosedPortfolioPage() {
   const [reviewLoading, setReviewLoading] = useState<Record<number, boolean>>({});
   const [reviewError, setReviewError] = useState<Record<number, string | null>>({});
   const [copyStatus, setCopyStatus] = useState<Record<number, CopyStatus>>({});
-  const [selectedTimelineGroup, setSelectedTimelineGroup] = useState<ClosedPortfolioGroup | null>(null);
   const [timelineMap, setTimelineMap] = useState<Record<string, PositionGroupEventsResponse>>({});
   const [timelineLoading, setTimelineLoading] = useState<Record<string, boolean>>({});
   const [timelineError, setTimelineError] = useState<Record<string, string | null>>({});
-  const [selectedLifecycleGroup, setSelectedLifecycleGroup] = useState<ClosedPortfolioGroup | null>(null);
+  const [selectedLifecycleGroup, setSelectedLifecycleGroup] = useState<ClosedPortfolioLifecycle | null>(null);
   const [lifecycleReviewMap, setLifecycleReviewMap] = useState<Record<string, PositionLifecycleReviewResponse>>({});
   const [lifecycleReviewLoading, setLifecycleReviewLoading] = useState<Record<string, boolean>>({});
   const [lifecycleReviewError, setLifecycleReviewError] = useState<Record<string, string | null>>({});
@@ -1828,8 +1794,8 @@ export default function ClosedPortfolioPage() {
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchClosedPortfolioItems();
-        if (!cancelled) setItems(data);
+        const data = await fetchClosedPortfolioLifecycles();
+        if (!cancelled) setLifecycles(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "已結案持股載入失敗");
       } finally {
@@ -1844,16 +1810,14 @@ export default function ClosedPortfolioPage() {
   }, []);
 
   const activePeriod = PERIOD_OPTIONS.find((option) => option.key === selectedPeriod) ?? PERIOD_OPTIONS[2];
-  const filteredItems = useMemo(() => {
+  const filteredLifecycles = useMemo(() => {
     const today = getToday();
-    return items.filter((item) => isWithinPeriod(item.exit_date, activePeriod.days, today));
-  }, [activePeriod.days, items]);
-
-  const groupedItems = useMemo(() => groupClosedItems(filteredItems), [filteredItems]);
+    return lifecycles.filter((lifecycle) => isWithinPeriod(lifecycle.lifecycle_end_date, activePeriod.days, today));
+  }, [activePeriod.days, lifecycles]);
 
   const totalRealizedPnl = useMemo(
-    () => filteredItems.reduce((total, item) => total + item.realized_pnl, 0),
-    [filteredItems],
+    () => filteredLifecycles.reduce((total, lifecycle) => total + lifecycle.total_realized_pnl, 0),
+    [filteredLifecycles],
   );
   const totalClass = roundedMoneyClass(totalRealizedPnl);
 
@@ -1861,8 +1825,38 @@ export default function ClosedPortfolioPage() {
     return fetchOrCreateTradeReview(item.id);
   }
 
-  async function openReview(item: ClosedPortfolioItem): Promise<void> {
+  function focusReviewWorkspace(): void {
+    window.requestAnimationFrame(() => {
+      const workspace = document.getElementById("closed-review-workspace");
+      workspace?.scrollIntoView({ behavior: "smooth", block: "start" });
+      workspace?.focus({ preventScroll: true });
+    });
+  }
+
+  function closeReviewWorkspace(): void {
+    const triggerId = selectedLifecycleGroup
+      ? `closed-review-trigger-${selectedLifecycleGroup.position_group_id}`
+      : null;
+    setSelectedLifecycleGroup(null);
+    setSelectedReviewItem(null);
+    window.requestAnimationFrame(() => {
+      if (triggerId) document.getElementById(triggerId)?.focus();
+    });
+  }
+
+  function closeExitDecision(itemId: number): void {
+    setSelectedReviewItem(null);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`closed-exit-trigger-${itemId}`)?.focus();
+    });
+  }
+
+  async function openReview(group: ClosedPortfolioLifecycle, item: ClosedPortfolioItem): Promise<void> {
+    if (selectedLifecycleGroup?.position_group_id !== group.position_group_id) {
+      void openLifecycleReview(group);
+    }
     setSelectedReviewItem(item);
+    focusReviewWorkspace();
     setCopyStatus((prev) => ({ ...prev, [item.id]: "idle" }));
     if (reviewMap[item.id]) return;
 
@@ -1882,8 +1876,7 @@ export default function ClosedPortfolioPage() {
     return fetchPositionGroupEvents(positionGroupId);
   }
 
-  async function openTimeline(group: ClosedPortfolioGroup): Promise<void> {
-    setSelectedTimelineGroup(group);
+  async function loadTimeline(group: ClosedPortfolioLifecycle): Promise<void> {
     if (timelineMap[group.position_group_id]) return;
 
     setAsyncMapValue(setTimelineLoading, group.position_group_id, true);
@@ -1906,9 +1899,14 @@ export default function ClosedPortfolioPage() {
     return createPositionLifecycleReview(positionGroupId);
   }
 
-  async function openLifecycleReview(group: ClosedPortfolioGroup): Promise<void> {
+  async function openLifecycleReview(group: ClosedPortfolioLifecycle): Promise<void> {
+    if (selectedLifecycleGroup?.position_group_id !== group.position_group_id) {
+      setSelectedReviewItem(null);
+    }
     setSelectedLifecycleGroup(group);
     setLifecycleCopyStatus((prev) => ({ ...prev, [group.position_group_id]: "idle" }));
+    focusReviewWorkspace();
+    void loadTimeline(group);
 
     setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, true);
     setAsyncMapValue(setLifecycleReviewError, group.position_group_id, null);
@@ -1919,7 +1917,7 @@ export default function ClosedPortfolioPage() {
       setAsyncMapValue(
         setLifecycleReviewError,
         group.position_group_id,
-        err instanceof Error ? err.message : "整體部位檢討載入失敗",
+        err instanceof Error ? err.message : "完整交易復盤載入失敗",
       );
     } finally {
       setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, false);
@@ -2016,12 +2014,12 @@ export default function ClosedPortfolioPage() {
               <p className={`mt-2 text-3xl font-semibold tabular-nums ${totalClass}`}>
                 {getSignedRoundedMoneyText(totalRealizedPnl)}
               </p>
-              <p className="mt-2 text-xs text-text-muted">本期間共 {filteredItems.length} 筆結案批次</p>
+              <p className="mt-2 text-xs text-text-muted">本期間共 {filteredLifecycles.length} 筆完整交易</p>
             </div>
             <div className="border-t border-border-subtle px-4 py-4 sm:border-t-0 sm:border-l md:px-5">
               <p className="text-xs text-text-faint">結案部位群組</p>
-              <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">{groupedItems.length}</p>
-              <p className="mt-1 text-xs text-text-muted">依部位群組彙整</p>
+              <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">{filteredLifecycles.length}</p>
+              <p className="mt-1 text-xs text-text-muted">依最終出清日歸屬期間</p>
             </div>
           </div>
         </section>
@@ -2032,7 +2030,7 @@ export default function ClosedPortfolioPage() {
           </div>
         )}
 
-        {filteredItems.length === 0 ? (
+        {filteredLifecycles.length === 0 ? (
           <WorkspaceEmptyState
             eyebrow="Closed positions"
             title="此期間沒有結案紀錄"
@@ -2048,58 +2046,75 @@ export default function ClosedPortfolioPage() {
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-text-primary">已結案部位</h2>
-              <span className="text-xs tabular-nums text-text-faint">{filteredItems.length} 筆批次</span>
+              <span className="text-xs tabular-nums text-text-faint">{filteredLifecycles.length} 筆完整交易</span>
             </div>
 
-            {groupedItems.map((group) => {
-              const groupResultClass = roundedMoneyClass(group.totalRealizedPnl);
-              const isTimelineLoading = timelineLoading[group.position_group_id] ?? false;
+            {filteredLifecycles.map((group) => {
+              const groupResultClass = roundedMoneyClass(group.total_realized_pnl);
               const isLifecycleReviewLoading = lifecycleReviewLoading[group.position_group_id] ?? false;
+              const loadedReview = lifecycleReviewMap[group.position_group_id]?.review_result.lifecycle_review;
+              const outcome = loadedReview?.outcome ?? group.review_summary?.outcome;
+              const processQuality = loadedReview?.process_quality ?? group.review_summary?.process_quality;
+              const feedback = loadedReview?.feedback;
+              const keyFeedback = feedback
+                ? (feedback.improve[0] ?? feedback.keep[0] ?? feedback.next_actions[0] ?? null)
+                : group.review_summary?.key_feedback;
               return (
                 <article
                   key={group.position_group_id}
                   data-closed-position-group={group.position_group_id}
                   className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel"
                 >
-                  <div className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(190px,1.25fr)_minmax(110px,0.7fr)_minmax(130px,0.8fr)_auto] md:items-center md:px-5">
+                  <div className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(210px,1.15fr)_minmax(130px,0.7fr)_minmax(190px,1fr)_auto] md:items-center md:px-5">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-text-primary">{group.name ?? group.symbol}</p>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-text-primary">{group.name ?? group.symbol}</p>
+                        <span className="shrink-0 rounded-md bg-badge-neutral-bg px-2 py-0.5 text-[0.6875rem] font-medium text-badge-neutral-text">
+                          完整交易
+                        </span>
+                      </div>
                       <p className="mt-1 text-xs tabular-nums text-text-faint">
-                        {group.name ? `${group.symbol} · ` : ""}進場 {group.entry_date}
+                        {group.name ? `${group.symbol} · ` : ""}
+                        {group.lifecycle_start_date} 至 {group.lifecycle_end_date}
                       </p>
                       <p className="mt-1 text-xs tabular-nums text-text-faint">
-                        成本 {formatPrice(group.entry_price, group.symbol)}
+                        初始進場 {formatPrice(group.initial_entry_price, group.symbol)} · {group.add_entry_count} 次追加
+                      </p>
+                      <p className="mt-1 text-xs tabular-nums text-text-faint">
+                        {group.total_closed_quantity} 股 · {group.exit_event_count} 次處分
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-text-faint">結案規模</p>
-                      <p className="mt-1 text-sm font-medium tabular-nums text-text-primary">
-                        {group.totalClosedQuantity} 股
-                      </p>
-                      <p className="mt-1 text-xs tabular-nums text-text-faint">{group.exitBatchCount} 筆批次</p>
-                    </div>
-                    <div className="md:text-right">
-                      <p className="text-xs text-text-faint">已實現損益</p>
+                      <p className="text-xs text-text-faint">交易結果</p>
                       <p className={`mt-1 text-lg font-semibold tabular-nums ${groupResultClass}`}>
-                        {getSignedRoundedMoneyText(group.totalRealizedPnl)}
+                        {getSignedRoundedMoneyText(group.total_realized_pnl)}
+                      </p>
+                      <p className="mt-1 text-xs text-text-faint">{outcome?.label ?? "以完整生命週期計算"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-text-faint">操作流程</p>
+                      {processQuality ? (
+                        <span
+                          className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-xs font-medium ${REVIEW_STATUS_STYLE[processQuality.status]}`}
+                        >
+                          {processQuality.label}
+                        </span>
+                      ) : (
+                        <p className="mt-1 text-sm font-medium text-text-muted">尚未產生復盤</p>
+                      )}
+                      <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-text-faint">
+                        {keyFeedback?.title ?? "開啟完整復盤後，會顯示要保持或改善的重點。"}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2 md:justify-end">
                       <button
+                        id={`closed-review-trigger-${group.position_group_id}`}
                         type="button"
                         onClick={() => void openLifecycleReview(group)}
                         disabled={isLifecycleReviewLoading}
                         className="ui-button-primary min-h-10 px-3 text-xs"
                       >
-                        {isLifecycleReviewLoading ? "載入檢討中" : "整體部位檢討"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void openTimeline(group)}
-                        disabled={isTimelineLoading}
-                        className="ui-button-secondary min-h-10 px-3 text-xs"
-                      >
-                        {isTimelineLoading ? "載入時間線中" : "事件時間線"}
+                        {isLifecycleReviewLoading ? "建立復盤中" : "查看完整復盤"}
                       </button>
                     </div>
                   </div>
@@ -2112,7 +2127,7 @@ export default function ClosedPortfolioPage() {
                       <span className="text-right">檢討</span>
                     </div>
                     <div className="divide-y divide-border-subtle">
-                      {group.items.map((item) => {
+                      {group.exit_batches.map((item) => {
                         const resultClass = roundedMoneyClass(item.realized_pnl);
                         const isReviewLoading = reviewLoading[item.id] ?? false;
                         return (
@@ -2122,7 +2137,7 @@ export default function ClosedPortfolioPage() {
                             className="grid gap-4 px-4 py-3 md:grid-cols-[minmax(170px,1.2fr)_minmax(150px,1fr)_minmax(110px,0.7fr)_auto] md:items-center md:px-5"
                           >
                             <div>
-                              <p className="text-sm font-medium text-text-primary">批次 #{item.id}</p>
+                              <p className="text-sm font-medium text-text-primary">{item.display_label}</p>
                               <p className="mt-1 text-xs tabular-nums text-text-faint">
                                 {item.entry_date} 至 {item.exit_date} · {item.holding_days} 天
                               </p>
@@ -2146,12 +2161,13 @@ export default function ClosedPortfolioPage() {
                             </div>
                             <div className="flex md:justify-end">
                               <button
+                                id={`closed-exit-trigger-${item.id}`}
                                 type="button"
-                                onClick={() => void openReview(item)}
+                                onClick={() => void openReview(group, item)}
                                 disabled={isReviewLoading}
                                 className="ui-button-secondary min-h-10 px-3 text-xs"
                               >
-                                {isReviewLoading ? "載入中" : "檢討分析"}
+                                {isReviewLoading ? "載入中" : "查看這次處分"}
                               </button>
                             </div>
                           </div>
@@ -2166,38 +2182,42 @@ export default function ClosedPortfolioPage() {
         )}
       </div>
 
-      {selectedReviewItem && (
-        <ReviewModal
-          item={selectedReviewItem}
-          review={reviewMap[selectedReviewItem.id] ?? null}
-          loading={reviewLoading[selectedReviewItem.id] ?? false}
-          error={reviewError[selectedReviewItem.id] ?? null}
-          copyStatus={copyStatus[selectedReviewItem.id] ?? "idle"}
-          onCopyEvidence={() => void copyEvidence()}
-          onClose={() => setSelectedReviewItem(null)}
-        />
-      )}
-
-      {selectedTimelineGroup && (
-        <TimelineModal
-          group={selectedTimelineGroup}
-          timeline={timelineMap[selectedTimelineGroup.position_group_id] ?? null}
-          loading={timelineLoading[selectedTimelineGroup.position_group_id] ?? false}
-          error={timelineError[selectedTimelineGroup.position_group_id] ?? null}
-          onClose={() => setSelectedTimelineGroup(null)}
-        />
-      )}
-
       {selectedLifecycleGroup && (
-        <LifecycleReviewModal
-          group={selectedLifecycleGroup}
-          review={lifecycleReviewMap[selectedLifecycleGroup.position_group_id] ?? null}
-          loading={lifecycleReviewLoading[selectedLifecycleGroup.position_group_id] ?? false}
-          error={lifecycleReviewError[selectedLifecycleGroup.position_group_id] ?? null}
-          copyStatus={lifecycleCopyStatus[selectedLifecycleGroup.position_group_id] ?? "idle"}
-          onCopyEvidence={() => void copyLifecycleEvidence()}
-          onClose={() => setSelectedLifecycleGroup(null)}
-        />
+        <section
+          id="closed-review-workspace"
+          tabIndex={-1}
+          className="mt-6 space-y-4 scroll-mt-4 outline-none"
+          aria-label={`${portfolioDisplayName(selectedLifecycleGroup)} 復盤工作區`}
+        >
+          <LifecycleReviewWorkspace
+            group={selectedLifecycleGroup}
+            review={lifecycleReviewMap[selectedLifecycleGroup.position_group_id] ?? null}
+            loading={lifecycleReviewLoading[selectedLifecycleGroup.position_group_id] ?? false}
+            error={lifecycleReviewError[selectedLifecycleGroup.position_group_id] ?? null}
+            copyStatus={lifecycleCopyStatus[selectedLifecycleGroup.position_group_id] ?? "idle"}
+            onCopyEvidence={() => void copyLifecycleEvidence()}
+            onClose={closeReviewWorkspace}
+          />
+
+          {selectedReviewItem && selectedReviewItem.position_group_id === selectedLifecycleGroup.position_group_id && (
+            <ExitDecisionReview
+              item={selectedReviewItem}
+              review={reviewMap[selectedReviewItem.id] ?? null}
+              loading={reviewLoading[selectedReviewItem.id] ?? false}
+              error={reviewError[selectedReviewItem.id] ?? null}
+              copyStatus={copyStatus[selectedReviewItem.id] ?? "idle"}
+              onCopyEvidence={() => void copyEvidence()}
+              onClose={() => closeExitDecision(selectedReviewItem.id)}
+            />
+          )}
+
+          <LifecycleLedger
+            group={selectedLifecycleGroup}
+            timeline={timelineMap[selectedLifecycleGroup.position_group_id] ?? null}
+            loading={timelineLoading[selectedLifecycleGroup.position_group_id] ?? false}
+            error={timelineError[selectedLifecycleGroup.position_group_id] ?? null}
+          />
+        </section>
       )}
     </>
   );

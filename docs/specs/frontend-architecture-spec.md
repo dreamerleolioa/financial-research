@@ -142,7 +142,9 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - Auth cache isolation：登入、登出、token 驗證失敗或其他分頁的 `auth_token` storage event 都必須先 cancel／clear 共用 QueryClient 與價格 overlay。其他分頁換帳號時，本分頁需用新 token 重新執行 `/auth/me`，並以 verification sequence 丟棄晚到的舊身分 response；不得保留前一位使用者的 user state 或 portfolio query cache。
 - Active freshness：持股列分開顯示 `price_context` 的價格時間／盤中狀態與 latest history 的 AI 分析日期。價格刷新 partial failure 時保留後端 fallback 值並明示失敗，不把舊價偽裝成剛更新成功。
 - Caveat hierarchy：缺少 plan、風險資料注意與資料不足仍需在持股列可見，但只作次要狀態，不得以大型警告卡壓過部位狀態與防守距離。
-- Closed position groups：已結案頁先顯示期間已實現損益與部位群組數量，再以部位群組彙整結案規模、總損益、整體部位檢討、事件時間線與每筆結案批次。Lifecycle Review 的 v1 / v2 會由 POST 建立 v3；v3 以 `unclassified` 表示脈絡完整但未命中既定 pattern，前端不得顯示成「決策脈絡不足」。`insufficient`、`retrospective_only` 與真正的 event／market data gap 必須分開提示。Single Trade Review 與 Lifecycle Review 的未知較新版本都只讀不降級；生命週期檢討採 closed-only，事後補填或進場後已修改的 plan 需顯示 `retrospective_only` 提示，不得呈現為歷史違規或客觀分數。持有中結案 modal 必須明確送出結案原因、計畫遵循與信心水準；使用者選擇未記錄時需保存明確的 `not_recorded`，不得由前端推論。
+- Closed position groups：已結案頁只以完整交易生命週期為清單單位，期間由最終出清日決定；同一交易的所有處分批次完整保留，依序命名為 `第 N 次減碼` 與 `最終出清`，不得顯示 portfolio row id 或 group UUID 作為主要識別。卡片固定先顯示標的與日期範圍、`完整交易`、完整損益、操作流程品質與一個關鍵回饋；沒有 saved v4 review 時明示尚未產生復盤。主要動作只有 `查看完整復盤`，個別批次動作為 `查看這次處分`。
+- Closed review workspace：完整交易復盤使用頁面內單一工作區，不以多個 modal 分割結果、整體檢討、事件時間線與單次處分。閱讀順序固定為交易結果與操作流程、四面向品質、保持／改善／下次規則、生命週期指標、事件證據、個別處分與技術細節。`outcome` 與 `process_quality` 必須並列，獲利或虧損不得取代操作品質；四面向使用類別狀態，不呈現 0–100 權威分數。review version、group id、raw trace 與複製 evidence 收進技術細節。
+- Lifecycle compatibility：Lifecycle Review v1 / v2 / v3 可讀，POST 建立 v4；舊 v3 的 `unclassified` fallback 仍不得顯示成決策脈絡不足。`insufficient`、`retrospective_only` 與真正的 event／market data gap 必須分開提示。Single Trade Review 與 Lifecycle Review 的未知較新版本都只讀不降級；事後補填或進場後已修改的 plan 只作回顧脈絡，不得呈現為歷史違規或客觀分數。持有中結案 modal 必須明確送出結案原因、計畫遵循與信心水準；使用者選擇未記錄時需保存明確的 `not_recorded`，不得由前端推論。
 
 ## Analyze Technical Indicator Surface
 

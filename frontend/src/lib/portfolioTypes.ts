@@ -198,6 +198,38 @@ export interface ClosedPortfolioItem {
   notes: string | null;
 }
 
+export interface ClosedPortfolioExitBatch extends ClosedPortfolioItem {
+  sequence_number: number;
+  display_label: string;
+  event_id: number;
+  event_type: "partial_exit" | "full_exit";
+  reason_category: ReasonCategory | null;
+  reason_code: ExitReasonCode | null;
+  plan_adherence: PlanAdherence | null;
+  confidence_level: DecisionConfidenceLevel | null;
+}
+
+export interface ClosedPortfolioLifecycle {
+  position_group_id: string;
+  symbol: string;
+  name?: string | null;
+  lifecycle_start_date: string;
+  lifecycle_end_date: string;
+  initial_entry_price: number;
+  entry_event_count: number;
+  add_entry_count: number;
+  exit_event_count: number;
+  total_closed_quantity: number;
+  total_realized_pnl: number;
+  exit_batches: ClosedPortfolioExitBatch[];
+  review_summary: {
+    review_version: string;
+    outcome: PositionLifecycleOutcome | null;
+    process_quality: PositionLifecycleProcessQuality | null;
+    key_feedback: PositionLifecycleFeedbackItem | null;
+  } | null;
+}
+
 export interface TradeReviewDataQuality {
   status?: string;
   notes?: string[];
@@ -618,7 +650,58 @@ export interface PositionLifecycleClassification {
   [key: string]: unknown;
 }
 
+export type PositionLifecycleOutcomeStatus = "profit" | "loss" | "breakeven" | "insufficient";
+export type PositionLifecycleProcessStatus = "disciplined" | "mixed" | "needs_review" | "insufficient";
+export type PositionLifecycleDimensionStatus =
+  | "strength"
+  | "needs_review"
+  | "mixed"
+  | "insufficient"
+  | "not_observed"
+  | "sufficient";
+
+export interface PositionLifecycleOutcome {
+  status: PositionLifecycleOutcomeStatus;
+  label: string;
+  summary: string;
+  total_realized_pnl: number | null;
+  total_return_pct: number | null;
+  source_refs: string[];
+}
+
+export interface PositionLifecycleProcessQuality {
+  status: PositionLifecycleProcessStatus;
+  label: string;
+  summary: string;
+  strength_labels: string[];
+  risk_labels: string[];
+  source_refs: string[];
+}
+
+export interface PositionLifecycleDimension {
+  label: string;
+  status: PositionLifecycleDimensionStatus;
+  summary: string;
+  source_refs: string[];
+}
+
+export interface PositionLifecycleFeedbackItem {
+  label?: string;
+  title: string;
+  observation?: string;
+  action: string;
+  source_refs: string[];
+}
+
 export interface PositionLifecycleReview {
+  outcome?: PositionLifecycleOutcome;
+  process_quality?: PositionLifecycleProcessQuality;
+  dimensions?: Record<"entry" | "position_management" | "risk_exit" | "record_quality", PositionLifecycleDimension>;
+  feedback?: {
+    keep: PositionLifecycleFeedbackItem[];
+    improve: PositionLifecycleFeedbackItem[];
+    next_actions: PositionLifecycleFeedbackItem[];
+  };
   classification?: PositionLifecycleClassification;
   overall_conclusion?: LifecycleTextItem;
   what_worked?: LifecycleTextItem[];

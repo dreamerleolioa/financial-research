@@ -3406,7 +3406,7 @@ def test_create_position_lifecycle_review_first_post_saves_result_and_evidence_p
     assert data["user_id"] == 1
     assert data["position_group_id"] == "group-life-review"
     assert data["symbol"] == "2330.TW"
-    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_version"] == "position-lifecycle-review-v4"
     assert data["llm_summary"] is None
     assert data["review_result"]["lifecycle_review"]["classification"]["tier"] == "constructive"
     assert data["evidence_payload"]["events"] == [{"event_type": "initial_entry"}]
@@ -3526,7 +3526,7 @@ def test_position_lifecycle_review_preserves_unknown_newer_version(
         user_id=1,
         position_group_id="group-life-review",
         symbol="2330.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"current": True},
         evidence_payload={"current": True},
         llm_summary=None,
@@ -3535,7 +3535,7 @@ def test_position_lifecycle_review_preserves_unknown_newer_version(
         user_id=1,
         position_group_id="group-life-review",
         symbol="2330.TW",
-        review_version="position-lifecycle-review-v4",
+        review_version="position-lifecycle-review-v5",
         review_result={"future": True},
         evidence_payload={"future": True},
         llm_summary="future summary",
@@ -3547,8 +3547,8 @@ def test_position_lifecycle_review_preserves_unknown_newer_version(
 
     assert post_resp.status_code == 200
     assert get_resp.status_code == 200
-    assert post_resp.json()["review_version"] == "position-lifecycle-review-v4"
-    assert get_resp.json()["review_version"] == "position-lifecycle-review-v4"
+    assert post_resp.json()["review_version"] == "position-lifecycle-review-v5"
+    assert get_resp.json()["review_version"] == "position-lifecycle-review-v5"
     assert len(portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()) == 2
 
 
@@ -4049,7 +4049,7 @@ def test_position_lifecycle_review_missing_shared_context_is_nonblocking(
     assert shared_context["consumer"] == "lifecycle_review"
     assert shared_context["data_quality"]["blocking"] is False
     assert "context_cache_missing" in shared_context["data_quality"]["missing_reasons"]
-    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_version"] == "position-lifecycle-review-v4"
 
 
 def test_get_position_lifecycle_review_returns_existing_review(
@@ -4072,8 +4072,11 @@ def test_get_position_lifecycle_review_returns_existing_review(
     assert resp.json() == created
 
 
-@pytest.mark.parametrize("saved_version", ["position-lifecycle-review-v1", "position-lifecycle-review-v2"])
-def test_get_position_lifecycle_review_can_read_saved_version_until_post_upgrades_to_v3(
+@pytest.mark.parametrize(
+    "saved_version",
+    ["position-lifecycle-review-v1", "position-lifecycle-review-v2", "position-lifecycle-review-v3"],
+)
+def test_get_position_lifecycle_review_can_read_saved_version_until_post_upgrades_to_v4(
     portfolio_db_client: TestClient,
     portfolio_db_session: Session,
     saved_version: str,
@@ -4097,9 +4100,9 @@ def test_get_position_lifecycle_review_can_read_saved_version_until_post_upgrade
     assert get_resp.json()["review_version"] == saved_version
     assert get_resp.json()["review_result"] == {"legacy": True}
     assert post_resp.status_code == 200
-    assert post_resp.json()["review_version"] == "position-lifecycle-review-v3"
+    assert post_resp.json()["review_version"] == "position-lifecycle-review-v4"
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
-    assert {review.review_version for review in reviews} == {saved_version, "position-lifecycle-review-v3"}
+    assert {review.review_version for review in reviews} == {saved_version, "position-lifecycle-review-v4"}
 
 
 def test_get_position_lifecycle_review_missing_owned_group_returns_404(
@@ -4156,14 +4159,14 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     _, legacy_evidence = _lifecycle_payload()
     legacy_fingerprint = attach_source_fingerprint(
         legacy_evidence,
-        ruleset_version="position-lifecycle-ruleset-v3.1",
+        ruleset_version="position-lifecycle-ruleset-v3.2",
     )
     portfolio_db_session.add(PositionLifecycleReview(
         id=9,
         user_id=1,
         position_group_id="group-life-review",
         symbol="2330.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"legacy_copy": True},
         evidence_payload=legacy_evidence,
     ))
@@ -4174,9 +4177,9 @@ def test_create_position_lifecycle_review_refreshes_same_source_after_ruleset_up
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == 9
-    assert data["review_version"] == "position-lifecycle-review-v3"
+    assert data["review_version"] == "position-lifecycle-review-v4"
     assert data["review_result"] == _lifecycle_payload()[0]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
     assert data["evidence_payload"]["source_fingerprint"] != legacy_fingerprint
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
     assert len(reviews) == 1
@@ -4208,7 +4211,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
         user_id=1,
         position_group_id="group-life-review",
         symbol="OLD.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary="old summary",
@@ -4227,7 +4230,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "event", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "event"
     assert data["evidence_payload"]["events"] == [{"event_type": "full_exit"}]
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4274,7 +4277,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
         user_id=1,
         position_group_id="group-life-review",
         symbol="OLD.TW",
-        review_version="position-lifecycle-review-v3",
+        review_version="position-lifecycle-review-v4",
         review_result={"existing": True},
         evidence_payload={"existing": True},
         llm_summary="old summary",
@@ -4293,7 +4296,7 @@ def test_create_position_lifecycle_review_recomputes_stale_existing_review_after
     assert data["review_result"] == {"rebuilt": "plan", "position_group_id": "group-life-review"}
     assert data["evidence_payload"]["source"] == "plan"
     assert data["evidence_payload"]["plan"] == {"planned_holding_period": "long_term"}
-    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v3.2"
+    assert data["evidence_payload"]["ruleset_version"] == "position-lifecycle-ruleset-v4.0"
     assert len(data["evidence_payload"]["source_fingerprint"]) == 64
     assert data["llm_summary"] is None
     reviews = portfolio_db_session.execute(select(PositionLifecycleReview)).scalars().all()
@@ -4461,7 +4464,7 @@ def test_position_lifecycle_review_does_not_change_single_trade_review_behavior(
 
     assert lifecycle_resp.status_code == 200
     assert trade_resp.status_code == 200
-    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v3"
+    assert lifecycle_resp.json()["review_version"] == "position-lifecycle-review-v4"
     assert trade_resp.json()["review_version"] == "trade-review-v3"
     assert trade_resp.json()["portfolio_id"] == 42
     assert trade_resp.json()["review_result"]["operation_review"]["scope"] == "current_closed_row_only"
@@ -4963,6 +4966,252 @@ def test_list_closed_portfolio_returns_realized_fields():
     assert resp.json()[0]["realized_pnl"] == 4985.0
     assert resp.json()[0]["holding_days"] == 10
     assert resp.json()[0]["position_group_id"] == "group-42"
+
+
+def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_labels_and_ledger_pnl(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            entry_price=910,
+            quantity=40,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 8),
+            exit_price=960,
+            exit_quantity=40,
+            realized_pnl=2000,
+            realized_return_pct=5.49,
+            holding_days=7,
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            entry_price=910,
+            quantity=60,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 12),
+            exit_price=940,
+            exit_quantity=60,
+            realized_pnl=1800,
+            realized_return_pct=3.30,
+            holding_days=11,
+        ),
+    ])
+    portfolio_db_session.add_all([
+        PositionEvent(
+            id=101,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=80,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=43,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            id=102,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="add_entry",
+            event_date=date(2026, 1, 4),
+            price=950,
+            quantity=20,
+            fees=200,
+            taxes=0,
+            source_portfolio_id=43,
+            reason_category="plan_execution",
+            reason_code="planned_scale_in",
+            plan_adherence="yes",
+            confidence_level="high",
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            id=103,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="partial_exit",
+            event_date=date(2026, 1, 8),
+            price=960,
+            quantity=40,
+            fees=20,
+            taxes=30,
+            source_portfolio_id=42,
+            reason_category="risk_control",
+            reason_code="profit_protection",
+            plan_adherence="yes",
+            confidence_level="high",
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            id=104,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="full_exit",
+            event_date=date(2026, 1, 12),
+            price=940,
+            quantity=60,
+            fees=20,
+            taxes=30,
+            source_portfolio_id=43,
+            reason_category="technical",
+            reason_code="support_broken",
+            plan_adherence="partial",
+            confidence_level="medium",
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-complete-lifecycle",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v4",
+        review_result={
+            "lifecycle_review": {
+                "outcome": {"status": "profit", "label": "結果獲利", "total_realized_pnl": 3500.0},
+                "process_quality": {"status": "mixed", "label": "流程有好有壞"},
+                "feedback": {
+                    "improve": [{
+                        "title": "提前定義風險出口",
+                        "action": "下次進場前先定義破位條件。",
+                        "source_refs": ["exit_sequence.percentage_sold_after_breakdown"],
+                    }],
+                    "keep": [],
+                    "next_actions": [],
+                },
+            },
+        },
+        evidence_payload={},
+    ))
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/closed-lifecycles")
+
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+    lifecycle = resp.json()[0]
+    assert lifecycle["lifecycle_start_date"] == "2026-01-01"
+    assert lifecycle["lifecycle_end_date"] == "2026-01-12"
+    assert lifecycle["initial_entry_price"] == 900.0
+    assert lifecycle["entry_event_count"] == 2
+    assert lifecycle["add_entry_count"] == 1
+    assert lifecycle["exit_event_count"] == 2
+    assert lifecycle["total_closed_quantity"] == 100
+    assert lifecycle["total_realized_pnl"] == 3500.0
+    assert lifecycle["total_realized_pnl"] == lifecycle["review_summary"]["outcome"]["total_realized_pnl"]
+    assert [batch["display_label"] for batch in lifecycle["exit_batches"]] == ["第 1 次減碼", "最終出清"]
+    assert lifecycle["exit_batches"][0]["reason_code"] == "profit_protection"
+    assert lifecycle["exit_batches"][1]["plan_adherence"] == "partial"
+    assert lifecycle["review_summary"] == {
+        "review_version": "position-lifecycle-review-v4",
+        "outcome": {"status": "profit", "label": "結果獲利", "total_realized_pnl": 3500.0},
+        "process_quality": {"status": "mixed", "label": "流程有好有壞"},
+        "key_feedback": {
+            "title": "提前定義風險出口",
+            "action": "下次進場前先定義破位條件。",
+            "source_refs": ["exit_sequence.percentage_sold_after_breakdown"],
+        },
+    }
+
+    portfolio_db_session.add(PositionLifecycleReview(
+        user_id=1,
+        position_group_id="group-complete-lifecycle",
+        symbol="2330.TW",
+        review_version="position-lifecycle-review-v5",
+        review_result={"future": True},
+        evidence_payload={"future": True},
+    ))
+    portfolio_db_session.commit()
+
+    response_with_future_review = portfolio_db_client.get("/portfolio/closed-lifecycles")
+
+    assert response_with_future_review.status_code == 200
+    assert response_with_future_review.json()[0]["review_summary"] is None
+
+
+def test_list_closed_lifecycles_excludes_group_that_still_has_an_active_position(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=60,
+            entry_date=date(2026, 1, 1),
+            is_active=True,
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=40,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 8),
+            exit_price=960,
+            exit_quantity=40,
+            realized_pnl=2400,
+            realized_return_pct=6.67,
+            holding_days=7,
+        ),
+    ])
+    portfolio_db_session.add_all([
+        PositionEvent(
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=100,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            event_type="partial_exit",
+            event_date=date(2026, 1, 8),
+            price=960,
+            quantity=40,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=43,
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/closed-lifecycles")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 # ── Task 2: GET /portfolio/latest-history ────────────────────

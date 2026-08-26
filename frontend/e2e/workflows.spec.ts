@@ -1041,8 +1041,77 @@ test("Closed Portfolio presents a populated realized-PnL group", async ({ page }
   await expect(closedPosition).toContainText("台積電");
   await expect(closedPosition).toContainText("600 股");
   await expect(closedPosition).toContainText("+41,634");
-  await expect(closedPosition.getByRole("button", { name: "整體部位檢討" })).toBeVisible();
-  await expect(closedPosition.getByRole("button", { name: "事件時間線" })).toBeVisible();
+  await expect(closedPosition).toContainText("完整交易");
+  await expect(closedPosition.getByRole("button", { name: "查看完整復盤" })).toBeVisible();
+  await expect(closedPosition.getByRole("button", { name: "查看這次處分" })).toBeVisible();
+});
+
+test("Closed Portfolio keeps every exit batch when the lifecycle completes inside the selected period", async ({
+  page,
+}) => {
+  const dateFromToday = (days: number) => {
+    const value = new Date();
+    value.setUTCDate(value.getUTCDate() + days);
+    return value.toISOString().slice(0, 10);
+  };
+  const firstExit = {
+    ...closedPortfolioItem,
+    id: 201,
+    exit_date: dateFromToday(-45),
+    exit_quantity: 200,
+    realized_pnl: 12_000,
+    sequence_number: 1,
+    display_label: "第 1 次減碼",
+    event_id: 501,
+    event_type: "partial_exit",
+    reason_category: "risk_control",
+    reason_code: "profit_protection",
+    plan_adherence: "yes",
+    confidence_level: "high",
+  };
+  const finalExit = {
+    ...closedPortfolioItem,
+    id: 202,
+    entry_price: 990,
+    exit_date: dateFromToday(0),
+    exit_quantity: 400,
+    realized_pnl: 29_634,
+    sequence_number: 2,
+    display_label: "最終出清",
+    event_id: 502,
+    event_type: "full_exit",
+    reason_category: "technical",
+    reason_code: "support_broken",
+    plan_adherence: "partial",
+    confidence_level: "medium",
+  };
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedLifecycles: [
+      {
+        position_group_id: closedPortfolioItem.position_group_id,
+        symbol: closedPortfolioItem.symbol,
+        name: closedPortfolioItem.name,
+        lifecycle_start_date: dateFromToday(-60),
+        lifecycle_end_date: dateFromToday(0),
+        initial_entry_price: 968,
+        entry_event_count: 2,
+        add_entry_count: 1,
+        exit_event_count: 2,
+        total_closed_quantity: 600,
+        total_realized_pnl: 41_634,
+        exit_batches: [firstExit, finalExit],
+      },
+    ],
+  });
+
+  await page.goto("/portfolio/closed");
+
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await expect(closedPosition).toContainText("第 1 次減碼");
+  await expect(closedPosition).toContainText("最終出清");
+  await expect(closedPosition).toContainText("2 次處分");
+  await expect(page.getByText("本期間共 1 筆完整交易")).toBeVisible();
 });
 
 test("Closed Portfolio presents a neutral lifecycle classification without a missing-context warning", async ({
@@ -1121,27 +1190,174 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "整體部位檢討" }).click();
+  await closedPosition.getByRole("button", { name: "查看完整復盤" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 整體部位檢討" });
-  await expect(dialog).toContainText("position-lifecycle-review-v3");
-  const overallSection = dialog.locator("article").filter({ hasText: "整體結果" });
+  const workspace = page.locator("#closed-review-workspace");
+  await expect(workspace).toBeVisible();
+  await workspace.getByText("技術細節與來源").click();
+  await expect(workspace).toContainText("position-lifecycle-review-v3");
+  const overallSection = workspace.locator("article").filter({ hasText: "整體結果" });
   await expect(overallSection.getByText("暫無適用分類", { exact: true })).toHaveCount(1);
-  await expect(dialog).not.toContainText("混合結論");
-  await expect(dialog).not.toContainText("原始計畫缺失：");
-  await expect(dialog).not.toContainText("事件或市場證據不足");
+  await expect(workspace).not.toContainText("混合結論");
+  await expect(workspace).not.toContainText("原始計畫缺失：");
+  await expect(workspace).not.toContainText("事件或市場證據不足");
 
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
+  await workspace.getByRole("button", { name: "關閉完整交易復盤" }).click();
+  await expect(workspace).toBeHidden();
+  await expect(closedPosition.getByRole("button", { name: "查看完整復盤" })).toBeFocused();
   decisionContextStatus = "retrospective_only";
   backfilledPlan = true;
   insufficientData = ["full_exit_2026-05-10_ma20"];
-  await closedPosition.getByRole("button", { name: "整體部位檢討" }).click();
+  await closedPosition.getByRole("button", { name: "查看完整復盤" }).click();
 
-  await expect(dialog).toContainText("檢討證據不足");
-  await expect(dialog).toContainText("事件或市場證據不足");
-  await expect(dialog).toContainText("事後補填計畫提示");
-  await expect(dialog).not.toContainText("原始計畫缺失：");
+  await expect(workspace).toContainText("檢討證據不足");
+  await expect(workspace).toContainText("事件或市場證據不足");
+  await expect(workspace).toContainText("事後補填計畫提示");
+  await expect(workspace).not.toContainText("原始計畫缺失：");
+});
+
+test("Closed Portfolio separates profitable outcome from mixed process quality and actionable feedback", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await authenticate(page);
+  await installApiMocks(page, { closedPortfolio: [closedPortfolioItem] });
+  await page.route("http://127.0.0.1:8001/portfolio/groups/closed-tsmc-e2e/events", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ position_group_id: "closed-tsmc-e2e", symbol: "2330.TW", events: [] }),
+    });
+  });
+  await page.route("http://127.0.0.1:8001/portfolio/groups/closed-tsmc-e2e/lifecycle-review", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: 401,
+        user_id: 1,
+        position_group_id: "closed-tsmc-e2e",
+        symbol: "2330.TW",
+        review_version: "position-lifecycle-review-v4",
+        review_result: {
+          lifecycle_metrics: {
+            total_realized_pnl: 41_634,
+            total_return_pct_on_weighted_cost: 7.17,
+          },
+          entry_sequence: {},
+          exit_sequence: {},
+          advanced_internal: {},
+          event_indicator_snapshots: [],
+          event_facts: [],
+          decision_context: { status: "present", has_plan: true, historical_judgment_eligible: true },
+          data_quality: { status: "ok", notes: [], insufficient_data: [] },
+          lifecycle_review: {
+            outcome: {
+              status: "profit",
+              label: "結果獲利",
+              summary: "獲利結果不等同於操作流程必然正確。",
+              total_realized_pnl: 41_634,
+              total_return_pct: 7.17,
+              source_refs: ["lifecycle_metrics.total_realized_pnl"],
+            },
+            process_quality: {
+              status: "mixed",
+              label: "流程有好有壞",
+              summary: "同時有可保留的做法與需要修正的決策。",
+              strength_labels: ["disciplined_scale_out"],
+              risk_labels: ["late_scale_out"],
+              source_refs: ["exit_sequence"],
+            },
+            dimensions: {
+              entry: {
+                label: "進場品質",
+                status: "not_observed",
+                summary: "未命中模式。",
+                source_refs: ["entry_sequence"],
+              },
+              position_management: {
+                label: "部位管理",
+                status: "strength",
+                summary: "分批管理可追溯。",
+                source_refs: ["exit_sequence"],
+              },
+              risk_exit: {
+                label: "風險與出場",
+                status: "mixed",
+                summary: "有保護也有延遲。",
+                source_refs: ["exit_sequence"],
+              },
+              record_quality: {
+                label: "紀錄品質",
+                status: "sufficient",
+                summary: "紀錄足夠。",
+                source_refs: ["data_quality"],
+              },
+            },
+            feedback: {
+              keep: [
+                {
+                  label: "disciplined_scale_out",
+                  title: "保留分批保護獲利",
+                  observation: "部分結案先鎖定獲利。",
+                  action: "下次沿用事前定義的分批條件。",
+                  source_refs: ["exit_sequence.partial_exit_count"],
+                },
+              ],
+              improve: [
+                {
+                  label: "late_scale_out",
+                  title: "提前定義風險出口",
+                  observation: "較大比例的結案發生在轉弱之後。",
+                  action: "下次進場前先定義破位條件。",
+                  source_refs: ["exit_sequence.percentage_sold_after_breakdown"],
+                },
+              ],
+              next_actions: [
+                {
+                  title: "下次操作規則",
+                  action: "破位條件觸發時直接降低曝險。",
+                  source_refs: ["exit_sequence.percentage_sold_after_breakdown"],
+                },
+              ],
+            },
+            classification: {
+              primary_label: "late_scale_out",
+              labels: ["disciplined_scale_out", "late_scale_out"],
+              tier: "needs_review",
+              reasons: [],
+              caveats: [],
+              source_refs: ["exit_sequence"],
+            },
+            event_level_evidence: [],
+            data_quality_notes: [],
+          },
+        },
+        evidence_payload: {},
+        llm_summary: null,
+        created_at: "2026-08-26T00:00:00Z",
+        updated_at: "2026-08-26T00:00:00Z",
+      }),
+    });
+  });
+
+  await page.goto("/portfolio/closed");
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await closedPosition.getByRole("button", { name: "查看完整復盤" }).click();
+
+  const workspace = page.locator("#closed-review-workspace");
+  await expect(workspace).toContainText("結果獲利");
+  await expect(workspace).toContainText("流程有好有壞");
+  await expect(workspace).toContainText("進場品質");
+  await expect(workspace).toContainText("部位管理");
+  await expect(workspace).toContainText("風險與出場");
+  await expect(workspace).toContainText("紀錄品質");
+  await expect(workspace).toContainText("保留分批保護獲利");
+  await expect(workspace).toContainText("提前定義風險出口");
+  await expect(workspace).toContainText("破位條件觸發時直接降低曝險");
+  await expect(closedPosition).toContainText("流程有好有壞");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("Closed Portfolio upgrades a saved v1 trade review before presenting it", async ({ page }) => {
@@ -1156,10 +1372,10 @@ test("Closed Portfolio upgrades a saved v1 trade review before presenting it", a
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v3");
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
+  await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
 });
@@ -1176,10 +1392,10 @@ test("Closed Portfolio upgrades a saved v2 trade review before presenting it", a
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v3");
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
+  await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
 });
@@ -1196,10 +1412,10 @@ test("Closed Portfolio refreshes a saved v3 trade review before presenting it", 
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v3");
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
+  await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
 });
@@ -1223,10 +1439,10 @@ test("Closed Portfolio retries a concurrent trade review refresh using Retry-Aft
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v3");
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
+  await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(2);
 });
 
@@ -1241,10 +1457,10 @@ test("Closed Portfolio does not downgrade an unknown newer trade review", async 
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "檢討分析" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 檢討分析" });
-  await expect(dialog).toContainText("trade-review-v4");
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
+  await expect(exitReview).toContainText("trade-review-v4");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   expect(requestLog.filter((entry) => entry === "POST /portfolio/201/review")).toHaveLength(0);
 });

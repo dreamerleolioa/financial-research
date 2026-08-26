@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,6 +21,16 @@ ENTRY_TYPES = {"initial_entry", "add_entry"}
 EXIT_TYPES = {"partial_exit", "full_exit"}
 MAX_DETECTED_EVENTS = 8
 POSITION_LIFECYCLE_LOOKBACK_DAYS = 120
+
+
+def build_lifecycle_accounting(
+    events,
+    *,
+    data_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build deterministic lifecycle accounting from the ordered event ledger."""
+    quality = data_quality if data_quality is not None else _empty_data_quality()
+    return _build_accounting_timeline(_sort_events(list(events or ())), quality)
 
 
 def build_position_lifecycle_analysis(
@@ -97,7 +107,7 @@ def build_position_lifecycle_analysis_from_rows(
     if not ordered_events:
         _add_note(data_quality, "events_missing", "No PositionEvent rows were available for this position_group_id.")
 
-    accounting = _build_accounting_timeline(ordered_events, data_quality)
+    accounting = build_lifecycle_accounting(ordered_events, data_quality=data_quality)
     event_snapshots = _build_event_indicator_snapshots(ordered_events, ordered_rows, data_quality)
     lifecycle_metrics = _build_lifecycle_metrics(ordered_events, ordered_rows, accounting, data_quality)
     entry_sequence = _build_entry_sequence(ordered_events, accounting, event_snapshots)
@@ -456,8 +466,17 @@ def _build_lifecycle_review(
         if primary_label == "unclassified"
         else f"本次生命週期檢討層級為{_lifecycle_tier_text(tier)}；主要分類為{_lifecycle_label_text(primary_label)}。"
     )
+    review_framework = _build_review_framework(
+        labels=labels,
+        lifecycle_metrics=lifecycle_metrics,
+        next_operation_rules=next_operation_rules,
+        source_refs=source_refs,
+        decision_context_insufficient=decision_context_insufficient,
+        evidence_gaps=evidence_gaps,
+    )
 
     return {
+        **review_framework,
         "classification": {
             "primary_label": primary_label,
             "labels": labels or [primary_label],
@@ -548,6 +567,312 @@ def _lifecycle_tier_text(tier: str) -> str:
         "constructive": "具建設性",
         "mixed": "混合結論",
     }.get(tier, tier)
+
+
+_PROCESS_STRENGTH_LABELS = {
+    "ma20_pullback_supported",
+    "disciplined_scale_out",
+    "risk_reduction_exit",
+    "coherent_position_management",
+}
+_PROCESS_RISK_LABELS = {
+    "averaging_down_into_weakness",
+    "add_entry_plan_violation",
+    "unacted_stop_rule_break",
+    "holding_period_needs_review",
+    "premature_scale_out",
+    "late_scale_out",
+}
+
+
+def _build_review_framework(
+    *,
+    labels: list[str],
+    lifecycle_metrics: dict[str, Any],
+    next_operation_rules: list[dict[str, Any]],
+    source_refs: list[str],
+    decision_context_insufficient: bool,
+    evidence_gaps: list[str],
+) -> dict[str, Any]:
+    realized_pnl = _number(lifecycle_metrics.get("total_realized_pnl"))
+    realized_return_pct = _number(lifecycle_metrics.get("total_return_pct_on_weighted_cost"))
+    if realized_pnl is None:
+        outcome_status = "insufficient"
+        outcome_label = "損益資料不足"
+        outcome_summary = "目前沒有足夠的已實現損益資料可判斷結果。"
+    elif realized_pnl > 0:
+        outcome_status = "profit"
+        outcome_label = "結果獲利"
+        outcome_summary = "這筆完整交易最終為獲利；獲利結果不等同於操作流程必然正確。"
+    elif realized_pnl < 0:
+        outcome_status = "loss"
+        outcome_label = "結果虧損"
+        outcome_summary = "這筆完整交易最終為虧損；虧損結果不等同於每個操作決策都錯誤。"
+    else:
+        outcome_status = "breakeven"
+        outcome_label = "結果持平"
+        outcome_summary = "這筆完整交易最終接近持平，仍需獨立檢查操作流程。"
+
+    strength_labels = [label for label in labels if label in _PROCESS_STRENGTH_LABELS]
+    risk_labels = [label for label in labels if label in _PROCESS_RISK_LABELS]
+    has_evidence_gap = "insufficient_data" in labels
+    if strength_labels and risk_labels:
+        process_status = "mixed"
+        process_label = "流程有好有壞"
+        process_summary = "同一筆交易同時有可保留的做法與需要修正的決策，不能只用損益下結論。"
+    elif risk_labels:
+        process_status = "needs_review"
+        process_label = "流程需要改善"
+        process_summary = "已辨識出具體的執行風險，應先修正命中的行為再評估下次操作。"
+    elif strength_labels and has_evidence_gap:
+        process_status = "mixed"
+        process_label = "有可取處但證據不完整"
+        process_summary = "已有可追溯的正向做法，但資料缺口仍限制整體流程判斷。"
+    elif strength_labels:
+        process_status = "disciplined"
+        process_label = "流程大致有紀律"
+        process_summary = "已辨識出可重複的正向操作模式，仍應持續保留觸發條件與執行紀錄。"
+    else:
+        process_status = "insufficient"
+        process_label = "流程暫無足夠判斷"
+        process_summary = (
+            "目前資料有缺口，先補齊紀錄再判斷操作流程。"
+            if has_evidence_gap
+            else "現有固定規則未命中可驗證模式，暫不把這筆交易判定為做對或做錯。"
+        )
+
+    dimensions = {
+        "entry": _review_dimension(
+            label="進場品質",
+            labels=labels,
+            strength_labels={"ma20_pullback_supported"},
+            risk_labels={"averaging_down_into_weakness", "add_entry_plan_violation"},
+            strength_summary="進場理由與事件當下證據可互相核對。",
+            risk_summary="進場或新增批次行為命中需要修正的規則。",
+            source_refs=["entry_sequence", "event_facts", "event_indicator_snapshots"],
+            has_evidence_gap=has_evidence_gap,
+        ),
+        "position_management": _review_dimension(
+            label="部位管理",
+            labels=labels,
+            strength_labels={"disciplined_scale_out", "coherent_position_management"},
+            risk_labels={"holding_period_needs_review"},
+            strength_summary="部位調整呈現可追溯的紀律或一致性。",
+            risk_summary="持有週期或部位調整需要重新核對原計畫。",
+            source_refs=["entry_sequence", "exit_sequence", "decision_context"],
+            has_evidence_gap=has_evidence_gap,
+        ),
+        "risk_exit": _review_dimension(
+            label="風險與出場",
+            labels=labels,
+            strength_labels={"disciplined_scale_out", "risk_reduction_exit"},
+            risk_labels={"unacted_stop_rule_break", "premature_scale_out", "late_scale_out"},
+            strength_summary="降低曝險或風險處理有明確可追溯的效果。",
+            risk_summary="出場時機或風險規則執行命中需要改善的條件。",
+            source_refs=["exit_sequence", "event_facts", "event_indicator_snapshots"],
+            has_evidence_gap=has_evidence_gap,
+        ),
+        "record_quality": {
+            "label": "紀錄品質",
+            "status": "insufficient" if has_evidence_gap else "sufficient",
+            "summary": (
+                "決策脈絡、事件帳本或市場證據仍有缺口。"
+                if has_evidence_gap
+                else "目前紀錄足以支持這次規則化判讀。"
+            ),
+            "source_refs": ["data_quality", "decision_context"],
+        },
+    }
+
+    keep = _structured_feedback_for_labels(strength_labels, kind="keep")
+    improve = _structured_feedback_for_labels(risk_labels, kind="improve")
+    next_actions = [
+        {
+            "title": "下次操作規則",
+            "action": item["text"],
+            "source_refs": item["source_refs"],
+        }
+        for item in next_operation_rules
+        if not (
+            decision_context_insufficient
+            and "decision_context.status" in item["source_refs"]
+        )
+        and not (
+            evidence_gaps
+            and "data_quality.insufficient_data" in item["source_refs"]
+        )
+    ]
+    if decision_context_insufficient:
+        next_actions.insert(0, {
+            "title": "先補操作計畫",
+            "action": "下次進場前先記錄持有週期、新增批次條件與風險控制規則，讓結案時能核對原始計畫。",
+            "source_refs": ["decision_context.status"],
+        })
+    if evidence_gaps:
+        next_actions.insert(0, {
+            "title": "先補齊證據",
+            "action": "依資料品質提示補齊事件帳本與事件當下資料，再進行交易品質判斷。",
+            "source_refs": ["data_quality.insufficient_data"],
+        })
+
+    return {
+        "outcome": {
+            "status": outcome_status,
+            "label": outcome_label,
+            "summary": outcome_summary,
+            "total_realized_pnl": realized_pnl,
+            "total_return_pct": realized_return_pct,
+            "source_refs": [
+                "lifecycle_metrics.total_realized_pnl",
+                "lifecycle_metrics.total_return_pct_on_weighted_cost",
+            ],
+        },
+        "process_quality": {
+            "status": process_status,
+            "label": process_label,
+            "summary": process_summary,
+            "strength_labels": strength_labels,
+            "risk_labels": risk_labels,
+            "source_refs": source_refs,
+        },
+        "dimensions": dimensions,
+        "feedback": {
+            "keep": keep,
+            "improve": improve,
+            "next_actions": _deduplicate_feedback(next_actions),
+        },
+    }
+
+
+def _review_dimension(
+    *,
+    label: str,
+    labels: list[str],
+    strength_labels: set[str],
+    risk_labels: set[str],
+    strength_summary: str,
+    risk_summary: str,
+    source_refs: list[str],
+    has_evidence_gap: bool,
+) -> dict[str, Any]:
+    strengths = strength_labels.intersection(labels)
+    risks = risk_labels.intersection(labels)
+    if strengths and risks:
+        status = "mixed"
+        summary = f"{strength_summary}{risk_summary}"
+    elif risks:
+        status = "needs_review"
+        summary = risk_summary
+    elif strengths:
+        status = "strength"
+        summary = strength_summary
+    elif has_evidence_gap:
+        status = "insufficient"
+        summary = "目前證據不足，暫不判定此面向做得好或不好。"
+    else:
+        status = "not_observed"
+        summary = "目前固定規則未命中此面向的明確模式。"
+    return {
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "source_refs": source_refs,
+    }
+
+
+def _structured_feedback_for_labels(
+    labels: list[str],
+    *,
+    kind: Literal["keep", "improve"],
+) -> list[dict[str, Any]]:
+    feedback_by_label = {
+        "ma20_pullback_supported": (
+            "保留可核對的進場理由",
+            "進場理由與 MA20 事件快照相互支持。",
+            "下次延續在進場當下記錄理由與支撐依據。",
+            ["event_facts.reason_code", "event_indicator_snapshots.event_price_vs_ma20_pct"],
+        ),
+        "disciplined_scale_out": (
+            "保留分批保護獲利",
+            "部分結案先鎖定獲利，降低了完整部位的回吐風險。",
+            "下次沿用事前定義的分批條件，並記錄每次降低曝險的原因。",
+            ["exit_sequence.partial_exit_count", "exit_sequence.profit_protected_by_partial_exits"],
+        ),
+        "risk_reduction_exit": (
+            "保留破位後降低曝險",
+            "轉弱後的結案動作確實降低剩餘曝險。",
+            "下次繼續把破位條件寫成可直接執行的風險動作。",
+            ["exit_sequence.percentage_sold_after_breakdown", "exit_sequence.final_exit_return_pct"],
+        ),
+        "coherent_position_management": (
+            "保留一致的部位管理",
+            "部位調整與已記錄計畫大致一致。",
+            "下次繼續在每個事件記錄是否符合原計畫。",
+            ["decision_context", "event_facts.plan_adherence"],
+        ),
+        "averaging_down_into_weakness": (
+            "停止在弱勢中攤平",
+            "新增批次同時出現成本下修與弱勢證據。",
+            "下次只有在已記錄的轉強條件成立後才新增批次。",
+            ["entry_sequence.average_down_count", "entry_sequence.add_after_breakdown_count"],
+        ),
+        "add_entry_plan_violation": (
+            "遵守新增批次條件",
+            "實際新增批次與原先不攤平的條件衝突。",
+            "新增批次前逐項核對價格位置與原計畫，不符合就不執行。",
+            ["decision_context.add_entry_condition", "event_facts", "event_indicator_snapshots"],
+        ),
+        "unacted_stop_rule_break": (
+            "讓風險規則可執行",
+            "風險條件觸發後，紀錄中沒有可核對的對應動作。",
+            "下次把風險規則寫成觸發條件、動作與紀錄欄位三件事。",
+            ["decision_context.default_stop_rule", "event_facts.reason_code", "event_facts.plan_adherence"],
+        ),
+        "holding_period_needs_review": (
+            "校準持有週期",
+            "實際持有時間與原計畫的時間框架差距較大。",
+            "若策略中途改變，當下更新計畫與下一次檢查日期。",
+            ["decision_context.planned_holding_period", "lifecycle_metrics.total_holding_days_from_first_entry"],
+        ),
+        "premature_scale_out": (
+            "避免無依據地過早降低曝險",
+            "降低曝險時有偏離計畫或情緒性紀錄，且後續價格仍走高。",
+            "下次先確認原計畫的降低曝險條件成立，再執行部分結案。",
+            ["event_facts.plan_adherence", "event_facts.reason_code", "exit_sequence.percentage_sold_before_peak"],
+        ),
+        "late_scale_out": (
+            "提前定義風險出口",
+            "較大比例的結案發生在轉弱或明顯回吐之後。",
+            "下次在進場前定義回吐或破位的降低曝險條件，觸發時直接執行。",
+            ["lifecycle_metrics.profit_giveback_pct", "exit_sequence.percentage_sold_after_breakdown"],
+        ),
+    }
+    allowed_labels = _PROCESS_STRENGTH_LABELS if kind == "keep" else _PROCESS_RISK_LABELS
+    items = []
+    for label in labels:
+        if label not in allowed_labels:
+            continue
+        title, observation, action, refs = feedback_by_label[label]
+        items.append({
+            "label": label,
+            "title": title,
+            "observation": _risk_language_text(observation),
+            "action": _risk_language_text(action),
+            "source_refs": refs,
+        })
+    return items
+
+
+def _deduplicate_feedback(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduplicated = []
+    seen_actions = set()
+    for item in items:
+        action = item.get("action")
+        if action in seen_actions:
+            continue
+        seen_actions.add(action)
+        deduplicated.append(item)
+    return deduplicated
 
 
 def _event_evidence_item(event: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str, Any]:
