@@ -1368,12 +1368,12 @@ function ExitDecisionReview({
   return (
     <section
       id="closed-exit-decision"
-      aria-label={`${portfolioDisplayName(item)} 這次出場檢討`}
+      aria-label={`${portfolioDisplayName(item)} 個別批次復盤`}
       className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel"
     >
       <div className="flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
         <div>
-          <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 這次出場</p>
+          <p className="font-semibold text-text-primary">{portfolioDisplayName(item)} 本次處分</p>
           <p className="mt-1 text-xs text-text-faint">
             {item.entry_date} → {item.exit_date} ｜ 結案 {item.exit_quantity} 股 ｜{" "}
             {getSignedRoundedMoneyText(item.realized_pnl)}
@@ -1383,7 +1383,7 @@ function ExitDecisionReview({
           type="button"
           onClick={onClose}
           className="ui-icon-button shrink-0 border border-border"
-          aria-label="收合這次出場檢討"
+          aria-label="收合個別批次復盤"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -1452,7 +1452,7 @@ function LifecycleLedger({ group, timeline, loading, error }: LifecycleLedgerPro
           <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件與來源細節</p>
           <p className="mt-1 text-xs text-text-faint">
             部位事件時間線 ｜ {group.lifecycle_start_date} 至 {group.lifecycle_end_date} ｜ {group.exit_event_count}{" "}
-            次出場
+            次處分
           </p>
         </div>
         <span className="text-xs font-medium text-accent">展開／收合</span>
@@ -1624,7 +1624,7 @@ function LifecycleReviewWorkspace({
           <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 完整交易復盤</p>
           <p className="mt-1 text-xs text-text-faint">
             {group.lifecycle_start_date} 至 {group.lifecycle_end_date} ｜ {group.entry_event_count} 次進場 ｜{" "}
-            {group.exit_event_count} 次出場
+            {group.exit_event_count} 次處分
           </p>
         </div>
         <button
@@ -1655,7 +1655,7 @@ function LifecycleReviewWorkspace({
             <div>
               <p className="text-xs font-medium text-text-muted">整體部位生命週期檢討</p>
               <p className="mt-1 text-sm leading-relaxed text-text-secondary">
-                先看結果與操作流程，再檢查要保持、要改善與下次規則；個別出場決策與事件證據收在同一工作區內。
+                先看結果與操作流程，再檢查要保持、要改善與下次規則；個別處分決策與事件證據收在同一工作區內。
               </p>
             </div>
             <span
@@ -2078,10 +2078,10 @@ export default function ClosedPortfolioPage() {
                         {group.lifecycle_start_date} 至 {group.lifecycle_end_date}
                       </p>
                       <p className="mt-1 text-xs tabular-nums text-text-faint">
-                        初始進場 {formatPrice(group.initial_entry_price, group.symbol)} · {group.add_entry_count} 次加碼
+                        初始進場 {formatPrice(group.initial_entry_price, group.symbol)} · {group.add_entry_count} 次追加
                       </p>
                       <p className="mt-1 text-xs tabular-nums text-text-faint">
-                        {group.total_closed_quantity} 股 · {group.exit_event_count} 次出場
+                        {group.total_closed_quantity} 股 · {group.exit_event_count} 次處分
                       </p>
                     </div>
                     <div>
@@ -2167,7 +2167,7 @@ export default function ClosedPortfolioPage() {
                                 disabled={isReviewLoading}
                                 className="ui-button-secondary min-h-10 px-3 text-xs"
                               >
-                                {isReviewLoading ? "載入中" : "查看這次出場"}
+                                {isReviewLoading ? "載入中" : "查看這次處分"}
                               </button>
                             </div>
                           </div>

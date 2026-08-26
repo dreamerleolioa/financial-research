@@ -1043,7 +1043,7 @@ test("Closed Portfolio presents a populated realized-PnL group", async ({ page }
   await expect(closedPosition).toContainText("+41,634");
   await expect(closedPosition).toContainText("完整交易");
   await expect(closedPosition.getByRole("button", { name: "查看完整復盤" })).toBeVisible();
-  await expect(closedPosition.getByRole("button", { name: "查看這次出場" })).toBeVisible();
+  await expect(closedPosition.getByRole("button", { name: "查看這次處分" })).toBeVisible();
 });
 
 test("Closed Portfolio keeps every exit batch when the lifecycle completes inside the selected period", async ({
@@ -1110,7 +1110,7 @@ test("Closed Portfolio keeps every exit batch when the lifecycle completes insid
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
   await expect(closedPosition).toContainText("第 1 次減碼");
   await expect(closedPosition).toContainText("最終出清");
-  await expect(closedPosition).toContainText("2 次出場");
+  await expect(closedPosition).toContainText("2 次處分");
   await expect(page.getByText("本期間共 1 筆完整交易")).toBeVisible();
 });
 
@@ -1372,9 +1372,9 @@ test("Closed Portfolio upgrades a saved v1 trade review before presenting it", a
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "查看這次出場" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const exitReview = page.locator('[aria-label="台積電 2330.TW 這次出場檢討"]');
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
   await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
@@ -1392,9 +1392,9 @@ test("Closed Portfolio upgrades a saved v2 trade review before presenting it", a
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "查看這次出場" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const exitReview = page.locator('[aria-label="台積電 2330.TW 這次出場檢討"]');
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
   await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
@@ -1412,9 +1412,9 @@ test("Closed Portfolio refreshes a saved v3 trade review before presenting it", 
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "查看這次出場" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const exitReview = page.locator('[aria-label="台積電 2330.TW 這次出場檢討"]');
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
   await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(1);
@@ -1439,9 +1439,9 @@ test("Closed Portfolio retries a concurrent trade review refresh using Retry-Aft
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "查看這次出場" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const exitReview = page.locator('[aria-label="台積電 2330.TW 這次出場檢討"]');
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
   await expect(exitReview).toContainText("trade-review-v3");
   await expect.poll(() => requestLog.filter((entry) => entry === "POST /portfolio/201/review").length).toBe(2);
 });
@@ -1457,9 +1457,9 @@ test("Closed Portfolio does not downgrade an unknown newer trade review", async 
 
   await page.goto("/portfolio/closed");
   const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
-  await closedPosition.getByRole("button", { name: "查看這次出場" }).click();
+  await closedPosition.getByRole("button", { name: "查看這次處分" }).click();
 
-  const exitReview = page.locator('[aria-label="台積電 2330.TW 這次出場檢討"]');
+  const exitReview = page.locator('[aria-label="台積電 2330.TW 個別批次復盤"]');
   await expect(exitReview).toContainText("trade-review-v4");
   await expect.poll(() => requestLog.filter((entry) => entry === "GET /portfolio/201/review").length).toBe(1);
   expect(requestLog.filter((entry) => entry === "POST /portfolio/201/review")).toHaveLength(0);
