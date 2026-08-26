@@ -1200,9 +1200,10 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
   await expect(overallSection.getByText("暫無適用分類", { exact: true })).toHaveCount(1);
   await expect(workspace).not.toContainText("混合結論");
   await expect(workspace).not.toContainText("原始計畫缺失：");
-  await expect(workspace).not.toContainText("事件或市場證據不足");
+  await expect(workspace).not.toContainText("事件當下技術行情覆蓋不足");
 
-  await workspace.getByRole("button", { name: "關閉完整交易復盤" }).click();
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 完整交易復盤" });
+  await dialog.getByRole("button", { name: "關閉完整交易復盤" }).click();
   await expect(workspace).toBeHidden();
   await expect(closedPosition.getByRole("button", { name: "查看完整復盤" })).toBeFocused();
   decisionContextStatus = "retrospective_only";
@@ -1211,7 +1212,9 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
   await closedPosition.getByRole("button", { name: "查看完整復盤" }).click();
 
   await expect(workspace).toContainText("檢討證據不足");
-  await expect(workspace).toContainText("事件或市場證據不足");
+  await expect(workspace).toContainText("事件當下技術行情覆蓋不足");
+  await expect(workspace).toContainText("完整結案 2026-05-10 的 MA20");
+  await expect(workspace).toContainText("不代表你沒有記錄操作原因");
   await expect(workspace).toContainText("事後補填計畫提示");
   await expect(workspace).not.toContainText("原始計畫缺失：");
 });
@@ -1356,8 +1359,56 @@ test("Closed Portfolio separates profitable outcome from mixed process quality a
   await expect(workspace).toContainText("提前定義風險出口");
   await expect(workspace).toContainText("破位條件觸發時直接降低曝險");
   await expect(closedPosition).toContainText("流程有好有壞");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 完整交易復盤" });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("button", { name: "關閉完整交易復盤" })).toBeFocused();
+  await expect.poll(() => page.locator("#root").evaluate((element) => element.hasAttribute("inert"))).toBe(true);
+  await page.keyboard.press("Shift+Tab");
+  await expect(workspace.locator("summary").last()).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "關閉完整交易復盤" })).toBeFocused();
+  await expect.poll(() => workspace.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await workspace.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+  await expect(dialog.getByRole("button", { name: "上一筆完整交易" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe("hidden");
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Closed Portfolio switches lifecycle reviews inside the dialog without returning to the list", async ({
+  page,
+}) => {
+  const secondClosedPortfolioItem = {
+    ...closedPortfolioItem,
+    id: 202,
+    position_group_id: "closed-mediatek-e2e",
+    symbol: "2454.TW",
+    name: "聯發科",
+    realized_pnl: -8_500,
+  };
+  await authenticate(page);
+  await installApiMocks(page, { closedPortfolio: [closedPortfolioItem, secondClosedPortfolioItem] });
+
+  await page.goto("/portfolio/closed");
+  const firstTrigger = page
+    .locator('[data-closed-position-group="closed-tsmc-e2e"]')
+    .getByRole("button", { name: "查看完整復盤" });
+  await firstTrigger.click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("台積電 2330.TW 完整交易復盤");
+  await expect(dialog).toContainText("1 / 2");
+  const pageScrollBeforeSwitch = await page.evaluate(() => window.scrollY);
+  await dialog.getByRole("button", { name: "下一筆完整交易" }).click();
+
+  await expect(dialog).toContainText("聯發科 2454.TW 完整交易復盤");
+  await expect(dialog).toContainText("2 / 2");
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(pageScrollBeforeSwitch);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => page.locator("#root").evaluate((element) => element.hasAttribute("inert"))).toBe(false);
+  await expect(
+    page.locator('[data-closed-position-group="closed-mediatek-e2e"]').getByRole("button", { name: "查看完整復盤" }),
+  ).toBeFocused();
 });
 
 test("Closed Portfolio upgrades a saved v1 trade review before presenting it", async ({ page }) => {
