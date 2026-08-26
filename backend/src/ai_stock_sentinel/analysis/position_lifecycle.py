@@ -8,7 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
-from ai_stock_sentinel.analysis.review_sources import completed_trailing_series, market_snapshot_payload
+from ai_stock_sentinel.analysis.review_sources import (
+    completed_price_history_closes,
+    completed_technical_indicator_values,
+    completed_trailing_series,
+    market_snapshot_payload,
+)
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData
 from ai_stock_sentinel.shared_context import (
     SHARED_CONTEXT_CONSUMER_LIFECYCLE,
@@ -261,8 +266,18 @@ def _build_lifecycle_review(
     ]
     if evidence_gaps:
         _append_label(labels, "insufficient_data")
+        market_gaps = [key for key in evidence_gaps if _is_market_evidence_gap(key)]
+        record_gaps = [key for key in evidence_gaps if key not in market_gaps]
+        if market_gaps and not record_gaps:
+            gap_text = (
+                "事件當下的技術行情覆蓋不足；這是系統行情證據缺口，不代表操作原因或事件紀錄缺失。"
+            )
+        elif record_gaps and not market_gaps:
+            gap_text = "部分事件或 ledger 紀錄不足；請依資料品質欄位確認缺少的交易事實。"
+        else:
+            gap_text = "部分交易紀錄與事件當下技術行情不足；請依資料品質欄位分別確認缺口。"
         item = _text_item(
-            "部分事件、ledger 或市場證據不足；請依資料品質欄位確認缺口，不把缺少的證據解讀為已記錄事實。",
+            gap_text,
             ["data_quality.insufficient_data"],
         )
         caveats.append(item)
@@ -616,6 +631,23 @@ def _build_review_framework(
     strength_labels = [label for label in labels if label in _PROCESS_STRENGTH_LABELS]
     risk_labels = [label for label in labels if label in _PROCESS_RISK_LABELS]
     has_evidence_gap = "insufficient_data" in labels
+    market_gaps = [key for key in evidence_gaps if _is_market_evidence_gap(key)]
+    record_gaps = [key for key in evidence_gaps if key not in market_gaps]
+    entry_has_evidence_gap = any(
+        key.startswith(("initial_entry_", "add_entry_"))
+        or key in {"entry_price", "entry_indicators"}
+        for key in market_gaps
+    )
+    position_has_evidence_gap = any(
+        key in {"holding_path_prices", "path_metrics", "detected_events"}
+        for key in market_gaps
+    )
+    risk_exit_has_evidence_gap = any(
+        key.startswith(("partial_exit_", "full_exit_"))
+        or key in {"exit_price", "exit_indicators", "holding_path_prices"}
+        for key in market_gaps
+    )
+    record_has_evidence_gap = decision_context_insufficient or bool(record_gaps)
     if strength_labels and risk_labels:
         process_status = "mixed"
         process_label = "流程有好有壞"
@@ -650,7 +682,7 @@ def _build_review_framework(
             strength_summary="進場理由與事件當下證據可互相核對。",
             risk_summary="進場或新增批次行為命中需要修正的規則。",
             source_refs=["entry_sequence", "event_facts", "event_indicator_snapshots"],
-            has_evidence_gap=has_evidence_gap,
+            has_evidence_gap=entry_has_evidence_gap,
         ),
         "position_management": _review_dimension(
             label="部位管理",
@@ -660,7 +692,7 @@ def _build_review_framework(
             strength_summary="部位調整呈現可追溯的紀律或一致性。",
             risk_summary="持有週期或部位調整需要重新核對原計畫。",
             source_refs=["entry_sequence", "exit_sequence", "decision_context"],
-            has_evidence_gap=has_evidence_gap,
+            has_evidence_gap=position_has_evidence_gap,
         ),
         "risk_exit": _review_dimension(
             label="風險與出場",
@@ -670,15 +702,19 @@ def _build_review_framework(
             strength_summary="降低曝險或風險處理有明確可追溯的效果。",
             risk_summary="出場時機或風險規則執行命中需要改善的條件。",
             source_refs=["exit_sequence", "event_facts", "event_indicator_snapshots"],
-            has_evidence_gap=has_evidence_gap,
+            has_evidence_gap=risk_exit_has_evidence_gap,
         ),
         "record_quality": {
             "label": "紀錄品質",
-            "status": "insufficient" if has_evidence_gap else "sufficient",
+            "status": "insufficient" if record_has_evidence_gap else "sufficient",
             "summary": (
-                "決策脈絡、事件帳本或市場證據仍有缺口。"
-                if has_evidence_gap
-                else "目前紀錄足以支持這次規則化判讀。"
+                "操作計畫、事件或 ledger 紀錄仍有缺口。"
+                if record_has_evidence_gap
+                else (
+                    "操作原因、事件與計畫紀錄可用；技術行情缺口只限制受影響的判讀面向。"
+                    if market_gaps
+                    else "目前操作原因、事件與計畫紀錄足以支持這次規則化判讀。"
+                )
             ),
             "source_refs": ["data_quality", "decision_context"],
         },
@@ -708,10 +744,16 @@ def _build_review_framework(
             "action": "下次進場前先記錄持有週期、新增批次條件與風險控制規則，讓結案時能核對原始計畫。",
             "source_refs": ["decision_context.status"],
         })
-    if evidence_gaps:
+    if record_gaps:
         next_actions.insert(0, {
-            "title": "先補齊證據",
-            "action": "依資料品質提示補齊事件帳本與事件當下資料，再進行交易品質判斷。",
+            "title": "先補交易紀錄",
+            "action": "依資料品質提示補齊缺少的事件或 ledger 事實，再進行對應面向的交易品質判斷。",
+            "source_refs": ["data_quality.insufficient_data"],
+        })
+    if market_gaps:
+        next_actions.insert(0, {
+            "title": "系統補齊技術行情",
+            "action": "本次缺口來自事件當下歷史行情，不是操作原因未記錄；重新建立復盤時由系統補用已保存的盤後資料。",
             "source_refs": ["data_quality.insufficient_data"],
         })
 
@@ -778,6 +820,27 @@ def _review_dimension(
         "summary": summary,
         "source_refs": source_refs,
     }
+
+
+def _is_market_evidence_gap(key: str) -> bool:
+    return (
+        key in {
+            "holding_path_prices",
+            "path_metrics",
+            "detected_events",
+            "entry_price",
+            "entry_indicators",
+            "exit_price",
+            "exit_indicators",
+            "source_data",
+            "ohlcv",
+            "price_data",
+            "volume_data",
+            "technical_indicators",
+            "market_context",
+        }
+        or key.endswith(("_ma20", "_ma60", "_rsi14", "_volume_ratio"))
+    )
 
 
 def _structured_feedback_for_labels(
@@ -1412,20 +1475,29 @@ def _build_event_indicator_snapshots(events: list[Any], rows: list[Any], data_qu
         values = _point_in_time_values(rows, event_date)
         closes = values["closes"]
         volumes = values["volumes"]
+        completed_indicators = _completed_indicator_snapshot(rows, event_date)
         ma20 = ma(closes, 20)
+        if ma20 is None:
+            ma20 = completed_indicators.get("ma20")
         ma60 = ma(closes, 60)
+        if ma60 is None:
+            ma60 = completed_indicators.get("ma60")
         rsi14 = calc_rsi(closes, period=14)
+        if rsi14 is None:
+            rsi14 = completed_indicators.get("rsi14")
         volume_ratio = None
         if len(volumes) >= 20:
             average_volume = sum(volumes[-20:]) / 20
             volume_ratio = volumes[-1] / average_volume if average_volume else None
-        for key, required, actual in (
-            ("ma20", 20, len(closes)),
-            ("ma60", 60, len(closes)),
-            ("rsi14", 15, len(closes)),
-            ("volume_ratio", 20, len(volumes)),
+        if volume_ratio is None:
+            volume_ratio = completed_indicators.get("volume_ratio")
+        for key, required, actual, resolved_value in (
+            ("ma20", 20, len(closes), ma20),
+            ("ma60", 60, len(closes), ma60),
+            ("rsi14", 15, len(closes), rsi14),
+            ("volume_ratio", 20, len(volumes), volume_ratio),
         ):
-            if actual < required:
+            if resolved_value is None:
                 _add_note(
                     data_quality,
                     f"{event_type}_{_date_to_iso(event_date)}_{key}",
@@ -1610,6 +1682,7 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
         (row for row in reversed(rows) if _event_value(row, "record_date") == as_of),
         None,
     )
+    completed_candidates: list[dict[str, list[float]]] = []
     same_day_closes = _technical_values(same_day_row, "recent_closes") if same_day_row is not None else []
     if same_day_closes:
         completed = completed_trailing_series(
@@ -1621,7 +1694,7 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
             volumes=_technical_values(same_day_row, "recent_volumes"),
         )
         if completed is not None:
-            return completed
+            completed_candidates.append(completed)
     latest_row = None
     for row in rows:
         row_date = _event_value(row, "record_date")
@@ -1639,21 +1712,80 @@ def _point_in_time_values(rows: list[Any], as_of: date | None) -> dict[str, list
                 volumes=_technical_values(latest_row, "recent_volumes"),
             )
             if completed is not None:
-                return completed
+                completed_candidates.append(completed)
     point_rows = [row for row in rows if isinstance(_event_value(row, "record_date"), date) and _event_value(row, "record_date") < as_of]
+    same_day_history_closes = completed_price_history_closes(
+        _event_value(same_day_row, "technical"),
+        as_of,
+    )
+    prior_history_closes = completed_price_history_closes(
+        _event_value(latest_row, "technical"),
+        as_of,
+    )
     aligned_ohlc = [
         (close, high, low)
         for row in point_rows
         for close, high, low in [(_close(row), _high(row), _low(row))]
         if close is not None and high is not None and low is not None
     ]
+    point_closes = [value for row in point_rows for value in [_close(row)] if value is not None]
+    point_volumes = [value for row in point_rows for value in [_volume(row)] if value is not None]
+    best_completed_ohlc = max(
+        completed_candidates,
+        key=lambda candidate: (
+            len(candidate["ohlc_closes"]),
+            min(len(candidate["highs"]), len(candidate["lows"])),
+        ),
+        default=None,
+    )
+    point_ohlc_closes = [close for close, _high_value, _low_value in aligned_ohlc]
+    if best_completed_ohlc and len(best_completed_ohlc["ohlc_closes"]) >= len(point_ohlc_closes):
+        ohlc_closes = best_completed_ohlc["ohlc_closes"]
+        highs = best_completed_ohlc["highs"]
+        lows = best_completed_ohlc["lows"]
+    elif point_ohlc_closes:
+        ohlc_closes = point_ohlc_closes
+        highs = [high for _close_value, high, _low_value in aligned_ohlc]
+        lows = [low for _close_value, _high_value, low in aligned_ohlc]
+    else:
+        best_independent_ranges = max(
+            completed_candidates,
+            key=lambda candidate: min(len(candidate["highs"]), len(candidate["lows"])),
+            default=None,
+        )
+        ohlc_closes = []
+        highs = best_independent_ranges["highs"] if best_independent_ranges else []
+        lows = best_independent_ranges["lows"] if best_independent_ranges else []
     return {
-        "closes": [value for row in point_rows for value in [_close(row)] if value is not None],
-        "ohlc_closes": [close for close, _high_value, _low_value in aligned_ohlc],
-        "highs": [high for _close_value, high, _low_value in aligned_ohlc],
-        "lows": [low for _close_value, _high_value, low in aligned_ohlc],
-        "volumes": [value for row in point_rows for value in [_volume(row)] if value is not None],
+        "closes": max(
+            [candidate["closes"] for candidate in completed_candidates]
+            + [same_day_history_closes, prior_history_closes, point_closes],
+            key=len,
+        ),
+        "ohlc_closes": ohlc_closes,
+        "highs": highs,
+        "lows": lows,
+        "volumes": max(
+            [candidate["volumes"] for candidate in completed_candidates] + [point_volumes],
+            key=len,
+        ),
     }
+
+
+def _completed_indicator_snapshot(rows: list[Any], as_of: date | None) -> dict[str, float]:
+    if as_of is None:
+        return {}
+    for row in reversed(rows):
+        row_date = _event_value(row, "record_date")
+        if not isinstance(row_date, date) or row_date > as_of:
+            continue
+        indicators = completed_technical_indicator_values(
+            _event_value(row, "technical"),
+            as_of,
+        )
+        if indicators:
+            return indicators
+    return {}
 
 
 def _classify_market_regime(

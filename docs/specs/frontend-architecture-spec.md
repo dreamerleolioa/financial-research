@@ -143,8 +143,8 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - Active freshness：持股列分開顯示 `price_context` 的價格時間／盤中狀態與 latest history 的 AI 分析日期。價格刷新 partial failure 時保留後端 fallback 值並明示失敗，不把舊價偽裝成剛更新成功。
 - Caveat hierarchy：缺少 plan、風險資料注意與資料不足仍需在持股列可見，但只作次要狀態，不得以大型警告卡壓過部位狀態與防守距離。
 - Closed position groups：已結案頁只以完整交易生命週期為清單單位，期間由最終出清日決定；同一交易的所有處分批次完整保留，依序命名為 `第 N 次減碼` 與 `最終出清`，不得顯示 portfolio row id 或 group UUID 作為主要識別。卡片固定先顯示標的與日期範圍、`完整交易`、完整損益、操作流程品質與一個關鍵回饋；沒有 saved v4 review 時明示尚未產生復盤。主要動作只有 `查看完整復盤`，個別批次動作為 `查看這次處分`。
-- Closed review workspace：完整交易復盤使用頁面內單一工作區，不以多個 modal 分割結果、整體檢討、事件時間線與單次處分。閱讀順序固定為交易結果與操作流程、四面向品質、保持／改善／下次規則、生命週期指標、事件證據、個別處分與技術細節。`outcome` 與 `process_quality` 必須並列，獲利或虧損不得取代操作品質；四面向使用類別狀態，不呈現 0–100 權威分數。review version、group id、raw trace 與複製 evidence 收進技術細節。
-- Lifecycle compatibility：Lifecycle Review v1 / v2 / v3 可讀，POST 建立 v4；舊 v3 的 `unclassified` fallback 仍不得顯示成決策脈絡不足。`insufficient`、`retrospective_only` 與真正的 event／market data gap 必須分開提示。Single Trade Review 與 Lifecycle Review 的未知較新版本都只讀不降級；事後補填或進場後已修改的 plan 只作回顧脈絡，不得呈現為歷史違規或客觀分數。持有中結案 modal 必須明確送出結案原因、計畫遵循與信心水準；使用者選擇未記錄時需保存明確的 `not_recorded`，不得由前端推論。
+- Closed review workspace：完整交易復盤使用單一 fixed viewport dialog，不以多個 modal 分割結果、整體檢討、事件時間線與單次處分。Dialog header 固定顯示標的、日期範圍、目前筆數及上一筆／下一筆操作，只有內容區可垂直捲動；背景頁面鎖定且不可互動，Esc／關閉按鈕會關閉 dialog 並把焦點還給目前交易的觸發按鈕，Tab 焦點不得離開 dialog。閱讀順序固定為交易結果與操作流程、四面向品質、保持／改善／下次規則、生命週期指標、事件證據、個別處分與技術細節。`outcome` 與 `process_quality` 必須並列，獲利或虧損不得取代操作品質；四面向使用類別狀態，不呈現 0–100 權威分數。review version、group id、raw trace 與複製 evidence 收進技術細節。
+- Lifecycle compatibility：Lifecycle Review v1 / v2 / v3 可讀，POST 建立 v4；舊 v3 的 `unclassified` fallback 仍不得顯示成決策脈絡不足。`insufficient`、`retrospective_only`、event ledger gap 與 market evidence gap 必須分開提示。市場缺口文案要指出事件類型、日期與缺少指標，並明示這不代表使用者沒有記錄操作原因；只有事件、費稅或部位調整等交易事實缺漏才可標成紀錄品質不足。Single Trade Review 與 Lifecycle Review 的未知較新版本都只讀不降級；事後補填或進場後已修改的 plan 只作回顧脈絡，不得呈現為歷史違規或客觀分數。持有中結案 modal 必須明確送出結案原因、計畫遵循與信心水準；使用者選擇未記錄時需保存明確的 `not_recorded`，不得由前端推論。
 
 ## Analyze Technical Indicator Surface
 

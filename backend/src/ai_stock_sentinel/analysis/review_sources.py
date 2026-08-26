@@ -117,6 +117,47 @@ def completed_trailing_series(
     }
 
 
+def completed_price_history_closes(technical: Any, as_of: date) -> list[float]:
+    """Return dated Daily Radar close history completed before ``as_of``."""
+    if not isinstance(technical, dict):
+        return []
+    history = technical.get("price_history")
+    if not isinstance(history, list):
+        return []
+    closes_by_date: dict[date, float] = {}
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        item_date = _parse_date(item.get("date"))
+        close = _finite_number(item.get("close"))
+        if item_date is not None and item_date < as_of and close is not None:
+            closes_by_date[item_date] = close
+    return [closes_by_date[item_date] for item_date in sorted(closes_by_date)]
+
+
+def completed_technical_indicator_values(technical: Any, as_of: date) -> dict[str, float]:
+    """Read persisted indicators only when their data date predates ``as_of``."""
+    if not isinstance(technical, dict):
+        return {}
+    data_dates = technical.get("data_dates")
+    indicator_date = None
+    if isinstance(data_dates, dict):
+        indicator_date = _parse_date(data_dates.get("technical_indicators")) or _parse_date(
+            data_dates.get("ohlcv")
+        )
+    if indicator_date is not None and indicator_date >= as_of:
+        return {}
+    indicators = technical.get("indicators")
+    if not isinstance(indicators, dict):
+        return {}
+    return {
+        key: value
+        for key in ("ma20", "ma60", "rsi14", "volume_ratio")
+        for value in [_finite_number(indicators.get(key))]
+        if value is not None
+    }
+
+
 def _completed_aligned_ohlc(
     technical: dict[str, Any],
     *,
@@ -410,6 +451,25 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     lows = technical.get("recent_lows") if isinstance(technical.get("recent_lows"), list) else []
     volumes = technical.get("recent_volumes") if isinstance(technical.get("recent_volumes"), list) else []
     close_series = _dated_series(closes, technical.get("recent_close_dates"))
+    price_history = technical.get("price_history")
+    dated_price_history = []
+    if isinstance(price_history, list):
+        for item in price_history:
+            if not isinstance(item, dict):
+                continue
+            item_date = _parse_date(item.get("date"))
+            close = _finite_number(item.get("close"))
+            if item_date is not None and close is not None:
+                dated_price_history.append((item_date, close))
+    if dated_price_history:
+        deduplicated_history = dict(dated_price_history)
+        price_history_series = [
+            (item_date, deduplicated_history[item_date])
+            for item_date in sorted(deduplicated_history)
+        ]
+        if close_series is None or len(price_history_series) > len(close_series):
+            close_series = price_history_series
+            closes = [value for _item_date, value in close_series]
     high_series = _dated_series(highs, technical.get("recent_high_dates"))
     low_series = _dated_series(lows, technical.get("recent_low_dates"))
     volume_series = _dated_series(volumes, technical.get("recent_volume_dates"))
@@ -419,6 +479,13 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
     lows_by_date = dict(low_series) if low_series is not None else None
     volumes_by_date = dict(volume_series) if volume_series is not None else None
     data_dates = technical.get("data_dates") if isinstance(technical.get("data_dates"), dict) else {}
+    raw_indicators = technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {}
+    indicators = {
+        key: value
+        for key in ("ma20", "ma60", "rsi14", "volume_ratio")
+        for value in [_finite_number(raw_indicators.get(key))]
+        if value is not None
+    }
     series = [
         {
             "close": closes[index],
@@ -449,6 +516,7 @@ def _market_row_payload(row: Any) -> dict[str, Any]:
             "low": ohlcv.get("low"),
             "close": ohlcv.get("close", technical.get("current_price")),
             "volume": ohlcv.get("volume"),
+            **({"indicators": indicators} if indicators else {}),
         }),
         "trailing_series": _canonical_value(series),
     }
@@ -680,6 +748,16 @@ def _is_usable_price(value: Any) -> bool:
         return math.isfinite(number) and number > 0
     except (TypeError, ValueError):
         return False
+
+
+def _finite_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _date_in_window(value: date | None, start: date | None, end: date | None) -> bool:

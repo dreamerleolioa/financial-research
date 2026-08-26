@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
+import { ClosedReviewDialog } from "../components/closed-portfolio/ClosedReviewDialog";
 import { setAsyncMapValue } from "../lib/asyncMap";
 import {
   createPositionLifecycleReview,
@@ -69,7 +70,6 @@ interface LifecycleReviewWorkspaceProps {
   error: string | null;
   copyStatus: CopyStatus;
   onCopyEvidence: () => void;
-  onClose: () => void;
 }
 
 interface LifecyclePlanRelationGroup {
@@ -249,6 +249,13 @@ const INSUFFICIENT_DATA_LABEL: Record<string, string> = {
   exit_ma60: "出場 MA60",
   exit_rsi14: "出場 RSI14",
   exit_volume_ratio: "出場量比",
+  decision_context: "原始操作計畫",
+  events_missing: "交易事件紀錄",
+  missing_ledger_fees: "交易手續費紀錄",
+  missing_ledger_taxes: "交易稅費紀錄",
+  weighted_entry_price: "加權進場成本",
+  exit_quantity_exceeds_position: "結案數量與持倉紀錄",
+  manual_adjustment_not_accounted: "手動調整的成本影響",
 };
 
 const POSITION_EVENT_TYPE_LABEL: Record<PositionEvent["event_type"], string> = {
@@ -452,7 +459,23 @@ function formatDataQualityStatusLabel(value: string): string {
 }
 
 function formatInsufficientDataLabel(value: string): string {
-  return INSUFFICIENT_DATA_LABEL[value] ?? "其他資料項目";
+  const directLabel = INSUFFICIENT_DATA_LABEL[value];
+  if (directLabel) return directLabel;
+  const eventIndicatorMatch = value.match(
+    /^(initial_entry|add_entry|partial_exit|full_exit)_(\d{4}-\d{2}-\d{2})_(ma20|ma60|rsi14|volume_ratio)$/,
+  );
+  if (eventIndicatorMatch) {
+    const [, eventType, eventDate, indicator] = eventIndicatorMatch;
+    const eventLabel = formatPositionEventTypeLabel(eventType);
+    const indicatorLabel = {
+      ma20: "MA20",
+      ma60: "MA60",
+      rsi14: "RSI14",
+      volume_ratio: "量比",
+    }[indicator];
+    return `${eventLabel} ${eventDate} 的 ${indicatorLabel}`;
+  }
+  return `其他資料項目（${value}）`;
 }
 
 function formatLifecycleClassificationLabel(value: string | null | undefined): string {
@@ -531,9 +554,34 @@ function hasMissingLifecycleDecisionContext(review: PositionLifecycleReviewRespo
   return review?.review_result.decision_context?.status === "insufficient";
 }
 
-function hasLifecycleClassificationDataWarning(review: PositionLifecycleReviewResponse | null): boolean {
+function isLifecycleMarketEvidenceKey(key: string): boolean {
+  return (
+    [
+      "holding_path_prices",
+      "path_metrics",
+      "detected_events",
+      "entry_price",
+      "entry_indicators",
+      "exit_price",
+      "exit_indicators",
+      "source_data",
+      "ohlcv",
+      "price_data",
+      "volume_data",
+      "technical_indicators",
+      "market_context",
+    ].includes(key) || /_(ma20|ma60|rsi14|volume_ratio)$/.test(key)
+  );
+}
+
+function hasLifecycleMarketDataWarning(review: PositionLifecycleReviewResponse | null): boolean {
   const insufficientData = getStringArray(review?.review_result.data_quality?.insufficient_data);
-  return insufficientData.some((key) => key !== "decision_context");
+  return insufficientData.some(isLifecycleMarketEvidenceKey);
+}
+
+function hasLifecycleRecordDataWarning(review: PositionLifecycleReviewResponse | null): boolean {
+  const insufficientData = getStringArray(review?.review_result.data_quality?.insufficient_data);
+  return insufficientData.some((key) => key !== "decision_context" && !isLifecycleMarketEvidenceKey(key));
 }
 
 function hasBackfilledLifecyclePlanCaveat(review: PositionLifecycleReviewResponse | null): boolean {
@@ -1603,7 +1651,6 @@ function LifecycleReviewWorkspace({
   error,
   copyStatus,
   onCopyEvidence,
-  onClose,
 }: LifecycleReviewWorkspaceProps) {
   const result = review?.review_result;
   const lifecycleReview = result?.lifecycle_review;
@@ -1611,45 +1658,13 @@ function LifecycleReviewWorkspace({
   const snapshots = result?.event_indicator_snapshots ?? [];
   const provenance = getLifecycleProvenance(eventFacts);
   const hasMissingDecisionContext = hasMissingLifecycleDecisionContext(review);
-  const hasClassificationDataWarning = hasLifecycleClassificationDataWarning(review);
+  const hasMarketDataWarning = hasLifecycleMarketDataWarning(review);
+  const hasRecordDataWarning = hasLifecycleRecordDataWarning(review);
   const hasBackfilledCaveat = hasBackfilledLifecyclePlanCaveat(review);
 
   return (
-    <section
-      aria-label={`${portfolioDisplayName(group)} 完整交易復盤`}
-      className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel"
-    >
-      <div className="flex items-start justify-between gap-4 border-b border-border-subtle bg-surface-raised px-5 py-4">
-        <div>
-          <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 完整交易復盤</p>
-          <p className="mt-1 text-xs text-text-faint">
-            {group.lifecycle_start_date} 至 {group.lifecycle_end_date} ｜ {group.entry_event_count} 次進場 ｜{" "}
-            {group.exit_event_count} 次處分
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="ui-icon-button shrink-0 border border-border"
-          aria-label="關閉完整交易復盤"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              fillRule="evenodd"
-              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </button>
-      </div>
-
-      <div className="space-y-4 p-5">
+    <section aria-label={`${portfolioDisplayName(group)} 完整交易復盤`} className="space-y-4">
+      <div className="space-y-4">
         <div className="rounded-xl border border-border bg-surface p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
@@ -1690,9 +1705,15 @@ function LifecycleReviewWorkspace({
               </div>
             )}
 
-            {hasClassificationDataWarning && (
+            {hasMarketDataWarning && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                事件或市場證據不足：請依下方資料品質欄位判斷缺口；這不代表原始計畫缺失或屬於事後補填。
+                事件當下技術行情覆蓋不足：系統會優先使用每日盤後已保存的歷史價格與完成指標。這是行情證據缺口，不代表你沒有記錄操作原因。
+              </div>
+            )}
+
+            {hasRecordDataWarning && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                部分交易事實仍缺少紀錄：請依下方資料品質欄位確認缺少的是事件、費稅或部位調整資料。
               </div>
             )}
 
@@ -1819,18 +1840,15 @@ export default function ClosedPortfolioPage() {
     () => filteredLifecycles.reduce((total, lifecycle) => total + lifecycle.total_realized_pnl, 0),
     [filteredLifecycles],
   );
+  const selectedLifecycleIndex = selectedLifecycleGroup
+    ? filteredLifecycles.findIndex(
+        (lifecycle) => lifecycle.position_group_id === selectedLifecycleGroup.position_group_id,
+      )
+    : -1;
   const totalClass = roundedMoneyClass(totalRealizedPnl);
 
   async function fetchReview(item: ClosedPortfolioItem): Promise<TradeReviewResponse> {
     return fetchOrCreateTradeReview(item.id);
-  }
-
-  function focusReviewWorkspace(): void {
-    window.requestAnimationFrame(() => {
-      const workspace = document.getElementById("closed-review-workspace");
-      workspace?.scrollIntoView({ behavior: "smooth", block: "start" });
-      workspace?.focus({ preventScroll: true });
-    });
   }
 
   function closeReviewWorkspace(): void {
@@ -1856,7 +1874,6 @@ export default function ClosedPortfolioPage() {
       void openLifecycleReview(group);
     }
     setSelectedReviewItem(item);
-    focusReviewWorkspace();
     setCopyStatus((prev) => ({ ...prev, [item.id]: "idle" }));
     if (reviewMap[item.id]) return;
 
@@ -1905,7 +1922,6 @@ export default function ClosedPortfolioPage() {
     }
     setSelectedLifecycleGroup(group);
     setLifecycleCopyStatus((prev) => ({ ...prev, [group.position_group_id]: "idle" }));
-    focusReviewWorkspace();
     void loadTimeline(group);
 
     setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, true);
@@ -1922,6 +1938,12 @@ export default function ClosedPortfolioPage() {
     } finally {
       setAsyncMapValue(setLifecycleReviewLoading, group.position_group_id, false);
     }
+  }
+
+  function openAdjacentLifecycleReview(offset: -1 | 1): void {
+    const targetIndex = selectedLifecycleIndex + offset;
+    const targetGroup = filteredLifecycles[targetIndex];
+    if (targetGroup) void openLifecycleReview(targetGroup);
   }
 
   async function copyEvidence(): Promise<void> {
@@ -2183,11 +2205,16 @@ export default function ClosedPortfolioPage() {
       </div>
 
       {selectedLifecycleGroup && (
-        <section
-          id="closed-review-workspace"
-          tabIndex={-1}
-          className="mt-6 space-y-4 scroll-mt-4 outline-none"
-          aria-label={`${portfolioDisplayName(selectedLifecycleGroup)} 復盤工作區`}
+        <ClosedReviewDialog
+          title={`${portfolioDisplayName(selectedLifecycleGroup)} 完整交易復盤`}
+          description={`${selectedLifecycleGroup.lifecycle_start_date} 至 ${selectedLifecycleGroup.lifecycle_end_date} ｜ ${selectedLifecycleGroup.entry_event_count} 次進場 ｜ ${selectedLifecycleGroup.exit_event_count} 次處分`}
+          currentPosition={selectedLifecycleIndex >= 0 ? selectedLifecycleIndex + 1 : 1}
+          totalCount={filteredLifecycles.length}
+          canGoPrevious={selectedLifecycleIndex > 0}
+          canGoNext={selectedLifecycleIndex >= 0 && selectedLifecycleIndex < filteredLifecycles.length - 1}
+          onPrevious={() => openAdjacentLifecycleReview(-1)}
+          onNext={() => openAdjacentLifecycleReview(1)}
+          onClose={closeReviewWorkspace}
         >
           <LifecycleReviewWorkspace
             group={selectedLifecycleGroup}
@@ -2196,7 +2223,6 @@ export default function ClosedPortfolioPage() {
             error={lifecycleReviewError[selectedLifecycleGroup.position_group_id] ?? null}
             copyStatus={lifecycleCopyStatus[selectedLifecycleGroup.position_group_id] ?? "idle"}
             onCopyEvidence={() => void copyLifecycleEvidence()}
-            onClose={closeReviewWorkspace}
           />
 
           {selectedReviewItem && selectedReviewItem.position_group_id === selectedLifecycleGroup.position_group_id && (
@@ -2217,7 +2243,7 @@ export default function ClosedPortfolioPage() {
             loading={timelineLoading[selectedLifecycleGroup.position_group_id] ?? false}
             error={timelineError[selectedLifecycleGroup.position_group_id] ?? null}
           />
-        </section>
+        </ClosedReviewDialog>
       )}
     </>
   );

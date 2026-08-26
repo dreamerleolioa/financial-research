@@ -114,6 +114,48 @@ def _snapshot_raw_row(
     )
 
 
+def _daily_radar_raw_row(
+    record_date: date,
+    closes: list[float],
+    *,
+    volume_ratio: float,
+) -> StockRawData:
+    start_date = record_date - timedelta(days=len(closes) - 1)
+    return StockRawData(
+        symbol="2330.TW",
+        record_date=record_date,
+        technical={
+            "recent_closes": closes[-20:],
+            "recent_close_dates": [
+                (start_date + timedelta(days=index)).isoformat()
+                for index in range(max(0, len(closes) - 20), len(closes))
+            ],
+            "price_history": [
+                {
+                    "date": (start_date + timedelta(days=index)).isoformat(),
+                    "close": close,
+                }
+                for index, close in enumerate(closes)
+            ],
+            "ohlcv": {
+                "open": closes[-1],
+                "high": closes[-1] + 1,
+                "low": closes[-1] - 1,
+                "close": closes[-1],
+                "volume": 1_000,
+            },
+            "indicators": {
+                "ma20": sum(closes[-20:]) / 20,
+                "ma60": sum(closes[-60:]) / 60,
+                "rsi14": 60,
+                "volume_ratio": volume_ratio,
+            },
+            "data_dates": {"ohlcv": record_date.isoformat()},
+        },
+        raw_data_is_final=True,
+    )
+
+
 def _add_rows(db_session: Session, symbol: str, start: date, closes: list[float], volumes: list[float] | None = None) -> None:
     for offset, close in enumerate(closes):
         volume = volumes[offset] if volumes is not None else 1000 + offset
@@ -1419,6 +1461,75 @@ def test_insufficient_data_adds_notes_and_insufficient_data(db_session: Session)
     assert conclusion["overall_verdict_label"] == "資料不足"
     assert conclusion["evidence"]
     assert any("補資料" in rule for rule in conclusion["next_time_rules"])
+
+
+def test_trade_review_fallback_uses_daily_radar_price_history_and_indicators(db_session: Session):
+    portfolio = _portfolio(
+        entry_date=date(2026, 1, 10),
+        exit_date=date(2026, 1, 11),
+        entry_price=100,
+        exit_price=105,
+        holding_days=1,
+    )
+    prior_closes = [80 + index * 0.25 for index in range(80)]
+    entry_day_closes = prior_closes[1:] + [100]
+    db_session.add_all([
+        portfolio,
+        _daily_radar_raw_row(date(2026, 1, 9), prior_closes, volume_ratio=1.15),
+        _daily_radar_raw_row(date(2026, 1, 10), entry_day_closes, volume_ratio=1.32),
+    ])
+    db_session.commit()
+
+    review_result, evidence = build_trade_review_payload(db_session, portfolio)
+
+    entry_indicators = review_result["trade_result"]["entry_indicators"]
+    exit_indicators = review_result["trade_result"]["exit_indicators"]
+    assert entry_indicators["ma20"] is not None
+    assert entry_indicators["ma60"] is not None
+    assert entry_indicators["rsi14"] is not None
+    assert entry_indicators["volume_ratio"] == pytest.approx(1.15)
+    assert exit_indicators["volume_ratio"] == pytest.approx(1.32)
+    assert not any(
+        key.startswith(("entry_", "exit_"))
+        for key in review_result["data_quality"]["insufficient_data"]
+    )
+    assert evidence["market_snapshot"]["quality"]["trading_bar_count"] >= 60
+
+
+def test_trade_review_uses_completed_indicators_from_same_day_stale_cache(db_session: Session):
+    as_of = date(2026, 3, 2)
+    portfolio = _portfolio(
+        entry_date=as_of,
+        exit_date=date(2026, 3, 3),
+        entry_price=100,
+        exit_price=105,
+        holding_days=1,
+    )
+    row = _snapshot_raw_row("2330.TW", as_of, [98, 99, 100], volumes=[100, 200, 300])
+    row.technical["indicators"] = {
+        "ma20": 96.5,
+        "ma60": 91.5,
+        "rsi14": 58.2,
+        "volume_ratio": 1.15,
+    }
+    row.technical["data_dates"] = {
+        "ohlcv": "2026-03-01",
+        "technical_indicators": "2026-03-01",
+    }
+    db_session.add_all([portfolio, row])
+    db_session.commit()
+
+    review_result, _ = build_trade_review_payload(db_session, portfolio)
+
+    entry_indicators = review_result["trade_result"]["entry_indicators"]
+    assert entry_indicators["ma20"] == pytest.approx(96.5)
+    assert entry_indicators["ma60"] == pytest.approx(91.5)
+    assert entry_indicators["rsi14"] == pytest.approx(58.2)
+    assert entry_indicators["volume_ratio"] == pytest.approx(1.15)
+    assert not any(
+        key.startswith("entry_")
+        for key in review_result["data_quality"]["insufficient_data"]
+    )
 
 
 def _contains_forbidden_ohlcv_key(value) -> bool:

@@ -24,7 +24,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "corepack pnpm exec vite --host 127.0.0.1 --port 4173 --strictPort",
+    command: "./node_modules/.bin/vite --host 127.0.0.1 --port 4173 --strictPort",
     url: baseURL,
     reuseExistingServer: false,
     env: {
