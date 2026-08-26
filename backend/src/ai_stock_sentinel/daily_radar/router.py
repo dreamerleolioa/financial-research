@@ -41,7 +41,11 @@ from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
 )
 from ai_stock_sentinel.daily_radar.institutional_flow_service import (
     InstitutionalReportProvider,
+    backfill_taiwan_institutional_flows,
     refresh_taiwan_institutional_flows,
+)
+from ai_stock_sentinel.daily_radar.institutional_universe_replay import (
+    build_institutional_universe_replay_report,
 )
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
@@ -124,8 +128,12 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarChipContextUpdateResponse,
     DailyRadarForwardValidationRunRequest,
     DailyRadarForwardValidationRunResponse,
+    DailyRadarInstitutionalFlowsBackfillRequest,
+    DailyRadarInstitutionalFlowsBackfillResponse,
     DailyRadarInstitutionalFlowsRefreshRequest,
     DailyRadarInstitutionalFlowsRefreshResponse,
+    DailyRadarInstitutionalUniverseReplayRequest,
+    DailyRadarInstitutionalUniverseReplayResponse,
     DailyRadarMarketSessionRequest,
     DailyRadarMarketSessionResponse,
     DailyRadarMarketBarsRefreshRequest,
@@ -539,6 +547,104 @@ def refresh_daily_radar_institutional_flows_endpoint(
         markets_completed=result["markets_completed"],
         snapshots=result["snapshots"],
         errors=result["errors"],
+    )
+
+
+@router.post(
+    "/internal/daily-radar/backfill-institutional-flows",
+    response_model=DailyRadarInstitutionalFlowsBackfillResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def backfill_daily_radar_institutional_flows_endpoint(
+    payload: DailyRadarInstitutionalFlowsBackfillRequest,
+    db: Session = Depends(get_db),
+    provider: InstitutionalReportProvider = Depends(
+        get_taiwan_institutional_report_provider
+    ),
+    market_session_provider: MarketSessionProvider = Depends(
+        get_daily_radar_market_session_provider
+    ),
+) -> DailyRadarInstitutionalFlowsBackfillResponse:
+    try:
+        result = backfill_taiwan_institutional_flows(
+            db,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            as_of_date=_backend_today(),
+            provider=provider,
+            market_session_provider=market_session_provider,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "institutional_flow_backfill_range_invalid",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Taiwan institutional flow archive backfill failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "institutional_flow_archive_backfill_failed",
+                "error_type": exc.__class__.__name__,
+            },
+        ) from exc
+    return DailyRadarInstitutionalFlowsBackfillResponse(
+        status=result["status"],
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        market=payload.market,
+        records_written=result["records_written"],
+        dates_requested=result["dates_requested"],
+        dates_attempted=result["dates_attempted"],
+        dates_completed=result["dates_completed"],
+        dates_reused=result["dates_reused"],
+        dates_repaired=result["dates_repaired"],
+        skipped_dates=result["skipped_dates"],
+        snapshots=result["snapshots"],
+        errors=result["errors"],
+    )
+
+
+@router.post(
+    "/internal/daily-radar/institutional-universe-replay",
+    response_model=DailyRadarInstitutionalUniverseReplayResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def replay_daily_radar_institutional_universe_endpoint(
+    payload: DailyRadarInstitutionalUniverseReplayRequest,
+    db: Session = Depends(get_db),
+) -> DailyRadarInstitutionalUniverseReplayResponse:
+    if payload.run_date > _backend_today():
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "institutional_universe_replay_date_in_future"},
+        )
+    try:
+        report = build_institutional_universe_replay_report(
+            db,
+            run_date=payload.run_date,
+            market=payload.market,
+            track_limit=payload.track_limit,
+            max_symbols=payload.max_symbols,
+        )
+    except InstitutionalArchiveUniverseError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code,
+                "market": exc.market,
+                "query_date": exc.query_date.isoformat(),
+            },
+        ) from exc
+    return DailyRadarInstitutionalUniverseReplayResponse(
+        run_date=payload.run_date,
+        market=payload.market,
+        report=report,
     )
 
 

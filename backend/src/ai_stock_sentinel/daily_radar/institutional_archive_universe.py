@@ -89,41 +89,75 @@ class ArchivedInstitutionalUniverseProvider:
                 market="TW",
                 query_date=run_date,
             )
+        return build_segmented_institutional_tracks(
+            archive_window,
+            run_date=run_date,
+            recent_market_days=self._recent_market_days,
+            minimum_consecutive_buy_days=self._minimum_consecutive_buy_days,
+        )
 
-        selected_dates = tuple(sorted(archive_window)[-self._recent_market_days :])
-        rows_by_date = {trade_date: archive_window[trade_date] for trade_date in selected_dates}
-        return {
-            "foreign_same_day": tuple(
-                _rank_same_day_actor(
-                    rows_by_date[run_date],
-                    actor="foreign",
-                    track="foreign_same_day",
-                )
-            ),
-            "trust_same_day": tuple(
-                _rank_same_day_actor(
-                    rows_by_date[run_date],
-                    actor="trust",
-                    track="trust_same_day",
-                )
-            ),
-            "foreign_recent_accumulation": tuple(
-                _rank_recent_actor(
-                    rows_by_date,
-                    actor="foreign",
-                    track="foreign_recent_accumulation",
-                    minimum_consecutive_buy_days=self._minimum_consecutive_buy_days,
-                )
-            ),
-            "trust_recent_accumulation": tuple(
-                _rank_recent_actor(
-                    rows_by_date,
-                    actor="trust",
-                    track="trust_recent_accumulation",
-                    minimum_consecutive_buy_days=self._minimum_consecutive_buy_days,
-                )
-            ),
-        }
+
+def build_segmented_institutional_tracks(
+    archive_window: Mapping[date, Sequence[InstitutionalFlowRow]],
+    *,
+    run_date: date,
+    recent_market_days: int = 5,
+    minimum_consecutive_buy_days: int = 2,
+) -> dict[
+    SegmentedInstitutionalUniverseTrack,
+    tuple[InstitutionalLeaderRow, ...],
+]:
+    if run_date not in archive_window:
+        raise InstitutionalArchiveUniverseError(
+            "institutional_archive_current_date_unavailable",
+            market="TW",
+            query_date=run_date,
+        )
+    selected_dates = tuple(
+        sorted(archive_window)[-max(2, recent_market_days) :]
+    )
+    rows_by_date = {
+        trade_date: archive_window[trade_date]
+        for trade_date in selected_dates
+    }
+    return {
+        "foreign_same_day": tuple(
+            _rank_same_day_actor(
+                rows_by_date[run_date],
+                actor="foreign",
+                track="foreign_same_day",
+            )
+        ),
+        "trust_same_day": tuple(
+            _rank_same_day_actor(
+                rows_by_date[run_date],
+                actor="trust",
+                track="trust_same_day",
+            )
+        ),
+        "foreign_recent_accumulation": tuple(
+            _rank_recent_actor(
+                rows_by_date,
+                actor="foreign",
+                track="foreign_recent_accumulation",
+                minimum_consecutive_buy_days=max(
+                    2,
+                    minimum_consecutive_buy_days,
+                ),
+            )
+        ),
+        "trust_recent_accumulation": tuple(
+            _rank_recent_actor(
+                rows_by_date,
+                actor="trust",
+                track="trust_recent_accumulation",
+                minimum_consecutive_buy_days=max(
+                    2,
+                    minimum_consecutive_buy_days,
+                ),
+            )
+        ),
+    }
 
 
 def _rank_same_day_actor(
@@ -252,4 +286,5 @@ def _next_weekday(value: date) -> date:
 __all__ = [
     "ArchivedInstitutionalUniverseProvider",
     "InstitutionalArchiveUniverseError",
+    "build_segmented_institutional_tracks",
 ]

@@ -1124,7 +1124,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "resolve_daily_radar_run_date.py" in text
     assert "/internal/daily-radar/market-session" in text
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 12
+    assert text.count("needs: resolve-run-context") == 14
     assert "/internal/daily-radar/refresh-institutional-flows" in text
     assert "/internal/daily-radar/refresh-market-bars" in text
     assert "market_bar_start_date" in text
@@ -1220,3 +1220,52 @@ def test_daily_radar_workflow_refreshes_institutional_archive_before_universe() 
     ) in refresh_job
     assert refresh_job.index('if [[ ! "$http_status"') < refresh_job.index("jq -r '")
     assert refresh_job.index("jq -r '") < refresh_job.index("jq -e '.status ==")
+
+
+def test_daily_radar_workflow_exposes_bounded_archive_maintenance_without_auto_apply() -> None:
+    workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
+    text = workflow.read_text(encoding="utf-8")
+
+    assert "- backfill-institutional-flows" in text
+    assert "- replay-institutional-universe" in text
+    assert "institutional_flow_start_date" in text
+    assert "institutional_flow_end_date" in text
+
+    market_session_step = text.split("      - name: Resolve TW market session", 1)[1].split(
+        "\n  refresh-institutional-flows:",
+        1,
+    )[0]
+    for maintenance_step in (
+        "refresh-market-bars",
+        "backfill-institutional-flows",
+        "replay-institutional-universe",
+    ):
+        assert f"inputs.step != '{maintenance_step}'" in market_session_step
+
+    backfill_job = text.split("  backfill-institutional-flows:", 1)[1].split(
+        "  replay-institutional-universe:",
+        1,
+    )[0]
+    assert "github.event_name == 'workflow_dispatch'" in backfill_job
+    assert "/internal/daily-radar/backfill-institutional-flows" in backfill_job
+    assert "Both institutional_flow_start_date and institutional_flow_end_date" in backfill_job
+    assert "Institutional-flow backfill dates must use YYYY-MM-DD" in backfill_job
+    assert "payload=\"$(jq -cn" in backfill_job
+    assert ".status == \"completed\"" in backfill_job
+    assert "market_open" not in backfill_job
+
+    replay_job = text.split("  replay-institutional-universe:", 1)[1].split(
+        "  prepare-universe:",
+        1,
+    )[0]
+    assert "github.event_name == 'workflow_dispatch'" in replay_job
+    assert "/internal/daily-radar/institutional-universe-replay" in replay_job
+    assert "An explicit run_date is required" in replay_job
+    assert "Institutional-universe replay run_date must use YYYY-MM-DD" in replay_job
+    assert "payload=\"$(jq -cn" in replay_job
+    assert ".report.calibration_gate.ready_for_human_review == true" in replay_job
+    assert ".report.calibration_gate.auto_apply_scoring_change == false" in replay_job
+    assert "market_open" not in replay_job
+    assert "actions/upload-artifact@v4" in replay_job
+    assert "if: always()" in replay_job
+    assert "retention-days: 14" in replay_job

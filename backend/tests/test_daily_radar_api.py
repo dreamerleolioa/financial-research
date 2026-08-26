@@ -850,6 +850,193 @@ def test_daily_radar_institutional_flow_refresh_rolls_back_unexpected_failure(
     assert daily_radar_db_session.query(TaiwanInstitutionalReportSnapshot).count() == 0
 
 
+def test_daily_radar_institutional_flow_backfill_is_bounded_and_idempotent(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    provider = FakeInstitutionalFlowProvider()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        institutional_flow_provider=provider,
+    )
+    payload = {
+        "start_date": "2026-05-29",
+        "end_date": "2026-06-01",
+        "market": "TW",
+    }
+
+    try:
+        first = client.post(
+            "/internal/daily-radar/backfill-institutional-flows",
+            json=payload,
+            headers={"Authorization": "Bearer test-token"},
+        )
+        second = client.post(
+            "/internal/daily-radar/backfill-institutional-flows",
+            json=payload,
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "completed"
+    assert first.json()["dates_completed"] == ["2026-05-29", "2026-06-01"]
+    assert first.json()["skipped_dates"] == ["2026-05-30", "2026-05-31"]
+    assert first.json()["records_written"] == 4
+    assert second.status_code == 200
+    assert second.json()["dates_reused"] == ["2026-05-29", "2026-06-01"]
+    assert second.json()["dates_attempted"] == []
+    assert second.json()["records_written"] == 0
+    assert sorted(provider.calls) == [
+        ("TW", date(2026, 5, 29)),
+        ("TW", date(2026, 6, 1)),
+        ("TWO", date(2026, 5, 29)),
+        ("TWO", date(2026, 6, 1)),
+    ]
+
+
+def test_daily_radar_institutional_flow_backfill_rejects_future_range(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/backfill-institutional-flows",
+            json={
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-02",
+                "market": "TW",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == (
+        "institutional_flow_backfill_range_invalid"
+    )
+
+
+def test_daily_radar_institutional_universe_replay_is_read_only(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    for run_date in (
+        date(2026, 5, 26),
+        date(2026, 5, 27),
+        date(2026, 5, 28),
+        date(2026, 5, 29),
+        date(2026, 6, 1),
+    ):
+        _persist_required_institutional_archive(
+            daily_radar_db_session,
+            run_date=run_date,
+        )
+    client = _api_client(monkeypatch, daily_radar_db_session)
+    snapshot_count = daily_radar_db_session.query(
+        TaiwanInstitutionalReportSnapshot
+    ).count()
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/institutional-universe-replay",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    report = response.json()["report"]
+    assert report["calibration_gate"]["history_complete"] is True
+    assert report["calibration_gate"]["auto_apply_scoring_change"] is False
+    assert report["human_approval_boundary"][
+        "updates_live_universe_or_scoring"
+    ] is False
+    assert (
+        daily_radar_db_session.query(TaiwanInstitutionalReportSnapshot).count()
+        == snapshot_count
+    )
+
+
+def test_daily_radar_institutional_universe_replay_requires_current_archive(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/institutional-universe-replay",
+            json={"run_date": "2026-06-01", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "institutional_archive_current_date_unavailable",
+        "market": "TW",
+        "query_date": "2026-06-01",
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/internal/daily-radar/backfill-institutional-flows",
+            {"start_date": "2026-06-01", "end_date": "2026-06-01"},
+        ),
+        (
+            "/internal/daily-radar/institutional-universe-replay",
+            {"run_date": "2026-06-01"},
+        ),
+    ],
+)
+def test_daily_radar_institutional_archive_maintenance_requires_internal_auth(
+    monkeypatch,
+    daily_radar_db_session: Session,
+    path: str,
+    payload: dict[str, str],
+) -> None:
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(path, json=payload)
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 401
+
+
+def test_daily_radar_institutional_universe_replay_rejects_future_date(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/institutional-universe-replay",
+            json={"run_date": "2026-06-02", "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "institutional_universe_replay_date_in_future"
+    }
+
+
 def test_daily_radar_refresh_market_context_fails_closed_and_blocks_scoring(
     monkeypatch,
     daily_radar_db_session: Session,

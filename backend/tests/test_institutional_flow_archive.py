@@ -36,8 +36,10 @@ from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
     get_market_institutional_flows,
 )
 from ai_stock_sentinel.daily_radar.institutional_flow_service import (
+    backfill_taiwan_institutional_flows,
     refresh_taiwan_institutional_flows,
 )
+from ai_stock_sentinel.daily_radar.market_session import MarketSessionResult
 from ai_stock_sentinel.db.models import (
     TaiwanInstitutionalFlow,
     TaiwanInstitutionalReportSnapshot,
@@ -567,16 +569,20 @@ class _FixtureInstitutionalReportProvider:
         self,
         *,
         fail_market: str | None = None,
+        raise_calls: set[tuple[str, date]] | None = None,
         mismatched_market: str | None = None,
         missing_source_market: str | None = None,
     ) -> None:
         self.fail_market = fail_market
+        self.raise_calls = raise_calls or set()
         self.mismatched_market = mismatched_market
         self.missing_source_market = missing_source_market
         self.calls: list[tuple[str, date]] = []
 
     def fetch_market(self, *, market: str, trade_date: date) -> InstitutionalReport:
         self.calls.append((market, trade_date))
+        if (market, trade_date) in self.raise_calls:
+            raise RuntimeError("fixture unexpected provider failure")
         if market == self.fail_market:
             raise OfficialInstitutionalReportError("fixture_failed", market=market)
         report_market = market
@@ -595,6 +601,22 @@ class _FixtureInstitutionalReportProvider:
                     trade_date=trade_date,
                 ),
             ),
+        )
+
+
+class _FixtureMarketSessionProvider:
+    def __init__(self, *, closed_dates: set[date] | None = None) -> None:
+        self.closed_dates = closed_dates or set()
+        self.calls: list[date] = []
+
+    def resolve(self, *, run_date: date, market: str) -> MarketSessionResult:
+        self.calls.append(run_date)
+        return MarketSessionResult(
+            status="closed" if run_date in self.closed_dates else "open",
+            run_date=run_date,
+            market=market,
+            provider="fixture",
+            dataset="fixture_session",
         )
 
 
@@ -683,6 +705,220 @@ def test_institutional_flow_refresh_rejects_missing_provider_source() -> None:
         assert result["markets_completed"] == ["TW"]
         assert result["errors"][0]["code"] == "institutional_report_metadata_invalid"
         assert result["errors"][0]["market"] == "TWO"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_backfill_reuses_complete_days_and_skips_closed_dates() -> None:
+    session, engine = _db_session()
+    existing_date = date(2026, 8, 20)
+    closed_date = date(2026, 8, 21)
+    fetched_date = date(2026, 8, 24)
+    report_provider = _FixtureInstitutionalReportProvider()
+    market_session_provider = _FixtureMarketSessionProvider(
+        closed_dates={closed_date}
+    )
+    try:
+        for market, symbol in (("TW", "2330.TW"), ("TWO", "6488.TWO")):
+            archive_institutional_report(
+                session,
+                _report(
+                    _flow(
+                        symbol,
+                        market=market,
+                        trade_date=existing_date,
+                    )
+                ),
+            )
+        session.commit()
+
+        result = backfill_taiwan_institutional_flows(
+            session,
+            start_date=existing_date,
+            end_date=fetched_date,
+            as_of_date=fetched_date,
+            provider=report_provider,
+            market_session_provider=market_session_provider,
+        )
+
+        assert result["status"] == "completed"
+        assert result["dates_requested"] == [
+            "2026-08-20",
+            "2026-08-21",
+            "2026-08-22",
+            "2026-08-23",
+            "2026-08-24",
+        ]
+        assert result["dates_reused"] == ["2026-08-20"]
+        assert result["dates_attempted"] == ["2026-08-24"]
+        assert result["dates_completed"] == ["2026-08-24"]
+        assert result["skipped_dates"] == [
+            "2026-08-21",
+            "2026-08-22",
+            "2026-08-23",
+        ]
+        assert result["records_written"] == 2
+        assert market_session_provider.calls == [closed_date, fetched_date]
+        assert sorted(report_provider.calls) == [
+            ("TW", fetched_date),
+            ("TWO", fetched_date),
+        ]
+        assert session.query(TaiwanInstitutionalReportSnapshot).count() == 4
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_backfill_repairs_corrupted_complete_snapshot() -> None:
+    session, engine = _db_session()
+    trade_date = date(2026, 8, 24)
+    report_provider = _FixtureInstitutionalReportProvider()
+    try:
+        for market, symbol in (("TW", "2330.TW"), ("TWO", "6488.TWO")):
+            archive_institutional_report(
+                session,
+                _report(_flow(symbol, market=market, trade_date=trade_date)),
+            )
+        session.commit()
+        flow = session.query(TaiwanInstitutionalFlow).filter_by(
+            symbol="2330.TW"
+        ).one()
+        flow.foreign_net_shares = 999
+        session.commit()
+
+        result = backfill_taiwan_institutional_flows(
+            session,
+            start_date=trade_date,
+            end_date=trade_date,
+            as_of_date=trade_date,
+            provider=report_provider,
+            market_session_provider=_FixtureMarketSessionProvider(),
+        )
+
+        assert result["status"] == "completed"
+        assert result["dates_repaired"] == ["2026-08-24"]
+        assert result["dates_reused"] == []
+        repaired = session.query(TaiwanInstitutionalFlow).filter_by(
+            symbol="2330.TW"
+        ).one()
+        assert repaired.foreign_net_shares == 1000
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_backfill_preserves_prior_date_and_retries_incomplete_date() -> None:
+    session, engine = _db_session()
+    first_date = date(2026, 8, 20)
+    second_date = date(2026, 8, 21)
+    first_provider = _FixtureInstitutionalReportProvider(
+        raise_calls={("TWO", second_date)}
+    )
+    try:
+        first_result = backfill_taiwan_institutional_flows(
+            session,
+            start_date=first_date,
+            end_date=second_date,
+            as_of_date=second_date,
+            provider=first_provider,
+            market_session_provider=_FixtureMarketSessionProvider(),
+        )
+
+        assert first_result["status"] == "failed"
+        assert first_result["dates_completed"] == [first_date.isoformat()]
+        assert first_result["errors"] == [
+            {
+                "code": "institutional_backfill_date_failed",
+                "trade_date": second_date.isoformat(),
+                "error_type": "RuntimeError",
+            }
+        ]
+        assert session.query(TaiwanInstitutionalReportSnapshot).count() == 2
+
+        second_provider = _FixtureInstitutionalReportProvider()
+        second_result = backfill_taiwan_institutional_flows(
+            session,
+            start_date=first_date,
+            end_date=second_date,
+            as_of_date=second_date,
+            provider=second_provider,
+            market_session_provider=_FixtureMarketSessionProvider(),
+        )
+
+        assert second_result["status"] == "completed"
+        assert second_result["dates_reused"] == [first_date.isoformat()]
+        assert second_result["dates_attempted"] == [second_date.isoformat()]
+        assert second_result["dates_completed"] == [second_date.isoformat()]
+        assert sorted(second_provider.calls) == [
+            ("TW", second_date),
+            ("TWO", second_date),
+        ]
+        assert session.query(TaiwanInstitutionalReportSnapshot).count() == 4
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_institutional_flow_backfill_does_not_hide_partial_archive_as_closed_date() -> None:
+    session, engine = _db_session()
+    trade_date = date(2026, 8, 21)
+    try:
+        archive_institutional_report(
+            session,
+            _report(_flow("2330.TW", market="TW", trade_date=trade_date)),
+        )
+        session.commit()
+
+        result = backfill_taiwan_institutional_flows(
+            session,
+            start_date=trade_date,
+            end_date=trade_date,
+            as_of_date=trade_date,
+            provider=_FixtureInstitutionalReportProvider(),
+            market_session_provider=_FixtureMarketSessionProvider(
+                closed_dates={trade_date}
+            ),
+        )
+
+        assert result["status"] == "failed"
+        assert result["skipped_dates"] == []
+        assert result["errors"] == [
+            {
+                "code": "institutional_backfill_archive_session_conflict",
+                "trade_date": trade_date.isoformat(),
+            }
+        ]
+        assert session.query(TaiwanInstitutionalReportSnapshot).count() == 1
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("start_date", "end_date", "as_of_date"),
+    [
+        (date(2026, 8, 24), date(2026, 8, 23), date(2026, 8, 24)),
+        (date(2026, 8, 24), date(2026, 8, 25), date(2026, 8, 24)),
+        (date(2026, 8, 14), date(2026, 8, 25), date(2026, 8, 25)),
+    ],
+)
+def test_institutional_flow_backfill_rejects_unsafe_range(
+    start_date: date,
+    end_date: date,
+    as_of_date: date,
+) -> None:
+    session, engine = _db_session()
+    try:
+        with pytest.raises(ValueError):
+            backfill_taiwan_institutional_flows(
+                session,
+                start_date=start_date,
+                end_date=end_date,
+                as_of_date=as_of_date,
+                provider=_FixtureInstitutionalReportProvider(),
+                market_session_provider=_FixtureMarketSessionProvider(),
+            )
     finally:
         session.close()
         engine.dispose()

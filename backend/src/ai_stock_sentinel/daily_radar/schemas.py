@@ -139,6 +139,50 @@ class DailyRadarInstitutionalFlowsRefreshResponse(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarInstitutionalFlowsBackfillRequest(BaseModel):
+    start_date: date
+    end_date: date
+    market: Literal["TW"] = "TW"
+
+
+class DailyRadarInstitutionalBackfillSnapshotResponse(
+    DailyRadarInstitutionalSnapshotResponse
+):
+    trade_date: date
+
+
+class DailyRadarInstitutionalFlowsBackfillResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    start_date: date
+    end_date: date
+    market: Literal["TW"] = "TW"
+    records_written: int = Field(default=0, ge=0)
+    dates_requested: list[date] = Field(default_factory=list)
+    dates_attempted: list[date] = Field(default_factory=list)
+    dates_completed: list[date] = Field(default_factory=list)
+    dates_reused: list[date] = Field(default_factory=list)
+    dates_repaired: list[date] = Field(default_factory=list)
+    skipped_dates: list[date] = Field(default_factory=list)
+    snapshots: list[DailyRadarInstitutionalBackfillSnapshotResponse] = Field(
+        default_factory=list
+    )
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DailyRadarInstitutionalUniverseReplayRequest(BaseModel):
+    run_date: date
+    market: Literal["TW"] = "TW"
+    track_limit: int = Field(default=50, ge=1, le=100)
+    max_symbols: int = Field(default=250, ge=1, le=250)
+
+
+class DailyRadarInstitutionalUniverseReplayResponse(BaseModel):
+    status: Literal["completed"] = "completed"
+    run_date: date
+    market: Literal["TW"] = "TW"
+    report: dict[str, Any]
+
+
 class DailyRadarChipContextUpdateRequest(BaseModel):
     run_date: date | None = None
     market: str = Field(default="TW", min_length=1, max_length=20)
@@ -365,6 +409,14 @@ __all__ = [
     "DailyRadarCandidateResponse",
     "DailyRadarForwardValidationRunRequest",
     "DailyRadarForwardValidationRunResponse",
+    "DailyRadarInstitutionalBackfillSnapshotResponse",
+    "DailyRadarInstitutionalFlowsBackfillRequest",
+    "DailyRadarInstitutionalFlowsBackfillResponse",
+    "DailyRadarInstitutionalFlowsRefreshRequest",
+    "DailyRadarInstitutionalFlowsRefreshResponse",
+    "DailyRadarInstitutionalSnapshotResponse",
+    "DailyRadarInstitutionalUniverseReplayRequest",
+    "DailyRadarInstitutionalUniverseReplayResponse",
     "DailyRadarMarketSessionRequest",
     "DailyRadarMarketSessionResponse",
     "DailyRadarMatchedRule",
