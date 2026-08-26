@@ -65,7 +65,8 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 | ---- | -------------- | ---- |
 | OHLCV | yfinance 日線開高低收量 | 趨勢、波動、量價結構、均線與支撐壓力 |
 | 技術指標 | MA、EMA、RSI、MACD、KD、ATR、OBV、MFI、布林通道、Donchian | bucket 訊號與風險扣分 |
-| 法人買賣超 | TWSE RWD fund reports（`TWT38U` / `TWT44U`） | 外資、投信方向與連續性；以 report-level source trace 保存來源 |
+| 法人買賣超 | TWSE `T86` / TPEX `3itrade_hedge` archive | 外資、投信分開判斷當日買超與近期連續累積；每條軌道保留 actor、rank、淨買超、來源日期與 streak trace |
+| 市場級法人日報歸檔 | TWSE `T86` / TPEX `3itrade_hedge` | 逐市場、逐交易日保存完整報表快照與外資／投信／自營商分列淨買賣超；17:30 refresh 必須先完成 TW/TWO，18:00 `prepare-universe` 才可從 archive 建立上市櫃共同 universe |
 | 融資融券 | Minimal margin summary / future full margin context | 散戶追價、融資風險、軋空或籌碼壓力觀察；目前 live run 不宣稱完整融資融券已取得 |
 | 大盤指數 | 加權指數或等價 market index OHLCV | 市場風險濾網與相對強弱基準 |
 
@@ -88,12 +89,12 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 目前 live run 不從全市場靜態清單開始逐檔掃描，而是由後端自行建立 multi-track universe 後再進入資料補齊與評分。Universe 來源如下，最後以軌道優先序保留、去重後形成當日 selected symbols：
 
-1. Same-day institutional leaders：讀取當日外資與投信正買超名單，先為每個 symbol 選出分數較佳的法人角色，再將合併去重後的名單排序，最後取 combined top 50。
-2. Recent accumulation/concentration leaders：讀取最近 5 個交易日的累積與集中度排名 top 50。
+1. Same-day institutional leaders：分開讀取當日外資與投信正買超名單，形成 `foreign_same_day` 與 `trust_same_day` 兩條獨立 top-50 軌道；不先把法人角色合併，以免強勢投信訊號被外資排名稀釋。
+2. Recent accumulation leaders：分開計算最近最多 5 個完整市場日的外資與投信 trailing buy streak，形成 `foreign_recent_accumulation` 與 `trust_recent_accumulation` 兩條獨立 top-50 軌道；必須截至 `run_date` 仍連買至少 2 日且窗口累計淨買超為正。
 3. Daily trigger technical tracks：從當日已存在的 final `StockRawData` OHLCV/canonical `technical_profile` 與 compatibility `indicators` 建立 `price_volume`、`reversal`、`support_retake` 等日頻 trigger tracks，不對全市場逐檔呼叫外部 API。`technical_profile` 提供 canonical layer trace、data quality 與後續遷移依據；現行 bucket/cross scoring 仍讀 compatibility `indicators`。
 4. Final selected universe：依上述軌道順序合併，保留第一次出現的位置，重複 symbol 只留一筆，並保存 `primary_track`、`tracks` 與 `track_metrics` trace。
 
-這代表 live run 的 universe 來自法人雙軌加上本地日頻技術 trigger tracks，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的，但目前 live default 是 multi-track 候選 universe，不是完整上市櫃全市場逐檔掃描。
+這代表 live run 的 universe 來自四條分法人軌道加上本地日頻技術 trigger tracks，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的，但目前 live default 是 multi-track 候選 universe，不是完整上市櫃全市場逐檔掃描。
 
 ### 4.2 兩階段掃描
 
@@ -106,14 +107,15 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 原則：Stage 1 不應對全市場逐檔打昂貴外部 API。GitHub Actions 以分段 internal endpoints 準備資料；正式 scoring 階段不得再打 FinMind、yfinance、TWSE 或 market index provider，只能讀已落庫的 cache/snapshot。若未來需要新增資料源，應新增獨立 refresh step，不得直接重用 `/internal/fetch-raw-data`。
 
-目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時 scheduled pipeline 與一般手動 step skip，但 provider 錯誤或無法判斷時 fail closed；唯一例外是手動 `refresh-market-bars` maintenance/backfill，它可在目前 `run_date` 休市時依明確日期範圍執行。開市後 `prepare-universe` 才呼叫 multi-track universe 選股並保存 capped 250 selected symbols；18:30 的 `refresh-market-bars` 先把 TWSE/TPEX 官方整表 OHLCV 寫入 `taiwan_daily_bars`，其後 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context` 分別準備資料並寫入 prepared run step status。23:00 的 `refresh-ai-evidence` 以同日全部 final 支援台股 raw rows 為 pool，補齊技術、TWSE/TPEX 官方法人、full-margin projection 與 `official_cache_only` 基本面，並輸出各 evidence lane 缺漏；它不得改 selected symbols、universe tracks 或 candidate/scoring 結論，也不列入 required refresh steps。`run-scoring` 只讀 DB cache/snapshot，且必須看到 lending、full-margin、OHLCV、market context required steps 都是 `completed`，拒絕空 selected universe，並再次確認每個 selected symbol 的 final raw row 同時具備 scoring 與 replay 必要資料，才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
+目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時 scheduled pipeline 與一般手動 step skip，但 provider 錯誤或無法判斷時 fail closed；明確日期範圍的 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是不受當日開市判斷阻擋的手動 maintenance steps。開市後 17:30 的 `refresh-institutional-flows` 先抓取並歸檔 TWSE/TPEX 完整法人日報；18:00 的 `prepare-universe` 必須確認同日 TW/TWO 都有 completed snapshot，才從 archive 建立 `foreign_same_day`、`trust_same_day`、`foreign_recent_accumulation`、`trust_recent_accumulation` 四條法人軌道，加上既有技術軌道後保存 capped 250 selected symbols，並把 archive 來源與列數寫入 required step status。近期軌道最多讀最近 5 個同時具備 TW/TWO 完整 snapshot 的市場日，只有截至 `run_date` 仍連續買超至少 2 日且窗口累計淨買超為正才入選；已在當日轉賣超的舊 streak 不得入選，也不得跨越缺少 completed archive 的平日拼接 streak（週末可自然銜接）。18:30 的 `refresh-market-bars` 再把 TWSE/TPEX 官方整表 OHLCV 寫入 `taiwan_daily_bars`，其後 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context` 分別準備資料並寫入 prepared run step status。23:00 的 `refresh-ai-evidence` 以同日全部 final 支援台股 raw rows 為 pool，補齊技術、TWSE/TPEX 官方法人、full-margin projection 與 `official_cache_only` 基本面，並輸出各 evidence lane 缺漏；它不得改 selected symbols、universe tracks 或 candidate/scoring 結論，也不列入 required refresh steps。`run-scoring` 只讀 DB cache/snapshot，且必須看到 institutional-flow archive、lending、full-margin、OHLCV、market context required steps 都是 `completed`，拒絕空 selected universe，並再次確認每個 selected symbol 的 final raw row 同時具備 scoring 與 replay 必要資料，才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
 
 ### 4.3 外部資料 request budget
 
 | 資料源 | 目前 live 規則 |
 | ------ | -------------- |
-| TWSE RWD `MI_INDEX` market session | 使用 `/rwd/zh/afterTrading/MI_INDEX` 的 `tables[*].data` payload，每次 workflow 先以 intended `run_date` 查詢交易日狀態；明確無資料代表休市，scheduled pipeline 與一般手動 step skip。手動 `refresh-market-bars` maintenance/backfill 是唯一不受 `market_open` 結果阻擋的例外。HTTP、payload、日期或未知 status 異常都 fail closed，不當成休市。Legacy `/exchangeReport/MI_INDEX` 的 `data1…data9` shape 不得與 RWD parser 混用。 |
-| TWSE RWD institutional reports | 目前 live provider 讀取 `TWT38U` 與 `TWT44U` fund reports 建立 same-day institutional 與 recent accumulation universe。這是 report-level all-report 查詢，不是 selected symbols 的逐檔法人 request。 |
+| TWSE RWD `MI_INDEX` market session | 使用 `/rwd/zh/afterTrading/MI_INDEX` 的 `tables[*].data` payload，每次一般 workflow step 先以 intended `run_date` 查詢交易日狀態；明確無資料代表休市，scheduled pipeline 與一般手動 step skip。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` maintenance steps 不依賴當日 `market_open`。HTTP、payload、日期或未知 status 異常都 fail closed，不當成休市。Legacy `/exchangeReport/MI_INDEX` 的 `data1…data9` shape 不得與 RWD parser 混用。 |
+| Legacy TWSE RWD institutional reports | `TWT38U` / `TWT44U` provider 與舊 `same_day_institutional` / `recent_accumulation` prepared payload 只保留相容讀取與測試，不再是 live `prepare-universe` 的資料源。 |
+| TWSE/TPEX institutional flow archive | `T86` 與 `3itrade_hedge` parser 必須驗證市場、交易日、欄位位置、官方宣告列數、重複代號與數字格式，成功後才可寫入 `completed` snapshot。相同市場／日期／dataset 重抓時以同一交易更新 snapshot 並重建 flow rows，避免官方更正後殘留舊列。17:30 workflow 同時要求 TW/TWO 成功；部分成功會保留可重用 snapshot 並回報 safe per-market error，但 `prepare-universe` 仍 fail closed。Live universe 只讀 completed archive，並在 repository 邊界再次驗證 snapshot metadata、子資料市場／日期／dataset／symbol 身份、實際 flow row count，以及依完整內容重算的 payload hash。手動 archive backfill 限制最多 11 個含首尾 calendar days、拒絕未來日期、逐日 commit；完整且通過 integrity check 的日期直接重用，損壞 snapshot 重抓修復，週末與官方休市日不呼叫法人報表 provider。 |
 | TWSE/TPEX official market bars | 台灣時間 18:30 以兩個 market-wide request 歸檔當日未還原 OHLCV；手動 backfill 最多 180 個 calendar days。未還原資料供 AVWAP 與基本面季末價格使用，不得直接取代 adjusted technical history。 |
 | TWSE-first Phase 1 Daily AVWAP | 合併 selected universe symbols、active holdings 與 watchlist symbols 做 refresh；正式排程台灣時間 19:00 執行。上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，同一 symbol 的月份請求以最多 4 路 bounded concurrency 執行，避免完整 universe 的同步 HTTP request 超過服務 timeout；上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback；其他 symbol 以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄，不呼叫 AVWAP provider。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，會寫入 missing snapshot trace，並將 `refresh-avwap` step 標記為 `failed` 與輸出 per-symbol missing reason；TWSE 延遲、request failure、parser error 與 FinMind token acquisition/auth failure 至少需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`、`token_error`，不得讓單一 provider error 升級成 endpoint 500；`run-scoring` 不因此阻塞，候選 detail 保留 `freshness = missing` / `missing_reason`。 |
 | adjusted selected-symbol technical OHLCV | 正式排程台灣時間 22:30 執行。technical indicators 明確使用 yfinance `auto_adjust=true`；目前只有 `unadjusted` 的 `taiwan_daily_bars` 不符合 adjusted contract，因此即使完成官方 archive 暖機也不會被 technical fetcher 採用。未來若新增 adjusted archive，仍須至少 60 根且最新日等於 `run_date` 才能切換。 |
@@ -243,6 +245,8 @@ uv run python scripts/daily_radar_calibration.py --source fixture --run-date 202
 
 報表包含 sample count、bucket distribution、rank cutoff impact、bucket threshold impact、risk/overheat impact、relative strength impact、skip reasons 與 version manifest。Calibration report 只作為規則校準診斷，不宣稱勝率、不輸出價格承諾，也不自動改 live scoring 行為。
 
+法人 universe 另提供 `archive-combined-legacy-proxy-v1` 唯讀對照報表，用同一批已驗證 archive 比較現行四條分法人軌道與「外資＋投信合併」代理基準的清單重疊、Jaccard ratio、單邊 symbols 與共同標的排名變化。這不是 `TWT38U` / `TWT44U` 舊報表及量能集中度的精確重建，因此 response 必須保留 limitations；現行 segmented 有四條各自的 top-N quota，baseline 只有兩條，所以差異同時包含 actor segmentation 與總軌道容量，不得只歸因於分開判斷。這份單一 `run_date` 報表只比較 membership/rank，不是 forward performance 證據。只有最近 5 個完整且未跨缺檔平日的市場日可用時，才可標記 `ready_for_human_review = true`；報表永遠維持 `auto_apply_scoring_change = false`，任何 live universe、limit、scoring 或 rule version 變更仍需人工審核、版本化修改與獨立測試。
+
 ---
 
 ## 8. 解釋、風險標籤與重複處理
@@ -281,12 +285,14 @@ uv run python scripts/daily_radar_calibration.py --source fixture --run-date 202
 
 延續現有 FastAPI 與資料庫架構，Daily Radar 可重用 `stock_raw_data` 作為原始資料快取，並與 `daily_analysis_log` 保持關聯。
 
-### 9.1 既有資料表關係
+### 9.1 持久化資料表關係
 
-| 既有表 | 關係 |
+| 資料表 | 關係 |
 | ------ | ---- |
 | `stock_raw_data` | 儲存 OHLCV、法人、融資、技術指標輸入快照或來源資料 |
 | `daily_analysis_log` | 可保存單股分析結果，Daily Radar 入選後可連回個股分析紀錄 |
+| `taiwan_institutional_report_snapshots` | 以 market / trade date / dataset 唯一保存市場級法人報表完成狀態、來源、支援列數、payload hash 與抓取時間；失敗不得冒充 completed |
+| `taiwan_institutional_flows` | 連結 report snapshot，依 symbol / trade date / dataset 唯一保存外資、投信、自營商與三大法人淨買賣超；`row_origin` 區分官方 reported 與日後只在完整報表加 final market bar 證據下建立的 zero-fill |
 
 ### 9.2 MVP 新增概念表
 
@@ -359,8 +365,12 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
 
 | Method | Path | 用途 |
 | ------ | ---- | ---- |
-| `POST` | `/internal/daily-radar/market-session` | 由 GitHub Actions 在所有下游 jobs 前呼叫，以 TWSE `MI_INDEX` 判斷 intended `run_date` 是開市或休市 |
+| `POST` | `/internal/daily-radar/market-session` | 由 GitHub Actions 在 scheduled pipeline 與一般手動 refresh jobs 前呼叫，以 TWSE `MI_INDEX` 判斷 intended `run_date` 是開市或休市；明確歷史日期的 maintenance exceptions 不呼叫 |
+| `POST` | `/internal/daily-radar/refresh-institutional-flows` | 在建立 prepared run 前歸檔同日 TWSE/TPEX 全市場法人日報；任一市場失敗時回報 safe per-market error |
+| `POST` | `/internal/daily-radar/backfill-institutional-flows` | 手動、可重跑的法人 archive 回補；明確 `start_date` / `end_date`、最多 11 個含首尾 calendar days、拒絕未來日期，重用完整日並修復 integrity check 失敗的 snapshot |
+| `POST` | `/internal/daily-radar/institutional-universe-replay` | 對明確且非未來的 `run_date` 唯讀比較四條分法人軌道與 archive-combined legacy proxy；不更新 prepared universe、candidate 或 scoring config |
 | `POST` | `/internal/daily-radar/prepare-universe` | 由 GitHub Actions 呼叫的 selected universe 準備端點，正式排程 capped 250 symbols |
+| `POST` | `/internal/daily-radar/refresh-market-bars` | 由 GitHub Actions 歸檔 TWSE/TPEX 全市場未還原 OHLCV，亦支援明確日期範圍的手動 maintenance/backfill |
 | `POST` | `/internal/daily-radar/refresh-avwap` | 由 GitHub Actions 呼叫的試驗版 Daily AVWAP refresh 端點 |
 | `POST` | `/internal/daily-radar/refresh-lending` | 由 GitHub Actions 呼叫的 lending refresh 端點 |
 | `POST` | `/internal/daily-radar/refresh-full-margin` | 由 GitHub Actions 呼叫的 full margin refresh 端點 |
@@ -390,8 +400,8 @@ Daily Radar 以現有 FastAPI 為後端基礎，並與既有端點共存。
       "risk_labels": ["market_weakness"],
       "repeat_status": "new",
       "explanation": "量價轉強觀察...",
-      "scoring_version": "daily-radar-scoring-v2.4",
-      "rule_version": "daily-radar-rules-v2.3",
+      "scoring_version": "daily-radar-scoring-v2.5",
+      "rule_version": "daily-radar-rules-v2.4",
       "bucket_scores": {},
       "score_breakdown": {
         "relative_strength": {
@@ -493,10 +503,10 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 
 1. 台股收盤且資料源更新後，GitHub Actions 以 cron 觸發。
 2. Scheduled run 用 Actions run API 的原始 `created_at` 回推 `github.event.schedule` 對應的 UTC cron slot，得到不受啟動延遲或 Re-run 時間影響的 immutable `run_date`。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期，保證 Re-run 不改日。
-3. Workflow 先呼叫 `/internal/daily-radar/market-session`。週末、國定假日、颱風停市等明確 closed 結果會讓 scheduled pipeline 與一般手動 step skip；provider 異常或無法判斷時 fail closed。手動 `refresh-market-bars` maintenance/backfill 是唯一例外，可在目前 `run_date` 休市時依明確日期範圍執行。
-4. 開市時 Action 才以分段 schedule 呼叫 Zeabur 後端 internal endpoints，且所有 step 都明確傳入同一個 `run_date`。排程為 18:00 `prepare-universe`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`、22:30 `refresh-ohlcv`、23:00 `refresh-ai-evidence`、23:30 `refresh-market-context`、隔日 00:30 `run-scoring`。
+3. Workflow 一般 step 先呼叫 `/internal/daily-radar/market-session`。週末、國定假日、颱風停市等明確 closed 結果會讓 scheduled pipeline 與一般手動 step skip；provider 異常或無法判斷時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是 maintenance exceptions，可在目前 `run_date` 休市時依明確歷史日期執行；replay 的完整 JSON response 以 14 日 GitHub artifact 保存，即使 calibration gate 因資料不足失敗仍可下載診斷。
+4. 開市時 Action 才以分段 schedule 呼叫 Zeabur 後端 internal endpoints，且所有 step 都明確傳入同一個 `run_date`。排程為 17:30 `refresh-institutional-flows`、18:00 `prepare-universe`、18:30 `refresh-market-bars`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`、22:30 `refresh-ohlcv`、23:00 `refresh-ai-evidence`、23:30 `refresh-market-context`、隔日 00:30 `run-scoring`。
 5. 核心 refresh step 都讀同一筆 `daily_radar_prepared_runs` 的 selected symbols；不得重選 universe。`refresh-avwap` 另會合併 active holdings 與 watchlist symbols 刷新 shared market snapshot，但只支援 `.TW` / `.TWO`，其他 symbol 以 skipped reason 記錄；不得把使用者 entry date、avg cost 或 holding-specific anchor 寫入 cache。
-6. `run-scoring` 只讀 DB cache/snapshot；若 lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
+6. `run-scoring` 只讀 DB cache/snapshot；若 institutional-flow archive、lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
 7. 台灣時間週二至週六 07:00 會補跑前一個 intended trading date 的 `refresh-avwap`；成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
 8. 前端 `GET /daily-radar/latest` 顯示最新完成版本。
 9. `.github/workflows/daily-radar.yml` 於 OHLCV 與 market context 後、台灣時間平日 23:50 執行 5 / 10 / 20 交易日 due validation。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
@@ -522,9 +532,9 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 | Idempotency | 同一 `run_date` 重跑需覆寫或建立新版本，策略需明確 |
 | Observability | 保存 universe count、prefilter count、candidate count、錯誤摘要 |
 | Partial failure | 單一資料源失敗不得讓全流程無聲失敗，需標示 data gap |
-| Request budget | TWSE RWD fund reports 用 report-level 查詢建立法人 tracks；selected symbols capped 250；AVWAP / lending / full margin 拆成不同小時；AVWAP refresh 合併 selected symbols、active holdings 與 watchlist symbols 後刷新 shared market snapshot，上市 `.TW` 走 TWSE `STOCK_DAY`、上櫃 `.TWO` 保留 FinMind fallback，非支援 symbol 只記 skipped reason；lending / full-margin 只對 selected symbols refresh 並重用同日 fresh cache；yfinance 只對缺少 final row 或 candidate/replay 必要資料的 selected symbols 做一次 batch download，並回寫 prepared universe 技術面 tracks；market index 只抓固定 benchmark；weekly major holders 由週頻背景 endpoint 更新 cache |
+| Request budget | TWSE `T86` / TPEX `3itrade_hedge` 各用一次 market-level 查詢歸檔法人日報，live universe 只讀 archive 並建立四條分法人 tracks；selected symbols capped 250；AVWAP / lending / full margin 拆成不同小時；AVWAP refresh 合併 selected symbols、active holdings 與 watchlist symbols 後刷新 shared market snapshot，上市 `.TW` 走 TWSE `STOCK_DAY`、上櫃 `.TWO` 保留 FinMind fallback，非支援 symbol 只記 skipped reason；lending / full-margin 只對 selected symbols refresh 並重用同日 fresh cache；yfinance 只對缺少 final row 或 candidate/replay 必要資料的 selected symbols 做一次 batch download，並回寫 prepared universe 技術面 tracks；market index 只抓固定 benchmark；weekly major holders 由週頻背景 endpoint 更新 cache |
 | Stale guard | 若核心資料日期過舊，run status 應標示 `stale_data` |
-| Background context failure | Daily Radar 正式分段 pipeline 對 lending、full margin、OHLCV、market context refresh step 採 fail-closed；任一步不是 `completed` 時 `run-scoring` 回 `409`，不持久化 candidates。AVWAP 是 optional evidence step，非 completed business status 會在 workflow log 顯示 missing symbols / missing reasons，candidate detail 以 missing caveat 呈現；獨立 chip-context workflow 對非 completed 業務狀態 fail job 以利監控 |
+| Required-step failure | Daily Radar 正式分段 pipeline 對 institutional-flow archive、lending、full margin、OHLCV、market context refresh step 採 fail-closed；任一步不是 `completed` 時 `run-scoring` 回 `409`，不持久化 candidates。AVWAP 是 optional evidence step，非 completed business status 會在 workflow log 顯示 missing symbols / missing reasons，candidate detail 以 missing caveat 呈現；獨立 chip-context workflow 對非 completed 業務狀態 fail job 以利監控 |
 | Background labels | `background_context_labels` 只描述背景脈絡與資料完整度，不作為 score driver、交易 action 或 portfolio recommendation |
 
 ---
@@ -537,12 +547,12 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 | ---- | -------- |
 | Unit tests | 前置濾網、bucket 判定、分數計算、風險扣分、冷卻邏輯 |
 | Snapshot tests | 固定輸入資料產生穩定 candidate、內部 score breakdown 與 user-facing 觀察等級 |
-| API tests | market-session fail-closed guard、分段 internal endpoints、`/internal/daily-radar/run` 相容入口、`/daily-radar/latest`、日期查詢、symbol 查詢 |
+| API tests | market-session fail-closed guard、法人 archive 完整/部分成功/非預期失敗、bounded/reentrant backfill、唯讀 segmented-vs-proxy replay、internal auth、prepare-universe 的 TW/TWO archive prerequisite、分段 internal endpoints、`/internal/daily-radar/run` 相容入口、`/daily-radar/latest`、日期查詢、symbol 查詢 |
 | Persistence tests | run 與 candidate 寫入、重跑行為、依日期與 symbol 查詢 |
 | Data freshness tests | stale data、缺法人資料、缺融資資料時的降級行為 |
 | Calibration tests | 固定 fixture 重跑產出穩定 calibration report，並覆蓋 rank cutoff、bucket threshold、risk/overheat、relative strength 與 skip reasons |
 | Background context tests | migration/model、repository upsert/read、internal updater endpoint、workflow request budget、分段 workflow 會在不同小時刷新日頻 selected-symbol context，且 background labels 不改 ranking |
-| Workflow context tests | Scheduled Re-run 保留原始 cron-slot `run_date`；開市、休市與 provider 異常都有回歸覆蓋；scheduled pipeline 與一般手動 step 共用同一 run context guard，並固定驗證手動 `refresh-market-bars` maintenance/backfill 的休市例外 |
+| Workflow context tests | Scheduled Re-run 保留原始 cron-slot `run_date`；開市、休市與 provider 異常都有回歸覆蓋；scheduled pipeline 與一般手動 refresh 共用同一 run context guard，並固定驗證手動 `refresh-market-bars`、`backfill-institutional-flows`、唯讀 `replay-institutional-universe` 的休市 maintenance exceptions、明確日期輸入與不自動套用校準結果 |
 | Background label tests | API/schema 可表示 labels、freshness、missing reason；移除 background context 後 score/ranking 不變 |
 | Rule governance tests | rule registry coverage、context_only/deprecated 不可影響 score、同輸入 counterfactual ablation、partial v1 replay payload 不得通過、90% coverage 但 ranking pool 不完整時 fail closed、空 cohort 與 incomplete pool 狀態分離、baseline replay 共用、完整 candidate pool 先排名再接 outcome、monthly rule-review API、artifact workflow 基本檢查 |
 | Weight governance tests | baseline config replay 等於 live score、舊 snapshot 標記 `replay_input_incomplete`、一次只移動一個參數與一個 step、risk / data-gap / prefilter 參數不會成為候選、5 / 10 / 20 日各自通過 holdout 非劣性 gate |

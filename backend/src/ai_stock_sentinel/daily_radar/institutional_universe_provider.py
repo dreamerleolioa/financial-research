@@ -101,7 +101,7 @@ class InstitutionalUniverseEmptyResponse(ValueError):
 
 
 class TwseRwdInstitutionalUniverseProvider:
-    name = "TwseRwdInstitutionalUniverseProvider"
+    name = "twse_rwd"
 
     def __init__(
         self,

@@ -22,13 +22,30 @@ from ai_stock_sentinel.daily_radar.data_quality import (
 )
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
     InstitutionalUniverseProviderError,
-    TwseRwdInstitutionalUniverseProvider,
+)
+from ai_stock_sentinel.daily_radar.institutional_archive_universe import (
+    ArchivedInstitutionalUniverseProvider,
+    InstitutionalArchiveUniverseError,
 )
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
     InstitutionalEvidenceProvider,
     InstitutionalEvidenceResult,
     OfficialInstitutionalEvidenceProvider,
     cached_daily_rows_from_raw_rows,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_provider import (
+    OfficialTaiwanInstitutionalReportProvider,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
+    get_completed_institutional_snapshot,
+)
+from ai_stock_sentinel.daily_radar.institutional_flow_service import (
+    InstitutionalReportProvider,
+    backfill_taiwan_institutional_flows,
+    refresh_taiwan_institutional_flows,
+)
+from ai_stock_sentinel.daily_radar.institutional_universe_replay import (
+    build_institutional_universe_replay_report,
 )
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
@@ -111,6 +128,12 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarChipContextUpdateResponse,
     DailyRadarForwardValidationRunRequest,
     DailyRadarForwardValidationRunResponse,
+    DailyRadarInstitutionalFlowsBackfillRequest,
+    DailyRadarInstitutionalFlowsBackfillResponse,
+    DailyRadarInstitutionalFlowsRefreshRequest,
+    DailyRadarInstitutionalFlowsRefreshResponse,
+    DailyRadarInstitutionalUniverseReplayRequest,
+    DailyRadarInstitutionalUniverseReplayResponse,
     DailyRadarMarketSessionRequest,
     DailyRadarMarketSessionResponse,
     DailyRadarMarketBarsRefreshRequest,
@@ -131,6 +154,7 @@ from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseEntry,
     DailyRadarUniverseProvider,
+    SEGMENTED_INSTITUTIONAL_TRACKS,
     is_daily_radar_supported_symbol,
     refresh_daily_radar_universe_technical_tracks,
     select_daily_radar_universe,
@@ -146,7 +170,9 @@ router = APIRouter(tags=["daily-radar"])
 logger = logging.getLogger(__name__)
 
 DAILY_RUN_REFRESH_CONTEXT_TYPES = ("lending", "full_margin")
+DAILY_RADAR_MAX_UNIVERSE_SYMBOLS = 250
 DAILY_RADAR_REQUIRED_REFRESH_STEPS = (
+    "refresh-institutional-flows",
     "refresh-lending",
     "refresh-full-margin",
     "refresh-ohlcv",
@@ -154,8 +180,10 @@ DAILY_RADAR_REQUIRED_REFRESH_STEPS = (
 )
 
 
-def get_daily_radar_universe_provider() -> DailyRadarUniverseProvider:
-    return TwseRwdInstitutionalUniverseProvider()
+def get_daily_radar_universe_provider(
+    db: Session = Depends(get_db),
+) -> DailyRadarUniverseProvider:
+    return ArchivedInstitutionalUniverseProvider(db)
 
 
 def get_daily_radar_technical_fetcher(
@@ -166,6 +194,10 @@ def get_daily_radar_technical_fetcher(
 
 def get_taiwan_market_bar_provider() -> OfficialTaiwanMarketBarProvider:
     return OfficialTaiwanMarketBarProvider()
+
+
+def get_taiwan_institutional_report_provider() -> InstitutionalReportProvider:
+    return OfficialTaiwanInstitutionalReportProvider()
 
 
 def get_daily_radar_market_context_provider() -> MarketIndexContextProvider:
@@ -295,6 +327,10 @@ def prepare_daily_radar_universe_endpoint(
 ) -> DailyRadarPreparedRunResponse:
     request = payload or DailyRadarPreparedRunRequest()
     run_date = request.run_date or _backend_today()
+    institutional_archive = _required_institutional_archive_details(
+        db,
+        run_date=run_date,
+    )
     existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
     try:
         universe = select_daily_radar_universe(
@@ -307,11 +343,8 @@ def prepare_daily_radar_universe_endpoint(
     except Exception as exc:
         with suppress(Exception):
             db.rollback()
-        error_type = (
-            exc.error_type
-            if isinstance(exc, InstitutionalUniverseProviderError)
-            else exc.__class__.__name__
-        )
+        error_type = _universe_provider_error_type(exc)
+        provider_name = _universe_provider_name(universe_provider)
         if isinstance(exc, InstitutionalUniverseProviderError):
             logger.warning(
                 "Daily Radar universe provider failed provider=twse_rwd report_id=%s query_date=%s error_type=%s",
@@ -322,7 +355,7 @@ def prepare_daily_radar_universe_endpoint(
         else:
             logger.exception(
                 "Daily Radar universe selection failed provider=%s error_type=%s",
-                universe_provider.__class__.__name__,
+                provider_name,
                 error_type,
             )
         raise HTTPException(
@@ -331,10 +364,13 @@ def prepare_daily_radar_universe_endpoint(
                 "code": "daily_radar_universe_provider_failed",
                 "message": "Daily Radar universe provider request failed.",
                 "error_type": error_type,
-                "provider": "twse_rwd",
+                "provider": provider_name,
             },
         ) from exc
-    capped_universe = universe[: request.max_symbols]
+    capped_universe = _capped_daily_radar_universe(
+        universe,
+        max_symbols=request.max_symbols,
+    )
     if not capped_universe:
         raise HTTPException(
             status_code=409,
@@ -349,6 +385,13 @@ def prepare_daily_radar_universe_endpoint(
         universe=[_universe_entry_payload(entry) for entry in capped_universe],
         status="prepared",
         errors=[],
+    )
+    update_daily_radar_prepared_step_status(
+        db,
+        prepared,
+        step="refresh-institutional-flows",
+        status="completed",
+        details=institutional_archive,
     )
     update_daily_radar_prepared_step_status(
         db,
@@ -461,6 +504,147 @@ def refresh_daily_radar_full_margin_endpoint(
         provider=provider,
         context_type="full_margin",
         step="refresh-full-margin",
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-institutional-flows",
+    response_model=DailyRadarInstitutionalFlowsRefreshResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_institutional_flows_endpoint(
+    payload: DailyRadarInstitutionalFlowsRefreshRequest | None = None,
+    db: Session = Depends(get_db),
+    provider: InstitutionalReportProvider = Depends(
+        get_taiwan_institutional_report_provider
+    ),
+) -> DailyRadarInstitutionalFlowsRefreshResponse:
+    request = payload or DailyRadarInstitutionalFlowsRefreshRequest()
+    run_date = request.run_date or _backend_today()
+    try:
+        result = refresh_taiwan_institutional_flows(
+            db,
+            trade_date=run_date,
+            provider=provider,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Taiwan institutional flow archive refresh failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "institutional_flow_archive_refresh_failed",
+                "error_type": exc.__class__.__name__,
+            },
+        ) from exc
+    return DailyRadarInstitutionalFlowsRefreshResponse(
+        status=result["status"],
+        run_date=run_date,
+        market=request.market,
+        records_written=result["records_written"],
+        markets_attempted=result["markets_attempted"],
+        markets_completed=result["markets_completed"],
+        snapshots=result["snapshots"],
+        errors=result["errors"],
+    )
+
+
+@router.post(
+    "/internal/daily-radar/backfill-institutional-flows",
+    response_model=DailyRadarInstitutionalFlowsBackfillResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def backfill_daily_radar_institutional_flows_endpoint(
+    payload: DailyRadarInstitutionalFlowsBackfillRequest,
+    db: Session = Depends(get_db),
+    provider: InstitutionalReportProvider = Depends(
+        get_taiwan_institutional_report_provider
+    ),
+    market_session_provider: MarketSessionProvider = Depends(
+        get_daily_radar_market_session_provider
+    ),
+) -> DailyRadarInstitutionalFlowsBackfillResponse:
+    try:
+        result = backfill_taiwan_institutional_flows(
+            db,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            as_of_date=_backend_today(),
+            provider=provider,
+            market_session_provider=market_session_provider,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "institutional_flow_backfill_range_invalid",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Taiwan institutional flow archive backfill failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "institutional_flow_archive_backfill_failed",
+                "error_type": exc.__class__.__name__,
+            },
+        ) from exc
+    return DailyRadarInstitutionalFlowsBackfillResponse(
+        status=result["status"],
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        market=payload.market,
+        records_written=result["records_written"],
+        dates_requested=result["dates_requested"],
+        dates_attempted=result["dates_attempted"],
+        dates_completed=result["dates_completed"],
+        dates_reused=result["dates_reused"],
+        dates_repaired=result["dates_repaired"],
+        skipped_dates=result["skipped_dates"],
+        snapshots=result["snapshots"],
+        errors=result["errors"],
+    )
+
+
+@router.post(
+    "/internal/daily-radar/institutional-universe-replay",
+    response_model=DailyRadarInstitutionalUniverseReplayResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def replay_daily_radar_institutional_universe_endpoint(
+    payload: DailyRadarInstitutionalUniverseReplayRequest,
+    db: Session = Depends(get_db),
+) -> DailyRadarInstitutionalUniverseReplayResponse:
+    if payload.run_date > _backend_today():
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "institutional_universe_replay_date_in_future"},
+        )
+    try:
+        report = build_institutional_universe_replay_report(
+            db,
+            run_date=payload.run_date,
+            market=payload.market,
+            track_limit=payload.track_limit,
+            max_symbols=payload.max_symbols,
+        )
+    except InstitutionalArchiveUniverseError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code,
+                "market": exc.market,
+                "query_date": exc.query_date.isoformat(),
+            },
+        ) from exc
+    return DailyRadarInstitutionalUniverseReplayResponse(
+        run_date=payload.run_date,
+        market=payload.market,
+        report=report,
     )
 
 
@@ -918,6 +1102,10 @@ def run_daily_radar_endpoint(
             market=market,
             track_limit=50,
             technical_records=existing_technical_rows,
+        )
+        universe = _capped_daily_radar_universe(
+            universe,
+            max_symbols=DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
         )
         if not universe:
             raise HTTPException(
@@ -1390,6 +1578,80 @@ def _should_refresh_daily_run_chip_context(market: str) -> bool:
     return market.upper() == "TW"
 
 
+def _capped_daily_radar_universe(
+    universe: list[DailyRadarUniverseEntry],
+    *,
+    max_symbols: int,
+) -> list[DailyRadarUniverseEntry]:
+    return universe[: max(0, max_symbols)]
+
+
+def _universe_provider_error_type(exc: Exception) -> str:
+    if isinstance(exc, InstitutionalUniverseProviderError):
+        return exc.error_type
+    if isinstance(exc, InstitutionalArchiveUniverseError):
+        return exc.code
+    return exc.__class__.__name__
+
+
+def _universe_provider_name(provider: DailyRadarUniverseProvider) -> str:
+    return str(getattr(provider, "name", provider.__class__.__name__))
+
+
+def _required_institutional_archive_details(
+    db: Session,
+    *,
+    run_date: date,
+) -> dict[str, Any]:
+    snapshots: dict[str, Any] = {}
+    missing_markets: list[str] = []
+    for market in ("TW", "TWO"):
+        snapshot = get_completed_institutional_snapshot(
+            db,
+            market=market,
+            trade_date=run_date,
+        )
+        payload_hash = snapshot.payload_hash if snapshot is not None else None
+        if (
+            snapshot is None
+            or snapshot.row_count <= 0
+            or not snapshot.source_provider.strip()
+            or not snapshot.source_dataset.strip()
+            or payload_hash is None
+            or len(payload_hash) != 64
+            or any(character not in "0123456789abcdef" for character in payload_hash)
+        ):
+            missing_markets.append(market)
+            continue
+        snapshots[market] = {
+            "snapshot_id": snapshot.id,
+            "row_count": snapshot.row_count,
+            "source_provider": snapshot.source_provider,
+            "source_dataset": snapshot.source_dataset,
+            "payload_hash": snapshot.payload_hash,
+        }
+    if missing_markets:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "daily_radar_institutional_archive_incomplete",
+                "message": (
+                    "Daily Radar institutional archive is incomplete; "
+                    "prepare-universe is blocked."
+                ),
+                "run_date": run_date.isoformat(),
+                "required_markets": ["TW", "TWO"],
+                "missing_markets": missing_markets,
+            },
+        )
+    return {
+        "records_written": sum(
+            int(details["row_count"]) for details in snapshots.values()
+        ),
+        "markets": snapshots,
+    }
+
+
 def _raise_if_required_refresh_steps_missing(prepared: Any) -> None:
     step_statuses = dict(prepared.step_statuses or {})
     incomplete_steps = [
@@ -1682,6 +1944,7 @@ def _require_complete_daily_radar_raw_rows(
 def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) -> dict[str, Any]:
     same_day_metrics = dict(entry.track_metrics.get("same_day_institutional") or {})
     recent_metrics = dict(entry.track_metrics.get("recent_accumulation") or {})
+    segmented = any(track in SEGMENTED_INSTITUTIONAL_TRACKS for track in entry.tracks)
     flat_payload: dict[str, Any] = {
         "flow_label": "institutional_accumulation",
         "flow_state": _flow_state(entry),
@@ -1691,28 +1954,49 @@ def _institutional_payload(entry: DailyRadarUniverseEntry, *, run_date: date) ->
         "same_day_rank": entry.same_day_rank,
         "recent_accumulation_rank": entry.recent_accumulation_rank,
         "scores": _score_payload(entry),
-        "source_provider": "daily_radar_universe",
+        "source_provider": (
+            "taiwan_institutional_flow_archive"
+            if segmented
+            else "daily_radar_universe"
+        ),
         "data_dates": {"institutional_flow": _latest_institutional_date(entry, run_date=run_date)},
     }
-    _merge_same_day_metrics(flat_payload, same_day_metrics)
-    _merge_recent_metrics(flat_payload, recent_metrics)
+    if segmented:
+        _merge_segmented_institutional_metrics(flat_payload, entry)
+    else:
+        _merge_same_day_metrics(flat_payload, same_day_metrics)
+        _merge_recent_metrics(flat_payload, recent_metrics)
     return flat_payload | {"institutional_flow": dict(flat_payload)}
 
 
 def _flow_state(entry: DailyRadarUniverseEntry) -> str:
-    recent_metrics = entry.track_metrics.get("recent_accumulation") or {}
-    recent_flow_state = recent_metrics.get("flow_state")
-    if recent_flow_state is not None:
-        return str(recent_flow_state)
-    recent_positive_days = _int_metric(recent_metrics.get("consecutive_buy_days"))
-    if recent_positive_days is not None:
-        return "consistent_accumulation" if recent_positive_days >= 2 else "weak_confirmation"
+    recent_tracks = (
+        "foreign_recent_accumulation",
+        "trust_recent_accumulation",
+        "recent_accumulation",
+    )
+    recent_metrics = [entry.track_metrics.get(track) or {} for track in recent_tracks]
+    recent_positive_days = [
+        value
+        for metrics in recent_metrics
+        if (value := _int_metric(metrics.get("consecutive_buy_days"))) is not None
+    ]
+    if recent_positive_days:
+        return (
+            "consistent_accumulation"
+            if max(recent_positive_days) >= 2
+            else "weak_confirmation"
+        )
+    for metrics in recent_metrics:
+        if metrics.get("flow_state") is not None:
+            return str(metrics["flow_state"])
 
-    same_day_metrics = entry.track_metrics.get("same_day_institutional") or {}
-    same_day_flow_state = same_day_metrics.get("flow_state")
-    if same_day_flow_state is not None:
-        return str(same_day_flow_state)
-    if not any(track in {"same_day_institutional", "recent_accumulation"} for track in entry.tracks):
+    same_day_tracks = ("foreign_same_day", "trust_same_day", "same_day_institutional")
+    for track in same_day_tracks:
+        same_day_metrics = entry.track_metrics.get(track) or {}
+        if same_day_metrics.get("flow_state") is not None:
+            return str(same_day_metrics["flow_state"])
+    if not any(track in {*same_day_tracks, *recent_tracks} for track in entry.tracks):
         return "technical_trigger"
     return "weak_confirmation"
 
@@ -1769,6 +2053,77 @@ def _merge_recent_metrics(payload: dict[str, Any], metrics: dict[str, Any]) -> N
     _add_payload_metric(payload, "recent_concentration", raw_recent_concentration)
     _add_payload_metric(payload, "net_flow_to_avg_volume", recent_concentration)
     _add_payload_metric(payload, "recent_source_dates", _source_dates(metrics))
+
+
+def _merge_segmented_institutional_metrics(
+    payload: dict[str, Any],
+    entry: DailyRadarUniverseEntry,
+) -> None:
+    same_day_values: dict[str, float] = {}
+    recent_cumulative_values: dict[str, float] = {}
+    recent_consecutive_days: dict[str, int] = {}
+    same_day_source_dates: set[str] = set()
+    recent_source_dates: set[str] = set()
+
+    for actor, track in (
+        ("foreign", "foreign_same_day"),
+        ("trust", "trust_same_day"),
+    ):
+        metrics = dict(entry.track_metrics.get(track) or {})
+        net_buy = _float_metric(metrics.get("net_buy"))
+        if net_buy is None:
+            continue
+        same_day_values[actor] = net_buy
+        payload[f"{actor}_same_day_net_shares"] = net_buy
+        same_day_source_dates.update(_source_dates(metrics) or ())
+
+    for actor, track in (
+        ("foreign", "foreign_recent_accumulation"),
+        ("trust", "trust_recent_accumulation"),
+    ):
+        metrics = dict(entry.track_metrics.get(track) or {})
+        cumulative_net_buy = _float_metric(metrics.get("cumulative_net_buy"))
+        consecutive_buy_days = _int_metric(metrics.get("consecutive_buy_days"))
+        latest_net_buy = _float_metric(metrics.get("net_buy"))
+        if cumulative_net_buy is not None:
+            recent_cumulative_values[actor] = cumulative_net_buy
+            payload[f"{actor}_cumulative_net_shares"] = cumulative_net_buy
+        if consecutive_buy_days is not None:
+            recent_consecutive_days[actor] = consecutive_buy_days
+            payload[f"{actor}_consecutive_buy_days"] = consecutive_buy_days
+        if latest_net_buy is not None:
+            payload[f"{actor}_latest_net_shares"] = latest_net_buy
+        recent_source_dates.update(_source_dates(metrics) or ())
+
+    if same_day_values:
+        same_day_actors = tuple(actor for actor in ("foreign", "trust") if actor in same_day_values)
+        payload["same_day_actor"] = same_day_actors[0] if len(same_day_actors) == 1 else "mixed"
+        payload["same_day_net_buy"] = sum(same_day_values.values())
+        payload["same_day_source_dates"] = sorted(same_day_source_dates)
+
+    for actor, output_key in (
+        ("foreign", "foreign_net_shares"),
+        ("trust", "investment_trust_net_shares"),
+    ):
+        current_net_buy = same_day_values.get(actor)
+        if current_net_buy is None:
+            current_net_buy = _float_metric(payload.get(f"{actor}_latest_net_shares"))
+        if current_net_buy is not None:
+            payload[output_key] = current_net_buy
+
+    if recent_cumulative_values:
+        recent_actors = tuple(
+            actor for actor in ("foreign", "trust") if actor in recent_cumulative_values
+        )
+        cumulative_net_buy = sum(recent_cumulative_values.values())
+        payload["recent_actor"] = recent_actors[0] if len(recent_actors) == 1 else "mixed"
+        payload["cumulative_net_buy"] = cumulative_net_buy
+        payload["net_buy_cumulative"] = cumulative_net_buy
+        payload["recent_source_dates"] = sorted(recent_source_dates)
+    if recent_consecutive_days:
+        consecutive_buy_days = max(recent_consecutive_days.values())
+        payload["consecutive_buy_days"] = consecutive_buy_days
+        payload["consecutive_positive_days"] = consecutive_buy_days
 
 
 def _normalized_actor(value: Any) -> str | None:

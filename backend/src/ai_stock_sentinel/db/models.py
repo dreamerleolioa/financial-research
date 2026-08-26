@@ -441,6 +441,112 @@ class TaiwanDailyBar(Base):
     )
 
 
+class TaiwanInstitutionalReportSnapshot(Base):
+    __tablename__ = "taiwan_institutional_report_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "market",
+            "trade_date",
+            "dataset",
+            name="uq_taiwan_institutional_snapshot_market_date_dataset",
+        ),
+        CheckConstraint(
+            "market IN ('TW', 'TWO')",
+            name="ck_taiwan_institutional_snapshot_market",
+        ),
+        CheckConstraint(
+            "status IN ('completed', 'failed')",
+            name="ck_taiwan_institutional_snapshot_status",
+        ),
+        CheckConstraint(
+            "row_count >= 0",
+            name="ck_taiwan_institutional_snapshot_row_count",
+        ),
+        CheckConstraint(
+            "status != 'completed' OR payload_hash IS NOT NULL",
+            name="ck_taiwan_institutional_snapshot_completed_hash",
+        ),
+        CheckConstraint(
+            "status != 'failed' OR row_count = 0",
+            name="ck_taiwan_institutional_snapshot_failed_rows",
+        ),
+        Index(
+            "idx_taiwan_institutional_snapshots_date_market",
+            "trade_date",
+            "market",
+        ),
+        Index("idx_taiwan_institutional_snapshots_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    dataset: Mapped[str] = mapped_column(String(60), nullable=False)
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_dataset: Mapped[str] = mapped_column(String(60), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class TaiwanInstitutionalFlow(Base):
+    __tablename__ = "taiwan_institutional_flows"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "trade_date",
+            "dataset",
+            name="uq_taiwan_institutional_flow_symbol_date_dataset",
+        ),
+        CheckConstraint(
+            "market IN ('TW', 'TWO')",
+            name="ck_taiwan_institutional_flow_market",
+        ),
+        CheckConstraint(
+            "row_origin IN ('reported', 'complete_report_zero_fill')",
+            name="ck_taiwan_institutional_flow_row_origin",
+        ),
+        Index(
+            "idx_taiwan_institutional_flows_symbol_date",
+            "symbol",
+            "trade_date",
+        ),
+        Index(
+            "idx_taiwan_institutional_flows_date_market",
+            "trade_date",
+            "market",
+        ),
+        Index("idx_taiwan_institutional_flows_snapshot_id", "snapshot_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("taiwan_institutional_report_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    dataset: Mapped[str] = mapped_column(String(60), nullable=False)
+    foreign_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    investment_trust_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dealer_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    row_origin: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="reported",
+        server_default="reported",
+    )
+
+
 class CompanyFundamentalPeriod(Base):
     __tablename__ = "company_fundamental_periods"
     __table_args__ = (

@@ -114,6 +114,75 @@ class DailyRadarMarketBarsRefreshResponse(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarInstitutionalFlowsRefreshRequest(BaseModel):
+    run_date: date | None = None
+    market: Literal["TW"] = "TW"
+
+
+class DailyRadarInstitutionalSnapshotResponse(BaseModel):
+    market: Literal["TW", "TWO"]
+    row_count: int = Field(ge=1)
+    source_provider: str = Field(min_length=1)
+    source_dataset: str = Field(min_length=1)
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DailyRadarInstitutionalFlowsRefreshResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    step: Literal["refresh-institutional-flows"] = "refresh-institutional-flows"
+    run_date: date
+    market: Literal["TW"] = "TW"
+    records_written: int = Field(default=0, ge=0)
+    markets_attempted: list[Literal["TW", "TWO"]] = Field(default_factory=list)
+    markets_completed: list[Literal["TW", "TWO"]] = Field(default_factory=list)
+    snapshots: list[DailyRadarInstitutionalSnapshotResponse] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DailyRadarInstitutionalFlowsBackfillRequest(BaseModel):
+    start_date: date
+    end_date: date
+    market: Literal["TW"] = "TW"
+
+
+class DailyRadarInstitutionalBackfillSnapshotResponse(
+    DailyRadarInstitutionalSnapshotResponse
+):
+    trade_date: date
+
+
+class DailyRadarInstitutionalFlowsBackfillResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    start_date: date
+    end_date: date
+    market: Literal["TW"] = "TW"
+    records_written: int = Field(default=0, ge=0)
+    dates_requested: list[date] = Field(default_factory=list)
+    dates_attempted: list[date] = Field(default_factory=list)
+    dates_completed: list[date] = Field(default_factory=list)
+    dates_reused: list[date] = Field(default_factory=list)
+    dates_repaired: list[date] = Field(default_factory=list)
+    skipped_dates: list[date] = Field(default_factory=list)
+    snapshots: list[DailyRadarInstitutionalBackfillSnapshotResponse] = Field(
+        default_factory=list
+    )
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DailyRadarInstitutionalUniverseReplayRequest(BaseModel):
+    run_date: date
+    market: Literal["TW"] = "TW"
+    track_limit: int = Field(default=50, ge=1, le=100)
+    max_symbols: int = Field(default=250, ge=1, le=250)
+
+
+class DailyRadarInstitutionalUniverseReplayResponse(BaseModel):
+    status: Literal["completed"] = "completed"
+    run_date: date
+    market: Literal["TW"] = "TW"
+    report: dict[str, Any]
+
+
 class DailyRadarChipContextUpdateRequest(BaseModel):
     run_date: date | None = None
     market: str = Field(default="TW", min_length=1, max_length=20)
@@ -224,11 +293,11 @@ class DailyRadarCandidateResponse(BaseModel):
                 "risk_labels": [DAILY_RADAR_RISK_LABELS[3]],
                 "repeat_status": DAILY_RADAR_REPEAT_STATUSES[0],
                 "explanation": "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。",
-                "scoring_version": "daily-radar-scoring-v2.4",
-                "rule_version": "daily-radar-rules-v2.3",
+                "scoring_version": "daily-radar-scoring-v2.5",
+                "rule_version": "daily-radar-rules-v2.4",
                 "score_breakdown": {
-                    "scoring_version": "daily-radar-scoring-v2.4",
-                    "rule_version": "daily-radar-rules-v2.3",
+                    "scoring_version": "daily-radar-scoring-v2.5",
+                    "rule_version": "daily-radar-rules-v2.4",
                     "bucket_scores": {
                         DAILY_RADAR_BUCKETS[1]: 82,
                         DAILY_RADAR_BUCKETS[0]: 68,
@@ -282,8 +351,8 @@ class DailyRadarCandidateResponse(BaseModel):
             "量價轉強觀察：今日收盤站回 MA20，成交量高於 20 日均量，隔日留意量能是否延續。"
         ],
     )
-    scoring_version: str | None = Field(default=None, examples=["daily-radar-scoring-v2.4"])
-    rule_version: str | None = Field(default=None, examples=["daily-radar-rules-v2.3"])
+    scoring_version: str | None = Field(default=None, examples=["daily-radar-scoring-v2.5"])
+    rule_version: str | None = Field(default=None, examples=["daily-radar-rules-v2.4"])
     bucket_scores: dict[str, Any] = Field(default_factory=dict)
     score_breakdown: dict[str, Any] = Field(default_factory=dict)
     input_snapshot: dict[str, Any] = Field(default_factory=dict)
@@ -340,6 +409,14 @@ __all__ = [
     "DailyRadarCandidateResponse",
     "DailyRadarForwardValidationRunRequest",
     "DailyRadarForwardValidationRunResponse",
+    "DailyRadarInstitutionalBackfillSnapshotResponse",
+    "DailyRadarInstitutionalFlowsBackfillRequest",
+    "DailyRadarInstitutionalFlowsBackfillResponse",
+    "DailyRadarInstitutionalFlowsRefreshRequest",
+    "DailyRadarInstitutionalFlowsRefreshResponse",
+    "DailyRadarInstitutionalSnapshotResponse",
+    "DailyRadarInstitutionalUniverseReplayRequest",
+    "DailyRadarInstitutionalUniverseReplayResponse",
     "DailyRadarMarketSessionRequest",
     "DailyRadarMarketSessionResponse",
     "DailyRadarMatchedRule",

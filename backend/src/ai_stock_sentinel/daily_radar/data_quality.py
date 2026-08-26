@@ -47,6 +47,16 @@ _LEGACY_INSTITUTIONAL_REQUIRED_FIELDS = (
     "net_flow_to_avg_volume",
 )
 _TRACK_REQUIRED_INSTITUTIONAL_FIELDS: dict[str, tuple[str, ...]] = {
+    "foreign_same_day": ("foreign_same_day_net_shares",),
+    "trust_same_day": ("trust_same_day_net_shares",),
+    "foreign_recent_accumulation": (
+        "foreign_cumulative_net_shares",
+        "foreign_consecutive_buy_days",
+    ),
+    "trust_recent_accumulation": (
+        "trust_cumulative_net_shares",
+        "trust_consecutive_buy_days",
+    ),
     "same_day_institutional": ("same_day_actor", "same_day_net_buy"),
     "recent_accumulation": ("three_party_net_shares", "consecutive_positive_days"),
 }
