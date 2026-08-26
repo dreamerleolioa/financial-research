@@ -1045,6 +1045,70 @@ test("Closed Portfolio presents a populated realized-PnL group", async ({ page }
   await expect(closedPosition.getByRole("button", { name: "事件時間線" })).toBeVisible();
 });
 
+test("Closed Portfolio keeps every exit batch when the lifecycle completes inside the selected period", async ({ page }) => {
+  const dateFromToday = (days: number) => {
+    const value = new Date();
+    value.setUTCDate(value.getUTCDate() + days);
+    return value.toISOString().slice(0, 10);
+  };
+  const firstExit = {
+    ...closedPortfolioItem,
+    id: 201,
+    exit_date: dateFromToday(-45),
+    exit_quantity: 200,
+    realized_pnl: 12_000,
+    sequence_number: 1,
+    display_label: "第 1 次減碼",
+    event_id: 501,
+    event_type: "partial_exit",
+    reason_category: "risk_control",
+    reason_code: "profit_protection",
+    plan_adherence: "yes",
+    confidence_level: "high",
+  };
+  const finalExit = {
+    ...closedPortfolioItem,
+    id: 202,
+    entry_price: 990,
+    exit_date: dateFromToday(0),
+    exit_quantity: 400,
+    realized_pnl: 29_634,
+    sequence_number: 2,
+    display_label: "最終出清",
+    event_id: 502,
+    event_type: "full_exit",
+    reason_category: "technical",
+    reason_code: "support_broken",
+    plan_adherence: "partial",
+    confidence_level: "medium",
+  };
+  await authenticate(page);
+  await installApiMocks(page, {
+    closedLifecycles: [{
+      position_group_id: closedPortfolioItem.position_group_id,
+      symbol: closedPortfolioItem.symbol,
+      name: closedPortfolioItem.name,
+      lifecycle_start_date: dateFromToday(-60),
+      lifecycle_end_date: dateFromToday(0),
+      initial_entry_price: 968,
+      entry_event_count: 2,
+      add_entry_count: 1,
+      exit_event_count: 2,
+      total_closed_quantity: 600,
+      total_realized_pnl: 41_634,
+      exit_batches: [firstExit, finalExit],
+    }],
+  });
+
+  await page.goto("/portfolio/closed");
+
+  const closedPosition = page.locator('[data-closed-position-group="closed-tsmc-e2e"]');
+  await expect(closedPosition).toContainText("第 1 次減碼");
+  await expect(closedPosition).toContainText("最終出清");
+  await expect(closedPosition).toContainText("2 次出場");
+  await expect(page.getByText("本期間共 1 筆完整交易")).toBeVisible();
+});
+
 test("Closed Portfolio presents a neutral lifecycle classification without a missing-context warning", async ({
   page,
 }) => {

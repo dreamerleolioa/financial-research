@@ -4965,6 +4965,204 @@ def test_list_closed_portfolio_returns_realized_fields():
     assert resp.json()[0]["position_group_id"] == "group-42"
 
 
+def test_list_closed_lifecycles_returns_complete_group_with_chronological_exit_labels(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            entry_price=910,
+            quantity=40,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 8),
+            exit_price=960,
+            exit_quantity=40,
+            realized_pnl=2000,
+            realized_return_pct=5.49,
+            holding_days=7,
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            entry_price=910,
+            quantity=60,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 12),
+            exit_price=940,
+            exit_quantity=60,
+            realized_pnl=1800,
+            realized_return_pct=3.30,
+            holding_days=11,
+        ),
+    ])
+    portfolio_db_session.add_all([
+        PositionEvent(
+            id=101,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=80,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=43,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            id=102,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="add_entry",
+            event_date=date(2026, 1, 4),
+            price=950,
+            quantity=20,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=43,
+            reason_category="plan_execution",
+            reason_code="planned_scale_in",
+            plan_adherence="yes",
+            confidence_level="high",
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            id=103,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="partial_exit",
+            event_date=date(2026, 1, 8),
+            price=960,
+            quantity=40,
+            fees=20,
+            taxes=30,
+            source_portfolio_id=42,
+            reason_category="risk_control",
+            reason_code="profit_protection",
+            plan_adherence="yes",
+            confidence_level="high",
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            id=104,
+            user_id=1,
+            position_group_id="group-complete-lifecycle",
+            symbol="2330.TW",
+            event_type="full_exit",
+            event_date=date(2026, 1, 12),
+            price=940,
+            quantity=60,
+            fees=20,
+            taxes=30,
+            source_portfolio_id=43,
+            reason_category="technical",
+            reason_code="support_broken",
+            plan_adherence="partial",
+            confidence_level="medium",
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/closed-lifecycles")
+
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+    lifecycle = resp.json()[0]
+    assert lifecycle["lifecycle_start_date"] == "2026-01-01"
+    assert lifecycle["lifecycle_end_date"] == "2026-01-12"
+    assert lifecycle["initial_entry_price"] == 900.0
+    assert lifecycle["entry_event_count"] == 2
+    assert lifecycle["add_entry_count"] == 1
+    assert lifecycle["exit_event_count"] == 2
+    assert lifecycle["total_closed_quantity"] == 100
+    assert lifecycle["total_realized_pnl"] == 3800.0
+    assert [batch["display_label"] for batch in lifecycle["exit_batches"]] == ["第 1 次減碼", "最終出清"]
+    assert lifecycle["exit_batches"][0]["reason_code"] == "profit_protection"
+    assert lifecycle["exit_batches"][1]["plan_adherence"] == "partial"
+
+
+def test_list_closed_lifecycles_excludes_group_that_still_has_an_active_position(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add_all([
+        UserPortfolio(
+            id=42,
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=60,
+            entry_date=date(2026, 1, 1),
+            is_active=True,
+        ),
+        UserPortfolio(
+            id=43,
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            entry_price=900,
+            quantity=40,
+            entry_date=date(2026, 1, 1),
+            is_active=False,
+            exit_date=date(2026, 1, 8),
+            exit_price=960,
+            exit_quantity=40,
+            realized_pnl=2400,
+            realized_return_pct=6.67,
+            holding_days=7,
+        ),
+    ])
+    portfolio_db_session.add_all([
+        PositionEvent(
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            event_type="initial_entry",
+            event_date=date(2026, 1, 1),
+            price=900,
+            quantity=100,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=42,
+            source="user_recorded_at_event_time",
+        ),
+        PositionEvent(
+            user_id=1,
+            position_group_id="group-still-open",
+            symbol="2330.TW",
+            event_type="partial_exit",
+            event_date=date(2026, 1, 8),
+            price=960,
+            quantity=40,
+            fees=0,
+            taxes=0,
+            source_portfolio_id=43,
+            source="user_recorded_at_event_time",
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    resp = portfolio_db_client.get("/portfolio/closed-lifecycles")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
 # ── Task 2: GET /portfolio/latest-history ────────────────────
 
 def _make_latest_history_client(portfolios, log_rows) -> TestClient:

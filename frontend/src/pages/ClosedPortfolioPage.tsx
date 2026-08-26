@@ -5,13 +5,14 @@ import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState
 import { setAsyncMapValue } from "../lib/asyncMap";
 import {
   createPositionLifecycleReview,
-  fetchClosedPortfolioItems,
+  fetchClosedPortfolioLifecycles,
   fetchOrCreateTradeReview,
   fetchPositionGroupEvents,
 } from "../lib/closedPortfolioApi";
 import { formatPrice } from "../lib/formatters";
 import type {
   ClosedPortfolioItem,
+  ClosedPortfolioLifecycle,
   LifecycleTextItem,
   PositionEvent,
   PositionGroupEventsResponse,
@@ -45,18 +46,6 @@ interface PeriodOption {
   days: number;
 }
 
-interface ClosedPortfolioGroup {
-  position_group_id: string;
-  symbol: string;
-  name?: string | null;
-  entry_date: string;
-  entry_price: number;
-  totalClosedQuantity: number;
-  totalRealizedPnl: number;
-  exitBatchCount: number;
-  items: ClosedPortfolioItem[];
-}
-
 interface ReviewModalProps {
   item: ClosedPortfolioItem;
   review: TradeReviewResponse | null;
@@ -68,7 +57,7 @@ interface ReviewModalProps {
 }
 
 interface TimelineModalProps {
-  group: ClosedPortfolioGroup;
+  group: ClosedPortfolioLifecycle;
   timeline: PositionGroupEventsResponse | null;
   loading: boolean;
   error: string | null;
@@ -76,7 +65,7 @@ interface TimelineModalProps {
 }
 
 interface LifecycleReviewModalProps {
-  group: ClosedPortfolioGroup;
+  group: ClosedPortfolioLifecycle;
   review: PositionLifecycleReviewResponse | null;
   loading: boolean;
   error: string | null;
@@ -396,37 +385,6 @@ function isWithinPeriod(exitDate: string, days: number, today: Date): boolean {
   const start = new Date(today);
   start.setDate(today.getDate() - days + 1);
   return date >= start && date <= today;
-}
-
-function groupClosedItems(items: ClosedPortfolioItem[]): ClosedPortfolioGroup[] {
-  const groups: ClosedPortfolioGroup[] = [];
-  const groupMap = new Map<string, ClosedPortfolioGroup>();
-
-  for (const item of items) {
-    let group = groupMap.get(item.position_group_id);
-    if (!group) {
-      group = {
-        position_group_id: item.position_group_id,
-        symbol: item.symbol,
-        name: item.name,
-        entry_date: item.entry_date,
-        entry_price: item.entry_price,
-        totalClosedQuantity: 0,
-        totalRealizedPnl: 0,
-        exitBatchCount: 0,
-        items: [],
-      };
-      groupMap.set(item.position_group_id, group);
-      groups.push(group);
-    }
-
-    group.totalClosedQuantity += item.exit_quantity;
-    group.totalRealizedPnl += item.realized_pnl;
-    group.exitBatchCount += 1;
-    group.items.push(item);
-  }
-
-  return groups;
 }
 
 function portfolioDisplayName(item: { symbol: string; name?: string | null }): string {
@@ -1442,7 +1400,7 @@ function TimelineModal({ group, timeline, loading, error, onClose }: TimelineMod
           <div>
             <p className="font-semibold text-text-primary">{portfolioDisplayName(group)} 事件時間線</p>
             <p className="mt-1 text-xs text-text-faint">
-              部位事件時間線 ｜ Group {group.position_group_id.slice(0, 8)} ｜ {group.exitBatchCount} 筆結案批次
+              部位事件時間線 ｜ {group.lifecycle_start_date} 至 {group.lifecycle_end_date} ｜ {group.exit_event_count} 次出場
             </p>
           </div>
           <button
@@ -1798,7 +1756,7 @@ function LifecycleReviewModal({
 }
 
 export default function ClosedPortfolioPage() {
-  const [items, setItems] = useState<ClosedPortfolioItem[]>([]);
+  const [lifecycles, setLifecycles] = useState<ClosedPortfolioLifecycle[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>(readStoredPeriod);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1807,11 +1765,11 @@ export default function ClosedPortfolioPage() {
   const [reviewLoading, setReviewLoading] = useState<Record<number, boolean>>({});
   const [reviewError, setReviewError] = useState<Record<number, string | null>>({});
   const [copyStatus, setCopyStatus] = useState<Record<number, CopyStatus>>({});
-  const [selectedTimelineGroup, setSelectedTimelineGroup] = useState<ClosedPortfolioGroup | null>(null);
+  const [selectedTimelineGroup, setSelectedTimelineGroup] = useState<ClosedPortfolioLifecycle | null>(null);
   const [timelineMap, setTimelineMap] = useState<Record<string, PositionGroupEventsResponse>>({});
   const [timelineLoading, setTimelineLoading] = useState<Record<string, boolean>>({});
   const [timelineError, setTimelineError] = useState<Record<string, string | null>>({});
-  const [selectedLifecycleGroup, setSelectedLifecycleGroup] = useState<ClosedPortfolioGroup | null>(null);
+  const [selectedLifecycleGroup, setSelectedLifecycleGroup] = useState<ClosedPortfolioLifecycle | null>(null);
   const [lifecycleReviewMap, setLifecycleReviewMap] = useState<Record<string, PositionLifecycleReviewResponse>>({});
   const [lifecycleReviewLoading, setLifecycleReviewLoading] = useState<Record<string, boolean>>({});
   const [lifecycleReviewError, setLifecycleReviewError] = useState<Record<string, string | null>>({});
@@ -1828,8 +1786,8 @@ export default function ClosedPortfolioPage() {
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchClosedPortfolioItems();
-        if (!cancelled) setItems(data);
+        const data = await fetchClosedPortfolioLifecycles();
+        if (!cancelled) setLifecycles(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "已結案持股載入失敗");
       } finally {
@@ -1844,16 +1802,14 @@ export default function ClosedPortfolioPage() {
   }, []);
 
   const activePeriod = PERIOD_OPTIONS.find((option) => option.key === selectedPeriod) ?? PERIOD_OPTIONS[2];
-  const filteredItems = useMemo(() => {
+  const filteredLifecycles = useMemo(() => {
     const today = getToday();
-    return items.filter((item) => isWithinPeriod(item.exit_date, activePeriod.days, today));
-  }, [activePeriod.days, items]);
-
-  const groupedItems = useMemo(() => groupClosedItems(filteredItems), [filteredItems]);
+    return lifecycles.filter((lifecycle) => isWithinPeriod(lifecycle.lifecycle_end_date, activePeriod.days, today));
+  }, [activePeriod.days, lifecycles]);
 
   const totalRealizedPnl = useMemo(
-    () => filteredItems.reduce((total, item) => total + item.realized_pnl, 0),
-    [filteredItems],
+    () => filteredLifecycles.reduce((total, lifecycle) => total + lifecycle.total_realized_pnl, 0),
+    [filteredLifecycles],
   );
   const totalClass = roundedMoneyClass(totalRealizedPnl);
 
@@ -1882,7 +1838,7 @@ export default function ClosedPortfolioPage() {
     return fetchPositionGroupEvents(positionGroupId);
   }
 
-  async function openTimeline(group: ClosedPortfolioGroup): Promise<void> {
+  async function openTimeline(group: ClosedPortfolioLifecycle): Promise<void> {
     setSelectedTimelineGroup(group);
     if (timelineMap[group.position_group_id]) return;
 
@@ -1906,7 +1862,7 @@ export default function ClosedPortfolioPage() {
     return createPositionLifecycleReview(positionGroupId);
   }
 
-  async function openLifecycleReview(group: ClosedPortfolioGroup): Promise<void> {
+  async function openLifecycleReview(group: ClosedPortfolioLifecycle): Promise<void> {
     setSelectedLifecycleGroup(group);
     setLifecycleCopyStatus((prev) => ({ ...prev, [group.position_group_id]: "idle" }));
 
@@ -2016,12 +1972,12 @@ export default function ClosedPortfolioPage() {
               <p className={`mt-2 text-3xl font-semibold tabular-nums ${totalClass}`}>
                 {getSignedRoundedMoneyText(totalRealizedPnl)}
               </p>
-              <p className="mt-2 text-xs text-text-muted">本期間共 {filteredItems.length} 筆結案批次</p>
+              <p className="mt-2 text-xs text-text-muted">本期間共 {filteredLifecycles.length} 筆完整交易</p>
             </div>
             <div className="border-t border-border-subtle px-4 py-4 sm:border-t-0 sm:border-l md:px-5">
               <p className="text-xs text-text-faint">結案部位群組</p>
-              <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">{groupedItems.length}</p>
-              <p className="mt-1 text-xs text-text-muted">依部位群組彙整</p>
+              <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">{filteredLifecycles.length}</p>
+              <p className="mt-1 text-xs text-text-muted">依最終出清日歸屬期間</p>
             </div>
           </div>
         </section>
@@ -2032,7 +1988,7 @@ export default function ClosedPortfolioPage() {
           </div>
         )}
 
-        {filteredItems.length === 0 ? (
+        {filteredLifecycles.length === 0 ? (
           <WorkspaceEmptyState
             eyebrow="Closed positions"
             title="此期間沒有結案紀錄"
@@ -2048,11 +2004,11 @@ export default function ClosedPortfolioPage() {
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-text-primary">已結案部位</h2>
-              <span className="text-xs tabular-nums text-text-faint">{filteredItems.length} 筆批次</span>
+              <span className="text-xs tabular-nums text-text-faint">{filteredLifecycles.length} 筆完整交易</span>
             </div>
 
-            {groupedItems.map((group) => {
-              const groupResultClass = roundedMoneyClass(group.totalRealizedPnl);
+            {filteredLifecycles.map((group) => {
+              const groupResultClass = roundedMoneyClass(group.total_realized_pnl);
               const isTimelineLoading = timelineLoading[group.position_group_id] ?? false;
               const isLifecycleReviewLoading = lifecycleReviewLoading[group.position_group_id] ?? false;
               return (
@@ -2065,23 +2021,23 @@ export default function ClosedPortfolioPage() {
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-text-primary">{group.name ?? group.symbol}</p>
                       <p className="mt-1 text-xs tabular-nums text-text-faint">
-                        {group.name ? `${group.symbol} · ` : ""}進場 {group.entry_date}
+                        {group.name ? `${group.symbol} · ` : ""}{group.lifecycle_start_date} 至 {group.lifecycle_end_date}
                       </p>
                       <p className="mt-1 text-xs tabular-nums text-text-faint">
-                        成本 {formatPrice(group.entry_price, group.symbol)}
+                        初始進場 {formatPrice(group.initial_entry_price, group.symbol)} · {group.add_entry_count} 次加碼
                       </p>
                     </div>
                     <div>
                       <p className="text-xs text-text-faint">結案規模</p>
                       <p className="mt-1 text-sm font-medium tabular-nums text-text-primary">
-                        {group.totalClosedQuantity} 股
+                        {group.total_closed_quantity} 股
                       </p>
-                      <p className="mt-1 text-xs tabular-nums text-text-faint">{group.exitBatchCount} 筆批次</p>
+                      <p className="mt-1 text-xs tabular-nums text-text-faint">{group.exit_event_count} 次出場</p>
                     </div>
                     <div className="md:text-right">
                       <p className="text-xs text-text-faint">已實現損益</p>
                       <p className={`mt-1 text-lg font-semibold tabular-nums ${groupResultClass}`}>
-                        {getSignedRoundedMoneyText(group.totalRealizedPnl)}
+                        {getSignedRoundedMoneyText(group.total_realized_pnl)}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2 md:justify-end">
@@ -2112,7 +2068,7 @@ export default function ClosedPortfolioPage() {
                       <span className="text-right">檢討</span>
                     </div>
                     <div className="divide-y divide-border-subtle">
-                      {group.items.map((item) => {
+                      {group.exit_batches.map((item) => {
                         const resultClass = roundedMoneyClass(item.realized_pnl);
                         const isReviewLoading = reviewLoading[item.id] ?? false;
                         return (
@@ -2122,7 +2078,7 @@ export default function ClosedPortfolioPage() {
                             className="grid gap-4 px-4 py-3 md:grid-cols-[minmax(170px,1.2fr)_minmax(150px,1fr)_minmax(110px,0.7fr)_auto] md:items-center md:px-5"
                           >
                             <div>
-                              <p className="text-sm font-medium text-text-primary">批次 #{item.id}</p>
+                              <p className="text-sm font-medium text-text-primary">{item.display_label}</p>
                               <p className="mt-1 text-xs tabular-nums text-text-faint">
                                 {item.entry_date} 至 {item.exit_date} · {item.holding_days} 天
                               </p>

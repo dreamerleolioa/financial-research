@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.db.models import PositionLifecyclePlan, StockRawData, UserPortfolio
+from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData, UserPortfolio
 
 
 def list_active_portfolios(db: Session, *, user_id: int) -> list[UserPortfolio]:
@@ -24,6 +24,45 @@ def list_closed_portfolios(db: Session, *, user_id: int) -> list[UserPortfolio]:
             UserPortfolio.is_active == False,
             UserPortfolio.exit_date.is_not(None),
         ).order_by(UserPortfolio.exit_date.desc(), UserPortfolio.updated_at.desc())
+    ).scalars().all()
+
+
+def list_portfolios_for_groups(
+    db: Session,
+    *,
+    user_id: int,
+    position_group_ids: Iterable[str],
+) -> list[UserPortfolio]:
+    group_ids = list(position_group_ids)
+    if not group_ids:
+        return []
+    return db.execute(
+        select(UserPortfolio).where(
+            UserPortfolio.user_id == user_id,
+            UserPortfolio.position_group_id.in_(group_ids),
+        ).order_by(UserPortfolio.position_group_id.asc(), UserPortfolio.id.asc())
+    ).scalars().all()
+
+
+def list_position_events_for_groups(
+    db: Session,
+    *,
+    user_id: int,
+    position_group_ids: Iterable[str],
+) -> list[PositionEvent]:
+    group_ids = list(position_group_ids)
+    if not group_ids:
+        return []
+    return db.execute(
+        select(PositionEvent).where(
+            PositionEvent.user_id == user_id,
+            PositionEvent.position_group_id.in_(group_ids),
+        ).order_by(
+            PositionEvent.position_group_id.asc(),
+            PositionEvent.event_date.asc(),
+            PositionEvent.created_at.asc(),
+            PositionEvent.id.asc(),
+        )
     ).scalars().all()
 
 

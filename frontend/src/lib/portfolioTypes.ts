@@ -198,6 +198,32 @@ export interface ClosedPortfolioItem {
   notes: string | null;
 }
 
+export interface ClosedPortfolioExitBatch extends ClosedPortfolioItem {
+  sequence_number: number;
+  display_label: string;
+  event_id: number;
+  event_type: "partial_exit" | "full_exit";
+  reason_category: ReasonCategory | null;
+  reason_code: ExitReasonCode | null;
+  plan_adherence: PlanAdherence | null;
+  confidence_level: DecisionConfidenceLevel | null;
+}
+
+export interface ClosedPortfolioLifecycle {
+  position_group_id: string;
+  symbol: string;
+  name?: string | null;
+  lifecycle_start_date: string;
+  lifecycle_end_date: string;
+  initial_entry_price: number;
+  entry_event_count: number;
+  add_entry_count: number;
+  exit_event_count: number;
+  total_closed_quantity: number;
+  total_realized_pnl: number;
+  exit_batches: ClosedPortfolioExitBatch[];
+}
+
 export interface TradeReviewDataQuality {
   status?: string;
   notes?: string[];

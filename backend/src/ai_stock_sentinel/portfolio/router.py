@@ -41,7 +41,12 @@ from ai_stock_sentinel.portfolio.application.refresh_prices import (
     refresh_user_portfolio_prices,
 )
 from ai_stock_sentinel.portfolio.application.update_position import update_portfolio_record
-from ai_stock_sentinel.portfolio.repository import list_active_portfolios, list_closed_portfolios
+from ai_stock_sentinel.portfolio.repository import (
+    list_active_portfolios,
+    list_closed_portfolios,
+    list_portfolios_for_groups,
+    list_position_events_for_groups,
+)
 from ai_stock_sentinel.portfolio.schemas import (
     AddEntryRequest,
     BackfillLifecyclePlanRequest,
@@ -124,6 +129,96 @@ def _serialize_portfolio(item: UserPortfolio) -> dict:
         "holding_days": item.holding_days,
         "notes": item.notes,
     }
+
+
+def _build_closed_lifecycle_summaries(
+    portfolio_rows: list[UserPortfolio],
+    events: list[PositionEvent],
+) -> list[dict]:
+    rows_by_group: dict[str, list[UserPortfolio]] = {}
+    events_by_group: dict[str, list[PositionEvent]] = {}
+    for row in portfolio_rows:
+        rows_by_group.setdefault(row.position_group_id, []).append(row)
+    for event in events:
+        events_by_group.setdefault(event.position_group_id, []).append(event)
+
+    summaries = []
+    for position_group_id, group_rows in rows_by_group.items():
+        group_events = events_by_group.get(position_group_id, [])
+        exit_events = [event for event in group_events if event.event_type in {"partial_exit", "full_exit"}]
+        full_exit_events = [event for event in exit_events if event.event_type == "full_exit"]
+        if (
+            any(row.is_active for row in group_rows)
+            or not full_exit_events
+            or ledger_open_quantity(group_events) != 0
+        ):
+            continue
+
+        closed_rows = [row for row in group_rows if not row.is_active and row.exit_date is not None]
+        if not closed_rows:
+            continue
+
+        row_by_id = {row.id: row for row in closed_rows}
+        used_row_ids: set[int] = set()
+        exit_batches = []
+        for sequence_number, event in enumerate(exit_events, start=1):
+            row = row_by_id.get(event.source_portfolio_id)
+            if row is None or row.id in used_row_ids:
+                row = next(
+                    (
+                        candidate
+                        for candidate in closed_rows
+                        if candidate.id not in used_row_ids
+                        and candidate.exit_date == event.event_date
+                        and candidate.exit_quantity == event.quantity
+                    ),
+                    None,
+                )
+            if row is None:
+                continue
+            used_row_ids.add(row.id)
+            batch = _serialize_portfolio(row)
+            batch.update({
+                "sequence_number": sequence_number,
+                "display_label": "最終出清" if event.event_type == "full_exit" else f"第 {sequence_number} 次減碼",
+                "event_id": event.id,
+                "event_type": event.event_type,
+                "reason_category": event.reason_category,
+                "reason_code": event.reason_code,
+                "plan_adherence": event.plan_adherence,
+                "confidence_level": event.confidence_level,
+            })
+            exit_batches.append(batch)
+
+        if len(exit_batches) != len(closed_rows):
+            continue
+
+        entry_events = [event for event in group_events if event.event_type in {"initial_entry", "add_entry"}]
+        initial_event = entry_events[0] if entry_events else None
+        completed_event = full_exit_events[-1]
+        first_row = min(closed_rows, key=lambda row: (row.entry_date, row.id))
+        summaries.append({
+            "position_group_id": position_group_id,
+            "symbol": first_row.symbol,
+            "name": resolve_symbol_name(first_row.symbol),
+            "lifecycle_start_date": (
+                initial_event.event_date.isoformat() if initial_event is not None else first_row.entry_date.isoformat()
+            ),
+            "lifecycle_end_date": completed_event.event_date.isoformat(),
+            "initial_entry_price": float(initial_event.price) if initial_event is not None else float(first_row.entry_price),
+            "entry_event_count": len(entry_events),
+            "add_entry_count": sum(event.event_type == "add_entry" for event in entry_events),
+            "exit_event_count": len(exit_events),
+            "total_closed_quantity": sum(int(row.exit_quantity or 0) for row in closed_rows),
+            "total_realized_pnl": sum(float(row.realized_pnl or 0) for row in closed_rows),
+            "exit_batches": exit_batches,
+        })
+
+    return sorted(
+        summaries,
+        key=lambda summary: (summary["lifecycle_end_date"], summary["position_group_id"]),
+        reverse=True,
+    )
 
 
 def _serialize_trade_review(review: TradeReview) -> dict:
@@ -512,6 +607,26 @@ def list_closed_portfolio(
 ):
     rows = list_closed_portfolios(db, user_id=current_user.id)
     return [_serialize_portfolio(row) for row in rows]
+
+
+@router.get("/closed-lifecycles")
+def list_closed_lifecycles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    closed_rows = list_closed_portfolios(db, user_id=current_user.id)
+    group_ids = {row.position_group_id for row in closed_rows}
+    portfolio_rows = list_portfolios_for_groups(
+        db,
+        user_id=current_user.id,
+        position_group_ids=group_ids,
+    )
+    events = list_position_events_for_groups(
+        db,
+        user_id=current_user.id,
+        position_group_ids=group_ids,
+    )
+    return _build_closed_lifecycle_summaries(portfolio_rows, events)
 
 
 @router.get("/decision-context-status")
