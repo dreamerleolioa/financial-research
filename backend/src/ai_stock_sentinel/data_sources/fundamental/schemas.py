@@ -34,6 +34,8 @@ class FundamentalBackfillResponse(BaseModel):
     job_id: str
     raw_pool_date: date | None = None
     errors: list[str] = Field(default_factory=list)
+    provider_attempts: dict[str, int] = Field(default_factory=dict)
+    fallback_symbols: list[str] = Field(default_factory=list)
 
 
 __all__ = [

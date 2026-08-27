@@ -139,6 +139,98 @@ def normalize_finmind_statement_rows(
     return normalized
 
 
+def normalize_mops_historical_eps_payload(
+    payload: Mapping[str, Any],
+    *,
+    symbol: str,
+) -> list[NormalizedFundamentalPeriod]:
+    normalized_symbol = symbol.strip().upper()
+    matched_symbol = re.fullmatch(r"([1-9]\d{3})\.(TW|TWO)", normalized_symbol)
+    if matched_symbol is None:
+        raise ValueError("invalid Taiwan stock symbol")
+    stock_id, market = matched_symbol.groups()
+
+    axes = payload.get("xaxisList")
+    graph_data = payload.get("graphData")
+    if not _is_sequence(axes) or not _is_sequence(graph_data) or len(graph_data) != 1:
+        raise ValueError("MOPS historical EPS response has an invalid graph contract")
+
+    identity_values = next(
+        (
+            values
+            for key in ("showNameList", "checkedNameList", "displayCompanyId")
+            if _is_sequence(values := payload.get(key)) and values
+        ),
+        None,
+    )
+    if identity_values is None or not any(
+        re.match(rf"^{re.escape(stock_id)}(?:\s|$)", str(value).strip())
+        for value in identity_values
+    ):
+        raise ValueError("MOPS historical EPS response symbol mismatch")
+
+    series = graph_data[0]
+    if not isinstance(series, Mapping) or not _is_sequence(series.get("data")):
+        raise ValueError("MOPS historical EPS response has an invalid data series")
+
+    normalized: list[NormalizedFundamentalPeriod] = []
+    seen_indexes: set[int] = set()
+    for point in series["data"]:
+        if not _is_sequence(point) or len(point) < 2:
+            raise ValueError("MOPS historical EPS response has an invalid data point")
+        index_value = point[0]
+        if isinstance(index_value, bool):
+            raise ValueError("MOPS historical EPS response has an invalid axis index")
+        try:
+            index = int(index_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("MOPS historical EPS response has an invalid axis index") from exc
+        if index != index_value or index < 0 or index >= len(axes) or index in seen_indexes:
+            raise ValueError("MOPS historical EPS response has an invalid axis index")
+        seen_indexes.add(index)
+
+        axis = str(axes[index]).strip()
+        axis_match = re.fullmatch(r"(\d{4})Q([1-4])", axis)
+        if axis_match is None:
+            raise ValueError("MOPS historical EPS response has an invalid quarter axis")
+        eps_value = _decimal(point[1])
+        if eps_value is None:
+            continue
+        if not eps_value.is_finite():
+            raise ValueError("MOPS historical EPS response has a non-finite EPS value")
+
+        fiscal_year = int(axis_match.group(1))
+        fiscal_quarter = int(axis_match.group(2))
+        report_type = str(point[2]).strip() if len(point) >= 3 else None
+        raw_payload = {
+            "axis": axis,
+            "value": str(point[1]),
+            "report_type": report_type,
+            "company_label": str(series.get("label") or "").strip() or None,
+            "requested_symbol": normalized_symbol,
+        }
+        normalized.append(
+            NormalizedFundamentalPeriod(
+                symbol=normalized_symbol,
+                market=market,
+                fiscal_year=fiscal_year,
+                fiscal_quarter=fiscal_quarter,
+                period_end=_quarter_end(fiscal_year, fiscal_quarter),
+                statement_scope="consolidated",
+                industry_schema="mops_historical_eps",
+                cumulative_eps=None,
+                quarter_eps=eps_value,
+                source_report_date=None,
+                availability_quality="historical_unknown",
+                source_provider="mops_historical",
+                source_dataset="MOPS_FINANCIAL_COMPARISON_EPS",
+                payload_hash=_payload_hash(raw_payload),
+                raw_payload=raw_payload,
+            )
+        )
+    return normalized
+
+
 def normalize_twse_dividend_rows(
     rows: Iterable[Mapping[str, Any]],
 ) -> list[NormalizedDividendEvent]:
@@ -420,6 +512,10 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
 def _sum_decimals(*values: Decimal | None) -> Decimal | None:
     available = [value for value in values if value is not None]
     return sum(available, Decimal("0")) if available else None
@@ -439,6 +535,7 @@ __all__ = [
     "NormalizedFundamentalPeriod",
     "normalize_finmind_dividend_rows",
     "normalize_finmind_statement_rows",
+    "normalize_mops_historical_eps_payload",
     "normalize_official_statement_rows",
     "normalize_tpex_ex_dividend_payload",
     "normalize_twse_dividend_rows",

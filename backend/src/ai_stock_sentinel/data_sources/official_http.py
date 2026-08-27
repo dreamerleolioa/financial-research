@@ -24,11 +24,47 @@ def official_request_get(
 ) -> Any:
     """Call official market endpoints with bounded retries and TLS verification enabled."""
 
+    return _official_request(
+        "get",
+        url,
+        max_attempts=max_attempts,
+        session=session,
+        **kwargs,
+    )
+
+
+def official_request_post(
+    url: str,
+    *,
+    max_attempts: int | None = None,
+    session: Any | None = None,
+    **kwargs: Any,
+) -> Any:
+    """POST to official market endpoints with the same bounded retry policy."""
+
+    return _official_request(
+        "post",
+        url,
+        max_attempts=max_attempts,
+        session=session,
+        **kwargs,
+    )
+
+
+def _official_request(
+    method: str,
+    url: str,
+    *,
+    max_attempts: int | None,
+    session: Any | None,
+    **kwargs: Any,
+) -> Any:
     attempts = _MAX_ATTEMPTS if max_attempts is None else max(1, max_attempts)
     transport = session or curl_requests
+    request = getattr(transport, method)
     for attempt in range(1, attempts + 1):
         try:
-            response = transport.get(url, **kwargs)
+            response = request(url, **kwargs)
         except _RETRYABLE_EXCEPTIONS:
             if attempt >= attempts:
                 raise
@@ -57,4 +93,4 @@ def _sleep_before_retry(attempt: int) -> None:
     time.sleep(_BACKOFF_SECONDS * (2 ** (attempt - 1)))
 
 
-__all__ = ["official_request_get"]
+__all__ = ["official_request_get", "official_request_post"]

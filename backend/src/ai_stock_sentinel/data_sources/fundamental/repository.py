@@ -391,10 +391,11 @@ def _period_revision_sort_key(
     row: CompanyFundamentalPeriod,
     *,
     as_of_date: date | None,
-) -> tuple[int, float, int]:
+) -> tuple[int, int, float, int]:
     quality_priority = 1 if row.availability_quality == "observed" else 0
+    source_priority = 1 if row.source_provider == "mops_historical" else 0
     observed_at, row_id = _revision_observed_sort_key(row, as_of_date=as_of_date)
-    return quality_priority, observed_at, row_id
+    return quality_priority, source_priority, observed_at, row_id
 
 
 def _is_postgresql(session: Session) -> bool:

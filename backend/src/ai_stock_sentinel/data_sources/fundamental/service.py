@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 import re
 from typing import Any
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
+from ai_stock_sentinel.data_sources.fundamental.mops_provider import MopsHistoricalEpsProvider
 from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_finmind_dividend_rows,
     normalize_finmind_statement_rows,
@@ -69,6 +70,8 @@ class FundamentalBackfillResult:
     records_written: int
     next_after_symbol: str | None
     errors: list[str]
+    provider_attempts: dict[str, int] = field(default_factory=dict)
+    fallback_symbols: list[str] = field(default_factory=list)
 
 
 def refresh_official_fundamentals(
@@ -142,6 +145,7 @@ def backfill_fundamentals(
     after_symbol: str | None = None,
     limit: int = 10,
     provider: FinMindFundamentalProvider | None = None,
+    historical_provider: MopsHistoricalEpsProvider | None = None,
 ) -> FundamentalBackfillResult:
     bounded_limit = max(1, min(limit, 10))
     normalized_symbols = sorted(
@@ -155,23 +159,69 @@ def backfill_fundamentals(
         normalized_symbols = [symbol for symbol in normalized_symbols if symbol > after_symbol.upper()]
     selected = normalized_symbols[:bounded_limit]
     fallback = provider or _bounded_fundamental_backfill_provider()
+    # Supplying a FinMind provider is the existing unit-test/custom-injection
+    # seam. Production calls leave both arguments empty and enable MOPS first.
+    historical = historical_provider
+    if historical is None and provider is None:
+        historical = MopsHistoricalEpsProvider()
     errors: list[str] = []
+    provider_attempts = {
+        "mops_historical": 0,
+        "finmind_statement": 0,
+        "finmind_dividend": 0,
+    }
+    fallback_symbols: list[str] = []
     records_written = 0
     for symbol in selected:
         periods = load_latest_fundamental_periods(session, symbol=symbol)
         if not fundamental_period_history_is_sufficient(periods):
-            try:
-                statement_rows = fallback.fetch_statement_rows(symbol)
-                with session.begin_nested():
-                    dataset_records = store_fundamental_periods(
-                        session,
-                        normalize_finmind_statement_rows(statement_rows, symbol=symbol),
+            statement_failures: list[str] = []
+            attempted_sources: list[str] = []
+            if historical is not None:
+                attempted_sources.append("MOPS")
+                provider_attempts["mops_historical"] += 1
+                try:
+                    historical_periods = historical.fetch_periods(symbol)
+                    with session.begin_nested():
+                        dataset_records = store_fundamental_periods(
+                            session,
+                            historical_periods,
+                        )
+                    records_written += dataset_records
+                except Exception as exc:
+                    statement_failures.append(f"MOPS failed: {exc}")
+                periods = load_latest_fundamental_periods(session, symbol=symbol)
+
+            if not fundamental_period_history_is_sufficient(periods):
+                attempted_sources.append("FinMind")
+                provider_attempts["finmind_statement"] += 1
+                if historical is not None:
+                    fallback_symbols.append(symbol)
+                try:
+                    statement_rows = fallback.fetch_statement_rows(symbol)
+                    normalized_periods = normalize_finmind_statement_rows(
+                        statement_rows,
+                        symbol=symbol,
                     )
-                records_written += dataset_records
-            except Exception as exc:
-                errors.append(f"{symbol}: statement backfill failed: {exc}")
+                    with session.begin_nested():
+                        dataset_records = store_fundamental_periods(
+                            session,
+                            normalized_periods,
+                        )
+                    records_written += dataset_records
+                except Exception as exc:
+                    statement_failures.append(f"FinMind failed: {exc}")
+                periods = load_latest_fundamental_periods(session, symbol=symbol)
+
+            if not fundamental_period_history_is_sufficient(periods):
+                source_label = " and ".join(attempted_sources)
+                detail = f"{source_label} returned no sufficient EPS history"
+                if statement_failures:
+                    detail = f"{detail}; {'; '.join(statement_failures)}"
+                errors.append(f"{symbol}: statement backfill incomplete: {detail}")
         dividends = load_latest_dividend_events(session, symbol=symbol)
         if not dividend_history_is_sufficient(dividends):
+            provider_attempts["finmind_dividend"] += 1
             try:
                 dividend_rows = fallback.fetch_dividend_rows(symbol)
                 with session.begin_nested():
@@ -190,6 +240,8 @@ def backfill_fundamentals(
         records_written=records_written,
         next_after_symbol=selected[-1] if selected and has_more else None,
         errors=errors,
+        provider_attempts=provider_attempts,
+        fallback_symbols=fallback_symbols,
     )
 
 

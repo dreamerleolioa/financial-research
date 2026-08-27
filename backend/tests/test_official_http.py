@@ -110,3 +110,30 @@ def test_official_request_can_limit_attempts_for_route_fallback(
 
     assert calls == 1
     assert sleeps == []
+
+
+def test_official_request_post_retries_transient_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter([_Response(503), _Response(200)])
+    calls: list[dict[str, Any]] = []
+    sleeps: list[float] = []
+
+    def request_post(_url: str, **kwargs: Any) -> _Response:
+        calls.append(kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(official_http.curl_requests, "post", request_post)
+    monkeypatch.setattr(official_http.time, "sleep", sleeps.append)
+
+    response = official_http.official_request_post(
+        "https://official.example.test/data",
+        data={"companyId": "2801"},
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        {"data": {"companyId": "2801"}},
+        {"data": {"companyId": "2801"}},
+    ]
+    assert sleeps == [0.25]
