@@ -360,34 +360,34 @@
 資料來源與 provider：
 
 - TWSE/TPEX 六種產業財務報表 OpenAPI 提供市場級當季累計 EPS；上市股利使用 TWSE `t187ap45_L`，上櫃已除權息現金股利使用 TPEX `bulletin/exDailyQ`。
-- TPEX `mopsfin_t187ap39_O` 抽查存在明顯資料落後，不得作唯一上櫃股利來源；尚未除息或歷史不足時，`official_cache_first` 可對單一股票做一次 FinMind bootstrap 並持久化。
+- TPEX `mopsfin_t187ap39_O` 抽查存在明顯資料落後，不得作唯一上櫃股利來源；歷史 EPS 不足時先查 MOPS 官方歷史財務比較資料，仍不足才對單一股票做一次 FinMind 財報 bootstrap；尚未除息或股利歷史不足時仍以 FinMind 回補並持久化。
 - 新增 `OfficialCachedFundamentalProvider`；`/analyze` 與 `/analyze/position` 正常路徑只讀 DB，不直接呼叫官方 API。
 - `FUNDAMENTAL_PROVIDER_MODE` 支援 `finmind_only`、`official_cache_first`、`official_cache_only`。`official_cache_only` 資料不足時回傳 partial fundamental context 與 warning，不中止整體分析。
 
-新增 `company_fundamental_periods`：保存 symbol/market、fiscal year/quarter、statement scope、industry schema、官方累計 EPS、FinMind 離散季度 EPS、report date、first/last observed、availability quality、來源、payload hash 與 raw payload；財報修訂追加版本，不覆蓋舊值。官方單季 EPS 依查詢當下選中的 point-in-time revisions 動態推導，避免前期重編回頭改寫既有後期 revision。
+新增 `company_fundamental_periods`：保存 symbol/market、fiscal year/quarter、statement scope、industry schema、官方累計 EPS、MOPS／FinMind 離散季度 EPS、report date、first/last observed、availability quality、來源、payload hash 與 raw payload；財報修訂追加版本，不覆蓋舊值。官方單季 EPS 依查詢當下選中的 point-in-time revisions 動態推導，避免前期重編回頭改寫既有後期 revision。同期間的 observed 市場級官方 revision 優先於歷史回補；歷史回補之間 MOPS 優先於 FinMind。
 
 新增 `company_dividend_events`：保存股利年度與涵蓋期間、決議狀態、董事會／股東會／除權息日期、盈餘／法定盈餘公積／資本公積現金股利、合計現金股利、first/last observed、來源、payload hash 與 raw payload；重疊期間無法消歧時 fail closed。
 
 計算規則：
 
 - 官方累計 EPS 轉單季：Q1 等於 Q1 累計；Q2/Q3/Q4 分別扣除前一累計期間。前期缺漏時不猜值，該季及 TTM 標記 unavailable。
-- FinMind `TaiwanStockFinancialStatements` bootstrap 的 `EPS` 是單季值，直接保存於 `quarter_eps`，不得先寫成累計值再相減。
-- TTM 只使用最新四個連續離散季度，不得因最新季度缺值而退回更舊的四季窗口並偽裝成最新 TTM；目前 PE 僅在 TTM EPS > 0 時計算。Q1 單季 EPS 等同當年 Q1 累計，因此可作為官方 Q2 累計的前期基準；其他官方累計季度因缺少前期官方累計而無法推導時，若同期間已有 FinMind bootstrap 的直接單季 EPS，可使用該直接值並保留 FinMind provenance，沒有直接值時維持 unavailable。
+- MOPS 歷史財務比較的季度 EPS 與 FinMind `TaiwanStockFinancialStatements` bootstrap 的 `EPS` 都是單季值，直接保存於 `quarter_eps`，不得先寫成累計值再相減；MOPS 回應必須驗證股票 identity、季度軸、有限數值與單一資料序列，schema/identity 不符時 fail closed。
+- TTM 只使用最新四個連續離散季度，不得因最新季度缺值而退回更舊的四季窗口並偽裝成最新 TTM；目前 PE 僅在 TTM EPS > 0 時計算。Q1 單季 EPS 等同當年 Q1 累計，因此可作為官方 Q2 累計的前期基準；其他官方累計季度因缺少前期官方累計而無法推導時，若同期間已有 MOPS／FinMind bootstrap 的直接單季 EPS，可使用該直接值並保留實際 provenance，沒有直接值時維持 unavailable。
 - 歷史 PE 最多 24 季，季末價格優先讀 DR2 `taiwan_daily_bars`，資料不足才使用 yfinance fallback；至少四個有效樣本才產生估值帶。
 - 年度股利優先使用完整年度事件，否則加總互不重疊季度／半年事件；FinMind bootstrap 必須解析 `year` 的民國年與季度範圍，無法確認期間時保持 unbounded 並 fail closed，不得把每筆配息偽裝成完整年度，也不得用股價乘殖利率反推現金股利。
 - 官方與 FinMind 同時保存相同股利涵蓋期間時，先以官方事件消除跨來源重疊；同一優先來源仍有無法消歧的重疊時維持 fail closed。基本面與 AVWAP 的公開 provenance 必須反映實際使用的 official、bootstrap 或 fallback provider，不得只標示 routing wrapper。
-- `first_observed_at` 是 point-in-time availability boundary；資料庫以 UTC 保存，但與 Daily Radar `run_date` 比較前必須換算成 `Asia/Taipei` 日期，避免台北隔日早晨取得的 revision 洩漏到前一交易日。FinMind 歷史 bootstrap 標記 `historical_unknown`，可支援目前估值帶，不可進入要求 point-in-time 正確性的歷史 replay/backtest。
+- `first_observed_at` 是 point-in-time availability boundary；資料庫以 UTC 保存，但與 Daily Radar `run_date` 比較前必須換算成 `Asia/Taipei` 日期，避免台北隔日早晨取得的 revision 洩漏到前一交易日。MOPS／FinMind 歷史 bootstrap 都標記 `historical_unknown`，可支援目前估值帶；對明確 `as_of_date` 的讀取仍必須晚於實際 `first_observed_at`，且不得冒充原始申報日進入更早的 replay/backtest。
 - 保持現有 `ttm_eps`、`pe_current`、PE band/percentile、`annual_cash_dividend`、`dividend_yield`、`yield_signal`、source 與 warning public contract。
 
 內部流程：
 
 - `POST /internal/fundamentals/refresh` 每日 07:15 更新市場級財報與股利；dataset 可部分成功、冪等提交，最多四個並行 request、45 秒 timeout、兩次 retry。
-- `POST /internal/fundamentals/backfill` 以 managed universe、每批最多 10 檔及 server-owned cursor 執行。第一頁排除已完整 symbols，並把 immutable snapshot/raw-pool date/cursor 保存到 `fundamental_backfill_jobs`；後續頁以 `job_id` 與 row lock 驗證。所有可能建立新 job 的入口先取得同一 PostgreSQL transaction advisory lock 並檢查 running job；一般 create 遇既有 job 回 `409`，scheduled `resume_running_job=true` 接續它，避免跨 caller no-row race。Backfill 專用 client 使用 10 秒 timeout、零 transport retry、停用 token refresh retry，六批 × 十檔 × 兩個 lanes 的 upstream hard bound 為 120 次。Partial page 保留成功寫入並前移過已嘗試 symbols，失敗 symbols 於 current job 完成後重新進入 pending job，不會餓死後續佇列。07:15 workflow 即使官方 refresh partial 仍跑 bounded backfill，最後再回報官方 failure；額度用完屬正常 progress，真正 provider/partial failure 才非零結束。
+- `POST /internal/fundamentals/backfill` 以 managed universe、每批最多 10 檔及 server-owned cursor 執行。第一頁排除已完整 symbols，並把 immutable snapshot/raw-pool date/cursor 保存到 `fundamental_backfill_jobs`；後續頁以 `job_id` 與 row lock 驗證。所有可能建立新 job 的入口先取得同一 PostgreSQL transaction advisory lock 並檢查 running job；一般 create 遇既有 job 回 `409`，scheduled `resume_running_job=true` 接續它，避免跨 caller no-row race。MOPS 歷史 EPS 單檔使用 5 秒 timeout、一次 attempt，失敗立即降級 FinMind；FinMind client 使用 10 秒 timeout、零 transport retry、停用 token refresh retry。六批最壞 logical upstream bound 為 60 次 MOPS + 120 次 FinMind，共 180 次；response 另以 `provider_attempts` 與 `fallback_symbols` 保留實際來源與降級證據。Partial page 保留成功寫入並前移過已嘗試 symbols，失敗 symbols 於 current job 完成後重新進入 pending job，不會餓死後續佇列。07:15 workflow 即使官方 refresh partial 仍跑 bounded backfill，最後再回報官方 failure；額度用完屬正常 progress，真正 provider/partial failure 才非零結束。
 - PostgreSQL revision 寫入使用 unique constraint 對應的 `ON CONFLICT DO UPDATE`，避免同一冷快取股票併發 bootstrap 時因先查後寫競態讓其中一個分析失敗。
 - 市場級官方財報若回傳已知 schema、只有報表日期非空且公司／期間／財務欄位全空的官方占位列，視為尚未發布並回報 `datasets_skipped` / `skipped_datasets`，保留既有 cache；完全空 payload、缺少已知 identity fields、含非空業務欄位卻無法正規化，仍視為 dataset failure，不得靜默沿用舊 cache。TPEX 當日除權息事件可合法為空，維持 dataset-specific no-data 語意。
 - 沿用 `DAILY_RADAR_INTERNAL_TOKEN` 的 fail-closed internal auth，不新增 provider key 或 secret。
 
-驗收：12 種財報 schema alias、民國年與數值清理、官方累計轉單季、FinMind 單季 EPS 保真、TTM 連續性、財報修訂、季度／年度股利期間、point-in-time、官方快取零 FinMind happy path、一次性 fallback 持久化、併發 upsert、空資料集診斷、可續跑 workflow、`official_cache_only` graceful degradation、DR2/yfinance 價格切換、internal auth、partial failure、migration 與既有 API contract 都有自動測試。正式切換前仍須用代表性上市櫃及六種產業公司雙軌比對。
+驗收：12 種財報 schema alias、民國年與數值清理、官方累計轉單季、MOPS／FinMind 單季 EPS 保真與來源優先序、MOPS identity/schema fail-closed、TTM 連續性、財報修訂、季度／年度股利期間、point-in-time、官方快取零 FinMind happy path、一次性 fallback 持久化、併發 upsert、空資料集診斷、可續跑 workflow、`official_cache_only` graceful degradation、DR2/yfinance 價格切換、internal auth、partial failure、migration 與既有 API contract 都有自動測試。正式切換前仍須用代表性上市櫃及六種產業公司雙軌比對。
 
 ### 7.5 上線順序與安全邊界
 

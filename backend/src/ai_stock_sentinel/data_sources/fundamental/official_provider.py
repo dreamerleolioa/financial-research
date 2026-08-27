@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalData, FundamentalError
+from ai_stock_sentinel.data_sources.fundamental.mops_provider import MopsHistoricalEpsProvider
 from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_finmind_dividend_rows,
     normalize_finmind_statement_rows,
@@ -31,12 +32,16 @@ class OfficialCachedFundamentalProvider:
         session: Session,
         *,
         fallback_provider: FinMindFundamentalProvider | None = None,
+        historical_provider: MopsHistoricalEpsProvider | None = None,
         provider_mode: str = "official_cache_first",
     ) -> None:
         if provider_mode not in {"official_cache_first", "official_cache_only"}:
             raise ValueError("invalid FUNDAMENTAL_PROVIDER_MODE for official provider")
         self._session = session
         self._fallback_provider = fallback_provider or FinMindFundamentalProvider()
+        self._historical_provider = historical_provider
+        if historical_provider is None and fallback_provider is None:
+            self._historical_provider = MopsHistoricalEpsProvider()
         self._provider_mode = provider_mode
 
     def fetch(self, symbol: str, current_price: float) -> FundamentalData:
@@ -153,6 +158,23 @@ class OfficialCachedFundamentalProvider:
         dividends: list[CompanyDividendEvent],
         warnings: list[str],
     ) -> tuple[list[LoadedFundamentalPeriod], list[CompanyDividendEvent]]:
+        if not fundamental_period_history_is_sufficient(periods):
+            if self._historical_provider is not None:
+                try:
+                    historical_periods = self._historical_provider.fetch_periods(symbol)
+                except Exception as exc:
+                    warnings.append(
+                        "歷史 EPS MOPS bootstrap 失敗："
+                        f"{type(exc).__name__}"
+                    )
+                else:
+                    store_fundamental_periods(self._session, historical_periods)
+                    periods = load_latest_fundamental_periods(
+                        self._session,
+                        symbol=symbol,
+                    )
+                    warnings.append("歷史 EPS 由 MOPS 一次性 bootstrap 補入本地版本庫")
+
         if not fundamental_period_history_is_sufficient(periods):
             try:
                 rows = self._fallback_provider.fetch_statement_rows(symbol)
@@ -338,6 +360,11 @@ def _fundamental_source_provider(
     periods: list[LoadedFundamentalPeriod],
     dividends: list[CompanyDividendEvent],
 ) -> str:
+    uses_mops = any(
+        period.source_provider == "mops_historical"
+        or period.quarter_eps_source_provider == "mops_historical"
+        for period in periods
+    )
     uses_finmind = any(
         period.source_provider == "finmind_bootstrap"
         or period.quarter_eps_source_provider == "finmind_bootstrap"
@@ -346,11 +373,12 @@ def _fundamental_source_provider(
         dividend.source_provider == "finmind_bootstrap"
         for dividend in dividends
     )
-    return (
-        "OfficialCachedFundamental+FinMindFundamental"
-        if uses_finmind
-        else "OfficialCachedFundamental"
-    )
+    providers = ["OfficialCachedFundamental"]
+    if uses_mops:
+        providers.append("MopsHistoricalEps")
+    if uses_finmind:
+        providers.append("FinMindFundamental")
+    return "+".join(providers)
 
 
 def _covers_full_year_without_overlap(

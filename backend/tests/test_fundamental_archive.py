@@ -25,6 +25,7 @@ from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_da
 from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_finmind_dividend_rows,
     normalize_finmind_statement_rows,
+    normalize_mops_historical_eps_payload,
     normalize_official_statement_rows,
     normalize_tpex_ex_dividend_payload,
     normalize_twse_dividend_rows,
@@ -533,6 +534,54 @@ def test_observed_official_period_wins_over_later_finmind_bootstrap() -> None:
         engine.dispose()
 
 
+def test_mops_historical_period_wins_over_later_finmind_bootstrap() -> None:
+    session, engine = _db_session()
+    try:
+        store_fundamental_periods(
+            session,
+            normalize_mops_historical_eps_payload(
+                {
+                    "xaxisList": ["2025Q2", "2025Q3", "2025Q4", "2026Q1"],
+                    "graphData": [
+                        {
+                            "label": "彰銀",
+                            "data": [
+                                [0, "0.42", "C"],
+                                [1, "0.43", "C"],
+                                [2, "0.31", "C"],
+                                [3, "0.44", "C"],
+                            ],
+                        }
+                    ],
+                    "showNameList": ["2801 彰銀 (上市金融保險業)"],
+                },
+                symbol="2801.TW",
+            ),
+        )
+        store_fundamental_periods(
+            session,
+            normalize_finmind_statement_rows(
+                [{"date": "2026-03-31", "type": "EPS", "value": "99"}],
+                symbol="2801.TW",
+            ),
+        )
+
+        latest = load_latest_fundamental_periods(session, symbol="2801.TW")
+        result = OfficialCachedFundamentalProvider(
+            session,
+            provider_mode="official_cache_only",
+        ).fetch("2801.TW", 20)
+
+        assert len(latest) == 4
+        assert latest[-1].quarter_eps == Decimal("0.44")
+        assert latest[0].source_provider == "mops_historical"
+        assert result.ttm_eps == 1.6
+        assert result.source_provider == "OfficialCachedFundamental+MopsHistoricalEps"
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_bootstrap_q1_anchors_official_q2_cumulative_gap() -> None:
     session, engine = _db_session()
     try:
@@ -888,6 +937,88 @@ class _BootstrapProvider:
         return {period_end: 100.0 for period_end in quarter_dates}
 
 
+class _BootstrapHistoricalProvider:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.calls = 0
+        self.error = error
+
+    def fetch_periods(self, symbol: str):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        stock_id = symbol.split(".", 1)[0]
+        return normalize_mops_historical_eps_payload(
+            {
+                "xaxisList": [
+                    "2025Q1",
+                    "2025Q2",
+                    "2025Q3",
+                    "2025Q4",
+                    "2026Q1",
+                    "2026Q2",
+                    "2026Q3",
+                    "2026Q4",
+                ],
+                "graphData": [
+                    {
+                        "label": "fixture",
+                        "data": [
+                            [index, str((index % 4) + 1), "C"]
+                            for index in range(8)
+                        ],
+                    }
+                ],
+                "showNameList": [f"{stock_id} fixture"],
+            },
+            symbol=symbol,
+        )
+
+
+def test_official_cache_first_prefers_mops_before_finmind_statements() -> None:
+    session, engine = _db_session()
+    fallback = _BootstrapProvider()
+    historical = _BootstrapHistoricalProvider()
+    try:
+        result = OfficialCachedFundamentalProvider(
+            session,
+            fallback_provider=fallback,  # type: ignore[arg-type]
+            historical_provider=historical,  # type: ignore[arg-type]
+            provider_mode="official_cache_first",
+        ).fetch("2801.TW", 20)
+
+        assert result.ttm_eps == 10
+        assert result.source_provider == (
+            "OfficialCachedFundamental+MopsHistoricalEps+FinMindFundamental"
+        )
+        assert historical.calls == 1
+        assert fallback.statement_calls == 0
+        assert fallback.dividend_calls == 1
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_official_cache_first_falls_back_when_mops_fails() -> None:
+    session, engine = _db_session()
+    fallback = _BootstrapProvider()
+    historical = _BootstrapHistoricalProvider(error=TimeoutError("MOPS timeout"))
+    try:
+        result = OfficialCachedFundamentalProvider(
+            session,
+            fallback_provider=fallback,  # type: ignore[arg-type]
+            historical_provider=historical,  # type: ignore[arg-type]
+            provider_mode="official_cache_first",
+        ).fetch("2330.TW", 140)
+
+        assert result.ttm_eps == 14
+        assert historical.calls == 1
+        assert fallback.statement_calls == 1
+        assert "歷史 EPS MOPS bootstrap 失敗：TimeoutError" in result.warnings
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_official_cache_first_bootstraps_once_and_marks_history_unknown() -> None:
     session, engine = _db_session()
     fallback = _BootstrapProvider()
@@ -1184,11 +1315,51 @@ class _BackfillProvider:
 
     def fetch_statement_rows(self, symbol: str) -> list[dict]:
         self.statement_calls.append(symbol)
-        return [{"date": "2025-03-31", "type": "EPS", "value": "2"}]
+        return [
+            {
+                "date": date(year, quarter * 3, 31 if quarter in {1, 4} else 30).isoformat(),
+                "type": "EPS",
+                "value": str(quarter),
+            }
+            for year in (2025, 2026)
+            for quarter in range(1, 5)
+        ]
 
     def fetch_dividend_rows(self, symbol: str) -> list[dict]:
         self.dividend_calls.append(symbol)
         return [{"date": "2025-07-01", "CashEarningsDistribution": "4"}]
+
+
+class _HistoricalEpsProvider:
+    def __init__(self, *, periods: list | None = None) -> None:
+        self.calls: list[str] = []
+        self.periods = periods
+
+    def fetch_periods(self, symbol: str):
+        self.calls.append(symbol)
+        if self.periods is not None:
+            return self.periods
+        stock_id = symbol.split(".", 1)[0]
+        return normalize_mops_historical_eps_payload(
+            {
+                "xaxisList": [
+                    f"{year}Q{quarter}"
+                    for year in (2025, 2026)
+                    for quarter in range(1, 5)
+                ],
+                "graphData": [
+                    {
+                        "label": "fixture",
+                        "data": [
+                            [index, str((index % 4) + 1), "C"]
+                            for index in range(8)
+                        ],
+                    }
+                ],
+                "showNameList": [f"{stock_id} fixture"],
+            },
+            symbol=symbol,
+        )
 
 
 def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
@@ -1314,7 +1485,96 @@ def test_finmind_backfill_limits_symbols_and_returns_cursor() -> None:
         assert result.next_after_symbol == "2330.TW"
         assert provider.statement_calls == ["2330.TW"]
         assert provider.dividend_calls == ["2330.TW"]
-        assert result.records_written == 2
+        assert result.records_written == 9
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_backfill_prefers_mops_historical_eps_before_finmind_statements() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    historical_provider = _HistoricalEpsProvider()
+    try:
+        result = backfill_fundamentals(
+            session,
+            symbols=["2801.TW"],
+            provider=provider,
+            historical_provider=historical_provider,
+        )
+
+        assert result.status == "ok"
+        assert historical_provider.calls == ["2801.TW"]
+        assert provider.statement_calls == []
+        assert provider.dividend_calls == ["2801.TW"]
+        assert result.provider_attempts == {
+            "mops_historical": 1,
+            "finmind_statement": 0,
+            "finmind_dividend": 1,
+        }
+        assert result.fallback_symbols == []
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_backfill_falls_back_to_finmind_after_mops_token_error() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    historical_provider = _HistoricalEpsProvider()
+    historical_provider.fetch_periods = MagicMock(
+        side_effect=ValueError(
+            "MOPS historical EPS response has an invalid EPS token"
+        )
+    )
+    try:
+        result = backfill_fundamentals(
+            session,
+            symbols=["2801.TW"],
+            provider=provider,
+            historical_provider=historical_provider,
+        )
+
+        assert result.status == "ok"
+        assert provider.statement_calls == ["2801.TW"]
+        assert result.fallback_symbols == ["2801.TW"]
+        assert result.provider_attempts == {
+            "mops_historical": 1,
+            "finmind_statement": 1,
+            "finmind_dividend": 1,
+        }
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_backfill_reports_partial_when_all_statement_sources_have_no_eps() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    provider.fetch_statement_rows = MagicMock(
+        return_value=[
+            {
+                "date": "2026-03-31",
+                "type": "IncomeAfterTax",
+                "value": "1000000",
+            }
+        ]
+    )
+    historical_provider = _HistoricalEpsProvider(periods=[])
+    try:
+        result = backfill_fundamentals(
+            session,
+            symbols=["2801.TW"],
+            provider=provider,
+            historical_provider=historical_provider,
+        )
+
+        assert result.status == "partial"
+        assert result.errors == [
+            "2801.TW: statement backfill incomplete: "
+            "MOPS and FinMind returned no sufficient EPS history"
+        ]
+        assert result.fallback_symbols == ["2801.TW"]
     finally:
         session.close()
         engine.dispose()
@@ -1335,7 +1595,9 @@ def test_finmind_backfill_defers_partial_failure_without_starving_later_symbols(
         assert result.status == "partial"
         assert result.next_after_symbol == "2330.TW"
         assert result.errors == [
-            "2330.TW: statement backfill failed: temporary outage"
+            "2330.TW: statement backfill incomplete: "
+            "FinMind returned no sufficient EPS history; "
+            "FinMind failed: temporary outage"
         ]
     finally:
         session.close()
@@ -1603,6 +1865,8 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
             "fundamental_backfill_job_id_required"
         )
         assert backfilled.json()["symbols_processed"] == ["2330.TW"]
+        assert backfilled.json()["provider_attempts"] == {}
+        assert backfilled.json()["fallback_symbols"] == []
         assert backfilled.json()["job_id"]
         assert backfilled.json()["raw_pool_date"] == "2026-08-17"
         assert incomplete_pool.status_code == 409

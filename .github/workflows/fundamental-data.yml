@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Refresh official snapshots or backfill managed/latest AI-pool symbols from FinMind
+        description: Refresh official snapshots or backfill managed/latest AI-pool symbols from MOPS/FinMind
         required: true
         default: refresh
         type: choice
