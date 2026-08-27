@@ -1518,6 +1518,36 @@ def test_backfill_prefers_mops_historical_eps_before_finmind_statements() -> Non
         engine.dispose()
 
 
+def test_backfill_falls_back_to_finmind_after_mops_token_error() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    historical_provider = _HistoricalEpsProvider()
+    historical_provider.fetch_periods = MagicMock(
+        side_effect=ValueError(
+            "MOPS historical EPS response has an invalid EPS token"
+        )
+    )
+    try:
+        result = backfill_fundamentals(
+            session,
+            symbols=["2801.TW"],
+            provider=provider,
+            historical_provider=historical_provider,
+        )
+
+        assert result.status == "ok"
+        assert provider.statement_calls == ["2801.TW"]
+        assert result.fallback_symbols == ["2801.TW"]
+        assert result.provider_attempts == {
+            "mops_historical": 1,
+            "finmind_statement": 1,
+            "finmind_dividend": 1,
+        }
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_backfill_reports_partial_when_all_statement_sources_have_no_eps() -> None:
     session, engine = _db_session()
     provider = _BackfillProvider()

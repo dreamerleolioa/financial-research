@@ -150,3 +150,51 @@ def test_mops_historical_eps_normalizer_rejects_non_finite_values() -> None:
 
     with pytest.raises(ValueError, match="non-finite EPS"):
         normalize_mops_historical_eps_payload(payload, symbol="2801.TW")
+
+
+def test_mops_historical_eps_normalizer_rejects_unknown_missing_token() -> None:
+    axes = [
+        f"{year}Q{quarter}"
+        for year in (2024, 2025)
+        for quarter in range(1, 5)
+    ] + ["2026Q1"]
+    payload = {
+        "xaxisList": axes,
+        "graphData": [
+            {
+                "label": "彰銀",
+                "data": [
+                    *[
+                        [index, "0.50", "C"]
+                        for index in range(len(axes) - 1)
+                    ],
+                    [len(axes) - 1, "N/A", "C"],
+                ],
+            }
+        ],
+        "showNameList": ["2801 彰銀 (上市金融保險業)"],
+    }
+
+    with pytest.raises(ValueError, match="invalid EPS token"):
+        normalize_mops_historical_eps_payload(payload, symbol="2801.TW")
+
+
+@pytest.mark.parametrize("missing_token", [None, "", "-", "--"])
+def test_mops_historical_eps_normalizer_skips_known_missing_tokens(
+    missing_token: object,
+) -> None:
+    payload = _payload(
+        stock_id="2801",
+        label="彰銀",
+        report_type="C",
+        q1_eps="0.44",
+        q2_eps="0.51",
+    )
+    payload["graphData"][0]["data"][1][1] = missing_token
+
+    periods = normalize_mops_historical_eps_payload(payload, symbol="2801.TW")
+
+    assert [(period.fiscal_year, period.fiscal_quarter) for period in periods] == [
+        (2025, 4),
+        (2026, 2),
+    ]

@@ -10,6 +10,9 @@ import re
 from typing import Any
 
 
+_MOPS_MISSING_EPS_TOKENS = frozenset({"", "-", "--"})
+
+
 @dataclass(frozen=True)
 class NormalizedFundamentalPeriod:
     symbol: str
@@ -193,7 +196,7 @@ def normalize_mops_historical_eps_payload(
         axis_match = re.fullmatch(r"(\d{4})Q([1-4])", axis)
         if axis_match is None:
             raise ValueError("MOPS historical EPS response has an invalid quarter axis")
-        eps_value = _decimal(point[1])
+        eps_value = _mops_eps_decimal(point[1])
         if eps_value is None:
             continue
         if not eps_value.is_finite():
@@ -510,6 +513,18 @@ def _decimal(value: Any) -> Decimal | None:
         return Decimal(text)
     except InvalidOperation:
         return None
+
+
+def _mops_eps_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    text = str(value).replace(",", "").strip()
+    if text in _MOPS_MISSING_EPS_TOKENS:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueError("MOPS historical EPS response has an invalid EPS token") from exc
 
 
 def _is_sequence(value: Any) -> bool:
