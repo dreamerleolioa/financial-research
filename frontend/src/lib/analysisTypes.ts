@@ -46,6 +46,14 @@ export interface TechnicalIndicators {
   donchian_mid: number | null;
   donchian_width_pct: number | null;
   donchian_position: string | null;
+  ma20_slope_pct_5d?: number | null;
+  ma60_slope_pct_10d?: number | null;
+  macd_hist_slope_pct_3d?: number | null;
+  macd_hist_trend?: string | null;
+  atr_pct_percentile_60d?: number | null;
+  bollinger_bandwidth_percentile_60d?: number | null;
+  volatility_regime?: string | null;
+  technical_conflicts?: string[];
 }
 
 export interface TechnicalProfileSignal {
@@ -61,6 +69,12 @@ export interface TechnicalProfile {
   primary_score_inputs: Record<string, TechnicalProfileSignal>;
   risk_overheat_filters: Record<string, TechnicalProfileSignal>;
   secondary_evidence: Record<string, TechnicalProfileSignal>;
+  temporal_evidence?: Record<string, TechnicalProfileSignal>;
+  signal_conflicts?: Array<{
+    code: string;
+    severity: string;
+    message: string;
+  }>;
   display_only: Record<string, unknown>;
   score_summary: {
     primary_score: number;

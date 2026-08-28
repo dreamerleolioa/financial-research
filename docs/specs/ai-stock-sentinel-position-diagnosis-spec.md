@@ -5,6 +5,7 @@
 > 狀態：Draft v1.0
 > 定位：針對已持有倉位提供動態風險評估與出場決策支援
 > API 端點：`POST /analyze/position`
+> 退役說明（2026-08-28）：本文件保留早期需求脈絡，但其中 LLM、新聞解讀與 Skeptic Mode prompt 已退役。現行端點只執行版本化 Python 規則，回傳 deterministic position score、risk language 與 strategy trace。
 
 ---
 

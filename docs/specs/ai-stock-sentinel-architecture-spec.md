@@ -4,6 +4,7 @@
 > 狀態：Current v3.2
 > 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
 > 更新摘要：2026-08-28 起，Production 已移除 Anthropic/OpenAI/LangChain client、RSS 新聞清潔與 LLM prompt/analysis nodes；Analyze 與 Position 僅執行可回放的 Python 確定性分析。舊 `analysis*` / `cleaned_news*` response 欄位暫留為空值相容殼，歷史快取讀取時也必須清洗。本文後段若仍提及 LLM prompt、新聞 cleaner 或 `skip_ai`，只代表已退役的歷史設計，不再是現行 runtime contract。
+> Technical profile v2 新增 MA20/MA60 斜率、MACD 柱體斜率、ATR%/布林帶寬 60 日分位、波動 regime 與 signal conflicts。這些欄位先作可解釋 evidence，不進入 `score_summary`；盤中若無法用日期證明已完成 bar，temporal evidence 必須 fail closed。
 
 ## 0. 目前實作快照（2026-06-18）
 
@@ -124,7 +125,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 | 維度                       | 說明                                                                                                                                                                                             | 資料來源                                                         |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
 | **消息面 (News)**          | 影響市場情緒的事件訊號（法說會、政策、產業動態、法人評等調整等），以多篇新聞聚合出 `sentiment_label` 與 `sentiment_strength`；**不涵蓋公司財務數字**（財報數字屬於基本面，需另從財報資料源取得） | Google News RSS、財經媒體 RSS                                    |
-| **技術面 (Technical)**     | MA5/20/60 均線、乖離率 (BIAS)、RSI、布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel、成交量變化、支撐壓力位                                                                             | yfinance + Pandas 計算                                           |
+| **技術面 (Technical)**     | MA5/20/60、均線斜率、BIAS、RSI、布林通道與帶寬分位、MACD 與柱體斜率、KD、ADX、OBV、ATR 與 ATR% 分位、MFI、Donchian、成交量、支撐壓力及訊號衝突 | yfinance + Python canonical metrics/profile 計算                 |
 | **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、連續買賣超、主導買賣方、融資融券、借券、外資持股、大戶/散戶持股結構，並以買賣超占近期均量比例判斷相對規模                                                  | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback）              |
 | **基本面 (Fundamental)**   | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS）                                                                                                                                     | TWSE/TPEX 官方財報與股利版本庫；MOPS 歷史季 EPS 回補；FinMind bounded fallback |
 

@@ -597,7 +597,7 @@ def test_analyze_response_includes_extended_technical_indicators(monkeypatch: py
     assert indicators["obv_trend_mid_long"] is None
     assert indicators["obv_trend_mid_long_window"] is None
     profile = body["technical_profile"]
-    assert profile["version"] == "technical-layer-v1"
+    assert profile["version"] == "technical-layer-v2"
     assert profile["primary_score_inputs"]["ma_structure"]["state"] in {
         "bullish_alignment",
         "above_ma20",
@@ -1710,13 +1710,13 @@ def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
         sum(full["snapshot"]["recent_volumes"][-60:]) / 60
     )
     assert response.technical_profile is not None
-    assert response.technical_profile["version"] == "technical-layer-v1"
+    assert response.technical_profile["version"] == "technical-layer-v2"
     assert response.technical_profile["data_quality"]["data_date"] == "2026-06-23"
     assert response.technical_profile["data_quality"]["is_final"] is True
 
 
-def test_cache_hit_syncs_average_volumes_into_existing_technical_profile() -> None:
-    """Old profiles and raw indicators should expose the same hydrated average volumes."""
+def test_cache_hit_rebuilds_outdated_technical_profile() -> None:
+    """Outdated cached profiles are replaced with the current canonical contract."""
     from unittest.mock import MagicMock
     import ai_stock_sentinel.analysis.router as api_module
 
@@ -1772,18 +1772,12 @@ def test_cache_hit_syncs_average_volumes_into_existing_technical_profile() -> No
     assert display_only["avg_volume_60"] == pytest.approx(sum(volumes[-60:]) / 60)
     assert response.technical_indicators.avg_volume_20 == display_only["avg_volume_20"]
     assert response.technical_indicators.avg_volume_60 == display_only["avg_volume_60"]
-    assert response.technical_profile["data_quality"]["missing_fields"] == ["legacy_field"]
+    assert "legacy_field" not in response.technical_profile["data_quality"]["missing_fields"]
     assert response.technical_profile["data_quality"]["is_final"] is True
-    assert response.technical_profile["version"] == "cached-technical-version"
-    assert response.technical_profile["primary_score_inputs"] == {
-        "ma_alignment": "cached-ma-alignment",
-        "rsi14": 999.0,
-    }
-    assert response.technical_profile["score_summary"] == {
-        "primary_score": 91,
-        "secondary_score": 82,
-        "risk_filter_score": -73,
-    }
+    assert response.technical_profile["version"] == "technical-layer-v2"
+    assert "ma_structure" in response.technical_profile["primary_score_inputs"]
+    assert "temporal_evidence" in response.technical_profile
+    assert response.technical_profile["score_summary"]["technical_score"] <= 100
 
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:

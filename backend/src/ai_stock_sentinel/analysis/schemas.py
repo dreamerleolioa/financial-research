@@ -94,6 +94,14 @@ class TechnicalIndicators(BaseModel):
     donchian_mid: float | None = None
     donchian_width_pct: float | None = None
     donchian_position: str | None = None
+    ma20_slope_pct_5d: float | None = None
+    ma60_slope_pct_10d: float | None = None
+    macd_hist_slope_pct_3d: float | None = None
+    macd_hist_trend: str | None = None
+    atr_pct_percentile_60d: float | None = None
+    bollinger_bandwidth_percentile_60d: float | None = None
+    volatility_regime: str | None = None
+    technical_conflicts: list[str] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):

@@ -24,7 +24,7 @@ from ai_stock_sentinel.analysis.schemas import (
     PositionAnalyzeRequest,
     TechnicalIndicators,
 )
-from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
+from ai_stock_sentinel.technical.profile import TECHNICAL_LAYER_VERSION, build_technical_profile_from_snapshot
 
 
 def compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
@@ -120,6 +120,14 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
         "donchian_mid": donchian_data["donchian_mid"] if donchian_data else None,
         "donchian_width_pct": donchian_data["donchian_width_pct"] if donchian_data else None,
         "donchian_position": donchian_data["donchian_position"] if donchian_data else None,
+        "ma20_slope_pct_5d": canonical_indicators.get("ma20_slope_pct_5d"),
+        "ma60_slope_pct_10d": canonical_indicators.get("ma60_slope_pct_10d"),
+        "macd_hist_slope_pct_3d": canonical_indicators.get("macd_hist_slope_pct_3d"),
+        "macd_hist_trend": canonical_indicators.get("macd_hist_trend"),
+        "atr_pct_percentile_60d": canonical_indicators.get("atr_pct_percentile_60d"),
+        "bollinger_bandwidth_percentile_60d": canonical_indicators.get("bollinger_bandwidth_percentile_60d"),
+        "volatility_regime": canonical_indicators.get("volatility_regime"),
+        "technical_conflicts": canonical_indicators.get("technical_conflicts") or [],
         "institutional": {
             "foreign_net": inst.get("foreign_net"),
             "trust_net": inst.get("trust_net"),
@@ -207,13 +215,21 @@ def _hydrate_cached_technical_payload(
     payload = build_technical_profile_from_snapshot(snapshot, is_final=is_final)
     if payload:
         computed_indicators = TechnicalIndicators.model_validate(payload["technical_indicators"])
-        if response.technical_indicators is None:
+        cached_profile_version = (
+            response.technical_profile.get("version")
+            if isinstance(response.technical_profile, dict)
+            else None
+        )
+        if response.technical_indicators is None or cached_profile_version != TECHNICAL_LAYER_VERSION:
             response.technical_indicators = computed_indicators
         else:
             response.technical_indicators.avg_volume_20 = computed_indicators.avg_volume_20
             response.technical_indicators.avg_volume_60 = computed_indicators.avg_volume_60
         computed_profile = payload.get("technical_profile")
-        if response.technical_profile is None and isinstance(computed_profile, dict):
+        if (
+            (response.technical_profile is None or cached_profile_version != TECHNICAL_LAYER_VERSION)
+            and isinstance(computed_profile, dict)
+        ):
             response.technical_profile = computed_profile
         elif isinstance(response.technical_profile, dict) and isinstance(computed_profile, dict):
             display_only = response.technical_profile.setdefault("display_only", {})

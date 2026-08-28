@@ -4,6 +4,7 @@
 > 更新日期：2026-08-03
 > 更新摘要：2026-08-28 起 `/analyze` 與 `/analyze/position` 完全移除 LLM 與 RSS 新聞執行路徑，改為 crawl → external data → judge → preprocess → score → strategy 的 deterministic contract。`persist_result` 控制是否讀寫完整分析快取；`skip_ai` 與 `news_text` 只保留 deprecated request 相容。舊 LLM/news response 欄位暫留但固定為空值，舊快取也不得重新送出歷史 AI 內容。本文後段若仍提及 LLM prompt 或 cleaner，視為歷史設計而非現行 runtime contract。
 > Release Gate 仍包含 portfolio risk data-gap、Determinism Gate、Shared Context Gate 與 Copy Guard Gate；本次移除模型不得放寬既有投資紀律邊界。
+> Technical profile v2 新增 `ma20_slope_pct_5d`、`ma60_slope_pct_10d`、`macd_hist_slope_pct_3d`、`macd_hist_trend`、`atr_pct_percentile_60d`、`bollinger_bandwidth_percentile_60d`、`volatility_regime`、`technical_conflicts`，以及 profile 內的 `temporal_evidence` / `signal_conflicts`。新增欄位目前全為 evidence-only、`impact=0`，不得改變 `score_summary`；盤中若無日期可證明 completed bars，temporal evidence 必須 fail closed。
 
 ## 1) 目的
 
@@ -130,7 +131,7 @@ make run-api
     "obv_signal": "price_volume_confirm"
   },
   "technical_profile": {
-    "version": "technical-layer-v1",
+    "version": "technical-layer-v2",
     "primary_score_inputs": {
       "ma_structure": {
         "state": "bullish_alignment",
@@ -180,8 +181,8 @@ make run-api
       "missing_fields": []
     },
     "formula_versions": {
-      "metrics": "technical-metrics-v1",
-      "layering": "technical-layer-v1"
+      "metrics": "technical-metrics-v2",
+      "layering": "technical-layer-v2"
     },
     "companion_context_refs": {
       "chip_stability_context": "tdcc_weekly_major_holders"
@@ -260,7 +261,7 @@ make run-api
 }
 ```
 
-`price_limit_status` 為 `limit_up`、`limit_down`、`normal` 或 `unknown`。Analyze／Watchlist 個股查詢會在 response projection 統一補上漲跌停 context，因此新抓 snapshot、10 分鐘 raw cache 與完整分析 cache 命中都使用相同契約：後端必須使用同一筆 TWSE MIS 回傳的成交價 `z` 與官方上下限 `u`／`w` 判斷，並以獨立的 `market_current_price`、`market_current_price_source = "twse_mis"` 與 `price_limit_quote_price` 揭露即時市場報價。Canonical `snapshot.current_price` 不覆寫，因 technical indicators、technical profile 與 AI text 仍以該次 yfinance/raw/analysis snapshot 計算；前端需把 MIS 價明示為即時顯示值，不得暗示既有技術指標已隨之重算。不得以前一交易日收盤價直接乘上 110%／90% 推算。此 optional provider 使用 bounded worker，response 最多等待 500ms；provider socket／total reader deadline 同為 500ms，reader 使用 available-byte `read1`（fallback 單 byte read）定期重查 wall clock，response body 上限 64 KiB，避免單次填滿 buffer 的 blocking read 讓慢速串流長期占滿 worker。官方端未提供即時成交價／上下限、容量已滿或查詢失敗時回傳 `unknown`，且保留原 snapshot 現價，不得中斷個股分析主流程。Provider/display-only 欄位不進 graph、LLM prompt、Portfolio 純價格刷新或內部 raw-data 持久化。
+`price_limit_status` 為 `limit_up`、`limit_down`、`normal` 或 `unknown`。Analyze／Watchlist 個股查詢會在 response projection 統一補上漲跌停 context，因此新抓 snapshot、10 分鐘 raw cache 與完整分析 cache 命中都使用相同契約：後端必須使用同一筆 TWSE MIS 回傳的成交價 `z` 與官方上下限 `u`／`w` 判斷，並以獨立的 `market_current_price`、`market_current_price_source = "twse_mis"` 與 `price_limit_quote_price` 揭露即時市場報價。Canonical `snapshot.current_price` 不覆寫，因 technical indicators 與 technical profile 仍以該次 yfinance/raw snapshot 計算；前端需把 MIS 價明示為即時顯示值，不得暗示既有技術指標已隨之重算。不得以前一交易日收盤價直接乘上 110%／90% 推算。此 optional provider 使用 bounded worker，response 最多等待 500ms；provider socket／total reader deadline 同為 500ms，reader 使用 available-byte `read1`（fallback 單 byte read）定期重查 wall clock，response body 上限 64 KiB，避免單次填滿 buffer 的 blocking read 讓慢速串流長期占滿 worker。官方端未提供即時成交價／上下限、容量已滿或查詢失敗時回傳 `unknown`，且保留原 snapshot 現價，不得中斷個股分析主流程。Provider/display-only 欄位不進 graph、technical scoring、Portfolio 純價格刷新或內部 raw-data 持久化。
 
 - **欄位說明**
 
@@ -305,7 +306,7 @@ make run-api
 
 > **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver、portfolio risk score 或 action/verdict/classification 覆寫。
 
-> **Canonical technical profile（2026-06-24）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v1`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 必須用當前 bar 之前的 20 根已完成 bar 判斷 breakdown/near-support/near-resistance；raw `technical_indicators.high_20d` / `low_20d` 可作 display 數值並包含當前 bar，但不得直接拿來判斷當前 close 是否跌破支撐。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v1 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
+> **Canonical technical profile（2026-06-24）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v2`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 必須用當前 bar 之前的 20 根已完成 bar 判斷 breakdown/near-support/near-resistance；raw `technical_indicators.high_20d` / `low_20d` 可作 display 數值並包含當前 bar，但不得直接拿來判斷當前 close 是否跌破支撐。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v2 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
 
 > **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / Watchlist / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
@@ -346,14 +347,14 @@ make run-api
 > | `donchian_upper` / `donchian_lower` / `donchian_mid`    | number \| null | Donchian Channel 20 日區間上緣、下緣、中線                                                             |
 > | `donchian_width_pct`                                    | number \| null | Donchian 區間寬度百分比                                                                                |
 > | `donchian_position`                                     | string \| null | `breakout_up` / `breakdown_down` / `near_upper` / `near_lower` / `upper_half` / `lower_half` / `flat`  |
+> | `ma20_slope_pct_5d` / `ma60_slope_pct_10d`              | number \| null | 均線在指定回看期的百分比變化；只作時序 evidence                                                        |
+> | `macd_hist_slope_pct_3d` / `macd_hist_trend`             | number/string   | MACD 柱體相對價格正規化的 3 日斜率，以及擴張/收斂狀態                                                   |
+> | `atr_pct_percentile_60d`                                | number \| null | ATR% 在最近最多 60 個可計算觀察值中的 percentile rank                                                  |
+> | `bollinger_bandwidth_percentile_60d`                    | number \| null | 布林帶寬在最近最多 60 個可計算觀察值中的 percentile rank                                                |
+> | `volatility_regime`                                     | string          | `compression` / `normal` / `expansion` / `mixed_transition` / `missing`                                |
+> | `technical_conflicts`                                   | string[]        | 趨勢、動能、量價或過熱條件互相矛盾時的可讀警示；不計分                                                  |
 
 > **相容策略**：`technical_indicators` 仍是公開 response 欄位與 copy/export raw data 來源，不可因 `technical_profile` 上線而移除。舊 cache 若缺 `technical_profile` 但 snapshot 仍足以重建 profile，read path 可 backfill projection；若無法建立 profile，前端 fallback 到 legacy raw 指標顯示，不顯示分層結論。
-
-> **LLM input contract：`signal_summary`（內部欄位，非 API response）**
->
-> - `analyze_node` 在呼叫 LLM 前會建立 compact `signal_summary`，放在 prompt 最前段。
-> - 內容包含 rule-based labels（`technical_signal` / `institutional_flow` / `sentiment_label` / `confidence_score` / `cross_validation_note`）、技術證據（布林、MACD、KD、ADX、OBV、ATR、MFI、Donchian、RSI、支撐壓力）、籌碼證據（連續買賣超、主導買賣方、融資融券、借券、持股結構）、消息面聚合與策略標籤。
-> - LLM 只能解釋 `signal_summary`，不得改寫 labels 或重新計算分數；此欄位不會出現在 `/analyze` 或 `/analyze/position` response。
 
 ---
 

@@ -69,6 +69,23 @@ const VOLATILITY_LEVEL_LABEL: Record<string, { label: string }> = {
   unknown: { label: "未知" },
 };
 
+const MACD_HIST_TREND_LABEL: Record<string, { label: string }> = {
+  accelerating_bullish: { label: "多方動能擴張" },
+  bullish_fading: { label: "多方動能收斂" },
+  accelerating_bearish: { label: "空方動能擴張" },
+  bearish_recovering: { label: "空方動能收斂" },
+  flat: { label: "動能持平" },
+  missing: { label: "資料不足" },
+};
+
+const VOLATILITY_REGIME_LABEL: Record<string, { label: string }> = {
+  compression: { label: "波動壓縮" },
+  normal: { label: "常態波動" },
+  expansion: { label: "波動擴張" },
+  mixed_transition: { label: "波動轉換分歧" },
+  missing: { label: "資料不足" },
+};
+
 const MFI_SIGNAL_LABEL: Record<string, { label: string }> = {
   overbought: { label: "資金過熱" },
   oversold: { label: "資金低檔" },
@@ -113,6 +130,8 @@ const TECHNICAL_LABELS = {
   obv_signal: OBV_SIGNAL_LABEL,
   obv_trend: OBV_TREND_LABEL,
   volatility_level: VOLATILITY_LEVEL_LABEL,
+  macd_hist_trend: MACD_HIST_TREND_LABEL,
+  volatility_regime: VOLATILITY_REGIME_LABEL,
   mfi_signal: MFI_SIGNAL_LABEL,
   donchian_position: DONCHIAN_POSITION_LABEL,
 } as const;
@@ -122,6 +141,16 @@ export type TechnicalLabelKind = keyof typeof TECHNICAL_LABELS;
 export function formatIndicatorNumber(value: number | null | undefined, digits = 2): string {
   if (value == null || Number.isNaN(value)) return "—";
   return value.toFixed(digits);
+}
+
+export function formatSignedPercent(value: number | null | undefined, digits = 2): string {
+  if (value == null || Number.isNaN(value)) return "資料不足";
+  return `${value > 0 ? "+" : ""}${value.toFixed(digits)}%`;
+}
+
+export function formatPercentile(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "資料不足";
+  return `${value.toFixed(1)} 百分位`;
 }
 
 export function getTechnicalIndicatorLabel(
@@ -307,6 +336,17 @@ export function buildTechnicalIndicatorsCopyText(
     ["60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
     ["布林通道位階", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
     ["MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
+    ["MA20 5日斜率", formatSignedPercent(indicators.ma20_slope_pct_5d, 3)],
+    ["MA60 10日斜率", formatSignedPercent(indicators.ma60_slope_pct_10d, 3)],
+    ["MACD 柱體 3日斜率", formatSignedPercent(indicators.macd_hist_slope_pct_3d, 4)],
+    ["MACD 動能變化", getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)],
+    ["ATR% 60日分位", formatPercentile(indicators.atr_pct_percentile_60d)],
+    ["布林帶寬 60日分位", formatPercentile(indicators.bollinger_bandwidth_percentile_60d)],
+    ["波動狀態", getTechnicalIndicatorLabel("volatility_regime", indicators.volatility_regime)],
+    [
+      "訊號衝突",
+      indicators.technical_conflicts?.length ? indicators.technical_conflicts.join("；") : "無明顯衝突",
+    ],
     ["KD 交叉", getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)],
     ["KD 區間", getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)],
     ["ADX 趨勢強度", getTechnicalIndicatorLabel("adx_trend_strength", indicators.adx_trend_strength)],

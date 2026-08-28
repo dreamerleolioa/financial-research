@@ -32,6 +32,8 @@ test("Analyze deterministic research supports copy and a keyboard-contained add-
   await expect(page.getByText("3075 / 3155 / 3050", { exact: true })).toBeVisible();
   await expect(page.getByText("20／60 日均成交量", { exact: true })).toBeVisible();
   await expect(page.getByText("2,100 / 1,800", { exact: true })).toBeVisible();
+  await expect(page.getByText("MA20 5日斜率", { exact: true })).toBeVisible();
+  await expect(page.getByText("+1.234%", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "複製技術指標摘要" }).click();
   await expect(page.getByRole("button", { name: "複製技術指標摘要" })).toContainText("已複製");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("3661.TW");
@@ -44,6 +46,15 @@ test("Analyze deterministic research supports copy and a keyboard-contained add-
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("現價：3120（TWSE MIS 即時）（漲停）");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("MA20 5日斜率：+1.234%");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("波動狀態：波動擴張");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("訊號衝突：MA20 仍上升，但 MACD 多方柱體正在收斂。");
 
   const openDialogButton = page.getByRole("button", { name: "加入持股" });
   await openDialogButton.click();

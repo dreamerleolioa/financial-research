@@ -491,7 +491,7 @@ def get_graph():
 
 
 def _check_symbol_exists(symbol: str) -> None:
-    """yfinance 輕量驗證：代號無效時拋 HTTP 404，避免跑 LLM。"""
+    """yfinance 輕量驗證：代號無效時拋 HTTP 404，避免執行完整資料流程。"""
     if not check_symbol_exists(symbol):
         raise HTTPException(status_code=404, detail=f"查詢目標不存在：{symbol}")
 

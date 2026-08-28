@@ -8,7 +8,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 
 | 維度       | 追蹤指標                                  | 系統判讀重點                                        |
 | ---------- | ----------------------------------------- | -------------------------------------------------- |
-| **技術面** | $MA_{5/20/60}$、$Vol$、$BIAS$、$RSI_{14}$ | 判斷當前股價位階，識別「利多出盡」或「底部起漲」   |
+| **技術面** | MA5/20/60、均線斜率、MACD 動能斜率、ATR/布林波動分位、量價與支撐壓力 | 同時判斷位階、趨勢是否加速、波動 regime 與訊號衝突 |
 | **籌碼面** | 三大法人買賣超、融資餘額                  | 追蹤聰明錢流向，判斷籌碼是集中於大戶還是分散至散戶 |
 | **基本面** | 本益比區間、歷史估值帶                    | 判斷當前股價相對估值位階，識別高估或低估區間       |
 
@@ -422,7 +422,7 @@ make test
 | `snapshot`                 | 股票快照（price / volume / recent_closes 等）                                                                                                                                                      |
 | `analysis`                 | 已停用的舊 LLM 相容欄位；固定為空字串                                                                                                                                                              |
 | `analysis_detail`          | 已停用的舊 LLM 相容欄位；固定為 `null`                                                                                                                                                             |
-| `technical_indicators`     | 技術指標顯性輸出（布林通道上中下軌、bandwidth、位階、MACD 線 / 訊號線 / 柱狀體 / bias）                                                                                                            |
+| `technical_indicators`     | 技術指標顯性輸出：既有均線/量價/通道指標，加上 MA20 5 日斜率、MA60 10 日斜率、MACD 柱體 3 日斜率、ATR%/布林帶寬 60 日分位、波動 regime 與訊號衝突；新增欄位目前只作 evidence，不改分數                                                                               |
 | `sentiment_label`          | 已停用的舊消息面相容欄位；固定為 `null`                                                                                                                                                            |
 | `institutional_flow_label` | 籌碼面標籤（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral`）                                                                                                         |
 | `cleaned_news`             | 已停用的舊新聞相容欄位；固定為 `null`                                                                                                                                                              |

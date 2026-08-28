@@ -72,6 +72,138 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
         "atr_state",
     }
     assert set(profile["secondary_evidence"]) == {"adx", "donchian", "mfi", "kd"}
+    assert set(profile["temporal_evidence"]) == {
+        "ma20_slope",
+        "ma60_slope",
+        "macd_hist_trend",
+        "volatility_regime",
+    }
+    assert all(signal["impact"] == 0 for signal in profile["temporal_evidence"].values())
+    assert raw["ma20_slope_pct_5d"] is not None
+    assert raw["ma60_slope_pct_10d"] is not None
+    assert raw["macd_hist_slope_pct_3d"] is not None
+    assert raw["atr_pct_percentile_60d"] is not None
+    assert raw["bollinger_bandwidth_percentile_60d"] is not None
+    assert isinstance(raw["technical_conflicts"], list)
+
+
+def test_temporal_evidence_does_not_change_score_buckets() -> None:
+    closes, highs, lows, volumes = _series()
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+    )
+
+    assert payload is not None
+    profile = payload["technical_profile"]
+    expected_total = max(
+        -5,
+        min(
+            5,
+            profile["score_summary"]["primary_score"]
+            + profile["score_summary"]["risk_filter_score"]
+            + profile["score_summary"]["secondary_score"],
+        ),
+    )
+    assert profile["score_summary"]["capped_total"] == expected_total
+    assert profile["signal_conflicts"]
+    assert "trend_overheat" in {item["code"] for item in profile["signal_conflicts"]}
+
+
+def test_intraday_temporal_evidence_excludes_current_dated_bar() -> None:
+    closes, highs, lows, volumes = _series(length=90)
+    close_dates = [f"2026-07-{(index % 28) + 1:02d}" for index in range(89)] + ["2026-08-01"]
+    spiked_closes = [*closes[:-1], closes[-1] * 3]
+    spiked_highs = [*highs[:-1], spiked_closes[-1] + 2]
+    spiked_lows = [*lows[:-1], spiked_closes[-1] - 2]
+
+    intraday = build_technical_profile_payload(
+        closes=spiked_closes,
+        highs=spiked_highs,
+        lows=spiked_lows,
+        volumes=volumes,
+        close_dates=close_dates,
+        data_date="2026-07-31",
+        observation_date="2026-08-01",
+        is_final=False,
+    )
+    completed = build_technical_profile_payload(
+        closes=spiked_closes[:-1],
+        highs=spiked_highs[:-1],
+        lows=spiked_lows[:-1],
+        volumes=volumes[:-1],
+        data_date="2026-07-05",
+        is_final=True,
+    )
+
+    assert intraday is not None and completed is not None
+    for field in (
+        "ma20_slope_pct_5d",
+        "ma60_slope_pct_10d",
+        "macd_hist_slope_pct_3d",
+        "atr_pct_percentile_60d",
+        "bollinger_bandwidth_percentile_60d",
+    ):
+        assert intraday["technical_indicators"][field] == completed["technical_indicators"][field]
+    assert intraday["technical_profile"]["data_quality"]["temporal_data_date"] == close_dates[-2]
+    assert intraday["technical_profile"]["data_quality"]["temporal_completed_bars_only"] is True
+    assert intraday["technical_profile"]["data_quality"]["temporal_missing_reason"] is None
+
+
+def test_intraday_temporal_evidence_keeps_prior_completed_market_date() -> None:
+    closes, highs, lows, volumes = _series(length=90)
+    close_dates = [f"2026-07-{(index % 28) + 1:02d}" for index in range(89)] + ["2026-07-31"]
+
+    intraday = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        close_dates=close_dates,
+        data_date="2026-07-31",
+        observation_date="2026-08-01",
+        is_final=False,
+    )
+    completed = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        data_date="2026-07-31",
+        is_final=True,
+    )
+
+    assert intraday is not None and completed is not None
+    assert (
+        intraday["technical_indicators"]["ma20_slope_pct_5d"]
+        == completed["technical_indicators"]["ma20_slope_pct_5d"]
+    )
+    assert intraday["technical_profile"]["data_quality"]["temporal_data_date"] == "2026-07-31"
+
+
+def test_intraday_temporal_evidence_fails_closed_without_dated_bars() -> None:
+    closes, highs, lows, volumes = _series(length=90)
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        data_date="2026-08-01",
+        is_final=False,
+    )
+
+    assert payload is not None
+    raw = payload["technical_indicators"]
+    assert raw["ma20_slope_pct_5d"] is None
+    assert raw["volatility_regime"] == "missing"
+    data_quality = payload["technical_profile"]["data_quality"]
+    assert data_quality["temporal_data_date"] is None
+    assert data_quality["temporal_completed_bars_only"] is False
+    assert data_quality["temporal_missing_reason"] == "completed_bar_dates_unavailable"
 
 
 def test_profile_intraday_average_volumes_exclude_current_dated_bar() -> None:
@@ -84,7 +216,8 @@ def test_profile_intraday_average_volumes_exclude_current_dated_bar() -> None:
         lows=lows,
         volumes=volumes,
         volume_dates=volume_dates,
-        data_date="2026-07-30",
+        data_date="2026-07-29",
+        observation_date="2026-07-30",
         is_final=False,
     )
 
@@ -400,6 +533,31 @@ def test_profile_from_snapshot_builds_without_analysis_schema_dependency() -> No
     assert profile["companion_context_refs"]["chip_stability_context"] == "tdcc_weekly_major_holders"
     for bucket_name in ("primary_score_inputs", "risk_overheat_filters", "secondary_evidence", "display_only"):
         assert "chip_stability_context" not in profile[bucket_name]
+
+
+def test_profile_from_snapshot_uses_embedded_ohlcv_date_for_temporal_boundary() -> None:
+    closes, highs, lows, volumes = _series(length=90)
+    close_dates = ["2026-07-31"] * 90
+    snapshot = {
+        "current_price": closes[-1],
+        "recent_closes": closes,
+        "recent_highs": highs,
+        "recent_lows": lows,
+        "recent_volumes": volumes,
+        "recent_volume_dates": ["2026-07-31"] * 90,
+        "recent_close_dates": close_dates,
+        "data_dates": {"ohlcv": "2026-07-31"},
+        "fetched_at": "2026-08-01T01:00:00+08:00",
+    }
+
+    payload = build_technical_profile_from_snapshot(snapshot, is_final=False)
+
+    assert payload is not None
+    data_quality = payload["technical_profile"]["data_quality"]
+    assert data_quality["data_date"] == "2026-07-31"
+    assert data_quality["temporal_data_date"] == "2026-07-31"
+    assert payload["technical_indicators"]["avg_volume_60"] == pytest.approx(sum(volumes[-60:]) / 60)
+    assert payload["technical_indicators"]["ma20_slope_pct_5d"] is not None
 
 
 def test_profile_from_snapshot_ignores_zero_current_price_sentinel() -> None:

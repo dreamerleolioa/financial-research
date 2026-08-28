@@ -25,8 +25,8 @@ from ai_stock_sentinel.technical.metrics import (
     stochastic_kd,
 )
 
-TECHNICAL_METRICS_VERSION = "technical-metrics-v1"
-TECHNICAL_LAYER_VERSION = "technical-layer-v1"
+TECHNICAL_METRICS_VERSION = "technical-metrics-v2"
+TECHNICAL_LAYER_VERSION = "technical-layer-v2"
 REQUIRED_LOOKBACK_DAYS = 60
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -42,16 +42,19 @@ def build_technical_profile_from_snapshot(
     if not closes:
         return None
 
-    snapshot_data_date = data_date or _string_or_none(snapshot.get("data_date")) or _date_string_or_none(snapshot.get("fetched_at"))
+    snapshot_data_date = data_date or _snapshot_ohlcv_date(snapshot)
+    snapshot_observation_date = _date_string_or_none(snapshot.get("fetched_at"))
     current_price = _number_or_none(snapshot.get("current_price"))
     return build_technical_profile_payload(
         closes=closes,
         highs=_numbers(snapshot.get("recent_highs")),
         lows=_numbers(snapshot.get("recent_lows")),
         volumes=_numbers(snapshot.get("recent_volumes")),
+        close_dates=_strings(snapshot.get("recent_close_dates")),
         volume_dates=_strings(snapshot.get("recent_volume_dates")),
         current_price=current_price,
         data_date=snapshot_data_date,
+        observation_date=snapshot_observation_date,
         is_final=is_final,
     )
 
@@ -62,12 +65,14 @@ def build_technical_profile_payload(
     highs: Sequence[float] | None = None,
     lows: Sequence[float] | None = None,
     volumes: Sequence[float] | None = None,
+    close_dates: Sequence[str] | None = None,
     volume_dates: Sequence[str] | None = None,
     current_price: float | None = None,
     data_date: str | None = None,
+    observation_date: str | None = None,
     is_final: bool = True,
 ) -> dict[str, Any] | None:
-    """Return backward-compatible raw indicators plus the v1 layered profile."""
+    """Return backward-compatible raw indicators plus the v2 layered profile."""
     close_values = [float(value) for value in closes if value is not None]
     if not close_values:
         return None
@@ -102,6 +107,7 @@ def build_technical_profile_payload(
         average_volume_values,
         volume_dates=volume_dates,
         data_date=data_date,
+        observation_date=observation_date,
         is_final=is_final,
     )
     avg_volume_20 = _average_volume(completed_volume_values, 20)
@@ -111,6 +117,24 @@ def build_technical_profile_payload(
     volume_ratio = _volume_ratio(volume_values)
     bias20 = calc_bias(close, ma20) if ma20 is not None else None
     rsi14 = calc_rsi(close_values, period=14)
+    temporal_inputs = _completed_temporal_inputs(
+        closes=close_values,
+        highs=high_values,
+        lows=low_values,
+        close_dates=close_dates,
+        data_date=data_date,
+        observation_date=observation_date,
+        is_final=is_final,
+    )
+    temporal_metrics = (
+        _temporal_metrics(
+            closes=temporal_inputs[0],
+            highs=temporal_inputs[1],
+            lows=temporal_inputs[2],
+        )
+        if temporal_inputs
+        else _empty_temporal_metrics()
+    )
 
     raw_indicators = {
         "ma5": ma5,
@@ -156,6 +180,7 @@ def build_technical_profile_payload(
         "donchian_mid": donchian_data["donchian_mid"] if donchian_data else None,
         "donchian_width_pct": donchian_data["donchian_width_pct"] if donchian_data else None,
         "donchian_position": donchian_data["donchian_position"] if donchian_data else None,
+        **temporal_metrics,
     }
 
     missing_fields = _missing_fields(
@@ -189,6 +214,13 @@ def build_technical_profile_payload(
         "kd": _kd_evidence(kd_data),
     }
     score_summary = _score_summary(primary=primary, risk=risk, secondary=secondary)
+    temporal_evidence = _temporal_evidence(temporal_metrics)
+    signal_conflicts = _signal_conflicts(
+        primary=primary,
+        risk=risk,
+        temporal=temporal_evidence,
+    )
+    raw_indicators["technical_conflicts"] = [item["message"] for item in signal_conflicts]
     caveats = _profile_caveats(missing_fields=missing_fields, aligned_hilo=aligned_hilo, aligned_volume=aligned_volume)
 
     return {
@@ -198,6 +230,8 @@ def build_technical_profile_payload(
             "primary_score_inputs": primary,
             "risk_overheat_filters": risk,
             "secondary_evidence": secondary,
+            "temporal_evidence": temporal_evidence,
+            "signal_conflicts": signal_conflicts,
             "display_only": {
                 "obv_absolute_value": raw_indicators["obv"],
                 "avg_volume_20": raw_indicators["avg_volume_20"],
@@ -218,6 +252,11 @@ def build_technical_profile_payload(
                 "ohlcv_aligned": aligned_hilo,
                 "volume_aligned": aligned_volume,
                 "price_level_basis": "ohlc_high_low" if aligned_hilo else "close_fallback",
+                "temporal_data_date": temporal_inputs[3] if temporal_inputs else None,
+                "temporal_completed_bars_only": temporal_inputs is not None,
+                "temporal_missing_reason": (
+                    None if temporal_inputs else "completed_bar_dates_unavailable"
+                ),
                 "missing_fields": missing_fields,
             },
             "formula_versions": {
@@ -230,6 +269,235 @@ def build_technical_profile_payload(
             "caveats": caveats,
         },
     }
+
+
+def _completed_temporal_inputs(
+    *,
+    closes: Sequence[float],
+    highs: Sequence[float] | None,
+    lows: Sequence[float] | None,
+    close_dates: Sequence[str] | None,
+    data_date: str | None,
+    observation_date: str | None,
+    is_final: bool,
+) -> tuple[list[float], list[float] | None, list[float] | None, str | None] | None:
+    """Return bars safe for temporal comparisons without using an unfinished bar."""
+    end = len(closes)
+    dates = list(close_dates or [])
+    dates_aligned = len(dates) == len(closes)
+    if not is_final:
+        if not dates_aligned or observation_date is None:
+            return None
+        normalized_observation_date = _iso_date_or_none(observation_date)
+        normalized_data_date = _iso_date_or_none(data_date)
+        latest_bar_date = _iso_date_or_none(dates[-1]) if dates else None
+        if normalized_observation_date is None or latest_bar_date is None:
+            return None
+        if normalized_data_date is not None and normalized_data_date > normalized_observation_date:
+            return None
+        if latest_bar_date > normalized_observation_date:
+            return None
+        if latest_bar_date == normalized_observation_date:
+            end -= 1
+    if end <= 0:
+        return None
+    completed_highs = list(highs[:end]) if highs is not None else None
+    completed_lows = list(lows[:end]) if lows is not None else None
+    temporal_date = _iso_date_or_none(dates[end - 1]) if dates_aligned else _iso_date_or_none(data_date)
+    if not is_final and temporal_date is None:
+        return None
+    return list(closes[:end]), completed_highs, completed_lows, temporal_date
+
+
+def _temporal_metrics(
+    closes: Sequence[float],
+    highs: Sequence[float] | None,
+    lows: Sequence[float] | None,
+) -> dict[str, Any]:
+    close_values = list(closes)
+    high_values = list(highs) if highs is not None else None
+    low_values = list(lows) if lows is not None else None
+    ma20_slope = _moving_average_slope_pct(close_values, window=20, lookback=5)
+    ma60_slope = _moving_average_slope_pct(close_values, window=60, lookback=10)
+    macd_slope = _macd_hist_slope_pct(close_values, lookback=3)
+    macd_current = macd(close_values)
+    macd_hist = _number_or_none(macd_current.get("macd_hist")) if macd_current else None
+    atr_percentile = _atr_pct_percentile(close_values, high_values, low_values)
+    bandwidth_percentile = _bollinger_bandwidth_percentile(close_values)
+    return {
+        "ma20_slope_pct_5d": ma20_slope,
+        "ma60_slope_pct_10d": ma60_slope,
+        "macd_hist_slope_pct_3d": macd_slope,
+        "macd_hist_trend": _macd_hist_trend(macd_hist, macd_slope),
+        "atr_pct_percentile_60d": atr_percentile,
+        "bollinger_bandwidth_percentile_60d": bandwidth_percentile,
+        "volatility_regime": _volatility_regime(atr_percentile, bandwidth_percentile),
+    }
+
+
+def _empty_temporal_metrics() -> dict[str, Any]:
+    return {
+        "ma20_slope_pct_5d": None,
+        "ma60_slope_pct_10d": None,
+        "macd_hist_slope_pct_3d": None,
+        "macd_hist_trend": "missing",
+        "atr_pct_percentile_60d": None,
+        "bollinger_bandwidth_percentile_60d": None,
+        "volatility_regime": "missing",
+    }
+
+
+def _moving_average_slope_pct(values: Sequence[float], *, window: int, lookback: int) -> float | None:
+    if len(values) < window + lookback:
+        return None
+    current = ma(list(values), window)
+    previous = ma(list(values[:-lookback]), window)
+    if current is None or previous in (None, 0):
+        return None
+    return round((current - previous) / previous * 100, 3)
+
+
+def _macd_hist_slope_pct(values: Sequence[float], *, lookback: int) -> float | None:
+    if len(values) < 35 + lookback or not values or values[-1] == 0:
+        return None
+    current = macd(list(values))
+    previous = macd(list(values[:-lookback]))
+    if current is None or previous is None:
+        return None
+    current_hist = _number_or_none(current.get("macd_hist"))
+    previous_hist = _number_or_none(previous.get("macd_hist"))
+    if current_hist is None or previous_hist is None:
+        return None
+    return round((current_hist - previous_hist) / abs(values[-1]) * 100, 4)
+
+
+def _atr_pct_percentile(
+    closes: Sequence[float],
+    highs: Sequence[float] | None,
+    lows: Sequence[float] | None,
+) -> float | None:
+    if highs is None or lows is None or len(highs) != len(closes) or len(lows) != len(closes):
+        return None
+    observations: list[float] = []
+    start = max(15, len(closes) - 59)
+    for end in range(start, len(closes) + 1):
+        result = atr(list(closes[:end]), list(highs[:end]), list(lows[:end]))
+        value = _finite_number_or_none(result.get("atr_pct")) if result else None
+        if value is not None:
+            observations.append(value)
+    return _percentile_rank(observations)
+
+
+def _bollinger_bandwidth_percentile(closes: Sequence[float]) -> float | None:
+    observations: list[float] = []
+    start = max(20, len(closes) - 59)
+    for end in range(start, len(closes) + 1):
+        result = bollinger_bands(list(closes[:end]))
+        value = _finite_number_or_none(result.get("bollinger_bandwidth")) if result else None
+        if value is not None:
+            observations.append(value)
+    return _percentile_rank(observations)
+
+
+def _percentile_rank(values: Sequence[float], *, minimum_observations: int = 20) -> float | None:
+    if len(values) < minimum_observations:
+        return None
+    current = values[-1]
+    return round(sum(value <= current for value in values) / len(values) * 100, 1)
+
+
+def _macd_hist_trend(histogram: float | None, slope: float | None) -> str:
+    if histogram is None or slope is None:
+        return "missing"
+    epsilon = 1e-8
+    if histogram > epsilon and slope > epsilon:
+        return "accelerating_bullish"
+    if histogram > epsilon and slope < -epsilon:
+        return "bullish_fading"
+    if histogram < -epsilon and slope < -epsilon:
+        return "accelerating_bearish"
+    if histogram < -epsilon and slope > epsilon:
+        return "bearish_recovering"
+    return "flat"
+
+
+def _volatility_regime(atr_percentile: float | None, bandwidth_percentile: float | None) -> str:
+    values = [value for value in (atr_percentile, bandwidth_percentile) if value is not None]
+    if not values:
+        return "missing"
+    if len(values) == 2 and min(values) <= 20 and max(values) >= 80:
+        return "mixed_transition"
+    if max(values) >= 80:
+        return "expansion"
+    if all(value <= 20 for value in values):
+        return "compression"
+    return "normal"
+
+
+def _temporal_evidence(metrics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        "ma20_slope": _slope_evidence(metrics.get("ma20_slope_pct_5d"), label="MA20", period="5-day"),
+        "ma60_slope": _slope_evidence(metrics.get("ma60_slope_pct_10d"), label="MA60", period="10-day"),
+        "macd_hist_trend": _signal(
+            str(metrics.get("macd_hist_trend") or "missing"),
+            0,
+            "MACD histogram direction and 3-day normalized slope; evidence only.",
+            value=metrics.get("macd_hist_slope_pct_3d"),
+        ),
+        "volatility_regime": _signal(
+            str(metrics.get("volatility_regime") or "missing"),
+            0,
+            "ATR% and Bollinger bandwidth percentile regime; evidence only.",
+            atr_percentile=metrics.get("atr_pct_percentile_60d"),
+            bandwidth_percentile=metrics.get("bollinger_bandwidth_percentile_60d"),
+        ),
+    }
+
+
+def _slope_evidence(value: Any, *, label: str, period: str) -> dict[str, Any]:
+    slope = _finite_number_or_none(value)
+    if slope is None:
+        return _signal("missing", 0, f"{label} {period} slope unavailable.")
+    if slope > 0.05:
+        state = "rising"
+    elif slope < -0.05:
+        state = "falling"
+    else:
+        state = "flat"
+    return _signal(state, 0, f"{label} {period} slope is display-only evidence.", value=slope)
+
+
+def _signal_conflicts(
+    *,
+    primary: Mapping[str, Mapping[str, Any]],
+    risk: Mapping[str, Mapping[str, Any]],
+    temporal: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    conflicts: list[dict[str, str]] = []
+    ma_state = str(temporal.get("ma20_slope", {}).get("state") or "missing")
+    macd_state = str(temporal.get("macd_hist_trend", {}).get("state") or "missing")
+    if ma_state == "rising" and macd_state == "bullish_fading":
+        conflicts.append(_conflict("trend_momentum_fading", "MA20 仍上升，但 MACD 多方柱體正在收斂。"))
+    elif ma_state == "falling" and macd_state == "bearish_recovering":
+        conflicts.append(_conflict("countertrend_recovery", "MA20 仍下降，但 MACD 空方柱體正在收斂。"))
+
+    primary_impact = sum(_impact(value) for value in primary.values())
+    risk_impact = sum(_impact(value) for value in risk.values())
+    if primary_impact > 0 and risk_impact < 0:
+        conflicts.append(_conflict("trend_overheat", "主要趨勢偏多，但過熱或波動濾網正在扣分。"))
+
+    ma_structure = str(primary.get("ma_structure", {}).get("state") or "")
+    volume_state = str(primary.get("volume_ratio", {}).get("state") or "")
+    obv_state = str(primary.get("obv_trend", {}).get("state") or "")
+    if ma_structure in {"bullish_alignment", "above_ma20"} and (
+        volume_state == "thin_participation" or obv_state == "weakening"
+    ):
+        conflicts.append(_conflict("trend_without_participation", "價格結構偏多，但成交量或 OBV 尚未確認。"))
+    return conflicts
+
+
+def _conflict(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "severity": "caution", "message": message}
 
 
 def _score_summary(
@@ -436,6 +704,7 @@ def _profile_caveats(
     caveats = [
         "RSI/BIAS/Bollinger are treated as risk filters, not independent bullish evidence.",
         "KD/MFI/Donchian are secondary evidence only.",
+        "Temporal slopes, volatility percentiles, and conflict flags are evidence only and do not change scoring.",
         "TDCC thousand-lot holder changes are chip-stability companion signals, not technical score inputs.",
     ]
     if missing_fields:
@@ -471,6 +740,11 @@ def _missing_fields(
         "obv_trend_20d",
         "avg_volume_20",
         "avg_volume_60",
+        "ma20_slope_pct_5d",
+        "ma60_slope_pct_10d",
+        "macd_hist_slope_pct_3d",
+        "atr_pct_percentile_60d",
+        "bollinger_bandwidth_percentile_60d",
     ):
         if indicators.get(field) is None:
             missing.append(field)
@@ -512,6 +786,7 @@ def _completed_volume_values(
     *,
     volume_dates: Sequence[str] | None,
     data_date: str | None,
+    observation_date: str | None,
     is_final: bool,
 ) -> list[float] | None:
     if volumes is None:
@@ -523,6 +798,19 @@ def _completed_volume_values(
     dates_aligned = volume_dates is not None and len(volume_dates) == len(values)
     if not dates_aligned:
         return None
+    if observation_date is not None:
+        normalized_observation_date = _iso_date_or_none(observation_date)
+        normalized_data_date = _iso_date_or_none(data_date)
+        latest_bar_date = _iso_date_or_none(volume_dates[-1])
+        if normalized_observation_date is None or latest_bar_date is None:
+            return None
+        if normalized_data_date is not None and normalized_data_date > normalized_observation_date:
+            return None
+        if latest_bar_date > normalized_observation_date:
+            return None
+        if latest_bar_date == normalized_observation_date:
+            return values[:-1]
+        return values
     if data_date is not None and volume_dates[-1] == data_date:
         return values[:-1]
     return values
@@ -610,11 +898,28 @@ def _number_or_none(value: Any) -> float | None:
         return None
 
 
+def _finite_number_or_none(value: Any) -> float | None:
+    number = _number_or_none(value)
+    return number if number is not None and math.isfinite(number) else None
+
+
 def _positive_finite_number_or_none(value: Any) -> float | None:
     number = _number_or_none(value)
     if number is None or not math.isfinite(number) or number <= 0:
         return None
     return number
+
+
+def _snapshot_ohlcv_date(snapshot: Mapping[str, Any]) -> str | None:
+    explicit = _string_or_none(snapshot.get("data_date"))
+    if explicit:
+        return explicit
+    data_dates = snapshot.get("data_dates")
+    if isinstance(data_dates, Mapping):
+        ohlcv_date = _string_or_none(data_dates.get("ohlcv"))
+        if ohlcv_date:
+            return ohlcv_date
+    return _date_string_or_none(snapshot.get("fetched_at"))
 
 
 def _string_or_none(value: Any) -> str | None:
@@ -635,3 +940,14 @@ def _date_string_or_none(value: Any) -> str | None:
     if parsed is not None and parsed.tzinfo is not None:
         return parsed.astimezone(TAIPEI_TZ).date().isoformat()
     return text[:10] if len(text) >= 10 else text
+
+
+def _iso_date_or_none(value: Any) -> str | None:
+    text = _string_or_none(value)
+    if not text:
+        return None
+    candidate = text[:10]
+    try:
+        return datetime.fromisoformat(candidate).date().isoformat()
+    except ValueError:
+        return None
