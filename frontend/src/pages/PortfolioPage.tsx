@@ -24,7 +24,6 @@ import { deleteAsyncMapValue, setAsyncMapValue } from "../lib/asyncMap";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, PositionResult } from "../lib/analysisTypes";
 import { formatPrice, formatRecordedPrice } from "../lib/formatters";
-import { InsightText } from "../components/InsightText";
 import {
   fetchPortfolioHistory,
   runPortfolioPositionAnalysis,
@@ -517,7 +516,7 @@ function EditPortfolioModal({ item, autoDefensePrices, onClose, onSaved }: EditP
     const controller = new AbortController();
     setStopReferenceLoading(true);
     setStopReferenceError(null);
-    void analyzeSymbol({ symbol: item.symbol, skip_ai: true }, controller.signal)
+    void analyzeSymbol({ symbol: item.symbol, persist_result: false }, controller.signal)
       .then((result) => {
         const prices = autoDefensePricesFromIndicators(result.technical_indicators ?? null);
         setLatestAutoDefensePrices(prices);
@@ -2153,8 +2152,8 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                 className="h-10 w-10 animate-spin rounded-full border-4 border-accent-soft border-t-accent"
                 style={{ animationDuration: "1s" }}
               />
-              <p className="text-sm font-medium text-text-primary">AI 持倉診斷中</p>
-              <p className="text-xs text-text-muted">通常需要 15–30 秒</p>
+              <p className="text-sm font-medium text-text-primary">持倉診斷中</p>
+              <p className="text-xs text-text-muted">正在計算行情、技術指標與風險紀律</p>
             </div>
           )}
 
@@ -2254,26 +2253,6 @@ function AnalysisModal({ item, result, loading, error, onClose }: AnalysisModalP
                   </article>
                 )}
               </div>
-
-              {result.analysis_detail?.final_verdict && (
-                <article className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm dark:border-indigo-900 dark:bg-indigo-950">
-                  <div className="mb-2 text-xs font-semibold text-indigo-700 dark:text-indigo-400">綜合研判</div>
-                  <InsightText text={result.analysis_detail.final_verdict} emptyText="—" />
-                </article>
-              )}
-
-              {[
-                { label: "技術面防守", content: result.analysis_detail?.tech_insight },
-                { label: "主力動向", content: result.analysis_detail?.inst_insight },
-                { label: "消息面風險", content: result.analysis_detail?.news_insight },
-              ]
-                .filter(({ content }) => content)
-                .map(({ label, content }) => (
-                  <article key={label} className="rounded-xl border border-border bg-card p-4 shadow-sm">
-                    <div className="mb-2 text-xs font-semibold text-text-muted">{label}</div>
-                    <InsightText text={content} emptyText="—" />
-                  </article>
-                ))}
 
               <p className="text-center text-xs text-text-faint">本診斷結果僅供研究與紀律檢查，不構成投資建議。</p>
             </>
@@ -2775,7 +2754,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
           const controller = new AbortController();
           technicalBatchAbortControllersRef.current.add(controller);
           try {
-            const result = await analyzeSymbol({ symbol: item.symbol, skip_ai: true }, controller.signal);
+            const result = await analyzeSymbol({ symbol: item.symbol, persist_result: false }, controller.signal);
             if (
               technicalBatchSequenceRef.current !== batchSequence ||
               readPortfolioMutationRevision() !== revisionAtStart
@@ -3006,7 +2985,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                   disabled={batchStatus !== "idle" || technicalBatchRunning}
                   className="ui-button-secondary min-h-10 px-3 text-xs"
                 >
-                  {batchStatus === "running" ? "AI 分析中" : "一鍵全部分析"}
+                  {batchStatus === "running" ? "批次診斷中" : "一鍵全部診斷"}
                 </button>
               </div>
             </div>
@@ -3051,7 +3030,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                       {technicalBatchStatus === "stale" && "持股資料已變更，請重新整理技術資料"}
                     </p>
                     <p className="mt-1 text-xs opacity-80">
-                      本次取得的盤中／收盤快照＋日線 5／20／60 日波段結構，不執行 AI 分析。
+                      本次取得盤中／收盤快照與日線波段結構，不寫入持倉診斷紀錄。
                     </p>
                   </div>
                   {hasTechnicalResults && !technicalBatchRunning && (
@@ -3076,8 +3055,8 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
               <div className={`rounded-[10px] border px-4 py-3 text-sm ${BATCH_STATUS_STYLES[batchStatus].container}`}>
                 <div className="flex items-center justify-between gap-3">
                   <span className={`font-medium ${BATCH_STATUS_STYLES[batchStatus].text}`}>
-                    {batchStatus === "running" && `AI 分析中 ${batchProgress.done}/${batchProgress.total}…`}
-                    {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆 AI 分析`}
+                    {batchStatus === "running" && `批次診斷中 ${batchProgress.done}/${batchProgress.total}…`}
+                    {batchStatus === "done" && `✓ 已更新 ${batchProgress.total} 筆持倉診斷`}
                     {batchStatus === "partialError" &&
                       `完成 ${batchProgress.total - batchFailedSymbols.length}/${batchProgress.total}，失敗：${batchFailedSymbols.join("、")}`}
                   </span>
@@ -3106,7 +3085,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                 <span>狀態／計畫</span>
                 <span className="text-right">未實現損益</span>
                 <span className="text-right">防守緩衝</span>
-                <span>價格／AI 紀錄</span>
+                <span>價格／診斷紀錄</span>
                 <span className="text-right">操作</span>
               </div>
 
@@ -3224,7 +3203,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                       <div className="col-span-2 min-w-0 xl:col-span-1">
                         <p className="text-xs tabular-nums text-text-secondary">{priceFreshnessLabel(stopLossRisk)}</p>
                         <p className="mt-1 text-xs tabular-nums text-text-faint">
-                          {latest ? `上次 AI ${latest.record_date}` : "尚無 AI 分析"}
+                          {latest ? `上次診斷 ${latest.record_date}` : "尚無診斷紀錄"}
                         </p>
                         {latest && (
                           <p
@@ -3268,7 +3247,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           disabled={isAnalyzing || isRefreshingPrice || technicalBatchRunning}
                           className="ui-button-primary min-h-10 px-3 text-xs"
                         >
-                          {isAnalyzing ? "分析中" : "AI 分析"}
+                          {isAnalyzing ? "診斷中" : "持倉診斷"}
                         </button>
                         <PortfolioActionMenu
                           item={item}

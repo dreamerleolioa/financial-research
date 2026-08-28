@@ -520,7 +520,7 @@ def analyze(
 ) -> AnalyzeResponse:
     now_time = datetime.now(_TZ_TAIPEI).time()
 
-    if not payload.skip_ai:
+    if payload.should_persist_result:
         cache = get_analysis_cache(db, payload.symbol, analysis_type="general")
         if cache:
             hit = _handle_cache_hit(cache, now_time)
@@ -536,21 +536,19 @@ def analyze(
                 )
 
     raw_cache = None
-    if payload.skip_ai:
+    if not payload.should_persist_result:
         raw_cache = get_recent_raw_data(db, payload.symbol, max_age_seconds=600)
 
     cached_snapshot = None
     cached_institutional = None
     cached_fundamental = None
-    cached_fundamental_context = None
-
     if raw_cache:
         logger.info(json.dumps({
             "event": "raw_data_cache_hit_10m",
             "symbol": payload.symbol,
             "fetched_at": str(raw_cache.fetched_at),
         }))
-        cached_snapshot, cached_institutional, cached_fundamental, cached_fundamental_context = raw_cache_inputs(raw_cache)
+        cached_snapshot, cached_institutional, cached_fundamental = raw_cache_inputs(raw_cache)
     else:
         _check_symbol_exists(payload.symbol)
 
@@ -565,7 +563,6 @@ def analyze(
         cached_snapshot=cached_snapshot,
         cached_institutional=cached_institutional,
         cached_fundamental=cached_fundamental,
-        cached_fundamental_context=cached_fundamental_context,
     )
 
     try:
@@ -584,7 +581,7 @@ def analyze(
     _response = _build_response({**result, "is_final": is_final})
     _set_response_finality(_response, is_final=is_final)
 
-    if not payload.skip_ai:
+    if payload.should_persist_result:
         cache_full_result = _response.model_dump()
         calibration_replay_input: dict[str, Any] | None = None
         if is_final:

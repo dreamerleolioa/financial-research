@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import asdict as _asdict, is_dataclass
 from typing import Any
 
-from ai_stock_sentinel.analysis.langchain_analyzer import PROMPT_HASH
 from ai_stock_sentinel.analysis.metrics import (
     adx as _adx,
     atr as _atr,
@@ -171,6 +170,7 @@ def build_response_from_cache(
             )
             if resp.symbol_name:
                 resp.snapshot = {**snapshot, "name": resp.symbol_name}
+            _clear_retired_llm_fields(resp)
             return resp
         except Exception:
             pass
@@ -178,13 +178,24 @@ def build_response_from_cache(
     return AnalyzeResponse(
         snapshot={"symbol": symbol, "name": symbol_name} if symbol_name else {"symbol": symbol},
         symbol_name=symbol_name,
-        analysis=hit.final_verdict or "",
+        analysis="",
         signal_confidence=int(hit.signal_confidence) if hit.signal_confidence is not None else None,
         action_plan_tag=hit.action_tag,
         is_final=hit.is_final,
         intraday_disclaimer=hit.intraday_disclaimer,
         strategy_version=hit.strategy_version,
     )
+
+
+def _clear_retired_llm_fields(response: AnalyzeResponse) -> None:
+    """Prevent historical LLM payloads from re-entering the active API contract."""
+    response.analysis = ""
+    response.analysis_detail = None
+    response.cleaned_news = None
+    response.cleaned_news_quality = None
+    response.news_display = None
+    response.news_display_items = []
+    response.sentiment_label = None
 
 
 def _hydrate_cached_technical_payload(
@@ -266,8 +277,6 @@ def build_response(
             analysis_detail = _asdict(raw_detail)
         elif isinstance(raw_detail, dict):
             analysis_detail = raw_detail
-    if analysis_detail is not None:
-        analysis_detail = {**analysis_detail, "prompt_hash": PROMPT_HASH}
     response_errors: list[AnalyzeResponse.ErrorDetail] = [
         AnalyzeResponse.ErrorDetail(code=e["code"], message=e["message"])
         for e in result.get("errors", [])
@@ -291,12 +300,6 @@ def build_response(
         snapshot = {**snapshot, "name": symbol_name}
 
     if not isinstance(analysis, str):
-        response_errors.append(
-            AnalyzeResponse.ErrorDetail(
-                code="MISSING_ANALYSIS",
-                message="Graph result missing valid analysis payload.",
-            )
-        )
         analysis = ""
 
     inst_flow = result.get("institutional_flow")

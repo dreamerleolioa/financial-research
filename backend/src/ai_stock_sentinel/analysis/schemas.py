@@ -9,10 +9,18 @@ from ai_stock_sentinel.taiwan_symbols import validate_taiwan_symbol
 
 class AnalyzeRequest(BaseModel):
     symbol: str = Field(default="2330.TW", min_length=1)
-    news_text: str | None = None
-    skip_ai: bool = False
+    news_text: str | None = Field(default=None, deprecated=True)
+    persist_result: bool | None = None
+    skip_ai: bool | None = Field(default=None, deprecated=True)
 
     _validate_symbol = field_validator("symbol", mode="before")(validate_taiwan_symbol)
+
+    @property
+    def should_persist_result(self) -> bool:
+        """Resolve the new persistence option with legacy ``skip_ai`` support."""
+        if self.persist_result is not None:
+            return self.persist_result
+        return not bool(self.__dict__.get("skip_ai"))
 
 
 class PositionAnalyzeRequest(BaseModel):

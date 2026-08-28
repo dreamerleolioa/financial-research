@@ -5,31 +5,6 @@ export interface AnalysisErrorDetail {
   message: string;
 }
 
-export interface AnalysisDetail {
-  summary: string;
-  risks: string[];
-  technical_signal: "bullish" | "bearish" | "sideways";
-  institutional_flow: string | null;
-  sentiment_label: string | null;
-  tech_insight: string | null;
-  inst_insight: string | null;
-  news_insight: string | null;
-  final_verdict: string | null;
-  fundamental_insight?: string | null;
-  thought_process?: string | null;
-}
-
-export interface CleanedNewsQuality {
-  quality_score: number;
-  quality_flags: string[];
-}
-
-export interface NewsDisplayItem {
-  title: string;
-  date?: string | null;
-  source_url?: string | null;
-}
-
 export interface TechnicalIndicators {
   ma5: number | null;
   ma20: number | null;
@@ -187,10 +162,6 @@ export interface AnalyzeResponse {
   snapshot: Record<string, unknown>;
   symbol_name?: string | null;
   analysis: string;
-  analysis_detail: AnalysisDetail | null;
-  cleaned_news: Record<string, unknown> | null;
-  cleaned_news_quality: CleanedNewsQuality | null;
-  news_display_items: NewsDisplayItem[];
   confidence_score: number | null;
   cross_validation_note: string | null;
   strategy_type: "short_term" | "mid_term" | "defensive_wait" | null;
@@ -266,13 +237,4 @@ export interface PositionResult {
   position_analysis: PositionAnalysis | null;
   confidence_score: number | null;
   shared_context?: SharedContextReadPayload | null;
-  analysis_detail: {
-    technical_signal: string;
-    institutional_flow: string | null;
-    tech_insight: string | null;
-    inst_insight: string | null;
-    news_insight: string | null;
-    final_verdict: string | null;
-    summary: string;
-  } | null;
 }

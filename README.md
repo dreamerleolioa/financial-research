@@ -1,19 +1,18 @@
 # financial-research
 
-AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 Python / FastAPI / LangGraph / SQLAlchemy 建立可回放的資料與分析流程，前端以 React / Vite / Tailwind 呈現新倉分析、持股管理、結案復盤與 Daily Radar 盤後觀察清單。
+AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 Python / FastAPI / LangGraph / SQLAlchemy 建立可回放的確定性資料與分析流程，前端以 React / Vite / Tailwind 呈現新倉分析、持股管理、結案復盤與 Daily Radar 盤後觀察清單。線上產品不呼叫外部 LLM；需要延伸判讀時，可由使用者複製結構化摘要到自己選擇的對話工具。
 
 ## 核心分析維度 (Core Analysis Dimensions)
 
-為了達成「理性偵察」的目標，系統將針對每一標的進行四維數據掃描：
+為了達成「理性偵察」的目標，系統將針對每一標的進行三維數據掃描：
 
-| 維度       | 追蹤指標                                  | AI 觀察重點                                        |
+| 維度       | 追蹤指標                                  | 系統判讀重點                                        |
 | ---------- | ----------------------------------------- | -------------------------------------------------- |
-| **消息面** | RSS 財經新聞、法說會摘要                  | 提取事實、過濾誇大形容詞、識別情緒雜訊             |
 | **技術面** | $MA_{5/20/60}$、$Vol$、$BIAS$、$RSI_{14}$ | 判斷當前股價位階，識別「利多出盡」或「底部起漲」   |
 | **籌碼面** | 三大法人買賣超、融資餘額                  | 追蹤聰明錢流向，判斷籌碼是集中於大戶還是分散至散戶 |
 | **基本面** | 本益比區間、歷史估值帶                    | 判斷當前股價相對估值位階，識別高估或低估區間       |
 
-> **嚴格規範**：技術指標與籌碼數據必須由 Python 函式（`pandas` / `yfinance`）精確計算後，再交由 LLM 進行定性分析。**禁止 LLM 自行估算任何數值。**
+> **分析邊界**：技術指標、籌碼、基本面、風險語言與策略 trace 全部由版本化 Python 規則計算。Production 不持有或使用 Anthropic / OpenAI API key。
 
 ---
 
@@ -33,7 +32,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 
 ## 目前架構摘要
 
-- `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、RSS、法人籌碼、基本面 provider、新聞清潔與 LLM 分析。Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數；LLM 不負責估算數值或覆寫 deterministic 欄位。
+- `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、法人籌碼與基本面 provider，由 Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數，不呼叫外部模型。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
 - `/watchlist`：個人關注列表，保存尚未進入持股的觀察標的，可從 Analyze 與 Daily Radar 加入，並在列表內單筆或一鍵批次快速查看技術指標與複製摘要；它不代表進場、部位或交易紀錄。
 - `/portfolio`：持股、加碼、結案、事件 ledger、進場脈絡、lifecycle plan、single trade review 與 group-level lifecycle review。結案事件可明確保存原因、計畫遵循與信心水準；group lifecycle review v4 以獨立 `outcome`、`process_quality` 與四面向狀態區分交易結果、操作品質與真正資料不足。結案回顧採 closed-only、事件日前 completed data、source fingerprint、版本唯讀保護與短 transaction 並行鎖為契約。Single Trade Review 的 request-scoped provider refresh 具 timeout／容量／TTL／final trading-bar coverage 邊界，重複 refresh 回 `409`／`Retry-After`，外部 I/O 不持有 DB lock 且不寫回正式 `StockRawData`；Lifecycle Review 不另抓 provider，只讀 Daily Radar 已保存的 final `price_history` 與 completed indicators。OHLC 先依各自日期排除事件日，再以共同交易日對齊；full-exit 當日收盤不納入已持有路徑。事後補填或進場後已修改的 plan 不參與歷史違規或決策品質評分，市場行情缺口也不得被描述成使用者未記錄原因。
@@ -57,11 +56,6 @@ backend/
 		daily_radar_calibration.py
 	src/ai_stock_sentinel/
 		analysis/
-			interface.py
-			langchain_analyzer.py
-			news_cleaner.py
-			quality_gate.py
-			context_generator.py
 			confidence_scorer.py
 			strategy_generator.py
 			position_scorer.py
@@ -220,8 +214,6 @@ make install
 ### 本機開發（backend/.env）
 
 ```bash
-ANTHROPIC_API_KEY="your_api_key"
-ANTHROPIC_MODEL="claude-sonnet-4-5"
 FINMIND_API_TOKEN="your-finmind-api-token"
 FINMIND_MAX_CONCURRENT_REQUESTS="8"
 FINMIND_HOLDING_SHARES_PER_ENABLED="false"
@@ -239,11 +231,6 @@ FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_c
 
 > `.env` 不進版控。換電腦時複製 `backend/.env.example` 建立：`cp backend/.env.example backend/.env`
 
-若未設定 `ANTHROPIC_API_KEY`，系統會自動 fallback：
-
-- 股票分析：回傳提示訊息（不會中斷）
-- 新聞清潔：使用 heuristic 規則輸出 JSON
-
 ### CI/CD（GitHub Actions）
 
 | 類型     | 名稱                         | 用途                                              |
@@ -259,8 +246,6 @@ FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_c
 
 | 名稱                | 值                                                   |
 | ------------------- | ---------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | Anthropic API key                                    |
-| `ANTHROPIC_MODEL`   | `claude-sonnet-4-5`                                  |
 | `FINMIND_API_TOKEN` | FinMind 使用者頁取得的 API token                     |
 | `FINMIND_MAX_CONCURRENT_REQUESTS` | 單一 backend process 共用的 FinMind HTTP 並行上限，預設 `8` |
 | `FINMIND_HOLDING_SHARES_PER_ENABLED` | 是否啟用 sponsor 限定的持股分級資料，預設 `false` |
@@ -309,10 +294,8 @@ pnpm dev
 - 股票代碼輸入框 + 一鍵分析
 - 有方向的綜合訊號強度與資料品質提示（含 `cross_validation_note`；`confidence_score` 以 50 為中性基準，badge 分為 `>= 80` 強烈偏多、`60–79` 偏多、`41–59` 中性／混合、`21–40` 偏空、`<= 20` 強烈偏空，並以 `x / 100` 呈現，不借用 `action_plan.conviction_level`，也不使用百分比暗示勝率；`data_confidence < 60` 時仍顯示資料不足百分比）
 - 快照資訊（symbol / current_price / volume）
-- 分析報告四維小卡（技術面 / 籌碼面 / 基本面 / 消息面）+ 綜合仲裁全寬卡
+- 技術面、籌碼面與基本面資料卡，以及 rule-based 綜合判讀
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
-- 新聞卡片（RSS 標題、日期、原文連結；多筆列表來自 `news_display_items`，最多 5 筆）
-- 新聞摘要品質提示（`quality_score < 60` 時顯示警告）
 - 分析結果可加入關注列表，作為後續觀察標的，不寫入持股紀錄
 - 錯誤 banner + loading 狀態
 - 底層保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart.tsx`，供後續嵌入個股歷史分析趨勢
@@ -321,7 +304,7 @@ pnpm dev
 
 - 保存目前登入使用者有興趣但尚未進入持股的股票
 - 支援新增 / 移除股票、編輯單筆觀察備註，以及拖拉調整列表順序
-- 支援在列表內展開 raw 技術指標快查，透過 `POST /analyze` 搭配 `skip_ai: true` 取得 deterministic 指標，不執行完整 LLM 分析；可單筆查詢，也可一鍵批次補查尚未載入的關注標的
+- 支援在列表內展開 raw 技術指標快查，透過 `POST /analyze` 搭配 `persist_result: false` 取得 deterministic 指標且不寫入分析紀錄；可單筆查詢，也可一鍵批次補查尚未載入的關注標的
 - 技術快查面板可複製完整指標摘要，方便帶到其他 AI agent 做深度分析
 - Analyze 結果與 Daily Radar 候選標的都可加入關注列表
 - 與 `/portfolio` 分離，不代表進場、部位、加碼或交易紀錄
@@ -437,19 +420,19 @@ make test
 | 欄位                       | 說明                                                                                                                                                                                               |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `snapshot`                 | 股票快照（price / volume / recent_closes 等）                                                                                                                                                      |
-| `analysis`                 | LLM 四步驟分析文字（Skeptic Mode；向後相容）                                                                                                                                                       |
-| `analysis_detail`          | LLM 結構化輸出（`summary` / `risks` / `technical_signal` / `institutional_flow` / `sentiment_label` / `tech_insight` / `inst_insight` / `news_insight` / `final_verdict` / `fundamental_insight`） |
+| `analysis`                 | 已停用的舊 LLM 相容欄位；固定為空字串                                                                                                                                                              |
+| `analysis_detail`          | 已停用的舊 LLM 相容欄位；固定為 `null`                                                                                                                                                             |
 | `technical_indicators`     | 技術指標顯性輸出（布林通道上中下軌、bandwidth、位階、MACD 線 / 訊號線 / 柱狀體 / bias）                                                                                                            |
-| `sentiment_label`          | 消息面情緒標籤（`positive` / `negative` / `neutral`；從 `cleaned_news` 浮出）                                                                                                                      |
+| `sentiment_label`          | 已停用的舊消息面相容欄位；固定為 `null`                                                                                                                                                            |
 | `institutional_flow_label` | 籌碼面標籤（`institutional_accumulation` / `distribution` / `retail_chasing` / `neutral`）                                                                                                         |
-| `cleaned_news`             | 結構化新聞摘要（有新聞輸入時才有值）                                                                                                                                                               |
-| `cleaned_news_quality`     | 新聞摘要品質（`quality_score` 0–100 / `quality_flags`）                                                                                                                                            |
-| `news_display_items`       | 前端顯示用近期新聞列表（最多 5 筆，每筆含 `title` / `date` / `source_url`；直接取 RSS 原始欄位，不經 LLM 清潔）                                                                                    |
+| `cleaned_news`             | 已停用的舊新聞相容欄位；固定為 `null`                                                                                                                                                              |
+| `cleaned_news_quality`     | 已停用的舊新聞品質相容欄位；固定為 `null`                                                                                                                                                          |
+| `news_display_items`       | 已停用的舊新聞列表相容欄位；固定為空陣列                                                                                                                                                           |
 | `action_plan_tag`          | 綜合行動燈號（`opportunity` / `overheated` / `neutral`；rule-based 計算，任一輸入為 null 時降級回 `neutral`）                                                                                      |
 | `confidence_score`         | 有方向的訊號強度 0–100（`signal_confidence` 別名；50 中性、低於 50 偏空、高於 50 偏多）                                                                                                             |
 | `signal_confidence`        | 有方向的訊號強度分數（多維加權計算；不代表勝率或不分方向的一致性）                                                                                                                                 |
-| `data_confidence`          | 資料完整度分數（0 / 33 / 67 / 100，依三維資料是否成功取得計算）                                                                                                                                    |
-| `cross_validation_note`    | 三維交叉驗證備注（rule-based 固定字串）                                                                                                                                                            |
+| `data_confidence`          | 資料完整度分數（0 / 50 / 100，依技術面與籌碼面兩個啟用維度是否成功取得計算）                                                                                                                       |
+| `cross_validation_note`    | 技術面與籌碼面的交叉驗證備注（rule-based 固定字串）                                                                                                                                                |
 | `strategy_type`            | 策略方向（`short_term` / `mid_term` / `defensive_wait`）                                                                                                                                           |
 | `entry_zone`               | 建議入場區間（具體價格數值）                                                                                                                                                                       |
 | `stop_loss`                | 防守底線（具體停損價位）                                                                                                                                                                           |

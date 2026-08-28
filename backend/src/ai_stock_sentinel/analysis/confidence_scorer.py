@@ -264,10 +264,13 @@ def compute_confidence(
     news_available: bool | None = None,
     institutional_available: bool | None = None,
     technical_available: bool | None = None,
+    news_dimension_enabled: bool = True,
 ) -> dict[str, int | str]:
     """計算 data_confidence、signal_confidence 與 cross_validation_note。
 
-    data_confidence 代表資料成功取得的維度比例（0 / 33 / 67 / 100）。
+    data_confidence 代表啟用維度中成功取得資料的比例。歷史 replay
+    預設保留新聞／籌碼／技術三維；現行 deterministic graph 關閉新聞維度，
+    因此使用 0 / 50 / 100 的兩維完整度。
     availability 與方向標籤分開：neutral／sideways 可以是有效資料的中性結論，
     也可能只是上游缺資料時的顯示 fallback，呼叫端應明確傳入 availability。
     未傳入時才以 ``unknown`` label 維持舊呼叫端的相容行為。
@@ -284,12 +287,13 @@ def compute_confidence(
     resolved_technical_available = technical_signal != "unknown" if technical_available is None else technical_available
 
     # 資料完整度只看來源是否成功，不從 collapsed direction label 反推。
-    data_available = sum([
-        resolved_news_available,
+    availability = [
         resolved_institutional_available,
         resolved_technical_available,
-    ])
-    data_confidence = round(data_available / 3 * 100)
+    ]
+    if news_dimension_enabled:
+        availability.insert(0, resolved_news_available)
+    data_confidence = round(sum(availability) / len(availability) * 100)
 
     signal_confidence, note = adjust_confidence_by_divergence(
         base_score,
@@ -299,6 +303,18 @@ def compute_confidence(
         sentiment_strength=sentiment_strength,
         config=config,
     )
+
+    if not news_dimension_enabled and not note:
+        if inst_flow == "institutional_accumulation" and technical_signal == "bullish":
+            note = "技術面與籌碼面訊號一致，信心偏高"
+        elif inst_flow in {"distribution", "retail_chasing"} and technical_signal == "bearish":
+            note = "技術面與籌碼面同步偏弱，風險升高"
+        elif (
+            inst_flow == "institutional_accumulation" and technical_signal == "bearish"
+        ) or (
+            inst_flow in {"distribution", "retail_chasing"} and technical_signal == "bullish"
+        ):
+            note = "技術面與籌碼面訊號衝突，宜等待確認"
 
     # DATE_UNKNOWN 懲罰：在各維度加總後、clamp 前扣 -3（僅影響 signal_confidence）
     if date_unknown:

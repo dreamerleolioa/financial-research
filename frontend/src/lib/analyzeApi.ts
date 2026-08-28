@@ -4,7 +4,7 @@ import type { AnalyzeResponse } from "./analysisTypes";
 
 export interface AnalyzeRequest {
   symbol: string;
-  skip_ai?: boolean;
+  persist_result?: boolean;
 }
 
 export async function analyzeSymbol(body: AnalyzeRequest, signal?: AbortSignal): Promise<AnalyzeResponse> {

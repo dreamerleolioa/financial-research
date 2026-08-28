@@ -1,20 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Literal
-
-
-@dataclass(slots=True, frozen=True)
-class AnalysisDetail:
-    summary: str
-    risks: list[str] = field(default_factory=list)
-    technical_signal: Literal["bullish", "bearish", "sideways"] = "sideways"
-    institutional_flow: str | None = None
-    sentiment_label: str | None = None
-    tech_insight: str | None = None
-    inst_insight: str | None = None
-    news_insight: str | None = None
-    final_verdict: str | None = None
-    fundamental_insight: str | None = None
-    thought_process: str | None = None
+from typing import List
 
 
 @dataclass(slots=True)
