@@ -7,6 +7,7 @@ from math import isfinite, sqrt
 from typing import Any
 
 from ai_stock_sentinel.chip_stability_context import chip_stability_context_from_weekly_major_holders
+from ai_stock_sentinel.phase1_avwap.projection import classify_phase1_position_distance
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 
 
@@ -123,13 +124,14 @@ def build_portfolio_risk_summary(
         for caveat in caveats:
             aggregate_caveat_counts[caveat["code"]] += 1
 
+        price_context = _price_context(raw_row, price_quote)
         position_draft = {
             "symbol": symbol,
             "name": symbol_names.get(symbol),
             "industry": _extract_industry(raw_row),
             "quantity": _float_or_none(quantity),
             "current_price": _float_or_none(current_price),
-            "price_context": _price_context(raw_row, price_quote),
+            "price_context": price_context,
             "entry_price": _float_or_none(entry_price),
             "market_value": _float_or_none(market_value),
             "unrealized_pnl": _float_or_none(unrealized_pnl),
@@ -158,10 +160,15 @@ def build_portfolio_risk_summary(
         }
         if phase1_states is not None:
             group_key = str(getattr(position, "position_group_id", "") or "")
-            position_draft["phase1_position_state"] = (
+            raw_phase1_state = (
                 phase1_states.get(group_key)
                 or phase1_states.get(symbol)
                 or phase1_states.get(symbol.upper())
+            )
+            position_draft["phase1_position_state"] = _phase1_state_for_current_price(
+                raw_phase1_state,
+                current_price=current_price,
+                price_context=price_context,
             )
         if symbol in weekly_major_holders:
             weekly_major_holders_projection = dict(weekly_major_holders[symbol])
@@ -882,6 +889,50 @@ def _build_phase1_current_day_lists(position_risks: list[dict[str, Any]]) -> dic
     }
 
 
+def _phase1_state_for_current_price(
+    state: Any,
+    *,
+    current_price: Decimal | None,
+    price_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+
+    projected = dict(state)
+    display_anchor = state.get("display_anchor")
+    anchor = dict(display_anchor) if isinstance(display_anchor, dict) else None
+    avwap = _to_decimal(anchor.get("avwap")) if anchor is not None else None
+    distance = _pct(current_price - avwap, avwap) if current_price is not None and avwap is not None else None
+    position_state, label, matched_rule = classify_phase1_position_distance(distance)
+
+    projected["state"] = position_state
+    projected["label"] = label
+    projected["matched_rules"] = [matched_rule]
+    projected["display_anchor"] = anchor
+
+    data_quality = dict(state.get("data_quality") or {})
+    if anchor is not None and distance is not None:
+        anchor["distance_to_avwap_pct"] = distance
+        anchor["distance_basis"] = "portfolio_current_price"
+        anchor["distance_price"] = _float_or_none(current_price)
+        anchor["distance_price_data_date"] = price_context.get("data_date")
+        anchor["distance_price_as_of"] = price_context.get("as_of")
+        projected["missing_reason"] = None
+        data_quality["missing_reason"] = None
+    else:
+        missing_reason = "portfolio_current_price_missing" if current_price is None else "phase1_anchor_avwap_missing"
+        if anchor is not None:
+            anchor["distance_to_avwap_pct"] = None
+            anchor["distance_basis"] = "portfolio_current_price"
+            anchor["distance_price"] = _float_or_none(current_price)
+            anchor["distance_price_data_date"] = price_context.get("data_date")
+            anchor["distance_price_as_of"] = price_context.get("as_of")
+        projected["missing_reason"] = missing_reason
+        data_quality["missing_reason"] = missing_reason
+    projected["data_quality"] = data_quality
+    return projected
+
+
 def _phase1_holding_observation_item(risk: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     position_state = str(state.get("state") or "data_unavailable")
     display_anchor = state.get("display_anchor") if isinstance(state.get("display_anchor"), dict) else None
@@ -891,7 +942,9 @@ def _phase1_holding_observation_item(risk: dict[str, Any], state: dict[str, Any]
         "label": state.get("label"),
         "position_state": position_state,
         "close": risk.get("current_price"),
+        "price_context": risk.get("price_context"),
         "holding_avg_cost": risk.get("entry_price"),
+        "avwap_data_date": state.get("data_date"),
         "display_anchor": display_anchor,
         "matched_rules": list(state.get("matched_rules") or []),
         "current_day_observation": _phase1_current_day_observation_text(position_state, display_anchor),
@@ -901,15 +954,20 @@ def _phase1_holding_observation_item(risk: dict[str, Any], state: dict[str, Any]
 
 def _phase1_current_day_observation_text(position_state: str, display_anchor: dict[str, Any] | None) -> str:
     anchor_type = str(display_anchor.get("type")) if display_anchor else "phase1_anchor"
+    anchor_label = {
+        "entry": "進場後 AVWAP",
+        "breakout_20d": "20 日突破 AVWAP",
+        "swing_low_60d": "60 日低點 AVWAP",
+    }.get(anchor_type, "AVWAP 觀察線")
     if position_state == "add_watch":
-        return f"觀察回測 {anchor_type} 後是否維持支撐。"
+        return f"最新價格正在回測「{anchor_label}」，觀察是否維持支撐。"
     if position_state == "profit_take_watch":
         return "結構偏熱，觀察是否等待均線或 AVWAP 支撐重新整理。"
     if position_state == "warning":
-        return f"觀察是否重新站回 {anchor_type}，避免結構轉弱擴大。"
+        return f"最新價格已低於「{anchor_label}」，技術支撐轉弱，請對照原訂防守價。"
     if position_state == "exit_risk":
-        return f"已跌破 {anchor_type} 觀察線，優先檢查風險控制條件。"
-    return f"觀察 {anchor_type} 是否維持支撐，結構仍偏健康。"
+        return f"最新價格已低於「{anchor_label}」至少 2%，請優先檢查原訂防守價；這不是賣出指令。"
+    return f"最新價格仍位於「{anchor_label}」之上，尚未跌破這條技術觀察線。"
 
 
 def _phase1_observation_sort_key(item: dict[str, Any]) -> tuple[int, str]:

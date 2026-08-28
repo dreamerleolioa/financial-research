@@ -478,21 +478,35 @@ def test_portfolio_risk_summary_builds_phase1_current_day_holding_lists():
             "g2": _plan(group="g2", stop="45"),
         },
         raw_data_by_symbol={
-            "2330.TW": _raw("2330.TW", 120),
-            "2317.TW": _raw("2317.TW", 44),
+            "2330.TW": _raw("2330.TW", 120, record_date=date(2026, 6, 12)),
+            "2317.TW": _raw("2317.TW", 44, record_date=date(2026, 6, 12)),
         },
         phase1_position_states_by_symbol={
             "2330.TW": {
                 "state": "hold",
                 "label": "續抱",
-                "display_anchor": {"type": "entry", "distance_to_avwap_pct": 4.0},
+                "data_date": "2026-06-11",
+                "display_anchor": {
+                    "type": "entry",
+                    "anchor_date": "2026-05-20",
+                    "avwap": 115,
+                    "distance_to_avwap_pct": 4.0,
+                    "distance_basis": "snapshot_close",
+                },
                 "matched_rules": ["phase1_display_anchor_supported"],
                 "data_quality": {"blocking": False},
             },
             "2317.TW": {
                 "state": "exit_risk",
                 "label": "停損警戒",
-                "display_anchor": {"type": "breakout_20d", "distance_to_avwap_pct": -3.0},
+                "data_date": "2026-06-11",
+                "display_anchor": {
+                    "type": "breakout_20d",
+                    "anchor_date": "2026-05-15",
+                    "avwap": 45,
+                    "distance_to_avwap_pct": -3.0,
+                    "distance_basis": "snapshot_close",
+                },
                 "matched_rules": ["phase1_display_anchor_lost_by_2pct"],
                 "data_quality": {"blocking": False},
             },
@@ -516,9 +530,109 @@ def test_portfolio_risk_summary_builds_phase1_current_day_holding_lists():
     assert lists["overheated_do_not_chase_candidates"] == []
     assert [item["symbol"] for item in lists["holding_risk_alerts"]] == ["2317.TW"]
     assert lists["holding_risk_alerts"][0]["position_state"] == "exit_risk"
-    assert lists["holding_risk_alerts"][0]["current_day_observation"] == "已跌破 breakout_20d 觀察線，優先檢查風險控制條件。"
+    assert lists["holding_risk_alerts"][0]["display_anchor"] == {
+        "type": "breakout_20d",
+        "anchor_date": "2026-05-15",
+        "avwap": 45,
+        "distance_to_avwap_pct": -2.2222,
+        "distance_basis": "portfolio_current_price",
+        "distance_price": 44.0,
+        "distance_price_data_date": "2026-06-12",
+        "distance_price_as_of": "2026-06-12",
+    }
+    assert lists["holding_risk_alerts"][0]["current_day_observation"] == (
+        "最新價格已低於「20 日突破 AVWAP」至少 2%，請優先檢查原訂防守價；這不是賣出指令。"
+    )
     assert [item["symbol"] for item in lists["holding_management_candidates"]] == ["2330.TW"]
-    assert lists["holding_management_candidates"][0]["current_day_observation"] == "觀察 entry 是否維持支撐，結構仍偏健康。"
+    holding_item = lists["holding_management_candidates"][0]
+    assert holding_item["display_anchor"]["distance_to_avwap_pct"] == 4.3478
+    assert holding_item["display_anchor"]["distance_basis"] == "portfolio_current_price"
+    assert holding_item["price_context"]["data_date"] == "2026-06-12"
+    assert holding_item["avwap_data_date"] == "2026-06-11"
+    assert holding_item["current_day_observation"] == (
+        "最新價格仍位於「進場後 AVWAP」之上，尚未跌破這條技術觀察線。"
+    )
+
+
+def test_portfolio_risk_summary_reclassifies_phase1_state_with_refreshed_price():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95")},
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 97, record_date=date(2026, 6, 11)),
+        },
+        price_quotes_by_symbol={
+            "2330.TW": {
+                "status": "refreshed",
+                "current_price": 103,
+                "source": "yfinance_fast_info",
+                "fetched_at": "2026-06-12T10:30:00+08:00",
+                "data_date": "2026-06-12",
+                "market_session": "intraday",
+                "is_final": False,
+            },
+        },
+        phase1_position_states_by_symbol={
+            "2330.TW": {
+                "state": "exit_risk",
+                "label": "停損警戒",
+                "data_date": "2026-06-11",
+                "display_anchor": {
+                    "type": "entry",
+                    "anchor_date": "2026-05-20",
+                    "avwap": 100,
+                    "snapshot_close": 97,
+                    "distance_to_avwap_pct": -3,
+                    "distance_basis": "snapshot_close",
+                },
+                "matched_rules": ["phase1_display_anchor_lost_by_2pct"],
+                "data_quality": {"blocking": False},
+            },
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    assert summary["phase1_current_day_lists"]["holding_risk_alerts"] == []
+    item = summary["phase1_current_day_lists"]["holding_management_candidates"][0]
+    assert item["position_state"] == "hold"
+    assert item["close"] == 103
+    assert item["price_context"]["market_session"] == "intraday"
+    assert item["display_anchor"]["distance_to_avwap_pct"] == 3.0
+    assert item["display_anchor"]["distance_basis"] == "portfolio_current_price"
+    assert item["display_anchor"]["distance_price"] == 103.0
+    assert item["matched_rules"] == ["phase1_display_anchor_supported"]
+
+
+def test_portfolio_risk_summary_clears_stale_phase1_distance_without_current_price():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", entry_price="100", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95")},
+        raw_data_by_symbol={"2330.TW": _raw("2330.TW", None)},
+        phase1_position_states_by_symbol={
+            "2330.TW": {
+                "state": "hold",
+                "label": "續抱",
+                "display_anchor": {
+                    "type": "entry",
+                    "avwap": 100,
+                    "distance_to_avwap_pct": 5,
+                    "distance_basis": "snapshot_close",
+                },
+                "matched_rules": ["phase1_display_anchor_supported"],
+                "data_quality": {"blocking": False},
+            },
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    state = summary["position_risks"][0]["phase1_position_state"]
+    assert state["state"] == "data_unavailable"
+    assert state["missing_reason"] == "portfolio_current_price_missing"
+    assert state["display_anchor"]["distance_to_avwap_pct"] is None
+    assert state["display_anchor"]["distance_basis"] == "portfolio_current_price"
+    assert state["display_anchor"]["distance_price"] is None
+    assert summary["phase1_current_day_lists"]["holding_management_candidates"] == []
+    assert summary["phase1_current_day_lists"]["holding_risk_alerts"] == []
 
 
 def test_portfolio_risk_summary_rejects_phase1_non_holding_observation_input():

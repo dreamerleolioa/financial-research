@@ -117,7 +117,7 @@ Portfolio risk-summary response 已導入 Zod parser，`PortfolioPage` 直接消
 - `holding_management_candidates`
 - `holding_risk_alerts`
 
-Portfolio UI 標題為 `持股 AVWAP 觀察`，不得在持股頁顯示 watchlist / Daily Radar 的非持股候選。`breakout_confirmation_candidates`、`pullback_observation_candidates` 與 `overheated_do_not_chase_candidates` 可因 API 相容性保留在 parsed response shape，但不作為 Portfolio UI 顯示來源；非持股 AVWAP 候選應回 Daily Radar 或關注清單語境呈現，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。Phase 1 AVWAP snapshot 過期時 backend 會回 `missing_reason = "phase1_snapshot_stale"`，前端應以資料不足/風險 caveat 呈現，不把舊 snapshot 當今日觀察依據。
+Portfolio UI 標題為 `持股 AVWAP 觀察`，不得在持股頁顯示 watchlist / Daily Radar 的非持股候選。每張觀察卡的「最新價格」、狀態與「與觀察線距離」必須使用同一份 Portfolio refresh price；同時顯示價格資料日、AVWAP 資料日與 AVWAP 線價格，並明確說明 AVWAP 是技術觀察線，不等同持有成本或正式防守價。內部 anchor type / matched rule 只保留在 response trace，不得直接作為主要 UI 文案。`breakout_confirmation_candidates`、`pullback_observation_candidates` 與 `overheated_do_not_chase_candidates` 可因 API 相容性保留在 parsed response shape，但不作為 Portfolio UI 顯示來源；非持股 AVWAP 候選應回 Daily Radar 或關注清單語境呈現，不得寫入 portfolio，也不得把空陣列文案寫成交易建議或推薦結論。Phase 1 AVWAP snapshot 過期時 backend 會回 `missing_reason = "phase1_snapshot_stale"`，前端應以資料不足/風險 caveat 呈現，不把舊 snapshot 當今日觀察依據。
 
 `GET /portfolio/risk-summary` parser 也接受每個 `position_risks[]` 的 `weekly_major_holders` 與 `chip_stability_context`。Portfolio UI 可顯示籌碼穩定性摘要，但它只作 active holding 的週頻 TDCC 補充資訊：千張大戶增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定，下降代表籌碼穩定性轉弱或集中度下降但不能單獨判定看空。前端不得用這個欄位重新排序持股、改 risk state、改 risk score 或生成加減碼文案。
 

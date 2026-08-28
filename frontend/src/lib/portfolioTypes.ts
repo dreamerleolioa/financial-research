@@ -53,6 +53,9 @@ export interface PortfolioPhase1PositionState {
     snapshot_close?: number | null;
     distance_to_avwap_pct?: number | null;
     distance_basis?: string | null;
+    distance_price?: number | null;
+    distance_price_data_date?: string | null;
+    distance_price_as_of?: string | null;
     source_granularity?: string;
     estimated?: boolean;
   } | null;
@@ -114,7 +117,9 @@ export interface PortfolioPhase1ObservationItem {
   label?: "加碼" | "建倉" | "續抱" | "停損警戒" | "資料不足" | null;
   position_state?: "hold" | "add_watch" | "profit_take_watch" | "warning" | "exit_risk" | "data_unavailable" | string;
   close?: number | null;
+  price_context?: PortfolioPriceContext;
   holding_avg_cost?: number | null;
+  avwap_data_date?: string | null;
   display_anchor?: PortfolioPhase1PositionState["display_anchor"];
   matched_rules: string[];
   current_day_observation: string;

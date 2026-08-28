@@ -746,6 +746,80 @@ test("Portfolio refreshes prices without triggering AI analysis", async ({ page 
   expect(requestLog).not.toContain("POST /analyze/position");
 });
 
+test("Portfolio AVWAP observation explains one consistent price basis without internal rule codes", async ({
+  page,
+}) => {
+  const avwapRiskSummary = {
+    ...populatedRiskSummary,
+    phase1_current_day_lists: {
+      version: "phase1-current-day-lists-v1",
+      implemented_lists: ["holding_management_candidates", "holding_risk_alerts"],
+      pending_lists: [
+        "pullback_observation_candidates",
+        "breakout_confirmation_candidates",
+        "overheated_do_not_chase_candidates",
+      ],
+      pullback_observation_candidates: [],
+      breakout_confirmation_candidates: [],
+      holding_management_candidates: [
+        {
+          symbol: "2330.TW",
+          name: "台積電",
+          label: "續抱",
+          position_state: "hold",
+          close: 1085,
+          price_context: {
+            refresh_status: "refreshed",
+            source: "yfinance_fast_info",
+            as_of: "2026-07-31T10:30:00+08:00",
+            data_date: "2026-07-31",
+            market_session: "intraday",
+            is_final: false,
+          },
+          holding_avg_cost: 1018,
+          avwap_data_date: "2026-07-30",
+          display_anchor: {
+            type: "entry",
+            anchor_date: "2026-07-01",
+            avwap: 1050,
+            distance_to_avwap_pct: 3.3333,
+            distance_basis: "portfolio_current_price",
+            distance_price: 1085,
+            distance_price_data_date: "2026-07-31",
+            distance_price_as_of: "2026-07-31T10:30:00+08:00",
+          },
+          matched_rules: ["phase1_display_anchor_supported"],
+          current_day_observation: "最新價格仍位於「進場後 AVWAP」之上，尚未跌破這條技術觀察線。",
+          data_quality: { blocking: false },
+        },
+      ],
+      holding_risk_alerts: [],
+      overheated_do_not_chase_candidates: [],
+    },
+  };
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: avwapRiskSummary,
+    priceRefreshSummary: avwapRiskSummary,
+  });
+
+  await page.goto("/portfolio");
+  await page.getByRole("button", { name: "展開風險細節" }).click();
+
+  const section = page.locator("[data-phase1-observations]");
+  await expect(section).toContainText("進場後 AVWAP");
+  await expect(section).toContainText("盤中報價 10:30");
+  await expect(section).toContainText("AVWAP 資料日 2026-07-30");
+  await expect(section).toContainText("AVWAP 觀察線");
+  await expect(section).toContainText("1050");
+  await expect(section).toContainText("+3.33%");
+  await expect(section).toContainText("AVWAP 是技術觀察線，不等同持有成本或正式防守價");
+  await expect(section).not.toContainText("phase1_display_anchor_supported");
+  await expect(section).not.toContainText("entry", { useInnerText: true });
+});
+
 test("Portfolio loads fresh prices on first visit without a manual refresh", async ({ page }) => {
   const requestLog: string[] = [];
   const refreshedRiskSummary = {

@@ -1677,18 +1677,18 @@ function formatTaipeiTime(value: string | null | undefined): string | null {
 }
 
 function formatPhase1AnchorType(type: string | null | undefined): string {
-  if (!type) return "觀察錨點";
+  if (!type) return "AVWAP 觀察線";
   const labels: Record<string, string> = {
-    breakout: "突破錨點",
-    breakout_20d: "20 日突破錨點",
-    entry: "進場錨點",
-    entry_date: "進場錨點",
-    high_volume: "大量錨點",
-    high_volume_60d: "60 日大量錨點",
-    swing_low: "波段低點錨點",
-    swing_low_60d: "60 日低點錨點",
+    breakout: "突破 AVWAP",
+    breakout_20d: "20 日突破 AVWAP",
+    entry: "進場後 AVWAP",
+    entry_date: "進場後 AVWAP",
+    high_volume: "大量成交 AVWAP",
+    high_volume_60d: "60 日大量成交 AVWAP",
+    swing_low: "波段低點 AVWAP",
+    swing_low_60d: "60 日低點 AVWAP",
   };
-  return labels[type] ?? type;
+  return labels[type] ?? "AVWAP 觀察線";
 }
 
 function formatPhase1Distance(value: number | null | undefined): string {
@@ -1703,6 +1703,20 @@ function phase1DistanceClass(value: number | null | undefined): string {
 
 function phase1ObservationDisplayName(item: PortfolioPhase1ObservationItem): string {
   return item.name ? `${item.name} ${item.symbol}` : item.symbol;
+}
+
+function phase1HoldingReturnPct(item: PortfolioPhase1ObservationItem): number | null {
+  if (item.close == null || item.holding_avg_cost == null || item.holding_avg_cost <= 0) return null;
+  return ((item.close - item.holding_avg_cost) / item.holding_avg_cost) * 100;
+}
+
+function phase1PriceDateLabel(item: PortfolioPhase1ObservationItem): string {
+  const context = item.price_context;
+  if (context?.as_of) {
+    const timeLabel = formatTaipeiTime(context.as_of);
+    if (timeLabel) return `${context.market_session === "intraday" ? "盤中報價" : "最新報價"} ${timeLabel}`;
+  }
+  return context?.data_date ? `價格資料日 ${context.data_date}` : "價格日期未提供";
 }
 
 function formatPhase1ObservationState(state: string | undefined): string {
@@ -1827,15 +1841,19 @@ function hasPhase1CurrentDayLists(summary: PortfolioRiskSummary): boolean {
 function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1ObservationItem }) {
   const anchor = item.display_anchor;
   const estimated = item.data_quality.estimated === true || anchor?.estimated === true;
+  const holdingReturnPct = phase1HoldingReturnPct(item);
 
   return (
     <article className="border-t border-border-subtle px-3 py-3 first:border-t-0">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-text-primary">{phase1ObservationDisplayName(item)}</p>
-          {anchor?.anchor_date && (
-            <p className="mt-1 text-xs text-text-faint">
-              {formatPhase1AnchorType(anchor.type)}：{anchor.anchor_date}
+          <p className="mt-1 text-xs text-text-faint">{formatPhase1AnchorType(anchor?.type)}</p>
+          {(anchor?.anchor_date || item.avwap_data_date) && (
+            <p className="mt-0.5 text-xs text-text-faint">
+              {anchor?.anchor_date ? `起算日 ${anchor.anchor_date}` : ""}
+              {anchor?.anchor_date && item.avwap_data_date ? " · " : ""}
+              {item.avwap_data_date ? `AVWAP 資料日 ${item.avwap_data_date}` : ""}
             </p>
           )}
         </div>
@@ -1845,25 +1863,13 @@ function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1Observat
       </div>
 
       <p className="mt-2 text-xs leading-relaxed text-text-secondary">{item.current_day_observation}</p>
-      {item.matched_rules.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {item.matched_rules.slice(0, 2).map((rule) => (
-            <span
-              key={rule}
-              className="max-w-full break-words rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text"
-            >
-              {rule}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-border-subtle bg-card px-3 py-2 text-xs">
+      <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-border-subtle bg-card px-3 py-2 text-xs sm:grid-cols-4">
         <div className="min-w-0">
-          <p className="text-text-faint">現價</p>
+          <p className="text-text-faint">最新價格</p>
           <p className="mt-0.5 truncate font-mono font-semibold text-text-primary">
             {formatPrice(item.close, item.symbol)}
           </p>
+          <p className="mt-0.5 truncate text-[0.6875rem] text-text-faint">{phase1PriceDateLabel(item)}</p>
         </div>
         <div className="min-w-0">
           <p className="text-text-faint">成本</p>
@@ -1872,7 +1878,13 @@ function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1Observat
           </p>
         </div>
         <div className="min-w-0">
-          <p className="text-text-faint">相對錨點</p>
+          <p className="text-text-faint">AVWAP 觀察線</p>
+          <p className="mt-0.5 truncate font-mono font-semibold text-text-primary">
+            {formatPrice(anchor?.avwap, item.symbol)}
+          </p>
+        </div>
+        <div className="min-w-0">
+          <p className="text-text-faint">與觀察線距離</p>
           <p
             className={`mt-0.5 truncate font-mono font-semibold ${phase1DistanceClass(anchor?.distance_to_avwap_pct)}`}
           >
@@ -1880,6 +1892,11 @@ function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1Observat
           </p>
         </div>
       </div>
+      {holdingReturnPct != null && (
+        <p className="mt-2 text-xs leading-relaxed text-text-muted">
+          相對持有成本 {formatPhase1Distance(holdingReturnPct)}；AVWAP 是技術觀察線，不等同持有成本或正式防守價。
+        </p>
+      )}
       {estimated && <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">日資料估算</p>}
     </article>
   );
@@ -1898,7 +1915,7 @@ function PortfolioPhase1CurrentDayPanel({ summary }: { summary: PortfolioRiskSum
   const totalHoldingItems = holdingGroups.reduce((total, group) => total + group.items.length, 0);
 
   return (
-    <div className="mt-4 border-t border-border-subtle pt-4">
+    <div data-phase1-observations className="mt-4 border-t border-border-subtle pt-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h4 className="text-sm font-semibold text-text-primary">持股 AVWAP 觀察</h4>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -652,23 +653,10 @@ def _classify_position_state(
     holding_avg_cost: float | None,
 ) -> dict[str, Any]:
     distance = display_anchor.get("distance_to_avwap_pct")
-    if not isinstance(distance, int | float):
-        state = "data_unavailable"
-        label = "資料不足"
-        matched_rules = ["phase1_distance_missing"]
+    state, label, matched_rule = classify_phase1_position_distance(distance)
+    matched_rules = [matched_rule]
+    if state == "data_unavailable":
         missing_reason = missing_reason or "phase1_distance_to_avwap_missing"
-    elif distance <= -2:
-        state = "exit_risk"
-        label = "停損警戒"
-        matched_rules = ["phase1_display_anchor_lost_by_2pct"]
-    elif distance < 0:
-        state = "warning"
-        label = "停損警戒"
-        matched_rules = ["phase1_display_anchor_lost"]
-    else:
-        state = "hold"
-        label = "續抱"
-        matched_rules = ["phase1_display_anchor_supported"]
 
     data_quality = dict(snapshot.get("data_quality") or {})
     data_quality.setdefault("estimated", False)
@@ -696,6 +684,18 @@ def _classify_position_state(
         "source_granularity": "daily",
         "data_quality": data_quality,
     }
+
+
+def classify_phase1_position_distance(distance: Any) -> tuple[str, str, str]:
+    """Classify one position against an AVWAP line using a single price basis."""
+    normalized = _number_or_none(distance)
+    if normalized is None or not math.isfinite(normalized):
+        return "data_unavailable", "資料不足", "phase1_distance_missing"
+    if normalized <= -2:
+        return "exit_risk", "停損警戒", "phase1_display_anchor_lost_by_2pct"
+    if normalized < 0:
+        return "warning", "停損警戒", "phase1_display_anchor_lost"
+    return "hold", "續抱", "phase1_display_anchor_supported"
 
 
 def _missing_position_state(
@@ -968,6 +968,7 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 __all__ = [
+    "classify_phase1_position_distance",
     "read_phase1_avwap_contexts_for_daily_radar",
     "read_phase1_current_day_observations_for_managed_universe",
     "read_phase1_observation_for_analyze",
