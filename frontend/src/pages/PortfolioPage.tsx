@@ -3217,7 +3217,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
             <section className="xl:rounded-[14px] xl:border xl:border-border xl:bg-surface-raised xl:shadow-panel">
               <div
                 data-portfolio-position-header
-                className="hidden grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] gap-5 rounded-t-[14px] border-b border-border bg-card-hover/40 px-5 py-3 text-xs font-medium text-text-faint xl:grid"
+                className="hidden grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_216px] gap-5 rounded-t-[14px] border-b border-border bg-card-hover/40 px-5 py-3 text-xs font-medium text-text-faint xl:grid"
               >
                 <span>持股</span>
                 <span>狀態／計畫</span>
@@ -3251,7 +3251,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                     <article
                       key={item.id}
                       data-portfolio-position-id={item.id}
-                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel xl:grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_196px] xl:items-start xl:gap-x-5 xl:rounded-none xl:border-0 xl:px-5 xl:py-4 xl:shadow-none"
+                      className="grid grid-cols-2 gap-x-4 gap-y-4 rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel xl:grid-cols-[minmax(160px,1.3fr)_minmax(128px,0.9fr)_minmax(118px,0.75fr)_minmax(104px,0.65fr)_minmax(136px,0.9fr)_216px] xl:items-start xl:gap-x-5 xl:rounded-none xl:border-0 xl:px-5 xl:py-4 xl:shadow-none"
                     >
                       <div className="col-span-2 min-w-0 xl:col-span-1">
                         <p className="truncate text-sm font-semibold text-text-primary">{displayName.primary}</p>
@@ -3364,7 +3364,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                         )}
                       </div>
 
-                      <div className="col-span-2 flex items-center justify-end gap-2 xl:col-span-1">
+                      <div className="col-span-2 flex flex-nowrap items-center justify-end gap-2 xl:col-span-1">
                         <button
                           type="button"
                           onClick={() => void refreshPrices([item.id])}
@@ -3375,7 +3375,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                             technicalBatchRunning
                           }
                           aria-label={`更新 ${portfolioDisplayName(item)} 最新價格`}
-                          className="ui-button-secondary min-h-10 px-3 text-xs"
+                          className="ui-button-secondary min-h-10 shrink-0 whitespace-nowrap px-3 text-xs"
                         >
                           {portfolioRiskSummaryQuery.isLoading || isRefreshingPrice ? "更新中" : "更新價格"}
                         </button>
@@ -3383,7 +3383,7 @@ export default function PortfolioPage({ onNavigateAnalyze: _onNavigateAnalyze }:
                           type="button"
                           onClick={() => void openAnalysis(item)}
                           disabled={isAnalyzing || isRefreshingPrice || technicalBatchRunning}
-                          className="ui-button-primary min-h-10 px-3 text-xs"
+                          className="ui-button-primary min-h-10 shrink-0 whitespace-nowrap px-3 text-xs"
                         >
                           {isAnalyzing ? "診斷中" : "持倉診斷"}
                         </button>

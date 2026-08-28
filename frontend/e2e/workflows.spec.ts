@@ -784,10 +784,16 @@ test("Portfolio refreshes prices without triggering AI analysis", async ({ page 
 
   await page.goto("/portfolio");
   const position = page.locator('[data-portfolio-position-id="11"]');
-  await expect(position.getByRole("button", { name: "持倉診斷" })).toBeVisible();
+  const diagnoseButton = position.getByRole("button", { name: "持倉診斷" });
+  const updatePriceButton = position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" });
+  await expect(diagnoseButton).toBeVisible();
+  for (const button of [updatePriceButton, diagnoseButton]) {
+    await expect(button).toHaveCSS("white-space", "nowrap");
+    expect(await button.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
   await expect(page.getByRole("button", { name: "更新全部價格" })).toBeVisible();
 
-  await position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
+  await updatePriceButton.click();
 
   await expect.poll(() => requestLog).toContain("POST /portfolio/risk-summary/refresh-prices");
   await expect(position).toContainText("+8.06%");
@@ -945,6 +951,13 @@ test("Portfolio loads fresh prices on first visit without a manual refresh", asy
   ]);
   expect(rowColumns).toBe(headerColumns);
   expect(new Set(rowCellTops).size).toBe(1);
+  for (const button of [
+    position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }),
+    position.getByRole("button", { name: "持倉診斷" }),
+  ]) {
+    await expect(button).toHaveCSS("white-space", "nowrap");
+    expect(await button.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
   expect(requestLog).not.toContain("POST /analyze/position");
 });
 
@@ -963,7 +976,10 @@ test("Portfolio keeps the position list readable at 1024px", async ({ page }) =>
   await expect(page.locator("[data-portfolio-position-header]")).toBeHidden();
   await expect(position.getByText("未實現損益", { exact: true })).toBeVisible();
   await expect(position.getByText("防守緩衝", { exact: true })).toBeVisible();
-  await expect(position.getByRole("button", { name: "持倉診斷" })).toBeVisible();
+  const diagnoseButton = position.getByRole("button", { name: "持倉診斷" });
+  await expect(diagnoseButton).toBeVisible();
+  await expect(diagnoseButton).toHaveCSS("white-space", "nowrap");
+  expect(await diagnoseButton.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   const dimensions = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
