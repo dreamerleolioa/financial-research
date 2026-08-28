@@ -119,6 +119,12 @@ def test_health_endpoint() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_legacy_fetch_raw_data_endpoint_is_not_registered() -> None:
+    route_paths = {route.path for route in api.app.routes}
+
+    assert "/internal/fetch-raw-data" not in route_paths
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------

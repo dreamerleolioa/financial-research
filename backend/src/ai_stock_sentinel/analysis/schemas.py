@@ -162,11 +162,6 @@ class CachedAnalyzeResponse(BaseModel):
     strategy_version: str | None = None
 
 
-class FetchRawDataRequest(BaseModel):
-    symbol: str
-    date: str = "today"
-
-
 class HistoryEntry(BaseModel):
     record_date: str
     signal_confidence: float | None
