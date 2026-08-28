@@ -2,7 +2,8 @@ import logging as _logging
 import os
 from dataclasses import dataclass
 
-STRATEGY_VERSION = "1.0.0"
+# 2.0.0 is the first deterministic contract with no news/LLM-derived decisions.
+STRATEGY_VERSION = "2.0.0"
 
 
 @dataclass(slots=True, frozen=True)
