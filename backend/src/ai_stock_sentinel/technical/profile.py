@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -25,10 +26,24 @@ from ai_stock_sentinel.technical.metrics import (
     stochastic_kd,
 )
 
-TECHNICAL_METRICS_VERSION = "technical-metrics-v2"
-TECHNICAL_LAYER_VERSION = "technical-layer-v2"
+TECHNICAL_METRICS_VERSION = "technical-metrics-v3"
+TECHNICAL_LAYER_VERSION = "technical-layer-v3"
 REQUIRED_LOOKBACK_DAYS = 60
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def project_technical_profile_without_composite_judgments(
+    profile: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a public-safe copy without retired cross-indicator judgments."""
+    if not isinstance(profile, Mapping):
+        return None
+    projected = deepcopy(dict(profile))
+    projected.pop("signal_conflicts", None)
+    temporal_evidence = projected.get("temporal_evidence")
+    if isinstance(temporal_evidence, dict):
+        temporal_evidence.pop("volatility_regime", None)
+    return projected
 
 
 def build_technical_profile_from_snapshot(
@@ -72,7 +87,7 @@ def build_technical_profile_payload(
     observation_date: str | None = None,
     is_final: bool = True,
 ) -> dict[str, Any] | None:
-    """Return backward-compatible raw indicators plus the v2 layered profile."""
+    """Return backward-compatible raw indicators plus the v3 layered profile."""
     close_values = [float(value) for value in closes if value is not None]
     if not close_values:
         return None
@@ -215,12 +230,6 @@ def build_technical_profile_payload(
     }
     score_summary = _score_summary(primary=primary, risk=risk, secondary=secondary)
     temporal_evidence = _temporal_evidence(temporal_metrics)
-    signal_conflicts = _signal_conflicts(
-        primary=primary,
-        risk=risk,
-        temporal=temporal_evidence,
-    )
-    raw_indicators["technical_conflicts"] = [item["message"] for item in signal_conflicts]
     caveats = _profile_caveats(missing_fields=missing_fields, aligned_hilo=aligned_hilo, aligned_volume=aligned_volume)
 
     return {
@@ -231,7 +240,6 @@ def build_technical_profile_payload(
             "risk_overheat_filters": risk,
             "secondary_evidence": secondary,
             "temporal_evidence": temporal_evidence,
-            "signal_conflicts": signal_conflicts,
             "display_only": {
                 "obv_absolute_value": raw_indicators["obv"],
                 "avg_volume_20": raw_indicators["avg_volume_20"],
@@ -331,7 +339,6 @@ def _temporal_metrics(
         "macd_hist_trend": _macd_hist_trend(macd_hist, macd_slope),
         "atr_pct_percentile_60d": atr_percentile,
         "bollinger_bandwidth_percentile_60d": bandwidth_percentile,
-        "volatility_regime": _volatility_regime(atr_percentile, bandwidth_percentile),
     }
 
 
@@ -343,7 +350,6 @@ def _empty_temporal_metrics() -> dict[str, Any]:
         "macd_hist_trend": "missing",
         "atr_pct_percentile_60d": None,
         "bollinger_bandwidth_percentile_60d": None,
-        "volatility_regime": "missing",
     }
 
 
@@ -421,19 +427,6 @@ def _macd_hist_trend(histogram: float | None, slope: float | None) -> str:
     return "flat"
 
 
-def _volatility_regime(atr_percentile: float | None, bandwidth_percentile: float | None) -> str:
-    values = [value for value in (atr_percentile, bandwidth_percentile) if value is not None]
-    if not values:
-        return "missing"
-    if len(values) == 2 and min(values) <= 20 and max(values) >= 80:
-        return "mixed_transition"
-    if max(values) >= 80:
-        return "expansion"
-    if all(value <= 20 for value in values):
-        return "compression"
-    return "normal"
-
-
 def _temporal_evidence(metrics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         "ma20_slope": _slope_evidence(metrics.get("ma20_slope_pct_5d"), label="MA20", period="5-day"),
@@ -443,13 +436,6 @@ def _temporal_evidence(metrics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             0,
             "MACD histogram direction and 3-day normalized slope; evidence only.",
             value=metrics.get("macd_hist_slope_pct_3d"),
-        ),
-        "volatility_regime": _signal(
-            str(metrics.get("volatility_regime") or "missing"),
-            0,
-            "ATR% and Bollinger bandwidth percentile regime; evidence only.",
-            atr_percentile=metrics.get("atr_pct_percentile_60d"),
-            bandwidth_percentile=metrics.get("bollinger_bandwidth_percentile_60d"),
         ),
     }
 
@@ -465,39 +451,6 @@ def _slope_evidence(value: Any, *, label: str, period: str) -> dict[str, Any]:
     else:
         state = "flat"
     return _signal(state, 0, f"{label} {period} slope is display-only evidence.", value=slope)
-
-
-def _signal_conflicts(
-    *,
-    primary: Mapping[str, Mapping[str, Any]],
-    risk: Mapping[str, Mapping[str, Any]],
-    temporal: Mapping[str, Mapping[str, Any]],
-) -> list[dict[str, str]]:
-    conflicts: list[dict[str, str]] = []
-    ma_state = str(temporal.get("ma20_slope", {}).get("state") or "missing")
-    macd_state = str(temporal.get("macd_hist_trend", {}).get("state") or "missing")
-    if ma_state == "rising" and macd_state == "bullish_fading":
-        conflicts.append(_conflict("trend_momentum_fading", "MA20 仍上升，但 MACD 多方柱體正在收斂。"))
-    elif ma_state == "falling" and macd_state == "bearish_recovering":
-        conflicts.append(_conflict("countertrend_recovery", "MA20 仍下降，但 MACD 空方柱體正在收斂。"))
-
-    primary_impact = sum(_impact(value) for value in primary.values())
-    risk_impact = sum(_impact(value) for value in risk.values())
-    if primary_impact > 0 and risk_impact < 0:
-        conflicts.append(_conflict("trend_overheat", "主要趨勢偏多，但過熱或波動濾網正在扣分。"))
-
-    ma_structure = str(primary.get("ma_structure", {}).get("state") or "")
-    volume_state = str(primary.get("volume_ratio", {}).get("state") or "")
-    obv_state = str(primary.get("obv_trend", {}).get("state") or "")
-    if ma_structure in {"bullish_alignment", "above_ma20"} and (
-        volume_state == "thin_participation" or obv_state == "weakening"
-    ):
-        conflicts.append(_conflict("trend_without_participation", "價格結構偏多，但成交量或 OBV 尚未確認。"))
-    return conflicts
-
-
-def _conflict(code: str, message: str) -> dict[str, str]:
-    return {"code": code, "severity": "caution", "message": message}
 
 
 def _score_summary(

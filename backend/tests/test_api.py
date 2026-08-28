@@ -597,7 +597,7 @@ def test_analyze_response_includes_extended_technical_indicators(monkeypatch: py
     assert indicators["obv_trend_mid_long"] is None
     assert indicators["obv_trend_mid_long_window"] is None
     profile = body["technical_profile"]
-    assert profile["version"] == "technical-layer-v2"
+    assert profile["version"] == "technical-layer-v3"
     assert profile["primary_score_inputs"]["ma_structure"]["state"] in {
         "bullish_alignment",
         "above_ma20",
@@ -1710,7 +1710,7 @@ def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
         sum(full["snapshot"]["recent_volumes"][-60:]) / 60
     )
     assert response.technical_profile is not None
-    assert response.technical_profile["version"] == "technical-layer-v2"
+    assert response.technical_profile["version"] == "technical-layer-v3"
     assert response.technical_profile["data_quality"]["data_date"] == "2026-06-23"
     assert response.technical_profile["data_quality"]["is_final"] is True
 
@@ -1733,9 +1733,13 @@ def test_cache_hit_rebuilds_outdated_technical_profile() -> None:
             "fetched_at": "2026-06-23T06:30:00+00:00",
         },
         "analysis": "舊快取分析內容",
-        "technical_indicators": {"ma5": 132.0},
+        "technical_indicators": {
+            "ma5": 132.0,
+            "volatility_regime": "expansion",
+            "technical_conflicts": ["cached composite judgment"],
+        },
         "technical_profile": {
-            "version": "cached-technical-version",
+            "version": "technical-layer-v2",
             "primary_score_inputs": {
                 "ma_alignment": "cached-ma-alignment",
                 "rsi14": 999.0,
@@ -1745,6 +1749,13 @@ def test_cache_hit_rebuilds_outdated_technical_profile() -> None:
                 "secondary_score": 82,
                 "risk_filter_score": -73,
             },
+            "signal_conflicts": [
+                {
+                    "code": "cached_conflict",
+                    "severity": "caution",
+                    "message": "cached composite judgment",
+                }
+            ],
             "display_only": {},
             "data_quality": {
                 "is_final": False,
@@ -1774,10 +1785,55 @@ def test_cache_hit_rebuilds_outdated_technical_profile() -> None:
     assert response.technical_indicators.avg_volume_60 == display_only["avg_volume_60"]
     assert "legacy_field" not in response.technical_profile["data_quality"]["missing_fields"]
     assert response.technical_profile["data_quality"]["is_final"] is True
-    assert response.technical_profile["version"] == "technical-layer-v2"
+    assert response.technical_profile["version"] == "technical-layer-v3"
     assert "ma_structure" in response.technical_profile["primary_score_inputs"]
     assert "temporal_evidence" in response.technical_profile
+    assert "signal_conflicts" not in response.technical_profile
+    assert "volatility_regime" not in response.technical_indicators.model_dump()
+    assert "technical_conflicts" not in response.technical_indicators.model_dump()
     assert response.technical_profile["score_summary"]["technical_score"] <= 100
+
+
+def test_cache_hit_strips_retired_technical_judgments_when_profile_cannot_rebuild() -> None:
+    """Incomplete legacy snapshots must not leak retired composite judgments."""
+    from unittest.mock import MagicMock
+    import ai_stock_sentinel.analysis.router as api_module
+
+    full = {
+        "snapshot": {"symbol": "2330.TW", "current_price": 100.0},
+        "analysis": "舊快取分析內容",
+        "technical_indicators": {
+            "ma5": 100.0,
+            "volatility_regime": "expansion",
+            "technical_conflicts": ["cached composite judgment"],
+        },
+        "technical_profile": {
+            "version": "technical-layer-v2",
+            "signal_conflicts": [{"message": "cached composite judgment"}],
+            "temporal_evidence": {
+                "ma20_slope": {"state": "rising", "impact": 0, "reason": "cached"},
+                "volatility_regime": {"state": "expansion", "impact": 0, "reason": "cached"},
+            },
+        },
+        "is_final": True,
+        "errors": [],
+    }
+    cache = MagicMock()
+    cache.is_final = True
+    cache.intraday_disclaimer = None
+    cache.strategy_version = "strategy-v1"
+    cache.final_verdict = "舊快取分析內容"
+    cache.signal_confidence = None
+    cache.action_tag = None
+
+    response = api_module._build_response_from_cache(cache, "2330.TW", full_result=full)
+
+    assert response.technical_indicators is not None
+    assert "volatility_regime" not in response.technical_indicators.model_dump()
+    assert "technical_conflicts" not in response.technical_indicators.model_dump()
+    assert response.technical_profile is not None
+    assert "signal_conflicts" not in response.technical_profile
+    assert "volatility_regime" not in response.technical_profile["temporal_evidence"]
 
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:

@@ -100,17 +100,6 @@ const technicalProfileSchema = z
     risk_overheat_filters: z.record(z.string(), technicalProfileSignalSchema),
     secondary_evidence: z.record(z.string(), technicalProfileSignalSchema),
     temporal_evidence: z.record(z.string(), technicalProfileSignalSchema).optional(),
-    signal_conflicts: z
-      .array(
-        z
-          .object({
-            code: z.string(),
-            severity: z.string(),
-            message: z.string(),
-          })
-          .passthrough(),
-      )
-      .optional(),
     display_only: recordSchema,
     score_summary: z
       .object({

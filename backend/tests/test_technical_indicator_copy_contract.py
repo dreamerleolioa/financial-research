@@ -51,12 +51,12 @@ REQUIRED_NEUTRAL_COPY_TOKENS = [
     "均線 MA5/20/60",
     "MA20 5日斜率",
     "MACD 動能變化",
-    "波動狀態",
-    "訊號衝突",
     "AVWAP",
     "千張大戶持股比例",
     "技術指標：資料不足",
 ]
+
+FORBIDDEN_COMPOSITE_COPY_TOKENS = ["波動狀態", "訊號衝突"]
 
 ALLOWED_COPY_FUNCTION_CALLS = {
     "buildChipStabilityCopyRows",
@@ -113,6 +113,14 @@ def test_technical_indicator_copy_keeps_neutral_raw_context_payload() -> None:
     missing = [token for token in REQUIRED_NEUTRAL_COPY_TOKENS if token not in source]
 
     assert missing == []
+
+
+def test_technical_indicator_copy_excludes_composite_judgments() -> None:
+    source = TECHNICAL_INDICATORS_SOURCE.read_text(encoding="utf-8")
+
+    hits = [token for token in FORBIDDEN_COMPOSITE_COPY_TOKENS if token in source]
+
+    assert hits == []
 
 
 def test_portfolio_technical_export_keeps_neutral_position_context() -> None:

@@ -618,7 +618,7 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv": 12_000_000,
             "obv_trend": "rising",
         },
-        "technical_profile": {"version": "technical-layer-v1"},
+        "technical_profile": {"version": "technical-layer-v3"},
         "price_history": [{"date": run_date.isoformat(), "close": 106.0}],
         "data_dates": {
             "ohlcv": run_date.isoformat(),

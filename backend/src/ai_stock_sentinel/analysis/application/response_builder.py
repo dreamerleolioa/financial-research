@@ -24,7 +24,11 @@ from ai_stock_sentinel.analysis.schemas import (
     PositionAnalyzeRequest,
     TechnicalIndicators,
 )
-from ai_stock_sentinel.technical.profile import TECHNICAL_LAYER_VERSION, build_technical_profile_from_snapshot
+from ai_stock_sentinel.technical.profile import (
+    TECHNICAL_LAYER_VERSION,
+    build_technical_profile_from_snapshot,
+    project_technical_profile_without_composite_judgments,
+)
 
 
 def compute_technical_indicators(snapshot: dict) -> TechnicalIndicators | None:
@@ -126,8 +130,6 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
         "macd_hist_trend": canonical_indicators.get("macd_hist_trend"),
         "atr_pct_percentile_60d": canonical_indicators.get("atr_pct_percentile_60d"),
         "bollinger_bandwidth_percentile_60d": canonical_indicators.get("bollinger_bandwidth_percentile_60d"),
-        "volatility_regime": canonical_indicators.get("volatility_regime"),
-        "technical_conflicts": canonical_indicators.get("technical_conflicts") or [],
         "institutional": {
             "foreign_net": inst.get("foreign_net"),
             "trust_net": inst.get("trust_net"),
@@ -212,6 +214,9 @@ def _hydrate_cached_technical_payload(
     snapshot: dict[str, Any],
     is_final: bool,
 ) -> None:
+    response.technical_profile = project_technical_profile_without_composite_judgments(
+        response.technical_profile
+    )
     payload = build_technical_profile_from_snapshot(snapshot, is_final=is_final)
     if payload:
         computed_indicators = TechnicalIndicators.model_validate(payload["technical_indicators"])

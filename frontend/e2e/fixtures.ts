@@ -136,8 +136,6 @@ export const quickAnalyzeResult = {
     macd_hist_trend: "bullish_fading",
     atr_pct_percentile_60d: 82.5,
     bollinger_bandwidth_percentile_60d: 77.5,
-    volatility_regime: "expansion",
-    technical_conflicts: ["MA20 仍上升，但 MACD 多方柱體正在收斂。"],
   },
   technical_profile: null,
   action_plan: {

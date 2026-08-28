@@ -9,6 +9,7 @@ from ai_stock_sentinel.technical.profile import (
     TECHNICAL_METRICS_VERSION,
     build_technical_profile_from_snapshot,
     build_technical_profile_payload,
+    project_technical_profile_without_composite_judgments,
 )
 
 
@@ -27,6 +28,25 @@ def test_analysis_metrics_reexports_canonical_technical_metrics() -> None:
     assert compatibility_metrics.stochastic_kd is canonical_metrics.stochastic_kd
     assert compatibility_metrics.atr is canonical_metrics.atr
     assert compatibility_metrics.obv is canonical_metrics.obv
+
+
+def test_public_technical_profile_projection_removes_composite_judgments_without_mutation() -> None:
+    original = {
+        "version": "technical-layer-v2",
+        "signal_conflicts": [{"message": "cached composite judgment"}],
+        "temporal_evidence": {
+            "ma20_slope": {"state": "rising"},
+            "volatility_regime": {"state": "expansion"},
+        },
+    }
+
+    projected = project_technical_profile_without_composite_judgments(original)
+
+    assert projected is not None
+    assert "signal_conflicts" not in projected
+    assert "volatility_regime" not in projected["temporal_evidence"]
+    assert "signal_conflicts" in original
+    assert "volatility_regime" in original["temporal_evidence"]
 
 
 def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
@@ -76,7 +96,6 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
         "ma20_slope",
         "ma60_slope",
         "macd_hist_trend",
-        "volatility_regime",
     }
     assert all(signal["impact"] == 0 for signal in profile["temporal_evidence"].values())
     assert raw["ma20_slope_pct_5d"] is not None
@@ -84,7 +103,9 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
     assert raw["macd_hist_slope_pct_3d"] is not None
     assert raw["atr_pct_percentile_60d"] is not None
     assert raw["bollinger_bandwidth_percentile_60d"] is not None
-    assert isinstance(raw["technical_conflicts"], list)
+    assert "volatility_regime" not in raw
+    assert "technical_conflicts" not in raw
+    assert "signal_conflicts" not in profile
 
 
 def test_temporal_evidence_does_not_change_score_buckets() -> None:
@@ -109,8 +130,6 @@ def test_temporal_evidence_does_not_change_score_buckets() -> None:
         ),
     )
     assert profile["score_summary"]["capped_total"] == expected_total
-    assert profile["signal_conflicts"]
-    assert "trend_overheat" in {item["code"] for item in profile["signal_conflicts"]}
 
 
 def test_intraday_temporal_evidence_excludes_current_dated_bar() -> None:
@@ -199,7 +218,8 @@ def test_intraday_temporal_evidence_fails_closed_without_dated_bars() -> None:
     assert payload is not None
     raw = payload["technical_indicators"]
     assert raw["ma20_slope_pct_5d"] is None
-    assert raw["volatility_regime"] == "missing"
+    assert raw["atr_pct_percentile_60d"] is None
+    assert raw["bollinger_bandwidth_percentile_60d"] is None
     data_quality = payload["technical_profile"]["data_quality"]
     assert data_quality["temporal_data_date"] is None
     assert data_quality["temporal_completed_bars_only"] is False

@@ -14,7 +14,10 @@ import {
   watchlistItem,
 } from "./fixtures";
 
-test("Analyze deterministic research supports copy and a keyboard-contained add-position dialog", async ({ page, context }) => {
+test("Analyze deterministic research supports copy and a keyboard-contained add-position dialog", async ({
+  page,
+  context,
+}) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await authenticate(page);
@@ -46,15 +49,9 @@ test("Analyze deterministic research supports copy and a keyboard-contained add-
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("現價：3120（TWSE MIS 即時）（漲停）");
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("MA20 5日斜率：+1.234%");
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("波動狀態：波動擴張");
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("訊號衝突：MA20 仍上升，但 MACD 多方柱體正在收斂。");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("MA20 5日斜率：+1.234%");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toContain("波動狀態");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toContain("訊號衝突");
 
   const openDialogButton = page.getByRole("button", { name: "加入持股" });
   await openDialogButton.click();

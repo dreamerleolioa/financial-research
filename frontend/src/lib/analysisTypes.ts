@@ -52,8 +52,6 @@ export interface TechnicalIndicators {
   macd_hist_trend?: string | null;
   atr_pct_percentile_60d?: number | null;
   bollinger_bandwidth_percentile_60d?: number | null;
-  volatility_regime?: string | null;
-  technical_conflicts?: string[];
 }
 
 export interface TechnicalProfileSignal {
@@ -70,11 +68,6 @@ export interface TechnicalProfile {
   risk_overheat_filters: Record<string, TechnicalProfileSignal>;
   secondary_evidence: Record<string, TechnicalProfileSignal>;
   temporal_evidence?: Record<string, TechnicalProfileSignal>;
-  signal_conflicts?: Array<{
-    code: string;
-    severity: string;
-    message: string;
-  }>;
   display_only: Record<string, unknown>;
   score_summary: {
     primary_score: number;

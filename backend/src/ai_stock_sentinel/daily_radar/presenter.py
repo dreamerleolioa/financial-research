@@ -9,6 +9,7 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarRunTriggerResponse,
 )
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
+from ai_stock_sentinel.technical.profile import project_technical_profile_without_composite_judgments
 
 
 def run_trigger_response(run: DailyRadarRun) -> DailyRadarRunTriggerResponse:
@@ -58,7 +59,7 @@ def history_response(item: dict[str, Any]) -> dict[str, Any]:
         "bucket_scores": dict(item.get("bucket_scores") or {}),
         "matched_rules": _matched_rules(item.get("matched_rules") or []),
         "score_breakdown": dict(item.get("score_breakdown") or {}),
-        "input_snapshot": dict(item.get("input_snapshot") or {}),
+        "input_snapshot": _public_input_snapshot(item.get("input_snapshot")),
         "data_dates": {key: value.isoformat() for key, value in _date_mapping(item.get("data_dates") or {}).items()},
         "background_context_labels": _background_context_labels(item.get("input_snapshot")),
     }
@@ -85,7 +86,7 @@ def candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRes
         rule_version=_trace_version(candidate.score_breakdown, "rule_version"),
         bucket_scores=dict(candidate.bucket_scores or {}),
         score_breakdown=dict(candidate.score_breakdown or {}),
-        input_snapshot=dict(candidate.input_snapshot or {}),
+        input_snapshot=_public_input_snapshot(candidate.input_snapshot),
         data_dates=_date_mapping(candidate.data_dates or {}),
         matched_rules=_matched_rules(candidate.matched_rules or []),
         background_context_labels=_background_context_labels(candidate.input_snapshot),
@@ -96,6 +97,30 @@ def matches_bucket(item: dict[str, Any], bucket: str | None) -> bool:
     if bucket is None:
         return True
     return item.get("primary_bucket") == bucket or bucket in set(item.get("secondary_buckets") or [])
+
+
+def _public_input_snapshot(value: Any) -> dict[str, Any]:
+    snapshot = dict(value) if isinstance(value, dict) else {}
+    technical_profile = project_technical_profile_without_composite_judgments(
+        snapshot.get("technical_profile")
+    )
+    if technical_profile is not None:
+        snapshot["technical_profile"] = technical_profile
+
+    replay_input = snapshot.get("replay_input")
+    if isinstance(replay_input, dict):
+        replay_projection = dict(replay_input)
+        record = replay_projection.get("record")
+        if isinstance(record, dict):
+            record_projection = dict(record)
+            replay_profile = project_technical_profile_without_composite_judgments(
+                record_projection.get("technical_profile")
+            )
+            if replay_profile is not None:
+                record_projection["technical_profile"] = replay_profile
+            replay_projection["record"] = record_projection
+        snapshot["replay_input"] = replay_projection
+    return snapshot
 
 
 def _ordered_candidates(candidates: list[DailyRadarCandidate]) -> list[DailyRadarCandidate]:

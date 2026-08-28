@@ -100,8 +100,6 @@ class TechnicalIndicators(BaseModel):
     macd_hist_trend: str | None = None
     atr_pct_percentile_60d: float | None = None
     bollinger_bandwidth_percentile_60d: float | None = None
-    volatility_regime: str | None = None
-    technical_conflicts: list[str] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):

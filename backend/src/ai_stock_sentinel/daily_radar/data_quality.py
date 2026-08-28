@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any
 
 from ai_stock_sentinel.daily_radar.universe import TRACK_PRIORITY
+from ai_stock_sentinel.technical.profile import TECHNICAL_LAYER_VERSION
 
 
 REQUIRED_SCORING_FIELDS: dict[str, tuple[str, ...]] = {
@@ -120,7 +121,7 @@ def missing_daily_radar_candidate_technical_fields(
 ) -> list[str]:
     missing_fields = missing_technical_scoring_fields(technical)
     technical_profile = _mapping(technical.get("technical_profile"))
-    if not str(technical_profile.get("version") or "").strip():
+    if str(technical_profile.get("version") or "").strip() != TECHNICAL_LAYER_VERSION:
         missing_fields.append("technical_profile.version")
 
     price_history = technical.get("price_history")

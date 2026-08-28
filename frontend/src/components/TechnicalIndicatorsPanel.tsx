@@ -45,7 +45,6 @@ const TEMPORAL_LABELS: Record<string, string> = {
   ma20_slope: "MA20 斜率",
   ma60_slope: "MA60 斜率",
   macd_hist_trend: "MACD 動能變化",
-  volatility_regime: "波動分位狀態",
 };
 
 const SIGNAL_STATE_LABELS: Record<string, string> = {
@@ -70,12 +69,10 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   contained: "風險可控",
   constructive: "結構正向",
   constructive_participation: "量能配合",
-  compression: "波動壓縮",
   extended: "乖離偏大",
   expanded_participation: "量能放大",
   extreme_extension: "乖離過大",
   extreme_overheated: "極度過熱",
-  expansion: "波動擴張",
   flat: "區間平坦",
   high: "高波動",
   high_bearish_cross: "高檔死亡交叉",
@@ -83,7 +80,6 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   low_bullish_cross: "低檔黃金交叉",
   lower_half: "區間下半",
   medium: "中波動",
-  mixed_transition: "波動轉換分歧",
   missing: "資料不足",
   moderate: "支撐距離適中",
   near_lower: "接近下緣",
@@ -292,11 +288,6 @@ function rawIndicatorRows(
       formatPercentile(indicators.bollinger_bandwidth_percentile_60d),
     ],
     [
-      "volatility_regime",
-      "波動狀態",
-      getTechnicalIndicatorLabel("volatility_regime", indicators.volatility_regime),
-    ],
-    [
       "kd",
       "KD",
       `${getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)} / ${getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)}（K/D ${formatIndicatorNumber(indicators.kd_k, 1)} / ${formatIndicatorNumber(indicators.kd_d, 1)}）`,
@@ -430,21 +421,6 @@ export function TechnicalProfileDisclosure({
             signals={profile.temporal_evidence}
             labels={TEMPORAL_LABELS}
           />
-        )}
-        {(profile.signal_conflicts?.length ?? 0) > 0 && (
-          <section className="border-t border-border-subtle pt-4">
-            <h4 className="mb-3 text-xs font-semibold text-text-muted">訊號衝突</h4>
-            <ul className="space-y-2">
-              {profile.signal_conflicts!.map((conflict) => (
-                <li
-                  key={conflict.code}
-                  className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
-                >
-                  {conflict.message}
-                </li>
-              ))}
-            </ul>
-          </section>
         )}
       </div>
     </details>

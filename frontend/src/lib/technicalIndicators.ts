@@ -78,14 +78,6 @@ const MACD_HIST_TREND_LABEL: Record<string, { label: string }> = {
   missing: { label: "資料不足" },
 };
 
-const VOLATILITY_REGIME_LABEL: Record<string, { label: string }> = {
-  compression: { label: "波動壓縮" },
-  normal: { label: "常態波動" },
-  expansion: { label: "波動擴張" },
-  mixed_transition: { label: "波動轉換分歧" },
-  missing: { label: "資料不足" },
-};
-
 const MFI_SIGNAL_LABEL: Record<string, { label: string }> = {
   overbought: { label: "資金過熱" },
   oversold: { label: "資金低檔" },
@@ -131,7 +123,6 @@ const TECHNICAL_LABELS = {
   obv_trend: OBV_TREND_LABEL,
   volatility_level: VOLATILITY_LEVEL_LABEL,
   macd_hist_trend: MACD_HIST_TREND_LABEL,
-  volatility_regime: VOLATILITY_REGIME_LABEL,
   mfi_signal: MFI_SIGNAL_LABEL,
   donchian_position: DONCHIAN_POSITION_LABEL,
 } as const;
@@ -342,11 +333,6 @@ export function buildTechnicalIndicatorsCopyText(
     ["MACD 動能變化", getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)],
     ["ATR% 60日分位", formatPercentile(indicators.atr_pct_percentile_60d)],
     ["布林帶寬 60日分位", formatPercentile(indicators.bollinger_bandwidth_percentile_60d)],
-    ["波動狀態", getTechnicalIndicatorLabel("volatility_regime", indicators.volatility_regime)],
-    [
-      "訊號衝突",
-      indicators.technical_conflicts?.length ? indicators.technical_conflicts.join("；") : "無明顯衝突",
-    ],
     ["KD 交叉", getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)],
     ["KD 區間", getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)],
     ["ADX 趨勢強度", getTechnicalIndicatorLabel("adx_trend_strength", indicators.adx_trend_strength)],
