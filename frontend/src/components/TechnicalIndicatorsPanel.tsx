@@ -47,6 +47,18 @@ const TEMPORAL_LABELS: Record<string, string> = {
   macd_hist_trend: "MACD 動能變化",
 };
 
+const MISSING_FIELD_LABELS: Record<string, string> = {
+  close: "收盤價",
+  highs: "歷史最高價",
+  lows: "歷史最低價",
+  volumes: "歷史成交量",
+  ma20: "20 日均線",
+  ma60: "60 日均線",
+  rsi14: "14 日相對強弱指標",
+  volume_ratio: "量比",
+  price_levels: "支撐壓力價格",
+};
+
 const SIGNAL_STATE_LABELS: Record<string, string> = {
   above_ma20: "站上 MA20",
   above_mid: "中軌上方",
@@ -126,15 +138,19 @@ function impactLabel(impact: number): string {
 }
 
 function formatSignalState(state: string): string {
-  return SIGNAL_STATE_LABELS[state] ?? state.split("_").join(" ");
+  return SIGNAL_STATE_LABELS[state] ?? "其他狀態";
 }
 
 function signalRows(signals: Record<string, TechnicalProfileSignal>, labels: Record<string, string>) {
   return Object.entries(signals).map(([key, signal]) => ({
     key,
-    label: labels[key] ?? key,
+    label: labels[key] ?? "其他技術訊號",
     signal,
   }));
+}
+
+function formatMissingFieldLabel(field: string): string {
+  return MISSING_FIELD_LABELS[field] ?? "其他必要資料";
 }
 
 function TechnicalLayerSection({
@@ -176,10 +192,13 @@ function profileCaveats(profile: TechnicalProfile, responseIsFinal: boolean | un
     caveats.add("目前是盤中資料，分層摘要不是完整收盤判斷。");
   }
   if ((dataQuality.missing_fields ?? []).length > 0) {
-    caveats.add(`資料不足：${(dataQuality.missing_fields ?? []).slice(0, 4).join("、")}`);
+    const missingLabels = Array.from(
+      new Set((dataQuality.missing_fields ?? []).slice(0, 4).map(formatMissingFieldLabel)),
+    );
+    caveats.add(`資料不足：${missingLabels.join("、")}`);
   }
   if (dataQuality.ohlcv_aligned === false) {
-    caveats.add("OHLC high/low 不完整，支撐壓力不作主要計分。");
+    caveats.add("開盤、最高、最低與收盤價格不完整，支撐壓力不作主要計分。");
   }
   if (dataQuality.volume_aligned === false) {
     caveats.add("成交量序列不完整，量能與 OBV 相關判斷需保守。");

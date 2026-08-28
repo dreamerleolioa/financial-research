@@ -102,7 +102,7 @@ function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
     .slice(0, 4)
     .map(([key, anchor]) => ({
       key,
-      label: PHASE1_ANCHOR_LABEL[key] ?? key,
+      label: PHASE1_ANCHOR_LABEL[key] ?? "其他 AVWAP 觀察線",
       avwap: anchor.avwap,
       distance: anchor.current_distance_to_avwap_pct ?? anchor.distance_to_avwap_pct,
       anchorDate: anchor.anchor_date,

@@ -170,6 +170,12 @@ const LIFECYCLE_PROVENANCE_CLASS: Record<string, string> = {
     "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
 };
 
+const LIFECYCLE_PROVENANCE_LABEL: Record<string, string> = {
+  "real events": "事件當下紀錄",
+  "synthetic events": "由既有持股資料回填",
+  "mixed provenance": "混合來源紀錄",
+};
+
 const CONFIDENCE_LABEL: Record<string, string> = {
   high: "高",
   medium: "中",
@@ -478,12 +484,75 @@ function formatInsufficientDataLabel(value: string): string {
     }[indicator];
     return `${eventLabel} ${eventDate} 的 ${indicatorLabel}`;
   }
-  return `其他資料項目（${value}）`;
+  return "其他資料項目";
+}
+
+function formatDataQualityNote(note: string): string {
+  const exactLabels: Record<string, string> = {
+    "No PositionEvent rows were available for this position_group_id.": "找不到這筆完整交易的事件紀錄。",
+    "An exit event quantity exceeded the tracked open position size; realized accounting used available quantity only.":
+      "結案數量超過系統追蹤的持有數量，已只用可用持有數量計算已實現損益。",
+    "manual_adjustment rows were included as event facts but excluded from cost-basis accounting.":
+      "手動調整已保留為事件事實，但未納入成本基礎計算。",
+    "No market close rows were available during the lifecycle exposure window.":
+      "持有期間沒有可用的收盤價格資料。",
+    "Weighted entry price was unavailable for path metrics.":
+      "缺少可用的加權進場成本，暫時無法計算持有期間路徑指標。",
+    "No PositionLifecyclePlan row was available; decision context is insufficient.":
+      "缺少原始操作計畫，無法完整核對當時的決策脈絡。",
+  };
+  if (exactLabels[note]) return exactLabels[note];
+
+  const indicatorGap = note.match(
+    /^Insufficient point-in-time rows for (initial_entry|add_entry|partial_exit|full_exit) (ma20|ma60|rsi14|volume_ratio): (\d+)\/(\d+)\.$/,
+  );
+  if (indicatorGap) {
+    const [, eventType, indicator, actual, required] = indicatorGap;
+    const indicatorLabel = {
+      ma20: "20 日均線",
+      ma60: "60 日均線",
+      rsi14: "14 日相對強弱指標",
+      volume_ratio: "量比",
+    }[indicator];
+    return `${formatPositionEventTypeLabel(eventType)}的${indicatorLabel}歷史資料不足（可用 ${actual} 筆，至少需要 ${required} 筆）。`;
+  }
+
+  const ledgerGap = note.match(/^Event .+ had (?:missing|non-finite or invalid) (fees|taxes);/);
+  if (ledgerGap) {
+    return `${ledgerGap[1] === "fees" ? "手續費" : "交易稅"}資料缺漏或格式無效，交易帳務計算暫以 0 處理。`;
+  }
+  if (/[㐀-鿿]/u.test(note)) return formatLifecycleText(note);
+  return "部分資料不完整，請查看下方資料不足欄位。";
+}
+
+function formatLifecycleText(text: string): string {
+  const replacements: Record<string, string> = {
+    initial_entry: "初始進場",
+    add_entry: "新增進場批次",
+    partial_exit: "部分結案",
+    full_exit: "完整結案",
+    manual_adjustment: "手動調整",
+    strong_momentum: "強動能環境",
+    high_volatility: "高波動環境",
+    insufficient_data: "資料不足",
+    range_bound: "區間震盪",
+    downtrend: "下降趨勢",
+    uptrend: "上升趨勢",
+    planned_stop_price: "計畫防守價",
+    "shared context": "背景脈絡資料",
+    caveat: "限制",
+    ledger: "交易帳務",
+  };
+  const localizedFreshness = text.replace(/\bfresh\b/g, "最新狀態");
+  return Object.entries(replacements).reduce(
+    (result, [internalValue, label]) => result.replaceAll(internalValue, label),
+    localizedFreshness,
+  );
 }
 
 function formatLifecycleClassificationLabel(value: string | null | undefined): string {
   if (!value) return "尚無分類";
-  return LIFECYCLE_CLASSIFICATION_LABEL[value] ?? `其他生命週期分類（${value}）`;
+  return LIFECYCLE_CLASSIFICATION_LABEL[value] ?? "其他生命週期分類";
 }
 
 function formatEntryRecordReason(value: string | null | undefined): string {
@@ -493,32 +562,32 @@ function formatEntryRecordReason(value: string | null | undefined): string {
 
 function formatPlannedHoldingPeriod(value: string | null | undefined): string {
   if (!value) return "未記錄";
-  return (PLANNED_HOLDING_PERIOD_LABEL as Record<string, string>)[value] ?? `其他持有期間（${value}）`;
+  return (PLANNED_HOLDING_PERIOD_LABEL as Record<string, string>)[value] ?? "其他持有期間";
 }
 
 function formatDefaultStopRule(value: string | null | undefined): string {
   if (!value) return "未記錄";
-  return (DEFAULT_STOP_RULE_LABEL as Record<string, string>)[value] ?? `其他風險控制規則（${value}）`;
+  return (DEFAULT_STOP_RULE_LABEL as Record<string, string>)[value] ?? "其他風險控制規則";
 }
 
 function formatAddEntryCondition(value: string | null | undefined): string {
   if (!value) return "未記錄";
-  return (ADD_ENTRY_CONDITION_LABEL as Record<string, string>)[value] ?? `其他新增批次條件（${value}）`;
+  return (ADD_ENTRY_CONDITION_LABEL as Record<string, string>)[value] ?? "其他新增批次條件";
 }
 
 function formatLifecycleTierLabel(value: string | null | undefined): string {
   if (!value) return "尚無層級";
-  return LIFECYCLE_TIER_LABEL[value] ?? `其他層級（${value}）`;
+  return LIFECYCLE_TIER_LABEL[value] ?? "其他層級";
 }
 
 function formatPositionEventTypeLabel(value: string | null | undefined): string {
   if (!value) return "其他事件";
-  return (POSITION_EVENT_TYPE_LABEL as Record<string, string>)[value] ?? `其他事件（${value}）`;
+  return (POSITION_EVENT_TYPE_LABEL as Record<string, string>)[value] ?? "其他事件";
 }
 
 function formatPositionEventSourceLabel(value: string | null | undefined): string {
   if (!value) return "未記錄來源";
-  return (POSITION_EVENT_SOURCE_LABEL as Record<string, string>)[value] ?? `其他來源（${value}）`;
+  return (POSITION_EVENT_SOURCE_LABEL as Record<string, string>)[value] ?? "其他來源";
 }
 
 function formatPositionEventSourceHelper(value: string | null | undefined): string {
@@ -536,6 +605,17 @@ function getLifecycleTierClass(value: string | null | undefined): string {
   return value
     ? (LIFECYCLE_TIER_CLASS[value] ?? "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text")
     : "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text";
+}
+
+function formatLifecycleProvenanceLabel(value: string): string {
+  return LIFECYCLE_PROVENANCE_LABEL[value] ?? "其他紀錄來源";
+}
+
+function getLifecycleProvenanceClass(value: string): string {
+  return (
+    LIFECYCLE_PROVENANCE_CLASS[value] ??
+    "border-border-subtle bg-badge-neutral-bg text-badge-neutral-text"
+  );
 }
 
 function getLifecycleProvenance(
@@ -650,22 +730,22 @@ function hasDataQualityPrompt(dataQuality: TradeReviewDataQuality | undefined): 
 
 function formatTimelineReasonCategory(value: string | null): string {
   if (!value) return "未記錄";
-  return TIMELINE_REASON_CATEGORY_LABEL[value] ?? `其他原因分類（${value}）`;
+  return TIMELINE_REASON_CATEGORY_LABEL[value] ?? "其他原因分類";
 }
 
 function formatTimelineReasonCode(value: string | null): string {
   if (!value) return "未記錄";
-  return TIMELINE_REASON_CODE_LABEL[value] ?? `其他原因代碼（${value}）`;
+  return TIMELINE_REASON_CODE_LABEL[value] ?? "其他原因";
 }
 
 function formatTimelinePlanAdherence(value: string | null): string {
   if (!value) return "未記錄";
-  return TIMELINE_PLAN_ADHERENCE_LABEL[value] ?? `其他計畫狀態（${value}）`;
+  return TIMELINE_PLAN_ADHERENCE_LABEL[value] ?? "其他計畫狀態";
 }
 
 function formatTimelineConfidence(value: string | null): string {
   if (!value) return "未記錄";
-  return TIMELINE_CONFIDENCE_LABEL[value] ?? `其他信心水準（${value}）`;
+  return TIMELINE_CONFIDENCE_LABEL[value] ?? "其他信心水準";
 }
 
 function isNotRecorded(value: string | null): boolean {
@@ -852,7 +932,7 @@ function ReviewSectionCard({
 }
 
 function DataQualitySection({ dataQuality }: { dataQuality: TradeReviewDataQuality }) {
-  const notes = getStringArray(dataQuality.notes);
+  const notes = getStringArray(dataQuality.notes).map(formatDataQualityNote);
   const insufficientData = getStringArray(dataQuality.insufficient_data).map(formatInsufficientDataLabel);
   return (
     <article className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm dark:border-amber-800 dark:bg-amber-950">
@@ -877,7 +957,7 @@ function LifecycleSourceRefs({ sourceRefs }: { sourceRefs: string[] | undefined 
 function LifecycleTextItemBlock({ item }: { item: LifecycleTextItem }) {
   return (
     <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
-      <p className="text-sm leading-relaxed text-text-secondary">{item.text}</p>
+      <p className="text-sm leading-relaxed text-text-secondary">{formatLifecycleText(item.text)}</p>
       <LifecycleSourceRefs sourceRefs={item.source_refs} />
     </div>
   );
@@ -1024,7 +1104,7 @@ function LifecycleDataQualitySection({
   dataQuality: PositionLifecycleDataQuality | undefined;
   notes: LifecycleTextItem[] | undefined;
 }) {
-  const noteTexts = getStringArray(dataQuality?.notes);
+  const noteTexts = getStringArray(dataQuality?.notes).map(formatDataQualityNote);
   const insufficientData = getStringArray(dataQuality?.insufficient_data).map(formatInsufficientDataLabel);
   const lifecycleNotes = notes ?? [];
   if (!dataQuality && lifecycleNotes.length === 0) return null;
@@ -1174,9 +1254,9 @@ function LifecycleDecisionSummary({ review }: { review: PositionLifecycleReviewR
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-medium text-text-primary">{dimension.label}</p>
                 <span
-                  className={`rounded-md border px-2 py-0.5 text-[0.6875rem] font-medium ${REVIEW_STATUS_STYLE[dimension.status]}`}
+                  className={`rounded-md border px-2 py-0.5 text-[0.6875rem] font-medium ${REVIEW_STATUS_STYLE[dimension.status] ?? REVIEW_STATUS_STYLE.not_observed}`}
                 >
-                  {REVIEW_DIMENSION_STATUS_LABEL[dimension.status] ?? dimension.status}
+                  {REVIEW_DIMENSION_STATUS_LABEL[dimension.status] ?? "其他狀態"}
                 </span>
               </div>
               <p className="mt-2 text-xs leading-relaxed text-text-muted">{dimension.summary}</p>
@@ -1402,9 +1482,9 @@ function LifecycleEventTimeline({
                       {event.event_date ?? "日期未記錄"}
                     </span>
                     <span
-                      className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}
+                      className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getLifecycleProvenanceClass(provenance)}`}
                     >
-                      {provenance}
+                      {formatLifecycleProvenanceLabel(provenance)}
                     </span>
                   </div>
                   <p className="mt-2 text-xs leading-relaxed text-text-muted">
@@ -1631,24 +1711,24 @@ function LifecycleLedger({ group, timeline, loading, error }: LifecycleLedgerPro
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span
-                          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${POSITION_EVENT_TYPE_CLASS[timelineEvent.event_type]}`}
+                          className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getPositionEventTypeClass(timelineEvent.event_type)}`}
                         >
-                          {POSITION_EVENT_TYPE_LABEL[timelineEvent.event_type]}
+                          {formatPositionEventTypeLabel(timelineEvent.event_type)}
                         </span>
                         <span className="font-mono text-sm font-semibold text-text-primary">
                           {timelineEvent.event_date}
                         </span>
                         <span className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs text-badge-neutral-text">
-                          Event #{timelineEvent.id}
+                          事件 #{timelineEvent.id}
                         </span>
                       </div>
                       <p className="mt-2 text-xs leading-relaxed text-text-muted">
-                        來源：{POSITION_EVENT_SOURCE_LABEL[timelineEvent.source]}。
-                        {POSITION_EVENT_SOURCE_HELPER[timelineEvent.source]}
+                        來源：{formatPositionEventSourceLabel(timelineEvent.source)}。
+                        {formatPositionEventSourceHelper(timelineEvent.source)}
                       </p>
                     </div>
                     <div className="rounded-lg border border-border-subtle bg-card px-3 py-2 text-left md:text-right">
-                      <p className="text-xs text-text-faint">來源 Portfolio ID</p>
+                      <p className="text-xs text-text-faint">來源持股紀錄編號</p>
                       <p className="mt-1 font-mono text-sm font-medium text-text-primary">
                         {formatPlainValue(timelineEvent.source_portfolio_id)}
                       </p>
@@ -1754,9 +1834,9 @@ function LifecycleReviewWorkspace({
               </p>
             </div>
             <span
-              className={`rounded-md border px-2 py-0.5 text-xs font-medium ${LIFECYCLE_PROVENANCE_CLASS[provenance]}`}
+              className={`rounded-md border px-2 py-0.5 text-xs font-medium ${getLifecycleProvenanceClass(provenance)}`}
             >
-              {provenance}
+              {formatLifecycleProvenanceLabel(provenance)}
             </span>
           </div>
         </div>

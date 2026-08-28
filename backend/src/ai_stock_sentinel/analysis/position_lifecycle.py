@@ -40,6 +40,31 @@ HOLDING_PERIOD_DAY_RANGES: dict[str, tuple[int, int | None]] = {
     "long_term": (180, None),
 }
 PULLBACK_MA20_MAX_DISTANCE_PCT = 3.0
+EVENT_TYPE_LABEL = {
+    "initial_entry": "初始進場",
+    "add_entry": "新增進場批次",
+    "partial_exit": "部分結案",
+    "full_exit": "完整結案",
+    "manual_adjustment": "手動調整",
+}
+MARKET_REGIME_LABEL = {
+    "uptrend": "上升趨勢",
+    "downtrend": "下降趨勢",
+    "range_bound": "區間震盪",
+    "strong_momentum": "強動能環境",
+    "high_volatility": "高波動環境",
+    "insufficient_data": "資料不足",
+}
+EVENT_INDICATOR_LABEL = {
+    "ma20": "20 日均線",
+    "ma60": "60 日均線",
+    "rsi14": "14 日相對強弱指標",
+    "volume_ratio": "量比",
+}
+LEDGER_FIELD_LABEL = {
+    "fees": "手續費",
+    "taxes": "交易稅",
+}
 
 
 def build_lifecycle_accounting(
@@ -137,7 +162,7 @@ def build_position_lifecycle_analysis_from_rows(
     data_quality = _empty_data_quality()
 
     if not ordered_events:
-        _add_note(data_quality, "events_missing", "No PositionEvent rows were available for this position_group_id.")
+        _add_note(data_quality, "events_missing", "找不到這筆完整交易的事件紀錄。")
 
     accounting = build_lifecycle_accounting(ordered_events, data_quality=data_quality)
     event_snapshots = _build_event_indicator_snapshots(ordered_events, ordered_rows, data_quality)
@@ -313,7 +338,7 @@ def _build_lifecycle_review(
                 "事件當下的技術行情覆蓋不足；這是系統行情證據缺口，不代表操作原因或事件紀錄缺失。"
             )
         elif record_gaps and not market_gaps:
-            gap_text = "部分事件或 ledger 紀錄不足；請依資料品質欄位確認缺少的交易事實。"
+            gap_text = "部分事件或交易帳務紀錄不足；請依資料品質欄位確認缺少的交易事實。"
         else:
             gap_text = "部分交易紀錄與事件當下技術行情不足；請依資料品質欄位分別確認缺口。"
         item = _text_item(
@@ -748,7 +773,7 @@ def _build_review_framework(
             "label": "紀錄品質",
             "status": "insufficient" if record_has_evidence_gap else "sufficient",
             "summary": (
-                "操作計畫、事件或 ledger 紀錄仍有缺口。"
+                "操作計畫、事件或交易帳務紀錄仍有缺口。"
                 if record_has_evidence_gap
                 else (
                     "操作原因、事件與計畫紀錄可用；技術行情缺口只限制受影響的判讀面向。"
@@ -787,7 +812,7 @@ def _build_review_framework(
     if record_gaps:
         next_actions.insert(0, {
             "title": "先補交易紀錄",
-            "action": "依資料品質提示補齊缺少的事件或 ledger 事實，再進行對應面向的交易品質判斷。",
+            "action": "依資料品質提示補齊缺少的事件或交易帳務事實，再進行對應面向的交易品質判斷。",
             "source_refs": ["data_quality.insufficient_data"],
         })
     if market_gaps:
@@ -978,14 +1003,26 @@ def _deduplicate_feedback(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduplicated
 
 
+def _event_type_label(value: Any) -> str:
+    return EVENT_TYPE_LABEL.get(str(value or ""), "其他交易事件")
+
+
+def _market_regime_label(value: Any) -> str:
+    return MARKET_REGIME_LABEL.get(str(value or ""), "市場狀態未明")
+
+
 def _event_evidence_item(event: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str, Any]:
     refs = [_event_fact_ref(event)]
     snapshot_text = "沒有可用的事件當下指標快照"
     if snapshot is not None:
         refs.append(f"event_indicator_snapshots.{event['event_key']}")
-        snapshot_text = f"事件當下市場狀態為 {snapshot.get('market_regime')}，價格相對 MA20 為 {snapshot.get('event_price_vs_ma20_pct')}%"
+        regime_label = _market_regime_label(snapshot.get("market_regime"))
+        distance = _number(snapshot.get("event_price_vs_ma20_pct"))
+        distance_label = f"{distance:g}%" if distance is not None else "資料不足"
+        snapshot_text = f"事件當下市場狀態為{regime_label}，價格相對 20 日均線為 {distance_label}"
+    event_type_label = _event_type_label(event.get("event_type"))
     return _text_item(
-        f"{event.get('event_date')} 發生 {event.get('event_type')}，價格 {event.get('price')}、數量 {event.get('quantity')}；{snapshot_text}。",
+        f"{event.get('event_date')} 發生{event_type_label}，價格 {event.get('price')}、數量 {event.get('quantity')}；{snapshot_text}。",
         refs,
     )
 
@@ -1062,7 +1099,7 @@ def _next_operation_rules(
             ))
         elif primary_label == "insufficient_data":
             rules.append(_text_item(
-                "本次仍有事件、ledger 或市場證據缺口；下次先補齊資料品質提示中的缺失，再判讀部位管理模式。",
+                "本次仍有事件、交易帳務或市場證據缺口；下次先補齊資料品質提示中的缺失，再判讀部位管理模式。",
                 ["data_quality.insufficient_data"],
             ))
         else:
@@ -1247,7 +1284,7 @@ def _build_accounting_timeline(events: list[Any], data_quality: dict[str, Any]) 
                 _add_note(
                     data_quality,
                     "exit_quantity_exceeds_position",
-                    "An exit event quantity exceeded the tracked open position size; realized accounting used available quantity only.",
+                    "結案數量超過系統追蹤的持有數量，已只用可用持有數量計算已實現損益。",
                 )
             if exit_quantity > 0 and before_average_cost is not None:
                 sold_cost = before_average_cost * exit_quantity
@@ -1264,7 +1301,7 @@ def _build_accounting_timeline(events: list[Any], data_quality: dict[str, Any]) 
             _add_note(
                 data_quality,
                 "manual_adjustment_not_accounted",
-                "manual_adjustment rows were included as event facts but excluded from cost-basis accounting.",
+                "手動調整已保留為事件事實，但未納入成本基礎計算。",
             )
 
         max_position_size = max(max_position_size, position_size)
@@ -1330,9 +1367,9 @@ def _build_lifecycle_metrics(
     max_drawdown_pct = None
     profit_giveback_pct = None
     if not path_points:
-        _add_note(data_quality, "holding_path_prices", "No market close rows were available during the lifecycle exposure window.")
+        _add_note(data_quality, "holding_path_prices", "持有期間沒有可用的收盤價格資料。")
     elif weighted_entry is None or weighted_entry == 0:
-        _add_note(data_quality, "weighted_entry_price", "Weighted entry price was unavailable for path metrics.")
+        _add_note(data_quality, "weighted_entry_price", "缺少可用的加權進場成本，暫時無法計算持有期間路徑指標。")
     else:
         closes = [point["close"] for point in path_points]
         max_profit_pct = (max(closes) - weighted_entry) / weighted_entry * 100
@@ -1585,7 +1622,11 @@ def _build_event_indicator_snapshots(events: list[Any], rows: list[Any], data_qu
                 _add_note(
                     data_quality,
                     f"{event_type}_{_date_to_iso(event_date)}_{key}",
-                    f"Insufficient point-in-time rows for {event_type} {key}: {actual}/{required}.",
+                    (
+                        f"{_event_type_label(event_type)} {_date_to_iso(event_date)} 的"
+                        f"{EVENT_INDICATOR_LABEL.get(key, '技術指標')}歷史資料不足"
+                        f"（可用 {actual} 筆，至少需要 {required} 筆）。"
+                    ),
                 )
         snapshots.append({
             "event_key": _event_key(event, index),
@@ -1873,7 +1914,7 @@ def _objective_stop_rule_check(
         return _objective_check(
             "default_stop_rule",
             "unobservable",
-            "固定價格型風險規則缺少 planned_stop_price。",
+            "固定價格型風險規則缺少計畫防守價。",
             refs + ["plan_snapshot.planned_stop_price"],
         )
 
@@ -2453,7 +2494,7 @@ def _market_regime_snapshots(snapshots: list[dict[str, Any]]) -> list[dict[str, 
 
 def _build_decision_context(plan: Any, data_quality: dict[str, Any]) -> dict[str, Any]:
     if plan is None:
-        _add_note(data_quality, "decision_context", "No PositionLifecyclePlan row was available; decision context is insufficient.")
+        _add_note(data_quality, "decision_context", "缺少原始操作計畫，無法完整核對當時的決策脈絡。")
         return {
             "status": "insufficient",
             "has_plan": False,
@@ -2663,11 +2704,11 @@ def _shared_context_data_quality_note(shared_context: dict[str, Any]) -> dict[st
         return None
 
     if "future_context_excluded" in missing_reasons:
-        text = "部分 shared context 的資料日期晚於事件日期，已排除以避免使用未來資料回評當時決策。"
+        text = "部分背景脈絡資料晚於事件日期，已排除以避免使用未來資料回評當時決策。"
     elif missing_reasons:
-        text = "部分 shared context 缺漏或過舊，本次生命週期檢討只把它作為資料品質 caveat。"
+        text = "部分背景脈絡資料缺漏或過舊，本次生命週期檢討只把它作為資料品質限制。"
     else:
-        text = "部分 shared context 非 fresh，本次生命週期檢討只把它作為資料品質 caveat。"
+        text = "部分背景脈絡資料不是最新狀態，本次生命週期檢討只把它作為資料品質限制。"
     return _text_item(
         text,
         ["shared_context.events", "shared_context.data_quality"],
@@ -2724,11 +2765,14 @@ def _event_key(event: Any, index: int) -> str:
 
 def _ledger_amount(event: Any, key: str, index: int, data_quality: dict[str, Any]) -> float:
     raw_value = _event_value(event, key, missing=None)
+    event_label = _event_type_label(_event_value(event, "event_type"))
+    event_context = _date_to_iso(_event_value(event, "event_date")) or f"第 {index + 1} 筆事件"
+    field_label = LEDGER_FIELD_LABEL.get(key, "交易費用")
     if raw_value is None:
         _add_note(
             data_quality,
             f"missing_ledger_{key}",
-            f"Event {_event_key(event, index)} had missing {key}; 0 was used for ledger accounting.",
+            f"{event_label} {event_context} 缺少{field_label}，交易帳務計算暫以 0 處理。",
         )
         return 0.0
     number = _number(raw_value)
@@ -2736,7 +2780,7 @@ def _ledger_amount(event: Any, key: str, index: int, data_quality: dict[str, Any
         _add_note(
             data_quality,
             f"invalid_ledger_{key}",
-            f"Event {_event_key(event, index)} had non-finite or invalid {key}; 0 was used for ledger accounting.",
+            f"{event_label} {event_context} 的{field_label}格式無效，交易帳務計算暫以 0 處理。",
         )
         return 0.0
     return number

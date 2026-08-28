@@ -247,7 +247,7 @@ def test_lifecycle_metrics_weighted_cost_realized_pnl_and_fees_taxes():
     assert metrics["max_unrealized_drawdown_pct"] == pytest.approx(-26.4319)
     assert metrics["profit_giveback_pct"] == pytest.approx(52.5486)
     assert evidence["metrics"]["lifecycle"]["total_realized_pnl"] == pytest.approx(-109)
-    assert any("missing taxes" in note for note in result["data_quality"]["notes"])
+    assert any("缺少交易稅" in note for note in result["data_quality"]["notes"])
 
 
 def test_lifecycle_metrics_exclude_full_exit_day_close_from_holding_path():
@@ -1260,7 +1260,9 @@ def test_lifecycle_review_classifies_phase_d_patterns_and_template_refs():
     assert any("弱勢中新增批次" in item["text"] for item in review["what_needs_review"])
     assert any("降低曝險或結案觸發條件" in item["text"] for item in review["next_operation_rules"])
     assert any("資料品質" in item["text"] for item in review["data_quality_notes"])
-    assert any("發生 initial_entry" in item["text"] for item in review["event_level_evidence"])
+    assert any("發生初始進場" in item["text"] for item in review["event_level_evidence"])
+    assert all("initial_entry" not in item["text"] for item in review["event_level_evidence"])
+    assert all("market_regime" not in item["text"] for item in review["event_level_evidence"])
     assert review["outcome"]["status"] == "loss"
     assert review["outcome"]["label"] == "結果虧損"
     assert review["process_quality"]["status"] == "mixed"
@@ -1789,7 +1791,8 @@ def test_lifecycle_shared_context_caveat_does_not_override_classification():
     )
     assert result["shared_context"] == shared_context
     assert evidence["shared_context"] == shared_context
-    assert any("shared context" in item["text"] for item in result["lifecycle_review"]["classification"]["caveats"])
+    assert any("背景脈絡" in item["text"] for item in result["lifecycle_review"]["classification"]["caveats"])
+    assert all("shared context" not in item["text"] for item in result["lifecycle_review"]["classification"]["caveats"])
 
 
 def test_db_builder_scopes_user_group_and_performs_no_writes(db_session: Session):

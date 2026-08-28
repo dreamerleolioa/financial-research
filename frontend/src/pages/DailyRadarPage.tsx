@@ -116,6 +116,33 @@ function formatDate(value: string | null | undefined): string {
   return value || "—";
 }
 
+function formatBucketLabel(value: string): string {
+  return (BUCKET_LABEL as Record<string, string>)[value] ?? "其他觀察分類";
+}
+
+function formatRiskLabel(value: string): string {
+  return (RISK_LABEL as Record<string, string>)[value] ?? "其他風險訊號";
+}
+
+function formatRepeatStatusLabel(value: string): string {
+  return (REPEAT_STATUS_LABEL as Record<string, string>)[value] ?? "觀察狀態未明";
+}
+
+function getRepeatStatusClass(value: string): string {
+  return (
+    (REPEAT_STATUS_CLASS as Record<string, string>)[value] ??
+    "bg-badge-neutral-bg text-badge-neutral-text"
+  );
+}
+
+function formatRunStatusLabel(value: string): string {
+  return (RUN_STATUS_LABEL as Record<string, string>)[value] ?? "掃描狀態未明";
+}
+
+function formatRunStatusHelper(value: string): string {
+  return (RUN_STATUS_HELPER as Record<string, string>)[value] ?? "請查看資料日期與流程紀錄確認狀態";
+}
+
 const DATA_SOURCE_LABEL: Record<string, string> = {
   ohlcv: "價格與成交量資料",
   technical_profile: "技術輪廓資料",
@@ -195,7 +222,7 @@ const TRACE_KEY_LABEL: Record<string, string> = {
 };
 
 function formatTraceKey(value: string): string {
-  return TRACE_KEY_LABEL[value] ?? `其他追蹤欄位（${value}）`;
+  return TRACE_KEY_LABEL[value] ?? "其他追蹤欄位";
 }
 
 const MATCHED_RULE_DETAIL_LABEL: Record<string, string> = {
@@ -539,7 +566,7 @@ function formatMatchedRuleValue(value: string): string {
     MATCHED_RULE_VALUE_LABEL[value] ??
     BUCKET_LABEL[value as DailyRadarBucket] ??
     RISK_LABEL[value as DailyRadarRiskLabel] ??
-    value
+    "其他狀態"
   );
 }
 
@@ -813,7 +840,7 @@ function getPhase1AvwapDisplayAnchors(context: DailyRadarPhase1AvwapContext): Ar
     .slice(0, 4)
     .map(([key, anchor]) => ({
       key,
-      referenceLabel: PHASE1_AVWAP_ANCHOR_REFERENCE_LABEL[key] ?? `${formatTraceKey(key)} AVWAP`,
+      referenceLabel: PHASE1_AVWAP_ANCHOR_REFERENCE_LABEL[key] ?? "其他 AVWAP 觀察線",
       avwap: anchor.avwap,
       distance: anchor.distance_to_avwap_pct,
       anchorDate: anchor.anchor_date,
@@ -936,16 +963,16 @@ function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }
     <section className="rounded-xl border border-accent/30 bg-accent-soft/35 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span
-          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}
+          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getRepeatStatusClass(candidate.repeat_status)}`}
         >
-          {REPEAT_STATUS_LABEL[candidate.repeat_status]}
+          {formatRepeatStatusLabel(candidate.repeat_status)}
         </span>
         <span className="rounded-md bg-surface-raised/75 px-2 py-0.5 text-xs font-medium text-accent">
-          {BUCKET_LABEL[candidate.primary_bucket]}候選
+          {formatBucketLabel(candidate.primary_bucket)}候選
         </span>
       </div>
       <h3 className="mt-3 text-base font-semibold text-text-primary">
-        {BUCKET_LABEL[candidate.primary_bucket]}候選，僅供觀察追蹤
+        {formatBucketLabel(candidate.primary_bucket)}候選，僅供觀察追蹤
       </h3>
       <p className="mt-2 text-sm leading-relaxed text-text-secondary">
         {getBucketResearchThesis(candidate.primary_bucket)}
@@ -1141,16 +1168,16 @@ function DailyRadarCandidateList({
               <div className="min-w-0">
                 <p className="text-xs font-medium text-text-faint md:hidden">追蹤狀態</p>
                 <span
-                  className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-medium md:mt-0 ${REPEAT_STATUS_CLASS[candidate.repeat_status]}`}
+                  className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-medium md:mt-0 ${getRepeatStatusClass(candidate.repeat_status)}`}
                 >
-                  {REPEAT_STATUS_LABEL[candidate.repeat_status]}
+                  {formatRepeatStatusLabel(candidate.repeat_status)}
                 </span>
               </div>
 
               <div className="min-w-0">
                 <p className="text-xs font-medium text-text-faint md:hidden">主要分類</p>
                 <p className="mt-1 text-sm font-medium leading-snug text-text-secondary md:mt-0">
-                  {BUCKET_LABEL[candidate.primary_bucket]}
+                  {formatBucketLabel(candidate.primary_bucket)}
                 </p>
               </div>
 
@@ -1163,7 +1190,7 @@ function DailyRadarCandidateList({
                         key={risk}
                         className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
                       >
-                        {RISK_LABEL[risk]}
+                        {formatRiskLabel(risk)}
                       </span>
                     ))
                   ) : (
@@ -1319,7 +1346,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
                     key={bucket}
                     className="rounded-md bg-badge-neutral-bg px-2 py-0.5 text-xs font-medium text-badge-neutral-text"
                   >
-                    次要分類：{BUCKET_LABEL[bucket]}
+                    次要分類：{formatBucketLabel(bucket)}
                   </span>
                 ))
               ) : (
@@ -1333,7 +1360,7 @@ function DailyRadarDetailDrawer({ candidate, onClose }: { candidate: DailyRadarC
                     key={risk}
                     className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
                   >
-                    {RISK_LABEL[risk]}
+                    {formatRiskLabel(risk)}
                   </span>
                 ))
               ) : (
@@ -1465,7 +1492,7 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
       <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
         <div className="flex flex-col gap-2 border-b border-border-subtle px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-5">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-text-faint">Radar status</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-text-faint">雷達狀態</p>
             <h2 className="mt-1 text-base font-semibold text-text-primary">今日掃描狀態</h2>
           </div>
           <span className="ui-badge self-start sm:self-auto">{freshnessSummary}</span>
@@ -1475,8 +1502,8 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
           <RunMetric label="最新掃描日" value={formatDate(run.run_date)} helper="盤後觀察批次" />
           <RunMetric
             label="掃描狀態"
-            value={RUN_STATUS_LABEL[run.status]}
-            helper={RUN_STATUS_HELPER[run.status]}
+            value={formatRunStatusLabel(run.status)}
+            helper={formatRunStatusHelper(run.status)}
             valueClass={getRunStatusClass(run.status)}
           />
           <RunMetric label="觀察候選數" value={String(run.candidates.length)} helper="符合規則的追蹤名單" />

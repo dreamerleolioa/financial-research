@@ -144,7 +144,7 @@ export function getTechnicalIndicatorLabel(
   emptyLabel = "—",
 ): string {
   if (!value) return emptyLabel;
-  return TECHNICAL_LABELS[kind][value]?.label ?? value;
+  return TECHNICAL_LABELS[kind][value]?.label ?? "其他狀態";
 }
 
 export function getAnalyzeSymbolName(
@@ -220,7 +220,7 @@ function buildPhase1AvwapCopyRows(
       const parts = [formatPrice(anchor.avwap, snapshotSymbol), `距離 ${formatPhase1Distance(distance)}`];
       if (anchor.anchor_date) parts.push(`錨點日 ${anchor.anchor_date}`);
       if (anchor.estimated) parts.push("日資料估算");
-      return [PHASE1_ANCHOR_LABEL[key] ?? `${key} AVWAP`, parts.join(" / ")];
+      return [PHASE1_ANCHOR_LABEL[key] ?? "其他 AVWAP 觀察線", parts.join(" / ")];
     });
 
   if (anchorRows.length > 0) {

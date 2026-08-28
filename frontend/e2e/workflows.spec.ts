@@ -1407,7 +1407,12 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
             overall_conclusion: { text: "目前沒有命中既定生命週期分類。", source_refs: ["lifecycle_metrics"] },
             what_worked: [],
             what_needs_review: [],
-            event_level_evidence: [],
+            event_level_evidence: [
+              {
+                text: "2026-05-08 發生 initial_entry；事件當下市場狀態為 uptrend。",
+                source_refs: ["event_facts.id:1"],
+              },
+            ],
             next_operation_rules: [],
             data_quality_notes: [],
           },
@@ -1432,6 +1437,11 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
   await expect(overallSection.getByText("暫無適用分類", { exact: true })).toHaveCount(1);
   await expect(workspace).not.toContainText("混合結論");
   await expect(workspace).not.toContainText("原始計畫缺失：");
+  await expect(workspace).toContainText("事件當下紀錄");
+  await expect(workspace).toContainText("發生 初始進場；事件當下市場狀態為 上升趨勢");
+  await expect(workspace).not.toContainText("real events");
+  await expect(workspace).not.toContainText("initial_entry");
+  await expect(workspace).not.toContainText("uptrend");
   await expect(workspace).not.toContainText("事件當下技術行情覆蓋不足");
 
   const dialog = page.getByRole("dialog", { name: "台積電 2330.TW 完整交易復盤" });
@@ -1448,6 +1458,8 @@ test("Closed Portfolio presents a neutral lifecycle classification without a mis
   await expect(workspace).toContainText("完整結案 2026-05-10 的 MA20");
   await expect(workspace).toContainText("不代表你沒有記錄操作原因");
   await expect(workspace).toContainText("事後補填計畫提示");
+  await expect(workspace).toContainText("部分資料不完整，請查看下方資料不足欄位");
+  await expect(workspace).not.toContainText("Missing full_exit_2026-05-10_ma20");
   await expect(workspace).not.toContainText("原始計畫缺失：");
 });
 
@@ -1506,7 +1518,7 @@ test("Closed Portfolio separates profitable outcome from mixed process quality a
             dimensions: {
               entry: {
                 label: "進場品質",
-                status: "not_observed",
+                status: "future_status",
                 summary: "未命中模式。",
                 source_refs: ["entry_sequence"],
               },
@@ -1587,6 +1599,8 @@ test("Closed Portfolio separates profitable outcome from mixed process quality a
   await expect(workspace).toContainText("部位管理");
   await expect(workspace).toContainText("風險與出場");
   await expect(workspace).toContainText("紀錄品質");
+  await expect(workspace).toContainText("其他狀態");
+  await expect(workspace).not.toContainText("future_status");
   await expect(workspace).toContainText("保留分批保護獲利");
   await expect(workspace).toContainText("提前定義風險出口");
   await expect(workspace).toContainText("破位條件觸發時直接降低曝險");

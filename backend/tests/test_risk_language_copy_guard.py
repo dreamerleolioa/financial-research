@@ -11,6 +11,11 @@ PRIMARY_SURFACE_FILES = [
     ROOT / "frontend/src/pages/WatchlistPage.tsx",
     ROOT / "frontend/src/pages/ClosedPortfolioPage.tsx",
 ]
+RAW_CODE_GUARD_FILES = [
+    *PRIMARY_SURFACE_FILES,
+    ROOT / "frontend/src/components/TechnicalIndicatorsPanel.tsx",
+    ROOT / "frontend/src/lib/technicalIndicators.ts",
+]
 
 COMMAND_LANGUAGE_TERMS = [
     "建議買",
@@ -146,6 +151,45 @@ def test_primary_frontend_surfaces_expose_risk_language_copy() -> None:
         "相容欄位（secondary）",
     ]:
         assert phrase in combined
+
+
+def test_primary_surfaces_do_not_render_internal_codes_as_fallback_copy() -> None:
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in RAW_CODE_GUARD_FILES)
+    forbidden_snippets = [
+        "TECHNICAL_LABELS[kind][value]?.label ?? value",
+        "PHASE1_ANCHOR_LABEL[key] ?? key",
+        "REVIEW_DIMENSION_STATUS_LABEL[dimension.status] ?? dimension.status",
+        "state.split(\"_\").join(\" \")",
+        "firstError.code",
+        "firstError.message",
+        "${label.missing_reason}",
+        "matched_rules.slice",
+        "REPEAT_STATUS_LABEL[candidate.repeat_status]",
+        "POSITION_EVENT_SOURCE_LABEL[timelineEvent.source]",
+        "LIFECYCLE_PROVENANCE_LABEL[provenance]",
+        "`其他資料項目（${value}）`",
+        "`其他事件（${value}）`",
+    ]
+
+    assert [snippet for snippet in forbidden_snippets if snippet in combined] == []
+    for readable_fallback in ["其他狀態", "其他技術訊號", "其他 AVWAP 觀察線"]:
+        assert readable_fallback in combined
+
+
+def test_lifecycle_generator_does_not_emit_legacy_english_diagnostics() -> None:
+    source = (
+        ROOT / "backend/src/ai_stock_sentinel/analysis/position_lifecycle.py"
+    ).read_text(encoding="utf-8")
+    forbidden_diagnostics = [
+        "No PositionEvent rows",
+        "Insufficient point-in-time rows",
+        "No PositionLifecyclePlan row",
+        "manual_adjustment rows were included",
+        "shared context 的資料日期",
+        "資料品質 caveat",
+    ]
+
+    assert [diagnostic for diagnostic in forbidden_diagnostics if diagnostic in source] == []
 
 
 def _is_allowlisted(relative_path: str, term: str, line: str) -> bool:
