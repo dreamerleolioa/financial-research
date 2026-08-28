@@ -14,7 +14,7 @@ import {
   watchlistItem,
 } from "./fixtures";
 
-test("Analyze quick lookup supports copy and a keyboard-contained add-position dialog", async ({ page, context }) => {
+test("Analyze deterministic research supports copy and a keyboard-contained add-position dialog", async ({ page, context }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await authenticate(page);
@@ -23,7 +23,7 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await page.goto("/analyze");
   const symbolInput = page.getByRole("textbox", { name: "股票代碼" });
   await symbolInput.fill("3661.TW");
-  await page.getByRole("button", { name: "快速資料" }).click();
+  await page.getByRole("button", { name: "開始分析" }).click();
 
   await expect(page.getByText("世芯-KY 3661.TW", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("漲停", { exact: true })).toBeVisible();
@@ -32,6 +32,8 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await expect(page.getByText("3075 / 3155 / 3050", { exact: true })).toBeVisible();
   await expect(page.getByText("20／60 日均成交量", { exact: true })).toBeVisible();
   await expect(page.getByText("2,100 / 1,800", { exact: true })).toBeVisible();
+  await expect(page.getByText("MA20 5日斜率", { exact: true })).toBeVisible();
+  await expect(page.getByText("+1.234%", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "複製技術指標摘要" }).click();
   await expect(page.getByRole("button", { name: "複製技術指標摘要" })).toContainText("已複製");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("3661.TW");
@@ -44,6 +46,15 @@ test("Analyze quick lookup supports copy and a keyboard-contained add-position d
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("現價：3120（TWSE MIS 即時）（漲停）");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("MA20 5日斜率：+1.234%");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("波動狀態：波動擴張");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("訊號衝突：MA20 仍上升，但 MACD 多方柱體正在收斂。");
 
   const openDialogButton = page.getByRole("button", { name: "加入持股" });
   await openDialogButton.click();
@@ -79,7 +90,7 @@ test("Analyze presents a bearish directional score without calling it low consis
 
   await page.goto("/analyze");
   await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
-  await page.getByRole("button", { name: "完整 AI 分析" }).click();
+  await page.getByRole("button", { name: /開始分析/ }).click();
 
   await expect(page.getByText("綜合訊號強度", { exact: true })).toBeVisible();
   await expect(page.getByText("強烈偏空", { exact: true })).toBeVisible();
@@ -291,12 +302,12 @@ test("Portfolio prepares and copies neutral technical snapshots for every holdin
   expect(copiedText).not.toContain("technical_score");
 
   const technicalBodies = requestBodies.filter(
-    (body): body is { symbol: string; skip_ai: boolean } =>
-      typeof body === "object" && body !== null && "symbol" in body && "skip_ai" in body,
+    (body): body is { symbol: string; persist_result: boolean } =>
+      typeof body === "object" && body !== null && "symbol" in body && "persist_result" in body,
   );
   expect(technicalBodies).toHaveLength(2);
   expect(technicalBodies.map((body) => body.symbol).sort()).toEqual(["2330.TW", "6488.TWO"]);
-  expect(technicalBodies.every((body) => body.skip_ai === true)).toBe(true);
+  expect(technicalBodies.every((body) => body.persist_result === false)).toBe(true);
   expect(requestLog).not.toContain("POST /analyze/position");
 
   await page.evaluate(() => {
@@ -626,7 +637,7 @@ test("Portfolio refreshes prices without triggering AI analysis", async ({ page 
 
   await page.goto("/portfolio");
   const position = page.locator('[data-portfolio-position-id="11"]');
-  await expect(position.getByRole("button", { name: "AI 分析" })).toBeVisible();
+  await expect(position.getByRole("button", { name: "持倉診斷" })).toBeVisible();
   await expect(page.getByRole("button", { name: "更新全部價格" })).toBeVisible();
 
   await position.getByRole("button", { name: "更新 台積電 2330.TW 最新價格" }).click();
@@ -698,7 +709,7 @@ test("Portfolio loads fresh prices on first visit without a manual refresh", asy
   await expect(position).toContainText("防守可控");
   await expect(position).toContainText("尚有 4.73%");
   await expect(position).toContainText("計畫防守價 1048");
-  await expect(position).toContainText("AI 2026-07-30");
+  await expect(position).toContainText("上次診斷 2026-07-30");
   await expect(position).toContainText("風險檢查已觸發");
   await expect(position).not.toContainText("防守條件已觸發");
 
@@ -731,7 +742,7 @@ test("Portfolio keeps the position list readable at 1024px", async ({ page }) =>
   await expect(page.locator("[data-portfolio-position-header]")).toBeHidden();
   await expect(position.getByText("未實現損益", { exact: true })).toBeVisible();
   await expect(position.getByText("防守緩衝", { exact: true })).toBeVisible();
-  await expect(position.getByRole("button", { name: "AI 分析" })).toBeVisible();
+  await expect(position.getByRole("button", { name: "持倉診斷" })).toBeVisible();
 
   const dimensions = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,

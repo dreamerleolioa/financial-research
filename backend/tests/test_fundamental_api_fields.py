@@ -67,7 +67,6 @@ def _mock_graph_result():
             "dividend_yield": 1.8,
             "yield_signal": "low_yield",
         },
-        "fundamental_context": "【基本面估值】當前 PE 25.6 倍，估值合理。",
     }
 
 

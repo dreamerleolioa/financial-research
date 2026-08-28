@@ -2,24 +2,17 @@ import logging as _logging
 import os
 from dataclasses import dataclass
 
-STRATEGY_VERSION = "1.0.0"
+# 2.0.0 is the first deterministic contract with no news/LLM-derived decisions.
+STRATEGY_VERSION = "2.0.0"
 
 
 @dataclass(slots=True, frozen=True)
 class Settings:
-    openai_api_key: str | None
-    openai_model: str
-    anthropic_api_key: str | None
-    anthropic_model: str
     daily_radar_internal_token: str | None
 
 
 def load_settings() -> Settings:
     return Settings(
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
         daily_radar_internal_token=os.getenv("DAILY_RADAR_INTERNAL_TOKEN"),
     )
 

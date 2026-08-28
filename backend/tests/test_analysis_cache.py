@@ -76,6 +76,21 @@ def test_cache_version_mismatch_returns_none():
     assert result is None
 
 
+def test_legacy_news_strategy_cache_is_invalidated() -> None:
+    """The pre-deterministic strategy contract must never survive presentation scrubbing."""
+    mock_cache = _make_mock_cache(is_final=True)
+    mock_cache.strategy_version = "1.0.0"
+    mock_cache.signal_confidence = 91
+    mock_cache.action_tag = "opportunity"
+    mock_cache.recommended_action = "Buy"
+    mock_cache.final_verdict = "新聞利多，建議積極進場"
+
+    result = handle_cache_hit(mock_cache, now_time=time(10, 0))
+
+    assert STRATEGY_VERSION != "1.0.0"
+    assert result is None
+
+
 def test_cache_null_version_returns_none():
     """strategy_version 為 NULL 的舊快取，_handle_cache_hit 回傳 None（視為版本失效）。"""
     mock_cache = _make_mock_cache(is_final=True)

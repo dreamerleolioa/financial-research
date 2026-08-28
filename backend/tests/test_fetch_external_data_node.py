@@ -12,7 +12,6 @@ def _base_state(symbol: str = "2330.TW") -> dict:
         "snapshot": {"current_price": 1785.0},
         "institutional_flow": None,
         "fundamental_data": None,
-        "fundamental_context": None,
         "errors": [],
     }
 
@@ -30,7 +29,6 @@ def test_writes_both_institutional_and_fundamental():
 
     assert result["institutional_flow"] == mock_inst
     assert result["fundamental_data"] == mock_fund
-    assert result["fundamental_context"]  # 非空字串
 
 
 def test_runs_fetchers_concurrently():

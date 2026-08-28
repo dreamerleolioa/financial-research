@@ -2,31 +2,12 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from ai_stock_sentinel.models import AnalysisDetail
-
-
-# ── 欄位分組（類型說明用，非 LangGraph 節點狀態） ──────────────────────────
-
-class _NewsStateFields(TypedDict, total=False):
-    """新聞相關欄位"""
-    news_content: str | None
-    cleaned_news: dict[str, Any] | None
-    cleaned_news_items: list[dict[str, Any]]
-    raw_news_items: list[dict[str, Any]] | None
-    cleaned_news_quality: dict[str, Any] | None
-    news_display: dict[str, Any] | None
-    news_display_items: list[dict[str, Any]]
-
-
 class _MarketDataStateFields(TypedDict, total=False):
     """市場數據與技術分析欄位"""
     snapshot: dict[str, Any] | None
     institutional_flow: dict[str, Any] | None
     fundamental_data: dict[str, Any] | None
-    technical_context: str | None
     technical_profile: dict[str, Any] | None
-    institutional_context: str | None
-    fundamental_context: str | None
     high_20d: float | None
     low_20d: float | None
     support_20d: float | None
@@ -38,9 +19,8 @@ class _MarketDataStateFields(TypedDict, total=False):
 
 
 class _AnalysisStateFields(TypedDict, total=False):
-    """LLM 分析結果與信心分數欄位"""
+    """確定性分析結果與相容欄位"""
     analysis: str | None
-    analysis_detail: AnalysisDetail | None
     confidence_score: int | None
     cross_validation_note: str | None
     signal_confidence: int | None
@@ -83,25 +63,12 @@ class GraphState(TypedDict):
     errors: list[dict[str, str]]
     requires_news_refresh: bool
     requires_fundamental_update: bool
-    skip_ai: bool | None
-
-    # 新聞相關（參見 _NewsStateFields）
-    news_content: str | None
-    cleaned_news: dict[str, Any] | None
-    cleaned_news_items: list[dict[str, Any]]
-    raw_news_items: list[dict[str, Any]] | None
-    cleaned_news_quality: dict[str, Any] | None
-    news_display: dict[str, Any] | None
-    news_display_items: list[dict[str, Any]]
 
     # 市場數據（參見 _MarketDataStateFields）
     snapshot: dict[str, Any] | None
     institutional_flow: dict[str, Any] | None
     fundamental_data: dict[str, Any] | None
-    technical_context: str | None
     technical_profile: dict[str, Any] | None
-    institutional_context: str | None
-    fundamental_context: str | None
     high_20d: float | None
     low_20d: float | None
     support_20d: float | None
@@ -113,7 +80,6 @@ class GraphState(TypedDict):
 
     # 分析結果（參見 _AnalysisStateFields）
     analysis: str | None
-    analysis_detail: AnalysisDetail | None
     confidence_score: int | None
     cross_validation_note: str | None
     signal_confidence: int | None
@@ -143,7 +109,7 @@ class GraphState(TypedDict):
     unrealized_pnl: float | None
     holding_days: int | None
 
-    # --- History Context (from stock_analysis_cache, injected before LLM call) ---
+    # --- History Context (from stock_analysis_cache) ---
     prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值
 
     # 分析時間戳記 — 由 API 層注入，strategy_node 讀取以套用盤中 guardrail

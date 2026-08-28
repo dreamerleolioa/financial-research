@@ -200,7 +200,7 @@ function WatchlistTechnicalPanel({
         <div>
           <p className="text-sm font-semibold text-text-primary">技術指標快查</p>
           <p className="mt-1 text-xs text-text-muted">
-            {quickResult ? `${quickSessionLabel}資料，不執行完整 AI 分析` : "讀取技術指標中"}
+            {quickResult ? `${quickSessionLabel}資料，不寫入分析紀錄` : "讀取技術指標中"}
             {technicalState.loading && quickResult ? "，更新中" : ""}
           </p>
         </div>
@@ -426,7 +426,7 @@ export default function WatchlistPage() {
     }));
 
     try {
-      const result = await analyzeSymbol({ symbol: item.symbol, skip_ai: true });
+      const result = await analyzeSymbol({ symbol: item.symbol, persist_result: false });
       updateTechnicalState(item.id, (state) => ({
         ...state,
         loading: false,
@@ -677,7 +677,7 @@ export default function WatchlistPage() {
             </p>
             <h2 className="mt-2 text-lg font-semibold text-text-primary">建立待研究清單</h2>
             <p className="mt-1 text-xs text-text-muted">
-              僅保留觀察標的、技術快查與 copy-to-AI 摘要，不會在此執行完整 AI 分析。
+              僅保留觀察標的、技術快查與 copy-to-AI 摘要，不會在此寫入分析紀錄。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:justify-end">

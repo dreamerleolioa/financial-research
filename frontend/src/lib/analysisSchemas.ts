@@ -5,37 +5,6 @@ const nullableString = z.string().nullable();
 const nullableNumber = z.number().nullable();
 const recordSchema = z.record(z.string(), z.unknown());
 
-const analysisDetailSchema = z
-  .object({
-    summary: z.string(),
-    risks: z.array(z.string()),
-    technical_signal: z.enum(["bullish", "bearish", "sideways"]),
-    institutional_flow: nullableString,
-    sentiment_label: nullableString,
-    tech_insight: nullableString,
-    inst_insight: nullableString,
-    news_insight: nullableString,
-    final_verdict: nullableString,
-    fundamental_insight: nullableString.optional(),
-    thought_process: nullableString.optional(),
-  })
-  .passthrough();
-
-const cleanedNewsQualitySchema = z
-  .object({
-    quality_score: z.number(),
-    quality_flags: z.array(z.string()),
-  })
-  .passthrough();
-
-const newsDisplayItemSchema = z
-  .object({
-    title: z.string(),
-    date: nullableString.optional(),
-    source_url: nullableString.optional(),
-  })
-  .passthrough();
-
 const actionPlanSchema = z
   .object({
     action: nullableString.optional(),
@@ -130,6 +99,18 @@ const technicalProfileSchema = z
     primary_score_inputs: z.record(z.string(), technicalProfileSignalSchema),
     risk_overheat_filters: z.record(z.string(), technicalProfileSignalSchema),
     secondary_evidence: z.record(z.string(), technicalProfileSignalSchema),
+    temporal_evidence: z.record(z.string(), technicalProfileSignalSchema).optional(),
+    signal_conflicts: z
+      .array(
+        z
+          .object({
+            code: z.string(),
+            severity: z.string(),
+            message: z.string(),
+          })
+          .passthrough(),
+      )
+      .optional(),
     display_only: recordSchema,
     score_summary: z
       .object({
@@ -196,10 +177,6 @@ export const analyzeResponseSchema = z
     snapshot: recordSchema,
     symbol_name: nullableString.optional(),
     analysis: z.string(),
-    analysis_detail: analysisDetailSchema.nullable(),
-    cleaned_news: recordSchema.nullable(),
-    cleaned_news_quality: cleanedNewsQualitySchema.nullable(),
-    news_display_items: z.array(newsDisplayItemSchema),
     confidence_score: nullableNumber,
     cross_validation_note: nullableString,
     strategy_type: z.enum(["short_term", "mid_term", "defensive_wait"]).nullable(),

@@ -9,10 +9,18 @@ from ai_stock_sentinel.taiwan_symbols import validate_taiwan_symbol
 
 class AnalyzeRequest(BaseModel):
     symbol: str = Field(default="2330.TW", min_length=1)
-    news_text: str | None = None
-    skip_ai: bool = False
+    news_text: str | None = Field(default=None, deprecated=True)
+    persist_result: bool | None = None
+    skip_ai: bool | None = Field(default=None, deprecated=True)
 
     _validate_symbol = field_validator("symbol", mode="before")(validate_taiwan_symbol)
+
+    @property
+    def should_persist_result(self) -> bool:
+        """Resolve the new persistence option with legacy ``skip_ai`` support."""
+        if self.persist_result is not None:
+            return self.persist_result
+        return not bool(self.__dict__.get("skip_ai"))
 
 
 class PositionAnalyzeRequest(BaseModel):
@@ -86,6 +94,14 @@ class TechnicalIndicators(BaseModel):
     donchian_mid: float | None = None
     donchian_width_pct: float | None = None
     donchian_position: str | None = None
+    ma20_slope_pct_5d: float | None = None
+    ma60_slope_pct_10d: float | None = None
+    macd_hist_slope_pct_3d: float | None = None
+    macd_hist_trend: str | None = None
+    atr_pct_percentile_60d: float | None = None
+    bollinger_bandwidth_percentile_60d: float | None = None
+    volatility_regime: str | None = None
+    technical_conflicts: list[str] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):

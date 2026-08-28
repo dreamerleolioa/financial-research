@@ -255,7 +255,7 @@ def test_analyze_missing_snapshot_returns_traceable_error() -> None:
     body = response.json()
     error_codes = {item["code"] for item in body["errors"]}
     assert "MISSING_SNAPSHOT" in error_codes
-    assert "MISSING_ANALYSIS" in error_codes
+    assert "MISSING_ANALYSIS" not in error_codes
 
 
 def test_analyze_graph_errors_propagated_to_response() -> None:
@@ -597,7 +597,7 @@ def test_analyze_response_includes_extended_technical_indicators(monkeypatch: py
     assert indicators["obv_trend_mid_long"] is None
     assert indicators["obv_trend_mid_long_window"] is None
     profile = body["technical_profile"]
-    assert profile["version"] == "technical-layer-v1"
+    assert profile["version"] == "technical-layer-v2"
     assert profile["primary_score_inputs"]["ma_structure"]["state"] in {
         "bullish_alignment",
         "above_ma20",
@@ -1098,6 +1098,7 @@ def test_analyze_position_returns_position_analysis_block() -> None:
     assert pa["risk_state_label"] == "風險狀態穩定"
     assert pa["risk_control_reference"]["reference_type"] == "dynamic_defense_reference"
     assert "recommended_action" in pa["command_language_deprecated"]
+    assert "skip_ai" not in graph.invoke.call_args.args[0]
 
 
 def test_analyze_position_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
@@ -1518,8 +1519,8 @@ def test_fetch_and_store_raw_data_uses_volume_when_recent_volumes_missing() -> N
     }
 
 
-def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
-    """When cache has full_result, /analyze should return all fields."""
+def test_cache_hit_returns_deterministic_fields_and_scrubs_retired_llm_payload(monkeypatch) -> None:
+    """Historical cache rows must not revive retired LLM/news output."""
     from unittest.mock import MagicMock
     import ai_stock_sentinel.analysis.router as api_module
     from ai_stock_sentinel.analysis.calibration import (
@@ -1587,9 +1588,12 @@ def test_cache_hit_returns_full_result_fields(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["analysis"] == "完整分析內容"
+    assert body["analysis"] == ""
+    assert body["analysis_detail"] is None
     assert body["fundamental_data"] == {"pe_ratio": 28.1}
-    assert body["news_display_items"] == [{"title": "新聞標題"}]
+    assert body["news_display_items"] == []
+    assert body["cleaned_news"] is None
+    assert body["sentiment_label"] is None
     assert body["snapshot"]["symbol"] == "2330.TW"
     assert body["symbol_name"] == "台積電"
     assert body["snapshot"]["name"] == "台積電"
@@ -1706,13 +1710,13 @@ def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
         sum(full["snapshot"]["recent_volumes"][-60:]) / 60
     )
     assert response.technical_profile is not None
-    assert response.technical_profile["version"] == "technical-layer-v1"
+    assert response.technical_profile["version"] == "technical-layer-v2"
     assert response.technical_profile["data_quality"]["data_date"] == "2026-06-23"
     assert response.technical_profile["data_quality"]["is_final"] is True
 
 
-def test_cache_hit_syncs_average_volumes_into_existing_technical_profile() -> None:
-    """Old profiles and raw indicators should expose the same hydrated average volumes."""
+def test_cache_hit_rebuilds_outdated_technical_profile() -> None:
+    """Outdated cached profiles are replaced with the current canonical contract."""
     from unittest.mock import MagicMock
     import ai_stock_sentinel.analysis.router as api_module
 
@@ -1768,18 +1772,12 @@ def test_cache_hit_syncs_average_volumes_into_existing_technical_profile() -> No
     assert display_only["avg_volume_60"] == pytest.approx(sum(volumes[-60:]) / 60)
     assert response.technical_indicators.avg_volume_20 == display_only["avg_volume_20"]
     assert response.technical_indicators.avg_volume_60 == display_only["avg_volume_60"]
-    assert response.technical_profile["data_quality"]["missing_fields"] == ["legacy_field"]
+    assert "legacy_field" not in response.technical_profile["data_quality"]["missing_fields"]
     assert response.technical_profile["data_quality"]["is_final"] is True
-    assert response.technical_profile["version"] == "cached-technical-version"
-    assert response.technical_profile["primary_score_inputs"] == {
-        "ma_alignment": "cached-ma-alignment",
-        "rsi14": 999.0,
-    }
-    assert response.technical_profile["score_summary"] == {
-        "primary_score": 91,
-        "secondary_score": 82,
-        "risk_filter_score": -73,
-    }
+    assert response.technical_profile["version"] == "technical-layer-v2"
+    assert "ma_structure" in response.technical_profile["primary_score_inputs"]
+    assert "temporal_evidence" in response.technical_profile
+    assert response.technical_profile["score_summary"]["technical_score"] <= 100
 
 
 def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
@@ -1859,10 +1857,11 @@ def test_analyze_general_endpoint_reads_only_general_cache(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert calls == [("2330.TW", "general")]
+    assert "skip_ai" not in graph.invoke.call_args.args[0]
 
 
-def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(monkeypatch) -> None:
-    """skip_ai quick lookup should reuse recent raw data and avoid external validation/fetch writes."""
+def test_analyze_non_persistent_uses_recent_raw_cache_without_symbol_check_or_rewrite(monkeypatch) -> None:
+    """Non-persistent lookup reuses recent raw data and avoids analysis-cache writes."""
     import ai_stock_sentinel.analysis.router as api_module
 
     cached_snapshot = asdict(_SNAPSHOT) | {"name": "台積電"}
@@ -1874,11 +1873,11 @@ def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(m
     raw_cache.fundamental = cached_fundamental
     raw_cache.fetched_at = "2026-06-18T09:01:00+08:00"
 
-    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: pytest.fail("skip_ai must bypass L1 analysis cache"))
+    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: pytest.fail("non-persistent lookup must bypass L1 analysis cache"))
     monkeypatch.setattr(api_module, "get_recent_raw_data", lambda db, symbol, max_age_seconds=600: raw_cache)
     monkeypatch.setattr(api_module, "_check_symbol_exists", lambda symbol: pytest.fail("raw cache hit must not validate symbol externally"))
     monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: pytest.fail("raw cache hit must not rewrite raw data"))
-    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: pytest.fail("skip_ai must not write analysis cache"))
+    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: pytest.fail("non-persistent lookup must not write analysis cache"))
     monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
@@ -1903,11 +1902,11 @@ def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(m
         }
     )
     client = _client_with_graph(graph)
-    response = client.post("/analyze", json={"symbol": "2330.TW", "skip_ai": True})
+    response = client.post("/analyze", json={"symbol": "2330.TW", "persist_result": False})
 
     assert response.status_code == 200
     graph_input = graph.invoke.call_args.args[0]
-    assert graph_input["skip_ai"] is True
+    assert "skip_ai" not in graph_input
     assert graph_input["snapshot"] == cached_snapshot
     assert graph_input["institutional_flow"] == cached_institutional
     assert graph_input["fundamental_data"] == cached_fundamental

@@ -602,10 +602,10 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
     assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
     assert payloads["2330.TW"]["name"] == "台積電"
     assert payloads["2454.TW"]["indicators"]["missing_trading_days_60"] == 0
-    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v1"
+    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v2"
     assert payloads["2330.TW"]["technical_profile"]["formula_versions"] == {
-        "metrics": "technical-metrics-v1",
-        "layering": "technical-layer-v1",
+        "metrics": "technical-metrics-v2",
+        "layering": "technical-layer-v2",
     }
     assert payloads["2330.TW"]["technical_profile"]["data_quality"]["data_date"] == "2026-06-02"
     assert payloads["2330.TW"]["data_dates"]["technical_profile"] == "2026-06-02"

@@ -61,7 +61,7 @@
 
 | 編號  | 需求                                                                                                  |
 | ----- | ----------------------------------------------------------------------------------------------------- |
-| P0-F1 | `config.py` 定義 `STRATEGY_VERSION = "1.0.0"`                                                         |
+| P0-F1 | `config.py` 定義 `STRATEGY_VERSION`；`2.0.0` 起代表不含新聞／LLM 派生決策的 deterministic contract |
 | P0-F2 | `DailyAnalysisLog` 與 `StockAnalysisCache` 具 nullable `strategy_version VARCHAR(20)` 欄位；正式校準樣本另寫入 append-only `analysis_calibration_samples` |
 | P0-F3 | 每次分析寫入 DB 時同步寫入目前 `STRATEGY_VERSION`；舊資料不回填                                       |
 | P0-F4 | Alembic migration 支援 upgrade / downgrade                                                            |

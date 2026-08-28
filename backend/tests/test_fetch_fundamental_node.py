@@ -6,7 +6,6 @@ def _base_state():
         "symbol": "2330.TW",
         "snapshot": {"current_price": 1785.0},
         "fundamental_data": None,
-        "fundamental_context": None,
         "errors": [],
     }
 
@@ -18,8 +17,7 @@ def test_writes_fundamental_data_on_success():
         return mock_result
 
     result = fetch_fundamental_node(_base_state(), fetcher=mock_fetcher)
-    assert result["fundamental_data"] == mock_result
-    assert result["fundamental_context"]  # 非空字串
+    assert result == {"fundamental_data": mock_result}
 
 
 def test_handles_fetcher_error_dict():
@@ -28,7 +26,6 @@ def test_handles_fetcher_error_dict():
 
     result = fetch_fundamental_node(_base_state(), fetcher=mock_fetcher)
     assert result["fundamental_data"]["error"] == "NO_DATA"
-    assert "基本面" in result["fundamental_context"]
 
 
 def test_handles_missing_snapshot():

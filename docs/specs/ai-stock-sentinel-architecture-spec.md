@@ -1,9 +1,10 @@
 # AI Stock Sentinel 技術架構需求文件
 
 > 日期：2026-06-18
-> 狀態：Current v3.1
+> 狀態：Current v3.2
 > 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
-> 更新摘要：同步後端架構重構後的目前事實。後端仍維持單一 FastAPI monolith、同一個 SQLAlchemy/PostgreSQL DB、同一套 uv/pytest/CI；已採用務實的 Clean Architecture / Hexagonal Architecture + DDD-lite + TDD guardrails。Analysis、Portfolio、Daily Radar 已拆出 schemas、application services、repository/presenter/adapter 等邊界；新增 AST-based architecture boundary tests 防止已整理出的純計算與 HTTP boundary 回退。
+> 更新摘要：2026-08-28 起，Production 已移除 Anthropic/OpenAI/LangChain client、RSS 新聞清潔與 LLM prompt/analysis nodes；Analyze 與 Position 僅執行可回放的 Python 確定性分析。舊 `analysis*` / `cleaned_news*` response 欄位暫留為空值相容殼，歷史快取讀取時也必須清洗。本文後段若仍提及 LLM prompt、新聞 cleaner 或 `skip_ai`，只代表已退役的歷史設計，不再是現行 runtime contract。
+> Technical profile v2 新增 MA20/MA60 斜率、MACD 柱體斜率、ATR%/布林帶寬 60 日分位、波動 regime 與 signal conflicts。這些欄位先作可解釋 evidence，不進入 `score_summary`；盤中若無法用日期證明已完成 bar，temporal evidence 必須 fail closed。
 
 ## 0. 目前實作快照（2026-06-18）
 
@@ -11,8 +12,8 @@
 
 | 表面 | 主要入口 | 核心責任 | 長期邊界 |
 | ---- | -------- | -------- | -------- |
-| 新倉分析 | `POST /analyze`, frontend `/analyze` | 對單一股票做四維研究、risk-language setup、資料品質與 action trace | 用於「是否值得觀察與建立新倉研究」，不是持股續抱/出場端點 |
-| 持股診斷 | `POST /analyze/position`, frontend `/portfolio` | 以既有成本、持有天數、技術防守線與風險語言檢查續抱/減碼/出場 | rule-based 欄位由 Python 產生，LLM 不覆寫 exit/action 判定 |
+| 新倉分析 | `POST /analyze`, frontend `/analyze` | 對單一股票做技術、籌碼、基本面研究、risk-language setup、資料品質與 action trace | 全程 deterministic；用於「是否值得觀察與建立新倉研究」，不是持股續抱/出場端點 |
+| 持股診斷 | `POST /analyze/position`, frontend `/portfolio` | 以既有成本、持有天數、技術防守線與風險語言檢查續抱/減碼/出場 | 所有判定與文案由版本化 Python 規則產生 |
 | 持股紀律與復盤 | `/portfolio/*` | 持股 CRUD、加碼事件、結案、entry record、lifecycle plan、trade review、group lifecycle review | 以 `position_group_id` 串起同一交易生命週期；可回放事件與決策脈絡 |
 | Daily Radar | `/internal/daily-radar/*`, `GET /daily-radar/*`, frontend `/daily-radar` | 收盤後產生隔日觀察清單、保存 deterministic scoring trace、forward validation 與 rule governance | 不是 LLM 選股；`observation_score` 供排序/校準/trace，不是勝率或交易建議 |
 
@@ -20,10 +21,10 @@
 
 | 層級 | 現況 |
 | ---- | ---- |
-| Backend | Python 3.14、FastAPI、LangGraph、LangChain、SQLAlchemy 2、Alembic、uv |
+| Backend | Python 3.14、FastAPI、LangGraph、SQLAlchemy 2、Alembic、uv |
 | Frontend | React 19、React Router 7、Vite 8、TypeScript 5.9、Tailwind CSS 4、pnpm 10 |
 | Data / DB | PostgreSQL production path；tests 可用 SQLite；JSONB 保存可回放 evidence 與 full result |
-| LLM | Anthropic 優先，OpenAI fallback；缺 key 時保持降級輸出，不中斷 deterministic pipeline |
+| LLM | Production 不整合外部模型、不保存模型 API key；延伸研究由使用者手動複製摘要到外部工具 |
 | CI/CD | GitHub Actions 跑 backend tests、frontend build、GitHub Pages deploy；Daily Radar 與 rule/report workflows 呼叫 Zeabur internal APIs |
 
 ### 0.2 後端模組邊界
@@ -31,9 +32,9 @@
 | 模組 | 責任 |
 | ---- | ---- |
 | `api.py` | FastAPI app setup、middleware、router include、health check、`/internal/fetch-raw-data` |
-| `graph/` | LangGraph state、nodes、builder；負責 crawl、external data fetch、judge、clean、analyze flow |
-| `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、LLM analyzer、新聞清潔、quality gate、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
-| `data_sources/` | yfinance、RSS、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
+| `graph/` | LangGraph state、nodes、builder；負責 crawl、external data fetch、judge、preprocess、score、strategy flow |
+| `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
+| `data_sources/` | yfinance、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
 | `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Portfolio/Daily Radar read-only projections |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
@@ -124,7 +125,7 @@ AI Stock Sentinel 採用 TypeScript + Python 混合架構，核心目標為：
 | 維度                       | 說明                                                                                                                                                                                             | 資料來源                                                         |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
 | **消息面 (News)**          | 影響市場情緒的事件訊號（法說會、政策、產業動態、法人評等調整等），以多篇新聞聚合出 `sentiment_label` 與 `sentiment_strength`；**不涵蓋公司財務數字**（財報數字屬於基本面，需另從財報資料源取得） | Google News RSS、財經媒體 RSS                                    |
-| **技術面 (Technical)**     | MA5/20/60 均線、乖離率 (BIAS)、RSI、布林通道、MACD、KD、ADX、OBV、ATR、MFI、Donchian Channel、成交量變化、支撐壓力位                                                                             | yfinance + Pandas 計算                                           |
+| **技術面 (Technical)**     | MA5/20/60、均線斜率、BIAS、RSI、布林通道與帶寬分位、MACD 與柱體斜率、KD、ADX、OBV、ATR 與 ATR% 分位、MFI、Donchian、成交量、支撐壓力及訊號衝突 | yfinance + Python canonical metrics/profile 計算                 |
 | **籌碼面 (Institutional)** | 三大法人（外資、投信、自營商）買賣超、連續買賣超、主導買賣方、融資融券、借券、外資持股、大戶/散戶持股結構，並以買賣超占近期均量比例判斷相對規模                                                  | FinMind（Primary）+ TWSE OpenAPI / TPEX（Fallback）              |
 | **基本面 (Fundamental)**   | 本益比位階（PE Band）、現金殖利率、近四季合計 EPS（TTM EPS）                                                                                                                                     | TWSE/TPEX 官方財報與股利版本庫；MOPS 歷史季 EPS 回補；FinMind bounded fallback |
 

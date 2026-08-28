@@ -5,6 +5,7 @@
 > 狀態：Draft v1.6
 > 定位：將單次診斷系統升級為具備記憶、自我修正能力的閉環量化平台
 > 前置依賴：Phase 6 持股診斷系統（`POST /analyze/position`）完成
+> 退役說明（2026-08-28）：本文件的 LLM 分析、新聞清潔與 token 成本段落只保留歷史脈絡。現行自動化、Analyze、Position 與 Daily Radar 均為 deterministic workflow，不呼叫模型 provider。
 
 ---
 

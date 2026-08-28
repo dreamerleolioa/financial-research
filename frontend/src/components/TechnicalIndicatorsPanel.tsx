@@ -11,6 +11,8 @@ import {
   formatDailyOhlc,
   formatIndicatorNumber,
   formatMovingAverages,
+  formatPercentile,
+  formatSignedPercent,
   getMarketCurrentPrice,
   getPriceLimitLabel,
   getTechnicalIndicatorLabel,
@@ -39,6 +41,13 @@ const SECONDARY_LABELS: Record<string, string> = {
   kd: "KD",
 };
 
+const TEMPORAL_LABELS: Record<string, string> = {
+  ma20_slope: "MA20 斜率",
+  ma60_slope: "MA60 斜率",
+  macd_hist_trend: "MACD 動能變化",
+  volatility_regime: "波動分位狀態",
+};
+
 const SIGNAL_STATE_LABELS: Record<string, string> = {
   above_ma20: "站上 MA20",
   above_mid: "中軌上方",
@@ -57,13 +66,16 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   bullish_cross: "黃金交叉",
   bullish_flow: "資金偏多",
   bullish_momentum: "多方動能",
+  bullish_fading: "多方動能收斂",
   contained: "風險可控",
   constructive: "結構正向",
   constructive_participation: "量能配合",
+  compression: "波動壓縮",
   extended: "乖離偏大",
   expanded_participation: "量能放大",
   extreme_extension: "乖離過大",
   extreme_overheated: "極度過熱",
+  expansion: "波動擴張",
   flat: "區間平坦",
   high: "高波動",
   high_bearish_cross: "高檔死亡交叉",
@@ -71,6 +83,7 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   low_bullish_cross: "低檔黃金交叉",
   lower_half: "區間下半",
   medium: "中波動",
+  mixed_transition: "波動轉換分歧",
   missing: "資料不足",
   moderate: "支撐距離適中",
   near_lower: "接近下緣",
@@ -86,6 +99,9 @@ const SIGNAL_STATE_LABELS: Record<string, string> = {
   overbought: "過熱",
   oversold: "低檔",
   positive_histogram: "動能柱偏多",
+  accelerating_bullish: "多方動能擴張",
+  accelerating_bearish: "空方動能擴張",
+  bearish_recovering: "空方動能收斂",
   range_mid: "區間中段",
   strong: "趨勢明確",
   strong_bearish_trend: "強勢空方趨勢",
@@ -258,10 +274,28 @@ function rawIndicatorRows(
     ["volume", "成交量", formatVolume(snapshot.volume)],
     ["average_volume", "20／60 日均成交量", formatAverageVolumes(indicators)],
     ["moving_averages", "均線 MA5/20/60", formatMovingAverages(indicators, symbol)],
+    ["ma20_slope", "MA20 5日斜率", formatSignedPercent(indicators.ma20_slope_pct_5d, 3)],
+    ["ma60_slope", "MA60 10日斜率", formatSignedPercent(indicators.ma60_slope_pct_10d, 3)],
     ["range_20d", "20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
     ["range_60d", "60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
     ["bollinger_position", "布林通道", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
     ["macd_bias", "MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
+    [
+      "macd_hist_trend",
+      "MACD 動能變化",
+      `${getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)}（3日斜率 ${formatSignedPercent(indicators.macd_hist_slope_pct_3d, 4)}）`,
+    ],
+    ["atr_percentile", "ATR% 60日分位", formatPercentile(indicators.atr_pct_percentile_60d)],
+    [
+      "bollinger_bandwidth_percentile",
+      "布林帶寬 60日分位",
+      formatPercentile(indicators.bollinger_bandwidth_percentile_60d),
+    ],
+    [
+      "volatility_regime",
+      "波動狀態",
+      getTechnicalIndicatorLabel("volatility_regime", indicators.volatility_regime),
+    ],
     [
       "kd",
       "KD",
@@ -390,6 +424,28 @@ export function TechnicalProfileDisclosure({
         <TechnicalLayerSection title="主要判斷" signals={profile.primary_score_inputs} labels={PRIMARY_LABELS} />
         <TechnicalLayerSection title="風險與過熱濾網" signals={profile.risk_overheat_filters} labels={RISK_LABELS} />
         <TechnicalLayerSection title="輔助證據" signals={profile.secondary_evidence} labels={SECONDARY_LABELS} />
+        {profile.temporal_evidence && (
+          <TechnicalLayerSection
+            title="時序證據（目前不計分）"
+            signals={profile.temporal_evidence}
+            labels={TEMPORAL_LABELS}
+          />
+        )}
+        {(profile.signal_conflicts?.length ?? 0) > 0 && (
+          <section className="border-t border-border-subtle pt-4">
+            <h4 className="mb-3 text-xs font-semibold text-text-muted">訊號衝突</h4>
+            <ul className="space-y-2">
+              {profile.signal_conflicts!.map((conflict) => (
+                <li
+                  key={conflict.code}
+                  className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                >
+                  {conflict.message}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </details>
   );

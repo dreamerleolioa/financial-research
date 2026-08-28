@@ -103,6 +103,19 @@ def test_score_node_neutral_sources_with_real_data_reports_full_data_confidence(
     assert result["data_confidence"] == 100
 
 
+def test_score_node_explains_two_lane_alignment_without_news() -> None:
+    from ai_stock_sentinel.graph.nodes import score_node
+
+    result = score_node({
+        "institutional_flow": {"flow_label": "institutional_accumulation"},
+        "snapshot": {"recent_closes": list(range(80, 106))},
+        "errors": [],
+    })
+
+    assert result["data_confidence"] == 100
+    assert result["cross_validation_note"] == "技術面與籌碼面訊號一致，信心偏高"
+
+
 def test_score_node_does_not_count_insufficient_technical_profile_as_available():
     """A derived score alone must not make a one-day technical profile complete."""
     from ai_stock_sentinel.graph.nodes import score_node
@@ -125,7 +138,7 @@ def test_score_node_does_not_count_insufficient_technical_profile_as_available()
     })
 
     assert result["technical_signal"] == "sideways"
-    assert result["data_confidence"] == 33
+    assert result["data_confidence"] == 0
 
 
 def test_score_node_ignores_insufficient_profile_when_raw_technical_data_is_available():
@@ -146,7 +159,7 @@ def test_score_node_ignores_insufficient_profile_when_raw_technical_data_is_avai
 
     assert result["technical_signal"] == "sideways"
     assert result["signal_confidence"] == 50
-    assert result["data_confidence"] == 67
+    assert result["data_confidence"] == 50
 
 
 def test_score_node_uses_existing_technical_profile_for_signal():
@@ -171,63 +184,6 @@ def test_score_node_uses_existing_technical_profile_for_signal():
     }
     result = score_node(state)
     assert result["technical_signal"] == "bearish"
-
-
-# ---------------------------------------------------------------------------
-# Session 7: DATE_UNKNOWN score_node integration tests
-# ---------------------------------------------------------------------------
-
-
-def test_date_unknown_appends_note_to_cross_validation_note():
-    """DATE_UNKNOWN 旗標存在時 cross_validation_note 末尾應追加時效性未驗證提示。"""
-    from ai_stock_sentinel.graph.nodes import score_node
-    state = {
-        "cleaned_news": {"sentiment_label": "neutral"},
-        "institutional_flow": None,
-        "snapshot": {"recent_closes": list(range(80, 106))},
-        "cleaned_news_quality": {"quality_flags": ["DATE_UNKNOWN"], "quality_score": 40},
-        "errors": [],
-    }
-    result = score_node(state)
-    assert "時效性未驗證" in result["cross_validation_note"]
-
-
-def test_no_penalty_when_quality_flags_empty():
-    """quality_flags 為空時不扣分、不追加提示。"""
-    from ai_stock_sentinel.graph.nodes import score_node
-    state_no_flag = {
-        "cleaned_news": {"sentiment_label": "neutral"},
-        "institutional_flow": None,
-        "snapshot": {"recent_closes": list(range(80, 106))},
-        "cleaned_news_quality": {"quality_flags": [], "quality_score": 100},
-        "errors": [],
-    }
-    state_with_flag = {
-        "cleaned_news": {"sentiment_label": "neutral"},
-        "institutional_flow": None,
-        "snapshot": {"recent_closes": list(range(80, 106))},
-        "cleaned_news_quality": {"quality_flags": ["DATE_UNKNOWN"], "quality_score": 40},
-        "errors": [],
-    }
-    result_no = score_node(state_no_flag)
-    result_with = score_node(state_with_flag)
-    assert result_with["signal_confidence"] == result_no["signal_confidence"] - 3
-    assert "時效性未驗證" not in result_no.get("cross_validation_note", "")
-
-
-def test_no_penalty_when_cleaned_news_quality_is_none():
-    """cleaned_news_quality 為 None 時安全降級，不崩潰，不扣分。"""
-    from ai_stock_sentinel.graph.nodes import score_node
-    state = {
-        "cleaned_news": {"sentiment_label": "neutral"},
-        "institutional_flow": None,
-        "snapshot": {"recent_closes": list(range(80, 106))},
-        "cleaned_news_quality": None,
-        "errors": [],
-    }
-    result = score_node(state)
-    assert isinstance(result["signal_confidence"], int)
-    assert "時效性未驗證" not in result.get("cross_validation_note", "")
 
 
 # ---------------------------------------------------------------------------
