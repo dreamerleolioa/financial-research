@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from math import isfinite
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,10 @@ from ai_stock_sentinel.analysis.position_lifecycle import (
     build_position_lifecycle_analysis_from_rows,
 )
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
+from ai_stock_sentinel.calibration.repository import (
+    completed_price_rows_from_raw_data,
+    load_price_series_from_raw_data,
+)
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, SharedBackgroundContext, StockRawData
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.user_models.user import User
@@ -96,8 +101,21 @@ def _row(record_date: date, close: float, volume: float = 1000, symbol: str = "2
                 "close": close,
                 "volume": volume,
             },
+            "data_dates": {"ohlcv": record_date.isoformat()},
         },
     )
+
+
+def _all_numbers(value):
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, dict):
+        return [number for item in value.values() for number in _all_numbers(item)]
+    if isinstance(value, (list, tuple)):
+        return [number for item in value for number in _all_numbers(item)]
+    return []
 
 
 def _snapshot_row(record_date: date, closes: list[float], symbol: str = "2330.TW"):
@@ -458,6 +476,464 @@ def test_advanced_internal_risk_path_and_scores():
     assert advanced["sector_relative_return_pct"] is None
 
 
+def test_objective_plan_adherence_uses_observed_facts_not_self_report() -> None:
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10, plan_adherence="no"),
+        _event(2, "add_entry", date(2026, 1, 11), 105, 5, plan_adherence="no"),
+        _event(3, "full_exit", date(2026, 1, 20), 120, 15, plan_adherence="no"),
+    ]
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 61),
+            _snapshot_row(date(2026, 1, 11), [100] * 60 + [105]),
+            _snapshot_row(date(2026, 1, 20), [100] * 60 + [120]),
+        ],
+        plan=_plan(
+            setup_type="pullback",
+            planned_holding_period="short_term",
+            add_entry_condition="no_averaging_down",
+        ),
+    )
+
+    advanced = result["advanced_internal"]
+    objective = advanced["objective_plan_adherence"]
+    assert advanced["declared_plan_adherence_score"] == 0
+    assert objective["status"] == "sufficient"
+    assert objective["evaluated_check_count"] == 2
+    assert objective["passed_check_count"] == 2
+    assert objective["score"] == 100
+    assert advanced["observed_plan_adherence_score"] == 100
+    assert advanced["plan_adherence_score"] == 100
+
+
+def test_objective_plan_adherence_keeps_single_check_as_limited_evidence() -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 10), 100, 10),
+            _event(2, "full_exit", date(2026, 1, 11), 110, 10),
+        ],
+        market_rows=[],
+        plan=_plan(add_entry_condition="no_add_entry"),
+    )
+
+    advanced = result["advanced_internal"]
+    assert advanced["objective_plan_adherence"]["status"] == "limited_evidence"
+    assert advanced["objective_plan_adherence"]["score"] == 100
+    assert advanced["observed_plan_adherence_score"] is None
+
+
+def test_objective_stop_rule_detects_delayed_response_from_completed_bars() -> None:
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10),
+        _event(2, "full_exit", date(2026, 1, 15), 85, 10),
+    ]
+    rows = [
+        _row(date(2026, 1, 9), 100),
+        _row(date(2026, 1, 10), 100),
+        _row(date(2026, 1, 11), 89),
+        _row(date(2026, 1, 12), 88),
+        _row(date(2026, 1, 13), 87),
+        _row(date(2026, 1, 14), 86),
+        _row(date(2026, 1, 15), 85),
+    ]
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=rows,
+        plan=_plan(
+            planned_holding_period="short_term",
+            default_stop_rule="fixed_price",
+            planned_stop_price=90,
+        ),
+    )
+
+    objective = result["advanced_internal"]["objective_plan_adherence"]
+    stop_check = next(
+        check for check in objective["checks"] if check["code"] == "default_stop_rule"
+    )
+    assert stop_check["status"] == "fail"
+    assert objective["score"] == 50
+    assert result["advanced_internal"]["observed_plan_adherence_score"] == 50
+
+
+def test_objective_fixed_stop_uses_intraday_low_not_only_close() -> None:
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10),
+        _event(2, "full_exit", date(2026, 1, 12), 99, 10),
+    ]
+    rows = [
+        _row(date(2026, 1, 9), 100),
+        SimpleNamespace(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 11),
+            technical={
+                "ohlcv": {"open": 100, "high": 101, "low": 89, "close": 100, "volume": 1000},
+                "data_dates": {"ohlcv": "2026-01-11"},
+            },
+        ),
+    ]
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=rows,
+        plan=_plan(default_stop_rule="fixed_price", planned_stop_price=90),
+    )
+
+    stop_check = next(
+        check
+        for check in result["advanced_internal"]["objective_plan_adherence"]["checks"]
+        if check["code"] == "default_stop_rule"
+    )
+    assert stop_check["status"] == "pass"
+
+
+def test_objective_fixed_stop_uses_embedded_trade_date_not_cache_observation_date() -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 10), 100, 1),
+            _event(2, "full_exit", date(2026, 1, 11), 100, 1),
+        ],
+        market_rows=[SimpleNamespace(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 10),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"open": 100, "high": 101, "low": 80, "close": 100, "volume": 1000},
+                "data_dates": {"ohlcv": "2026-01-09"},
+            },
+        )],
+        plan=_plan(default_stop_rule="fixed_price", planned_stop_price=90),
+    )
+
+    stop_check = next(
+        check
+        for check in result["advanced_internal"]["objective_plan_adherence"]["checks"]
+        if check["code"] == "default_stop_rule"
+    )
+    assert stop_check["status"] == "unobservable"
+    assert result["advanced_internal"]["observed_plan_adherence_score"] is None
+
+
+def test_objective_fixed_stop_does_not_use_ambiguous_entry_day_low() -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 10), 100, 1),
+            _event(2, "full_exit", date(2026, 1, 11), 100, 1),
+        ],
+        market_rows=[SimpleNamespace(
+            symbol="2330.TW",
+            record_date=date(2026, 1, 10),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"open": 100, "high": 101, "low": 80, "close": 100, "volume": 1000},
+                "data_dates": {"ohlcv": "2026-01-10"},
+            },
+        )],
+        plan=_plan(default_stop_rule="fixed_price", planned_stop_price=90),
+    )
+
+    stop_check = next(
+        check
+        for check in result["advanced_internal"]["objective_plan_adherence"]["checks"]
+        if check["code"] == "default_stop_rule"
+    )
+    assert stop_check["status"] == "unobservable"
+
+
+def test_objective_pullback_requires_ma20_proximity_not_only_price_above_ma20() -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 10), 100, 10),
+            _event(2, "add_entry", date(2026, 1, 11), 120, 1),
+            _event(3, "full_exit", date(2026, 1, 12), 121, 11),
+        ],
+        market_rows=[
+            _snapshot_row(date(2026, 1, 10), [100] * 61),
+            _snapshot_row(date(2026, 1, 11), [100] * 61),
+            _snapshot_row(date(2026, 1, 12), [100] * 61),
+        ],
+        plan=_plan(add_entry_condition="pullback_holds_ma20"),
+    )
+
+    add_check = next(
+        check
+        for check in result["advanced_internal"]["objective_plan_adherence"]["checks"]
+        if check["code"] == "add_entry_condition"
+    )
+    assert add_check["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    ("planned_holding_period", "exit_date", "expected_status"),
+    [
+        ("short_term", date(2026, 2, 9), "fail"),
+        ("long_term", date(2026, 2, 10), "fail"),
+        ("long_term", date(2026, 7, 9), "pass"),
+    ],
+)
+def test_objective_holding_period_uses_documented_day_ranges(
+    planned_holding_period: str,
+    exit_date: date,
+    expected_status: str,
+) -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 10), 100, 1),
+            _event(2, "full_exit", exit_date, 101, 1),
+        ],
+        plan=_plan(planned_holding_period=planned_holding_period),
+    )
+
+    holding_check = next(
+        check
+        for check in result["advanced_internal"]["objective_plan_adherence"]["checks"]
+        if check["code"] == "holding_period"
+    )
+    assert holding_check["status"] == expected_status
+
+
+def test_relative_performance_uses_matched_cash_flows_and_prior_completed_bars() -> None:
+    events = [
+        _event(1, "initial_entry", date(2026, 1, 10), 100, 10),
+        _event(2, "add_entry", date(2026, 1, 11), 105, 5),
+        _event(3, "full_exit", date(2026, 1, 20), 120, 15),
+    ]
+    benchmark_rows = [
+        {"date": "2026-01-09", "close": 1000},
+        {"date": "2026-01-10", "close": 1010},
+        {"date": "2026-01-19", "close": 1100},
+        {"date": "2026-01-20", "close": 5000},
+    ]
+    result, evidence = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=[
+            _row(date(2026, 1, 9), 99),
+            _row(date(2026, 1, 10), 101),
+            _row(date(2026, 1, 19), 119),
+        ],
+        plan=_plan(),
+        benchmark_rows=benchmark_rows,
+        sector_benchmark_rows=benchmark_rows,
+        sector_benchmark_symbol="TWSE-SEMICONDUCTOR",
+    )
+
+    actual_return = result["lifecycle_metrics"]["total_return_pct_on_weighted_cost"]
+    benchmark_units = 1000 / 1000 + 525 / 1010
+    benchmark_return = (benchmark_units * 1100 - 1525) / 1525 * 100
+    advanced = result["advanced_internal"]
+    assert advanced["benchmark_relative_status"] == "available"
+    assert advanced["benchmark_return_pct"] == pytest.approx(benchmark_return, abs=1e-4)
+    assert advanced["benchmark_relative_return_pct"] == pytest.approx(
+        actual_return - benchmark_return,
+        abs=1e-4,
+    )
+    assert advanced["sector_relative_status"] == "available"
+    assert evidence["relative_performance_snapshot"]["methodology"] == (
+        "matched_cash_flow_aligned_prior_completed_bar_v1"
+    )
+
+
+def test_relative_performance_applies_entry_and_exit_costs_without_investing_fees() -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 10), 100, 10, fees=10, taxes=0),
+            _event(2, "full_exit", date(2026, 1, 20), 100, 10, fees=10, taxes=0),
+        ],
+        market_rows=[
+            _row(date(2026, 1, 9), 100),
+            _row(date(2026, 1, 19), 100),
+        ],
+        plan=_plan(),
+        benchmark_rows=[
+            {"date": "2026-01-09", "close": 1000},
+            {"date": "2026-01-19", "close": 1000},
+        ],
+    )
+
+    assert result["advanced_internal"]["benchmark_return_pct"] == pytest.approx(
+        -1.9802,
+        abs=1e-4,
+    )
+
+
+def test_completed_price_rows_use_embedded_trade_date_not_observation_date() -> None:
+    rows = completed_price_rows_from_raw_data([
+        SimpleNamespace(
+            record_date=date(2026, 1, 8),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"close": 101},
+                "data_dates": {"ohlcv": "2026-01-07"},
+            },
+        ),
+        SimpleNamespace(
+            record_date=date(2026, 1, 11),
+            raw_data_is_final=True,
+            technical={"ohlcv": {"close": 999}},
+        ),
+    ])
+
+    assert rows == [
+        {"date": "2026-01-07", "open": None, "high": None, "low": None, "close": 101.0},
+    ]
+
+
+def test_completed_price_rows_keep_real_ohlc_when_close_history_overlaps() -> None:
+    rows = completed_price_rows_from_raw_data([SimpleNamespace(
+        raw_data_is_final=True,
+        technical={
+            "price_history": [
+                {"date": "2026-01-07", "open": 95, "high": 110, "low": 80, "close": 100},
+            ],
+            "recent_closes": [100],
+            "recent_close_dates": ["2026-01-07"],
+        },
+    )])
+
+    assert rows == [
+        {"date": "2026-01-07", "open": 95.0, "high": 110.0, "low": 80.0, "close": 100.0},
+    ]
+
+
+def test_raw_price_loader_preserves_ohlc_across_later_close_only_observation(
+    db_session: Session,
+) -> None:
+    db_session.add_all([
+        StockRawData(
+            symbol="TAIEX",
+            record_date=date(2026, 1, 7),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"open": 95, "high": 110, "low": 80, "close": 100},
+                "data_dates": {"ohlcv": "2026-01-07"},
+            },
+        ),
+        StockRawData(
+            symbol="TAIEX",
+            record_date=date(2026, 1, 8),
+            raw_data_is_final=True,
+            technical={
+                "price_history": [{"date": "2026-01-07", "close": 101}],
+                "ohlcv": {"open": 101, "high": 102, "low": 99, "close": 101},
+                "data_dates": {"ohlcv": "2026-01-08"},
+            },
+        ),
+    ])
+    db_session.commit()
+
+    rows = load_price_series_from_raw_data(
+        db_session,
+        symbols=["TAIEX"],
+        start_date=date(2026, 1, 7),
+        end_date=date(2026, 1, 8),
+    )["TAIEX"]
+
+    assert rows[0] == {
+        "date": "2026-01-07",
+        "open": 95.0,
+        "high": 110.0,
+        "low": 80.0,
+        "close": 101.0,
+    }
+
+
+def test_relative_performance_aligns_to_embedded_stock_trade_date() -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=[
+            _event(1, "initial_entry", date(2026, 1, 9), 100, 1),
+            _event(2, "full_exit", date(2026, 1, 10), 101, 1),
+        ],
+        market_rows=[SimpleNamespace(
+            record_date=date(2026, 1, 8),
+            raw_data_is_final=True,
+            technical={
+                "ohlcv": {"close": 100},
+                "data_dates": {"ohlcv": "2026-01-07"},
+            },
+        )],
+        plan=_plan(),
+        benchmark_rows=[{"date": "2026-01-07", "close": 1000}],
+    )
+
+    assert result["advanced_internal"]["benchmark_relative_status"] == "available"
+
+
+@pytest.mark.parametrize("invalid_close", [float("nan"), float("inf"), float("-inf")])
+def test_relative_performance_rejects_non_finite_benchmark_prices(
+    invalid_close: float,
+) -> None:
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=_base_events(),
+        market_rows=_base_rows(),
+        plan=_plan(),
+        benchmark_rows=[
+            {"date": "2025-12-31", "close": invalid_close},
+            {"date": "2026-01-01", "close": invalid_close},
+        ],
+    )
+
+    advanced = result["advanced_internal"]
+    assert advanced["benchmark_relative_status"] == "unavailable_missing_benchmark_series"
+    assert advanced["benchmark_return_pct"] is None
+    assert advanced["benchmark_relative_return_pct"] is None
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("price", float("inf")),
+        ("fees", float("inf")),
+        ("taxes", float("-inf")),
+    ],
+)
+def test_relative_performance_rejects_non_finite_event_cash_flows(
+    field: str,
+    invalid_value: float,
+) -> None:
+    events = _base_events()
+    setattr(events[0], field, invalid_value)
+    result, _ = build_position_lifecycle_analysis_from_rows(
+        position_group_id="group-life",
+        symbol="2330.TW",
+        events=events,
+        market_rows=_base_rows(),
+        plan=_plan(),
+        benchmark_rows=[
+            {"date": "2025-12-31", "close": 1000},
+            {"date": "2026-01-01", "close": 1010},
+            {"date": "2026-01-02", "close": 1020},
+        ],
+    )
+
+    assert result["advanced_internal"]["benchmark_relative_status"] == (
+        "unavailable_invalid_event_cash_flow"
+    )
+    assert all(isfinite(number) for number in _all_numbers(result))
+
+
 def test_plan_risk_derives_from_stop_when_amount_missing():
     result, _ = build_position_lifecycle_analysis_from_rows(
         position_group_id="group-life",
@@ -644,6 +1120,7 @@ def test_lifecycle_evidence_payload_contains_copyable_ai_context_fields():
         "shared_context",
         "decision_context",
         "plan_snapshot",
+        "relative_performance_snapshot",
         "market_snapshot",
         "source_data",
         "data_quality",
@@ -710,8 +1187,9 @@ def test_insufficient_market_data_preserves_ledger_metrics_and_marks_context_ins
         "has_plan": False,
         "historical_judgment_eligible": False,
         "source": None,
-        "created_after_entry": None,
-        "planned_holding_period": None,
+            "created_after_entry": None,
+            "setup_type": None,
+            "planned_holding_period": None,
         "default_stop_rule": None,
         "add_entry_condition": None,
     }
@@ -815,8 +1293,9 @@ def test_lifecycle_review_includes_backfilled_plan_provenance_caveat():
         "has_plan": True,
         "historical_judgment_eligible": False,
         "source": "user_backfilled",
-        "created_after_entry": True,
-        "planned_holding_period": None,
+            "created_after_entry": True,
+            "setup_type": None,
+            "planned_holding_period": None,
         "default_stop_rule": None,
         "add_entry_condition": None,
     }
@@ -959,8 +1438,9 @@ def test_lifecycle_review_phase_e_missing_decision_context_does_not_hard_judge_f
         "has_plan": False,
         "historical_judgment_eligible": False,
         "source": None,
-        "created_after_entry": None,
-        "planned_holding_period": None,
+            "created_after_entry": None,
+            "setup_type": None,
+            "planned_holding_period": None,
         "default_stop_rule": None,
         "add_entry_condition": None,
     }
@@ -990,8 +1470,9 @@ def test_lifecycle_review_phase_e_backfilled_plan_keeps_provenance_caveat_with_f
         "has_plan": True,
         "historical_judgment_eligible": False,
         "source": "user_backfilled",
-        "created_after_entry": True,
-        "planned_holding_period": "swing",
+            "created_after_entry": True,
+            "setup_type": None,
+            "planned_holding_period": "swing",
         "default_stop_rule": "break_ma20",
         "add_entry_condition": "no_averaging_down",
     }
@@ -1369,7 +1850,10 @@ def test_db_builder_scopes_user_group_and_performs_no_writes(db_session: Session
 
     assert result["symbol"] == "2330.TW"
     assert evidence["source_data"]["event_count"] == 1
-    assert all(statement.startswith("select") for statement in statements)
+    assert all(
+        statement.startswith(("select", "pragma"))
+        for statement in statements
+    )
     assert not any(statement.startswith(("insert", "update", "delete")) for statement in statements)
     assert any("position_event" in statement for statement in statements)
     assert any("position_lifecycle_plan" in statement for statement in statements)

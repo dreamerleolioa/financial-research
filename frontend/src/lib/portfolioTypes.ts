@@ -585,13 +585,34 @@ export interface PositionLifecycleAdvancedInternal {
   mfe_r_multiple?: number | null;
   mfe_capture_rate?: number | null;
   declared_plan_adherence_score?: number | null;
+  objective_plan_adherence?: {
+    status: string;
+    score: number | null;
+    evaluated_check_count: number;
+    passed_check_count: number;
+    failed_check_count: number;
+    minimum_checks_for_observed_score: number;
+    checks: Array<{
+      code: string;
+      status: string;
+      summary: string;
+      source_refs: string[];
+    }>;
+  };
   observed_plan_adherence_score?: number | null;
   plan_adherence_score?: number | null;
   decision_quality_score?: number | null;
   capital_at_risk_by_event?: PositionLifecycleRiskPoint[];
   exposure_curve?: PositionLifecycleRiskPoint[];
   benchmark_relative_return_pct?: number | null;
+  benchmark_return_pct?: number | null;
+  benchmark_symbol?: string | null;
+  benchmark_relative_status?: string;
   sector_relative_return_pct?: number | null;
+  sector_return_pct?: number | null;
+  sector_benchmark_symbol?: string | null;
+  sector_relative_status?: string;
+  relative_performance_methodology?: string;
   [key: string]: unknown;
 }
 
@@ -634,6 +655,7 @@ export interface PositionLifecycleDecisionContext {
   historical_judgment_eligible?: boolean;
   source?: string | null;
   created_after_entry?: boolean | null;
+  setup_type?: LifecycleSetupType | null;
   planned_holding_period?: PlannedHoldingPeriod | null;
   default_stop_rule?: DefaultStopRule | null;
   add_entry_condition?: AddEntryCondition | null;
@@ -772,8 +794,28 @@ export interface PositionLifecycleReviewResponse {
   review_result: PositionLifecycleReviewResult;
   evidence_payload: PositionLifecycleReviewEvidencePayload;
   llm_summary: string | null;
+  personal_setup_stats?: PositionLifecyclePersonalSetupStats;
   created_at: string;
   updated_at: string;
+}
+
+export interface PositionLifecyclePersonalSetupStats {
+  status: "descriptive" | "insufficient_sample" | "unavailable_historical_setup" | string;
+  setup_type: LifecycleSetupType | null;
+  sample_count: number;
+  minimum_descriptive_sample_count: number;
+  eligible_closed_setup_count?: number;
+  reviewed_setup_count?: number;
+  review_coverage_pct?: number | null;
+  profitable_count?: number;
+  win_rate_pct?: number | null;
+  average_return_pct?: number | null;
+  median_return_pct?: number | null;
+  benchmark_relative_sample_count?: number;
+  average_benchmark_relative_return_pct?: number | null;
+  observed_adherence_sample_count?: number;
+  average_observed_plan_adherence_score?: number | null;
+  interpretation?: "descriptive_only_not_causal" | string;
 }
 
 export const LIFECYCLE_SETUP_TYPE_VALUES = [

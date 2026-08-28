@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import pandas as pd
 from fastapi.testclient import TestClient
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -26,7 +27,7 @@ from ai_stock_sentinel.calibration.forward_validation import (
 from ai_stock_sentinel.calibration.forward_validation_planning import (
     evaluation_ready_windows_by_candidate,
 )
-from ai_stock_sentinel.calibration.price_provider import get_forward_price_provider
+from ai_stock_sentinel.calibration.price_provider import _price_rows, get_forward_price_provider
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DAILY_RADAR_FORWARD_ADAPTER,
     FORWARD_VALIDATION_VERSION,
@@ -903,6 +904,92 @@ def test_benchmark_prices_fall_back_to_latest_prepared_market_context() -> None:
     ]
 
 
+def test_benchmark_price_loader_uses_older_complete_required_date_fallback() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarPreparedRun.__table__])
+    with Session(engine) as session:
+        for run_date, history in [
+            (
+                date(2026, 6, 8),
+                [
+                    {"date": "2026-06-05", "close": 1000},
+                    {"date": "2026-06-08", "close": 1010},
+                ],
+            ),
+            (
+                date(2026, 6, 9),
+                [{"date": "2026-06-08", "close": 1010}],
+            ),
+        ]:
+            session.add(DailyRadarPreparedRun(
+                run_date=run_date,
+                market="TW",
+                status="prepared",
+                selected_symbols=[],
+                universe=[],
+                symbol_count=0,
+                market_context={
+                    "benchmark": {
+                        "symbol": "TAIEX",
+                        "price_history": history,
+                    },
+                },
+                step_statuses={},
+                errors=[],
+            ))
+        session.commit()
+
+        prices = load_benchmark_prices_from_prepared_market_context(
+            session,
+            market="TW",
+            benchmark_symbol="TAIEX",
+            as_of_date=date(2026, 6, 9),
+            required_dates=[date(2026, 6, 5), date(2026, 6, 8)],
+        )
+
+    assert [row["date"] for row in prices] == ["2026-06-05", "2026-06-08"]
+
+
+def test_benchmark_price_loader_rejects_non_finite_newest_complete_run() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarPreparedRun.__table__])
+    with Session(engine) as session:
+        for run_date, final_close in [
+            (date(2026, 6, 8), 1010.0),
+            (date(2026, 6, 9), float("inf")),
+        ]:
+            session.add(DailyRadarPreparedRun(
+                run_date=run_date,
+                market="TW",
+                status="prepared",
+                selected_symbols=[],
+                universe=[],
+                symbol_count=0,
+                market_context={
+                    "benchmark": {
+                        "symbol": "TAIEX",
+                        "price_history": [
+                            {"date": "2026-06-05", "close": 1000},
+                            {"date": "2026-06-08", "close": final_close},
+                        ],
+                    },
+                },
+                step_statuses={},
+                errors=[],
+            ))
+        session.commit()
+
+        prices = load_benchmark_prices_from_prepared_market_context(
+            session,
+            market="TW",
+            benchmark_symbol="TAIEX",
+            as_of_date=date(2026, 6, 9),
+            required_dates=[date(2026, 6, 5), date(2026, 6, 8)],
+        )
+
+    assert prices[-1]["close"] == 1010.0
+
+
 def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
@@ -1117,6 +1204,86 @@ def test_forward_price_refresh_only_targets_incomplete_due_symbols_and_merges_ro
 
     assert required == ["2317.TW"]
     assert [row["date"] for row in merged["2317.TW"]] == ["2026-06-01", "2026-06-02"]
+
+
+def test_forward_price_refresh_treats_close_only_rows_as_incomplete_ohlc() -> None:
+    candidate = _candidate_snapshot() | {"candidate_id": 1, "symbol": "2330.TW"}
+    rows = [
+        _price("2026-06-01", 100, 100, 100, 100),
+        {"date": "2026-06-02", "close": 101},
+        _price("2026-06-03", 102, 102, 102, 102),
+        _price("2026-06-04", 103, 103, 103, 103),
+        _price("2026-06-05", 104, 104, 104, 104),
+        _price("2026-06-08", 105, 105, 105, 105),
+    ]
+
+    required = symbols_requiring_forward_price_refresh(
+        [candidate],
+        windows_by_candidate={"id:1": [5]},
+        price_series_by_symbol={"2330.TW": rows},
+        as_of_date=date(2026, 6, 8),
+    )
+
+    assert required == ["2330.TW"]
+
+
+@pytest.mark.parametrize(
+    "invalid_high",
+    [float("nan"), 10**1000],
+    ids=["nan", "overflow"],
+)
+def test_forward_price_provider_does_not_fabricate_missing_high_low_from_close(
+    invalid_high: float | int,
+) -> None:
+    frame_index = pd.to_datetime(["2026-06-02"])
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0],
+            "High": pd.Series([invalid_high], index=frame_index, dtype=object),
+            "Low": [float("nan")],
+            "Close": [100.0],
+        },
+        index=frame_index,
+    )
+
+    assert _price_rows(frame) == [
+        {"date": "2026-06-02", "open": 100.0, "high": None, "low": None, "close": 100.0},
+    ]
+
+
+def test_merge_price_series_does_not_erase_existing_ohlc_with_close_only_row() -> None:
+    merged = merge_price_series(
+        {"2330.TW": [_price("2026-06-02", 95, 110, 80, 100)]},
+        {"2330.TW": [{"date": "2026-06-02", "close": 101}]},
+    )
+
+    assert merged["2330.TW"] == [
+        {"date": "2026-06-02", "open": 95.0, "high": 110.0, "low": 80.0, "close": 101.0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid_high",
+    [float("nan"), float("inf"), 0, -1, 10**1000],
+    ids=["nan", "infinity", "zero", "negative", "overflow"],
+)
+def test_merge_price_series_keeps_valid_fallback_for_invalid_refresh_field(
+    invalid_high: float,
+) -> None:
+    merged = merge_price_series(
+        {"2330.TW": [_price("2026-06-02", 95, 110, 80, 100)]},
+        {"2330.TW": [{
+            "date": "2026-06-02",
+            "open": 96,
+            "high": invalid_high,
+            "low": 81,
+            "close": 101,
+        }]},
+    )
+
+    assert merged["2330.TW"] == [
+        {"date": "2026-06-02", "open": 96.0, "high": 110.0, "low": 81.0, "close": 101.0},
+    ]
 
 
 def test_forward_price_refresh_targets_symbol_missing_a_benchmark_trading_date() -> None:
@@ -1525,7 +1692,10 @@ def _add_raw(session: Session, symbol: str, row_date: date, close: float) -> Non
         StockRawData(
             symbol=symbol,
             record_date=row_date,
-            technical={"ohlcv": {"open": close, "high": close + 2, "low": close - 2, "close": close}},
+            technical={
+                "ohlcv": {"open": close, "high": close + 2, "low": close - 2, "close": close},
+                "data_dates": {"ohlcv": row_date.isoformat()},
+            },
             institutional={},
             fundamental={},
             raw_data_is_final=True,

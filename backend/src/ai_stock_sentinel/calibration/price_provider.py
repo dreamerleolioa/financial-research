@@ -92,11 +92,12 @@ def _price_rows(frame: Any) -> list[dict[str, Any]]:
         row_date = _index_date(index_value)
         if close is None or close <= 0 or row_date is None:
             continue
+        open_price = _frame_number(frame, columns["Open"], position)
         rows.append({
             "date": row_date.isoformat(),
-            "open": _frame_number(frame, columns["Open"], position) or close,
-            "high": _frame_number(frame, columns["High"], position) or close,
-            "low": _frame_number(frame, columns["Low"], position) or close,
+            "open": open_price if open_price is not None and open_price > 0 else close,
+            "high": _frame_number(frame, columns["High"], position),
+            "low": _frame_number(frame, columns["Low"], position),
             "close": close,
         })
     return rows
@@ -116,7 +117,7 @@ def _frame_number(frame: Any, column: Any | None, position: int) -> float | None
     value = series.iloc[position] if hasattr(series, "iloc") else series[position]
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
 

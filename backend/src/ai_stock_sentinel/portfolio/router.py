@@ -4,6 +4,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from math import isfinite
+from statistics import median
 from threading import Lock
 from typing import Iterator
 
@@ -69,12 +71,13 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 TRADE_REVIEW_VERSION = "trade-review-v3"
 TRADE_REVIEW_RULESET_VERSION = "trade-review-ruleset-v3.1"
 KNOWN_TRADE_REVIEW_VERSIONS = {"trade-review-v1", "trade-review-v2", TRADE_REVIEW_VERSION}
-POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v4"
-POSITION_LIFECYCLE_RULESET_VERSION = "position-lifecycle-ruleset-v4.1"
+POSITION_LIFECYCLE_REVIEW_VERSION = "position-lifecycle-review-v5"
+POSITION_LIFECYCLE_RULESET_VERSION = "position-lifecycle-ruleset-v5"
 KNOWN_POSITION_LIFECYCLE_REVIEW_VERSIONS = {
     "position-lifecycle-review-v1",
     "position-lifecycle-review-v2",
     "position-lifecycle-review-v3",
+    "position-lifecycle-review-v4",
     POSITION_LIFECYCLE_REVIEW_VERSION,
 }
 TRADE_REVIEW_SUCCESS_REFRESH_TTL = timedelta(hours=6)
@@ -278,8 +281,12 @@ def _serialize_trade_review(review: TradeReview) -> dict:
     }
 
 
-def _serialize_position_lifecycle_review(review: PositionLifecycleReview) -> dict:
-    return {
+def _serialize_position_lifecycle_review(
+    review: PositionLifecycleReview,
+    *,
+    personal_setup_stats: dict | None = None,
+) -> dict:
+    payload = {
         "id": review.id,
         "user_id": review.user_id,
         "position_group_id": review.position_group_id,
@@ -291,6 +298,186 @@ def _serialize_position_lifecycle_review(review: PositionLifecycleReview) -> dic
         "created_at": review.created_at.isoformat() if review.created_at and hasattr(review.created_at, "isoformat") else review.created_at,
         "updated_at": review.updated_at.isoformat() if review.updated_at and hasattr(review.updated_at, "isoformat") else review.updated_at,
     }
+    if personal_setup_stats is not None:
+        payload["personal_setup_stats"] = personal_setup_stats
+    return payload
+
+
+def _personal_setup_stats(
+    db: Session,
+    *,
+    user_id: int,
+    position_group_id: str,
+) -> dict:
+    plan = db.execute(
+        select(PositionLifecyclePlan).where(
+            PositionLifecyclePlan.user_id == user_id,
+            PositionLifecyclePlan.position_group_id == position_group_id,
+        )
+    ).scalar_one_or_none()
+    setup_type = plan.setup_type if plan is not None else None
+    historically_eligible = (
+        plan is not None
+        and plan.source == "user_recorded_at_event_time"
+        and plan.created_after_entry is not True
+        and setup_type is not None
+    )
+    if not historically_eligible:
+        return {
+            "status": "unavailable_historical_setup",
+            "setup_type": setup_type,
+            "sample_count": 0,
+            "minimum_descriptive_sample_count": 5,
+            "eligible_closed_setup_count": 0,
+            "reviewed_setup_count": 0,
+            "review_coverage_pct": None,
+        }
+
+    peer_group_ids = db.scalars(
+        select(PositionLifecyclePlan.position_group_id).where(
+            PositionLifecyclePlan.user_id == user_id,
+            PositionLifecyclePlan.setup_type == setup_type,
+            PositionLifecyclePlan.source == "user_recorded_at_event_time",
+            PositionLifecyclePlan.created_after_entry.is_(False),
+        )
+    ).all()
+    peer_events = list_position_events_for_groups(
+        db,
+        user_id=user_id,
+        position_group_ids=peer_group_ids,
+    )
+    peer_rows = list_portfolios_for_groups(
+        db,
+        user_id=user_id,
+        position_group_ids=peer_group_ids,
+    )
+    events_by_group: dict[str, list[PositionEvent]] = {}
+    rows_by_group: dict[str, list[UserPortfolio]] = {}
+    for event in peer_events:
+        events_by_group.setdefault(event.position_group_id, []).append(event)
+    for row in peer_rows:
+        rows_by_group.setdefault(row.position_group_id, []).append(row)
+    eligible_group_ids = {
+        group_id
+        for group_id in peer_group_ids
+        for group_events in [events_by_group.get(group_id, [])]
+        for group_rows in [rows_by_group.get(group_id, [])]
+        if group_rows
+        and not any(row.is_active for row in group_rows)
+        and any(event.event_type == "full_exit" for event in group_events)
+        and ledger_open_quantity(group_events) == 0
+    }
+    reviews = db.scalars(
+        select(PositionLifecycleReview).where(
+            PositionLifecycleReview.user_id == user_id,
+            PositionLifecycleReview.position_group_id.in_(eligible_group_ids),
+            PositionLifecycleReview.review_version == POSITION_LIFECYCLE_REVIEW_VERSION,
+        )
+    ).all()
+    returns: list[float] = []
+    benchmark_relative_returns: list[float] = []
+    observed_adherence_scores: list[float] = []
+    reviewed_setup_count = 0
+    for review in reviews:
+        evidence = review.evidence_payload
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("ruleset_version")
+            != POSITION_LIFECYCLE_RULESET_VERSION
+        ):
+            continue
+        reviewed_setup_count += 1
+        result = review.review_result if isinstance(review.review_result, dict) else {}
+        lifecycle = result.get("lifecycle_metrics")
+        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+        advanced = result.get("advanced_internal")
+        advanced = advanced if isinstance(advanced, dict) else {}
+        realized_return = _finite_float(
+            lifecycle.get("total_return_pct_on_weighted_cost")
+        )
+        if realized_return is None:
+            continue
+        returns.append(realized_return)
+        benchmark_relative = _finite_float(
+            advanced.get("benchmark_relative_return_pct")
+        )
+        if benchmark_relative is not None:
+            benchmark_relative_returns.append(benchmark_relative)
+        adherence = _finite_float(advanced.get("observed_plan_adherence_score"))
+        if adherence is not None:
+            observed_adherence_scores.append(adherence)
+
+    sample_count = len(returns)
+    minimum = 5
+    eligible_count = len(eligible_group_ids)
+    coverage_pct = (
+        round(reviewed_setup_count / eligible_count * 100, 4)
+        if eligible_count
+        else None
+    )
+    complete_coverage = eligible_count > 0 and reviewed_setup_count == eligible_count
+    return {
+        "status": (
+            "descriptive"
+            if sample_count >= minimum and complete_coverage
+            else "descriptive_partial_coverage"
+            if sample_count >= minimum
+            else "insufficient_sample"
+        ),
+        "setup_type": setup_type,
+        "sample_count": sample_count,
+        "minimum_descriptive_sample_count": minimum,
+        "eligible_closed_setup_count": eligible_count,
+        "reviewed_setup_count": reviewed_setup_count,
+        "review_coverage_pct": coverage_pct,
+        "profitable_count": sum(value > 0 for value in returns),
+        "win_rate_pct": round(sum(value > 0 for value in returns) / sample_count * 100, 4)
+        if sample_count
+        else None,
+        "average_return_pct": round(sum(returns) / sample_count, 4)
+        if sample_count
+        else None,
+        "median_return_pct": round(median(returns), 4) if sample_count else None,
+        "benchmark_relative_sample_count": len(benchmark_relative_returns),
+        "average_benchmark_relative_return_pct": round(
+            sum(benchmark_relative_returns) / len(benchmark_relative_returns),
+            4,
+        )
+        if benchmark_relative_returns
+        else None,
+        "observed_adherence_sample_count": len(observed_adherence_scores),
+        "average_observed_plan_adherence_score": round(
+            sum(observed_adherence_scores) / len(observed_adherence_scores),
+            4,
+        )
+        if observed_adherence_scores
+        else None,
+        "interpretation": "descriptive_only_not_causal",
+    }
+
+
+def _finite_float(value) -> float | None:
+    try:
+        parsed = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) else None
+
+
+def _serialize_lifecycle_review_with_personal_stats(
+    db: Session,
+    review: PositionLifecycleReview,
+    *,
+    user_id: int,
+) -> dict:
+    return _serialize_position_lifecycle_review(
+        review,
+        personal_setup_stats=_personal_setup_stats(
+            db,
+            user_id=user_id,
+            position_group_id=review.position_group_id,
+        ),
+    )
 
 
 def _serialize_position_event(event: PositionEvent) -> dict:
@@ -547,10 +734,48 @@ def _lifecycle_review_snapshot_regressed(
     for key in ("events", "plan_snapshot", "shared_context"):
         if existing_evidence.get(key) != evidence_payload.get(key):
             return False
-    return _market_snapshot_regressed(
+    if _market_snapshot_regressed(
         existing_evidence.get("market_snapshot"),
         evidence_payload.get("market_snapshot"),
+    ):
+        return True
+    return _relative_performance_snapshot_regressed(
+        existing_evidence.get("relative_performance_snapshot"),
+        evidence_payload.get("relative_performance_snapshot"),
     )
+
+
+def _relative_performance_snapshot_regressed(
+    existing_snapshot,
+    candidate_snapshot,
+) -> bool:
+    if not isinstance(existing_snapshot, dict) or not isinstance(candidate_snapshot, dict):
+        return False
+    if (
+        existing_snapshot.get("benchmark_symbol")
+        != candidate_snapshot.get("benchmark_symbol")
+        or existing_snapshot.get("sector_benchmark_symbol")
+        != candidate_snapshot.get("sector_benchmark_symbol")
+        or existing_snapshot.get("methodology")
+        != candidate_snapshot.get("methodology")
+    ):
+        return False
+    for key in ("benchmark_rows", "sector_benchmark_rows"):
+        existing_dates = _price_snapshot_dates(existing_snapshot.get(key))
+        candidate_dates = _price_snapshot_dates(candidate_snapshot.get(key))
+        if existing_dates and not existing_dates.issubset(candidate_dates):
+            return True
+    return False
+
+
+def _price_snapshot_dates(rows) -> set[str]:
+    if not isinstance(rows, list):
+        return set()
+    return {
+        str(row.get("date"))
+        for row in rows
+        if isinstance(row, dict) and row.get("date") is not None
+    }
 
 
 def _parse_utc_datetime(value: object) -> datetime | None:
@@ -906,7 +1131,11 @@ def get_position_lifecycle_review(
     review = _get_latest_saved_position_lifecycle_review(db, position_group_id, current_user.id)
     if not review:
         raise HTTPException(status_code=404, detail="尚未建立持股生命週期審核")
-    return _serialize_position_lifecycle_review(review)
+    return _serialize_lifecycle_review_with_personal_stats(
+        db,
+        review,
+        user_id=current_user.id,
+    )
 
 
 @router.post("/groups/{position_group_id}/lifecycle-review")
@@ -918,7 +1147,11 @@ def create_position_lifecycle_review(
     group = _get_owned_closed_position_group(db, position_group_id, current_user.id, lock=True)
     unknown_review = _get_unknown_position_lifecycle_review(db, position_group_id, current_user.id)
     if unknown_review is not None:
-        return _serialize_position_lifecycle_review(unknown_review)
+        return _serialize_lifecycle_review_with_personal_stats(
+            db,
+            unknown_review,
+            user_id=current_user.id,
+        )
     existing_review = _get_position_lifecycle_review(db, position_group_id, current_user.id)
 
     try:
@@ -928,7 +1161,11 @@ def create_position_lifecycle_review(
             position_group_id=position_group_id,
         )
         if existing_review and _lifecycle_review_snapshot_regressed(existing_review, evidence_payload):
-            return _serialize_position_lifecycle_review(existing_review)
+            return _serialize_lifecycle_review_with_personal_stats(
+                db,
+                existing_review,
+                user_id=current_user.id,
+            )
         source_fingerprint = attach_source_fingerprint(
             evidence_payload,
             ruleset_version=POSITION_LIFECYCLE_RULESET_VERSION,
@@ -938,7 +1175,11 @@ def create_position_lifecycle_review(
             and isinstance(existing_review.evidence_payload, dict)
             and existing_review.evidence_payload.get("source_fingerprint") == source_fingerprint
         ):
-            return _serialize_position_lifecycle_review(existing_review)
+            return _serialize_lifecycle_review_with_personal_stats(
+                db,
+                existing_review,
+                user_id=current_user.id,
+            )
         if existing_review:
             review = existing_review
             review.symbol = group.symbol
@@ -962,7 +1203,11 @@ def create_position_lifecycle_review(
     except Exception:
         db.rollback()
         raise
-    return _serialize_position_lifecycle_review(review)
+    return _serialize_lifecycle_review_with_personal_stats(
+        db,
+        review,
+        user_id=current_user.id,
+    )
 
 
 @router.get("/{portfolio_id}/review")

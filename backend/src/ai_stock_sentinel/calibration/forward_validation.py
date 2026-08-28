@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+import math
 from typing import Any
 
 
@@ -317,10 +318,26 @@ def merge_price_series(
         rows_by_date: dict[str, dict[str, Any]] = {}
         for row in [*existing.get(symbol, []), *fetched.get(symbol, [])]:
             row_date = parse_date(row.get("date"))
-            close = number(row.get("close"))
-            if row_date is None or close is None or close <= 0:
+            if row_date is None:
                 continue
-            rows_by_date[row_date.isoformat()] = dict(row)
+            date_key = row_date.isoformat()
+            existing_row = rows_by_date.get(date_key, {})
+            candidate = {
+                **existing_row,
+                **{
+                    key: value
+                    for key, value in row.items()
+                    if key not in {"open", "high", "low", "close"}
+                    and value is not None
+                },
+            }
+            for key in ("open", "high", "low", "close"):
+                value = number(row.get(key))
+                if value is not None and value > 0:
+                    candidate[key] = value
+            close = number(candidate.get("close"))
+            if close is not None and close > 0:
+                rows_by_date[date_key] = candidate
         merged[symbol] = [rows_by_date[key] for key in sorted(rows_by_date)]
     return merged
 
@@ -332,12 +349,22 @@ def normalize_price_series(
     for row in price_series:
         row_date = parse_date(row.get("date"))
         close = number(row.get("close"))
-        if row_date is None or close is None or close <= 0:
+        high = number(row.get("high"))
+        low = number(row.get("low"))
+        if (
+            row_date is None
+            or close is None
+            or close <= 0
+            or high is None
+            or high <= 0
+            or low is None
+            or low <= 0
+        ):
             continue
         prices[row_date] = {
             "open": number_or_default(row.get("open"), close),
-            "high": number_or_default(row.get("high"), close),
-            "low": number_or_default(row.get("low"), close),
+            "high": high,
+            "low": low,
             "close": close,
         }
     return prices
@@ -386,9 +413,10 @@ def number(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+    except (OverflowError, TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def number_or_default(value: Any, default: float) -> float:

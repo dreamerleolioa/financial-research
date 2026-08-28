@@ -1458,6 +1458,7 @@ def _add_raw(session: Session, symbol: str, row_date: date, close: float) -> Non
                     "low": close,
                     "close": close,
                 },
+                "data_dates": {"ohlcv": row_date.isoformat()},
             },
             institutional={},
             fundamental={},

@@ -17,11 +17,13 @@ import type {
   PositionEvent,
   PositionGroupEventsResponse,
   PositionLifecycleDataQuality,
+  PositionLifecycleAdvancedInternal,
   PositionLifecycleEntrySequence,
   PositionLifecycleEventFact,
   PositionLifecycleEventIndicatorSnapshot,
   PositionLifecycleExitSequence,
   PositionLifecycleMetrics,
+  PositionLifecyclePersonalSetupStats,
   PositionLifecycleReviewResponse,
   TradeReviewDataQuality,
   TradeReviewHoldingSection,
@@ -34,6 +36,7 @@ import {
   ADD_ENTRY_CONDITION_LABEL,
   DEFAULT_STOP_RULE_LABEL,
   ENTRY_RECORD_REASON_LABEL,
+  LIFECYCLE_SETUP_TYPE_LABEL,
   PLANNED_HOLDING_PERIOD_LABEL,
 } from "../lib/portfolioLabels";
 
@@ -1274,6 +1277,83 @@ function LifecyclePerspectives({
   );
 }
 
+function LifecycleEvidenceScorecard({
+  advanced,
+  setupStats,
+}: {
+  advanced: PositionLifecycleAdvancedInternal | undefined;
+  setupStats: PositionLifecyclePersonalSetupStats | undefined;
+}) {
+  const objective = advanced?.objective_plan_adherence;
+  const setupLabel = setupStats?.setup_type
+    ? LIFECYCLE_SETUP_TYPE_LABEL[setupStats.setup_type]
+    : "未記錄 setup";
+  const objectiveValue =
+    advanced?.observed_plan_adherence_score != null
+      ? `${advanced.observed_plan_adherence_score.toFixed(1)} 分`
+      : objective?.evaluated_check_count
+        ? `有限證據 ${objective.passed_check_count}/${objective.evaluated_check_count}`
+        : "尚無可客觀核對規則";
+
+  return (
+    <article className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div>
+        <h3 className="text-sm font-semibold text-text-primary">客觀紀律與相對績效</h3>
+        <p className="mt-1 text-xs leading-relaxed text-text-muted">
+          只使用事件帳本、原始事件時計畫與事件前已完成行情；自報的計畫遵循不直接計入客觀分數。
+        </p>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <ReviewMetric label="客觀計畫核對" value={objectiveValue} />
+        <ReviewMetric
+          label={`相對 ${advanced?.benchmark_symbol ?? "大盤"}`}
+          value={getSignedPercentText(advanced?.benchmark_relative_return_pct)}
+        />
+        <ReviewMetric
+          label={advanced?.sector_benchmark_symbol ? `相對 ${advanced.sector_benchmark_symbol}` : "相對產業"}
+          value={
+            advanced?.sector_relative_status === "available"
+              ? getSignedPercentText(advanced.sector_relative_return_pct)
+              : "尚無可靠產業基準"
+          }
+        />
+        <ReviewMetric
+          label={`${setupLabel} 個人樣本`}
+          value={setupStats ? `${setupStats.sample_count} 筆` : "—"}
+        />
+      </div>
+      {objective?.checks && objective.checks.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {objective.checks.map((check) => (
+            <div key={check.code} className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
+              <p className="text-xs font-medium text-text-primary">
+                {check.status === "pass"
+                  ? "符合"
+                  : check.status === "fail"
+                    ? "需檢討"
+                    : check.status === "not_triggered"
+                      ? "未觸發"
+                      : "無法核對"}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">{check.summary}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      {setupStats && setupStats.status !== "unavailable_historical_setup" && (
+        <p className="mt-3 text-xs leading-relaxed text-text-faint">
+          個人 setup 統計：獲利樣本比例 {getSignedPercentText(setupStats?.win_rate_pct)}、平均報酬{" "}
+          {getSignedPercentText(setupStats?.average_return_pct)}；已複盤 {setupStats.reviewed_setup_count ?? setupStats.sample_count}
+          ／可納入 {setupStats.eligible_closed_setup_count ?? setupStats.sample_count} 筆
+          {setupStats.review_coverage_pct != null ? `（${setupStats.review_coverage_pct.toFixed(1)}%）` : ""}。
+          所有樣本數都只作描述，不代表因果或未來績效；少於 {setupStats?.minimum_descriptive_sample_count ?? 5}
+          筆或覆蓋不完整時，代表性更有限。
+        </p>
+      )}
+    </article>
+  );
+}
+
 function LifecycleEventTimeline({
   events,
   snapshots,
@@ -1728,6 +1808,10 @@ function LifecycleReviewWorkspace({
               metrics={result.lifecycle_metrics}
               entrySequence={result.entry_sequence}
               exitSequence={result.exit_sequence}
+            />
+            <LifecycleEvidenceScorecard
+              advanced={result.advanced_internal}
+              setupStats={review.personal_setup_stats}
             />
             {!lifecycleReview?.feedback && (
               <>

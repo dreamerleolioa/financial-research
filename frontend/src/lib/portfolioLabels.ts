@@ -29,9 +29,9 @@ export const ENTRY_RECORD_REASON_LABEL = {
 } satisfies Record<EntryRecordReason, string>;
 
 export const PLANNED_HOLDING_PERIOD_LABEL = {
-  short_term: "短線（數日內）",
-  swing: "波段（數週）",
-  medium_term: "中期（數月）",
+  short_term: "短線（0–10 日）",
+  swing: "波段（11–60 日）",
+  medium_term: "中期（61–179 日）",
   long_term: "長期（半年以上）",
   not_recorded: "未記錄",
 } satisfies Record<PlannedHoldingPeriod, string>;

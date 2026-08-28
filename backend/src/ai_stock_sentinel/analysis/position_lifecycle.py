@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from math import isfinite
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.metrics import calc_rsi, ma
@@ -13,6 +13,11 @@ from ai_stock_sentinel.analysis.review_sources import (
     completed_technical_indicator_values,
     completed_trailing_series,
     market_snapshot_payload,
+)
+from ai_stock_sentinel.calibration.repository import (
+    completed_price_rows_from_raw_data,
+    load_benchmark_prices_from_prepared_market_context,
+    load_price_series_from_raw_data,
 )
 from ai_stock_sentinel.db.models import PositionEvent, PositionLifecyclePlan, StockRawData
 from ai_stock_sentinel.shared_context import (
@@ -26,6 +31,15 @@ ENTRY_TYPES = {"initial_entry", "add_entry"}
 EXIT_TYPES = {"partial_exit", "full_exit"}
 MAX_DETECTED_EVENTS = 8
 POSITION_LIFECYCLE_LOOKBACK_DAYS = 120
+POSITION_LIFECYCLE_BENCHMARK_SYMBOL = "TAIEX"
+MIN_OBJECTIVE_ADHERENCE_CHECKS = 2
+HOLDING_PERIOD_DAY_RANGES: dict[str, tuple[int, int | None]] = {
+    "short_term": (0, 10),
+    "swing": (11, 60),
+    "medium_term": (61, 179),
+    "long_term": (180, None),
+}
+PULLBACK_MA20_MAX_DISTANCE_PCT = 3.0
 
 
 def build_lifecycle_accounting(
@@ -85,6 +99,13 @@ def build_position_lifecycle_analysis(
             symbol=symbol or "",
             events=events,
         )
+        benchmark_rows = _load_lifecycle_benchmark_rows(
+            db,
+            analysis_start=analysis_start,
+            analysis_end=analysis_end,
+            events=events,
+            market_rows=market_rows,
+        )
 
     return build_position_lifecycle_analysis_from_rows(
         position_group_id=position_group_id,
@@ -93,6 +114,8 @@ def build_position_lifecycle_analysis(
         market_rows=market_rows,
         plan=plan,
         shared_context=shared_context,
+        benchmark_rows=benchmark_rows,
+        benchmark_symbol=POSITION_LIFECYCLE_BENCHMARK_SYMBOL,
     )
 
 
@@ -104,6 +127,10 @@ def build_position_lifecycle_analysis_from_rows(
     market_rows=(),
     plan=None,
     shared_context: dict[str, Any] | None = None,
+    benchmark_rows=(),
+    benchmark_symbol: str = POSITION_LIFECYCLE_BENCHMARK_SYMBOL,
+    sector_benchmark_rows=(),
+    sector_benchmark_symbol: str | None = None,
 ) -> tuple[dict, dict]:
     ordered_events = _sort_events(list(events or ()))
     ordered_rows = _sort_market_rows(list(market_rows or ()))
@@ -125,6 +152,12 @@ def build_position_lifecycle_analysis_from_rows(
         lifecycle_metrics,
         plan,
         decision_context,
+        event_snapshots,
+        list(benchmark_rows or ()),
+        benchmark_symbol,
+        list(sector_benchmark_rows or ()),
+        sector_benchmark_symbol,
+        _stock_calendar_rows(ordered_rows),
     )
     detected_events = _detect_market_events(ordered_events, ordered_rows)
     market_regime_snapshots = _market_regime_snapshots(event_snapshots)
@@ -174,6 +207,13 @@ def build_position_lifecycle_analysis_from_rows(
         "shared_context": shared_context_payload,
         "decision_context": decision_context,
         "plan_snapshot": _plan_source_data(plan),
+        "relative_performance_snapshot": {
+            "benchmark_symbol": benchmark_symbol,
+            "benchmark_rows": _compact_price_rows(benchmark_rows),
+            "sector_benchmark_symbol": sector_benchmark_symbol,
+            "sector_benchmark_rows": _compact_price_rows(sector_benchmark_rows),
+            "methodology": "matched_cash_flow_aligned_prior_completed_bar_v1",
+        },
         "market_snapshot": market_snapshot_payload(
             ordered_rows,
             provider="stock_raw_data_read_only",
@@ -1110,15 +1150,17 @@ def _holding_period_review(planned_holding_period: Any, total_holding_days: Any)
     days = _number(total_holding_days)
     if planned_holding_period in {None, "not_recorded"} or days is None:
         return None
-    if planned_holding_period == "short_term" and days > 30:
-        return "計畫持有週期為短線，但實際持有天數明顯超過短線範圍；這不是硬性錯誤，但需要檢討是否有更新計畫。"
-    if planned_holding_period == "swing" and (days < 5 or days > 90):
-        return "計畫持有週期為波段，但實際持有天數落在波段常見範圍外；需檢討出場節奏是否符合原先檢查週期。"
-    if planned_holding_period == "medium_term" and (days < 14 or days > 150):
-        return "計畫持有週期為中線，但實際持有天數與中線計畫差距較大；需檢討是否有紀錄策略轉換。"
-    if planned_holding_period == "long_term" and days < 30:
-        return "計畫持有週期為長期，但實際持有時間偏短；這只能標示為需檢討，不能直接判定出場錯誤。"
-    return None
+    day_range = HOLDING_PERIOD_DAY_RANGES.get(str(planned_holding_period))
+    if day_range is None:
+        return None
+    minimum, maximum = day_range
+    matches = days >= minimum and (maximum is None or days <= maximum)
+    if matches:
+        return None
+    return (
+        "實際持有天數超出已記錄持有期間的明確範圍；這不是硬性錯誤，"
+        "但需檢討是否在持有期間內更新過策略。"
+    )
 
 
 def _text_item(text: str, source_refs: list[str]) -> dict[str, Any]:
@@ -1430,6 +1472,12 @@ def _build_advanced_internal(
     lifecycle_metrics: dict[str, Any],
     plan: Any,
     decision_context: dict[str, Any],
+    snapshots: list[dict[str, Any]],
+    benchmark_rows: list[Any],
+    benchmark_symbol: str,
+    sector_benchmark_rows: list[Any],
+    sector_benchmark_symbol: str | None,
+    relative_calendar_rows: list[Any],
 ) -> dict[str, Any]:
     historical_judgment_eligible = decision_context.get("historical_judgment_eligible") is True
     planned_r = _planned_r_amount(plan, accounting) if historical_judgment_eligible else None
@@ -1442,8 +1490,36 @@ def _build_advanced_internal(
     mae_amount = weighted_entry * max_position_size * mae_pct / 100 if weighted_entry and mae_pct is not None else None
     mfe_amount = weighted_entry * max_position_size * mfe_pct / 100 if weighted_entry and mfe_pct is not None else None
     declared_plan_score = _plan_adherence_score(events, plan)
-    observed_plan_score = None
+    objective_adherence = _objective_plan_adherence(
+        events,
+        rows,
+        accounting,
+        lifecycle_metrics,
+        plan,
+        decision_context,
+        snapshots,
+    )
+    observed_plan_score = (
+        objective_adherence["score"]
+        if objective_adherence["evaluated_check_count"]
+        >= MIN_OBJECTIVE_ADHERENCE_CHECKS
+        else None
+    )
     capture_rate = _round_pct(_safe_div(realized_pnl, mfe_amount) * 100) if mfe_amount and mfe_amount > 0 else None
+    benchmark_performance = _matched_cash_flow_relative_performance(
+        events,
+        benchmark_rows,
+        calendar_rows=relative_calendar_rows,
+        actual_return_pct=lifecycle_metrics.get("total_return_pct_on_weighted_cost"),
+        benchmark_symbol=benchmark_symbol,
+    )
+    sector_performance = _matched_cash_flow_relative_performance(
+        events,
+        sector_benchmark_rows,
+        calendar_rows=relative_calendar_rows,
+        actual_return_pct=lifecycle_metrics.get("total_return_pct_on_weighted_cost"),
+        benchmark_symbol=sector_benchmark_symbol,
+    )
 
     return {
         "planned_1r_amount": _round_money(planned_r),
@@ -1454,13 +1530,21 @@ def _build_advanced_internal(
         "mfe_r_multiple": _round_ratio(_safe_div(mfe_amount, planned_r_value)),
         "mfe_capture_rate": capture_rate,
         "declared_plan_adherence_score": declared_plan_score,
+        "objective_plan_adherence": objective_adherence,
         "observed_plan_adherence_score": observed_plan_score,
         "plan_adherence_score": observed_plan_score,
         "decision_quality_score": None,
         "capital_at_risk_by_event": accounting["capital_at_risk_by_event"],
         "exposure_curve": accounting["exposure_curve"],
-        "benchmark_relative_return_pct": None,
-        "sector_relative_return_pct": None,
+        "benchmark_symbol": benchmark_symbol,
+        "benchmark_return_pct": benchmark_performance["benchmark_return_pct"],
+        "benchmark_relative_return_pct": benchmark_performance["relative_return_pct"],
+        "benchmark_relative_status": benchmark_performance["status"],
+        "sector_benchmark_symbol": sector_benchmark_symbol,
+        "sector_return_pct": sector_performance["benchmark_return_pct"],
+        "sector_relative_return_pct": sector_performance["relative_return_pct"],
+        "sector_relative_status": sector_performance["status"],
+        "relative_performance_methodology": "matched_cash_flow_aligned_prior_completed_bar_v1",
     }
 
 
@@ -1552,6 +1636,496 @@ def _plan_adherence_score(events: list[Any], plan: Any) -> float | None:
     if values:
         return _round_score(sum(values) / len(values))
     return None if plan is None else 50.0
+
+
+def _objective_plan_adherence(
+    events: list[Any],
+    rows: list[Any],
+    accounting: dict[str, Any],
+    lifecycle_metrics: dict[str, Any],
+    plan: Any,
+    decision_context: dict[str, Any],
+    snapshots: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if decision_context.get("historical_judgment_eligible") is not True:
+        return {
+            "status": "unavailable_historical_plan",
+            "score": None,
+            "evaluated_check_count": 0,
+            "passed_check_count": 0,
+            "failed_check_count": 0,
+            "minimum_checks_for_observed_score": MIN_OBJECTIVE_ADHERENCE_CHECKS,
+            "checks": [],
+        }
+
+    checks: list[dict[str, Any]] = []
+    holding_period = _event_value(plan, "planned_holding_period")
+    holding_days = lifecycle_metrics.get("total_holding_days_from_first_entry")
+    if holding_period not in {None, "not_recorded"}:
+        if holding_days is None:
+            checks.append(_objective_check(
+                "holding_period",
+                "unobservable",
+                "缺少完整結案日期，無法核對計畫持有週期。",
+                [
+                    "decision_context.planned_holding_period",
+                    "lifecycle_metrics.total_holding_days_from_first_entry",
+                ],
+            ))
+        else:
+            violation = _holding_period_review(holding_period, holding_days)
+            checks.append(_objective_check(
+                "holding_period",
+                "pass" if violation is None else "fail",
+                violation or "實際持有天數落在已記錄計畫的檢查範圍內。",
+                [
+                    "decision_context.planned_holding_period",
+                    "lifecycle_metrics.total_holding_days_from_first_entry",
+                ],
+            ))
+
+    add_entry_check = _objective_add_entry_check(
+        events,
+        rows,
+        accounting,
+        snapshots,
+        _event_value(plan, "add_entry_condition"),
+    )
+    if add_entry_check is not None:
+        checks.append(add_entry_check)
+
+    stop_rule_check = _objective_stop_rule_check(
+        events,
+        rows,
+        plan,
+        _event_value(plan, "default_stop_rule"),
+    )
+    if stop_rule_check is not None:
+        checks.append(stop_rule_check)
+
+    evaluated = [check for check in checks if check["status"] in {"pass", "fail"}]
+    passed = sum(check["status"] == "pass" for check in evaluated)
+    failed = len(evaluated) - passed
+    score = _round_score(passed / len(evaluated) * 100) if evaluated else None
+    if not evaluated:
+        status = "unavailable_no_evaluable_checks"
+    elif len(evaluated) < MIN_OBJECTIVE_ADHERENCE_CHECKS:
+        status = "limited_evidence"
+    else:
+        status = "sufficient"
+    return {
+        "status": status,
+        "score": score,
+        "evaluated_check_count": len(evaluated),
+        "passed_check_count": passed,
+        "failed_check_count": failed,
+        "minimum_checks_for_observed_score": MIN_OBJECTIVE_ADHERENCE_CHECKS,
+        "checks": checks,
+    }
+
+
+def _objective_add_entry_check(
+    events: list[Any],
+    rows: list[Any],
+    accounting: dict[str, Any],
+    snapshots: list[dict[str, Any]],
+    condition: Any,
+) -> dict[str, Any] | None:
+    if condition in {None, "not_recorded"}:
+        return None
+    add_events = [
+        (index, event)
+        for index, event in enumerate(events)
+        if _event_value(event, "event_type") == "add_entry"
+    ]
+    refs = ["decision_context.add_entry_condition", "event_facts"]
+    if condition == "no_add_entry":
+        return _objective_check(
+            "add_entry_condition",
+            "pass" if not add_events else "fail",
+            "生命週期內沒有新增批次。" if not add_events else "計畫記錄不新增批次，但生命週期內出現新增批次事件。",
+            refs,
+        )
+    if condition == "no_averaging_down":
+        violations = []
+        for index, event in add_events:
+            key = _event_key(event, index)
+            price = _number(_event_value(event, "price"))
+            average_before = _number(
+                accounting.get("event_metrics", {}).get(key, {}).get("average_cost_before")
+            )
+            if price is None or average_before is None:
+                return _objective_check(
+                    "add_entry_condition",
+                    "unobservable",
+                    "新增批次成本資料不足，無法客觀核對是否攤平。",
+                    refs + ["advanced_internal.exposure_curve"],
+                )
+            if price < average_before:
+                violations.append(key)
+        return _objective_check(
+            "add_entry_condition",
+            "fail" if violations else "pass",
+            "新增批次價格低於事件前平均成本。" if violations else "所有新增批次都沒有低於事件前平均成本。",
+            refs + [f"event_facts.{key}" for key in violations],
+        )
+    if not add_events:
+        return _objective_check(
+            "add_entry_condition",
+            "not_triggered",
+            "生命週期內沒有新增批次，因此這項條件未觸發。",
+            refs,
+        )
+
+    snapshot_by_key = {snapshot["event_key"]: snapshot for snapshot in snapshots}
+    if condition == "pullback_holds_ma20":
+        observations = []
+        for index, event in add_events:
+            key = _event_key(event, index)
+            distance = _number(
+                snapshot_by_key.get(key, {}).get("event_price_vs_ma20_pct")
+            )
+            if distance is None:
+                return _objective_check(
+                    "add_entry_condition",
+                    "unobservable",
+                    "缺少新增批次前一個完整交易日的 MA20 證據。",
+                    refs + [f"event_indicator_snapshots.{key}"],
+                )
+            observations.append((key, distance))
+        violations = [
+            key
+            for key, distance in observations
+            if distance < 0 or distance > PULLBACK_MA20_MAX_DISTANCE_PCT
+        ]
+        return _objective_check(
+            "add_entry_condition",
+            "fail" if violations else "pass",
+            (
+                "新增批次價格未同時符合守住 MA20 且距 MA20 不超過 3% 的回測契約。"
+                if violations
+                else "所有新增批次價格都守住 MA20，且距 MA20 不超過 3%。"
+            ),
+            refs + [f"event_indicator_snapshots.{key}" for key, _distance in observations],
+        )
+    if condition == "breakout_above_prior_high":
+        observed_keys = []
+        violations = []
+        for index, event in add_events:
+            key = _event_key(event, index)
+            event_date = _event_value(event, "event_date")
+            price = _number(_event_value(event, "price"))
+            highs = _point_in_time_values(rows, event_date).get("highs", [])
+            if price is None or len(highs) < 20:
+                return _objective_check(
+                    "add_entry_condition",
+                    "unobservable",
+                    "缺少新增批次前 20 根完整 High，無法核對是否突破前高。",
+                    refs + [f"event_indicator_snapshots.{key}"],
+                )
+            observed_keys.append(key)
+            if price <= max(highs[-20:]):
+                violations.append(key)
+        return _objective_check(
+            "add_entry_condition",
+            "fail" if violations else "pass",
+            "新增批次價格沒有突破前 20 根完整 High。" if violations else "所有新增批次價格都突破前 20 根完整 High。",
+            refs + [f"event_facts.{key}" for key in observed_keys],
+        )
+    return _objective_check(
+        "add_entry_condition",
+        "unobservable",
+        "目前保存的客觀資料不足以核對這項新增批次條件。",
+        refs,
+    )
+
+
+def _objective_stop_rule_check(
+    events: list[Any],
+    rows: list[Any],
+    plan: Any,
+    stop_rule: Any,
+) -> dict[str, Any] | None:
+    if stop_rule in {None, "not_recorded", "no_stop_recorded"}:
+        return None
+    refs = ["decision_context.default_stop_rule", "market_snapshot", "event_facts"]
+    entries = [event for event in events if _event_value(event, "event_type") in ENTRY_TYPES]
+    exits = [event for event in events if _event_value(event, "event_type") in EXIT_TYPES]
+    if not entries or not exits:
+        return _objective_check(
+            "default_stop_rule",
+            "unobservable",
+            "缺少完整進場或結案事件，無法核對風險控制規則。",
+            refs,
+        )
+    start = _event_value(entries[0], "event_date")
+    end = _event_value(exits[-1], "event_date")
+    if not isinstance(start, date) or not isinstance(end, date):
+        return _objective_check(
+            "default_stop_rule",
+            "unobservable",
+            "事件日期不完整，無法核對風險控制規則。",
+            refs,
+        )
+
+    stop_price = _number(_event_value(plan, "planned_stop_price"))
+    if stop_rule in {"fixed_price", "cost_minus_pct"} and stop_price is None:
+        return _objective_check(
+            "default_stop_rule",
+            "unobservable",
+            "固定價格型風險規則缺少 planned_stop_price。",
+            refs + ["plan_snapshot.planned_stop_price"],
+        )
+
+    history_closes: list[float] = []
+    history_lows: list[float] = []
+    trigger_date: date | None = None
+    had_required_history = False
+    sorted_rows = _sort_market_rows(completed_price_rows_from_raw_data(rows))
+    market_dates = sorted({
+        row_date
+        for row in sorted_rows
+        for row_date in [_row_date(row)]
+        if row_date is not None and row_date < end and _close(row) is not None
+    })
+    for row in sorted_rows:
+        row_date = _row_date(row)
+        close = _close(row)
+        low = _low(row)
+        if not isinstance(row_date, date) or row_date >= end or close is None:
+            continue
+        if row_date <= start:
+            history_closes.append(close)
+            if low is not None:
+                history_lows.append(low)
+            continue
+        triggered = False
+        if stop_rule in {"fixed_price", "cost_minus_pct"}:
+            had_required_history = had_required_history or low is not None
+            triggered = low is not None and low <= float(stop_price)
+        elif stop_rule == "break_ma20":
+            current_ma = ma(history_closes + [close], 20)
+            had_required_history = had_required_history or current_ma is not None
+            triggered = current_ma is not None and close < current_ma
+        elif stop_rule == "break_ma60":
+            current_ma = ma(history_closes + [close], 60)
+            had_required_history = had_required_history or current_ma is not None
+            triggered = current_ma is not None and close < current_ma
+        elif stop_rule == "break_20d_low":
+            had_required_history = had_required_history or len(history_lows) >= 20
+            triggered = len(history_lows) >= 20 and close < min(history_lows[-20:])
+        if triggered:
+            trigger_date = row_date
+            break
+        history_closes.append(close)
+        if low is not None:
+            history_lows.append(low)
+
+    if not had_required_history:
+        return _objective_check(
+            "default_stop_rule",
+            "unobservable",
+            "完整歷史行情不足，無法建立風險規則的客觀觸發點。",
+            refs,
+        )
+    if trigger_date is None:
+        trigger_basis = (
+            "盤中低點"
+            if stop_rule in {"fixed_price", "cost_minus_pct"}
+            else "收盤"
+        )
+        return _objective_check(
+            "default_stop_rule",
+            "not_triggered",
+            f"持有期間沒有觀察到已記錄風險規則的{trigger_basis}觸發點。",
+            refs,
+        )
+
+    response_event = next(
+        (
+            event
+            for event in exits
+            if isinstance(_event_value(event, "event_date"), date)
+            and _event_value(event, "event_date") > trigger_date
+        ),
+        None,
+    )
+    if response_event is None:
+        return _objective_check(
+            "default_stop_rule",
+            "fail",
+            "風險規則觸發後，沒有可核對的後續降低曝險事件。",
+            refs + [f"market_snapshot.{trigger_date.isoformat()}"],
+        )
+    response_date = _event_value(response_event, "event_date")
+    intervening_bars = sum(
+        trigger_date < market_date < response_date
+        for market_date in market_dates
+    )
+    timely = intervening_bars <= 2
+    return _objective_check(
+        "default_stop_rule",
+        "pass" if timely else "fail",
+        (
+            "風險規則觸發後，在兩根完整交易 bar 的觀察容許內出現降低曝險事件。"
+            if timely
+            else "風險規則觸發後，超過兩根完整交易 bar 才出現降低曝險事件。"
+        ),
+        refs
+        + [
+        f"market_snapshot.{trigger_date.isoformat()}",
+            f"event_facts.{_event_key(response_event, events.index(response_event))}",
+        ],
+    )
+
+
+def _objective_check(
+    code: str,
+    status: str,
+    summary: str,
+    source_refs: list[str],
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "summary": _risk_language_text(summary),
+        "source_refs": _unique_refs(source_refs),
+    }
+
+
+def _matched_cash_flow_relative_performance(
+    events: list[Any],
+    benchmark_rows: list[Any],
+    *,
+    calendar_rows: list[Any],
+    actual_return_pct: Any,
+    benchmark_symbol: str | None,
+) -> dict[str, Any]:
+    if not benchmark_symbol:
+        return {
+            "status": "unavailable_missing_benchmark_identity",
+            "benchmark_return_pct": None,
+            "relative_return_pct": None,
+        }
+    if not benchmark_rows:
+        return {
+            "status": "unavailable_missing_benchmark_series",
+            "benchmark_return_pct": None,
+            "relative_return_pct": None,
+        }
+    actual_return = _number(actual_return_pct)
+    if actual_return is None:
+        return {
+            "status": "unavailable_incomplete_lifecycle_return",
+            "benchmark_return_pct": None,
+            "relative_return_pct": None,
+        }
+    normalized_prices = [(_row_date(row), _close(row)) for row in benchmark_rows]
+    normalized_prices = [
+        (row_date, close)
+        for row_date, close in normalized_prices
+        if isinstance(row_date, date) and close is not None and close > 0
+    ]
+    normalized_prices.sort(key=lambda item: item[0])
+    if not normalized_prices:
+        return {
+            "status": "unavailable_missing_benchmark_series",
+            "benchmark_return_pct": None,
+            "relative_return_pct": None,
+        }
+    calendar_dates = sorted({
+        row_date
+        for row in calendar_rows
+        for row_date in [_row_date(row)]
+        if row_date is not None and _close(row) is not None
+    })
+    if not calendar_dates:
+        return {
+            "status": "unavailable_missing_stock_trading_calendar",
+            "benchmark_return_pct": None,
+            "relative_return_pct": None,
+        }
+    benchmark_by_date = dict(normalized_prices)
+
+    stock_quantity = 0.0
+    benchmark_units = 0.0
+    invested = 0.0
+    proceeds = 0.0
+    saw_full_exit = False
+    for event in events:
+        event_type = _event_value(event, "event_type")
+        if event_type not in ENTRY_TYPES | EXIT_TYPES:
+            continue
+        event_date = _event_value(event, "event_date")
+        raw_price = _event_value(event, "price")
+        raw_quantity = _event_value(event, "quantity")
+        raw_fees = _event_value(event, "fees")
+        raw_taxes = _event_value(event, "taxes")
+        event_price = _number(raw_price)
+        quantity = _number(raw_quantity)
+        fees = _number(raw_fees) if raw_fees is not None else 0.0
+        taxes = _number(raw_taxes) if raw_taxes is not None else 0.0
+        if (
+            not isinstance(event_date, date)
+            or event_price is None
+            or event_price <= 0
+            or quantity is None
+            or quantity <= 0
+            or fees is None
+            or fees < 0
+            or taxes is None
+            or taxes < 0
+        ):
+            return {
+                "status": "unavailable_invalid_event_cash_flow",
+                "benchmark_return_pct": None,
+                "relative_return_pct": None,
+            }
+        reference_date = next(
+            (row_date for row_date in reversed(calendar_dates) if row_date < event_date),
+            None,
+        )
+        reference_price = benchmark_by_date.get(reference_date)
+        if reference_date is None or reference_price is None:
+            return {
+                "status": "unavailable_incomplete_benchmark_coverage",
+                "benchmark_return_pct": None,
+                "relative_return_pct": None,
+            }
+        if event_type in ENTRY_TYPES:
+            gross_notional = event_price * quantity
+            benchmark_units += gross_notional / reference_price
+            invested += gross_notional + fees + taxes
+            stock_quantity += quantity
+            continue
+        if quantity > stock_quantity or stock_quantity <= 0:
+            return {
+                "status": "unavailable_invalid_event_cash_flow",
+                "benchmark_return_pct": None,
+                "relative_return_pct": None,
+            }
+        fraction = quantity / stock_quantity
+        units_sold = benchmark_units if event_type == "full_exit" else benchmark_units * fraction
+        proceeds += (
+            units_sold * reference_price
+            - fees
+            - taxes
+        )
+        benchmark_units = max(0.0, benchmark_units - units_sold)
+        stock_quantity = max(0.0, stock_quantity - quantity)
+        saw_full_exit = saw_full_exit or event_type == "full_exit"
+    if not saw_full_exit or stock_quantity > 0 or invested <= 0:
+        return {
+            "status": "unavailable_open_or_incomplete_lifecycle",
+            "benchmark_return_pct": None,
+            "relative_return_pct": None,
+        }
+    benchmark_return = (proceeds - invested) / invested * 100
+    return {
+        "status": "available",
+        "benchmark_return_pct": _round_pct(benchmark_return),
+        "relative_return_pct": _round_pct(actual_return - benchmark_return),
+    }
 
 
 def _active_exposure_days(events: list[Any], analysis_end: date | None) -> int | None:
@@ -1886,6 +2460,7 @@ def _build_decision_context(plan: Any, data_quality: dict[str, Any]) -> dict[str
             "historical_judgment_eligible": False,
             "source": None,
             "created_after_entry": None,
+            "setup_type": None,
             "planned_holding_period": None,
             "default_stop_rule": None,
             "add_entry_condition": None,
@@ -1899,6 +2474,7 @@ def _build_decision_context(plan: Any, data_quality: dict[str, Any]) -> dict[str
         "historical_judgment_eligible": historical_judgment_eligible,
         "source": source,
         "created_after_entry": created_after_entry,
+        "setup_type": _event_value(plan, "setup_type"),
         "planned_holding_period": _event_value(plan, "planned_holding_period"),
         "default_stop_rule": _event_value(plan, "default_stop_rule"),
         "add_entry_condition": _event_value(plan, "add_entry_condition"),
@@ -1922,6 +2498,7 @@ def _plan_source_data(plan: Any) -> dict[str, Any] | None:
     return {
         "source": _event_value(plan, "source"),
         "created_after_entry": _event_value(plan, "created_after_entry"),
+        "setup_type": _event_value(plan, "setup_type"),
         "planned_holding_period": _event_value(plan, "planned_holding_period"),
         "default_stop_rule": _event_value(plan, "default_stop_rule"),
         "add_entry_condition": _event_value(plan, "add_entry_condition"),
@@ -1929,6 +2506,92 @@ def _plan_source_data(plan: Any) -> dict[str, Any] | None:
         "planned_risk_amount": _number(_event_value(plan, "planned_risk_amount")),
         "planned_risk_pct": _number(_event_value(plan, "planned_risk_pct")),
     }
+
+
+def _load_lifecycle_benchmark_rows(
+    db: Session,
+    *,
+    analysis_start: date | None,
+    analysis_end: date | None,
+    events: list[Any],
+    market_rows: list[Any],
+) -> list[dict[str, Any]]:
+    if analysis_start is None or analysis_end is None:
+        return []
+    required_dates = _required_prior_completed_dates(events, market_rows)
+    start_date = min(required_dates) if required_dates else analysis_start - timedelta(days=14)
+    raw_rows = load_price_series_from_raw_data(
+        db,
+        symbols=[POSITION_LIFECYCLE_BENCHMARK_SYMBOL],
+        start_date=start_date,
+        end_date=analysis_end,
+    ).get(POSITION_LIFECYCLE_BENCHMARK_SYMBOL, [])
+    if _price_rows_cover_dates(raw_rows, required_dates):
+        return raw_rows
+    bind = db.get_bind()
+    if bind is None or not inspect(bind).has_table("daily_radar_prepared_runs"):
+        return []
+    return load_benchmark_prices_from_prepared_market_context(
+        db,
+        market="TW",
+        benchmark_symbol=POSITION_LIFECYCLE_BENCHMARK_SYMBOL,
+        as_of_date=analysis_end,
+        required_dates=sorted(required_dates),
+    )
+
+
+def _required_prior_completed_dates(
+    events: list[Any],
+    market_rows: list[Any],
+) -> set[date]:
+    calendar_rows = _stock_calendar_rows(market_rows)
+    market_dates = sorted({
+        row_date
+        for row in calendar_rows
+        for row_date in [_row_date(row)]
+        if row_date is not None and _close(row) is not None
+    })
+    required: set[date] = set()
+    for event in events:
+        if _event_value(event, "event_type") not in ENTRY_TYPES | EXIT_TYPES:
+            continue
+        event_date = _event_value(event, "event_date")
+        if not isinstance(event_date, date):
+            continue
+        prior_date = next(
+            (row_date for row_date in reversed(market_dates) if row_date < event_date),
+            None,
+        )
+        if prior_date is not None:
+            required.add(prior_date)
+    return required
+
+
+def _price_rows_cover_dates(rows: Any, required_dates: set[date]) -> bool:
+    if not rows or not required_dates:
+        return bool(rows)
+    available_dates = {
+        row_date
+        for row in rows
+        for row_date in [_row_date(row)]
+        if row_date is not None and _close(row) is not None
+    }
+    return required_dates.issubset(available_dates)
+
+
+def _stock_calendar_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    return completed_price_rows_from_raw_data(rows)
+
+
+def _compact_price_rows(rows: Any) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for row in rows or ():
+        row_date = _row_date(row)
+        close = _close(row)
+        if row_date is None or close is None or close <= 0:
+            continue
+        compact.append({"date": row_date.isoformat(), "close": _round_price(close)})
+    return sorted(compact, key=lambda item: item["date"])
 
 
 def _build_event_shared_context(
@@ -2020,7 +2683,7 @@ def _sort_events(events: list[Any]) -> list[Any]:
 
 
 def _sort_market_rows(rows: list[Any]) -> list[Any]:
-    return sorted(rows, key=lambda row: _event_value(row, "record_date") or date.min)
+    return sorted(rows, key=lambda row: _row_date(row) or date.min)
 
 
 def _analysis_end_date(events: list[Any]) -> date | None:
@@ -2068,7 +2731,15 @@ def _ledger_amount(event: Any, key: str, index: int, data_quality: dict[str, Any
             f"Event {_event_key(event, index)} had missing {key}; 0 was used for ledger accounting.",
         )
         return 0.0
-    return _number(raw_value) or 0.0
+    number = _number(raw_value)
+    if number is None:
+        _add_note(
+            data_quality,
+            f"invalid_ledger_{key}",
+            f"Event {_event_key(event, index)} had non-finite or invalid {key}; 0 was used for ledger accounting.",
+        )
+        return 0.0
+    return number
 
 
 def _close(row: Any) -> float | None:
@@ -2088,6 +2759,9 @@ def _volume(row: Any) -> float | None:
 
 
 def _latest_technical_value(row: Any, ohlcv_key: str, recent_key: str) -> float | None:
+    direct_value = _number(_event_value(row, ohlcv_key))
+    if direct_value is not None:
+        return direct_value
     ohlcv_value = _number(_technical_section(row, "ohlcv").get(ohlcv_key))
     if ohlcv_value is not None:
         return ohlcv_value
@@ -2121,16 +2795,27 @@ def _event_value(obj: Any, key: str, missing: Any = None) -> Any:
     return getattr(obj, key, missing)
 
 
+def _row_date(row: Any) -> date | None:
+    for key in ("record_date", "date", "data_date"):
+        value = _event_value(row, key)
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                continue
+    return None
+
+
 def _number(value: Any) -> float | None:
     if value is None:
         return None
-    if isinstance(value, Decimal):
-        return float(value)
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
-    return number if number == number else None
+    return number if isfinite(number) else None
 
 
 def _safe_div(numerator: float | None, denominator: float | None) -> float | None:

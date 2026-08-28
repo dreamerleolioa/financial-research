@@ -316,12 +316,14 @@ def load_benchmark_prices_from_prepared_market_context(
     market: str,
     benchmark_symbol: str,
     as_of_date: date,
+    required_dates: Iterable[date] = (),
 ) -> list[dict[str, Any]]:
     return load_cached_benchmark_prices(
         session,
         market=market,
         benchmark_symbol=benchmark_symbol,
         as_of_date=as_of_date,
+        required_dates=required_dates,
     )
 
 
