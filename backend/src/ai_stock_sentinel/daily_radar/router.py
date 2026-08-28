@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterable
 from contextlib import suppress
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -56,6 +56,11 @@ from ai_stock_sentinel.daily_radar.market_session import (
     MarketSessionProvider,
     MarketSessionProviderError,
     TwseMarketSessionProvider,
+)
+from ai_stock_sentinel.daily_radar.managed_raw_data import (
+    MANAGED_RAW_DATA_SYMBOL_LIMIT,
+    ManagedRawDataSelection,
+    select_managed_raw_data_symbols,
 )
 from ai_stock_sentinel.daily_radar.name_backfill import (
     SymbolNameResolver,
@@ -138,6 +143,8 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarInstitutionalUniverseReplayResponse,
     DailyRadarMarketSessionRequest,
     DailyRadarMarketSessionResponse,
+    DailyRadarManagedRawDataRefreshRequest,
+    DailyRadarManagedRawDataRefreshResponse,
     DailyRadarMarketBarsRefreshRequest,
     DailyRadarMarketBarsRefreshResponse,
     DailyRadarMonthlyRuleReviewRequest,
@@ -161,7 +168,7 @@ from ai_stock_sentinel.daily_radar.universe import (
     refresh_daily_radar_universe_technical_tracks,
     select_daily_radar_universe,
 )
-from ai_stock_sentinel.db.models import StockRawData
+from ai_stock_sentinel.db.models import DailyRadarPreparedRun, StockRawData
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.phase1_avwap.provider import ArchiveFirstDailyPriceProvider, TwseDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import DailyPriceProvider, refresh_phase1_avwap_snapshots_for_symbols
@@ -775,6 +782,99 @@ def refresh_daily_radar_ohlcv_endpoint(
         missing_symbols=missing_symbols,
         skipped_symbols=list(skipped_symbol_reasons),
         skipped_symbol_reasons=skipped_symbol_reasons,
+    )
+
+
+@router.post(
+    "/internal/daily-radar/refresh-managed-raw-data",
+    response_model=DailyRadarManagedRawDataRefreshResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_managed_raw_data_endpoint(
+    payload: DailyRadarManagedRawDataRefreshRequest | None = None,
+    db: Session = Depends(get_db),
+    technical_fetcher: BatchTechnicalFetcher = Depends(
+        get_daily_radar_technical_fetcher
+    ),
+) -> DailyRadarManagedRawDataRefreshResponse:
+    request = payload or DailyRadarManagedRawDataRefreshRequest()
+    run_date = request.run_date or _backend_today()
+    selection = select_managed_raw_data_symbols(
+        db,
+        run_date=run_date,
+        max_symbols=MANAGED_RAW_DATA_SYMBOL_LIMIT,
+    )
+    prepared = get_daily_radar_prepared_run(
+        db,
+        run_date=run_date,
+        market=request.market,
+    )
+    selected_overlap_count = _managed_selected_overlap_count(
+        selection,
+        prepared.selected_symbols if prepared is not None else (),
+    )
+    if selection.active_symbols_over_budget:
+        return _finish_managed_raw_data_refresh(
+            db,
+            prepared=prepared,
+            request=request,
+            run_date=run_date,
+            selection=selection,
+            selected_overlap_count=selected_overlap_count,
+            status="failed",
+            error_codes=["active_symbol_budget_exceeded"],
+        )
+
+    existing_rows = get_final_raw_data_rows_for_symbols(
+        db,
+        run_date=run_date,
+        symbols=selection.symbols,
+    )
+    reusable_before = reusable_daily_radar_raw_rows(existing_rows)
+    try:
+        refreshed_rows = ensure_daily_radar_raw_rows(
+            db,
+            run_date,
+            selection.symbols,
+            technical_fetcher=technical_fetcher,
+        )
+    except Exception as exc:
+        logger.error(
+            "Managed raw-data refresh failed; error_type=%s",
+            exc.__class__.__name__,
+        )
+        db.rollback()
+        prepared = get_daily_radar_prepared_run(
+            db,
+            run_date=run_date,
+            market=request.market,
+        )
+        return _finish_managed_raw_data_refresh(
+            db,
+            prepared=prepared,
+            request=request,
+            run_date=run_date,
+            selection=selection,
+            selected_overlap_count=selected_overlap_count,
+            status="failed",
+            error_codes=["managed_raw_data_refresh_failed"],
+        )
+
+    missing_record_count = len(selection.symbols) - len(refreshed_rows)
+    return _finish_managed_raw_data_refresh(
+        db,
+        prepared=prepared,
+        request=request,
+        run_date=run_date,
+        selection=selection,
+        selected_overlap_count=selected_overlap_count,
+        status="failed" if missing_record_count else "completed",
+        reused_record_count=len(reusable_before),
+        records_written=max(0, len(refreshed_rows) - len(reusable_before)),
+        missing_record_count=missing_record_count,
+        error_codes=(
+            ["managed_raw_data_incomplete"] if missing_record_count else []
+        ),
     )
 
 
@@ -1927,6 +2027,66 @@ def _supported_daily_radar_symbols(symbols: Iterable[str]) -> tuple[list[str], d
             continue
         skipped_symbol_reasons[normalized] = "unsupported_daily_radar_symbol"
     return supported_symbols, skipped_symbol_reasons
+
+
+def _managed_selected_overlap_count(
+    selection: ManagedRawDataSelection,
+    selected_symbols: Iterable[str],
+) -> int:
+    selected_symbol_set = {str(symbol) for symbol in selected_symbols}
+    return sum(symbol in selected_symbol_set for symbol in selection.symbols)
+
+
+def _finish_managed_raw_data_refresh(
+    db: Session,
+    *,
+    prepared: DailyRadarPreparedRun | None,
+    request: DailyRadarManagedRawDataRefreshRequest,
+    run_date: date,
+    selection: ManagedRawDataSelection,
+    selected_overlap_count: int,
+    status: Literal["completed", "failed"],
+    reused_record_count: int = 0,
+    records_written: int = 0,
+    missing_record_count: int = 0,
+    error_codes: list[str] | None = None,
+) -> DailyRadarManagedRawDataRefreshResponse:
+    safe_error_codes = list(error_codes or [])
+    target_symbol_count = (
+        selection.active_symbol_count
+        if selection.active_symbols_over_budget
+        else len(selection.symbols)
+    )
+    response_details = {
+        "target_symbol_count": target_symbol_count,
+        "active_symbol_count": selection.active_symbol_count,
+        "recent_analysis_symbol_count": selection.recent_analysis_symbol_count,
+        "overlap_symbol_count": selection.overlap_symbol_count,
+        "selected_overlap_count": selected_overlap_count,
+        "reused_record_count": reused_record_count,
+        "records_written": records_written,
+        "missing_record_count": missing_record_count,
+        "deferred_recent_symbol_count": selection.deferred_recent_symbol_count,
+        "error_codes": safe_error_codes,
+    }
+    if prepared is not None:
+        update_daily_radar_prepared_step_status(
+            db,
+            prepared,
+            step="refresh-managed-raw-data",
+            status=status,
+            details={
+                "required_for_scoring": False,
+                **response_details,
+            },
+        )
+    db.commit()
+    return DailyRadarManagedRawDataRefreshResponse(
+        status=status,
+        run_date=run_date,
+        market=request.market,
+        **response_details,
+    )
 
 
 def _require_complete_daily_radar_raw_rows(

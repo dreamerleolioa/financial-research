@@ -95,6 +95,28 @@ class DailyRadarRefreshStepResponse(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarManagedRawDataRefreshRequest(BaseModel):
+    run_date: date | None = None
+    market: Literal["TW"] = "TW"
+
+
+class DailyRadarManagedRawDataRefreshResponse(BaseModel):
+    status: Literal["completed", "failed"]
+    step: Literal["refresh-managed-raw-data"] = "refresh-managed-raw-data"
+    run_date: date
+    market: str
+    target_symbol_count: int = Field(default=0, ge=0)
+    active_symbol_count: int = Field(default=0, ge=0)
+    recent_analysis_symbol_count: int = Field(default=0, ge=0)
+    overlap_symbol_count: int = Field(default=0, ge=0)
+    selected_overlap_count: int = Field(default=0, ge=0)
+    reused_record_count: int = Field(default=0, ge=0)
+    records_written: int = Field(default=0, ge=0)
+    missing_record_count: int = Field(default=0, ge=0)
+    deferred_recent_symbol_count: int = Field(default=0, ge=0)
+    error_codes: list[str] = Field(default_factory=list)
+
+
 class DailyRadarMarketBarsRefreshRequest(BaseModel):
     run_date: date | None = None
     start_date: date | None = None
@@ -419,6 +441,8 @@ __all__ = [
     "DailyRadarInstitutionalUniverseReplayResponse",
     "DailyRadarMarketSessionRequest",
     "DailyRadarMarketSessionResponse",
+    "DailyRadarManagedRawDataRefreshRequest",
+    "DailyRadarManagedRawDataRefreshResponse",
     "DailyRadarMatchedRule",
     "DailyRadarMonthlyRuleReviewRequest",
     "DailyRadarMonthlyRuleReviewResponse",
