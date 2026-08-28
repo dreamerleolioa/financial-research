@@ -80,7 +80,7 @@ def test_run_daily_radar_orchestrates_fixture_prefilter_scoring_explanations_and
     ).all()
     selected = [candidate for candidate in candidates if candidate.selection_status == "selected"]
     shadow = [candidate for candidate in candidates if candidate.selection_status == "shadow"]
-    assert [candidate.symbol for candidate in selected] == ["2303.TW", "3034.TW", "2330.TW", "2454.TW"]
+    assert [candidate.symbol for candidate in selected] == ["3034.TW", "2303.TW", "2454.TW", "2330.TW"]
     assert {candidate.symbol for candidate in shadow} == {"1605.TW", "3661.TW"}
     assert {candidate.prefilter_status for candidate in shadow} == {"rejected"}
     assert all(candidate.prefilter_reasons for candidate in shadow)
@@ -102,7 +102,7 @@ def test_run_daily_radar_orchestrates_fixture_prefilter_scoring_explanations_and
     by_symbol = {candidate.symbol: candidate for candidate in selected}
     first = by_symbol["2330.TW"]
     assert first.explanation.startswith("法人籌碼延續觀察")
-    assert first.repeat_status == "upgraded"
+    assert first.repeat_status == "repeat"
     assert first.bucket_scores
     assert first.risk_labels == []
     assert first.matched_rules
@@ -311,8 +311,8 @@ def test_run_daily_radar_persists_relative_strength_version_and_replayable_evide
     relative_strength = candidate.score_breakdown["relative_strength"]
     evidence = candidate.input_snapshot["evidence"][0]
 
-    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.6"
-    assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.5"
+    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.7"
+    assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.6"
     assert relative_strength["benchmark_symbol"] == "TAIEX"
     assert relative_strength["lookback_days"] == 20
     assert relative_strength["relative_value"] > 0

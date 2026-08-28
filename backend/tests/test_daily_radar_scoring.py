@@ -347,6 +347,75 @@ def test_daily_radar_scoring_assigns_each_seed_fixture_primary_bucket() -> None:
         assert result["score_breakdown"]["freshness"]["score"] > 0
 
 
+def test_daily_radar_scoring_caps_correlated_signal_families_with_trace() -> None:
+    result = score_daily_radar_record(
+        _joined_records_by_symbol()["3034.TW"],
+        market_context=_market_context(),
+    )
+    bucket = result["score_breakdown"]["bucket_signal_families"]["bottoming_reversal"]
+    momentum = bucket["families"]["momentum"]
+    momentum_rules = [
+        rule
+        for rule in result["matched_rules"]
+        if rule.get("signal_family") == "momentum"
+        and rule["rule_id"].startswith("bottoming_")
+    ]
+
+    assert momentum["raw_positive_score"] > momentum["cap"]
+    assert momentum["effective_score"] == momentum["cap"]
+    assert bucket["raw_score"] > bucket["effective_score"]
+    assert bucket["capped_points"] > 0
+    assert sum(rule["raw_score_adjustment"] for rule in momentum_rules) == momentum[
+        "raw_positive_score"
+    ]
+    assert sum(rule["effective_score_adjustment"] for rule in momentum_rules) == pytest.approx(
+        momentum["effective_score"]
+    )
+    assert sum(rule["capped_points"] for rule in momentum_rules) == pytest.approx(
+        momentum["capped_points"]
+    )
+
+
+def test_daily_radar_family_caps_never_reduce_negative_rule_penalties() -> None:
+    record = deepcopy(_joined_records_by_symbol()["2303.TW"])
+    support = record["indicators"]["support_level"]
+    record["ohlcv"]["close"] = support * 0.99
+
+    result = score_daily_radar_record(record, market_context=_market_context())
+    price_structure = result["score_breakdown"]["bucket_signal_families"]["support_retest"][
+        "families"
+    ]["price_structure"]
+    negative_rule = next(
+        rule
+        for rule in result["matched_rules"]
+        if rule["rule_id"] == "support_retest_close_below_support"
+    )
+
+    assert price_structure["negative_score"] == -20
+    assert negative_rule["raw_score_adjustment"] == -20
+    assert negative_rule["effective_score_adjustment"] == -20
+    assert negative_rule["capped_points"] == 0
+
+
+def test_daily_radar_family_cap_exact_boundary_has_no_capped_points() -> None:
+    result = score_daily_radar_record(
+        _joined_records_by_symbol()["2303.TW"],
+        market_context=_market_context(),
+    )
+    momentum = result["score_breakdown"]["bucket_signal_families"]["support_retest"][
+        "families"
+    ]["momentum"]
+    macd_rule = next(
+        rule
+        for rule in result["matched_rules"]
+        if rule["rule_id"] == "support_retest_macd_stable"
+    )
+
+    assert momentum["raw_positive_score"] == momentum["cap"]
+    assert momentum["capped_points"] == 0
+    assert macd_rule["capped_points"] == 0
+
+
 def test_daily_radar_missing_scoring_inputs_are_rejected_and_never_add_positive_points() -> None:
     record = {
         "symbol": "2330.TW",
@@ -580,10 +649,10 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["risk_penalties"] == []
     assert result["data_dates"]["market_index"] == "2026-05-29"
     assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
-    assert result["scoring_version"] == "daily-radar-scoring-v2.6"
-    assert result["rule_version"] == "daily-radar-rules-v2.5"
-    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.6"
-    assert breakdown["rule_version"] == "daily-radar-rules-v2.5"
+    assert result["scoring_version"] == "daily-radar-scoring-v2.7"
+    assert result["rule_version"] == "daily-radar-rules-v2.6"
+    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.7"
+    assert breakdown["rule_version"] == "daily-radar-rules-v2.6"
 
 
 def test_daily_radar_counterfactual_exclusion_uses_same_input_without_mutating_default_score() -> None:
@@ -683,9 +752,9 @@ def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_
     assert result["data_dates"]["relative_strength"] == "2026-05-29"
     assert result["input_snapshot"]["relative_strength"] == relative_strength
     assert result["input_snapshot"]["versions"] == {
-        "scoring_version": "daily-radar-scoring-v2.6",
-        "rule_version": "daily-radar-rules-v2.5",
-        "config_version": "daily-radar-scoring-config-v1",
+        "scoring_version": "daily-radar-scoring-v2.7",
+        "rule_version": "daily-radar-rules-v2.6",
+        "config_version": "daily-radar-scoring-config-v2",
     }
     assert result["input_snapshot"]["replay_input"]["schema_version"] == "daily-radar-replay-input-v2"
     assert result["input_snapshot"]["replay_input"]["baseline_config"]["primary_bucket_weight"] == 0.8

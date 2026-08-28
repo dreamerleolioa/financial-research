@@ -32,6 +32,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     FORWARD_VALIDATION_VERSION,
     candidate_forward_validation_benchmark_symbol,
 )
+from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS
 from ai_stock_sentinel.daily_radar.data_quality import (
     DAILY_RADAR_REPLAY_INPUT_VERSION,
     margin_evidence_is_complete,
@@ -60,7 +61,7 @@ from ai_stock_sentinel.db.models import (
 )
 
 
-RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v5"
+RULE_REVIEW_REPORT_VERSION = "daily-radar-rule-review-v6"
 DEFAULT_MIN_SAMPLE_COUNT = 20
 DEFAULT_RANK_CUTOFF = 20
 MAX_GOVERNANCE_CANDIDATES_PER_GROUP = 250
@@ -266,6 +267,7 @@ def build_monthly_rule_review_report(
             "ranking_pool_complete": replay_context.ranking_pool_complete,
             "ranking_pool_status": replay_context.ranking_pool_status,
             "outcome_join": "validated_results_only_after_selection",
+            "bucket_cohort": "baseline_primary_bucket_anchor",
             "live_change_eligible": False,
             "replay_workload": replay_context.replay_workload,
         },
@@ -426,6 +428,7 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
         f"- Counterfactual cohort: {', '.join(str(value) for value in _as_list(counterfactual_scope.get('selected_months'))) or 'insufficient'}",
         f"- Counterfactual ranking pool: {counterfactual_scope.get('ranking_pool')}",
         f"- Counterfactual outcome join: {counterfactual_scope.get('outcome_join')}",
+        f"- Counterfactual bucket cohort: {counterfactual_scope.get('bucket_cohort')}",
         "",
         "## Counterfactual Ablation Recommendations",
         "",
@@ -442,6 +445,28 @@ def render_rule_review_markdown(report: Mapping[str, Any]) -> str:
                 recommendation=row.get("recommendation"),
             )
         )
+    lines.extend([
+        "",
+        "## Bucket Counterfactual Diagnostics",
+        "",
+        "| Group | Window | Baseline bucket | Validated sample | Delta excess pct | Recommendation |",
+        "| --- | ---: | --- | ---: | ---: | --- |",
+    ])
+    for row in _as_list(report.get("ablation_summary")):
+        for bucket, impact in sorted(_mapping(row.get("bucket_impacts")).items()):
+            details = _mapping(impact)
+            lines.append(
+                "| {group} | {window} | {bucket} | {sample} | {delta} | {recommendation} |".format(
+                    group=row.get("group"),
+                    window=row.get("window_days"),
+                    bucket=bucket,
+                    sample=details.get("validated_selected_sample_count"),
+                    delta=_markdown_value(
+                        details.get("delta_average_excess_return_vs_benchmark_pct")
+                    ),
+                    recommendation=details.get("recommendation"),
+                )
+            )
     lines.extend([
         "",
         "## Rule Recommendations",
@@ -596,6 +621,7 @@ def _counterfactual_ablation_report(
                     "delta_average_excess_return_vs_benchmark_pct": None,
                     "recommendation": "not_in_live_score",
                     "eligible_for_live_change": False,
+                    "bucket_impacts": {},
                 })
             continue
         if replay_context.ranking_pool_status == "not_applicable":
@@ -614,6 +640,7 @@ def _counterfactual_ablation_report(
                     "delta_average_excess_return_vs_benchmark_pct": None,
                     "recommendation": "not_applicable_no_cohort",
                     "eligible_for_live_change": False,
+                    "bucket_impacts": {},
                 })
             continue
         if replay_context.ranking_pool_status in {
@@ -650,6 +677,7 @@ def _counterfactual_ablation_report(
                     "delta_average_excess_return_vs_benchmark_pct": None,
                     "recommendation": blocked_recommendation,
                     "eligible_for_live_change": False,
+                    "bucket_impacts": {},
                 })
             continue
         ablated = _replay_daily_radar_rows(
@@ -657,6 +685,23 @@ def _counterfactual_ablation_report(
             ScoringConfig(),
             excluded_rule_codes=excluded_codes,
         )
+        bucket_excluded_codes = {
+            bucket: {
+                code
+                for code in excluded_codes
+                if registry[code].bucket == bucket
+            }
+            for bucket in DAILY_RADAR_BUCKETS
+        }
+        bucket_ablated = {
+            bucket: _replay_daily_radar_rows(
+                replayable,
+                ScoringConfig(),
+                excluded_rule_codes=codes,
+            )
+            for bucket, codes in bucket_excluded_codes.items()
+            if codes
+        }
         for window in DEFAULT_FORWARD_WINDOWS:
             before = [row for row in baseline if int(row["window_days"]) == window]
             after = [row for row in ablated if int(row["window_days"]) == window]
@@ -709,8 +754,112 @@ def _counterfactual_ablation_report(
                 "delta_average_excess_return_vs_benchmark_pct": delta_excess,
                 "recommendation": recommendation,
                 "eligible_for_live_change": False,
+                "bucket_impacts": _bucket_counterfactual_impacts(
+                    before,
+                    {
+                        bucket: [
+                            row
+                            for row in rows
+                            if int(row["window_days"]) == window
+                        ]
+                        for bucket, rows in bucket_ablated.items()
+                    },
+                    excluded_rule_codes_by_bucket=bucket_excluded_codes,
+                    min_sample_count=min_sample_count,
+                ),
             })
     return results
+
+
+def _bucket_counterfactual_impacts(
+    before: Sequence[Mapping[str, Any]],
+    after_by_bucket: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    excluded_rule_codes_by_bucket: Mapping[str, set[str]],
+    min_sample_count: int,
+) -> dict[str, dict[str, Any]]:
+    impacts: dict[str, dict[str, Any]] = {}
+    for bucket in DAILY_RADAR_BUCKETS:
+        before_rows = [row for row in before if row.get("baseline_primary_bucket") == bucket]
+        excluded_codes = excluded_rule_codes_by_bucket.get(bucket, set())
+        if not excluded_codes:
+            impacts[bucket] = {
+                "cohort": "baseline_primary_bucket_anchor",
+                "intervention_scope": "not_applicable_no_bucket_owned_rules",
+                "excluded_rule_codes": [],
+                "recommendation": "not_applicable_no_bucket_owned_rules",
+                "eligible_for_live_change": False,
+            }
+            continue
+        after = after_by_bucket.get(bucket, [])
+        after_rows = [row for row in after if row.get("baseline_primary_bucket") == bucket]
+        selection = lambda row: (
+            row.get("status") == "validated"
+            and row.get("selected_for_rank") is True
+        )
+        before_metrics = outcome_metrics(before_rows, selection=selection)
+        after_metrics = outcome_metrics(after_rows, selection=selection)
+        before_excess = _float_or_none(
+            before_metrics.get("average_excess_return_vs_benchmark_pct")
+        )
+        after_excess = _float_or_none(
+            after_metrics.get("average_excess_return_vs_benchmark_pct")
+        )
+        delta_excess = _delta(after_excess, before_excess)
+        validated_count = min(
+            int(before_metrics["selected_sample_count"]),
+            int(after_metrics["selected_sample_count"]),
+        )
+        before_selected = {
+            int(row["candidate_id"])
+            for row in before_rows
+            if row.get("selected_for_rank") is True
+        }
+        after_selected = {
+            int(row["candidate_id"])
+            for row in after_rows
+            if row.get("selected_for_rank") is True
+        }
+        before_by_candidate = {
+            int(row["candidate_id"]): row
+            for row in before_rows
+            if row.get("candidate_id") is not None
+        }
+        after_by_candidate = {
+            int(row["candidate_id"]): row
+            for row in after_rows
+            if row.get("candidate_id") is not None
+        }
+        common_ids = set(before_by_candidate).intersection(after_by_candidate)
+        primary_bucket_changed_count = sum(
+            before_by_candidate[candidate_id].get("replayed_primary_bucket")
+            != after_by_candidate[candidate_id].get("replayed_primary_bucket")
+            for candidate_id in common_ids
+        )
+        if validated_count < min_sample_count or delta_excess is None:
+            recommendation = "insufficient_sample"
+        elif delta_excess > 0:
+            recommendation = "review_group_removal_for_bucket"
+        else:
+            recommendation = "keep_group_for_bucket"
+        impacts[bucket] = {
+            "cohort": "baseline_primary_bucket_anchor",
+            "intervention_scope": "bucket_local_owned_rules_removal",
+            "excluded_rule_codes": sorted(excluded_codes),
+            "baseline_selected_count": len(before_selected),
+            "ablated_selected_count": len(after_selected),
+            "selection_membership_changed_count": len(
+                before_selected.symmetric_difference(after_selected)
+            ),
+            "primary_bucket_changed_count": primary_bucket_changed_count,
+            "validated_selected_sample_count": validated_count,
+            "average_excess_return_vs_benchmark_pct_baseline": before_excess,
+            "average_excess_return_vs_benchmark_pct_ablated": after_excess,
+            "delta_average_excess_return_vs_benchmark_pct": delta_excess,
+            "recommendation": recommendation,
+            "eligible_for_live_change": False,
+        }
+    return impacts
 
 
 def _rule_recommendations(
@@ -1415,10 +1564,18 @@ def _daily_radar_replay_workload_from_counts(
         if entry.tier in SCORING_ACTIVE_TIERS
         and entry.ablation_group in DEFAULT_ABLATION_GROUPS
     }
+    active_bucket_ablation_pairs = {
+        (entry.ablation_group, entry.bucket)
+        for entry in registry.values()
+        if entry.tier in SCORING_ACTIVE_TIERS
+        and entry.ablation_group in DEFAULT_ABLATION_GROUPS
+        and entry.bucket in DAILY_RADAR_BUCKETS
+    }
     scoring_pass_count = (
         1
         + SCORING_CANDIDATE_CONFIG_COUNT
         + len(active_ablation_groups)
+        + len(active_bucket_ablation_pairs)
     )
     estimated_scoring_calls = candidate_count * scoring_pass_count
     estimated_bootstrap_row_iterations = (
@@ -1439,6 +1596,7 @@ def _daily_radar_replay_workload_from_counts(
         "candidate_window_row_count": candidate_window_row_count,
         "candidate_config_count": SCORING_CANDIDATE_CONFIG_COUNT,
         "active_ablation_group_count": len(active_ablation_groups),
+        "active_bucket_ablation_count": len(active_bucket_ablation_pairs),
         "scoring_pass_count": scoring_pass_count,
         "estimated_scoring_calls": estimated_scoring_calls,
         "maximum_scoring_calls": MAX_GOVERNANCE_REPLAY_SCORING_CALLS,
@@ -2003,6 +2161,8 @@ def _replay_daily_radar_rows(
             | {
                 "record_date": snapshot.get("record_date") or row.get("signal_date"),
                 "replayed_score": int(scored["observation_score"]),
+                "baseline_primary_bucket": snapshot.get("primary_bucket"),
+                "replayed_primary_bucket": scored["primary_bucket"],
                 "_baseline_replay_signature": _baseline_replay_signature({
                     "observation_score": scored["observation_score"],
                     "primary_bucket": scored["primary_bucket"],

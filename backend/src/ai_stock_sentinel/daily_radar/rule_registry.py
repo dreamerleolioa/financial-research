@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Final, Literal
 
-from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION
+from ai_stock_sentinel.daily_radar.scoring import RULE_BUCKETS, RULE_SIGNAL_FAMILIES, RULE_VERSION
 
 
 RuleTier = Literal[
@@ -32,6 +32,8 @@ class RuleRegistryEntry:
     first_version: str
     last_reviewed_version: str
     ablation_group: str | None = None
+    signal_family: str | None = None
+    bucket: str | None = None
 
     def as_dict(self) -> dict[str, str | None]:
         return asdict(self)
@@ -81,6 +83,8 @@ def _entry(
         first_version=first_version,
         last_reviewed_version=last_reviewed_version,
         ablation_group=ablation_group,
+        signal_family=RULE_SIGNAL_FAMILIES.get(rule_code),
+        bucket=RULE_BUCKETS.get(rule_code),
     )
 
 

@@ -40,6 +40,7 @@ from ai_stock_sentinel.daily_radar.rule_registry import (
 )
 from ai_stock_sentinel.daily_radar.scoring import (
     RULE_SCORE_ADJUSTMENTS,
+    RULE_SIGNAL_FAMILIES,
     RULE_VERSION,
     SCORING_VERSION,
     ScoringConfig,
@@ -77,6 +78,10 @@ def test_rule_registry_covers_every_scoring_rule_and_active_score_driver() -> No
         assert registry[code].owner_module == "daily_radar.scoring"
         assert registry[code].first_version
         assert registry[code].last_reviewed_version == RULE_VERSION
+        assert registry[code].signal_family == RULE_SIGNAL_FAMILIES.get(code)
+
+    assert RULE_SIGNAL_FAMILIES
+    assert set(RULE_SIGNAL_FAMILIES) <= scoring_rule_codes
 
     for label in ("overextended", "flow_conflict", "margin_crowding", "market_weakness", "data_gap"):
         assert f"risk_label_{label}" in registry
@@ -206,7 +211,7 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
     manifest = report.json_report["version_manifest"]
     assert (
         report.json_report["metadata"]["report_version"]
-        == "daily-radar-rule-review-v5"
+        == "daily-radar-rule-review-v6"
     )
     assert manifest["scoring_version"] == SCORING_VERSION
     assert manifest["rule_version"] == RULE_VERSION
@@ -244,6 +249,7 @@ def test_monthly_rule_review_report_keeps_scoring_versions_unchanged() -> None:
         "ranking_pool_complete": False,
         "ranking_pool_status": "not_applicable",
         "outcome_join": "validated_results_only_after_selection",
+        "bucket_cohort": "baseline_primary_bucket_anchor",
         "live_change_eligible": False,
     }
     assert counterfactual_scope["replay_workload"]["candidate_count"] == 0
@@ -427,6 +433,58 @@ def test_incomplete_replay_pool_cannot_govern_ranked_changes_at_90_percent() -> 
         for row in counterfactual
         if row["method"] == "same_input_counterfactual_replay"
     } == {"replay_ranking_pool_incomplete"}
+
+
+def test_bucket_counterfactual_uses_stable_baseline_bucket_cohort() -> None:
+    def row(
+        candidate_id: int,
+        *,
+        selected: bool,
+        excess: float,
+        replayed_bucket: str,
+    ) -> dict[str, Any]:
+        return {
+            "candidate_id": candidate_id,
+            "status": "validated",
+            "selected_for_rank": selected,
+            "baseline_primary_bucket": "bottoming_reversal",
+            "replayed_primary_bucket": replayed_bucket,
+            "outcome": {
+                "forward_return_pct": excess,
+                "excess_return_vs_benchmark_pct": excess,
+                "max_adverse_excursion_pct": -1.0,
+            },
+        }
+
+    before = [
+        row(1, selected=True, excess=1.0, replayed_bucket="bottoming_reversal"),
+        row(2, selected=False, excess=3.0, replayed_bucket="bottoming_reversal"),
+    ]
+    after = [
+        row(1, selected=False, excess=1.0, replayed_bucket="support_retest"),
+        row(2, selected=True, excess=3.0, replayed_bucket="bottoming_reversal"),
+    ]
+
+    impacts = rule_governance_module._bucket_counterfactual_impacts(
+        before,
+        {"bottoming_reversal": after},
+        excluded_rule_codes_by_bucket={
+            "bottoming_reversal": {"bottoming_macd_improving"},
+        },
+        min_sample_count=1,
+    )
+    bottoming = impacts["bottoming_reversal"]
+
+    assert bottoming["cohort"] == "baseline_primary_bucket_anchor"
+    assert bottoming["intervention_scope"] == "bucket_local_owned_rules_removal"
+    assert bottoming["excluded_rule_codes"] == ["bottoming_macd_improving"]
+    assert bottoming["selection_membership_changed_count"] == 2
+    assert bottoming["primary_bucket_changed_count"] == 1
+    assert bottoming["delta_average_excess_return_vs_benchmark_pct"] == 2.0
+    assert bottoming["recommendation"] == "review_group_removal_for_bucket"
+    assert impacts["support_retest"]["recommendation"] == (
+        "not_applicable_no_bucket_owned_rules"
+    )
 
 
 def test_partial_v1_replay_payload_is_not_ranking_eligible() -> None:
@@ -700,6 +758,33 @@ def test_replay_governance_rejects_aggregate_workload_before_scoring(
     assert {
         candidate["eligibility_reason"] for candidate in candidates
     } == {"replay_workload_limit_exceeded"}
+
+
+def test_replay_workload_counts_bucket_local_ablation_passes_at_limit() -> None:
+    maximum = rule_governance_module.MAX_GOVERNANCE_REPLAY_SCORING_CALLS
+    expected_passes = (
+        1
+        + rule_governance_module.SCORING_CANDIDATE_CONFIG_COUNT
+        + 8
+        + 16
+    )
+    maximum_candidates = maximum // expected_passes
+
+    at_limit = rule_governance_module._daily_radar_replay_workload_from_counts(
+        candidate_count=maximum_candidates,
+        candidate_window_row_count=0,
+    )
+    over_limit = rule_governance_module._daily_radar_replay_workload_from_counts(
+        candidate_count=maximum_candidates + 1,
+        candidate_window_row_count=0,
+    )
+
+    assert at_limit["active_ablation_group_count"] == 8
+    assert at_limit["active_bucket_ablation_count"] == 16
+    assert at_limit["scoring_pass_count"] == expected_passes
+    assert at_limit["capacity_exceeded"] is False
+    assert over_limit["capacity_exceeded"] is True
+    assert over_limit["exceeded_limits"] == ["replay_scoring_calls"]
 
 
 @pytest.mark.parametrize(
