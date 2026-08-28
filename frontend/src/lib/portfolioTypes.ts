@@ -140,7 +140,7 @@ export interface PortfolioPhase1CurrentDayLists {
 }
 
 export interface PortfolioRiskSummary {
-  version: string;
+  version: "portfolio-risk-summary-v2";
   portfolio_revision?: string;
   as_of_date: string;
   portfolio_value: number;

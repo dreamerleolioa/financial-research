@@ -608,6 +608,7 @@ def exclude_persisted_daily_radar_windows(
                 result.status == "validated"
                 or (
                     result.status == "skipped"
+                    and result.evaluation_as_of_date is not None
                     and result.skip_reason
                     in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
                 )

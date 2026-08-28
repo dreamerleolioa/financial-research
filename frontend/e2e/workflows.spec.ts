@@ -161,6 +161,104 @@ test("Portfolio destructive action requires confirmation before DELETE", async (
   await expect.poll(() => requestLog).toContain("DELETE /portfolio/11");
 });
 
+test("Portfolio records cash and labels partial shared-exposure coverage", async ({ page }) => {
+  const requestLog: string[] = [];
+  const requestBodies: unknown[] = [];
+  const partialSummary = {
+    ...populatedRiskSummary,
+    account_capital: {
+      status: "recorded",
+      cash_balance: 500_000,
+      invested_market_value: 1_085_000,
+      account_equity: 1_585_000,
+      cash_pct_of_account_equity: 31.5457,
+      invested_pct_of_account_equity: 68.4543,
+      risk_percentage_denominator: "account_equity",
+    },
+    concentration: {
+      ...populatedRiskSummary.concentration,
+      by_industry: [
+        {
+          type: "industry",
+          key: "半導體業",
+          symbols: ["2330.TW"],
+          market_value: 1_085_000,
+          pct_of_invested: 100,
+          pct_of_capital_base: 68.4543,
+          status: "partial",
+        },
+      ],
+      industry_coverage: {
+        status: "partial",
+        classified_market_value: 1_085_000,
+        pct_of_invested: 100,
+        eligible_position_count: 2,
+        valued_position_count: 1,
+        classified_position_count: 1,
+        unvalued_position_count: 1,
+        unclassified_valued_position_count: 0,
+      },
+    },
+    correlation_risk: {
+      status: "partial",
+      minimum_overlapping_return_count: 20,
+      eligible_position_count: 3,
+      valued_position_count: 2,
+      possible_pair_count: 3,
+      eligible_pair_count: 1,
+      pair_coverage_pct: 33.3333,
+      weighted_average_correlation: 0.72,
+      watch_threshold: 0.65,
+      elevated_threshold: 0.8,
+      pairs: [
+        {
+          symbols: ["2330.TW", "2317.TW"],
+          correlation: 0.72,
+          overlapping_return_count: 20,
+          combined_invested_weight_pct: 100,
+          status: "watch",
+        },
+      ],
+      interpretation: "descriptive_co_movement_not_forward_prediction",
+    },
+  };
+  const updatedSummary = {
+    ...partialSummary,
+    account_capital: {
+      ...partialSummary.account_capital,
+      cash_balance: 600_000,
+      account_equity: 1_685_000,
+      cash_pct_of_account_equity: 35.6083,
+      invested_pct_of_account_equity: 64.3917,
+    },
+  };
+
+  await authenticate(page);
+  await installApiMocks(page, {
+    portfolio: [portfolioItem],
+    riskSummary: partialSummary,
+    priceRefreshSummaries: [partialSummary, updatedSummary],
+    requestLog,
+    requestBodies,
+  });
+
+  await page.goto("/portfolio");
+  await page.getByRole("button", { name: "展開風險細節" }).click();
+
+  await expect(page.getByText(/已分類 1 \/ 2 檔/)).toBeVisible();
+  await expect(page.getByText(/覆蓋不足，暫不定級/)).toBeVisible();
+  await expect(page.getByText(/可計算組合 1 \/ 3/)).toBeVisible();
+  await expect(page.getByText(/僅部分持股組合具備足夠且可估值/)).toBeVisible();
+
+  await page.getByLabel("可用現金餘額").fill("600000");
+  await page.getByRole("button", { name: "儲存", exact: true }).click();
+
+  await expect.poll(() => requestLog).toContain("PUT /portfolio/account-settings");
+  expect(requestBodies).toContainEqual({ cash_balance: 600000 });
+  await expect(page.getByText(/現金.*600,000/)).toBeVisible();
+  await expect(page.getByLabel("可用現金餘額")).toHaveValue("600000");
+});
+
 test("Portfolio close records exit reason, plan adherence, and confidence", async ({ page }) => {
   let closeRequestBody: Record<string, unknown> | null = null;
   await authenticate(page);

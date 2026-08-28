@@ -162,7 +162,7 @@ const phase1CurrentDayListKeySchema = z.enum([
 
 const phase1CurrentDayListsSchema = z
   .object({
-    version: z.string(),
+    version: z.literal("phase1-current-day-lists-v1"),
     implemented_lists: z.array(phase1CurrentDayListKeySchema),
     pending_lists: z.array(phase1CurrentDayListKeySchema),
     pullback_observation_candidates: z.array(phase1ObservationItemSchema),
@@ -175,7 +175,7 @@ const phase1CurrentDayListsSchema = z
 
 export const portfolioRiskSummarySchema = z
   .object({
-    version: z.string(),
+    version: z.literal("portfolio-risk-summary-v2"),
     portfolio_revision: z.string().optional(),
     as_of_date: z.string(),
     portfolio_value: z.number(),

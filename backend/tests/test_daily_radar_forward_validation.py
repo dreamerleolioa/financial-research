@@ -1034,6 +1034,7 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
                     "status": "skipped",
                     "signal_date": "2026-06-01",
                     "benchmark_symbol": "TAIEX",
+                    "evaluation_as_of_date": "2026-06-10",
                     "outcome": {},
                     "skip_reason": "stale_candidate_price",
                 }
@@ -1061,6 +1062,52 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
     assert pending == {f"id:{candidate.id}": [5]}
     assert stale == {}
     assert completed == {}
+
+
+def test_legacy_terminal_skip_without_evaluation_date_is_requeued() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        session.flush()
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=5,
+                validation_version=FORWARD_VALIDATION_VERSION,
+                status="skipped",
+                signal_date=run.run_date,
+                target_date=None,
+                benchmark_symbol="TAIEX",
+                evaluation_as_of_date=None,
+                outcome={},
+                skip_reason="stale_candidate_price",
+            )
+        )
+        session.flush()
+
+        pending = exclude_persisted_daily_radar_windows(
+            session,
+            {f"id:{candidate.id}": [5]},
+        )
+        snapshot = forward_validation_candidates_from_runs(session, market="TW")[0]
+        persisted = persisted_forward_validation_outcomes(
+            session,
+            [snapshot],
+            windows=[5],
+            as_of_date=date(2026, 6, 30),
+        )
+
+    assert pending == {f"id:{candidate.id}": [5]}
+    assert persisted == []
 
 
 def test_daily_radar_validation_rejects_and_requeues_identity_mismatches() -> None:
