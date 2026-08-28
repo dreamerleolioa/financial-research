@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from math import isfinite, sqrt
 from typing import Any
 
 from ai_stock_sentinel.chip_stability_context import chip_stability_context_from_weekly_major_holders
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 
 
-PORTFOLIO_RISK_SUMMARY_VERSION = "portfolio-risk-summary-v1"
+PORTFOLIO_RISK_SUMMARY_VERSION = "portfolio-risk-summary-v2"
 PHASE1_CURRENT_DAY_LISTS_VERSION = "phase1-current-day-lists-v1"
 PHASE1_CURRENT_DAY_LIST_KEYS = (
     "pullback_observation_candidates",
@@ -32,6 +33,12 @@ SYMBOL_CONCENTRATION_WATCH_PCT = 25.0
 SYMBOL_CONCENTRATION_ELEVATED_PCT = 35.0
 TOTAL_RISK_WATCH_PCT = 5.0
 TOTAL_RISK_CONSTRAINED_PCT = 10.0
+INDUSTRY_CONCENTRATION_WATCH_PCT = 40.0
+INDUSTRY_CONCENTRATION_ELEVATED_PCT = 60.0
+CORRELATION_MIN_OVERLAPPING_RETURNS = 20
+CORRELATION_WATCH_THRESHOLD = 0.65
+CORRELATION_ELEVATED_THRESHOLD = 0.8
+MAX_SUPPORTED_MARKET_PRICE = Decimal("99999999.99")
 BLOCKING_DATA_GAP_CODES = frozenset({
     "zero_quantity",
     "missing_price",
@@ -49,6 +56,7 @@ def build_portfolio_risk_summary(
     symbol_names_by_symbol: dict[str, str | None] | None = None,
     phase1_position_states_by_symbol: dict[str, dict[str, Any]] | None = None,
     weekly_major_holders_by_symbol: dict[str, dict[str, Any]] | None = None,
+    cash_balance: Any = None,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
     as_of = as_of_date or date.today()
@@ -90,6 +98,12 @@ def build_portfolio_risk_summary(
             caveats.append(_caveat("stale_price", f"最新價格日期超過 {STALE_PRICE_MAX_AGE_DAYS} 天，估算需附帶資料時效限制。"))
         if price_quote is not None and price_quote.get("status") == "failed":
             caveats.append(_caveat("price_refresh_failed", "最新報價更新失敗，暫時沿用既有價格。"))
+        elif (
+            price_quote is not None
+            and price_quote.get("status") == "refreshed"
+            and not _quote_was_refreshed(price_quote)
+        ):
+            caveats.append(_caveat("price_refresh_invalid", "最新報價超出可用價格範圍，暫時沿用既有價格。"))
         if defense_reference is None:
             caveats.append(_caveat("missing_defense_reference", "缺少風險控制參考價，暫不估計此部位風險。"))
 
@@ -112,6 +126,7 @@ def build_portfolio_risk_summary(
         position_draft = {
             "symbol": symbol,
             "name": symbol_names.get(symbol),
+            "industry": _extract_industry(raw_row),
             "quantity": _float_or_none(quantity),
             "current_price": _float_or_none(current_price),
             "price_context": _price_context(raw_row, price_quote),
@@ -158,26 +173,53 @@ def build_portfolio_risk_summary(
                 position_draft["chip_stability_context"] = chip_stability_context
         position_drafts.append(position_draft)
 
+    recorded_cash = _to_decimal(cash_balance)
+    if recorded_cash is not None and recorded_cash < 0:
+        recorded_cash = None
+    account_equity = portfolio_value + recorded_cash if recorded_cash is not None else None
+    risk_capital_base = account_equity if account_equity is not None else portfolio_value
     for draft in position_drafts:
         raw = draft.pop("_raw")
         market_value = raw["market_value"]
         risk_amount = raw["estimated_risk_amount"]
-        concentration_pct = _pct(market_value, portfolio_value)
-        risk_pct = _pct(risk_amount, portfolio_value)
+        concentration_pct = _pct(market_value, risk_capital_base)
+        risk_pct = _pct(risk_amount, risk_capital_base)
         draft["estimated_risk_pct_of_portfolio"] = risk_pct
         draft["portfolio_weight_pct"] = concentration_pct
+        draft["invested_weight_pct"] = _pct(market_value, portfolio_value)
+        draft["account_equity_weight_pct"] = _pct(market_value, account_equity)
         draft["risk_state"] = _risk_state(raw, risk_pct, concentration_pct)
         draft["discipline_triggers"] = _discipline_triggers(raw, risk_pct, concentration_pct)
 
-    concentration = _build_symbol_concentration(position_drafts, portfolio_value)
-    shared_exposures = _build_shared_exposures(position_drafts, positions, plans, portfolio_value)
+    concentration = _build_concentration(
+        position_drafts,
+        invested_market_value=portfolio_value,
+        capital_base=risk_capital_base,
+    )
+    shared_exposures = _build_shared_exposures(position_drafts, positions, plans, risk_capital_base)
+    correlation_risk = _build_correlation_risk(
+        position_drafts,
+        raw_rows,
+        invested_market_value=portfolio_value,
+    )
     phase1_current_day_lists = _build_phase1_current_day_lists(position_drafts)
-    total_risk_pct = _pct(total_at_risk, portfolio_value)
+    total_risk_pct = _pct(total_at_risk, risk_capital_base)
 
     return {
         "version": PORTFOLIO_RISK_SUMMARY_VERSION,
         "as_of_date": as_of.isoformat(),
         "portfolio_value": _round_money(portfolio_value),
+        "account_capital": {
+            "status": "recorded" if recorded_cash is not None else "cash_not_recorded",
+            "cash_balance": _round_money(recorded_cash) if recorded_cash is not None else None,
+            "invested_market_value": _round_money(portfolio_value),
+            "account_equity": _round_money(account_equity) if account_equity is not None else None,
+            "cash_pct_of_account_equity": _pct(recorded_cash, account_equity),
+            "invested_pct_of_account_equity": _pct(portfolio_value, account_equity),
+            "risk_percentage_denominator": (
+                "account_equity" if account_equity is not None else "invested_market_value_fallback"
+            ),
+        },
         "total_unrealized_pnl": _round_money(total_unrealized_pnl),
         "total_at_risk": _round_money(total_at_risk),
         "total_at_risk_pct": total_risk_pct,
@@ -185,7 +227,12 @@ def build_portfolio_risk_summary(
         "phase1_current_day_lists": phase1_current_day_lists,
         "concentration": concentration,
         "shared_exposures": shared_exposures,
-        "risk_budget_status": _risk_budget_status(total_risk_pct, aggregate_caveat_counts),
+        "correlation_risk": correlation_risk,
+        "risk_budget_status": _risk_budget_status(
+            total_risk_pct,
+            aggregate_caveat_counts,
+            uses_invested_fallback=recorded_cash is None,
+        ),
         "data_quality": _portfolio_data_quality(aggregate_caveat_counts),
     }
 
@@ -194,9 +241,10 @@ def _to_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        number = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+    return number if number.is_finite() and _finite_float(number) is not None else None
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -251,8 +299,8 @@ def _extract_current_price(raw_row: Any) -> Decimal | None:
     if isinstance(recent_closes, list) and recent_closes:
         candidates.append(recent_closes[-1])
     for candidate in candidates:
-        value = _to_decimal(candidate)
-        if value is not None and value > 0:
+        value = _market_price_decimal(candidate)
+        if value is not None:
             return value
     return None
 
@@ -262,14 +310,25 @@ def _current_price_with_quote(
     price_quote: dict[str, Any] | None,
 ) -> Decimal | None:
     if _quote_was_refreshed(price_quote):
-        refreshed_price = _to_decimal(price_quote.get("current_price"))
-        if refreshed_price is not None and refreshed_price > 0:
+        refreshed_price = _market_price_decimal(price_quote.get("current_price"))
+        if refreshed_price is not None:
             return refreshed_price
     return _extract_current_price(raw_row)
 
 
+def _market_price_decimal(value: Any) -> Decimal | None:
+    price = _to_decimal(value)
+    if price is None or price <= 0 or price > MAX_SUPPORTED_MARKET_PRICE:
+        return None
+    return price
+
+
 def _quote_was_refreshed(price_quote: dict[str, Any] | None) -> bool:
-    return bool(price_quote and price_quote.get("status") == "refreshed")
+    return bool(
+        price_quote
+        and price_quote.get("status") == "refreshed"
+        and _market_price_decimal(price_quote.get("current_price")) is not None
+    )
 
 
 def _price_context(
@@ -288,7 +347,13 @@ def _price_context(
 
     record_date = getattr(raw_row, "record_date", None) if raw_row is not None else None
     fetched_at = getattr(raw_row, "fetched_at", None) if raw_row is not None else None
-    refresh_failed = price_quote is not None and price_quote.get("status") == "failed"
+    refresh_failed = price_quote is not None and (
+        price_quote.get("status") == "failed"
+        or (
+            price_quote.get("status") == "refreshed"
+            and not _quote_was_refreshed(price_quote)
+        )
+    )
     return {
         "refresh_status": "failed" if refresh_failed else "not_requested",
         "source": "stock_raw_data_fallback" if refresh_failed else "stock_raw_data",
@@ -343,6 +408,15 @@ def _extract_auto_defense_prices(raw_row: Any) -> dict[str, float | None]:
             _mean_last(recent_closes, 60),
         )),
     }
+
+
+def _extract_industry(raw_row: Any) -> str | None:
+    fundamental = _as_mapping(getattr(raw_row, "fundamental", None))
+    for key in ("industry", "industry_name", "industry_category", "sector"):
+        value = fundamental.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _is_stale(raw_row: Any, as_of_date: date) -> bool:
@@ -428,11 +502,21 @@ def _discipline_triggers(raw: dict[str, Any], risk_pct: float | None, concentrat
     return triggers
 
 
-def _build_symbol_concentration(position_risks: list[dict[str, Any]], portfolio_value: Decimal) -> dict[str, Any]:
+def _build_concentration(
+    position_risks: list[dict[str, Any]],
+    *,
+    invested_market_value: Decimal,
+    capital_base: Decimal,
+) -> dict[str, Any]:
     rows = []
+    industry_values: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    classified_market_value = Decimal("0")
+    eligible_position_count = 0
+    valued_position_count = 0
+    classified_position_count = 0
     for risk in position_risks:
         market_value = _to_decimal(risk.get("market_value"))
-        pct = _pct(market_value, portfolio_value)
+        pct = _pct(market_value, capital_base)
         status = "ok"
         if pct is not None and pct >= SYMBOL_CONCENTRATION_ELEVATED_PCT:
             status = "elevated"
@@ -445,8 +529,291 @@ def _build_symbol_concentration(position_risks: list[dict[str, Any]], portfolio_
             "pct_of_portfolio": pct,
             "status": status,
         })
+        if _is_industry_coverage_eligible(risk):
+            eligible_position_count += 1
+            if market_value is not None and market_value > 0:
+                valued_position_count += 1
+        industry = risk.get("industry")
+        if (
+            _is_industry_coverage_eligible(risk)
+            and isinstance(industry, str)
+            and market_value is not None
+            and market_value > 0
+        ):
+            industry_values[industry] += market_value
+            classified_market_value += market_value
+            classified_position_count += 1
     rows.sort(key=lambda row: (row["pct_of_portfolio"] is not None, row["pct_of_portfolio"] or 0, row["key"]), reverse=True)
-    return {"by_symbol": rows}
+    coverage_pct = _pct(classified_market_value, invested_market_value)
+    if eligible_position_count == 0:
+        coverage_status = "unavailable"
+    elif classified_position_count == eligible_position_count:
+        coverage_status = "available"
+    elif classified_position_count > 0:
+        coverage_status = "partial"
+    else:
+        coverage_status = "unavailable"
+    industry_rows = []
+    for industry, market_value in industry_values.items():
+        pct_of_invested = _pct(market_value, invested_market_value)
+        pct_of_capital = _pct(market_value, capital_base)
+        status = "partial" if coverage_status != "available" else "ok"
+        if coverage_status == "available" and pct_of_capital is not None and pct_of_capital >= INDUSTRY_CONCENTRATION_ELEVATED_PCT:
+            status = "elevated"
+        elif coverage_status == "available" and pct_of_capital is not None and pct_of_capital >= INDUSTRY_CONCENTRATION_WATCH_PCT:
+            status = "watch"
+        industry_rows.append({
+            "type": "industry",
+            "key": industry,
+            "symbols": sorted(
+                risk["symbol"]
+                for risk in position_risks
+                if risk.get("industry") == industry
+            ),
+            "market_value": _round_money(market_value),
+            "pct_of_invested": pct_of_invested,
+            "pct_of_capital_base": pct_of_capital,
+            "status": status,
+        })
+    industry_rows.sort(
+        key=lambda row: (row["pct_of_capital_base"] or 0, row["key"]),
+        reverse=True,
+    )
+    return {
+        "by_symbol": rows,
+        "by_industry": industry_rows,
+        "industry_coverage": {
+            "status": coverage_status,
+            "classified_market_value": _round_money(classified_market_value),
+            "pct_of_invested": coverage_pct,
+            "eligible_position_count": eligible_position_count,
+            "valued_position_count": valued_position_count,
+            "classified_position_count": classified_position_count,
+            "unvalued_position_count": eligible_position_count - valued_position_count,
+            "unclassified_valued_position_count": (
+                valued_position_count - classified_position_count
+            ),
+        },
+        "industry_watch_threshold_pct": INDUSTRY_CONCENTRATION_WATCH_PCT,
+        "industry_elevated_threshold_pct": INDUSTRY_CONCENTRATION_ELEVATED_PCT,
+    }
+
+
+def _is_industry_coverage_eligible(risk: dict[str, Any]) -> bool:
+    quantity = _to_decimal(risk.get("quantity"))
+    caveats = _as_mapping(risk.get("data_quality")).get("caveats")
+    caveat_codes = {
+        caveat.get("code")
+        for caveat in caveats or []
+        if isinstance(caveat, dict)
+    }
+    return quantity is not None and quantity > 0 and "unsupported_market" not in caveat_codes
+
+
+def _build_correlation_risk(
+    position_risks: list[dict[str, Any]],
+    raw_data_by_symbol: dict[str, Any],
+    *,
+    invested_market_value: Decimal,
+) -> dict[str, Any]:
+    eligible_position_risks = [
+        risk for risk in position_risks if _is_industry_coverage_eligible(risk)
+    ]
+    valued_position_count = sum(
+        1
+        for risk in eligible_position_risks
+        if (_to_decimal(risk.get("market_value")) or Decimal("0")) > 0
+    )
+    possible_pair_count = (
+        len(eligible_position_risks) * (len(eligible_position_risks) - 1) // 2
+    )
+    closes_by_symbol = {
+        risk["symbol"]: _dated_closes(raw_data_by_symbol.get(risk["symbol"]))
+        for risk in eligible_position_risks
+    }
+    pairs: list[dict[str, Any]] = []
+    weighted_sum = 0.0
+    total_pair_weight = 0.0
+    for left_index, left in enumerate(eligible_position_risks):
+        for right in eligible_position_risks[left_index + 1:]:
+            left_symbol = left["symbol"]
+            right_symbol = right["symbol"]
+            left_market_value = _to_decimal(left.get("market_value"))
+            right_market_value = _to_decimal(right.get("market_value"))
+            if (
+                left_market_value is None
+                or left_market_value <= 0
+                or right_market_value is None
+                or right_market_value <= 0
+            ):
+                continue
+            aligned_returns = _aligned_pair_returns(
+                closes_by_symbol[left_symbol],
+                closes_by_symbol[right_symbol],
+            )
+            if len(aligned_returns) < CORRELATION_MIN_OVERLAPPING_RETURNS:
+                continue
+            correlation = _pearson(
+                [item[0] for item in aligned_returns],
+                [item[1] for item in aligned_returns],
+            )
+            if correlation is None:
+                continue
+            left_weight = _decimal_ratio(
+                left_market_value,
+                invested_market_value,
+            )
+            right_weight = _decimal_ratio(
+                right_market_value,
+                invested_market_value,
+            )
+            pair_weight = (left_weight or 0.0) * (right_weight or 0.0)
+            weighted_sum += correlation * pair_weight
+            total_pair_weight += pair_weight
+            pairs.append({
+                "symbols": [left_symbol, right_symbol],
+                "correlation": round(correlation, 4),
+                "overlapping_return_count": len(aligned_returns),
+                "combined_invested_weight_pct": round(
+                    ((left_weight or 0.0) + (right_weight or 0.0)) * 100,
+                    4,
+                ),
+                "status": _correlation_status(correlation),
+            })
+    pairs.sort(
+        key=lambda row: (row["correlation"], row["combined_invested_weight_pct"]),
+        reverse=True,
+    )
+    weighted_average = weighted_sum / total_pair_weight if total_pair_weight > 0 else None
+    pair_coverage_pct = (
+        round(len(pairs) / possible_pair_count * 100, 4)
+        if possible_pair_count > 0
+        else None
+    )
+    return {
+        "status": (
+            "available"
+            if pair_coverage_pct == 100.0
+            else "partial"
+            if pairs
+            else "insufficient_data"
+        ),
+        "minimum_overlapping_return_count": CORRELATION_MIN_OVERLAPPING_RETURNS,
+        "eligible_position_count": len(eligible_position_risks),
+        "valued_position_count": valued_position_count,
+        "possible_pair_count": possible_pair_count,
+        "eligible_pair_count": len(pairs),
+        "pair_coverage_pct": pair_coverage_pct,
+        "weighted_average_correlation": (
+            round(weighted_average, 4) if weighted_average is not None else None
+        ),
+        "watch_threshold": CORRELATION_WATCH_THRESHOLD,
+        "elevated_threshold": CORRELATION_ELEVATED_THRESHOLD,
+        "pairs": pairs,
+        "interpretation": "descriptive_co_movement_not_forward_prediction",
+    }
+
+
+def _dated_closes(raw_row: Any) -> dict[date, Decimal]:
+    technical = _as_mapping(getattr(raw_row, "technical", None))
+    closes_by_date: dict[date, Decimal] = {}
+    history = technical.get("price_history")
+    if isinstance(history, list):
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            item_date = _parse_date(item.get("date"))
+            close = _market_price_decimal(item.get("close"))
+            if item_date is not None and close is not None:
+                closes_by_date[item_date] = close
+    recent_closes = technical.get("recent_closes")
+    recent_dates = technical.get("recent_close_dates")
+    if (
+        isinstance(recent_closes, list)
+        and isinstance(recent_dates, list)
+        and len(recent_closes) == len(recent_dates)
+    ):
+        for raw_date, raw_close in zip(recent_dates, recent_closes, strict=True):
+            item_date = _parse_date(raw_date)
+            close = _market_price_decimal(raw_close)
+            if item_date is not None and close is not None:
+                closes_by_date[item_date] = close
+    return closes_by_date
+
+
+def _aligned_pair_returns(
+    left_closes: dict[date, Decimal],
+    right_closes: dict[date, Decimal],
+) -> list[tuple[float, float]]:
+    common_dates = sorted(set(left_closes) & set(right_closes))
+    aligned_returns: list[tuple[float, float]] = []
+    for previous_date, current_date in zip(common_dates, common_dates[1:]):
+        left_return = _finite_float(
+            left_closes[current_date] / left_closes[previous_date] - Decimal("1")
+        )
+        right_return = _finite_float(
+            right_closes[current_date] / right_closes[previous_date] - Decimal("1")
+        )
+        if left_return is not None and right_return is not None:
+            aligned_returns.append((left_return, right_return))
+    return aligned_returns
+
+
+def _parse_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _pearson(left: list[float], right: list[float]) -> float | None:
+    if (
+        len(left) != len(right)
+        or len(left) < 2
+        or not all(isfinite(value) for value in (*left, *right))
+    ):
+        return None
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    left_delta = [value - left_mean for value in left]
+    right_delta = [value - right_mean for value in right]
+    denominator = sqrt(
+        sum(value * value for value in left_delta)
+        * sum(value * value for value in right_delta)
+    )
+    if denominator == 0 or not isfinite(denominator):
+        return None
+    correlation = sum(
+        left_value * right_value
+        for left_value, right_value in zip(left_delta, right_delta, strict=True)
+    ) / denominator
+    return correlation if isfinite(correlation) else None
+
+
+def _finite_float(value: Decimal) -> float | None:
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return converted if isfinite(converted) else None
+
+
+def _decimal_ratio(numerator: Decimal | None, denominator: Decimal) -> float | None:
+    if numerator is None or denominator <= 0:
+        return None
+    return float(numerator / denominator)
+
+
+def _correlation_status(correlation: float) -> str:
+    if correlation >= CORRELATION_ELEVATED_THRESHOLD:
+        return "elevated"
+    if correlation >= CORRELATION_WATCH_THRESHOLD:
+        return "watch"
+    return "contained"
 
 
 def _build_shared_exposures(
@@ -559,7 +926,12 @@ def _phase1_observation_sort_key(item: dict[str, Any]) -> tuple[int, str]:
     return priority.get(str(item.get("position_state") or ""), 99), str(item.get("symbol") or "")
 
 
-def _risk_budget_status(total_risk_pct: float | None, caveat_counts: dict[str, int]) -> dict[str, Any]:
+def _risk_budget_status(
+    total_risk_pct: float | None,
+    caveat_counts: dict[str, int],
+    *,
+    uses_invested_fallback: bool = False,
+) -> dict[str, Any]:
     blocking_data_gap = any(caveat_counts.get(code, 0) for code in BLOCKING_DATA_GAP_CODES)
     if total_risk_pct is None:
         status = "unknown"
@@ -572,6 +944,8 @@ def _risk_budget_status(total_risk_pct: float | None, caveat_counts: dict[str, i
     notes = []
     if blocking_data_gap:
         notes.append("部分部位資料不足，風險預算狀態需搭配 data_quality 解讀。")
+    if uses_invested_fallback:
+        notes.append("尚未記錄可用現金，風險百分比暫以持股市值為分母。")
     return {
         "status": status,
         "total_at_risk_pct": total_risk_pct,

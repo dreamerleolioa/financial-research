@@ -871,13 +871,26 @@ make run-api
 }
 ```
 
-`portfolio_revision` 是後端以 active position、lifecycle plan、正式 raw data、Phase 1 與 weekly context inputs 產生的 opaque SHA-256 revision；價格 override 不參與 revision。前端只可用於判斷 request-scoped price overlay 是否仍屬於同一份 portfolio 結構，不得解析其內容。
+`portfolio_revision` 是後端以 active position、account settings、lifecycle plan、正式 raw data、Phase 1 與 weekly context inputs 產生的 opaque SHA-256 revision；價格 override 不參與 revision。前端只可用於判斷 request-scoped price overlay 是否仍屬於同一份 portfolio 結構，不得解析其內容。
+
+### `GET /portfolio/account-settings`
+
+- **用途**：讀取目前登入使用者的帳戶現金餘額設定。未曾設定時回 `status = "not_recorded"` 與 `cash_balance = null`，不得把未記錄解讀為 0。
+- **資料隔離**：只可依登入 `user_id` 讀取 `portfolio_account_settings`，不得接受 client 傳入其他使用者 id。
+
+### `PUT /portfolio/account-settings`
+
+- **用途**：建立或更新目前登入使用者的可用現金餘額，供 portfolio risk summary 計算帳戶權益母體。
+- **輸入限制**：`cash_balance` 必須是有限、非負且最多兩位小數的 JSON number；API 上限為 `9,999,999,999,999.99`，低於 `NUMERIC(18,2)` 的 DB-only 上限，以確保 JavaScript Number 對每一分仍可區分並可 round-trip。不合法輸入回 `422`。
+- **併發行為**：upsert 前以目前使用者 parent row 序列化首次建立路徑，避免同一使用者跨裝置同時新增時撞 primary key。成功後 portfolio revision 必須改變，使舊的 request-scoped risk-summary overlay 失效。
 
 ### `GET /portfolio/risk-summary`
 
-- **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
-- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data` 與 active holdings 對應的 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 provider backfill、snapshot refresh、watchlist lookup 或 latest Daily Radar candidate lookup。
-- **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
+- **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data`、既有 lifecycle plan 與可選的帳戶現金設定，產生 deterministic portfolio-level risk diagnostics；response 版本為 `portfolio-risk-summary-v2`。
+- **資料邊界**：只讀 `user_portfolio`、`portfolio_account_settings`、`position_lifecycle_plan`、`stock_raw_data` 與 active holdings 對應的 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 provider backfill、snapshot refresh、watchlist lookup 或 latest Daily Radar candidate lookup。
+- **資金分母**：若已記錄現金，`account_equity = invested_market_value + cash_balance`，持股權重、總風險百分比與集中度的資金分母使用帳戶權益；未記錄現金時 `account_capital.status = "cash_not_recorded"`，明示回退至持股市值，禁止把缺值當成 0 現金或暗示這是完整帳戶曝險。
+- **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。產業分類只可讀正式 raw-data fundamental payload 的明確 `industry` / `industry_name` / `industry_category` / `sector` 欄位，缺漏時回報 coverage，不可依股票代碼或名稱猜測產業。只要 eligible active holding 有缺價或未分類，coverage 不得回 available，產業 row 只能回 `status = "partial"`，不得用部分樣本下 definitive `ok/watch/elevated` 結論。
+- **共同波動**：持股兩兩相關性只使用帶日期且可對齊的歷史收盤價轉成日報酬；每一組至少需要 20 筆重疊報酬，否則該組回 insufficient。Response 必須同時揭露 possible / eligible pair count 與 pair coverage，避免少數可算組合被誤讀成全投資組合。結果只描述歷史共同波動，不得當成未來相關性預測或直接交易訊號。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
 - **價格來源說明**：每筆 `position_risks[].price_context` 明示 stored final price 的 `data_date`、`as_of`、`is_final` 與 `refresh_status = "not_requested"`。此 GET 仍不得觸發 provider；只有上述 POST 可建立 request-scoped 最新報價 override。
 - **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Portfolio UI 的持股 AVWAP observation projection。Backend 只由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`；`pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates` 可為相容 response shape 保留空陣列，但 `/portfolio/risk-summary` read path 與 summary builder 不接受 watchlist 或 latest Daily Radar candidate observation map，也不產生非持股清單。非持股 AVWAP 候選應在 Daily Radar 或 watchlist 語境顯示。Portfolio read path 會使用 requested date 當日或以前最新 fresh snapshot，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；最多回看 7 個 calendar days，超過時回 `freshness = "missing"` / `missing_reason = "phase1_snapshot_stale"`；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。Holding-specific entry anchor 與 avg cost 只在 Portfolio read projection 時由目前使用者的 portfolio rows 套用到 shared market snapshot，不寫回 `phase1_avwap_snapshots`。此 projection 只讀 cache，不觸發 provider backfill，不改 Daily Radar ranking/scoring。
@@ -887,12 +900,21 @@ make run-api
 
 ```json
 {
-  "version": "portfolio-risk-summary-v1",
+  "version": "portfolio-risk-summary-v2",
   "as_of_date": "2026-06-12",
   "portfolio_value": 120000.0,
+  "account_capital": {
+    "status": "recorded",
+    "cash_balance": 80000.0,
+    "invested_market_value": 120000.0,
+    "account_equity": 200000.0,
+    "cash_pct_of_account_equity": 40.0,
+    "invested_pct_of_account_equity": 60.0,
+    "risk_percentage_denominator": "account_equity"
+  },
   "total_unrealized_pnl": 20000.0,
   "total_at_risk": 25000.0,
-  "total_at_risk_pct": 20.8333,
+  "total_at_risk_pct": 12.5,
   "position_risks": [
     {
       "symbol": "2330.TW",
@@ -915,11 +937,13 @@ make run-api
         "source": "planned_stop_price"
       },
       "estimated_risk_amount": 25000.0,
-      "estimated_risk_pct_of_portfolio": 20.8333,
-      "portfolio_weight_pct": 100.0,
+      "estimated_risk_pct_of_portfolio": 12.5,
+      "portfolio_weight_pct": 60.0,
+      "invested_weight_pct": 100.0,
+      "account_equity_weight_pct": 60.0,
       "risk_state": "elevated",
       "discipline_triggers": [
-        "單一部位估計曝險占投資組合 20.83%，高於 5% 檢查線。"
+        "單一部位估計曝險占投資組合 12.50%，高於 5% 檢查線。"
       ],
       "phase1_position_state": {
         "symbol": "2330.TW",
@@ -1025,10 +1049,33 @@ make run-api
         "type": "symbol",
         "key": "2330.TW",
         "market_value": 120000.0,
-        "pct_of_portfolio": 100.0,
+        "pct_of_portfolio": 60.0,
         "status": "elevated"
       }
-    ]
+    ],
+    "by_industry": [
+      {
+        "type": "industry",
+        "key": "半導體業",
+        "symbols": ["2330.TW"],
+        "market_value": 120000.0,
+        "pct_of_invested": 100.0,
+        "pct_of_capital_base": 60.0,
+        "status": "elevated"
+      }
+    ],
+    "industry_coverage": {
+      "status": "available",
+      "classified_market_value": 120000.0,
+      "pct_of_invested": 100.0,
+      "eligible_position_count": 1,
+      "valued_position_count": 1,
+      "classified_position_count": 1,
+      "unvalued_position_count": 0,
+      "unclassified_valued_position_count": 0
+    },
+    "industry_watch_threshold_pct": 40.0,
+    "industry_elevated_threshold_pct": 60.0
   },
   "shared_exposures": [
     {
@@ -1037,12 +1084,26 @@ make run-api
       "symbols": ["2330.TW"],
       "count": 1,
       "market_value": 120000.0,
-      "pct_of_portfolio": 100.0
+      "pct_of_portfolio": 60.0
     }
   ],
+  "correlation_risk": {
+    "status": "insufficient_data",
+    "minimum_overlapping_return_count": 20,
+    "eligible_position_count": 1,
+    "valued_position_count": 1,
+    "possible_pair_count": 0,
+    "eligible_pair_count": 0,
+    "pair_coverage_pct": null,
+    "weighted_average_correlation": null,
+    "watch_threshold": 0.65,
+    "elevated_threshold": 0.8,
+    "pairs": [],
+    "interpretation": "descriptive_co_movement_not_forward_prediction"
+  },
   "risk_budget_status": {
     "status": "constrained",
-    "total_at_risk_pct": 20.8333,
+    "total_at_risk_pct": 12.5,
     "watch_threshold_pct": 5.0,
     "constrained_threshold_pct": 10.0,
     "notes": []

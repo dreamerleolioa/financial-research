@@ -21,6 +21,10 @@ LIFECYCLE_PRICE_MIN = Decimal("0.0001")
 LIFECYCLE_PRICE_MAX = Decimal("99999999.9999")
 LIFECYCLE_MONEY_MAX = Decimal("9999999999.99")
 LIFECYCLE_PERCENT_MAX = Decimal("9999.9999")
+# The HTTP/UI contract uses JSON numbers. Keep every accepted cent distinguishable
+# after a JavaScript Number round trip instead of exposing the wider DB-only range.
+PORTFOLIO_CASH_BALANCE_MAX = Decimal("9999999999999.99")
+PORTFOLIO_CASH_BALANCE_QUANTUM = Decimal("0.01")
 
 PortfolioPrice = Annotated[
     Decimal,
@@ -69,6 +73,16 @@ LifecyclePercent = Annotated[
         le=LIFECYCLE_PERCENT_MAX,
         max_digits=8,
         decimal_places=4,
+        allow_inf_nan=False,
+    ),
+]
+PortfolioCashBalance = Annotated[
+    Decimal,
+    Field(
+        ge=0,
+        le=PORTFOLIO_CASH_BALANCE_MAX,
+        max_digits=15,
+        decimal_places=2,
         allow_inf_nan=False,
     ),
 ]

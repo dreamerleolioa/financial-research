@@ -16,6 +16,7 @@ from ai_stock_sentinel.clock import TAIPEI_TZ
 from ai_stock_sentinel.models import StockSnapshot
 from ai_stock_sentinel.portfolio.application.get_risk_summary import build_user_portfolio_risk_summary
 from ai_stock_sentinel.portfolio.repository import list_active_portfolios
+from ai_stock_sentinel.portfolio.storage_limits import PORTFOLIO_PRICE_MAX
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 
 
@@ -156,9 +157,6 @@ def _fetch_quotes(
             symbol = future_by_symbol.pop(future)
             try:
                 snapshot = future.result()
-                current_price = float(snapshot.current_price)
-                if not math.isfinite(current_price) or current_price <= 0:
-                    raise ValueError("latest quote is unavailable")
                 quotes[symbol] = _quote_payload(snapshot)
             except Exception as exc:
                 quotes[symbol] = _failed_quote(exc.__class__.__name__)
@@ -207,12 +205,19 @@ def _failed_quote(error_code: str) -> dict[str, str]:
 
 
 def _quote_payload(snapshot: StockSnapshot) -> dict[str, Any]:
+    current_price = float(snapshot.current_price)
+    if (
+        not math.isfinite(current_price)
+        or current_price <= 0
+        or current_price > float(PORTFOLIO_PRICE_MAX)
+    ):
+        raise ValueError("latest quote is unavailable")
     data_date = snapshot.recent_volume_dates[-1] if snapshot.recent_volume_dates else None
     observed_at = _snapshot_observation_time(snapshot)
     market_session, is_final = _market_session(snapshot, now=observed_at)
     return {
         "status": "refreshed",
-        "current_price": float(snapshot.current_price),
+        "current_price": current_price,
         "source": "yfinance_fast_info",
         "fetched_at": snapshot.fetched_at,
         "data_date": data_date,

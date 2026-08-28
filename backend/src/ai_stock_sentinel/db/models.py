@@ -51,6 +51,31 @@ class UserPortfolio(Base):
     updated_at:  Mapped[datetime]   = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class PortfolioAccountSettings(Base):
+    __tablename__ = "portfolio_account_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "cash_balance >= 0",
+            name="ck_portfolio_account_settings_cash_nonnegative",
+        ),
+    )
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    cash_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class UserWatchlist(Base):
     __tablename__ = "user_watchlist"
     __table_args__ = (

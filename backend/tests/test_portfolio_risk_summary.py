@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -48,6 +48,8 @@ def _raw(
     recent_closes: list[float] | None = None,
     recent_lows: list[float] | None = None,
     indicators: dict | None = None,
+    price_history: list[dict] | None = None,
+    fundamental: dict | None = None,
 ) -> SimpleNamespace:
     technical = {"close_price": close} if close is not None else {}
     if low_20d is not None:
@@ -62,12 +64,22 @@ def _raw(
         technical["recent_lows"] = recent_lows
     if indicators is not None:
         technical["indicators"] = indicators
+    if price_history is not None:
+        technical["price_history"] = price_history
     return SimpleNamespace(
         symbol=symbol,
         record_date=record_date,
         technical=technical,
+        fundamental=fundamental or {},
         raw_data_is_final=True,
     )
+
+
+def _price_history(dates: list[date], closes: list[float]) -> list[dict]:
+    return [
+        {"date": value_date.isoformat(), "close": close}
+        for value_date, close in zip(dates, closes, strict=True)
+    ]
 
 
 def test_portfolio_risk_summary_calculates_position_risk_and_totals():
@@ -193,6 +205,164 @@ def test_portfolio_risk_summary_falls_back_when_quote_refresh_fails():
     assert summary["data_quality"]["caveats"] == [
         {"code": "price_refresh_failed", "count": 1},
     ]
+
+
+def test_portfolio_risk_summary_does_not_label_invalid_refreshed_quote_as_fresh():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95")},
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 100, record_date=date(2020, 1, 1)),
+        },
+        price_quotes_by_symbol={
+            "2330.TW": {
+                "status": "refreshed",
+                "current_price": "1e308",
+                "source": "yfinance_fast_info",
+                "fetched_at": "2026-06-12T10:30:00+08:00",
+                "data_date": "2026-06-12",
+            },
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    position = summary["position_risks"][0]
+    assert position["current_price"] == 100
+    assert position["price_context"]["refresh_status"] == "failed"
+    assert position["price_context"]["source"] == "stock_raw_data_fallback"
+    assert {item["code"] for item in position["data_quality"]["caveats"]} == {
+        "price_refresh_invalid",
+        "stale_price",
+    }
+
+
+def test_portfolio_risk_summary_rejects_non_json_finite_extreme_price():
+    summary = build_portfolio_risk_summary(
+        [_position(symbol="2330.TW", group="g1", quantity=10)],
+        plans_by_group={"g1": _plan(group="g1", stop="95")},
+        raw_data_by_symbol={"2330.TW": _raw("2330.TW", "1e308")},
+        as_of_date=date(2026, 6, 12),
+    )
+
+    position = summary["position_risks"][0]
+    assert position["current_price"] is None
+    assert position["market_value"] is None
+    assert position["risk_state"] == "data_incomplete"
+    assert {item["code"] for item in position["data_quality"]["caveats"]} == {
+        "missing_price",
+    }
+
+
+def test_industry_status_uses_account_capital_and_reports_missing_price_coverage():
+    summary = build_portfolio_risk_summary(
+        [
+            _position(symbol="2330.TW", group="g1", quantity=10),
+            _position(symbol="2317.TW", group="g2", quantity=10),
+            _position(symbol="2454.TW", group="g3", quantity=10),
+        ],
+        plans_by_group={
+            "g1": _plan(group="g1", stop="90"),
+            "g2": _plan(group="g2", stop="90"),
+            "g3": _plan(group="g3", stop="90"),
+        },
+        raw_data_by_symbol={
+            "2330.TW": _raw(
+                "2330.TW",
+                100,
+                fundamental={"industry": "半導體業"},
+            ),
+            "2317.TW": _raw("2317.TW", None),
+            "2454.TW": _raw("2454.TW", 100),
+        },
+        cash_balance=3000,
+        as_of_date=date(2026, 6, 12),
+    )
+
+    industry = summary["concentration"]["by_industry"][0]
+    coverage = summary["concentration"]["industry_coverage"]
+    assert industry["pct_of_invested"] == 50.0
+    assert industry["pct_of_capital_base"] == 20.0
+    assert industry["status"] == "partial"
+    assert coverage["status"] == "partial"
+    assert coverage["eligible_position_count"] == 3
+    assert coverage["valued_position_count"] == 2
+    assert coverage["classified_position_count"] == 1
+    assert coverage["unvalued_position_count"] == 1
+    assert coverage["unclassified_valued_position_count"] == 1
+
+
+def test_correlation_uses_pair_aligned_common_close_intervals():
+    start = date(2026, 1, 1)
+    common_dates = [start + timedelta(days=index * 2) for index in range(21)]
+    left_dates = [start + timedelta(days=index) for index in range(41)]
+    common_close_by_date = {
+        value_date: 100.0 + index
+        for index, value_date in enumerate(common_dates)
+    }
+    left_closes = [
+        common_close_by_date.get(value_date, 10000.0 if index % 4 == 1 else 1.0)
+        for index, value_date in enumerate(left_dates)
+    ]
+    right_closes = [common_close_by_date[value_date] for value_date in common_dates]
+    summary = build_portfolio_risk_summary(
+        [
+            _position(symbol="2330.TW", group="g1", quantity=10),
+            _position(symbol="2317.TW", group="g2", quantity=10),
+        ],
+        plans_by_group={
+            "g1": _plan(group="g1", stop="90"),
+            "g2": _plan(group="g2", stop="90"),
+        },
+        raw_data_by_symbol={
+            "2330.TW": _raw(
+                "2330.TW",
+                100,
+                price_history=_price_history(left_dates, left_closes),
+            ),
+            "2317.TW": _raw(
+                "2317.TW",
+                100,
+                price_history=_price_history(common_dates, right_closes),
+            ),
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    correlation = summary["correlation_risk"]
+    assert correlation["status"] == "available"
+    assert correlation["pairs"][0]["overlapping_return_count"] == 20
+    assert correlation["pairs"][0]["correlation"] == pytest.approx(1.0)
+
+
+def test_correlation_coverage_includes_supported_holding_without_current_value():
+    dates = [date(2026, 1, 1) + timedelta(days=index) for index in range(21)]
+    history = _price_history(dates, [100.0 + index for index in range(21)])
+    summary = build_portfolio_risk_summary(
+        [
+            _position(symbol="2330.TW", group="g1", quantity=10),
+            _position(symbol="2317.TW", group="g2", quantity=10),
+            _position(symbol="2454.TW", group="g3", quantity=10),
+        ],
+        plans_by_group={
+            "g1": _plan(group="g1", stop="90"),
+            "g2": _plan(group="g2", stop="90"),
+            "g3": _plan(group="g3", stop="90"),
+        },
+        raw_data_by_symbol={
+            "2330.TW": _raw("2330.TW", 100, price_history=history),
+            "2317.TW": _raw("2317.TW", 100, price_history=history),
+            "2454.TW": _raw("2454.TW", None),
+        },
+        as_of_date=date(2026, 6, 12),
+    )
+
+    correlation = summary["correlation_risk"]
+    assert correlation["status"] == "partial"
+    assert correlation["eligible_position_count"] == 3
+    assert correlation["valued_position_count"] == 2
+    assert correlation["possible_pair_count"] == 3
+    assert correlation["eligible_pair_count"] == 1
+    assert correlation["pair_coverage_pct"] == pytest.approx(33.3333)
 
 
 def test_portfolio_risk_summary_exposes_auto_defense_prices_for_plan_editing():
@@ -455,7 +625,7 @@ def test_build_user_portfolio_risk_summary_uses_taipei_today_for_phase1_projecti
     monkeypatch.setattr(risk_summary_module, "build_portfolio_risk_summary", _build_summary)
 
     result = risk_summary_module.build_user_portfolio_risk_summary(
-        object(),
+        SimpleNamespace(get=lambda *_args: None),
         user_id=1,
         symbol_name_resolver=lambda _symbol: None,
     )
@@ -495,7 +665,7 @@ def test_build_user_portfolio_risk_summary_degrades_when_weekly_major_holders_re
     monkeypatch.setattr(risk_summary_module, "build_portfolio_risk_summary", _build_summary)
 
     result = risk_summary_module.build_user_portfolio_risk_summary(
-        object(),
+        SimpleNamespace(get=lambda *_args: None),
         user_id=1,
         symbol_name_resolver=lambda _symbol: None,
         as_of_date=date(2026, 6, 19),

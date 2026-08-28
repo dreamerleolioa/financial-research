@@ -76,6 +76,7 @@ export interface PortfolioPhase1PositionState {
 export interface PortfolioPositionRisk {
   symbol: string;
   name?: string | null;
+  industry?: string | null;
   quantity: number | null;
   current_price: number | null;
   price_context?: PortfolioPriceContext;
@@ -94,6 +95,8 @@ export interface PortfolioPositionRisk {
   estimated_risk_amount: number | null;
   estimated_risk_pct_of_portfolio: number | null;
   portfolio_weight_pct: number | null;
+  invested_weight_pct?: number | null;
+  account_equity_weight_pct?: number | null;
   risk_state: "contained" | "watch" | "elevated" | "defense_reference_touched" | "data_incomplete";
   discipline_triggers: string[];
   phase1_position_state?: PortfolioPhase1PositionState | null;
@@ -141,6 +144,15 @@ export interface PortfolioRiskSummary {
   portfolio_revision?: string;
   as_of_date: string;
   portfolio_value: number;
+  account_capital: {
+    status: "recorded" | "cash_not_recorded";
+    cash_balance: number | null;
+    invested_market_value: number;
+    account_equity: number | null;
+    cash_pct_of_account_equity: number | null;
+    invested_pct_of_account_equity: number | null;
+    risk_percentage_denominator: "account_equity" | "invested_market_value_fallback";
+  };
   total_unrealized_pnl: number;
   total_at_risk: number;
   total_at_risk_pct: number | null;
@@ -155,6 +167,27 @@ export interface PortfolioRiskSummary {
       pct_of_portfolio: number | null;
       status: "ok" | "watch" | "elevated";
     }>;
+    by_industry: Array<{
+      type: "industry";
+      key: string;
+      symbols: string[];
+      market_value: number;
+      pct_of_invested: number | null;
+      pct_of_capital_base: number | null;
+      status: "ok" | "watch" | "elevated" | "partial";
+    }>;
+    industry_coverage: {
+      status: "available" | "partial" | "unavailable";
+      classified_market_value: number;
+      pct_of_invested: number | null;
+      eligible_position_count: number;
+      valued_position_count: number;
+      classified_position_count: number;
+      unvalued_position_count: number;
+      unclassified_valued_position_count: number;
+    };
+    industry_watch_threshold_pct: number;
+    industry_elevated_threshold_pct: number;
   };
   shared_exposures: Array<{
     type: string;
@@ -164,6 +197,26 @@ export interface PortfolioRiskSummary {
     market_value: number;
     pct_of_portfolio: number | null;
   }>;
+  correlation_risk: {
+    status: "available" | "partial" | "insufficient_data";
+    minimum_overlapping_return_count: number;
+    eligible_position_count: number;
+    valued_position_count: number;
+    possible_pair_count: number;
+    eligible_pair_count: number;
+    pair_coverage_pct: number | null;
+    weighted_average_correlation: number | null;
+    watch_threshold: number;
+    elevated_threshold: number;
+    pairs: Array<{
+      symbols: [string, string];
+      correlation: number;
+      overlapping_return_count: number;
+      combined_invested_weight_pct: number;
+      status: "contained" | "watch" | "elevated";
+    }>;
+    interpretation: "descriptive_co_movement_not_forward_prediction" | string;
+  };
   risk_budget_status: {
     status: "available" | "watch" | "constrained" | "unknown";
     total_at_risk_pct: number | null;
@@ -176,6 +229,12 @@ export interface PortfolioRiskSummary {
     caveats: PortfolioRiskCaveat[];
     price_stale_after_days: number;
   };
+}
+
+export interface PortfolioAccountSettings {
+  status: "recorded" | "not_recorded";
+  cash_balance: number | null;
+  updated_at: string | null;
 }
 
 export interface ClosedPortfolioItem {

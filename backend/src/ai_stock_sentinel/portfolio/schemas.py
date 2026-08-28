@@ -10,6 +10,7 @@ from ai_stock_sentinel.portfolio.storage_limits import (
     LifecycleMoney,
     LifecyclePercent,
     LifecyclePrice,
+    PortfolioCashBalance,
     PortfolioPrice,
     PositionEventMoney,
     POSTGRES_INTEGER_MAX,
@@ -140,3 +141,7 @@ class UpdatePortfolioRequest(BaseModel):
 
 class PortfolioPriceRefreshRequest(BaseModel):
     portfolio_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
+
+
+class PortfolioAccountSettingsRequest(BaseModel):
+    cash_balance: PortfolioCashBalance

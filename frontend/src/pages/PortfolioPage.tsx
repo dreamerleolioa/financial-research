@@ -6,6 +6,7 @@ import {
   useClosePortfolioItemMutation,
   useDeletePortfolioItemMutation,
   useRefreshPortfolioPricesMutation,
+  useUpdatePortfolioAccountSettingsMutation,
   useUpdateLifecyclePlanMutation,
   useUpdatePortfolioItemMutation,
 } from "../features/portfolio/mutations";
@@ -1763,7 +1764,9 @@ function riskBudgetDisplay(summary: PortfolioRiskSummary): { label: string; note
 
   return {
     label: PORTFOLIO_RISK_BUDGET_LABEL[summary.risk_budget_status.status],
-    note: `若跌到目前防守價，可能回吐約 ${formatPortfolioPct(summary.total_at_risk_pct)} 的持股市值。`,
+    note: `若跌到目前防守價，可能回吐約 ${formatPortfolioPct(summary.total_at_risk_pct)} 的${
+      summary.account_capital.risk_percentage_denominator === "account_equity" ? "帳戶權益" : "持股市值"
+    }。`,
   };
 }
 
@@ -1959,6 +1962,12 @@ function Phase1ObservationGroupList({
 
 function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskSummary | null; error: string | null }) {
   const [expanded, setExpanded] = useState(false);
+  const [cashInput, setCashInput] = useState("");
+  const accountSettingsMutation = useUpdatePortfolioAccountSettingsMutation();
+
+  useEffect(() => {
+    setCashInput(summary?.account_capital.cash_balance?.toString() ?? "");
+  }, [summary?.account_capital.cash_balance]);
 
   if (error) {
     return (
@@ -1972,6 +1981,7 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
   const riskExplanation = totalRiskExplanation(summary);
   const riskBudget = riskBudgetDisplay(summary);
   const stopCheckReason = stopLossCheckReason(summary);
+  const displayedCapital = summary.account_capital.account_equity ?? summary.portfolio_value;
   const dataQualityLabel =
     summary.data_quality.status === "ok"
       ? "資料完整"
@@ -2005,10 +2015,17 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
 
       <div className="grid grid-cols-2 sm:grid-cols-4">
         <div className="px-4 py-4 md:px-5">
-          <p className="text-xs text-text-faint">總市值</p>
-          <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">
-            {formatPortfolioMoney(summary.portfolio_value)}
+          <p className="text-xs text-text-faint">
+            {summary.account_capital.status === "recorded" ? "帳戶權益" : "持股市值"}
           </p>
+          <p className="mt-2 text-lg font-semibold tabular-nums text-text-primary">
+            {formatPortfolioMoney(displayedCapital)}
+          </p>
+          {summary.account_capital.status === "recorded" && (
+            <p className="mt-1 text-xs text-text-faint">
+              現金 {formatPortfolioMoney(summary.account_capital.cash_balance ?? 0)}
+            </p>
+          )}
         </div>
         <div className="border-l border-border-subtle px-4 py-4 md:px-5">
           <p className="text-xs text-text-faint">未實現損益</p>
@@ -2058,6 +2075,110 @@ function PortfolioRiskSummaryPanel({ summary, error }: { summary: PortfolioRiskS
               ) : (
                 <p className="mt-2 text-xs text-text-faint">目前沒有額外資料提示。</p>
               )}
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 border-t border-border-subtle pt-4 lg:grid-cols-3">
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const cashBalance = parseRequiredNumberInput(cashInput);
+                if (cashBalance == null || cashBalance < 0) return;
+                accountSettingsMutation.mutate(cashBalance);
+              }}
+            >
+              <p className="text-xs font-semibold text-text-muted">帳戶資金母體</p>
+              <label className="mt-2 block text-xs text-text-faint" htmlFor="portfolio-cash-balance">
+                可用現金餘額
+              </label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  id="portfolio-cash-balance"
+                  type="number"
+                  min="0"
+                  max="9999999999999.99"
+                  step="0.01"
+                  value={cashInput}
+                  onChange={(event) => setCashInput(event.target.value)}
+                  className="ui-input min-w-0 flex-1"
+                  placeholder="尚未記錄"
+                />
+                <button
+                  type="submit"
+                  disabled={accountSettingsMutation.isPending}
+                  className="ui-button-secondary px-3 text-xs"
+                >
+                  {accountSettingsMutation.isPending ? "儲存中" : "儲存"}
+                </button>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-text-faint">
+                {summary.account_capital.status === "recorded"
+                  ? `持股占帳戶權益 ${formatPortfolioPct(summary.account_capital.invested_pct_of_account_equity)}`
+                  : "未記錄現金時，風險百分比暫以持股市值為分母。"}
+              </p>
+              {accountSettingsMutation.isError && (
+                <p className="mt-1 text-xs text-negative">現金餘額儲存失敗，請稍後再試。</p>
+              )}
+            </form>
+
+            <div>
+              <p className="text-xs font-semibold text-text-muted">產業集中度</p>
+              {summary.concentration.by_industry.length > 0 ? (
+                <ul className="mt-2 space-y-1.5">
+                  {summary.concentration.by_industry.slice(0, 3).map((industry) => (
+                    <li key={industry.key} className="text-xs text-text-faint">
+                      {industry.key}：帳戶資金占比 {formatPortfolioPct(industry.pct_of_capital_base)}
+                      {`（持股內 ${formatPortfolioPct(industry.pct_of_invested)}）`}
+                      {industry.status === "partial"
+                        ? "（覆蓋不足，暫不定級）"
+                        : industry.status !== "ok"
+                          ? "（集中度需留意）"
+                          : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs leading-relaxed text-text-faint">尚無可靠產業分類，暫不判定產業集中度。</p>
+              )}
+              <p className="mt-2 text-xs text-text-faint">
+                已分類 {summary.concentration.industry_coverage.classified_position_count} / {summary.concentration.industry_coverage.eligible_position_count} 檔；
+                已估值持股內 {formatPortfolioPct(summary.concentration.industry_coverage.pct_of_invested)}
+              </p>
+              {summary.concentration.industry_coverage.status !== "available" && (
+                <p className="mt-1 text-xs leading-relaxed text-signal">
+                  產業資料或估值覆蓋不足，目前百分比只代表已分類且可估值的部位。
+                </p>
+              )}
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-text-muted">持股共同波動</p>
+              {summary.correlation_risk.status !== "insufficient_data" ? (
+                <>
+                  <p className="mt-2 text-xs text-text-faint">
+                    可計算組合加權平均相關 {summary.correlation_risk.weighted_average_correlation?.toFixed(2) ?? "—"}
+                  </p>
+                  <p className="mt-1 text-xs text-text-faint">
+                    可計算組合 {summary.correlation_risk.eligible_pair_count} / {summary.correlation_risk.possible_pair_count}
+                    （覆蓋 {formatPortfolioPct(summary.correlation_risk.pair_coverage_pct)}）
+                  </p>
+                  {summary.correlation_risk.status === "partial" && (
+                    <p className="mt-1 text-xs leading-relaxed text-signal">
+                      僅部分持股組合具備足夠且可估值的同期資料，加權平均只代表上述可計算組合。
+                    </p>
+                  )}
+                  {summary.correlation_risk.pairs.slice(0, 2).map((pair) => (
+                    <p key={pair.symbols.join("-")} className="mt-1 text-xs text-text-faint">
+                      {pair.symbols.join(" / ")}：{pair.correlation.toFixed(2)}（{pair.overlapping_return_count} 筆）
+                    </p>
+                  ))}
+                </>
+              ) : (
+                <p className="mt-2 text-xs leading-relaxed text-text-faint">
+                  至少需要兩檔持股各 {summary.correlation_risk.minimum_overlapping_return_count} 筆重疊日報酬。
+                </p>
+              )}
+              <p className="mt-2 text-xs leading-relaxed text-text-faint">僅描述歷史共同波動，不預測未來相關性。</p>
             </div>
           </div>
 

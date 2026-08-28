@@ -29,6 +29,7 @@ from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler, check_symbol_exists
 from ai_stock_sentinel.db.models import (
+    PortfolioAccountSettings,
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
@@ -56,9 +57,14 @@ from ai_stock_sentinel.portfolio.schemas import (
     AddEntryRequest,
     BackfillLifecyclePlanRequest,
     ClosePortfolioRequest,
+    PortfolioAccountSettingsRequest,
     PortfolioCreateRequest,
     PortfolioPriceRefreshRequest,
     UpdatePortfolioRequest,
+)
+from ai_stock_sentinel.portfolio.storage_limits import (
+    PORTFOLIO_CASH_BALANCE_QUANTUM,
+    quantize_for_storage,
 )
 from ai_stock_sentinel.shared_context import (
     SHARED_CONTEXT_CONSUMER_PORTFOLIO,
@@ -960,6 +966,67 @@ def get_portfolio_risk_summary(
         user_id=current_user.id,
         symbol_name_resolver=resolve_symbol_name,
     )
+
+
+@router.get("/account-settings")
+def get_portfolio_account_settings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    settings = db.get(PortfolioAccountSettings, current_user.id)
+    return {
+        "status": "recorded" if settings is not None else "not_recorded",
+        "cash_balance": float(settings.cash_balance) if settings is not None else None,
+        "updated_at": (
+            settings.updated_at.isoformat()
+            if settings is not None
+            and settings.updated_at is not None
+            and hasattr(settings.updated_at, "isoformat")
+            else None
+        ),
+    }
+
+
+@router.put("/account-settings")
+def update_portfolio_account_settings(
+    payload: PortfolioAccountSettingsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Serialize the read-then-insert path on the stable parent row. Locking only
+    # the optional settings row cannot protect the first concurrent insert.
+    db.execute(
+        select(User).where(User.id == current_user.id).with_for_update()
+    ).scalar_one()
+    settings = db.execute(
+        select(PortfolioAccountSettings)
+        .where(PortfolioAccountSettings.user_id == current_user.id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    cash_balance = quantize_for_storage(
+        payload.cash_balance,
+        PORTFOLIO_CASH_BALANCE_QUANTUM,
+    )
+    if settings is None:
+        settings = PortfolioAccountSettings(
+            user_id=current_user.id,
+            cash_balance=cash_balance,
+        )
+        db.add(settings)
+    else:
+        settings.cash_balance = cash_balance
+    db.commit()
+    db.refresh(settings)
+    return {
+        "status": "recorded",
+        "cash_balance": float(settings.cash_balance),
+        "updated_at": (
+            settings.updated_at.isoformat()
+            if settings.updated_at is not None
+            and hasattr(settings.updated_at, "isoformat")
+            else None
+        ),
+    }
 
 
 @router.post("/risk-summary/refresh-prices")

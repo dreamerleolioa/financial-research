@@ -7,6 +7,7 @@ import {
   deletePortfolioItem,
   refreshPortfolioPrices,
   updateLifecyclePlan,
+  updatePortfolioAccountSettings,
   updatePortfolioItem,
   type AddEntryRequest,
   type ClosePortfolioRequest,
@@ -186,6 +187,17 @@ export function useRefreshPortfolioPricesMutation() {
       storePriceRefreshOverlay(queryClient, summary, revisionAtStart);
       queryClient.setQueryData(portfolioKeys.riskSummary(), summary);
     },
+  });
+}
+
+export function useUpdatePortfolioAccountSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    scope: PORTFOLIO_MUTATION_SCOPE,
+    mutationFn: (cashBalance: number) => updatePortfolioAccountSettings(cashBalance),
+    onMutate: () => markPortfolioWriteStarted(queryClient),
+    onSuccess: () => invalidatePortfolioReadData(queryClient),
+    onError: () => recoverFromPortfolioWriteFailure(queryClient),
   });
 }
 

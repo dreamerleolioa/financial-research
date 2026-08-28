@@ -26,6 +26,7 @@ from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarRun,
     Phase1AvwapSnapshot,
+    PortfolioAccountSettings,
     PositionEvent,
     PositionLifecyclePlan,
     PositionLifecycleReview,
@@ -1310,6 +1311,7 @@ def portfolio_db_session() -> Session:
             PositionEvent.__table__,
             PositionLifecyclePlan.__table__,
             PositionLifecycleReview.__table__,
+            PortfolioAccountSettings.__table__,
             Phase1AvwapSnapshot.__table__,
             TradeReview.__table__,
             StockRawData.__table__,
@@ -1764,6 +1766,134 @@ def test_portfolio_risk_summary_reads_active_user_positions_only(
     assert portfolio_db_session.query(PositionEvent).count() == 0
 
 
+def test_portfolio_account_settings_are_user_scoped_and_drive_equity_denominator(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add_all([
+        User(id=1, google_sub="user-1", email="user@example.com"),
+        User(id=2, google_sub="user-2", email="other@example.com"),
+        PortfolioAccountSettings(user_id=2, cash_balance=999999),
+        UserPortfolio(
+            user_id=1,
+            position_group_id="group-account",
+            symbol="2330.TW",
+            entry_price=100,
+            quantity=10,
+            entry_date=date(2026, 6, 1),
+        ),
+        PositionLifecyclePlan(
+            user_id=1,
+            position_group_id="group-account",
+            symbol="2330.TW",
+            planned_stop_price=90,
+            source="user_recorded_at_event_time",
+            created_after_entry=False,
+        ),
+        StockRawData(
+            symbol="2330.TW",
+            record_date=date(2026, 6, 20),
+            technical={"close_price": 100},
+            raw_data_is_final=True,
+        ),
+    ])
+    portfolio_db_session.commit()
+
+    before = portfolio_db_client.get("/portfolio/account-settings")
+    updated = portfolio_db_client.put(
+        "/portfolio/account-settings",
+        json={"cash_balance": 1000.12},
+    )
+    summary = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert before.json() == {
+        "status": "not_recorded",
+        "cash_balance": None,
+        "updated_at": None,
+    }
+    assert updated.status_code == 200
+    assert updated.json()["cash_balance"] == 1000.12
+    assert portfolio_db_client.put(
+        "/portfolio/account-settings",
+        json={"cash_balance": -1},
+    ).status_code == 422
+    account = summary.json()["account_capital"]
+    assert account["status"] == "recorded"
+    assert account["cash_balance"] == 1000.12
+    assert account["invested_market_value"] == 1000
+    assert account["account_equity"] == 2000.12
+    assert account["risk_percentage_denominator"] == "account_equity"
+    assert summary.json()["position_risks"][0]["portfolio_weight_pct"] == pytest.approx(49.997)
+    maximum = portfolio_db_client.put(
+        "/portfolio/account-settings",
+        json={"cash_balance": 9999999999999.99},
+    )
+    assert maximum.status_code == 200
+    assert maximum.json()["cash_balance"] == 9999999999999.99
+    assert portfolio_db_client.put(
+        "/portfolio/account-settings",
+        json={"cash_balance": 10000000000000},
+    ).status_code == 422
+
+
+def test_portfolio_risk_summary_reports_industry_and_return_correlation_with_coverage(
+    portfolio_db_client: TestClient,
+    portfolio_db_session: Session,
+):
+    portfolio_db_session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    portfolio_db_session.add(PortfolioAccountSettings(user_id=1, cash_balance=2000))
+    dates = [date(2026, 5, 1) + timedelta(days=index) for index in range(21)]
+    for index, symbol in enumerate(("2330.TW", "2317.TW"), start=1):
+        portfolio_db_session.add(UserPortfolio(
+            user_id=1,
+            position_group_id=f"group-correlation-{index}",
+            symbol=symbol,
+            entry_price=100,
+            quantity=10,
+            entry_date=date(2026, 5, 1),
+        ))
+        closes = [100 + offset for offset in range(21)]
+        portfolio_db_session.add(StockRawData(
+            symbol=symbol,
+            record_date=date(2026, 6, 20),
+            technical={
+                "close_price": 100,
+                "price_history": [
+                    {"date": value_date.isoformat(), "close": close}
+                    for value_date, close in zip(dates, closes, strict=True)
+                ],
+            },
+            fundamental={"industry": "半導體業"},
+            raw_data_is_final=True,
+        ))
+    portfolio_db_session.commit()
+
+    response = portfolio_db_client.get("/portfolio/risk-summary")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "portfolio-risk-summary-v2"
+    assert data["concentration"]["industry_coverage"] == {
+        "status": "available",
+        "classified_market_value": 2000.0,
+        "pct_of_invested": 100.0,
+        "eligible_position_count": 2,
+        "valued_position_count": 2,
+        "classified_position_count": 2,
+        "unvalued_position_count": 0,
+        "unclassified_valued_position_count": 0,
+    }
+    assert data["concentration"]["by_industry"][0]["status"] == "watch"
+    correlation = data["correlation_risk"]
+    assert correlation["status"] == "available"
+    assert correlation["possible_pair_count"] == 1
+    assert correlation["eligible_pair_count"] == 1
+    assert correlation["pair_coverage_pct"] == 100.0
+    assert correlation["pairs"][0]["overlapping_return_count"] == 20
+    assert correlation["pairs"][0]["correlation"] == pytest.approx(1.0)
+    assert correlation["pairs"][0]["status"] == "elevated"
+
+
 def test_portfolio_risk_summary_projects_weekly_major_holders_with_previous_delta(
     monkeypatch: pytest.MonkeyPatch,
     portfolio_db_client: TestClient,
@@ -2191,6 +2321,30 @@ def test_price_refresh_processes_more_symbols_than_the_worker_count():
     assert all(quote["status"] == "refreshed" for quote in quotes.values())
 
 
+def test_price_refresh_rejects_quote_outside_supported_market_price_domain():
+    snapshot = StockSnapshot(
+        symbol="2330.TW",
+        currency="TWD",
+        current_price=1e308,
+        previous_close=100,
+        day_open=100,
+        day_high=100,
+        day_low=100,
+        volume=100,
+        recent_closes=[100],
+        fetched_at="2026-07-31T10:00:00+08:00",
+    )
+
+    quotes = _fetch_quotes(
+        ["2330.TW"],
+        quote_fetcher=lambda _symbol: snapshot,
+    )
+
+    assert quotes == {
+        "2330.TW": {"status": "failed", "error_code": "ValueError"},
+    }
+
+
 def test_price_refresh_uses_taiwan_exchange_session_at_quote_observation_time():
     snapshot = StockSnapshot(
         symbol="6488.TWO",
@@ -2348,7 +2502,10 @@ def test_portfolio_risk_summary_reports_data_gap_caveats(
     assert caveat_counts["zero_quantity"] == 1
     assert caveat_counts["stale_price"] == 1
     assert data["data_quality"]["status"] == "insufficient"
-    assert data["risk_budget_status"]["notes"] == ["部分部位資料不足，風險預算狀態需搭配 data_quality 解讀。"]
+    assert data["risk_budget_status"]["notes"] == [
+        "部分部位資料不足，風險預算狀態需搭配 data_quality 解讀。",
+        "尚未記錄可用現金，風險百分比暫以持股市值為分母。",
+    ]
 
 
 def test_decision_context_status_reads_user_backfilled_plan(

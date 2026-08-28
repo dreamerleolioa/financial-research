@@ -102,6 +102,7 @@ const portfolioPositionRiskSchema = z
   .object({
     symbol: z.string(),
     name: z.string().nullable().optional(),
+    industry: z.string().nullable().optional(),
     quantity: z.number().nullable(),
     current_price: z.number().nullable(),
     price_context: portfolioPriceContextSchema.optional(),
@@ -125,6 +126,8 @@ const portfolioPositionRiskSchema = z
     estimated_risk_amount: z.number().nullable(),
     estimated_risk_pct_of_portfolio: z.number().nullable(),
     portfolio_weight_pct: z.number().nullable(),
+    invested_weight_pct: z.number().nullable().optional(),
+    account_equity_weight_pct: z.number().nullable().optional(),
     risk_state: z.enum(["contained", "watch", "elevated", "defense_reference_touched", "data_incomplete"]),
     discipline_triggers: z.array(z.string()),
     phase1_position_state: phase1PositionStateSchema.nullable().optional(),
@@ -176,6 +179,17 @@ export const portfolioRiskSummarySchema = z
     portfolio_revision: z.string().optional(),
     as_of_date: z.string(),
     portfolio_value: z.number(),
+    account_capital: z
+      .object({
+        status: z.enum(["recorded", "cash_not_recorded"]),
+        cash_balance: z.number().nullable(),
+        invested_market_value: z.number(),
+        account_equity: z.number().nullable(),
+        cash_pct_of_account_equity: z.number().nullable(),
+        invested_pct_of_account_equity: z.number().nullable(),
+        risk_percentage_denominator: z.enum(["account_equity", "invested_market_value_fallback"]),
+      })
+      .passthrough(),
     total_unrealized_pnl: z.number(),
     total_at_risk: z.number(),
     total_at_risk_pct: z.number().nullable(),
@@ -195,6 +209,29 @@ export const portfolioRiskSummarySchema = z
             })
             .passthrough(),
         ),
+        by_industry: z.array(
+          z.object({
+            type: z.literal("industry"),
+            key: z.string(),
+            symbols: z.array(z.string()),
+            market_value: z.number(),
+            pct_of_invested: z.number().nullable(),
+            pct_of_capital_base: z.number().nullable(),
+            status: z.enum(["ok", "watch", "elevated", "partial"]),
+          }).passthrough(),
+        ),
+        industry_coverage: z.object({
+          status: z.enum(["available", "partial", "unavailable"]),
+          classified_market_value: z.number(),
+          pct_of_invested: z.number().nullable(),
+          eligible_position_count: z.number(),
+          valued_position_count: z.number(),
+          classified_position_count: z.number(),
+          unvalued_position_count: z.number(),
+          unclassified_valued_position_count: z.number(),
+        }).passthrough(),
+        industry_watch_threshold_pct: z.number(),
+        industry_elevated_threshold_pct: z.number(),
       })
       .passthrough(),
     shared_exposures: z.array(
@@ -209,6 +246,26 @@ export const portfolioRiskSummarySchema = z
         })
         .passthrough(),
     ),
+    correlation_risk: z.object({
+      status: z.enum(["available", "partial", "insufficient_data"]),
+      minimum_overlapping_return_count: z.number(),
+      eligible_position_count: z.number(),
+      valued_position_count: z.number(),
+      possible_pair_count: z.number(),
+      eligible_pair_count: z.number(),
+      pair_coverage_pct: z.number().nullable(),
+      weighted_average_correlation: z.number().nullable(),
+      watch_threshold: z.number(),
+      elevated_threshold: z.number(),
+      pairs: z.array(z.object({
+        symbols: z.tuple([z.string(), z.string()]),
+        correlation: z.number(),
+        overlapping_return_count: z.number(),
+        combined_invested_weight_pct: z.number(),
+        status: z.enum(["contained", "watch", "elevated"]),
+      }).passthrough()),
+      interpretation: z.string(),
+    }).passthrough(),
     risk_budget_status: z
       .object({
         status: z.enum(["available", "watch", "constrained", "unknown"]),
