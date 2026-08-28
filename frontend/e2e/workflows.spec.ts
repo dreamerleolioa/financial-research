@@ -98,6 +98,23 @@ test("Analyze presents a bearish directional score without calling it low consis
   await expect(page.getByText("13%", { exact: true })).toHaveCount(0);
 });
 
+test("Analyze presents a user-facing failure without backend codes or exception text", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    analyzeResult: {
+      ...quickAnalyzeResult,
+      errors: [{ code: "CRAWL_ERROR", message: "yfinance connection reset by peer" }],
+    },
+  });
+
+  await page.goto("/analyze");
+  await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
+  await page.getByRole("button", { name: /開始分析/ }).click();
+
+  await expect(page.getByText("無法取得這檔股票的市場資料，請稍後再試。")).toBeVisible();
+  await expect(page.getByText(/CRAWL_ERROR|yfinance|connection reset/)).toHaveCount(0);
+});
+
 test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await authenticate(page);
@@ -133,6 +150,41 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("現價：2555（TWSE MIS 即時）（跌停）");
+});
+
+test("Watchlist localizes an unknown AVWAP data gap without exposing its code", async ({ page }) => {
+  const internalReason = "new_phase1_provider_failure";
+  await authenticate(page);
+  await installApiMocks(page, {
+    watchlist: [watchlistItem],
+    analyzeResult: {
+      ...quickAnalyzeResult,
+      phase1_observation: {
+        symbol: "3661.TW",
+        data_date: "2026-07-16",
+        dataset: "TaiwanStockPrice",
+        adjustment_mode: "unadjusted",
+        freshness: "missing",
+        missing_reason: internalReason,
+        source: {
+          provider: "phase1_avwap_snapshot",
+          dataset: "TaiwanStockPrice",
+          adjustment_mode: "unadjusted",
+        },
+        source_granularity: "daily",
+        anchors: {},
+        data_quality: { blocking: false, missing_reason: internalReason },
+      },
+    },
+  });
+
+  await page.goto("/watchlist");
+  await page.getByRole("button", { name: "技術快查" }).click();
+
+  await expect(page.getByText("AVWAP 資料不足").first()).toBeVisible();
+  await expect(page.getByText("2026-07-16 · 未還原價格")).toBeVisible();
+  await expect(page.getByText(internalReason)).toHaveCount(0);
+  await expect(page.getByText("unadjusted")).toHaveCount(0);
 });
 
 test("Portfolio destructive action requires confirmation before DELETE", async ({ page }) => {
@@ -1713,4 +1765,37 @@ test("Daily Radar detail drawer traps focus and restores it on Escape", async ({
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(openDrawerButton).toBeFocused();
+});
+
+test("Daily Radar localizes background data gaps without exposing internal reason codes", async ({ page }) => {
+  const internalReason = "context_cache_missing";
+  const runWithGap = {
+    ...radarRun,
+    candidates: [
+      {
+        ...radarRun.candidates[0],
+        background_context_labels: [
+          {
+            context_type: "lending",
+            label: "借券資料尚未準備完成",
+            source: {},
+            as_of_date: null,
+            freshness: "missing",
+            missing_reason: internalReason,
+            replay_key: "lending:2330.TW:2026-07-16",
+            applicable_consumers: ["daily_radar"],
+          },
+        ],
+      },
+    ],
+  };
+
+  await authenticate(page);
+  await installApiMocks(page, { dailyRadar: runWithGap });
+  await page.goto("/daily-radar");
+  await page.getByRole("button", { name: "查看細節" }).click();
+
+  const drawer = page.getByRole("dialog", { name: "台積電 · 2330.TW" });
+  await expect(drawer).toContainText("缺資料原因：尚無背景資料快照");
+  await expect(drawer).not.toContainText(internalReason);
 });

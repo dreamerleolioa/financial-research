@@ -4,6 +4,7 @@ import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
 import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import { formatPrice } from "../lib/formatters";
+import { formatDataMissingReason, formatPriceAdjustmentMode } from "../lib/presentationLabels";
 import {
   buildTechnicalIndicatorsCopyText,
   COPY_STATUS_RESET_MS,
@@ -54,13 +55,6 @@ const PHASE1_ANCHOR_LABEL: Record<string, string> = {
   entry: "持股進場日",
 };
 
-const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
-  not_in_phase1_universe: "不在試驗版管理範圍",
-  phase1_snapshot_missing: "尚無試驗版快照",
-  phase1_snapshot_stale: "試驗版快照已過期",
-  phase1_snapshot_read_failed: "試驗版快照讀取失敗",
-};
-
 interface WatchlistTechnicalState {
   loading: boolean;
   expanded: boolean;
@@ -89,8 +83,7 @@ function formatPhase1Distance(value: number | null | undefined): string {
 }
 
 function formatPhase1MissingReason(reason: string | null | undefined): string {
-  if (!reason) return "資料不足";
-  return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
+  return formatDataMissingReason(reason, "AVWAP 資料不足");
 }
 
 function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
@@ -127,7 +120,7 @@ function WatchlistPhase1Observation({ observation, symbol }: { observation: Phas
         <div>
           <p className="text-sm font-semibold text-text-primary">試驗版 AVWAP 觀察</p>
           <p className="mt-1 text-xs text-text-muted">
-            {observation.data_date} · {observation.adjustment_mode}
+            {observation.data_date} · {formatPriceAdjustmentMode(observation.adjustment_mode)}
           </p>
         </div>
         <span
@@ -434,12 +427,12 @@ export default function WatchlistPage() {
         error: null,
         result,
       }));
-    } catch (err) {
+    } catch {
       updateTechnicalState(item.id, (state) => ({
         ...state,
         loading: false,
         expanded: true,
-        error: err instanceof Error ? err.message : "技術指標快查失敗",
+        error: "技術指標暫時無法取得，請稍後再試。",
       }));
     }
   }

@@ -7,6 +7,7 @@ import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState
 import { useCreatePortfolioItemMutation } from "../features/portfolio/mutations";
 import { fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
 import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
+import { formatAnalysisError } from "../lib/presentationLabels";
 import {
   buildTechnicalIndicatorsCopyText,
   COPY_STATUS_RESET_MS,
@@ -394,7 +395,6 @@ export default function AnalyzePage() {
       await Promise.all([fetchPortfolio(), fetchWatchlist()]);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return; // 使用者已送出新請求，忽略
-      const message = err instanceof Error ? err.message : "無法連線後端，請確認伺服器已啟動。";
       setResult({
         snapshot: {},
         symbol_name: null,
@@ -417,7 +417,7 @@ export default function AnalyzePage() {
         data_confidence: null,
         is_final: true,
         intraday_disclaimer: null,
-        errors: [{ code: "NETWORK_ERROR", message }],
+        errors: [{ code: "NETWORK_ERROR", message: "分析服務連線失敗" }],
       });
     } finally {
       setLoading(false);
@@ -518,7 +518,7 @@ export default function AnalyzePage() {
     <div className="space-y-6">
       {firstError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <span className="font-semibold">[{firstError.code}]</span> {firstError.message}
+          {formatAnalysisError(firstError)}
         </div>
       )}
 

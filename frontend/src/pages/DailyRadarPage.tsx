@@ -9,6 +9,11 @@ import {
 } from "../lib/dailyRadarApi";
 import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
 import {
+  formatDataMissingReason,
+  formatMarketDataset,
+  formatPriceAdjustmentMode,
+} from "../lib/presentationLabels";
+import {
   DAILY_RADAR_BUCKETS,
   type DailyRadarBucket,
   type DailyRadarCandidate,
@@ -73,12 +78,6 @@ const PHASE1_AVWAP_ANCHOR_REFERENCE_LABEL: Record<string, string> = {
   entry: "持股進場日 AVWAP",
 };
 
-const PHASE1_AVWAP_MISSING_REASON_LABEL: Record<string, string> = {
-  phase1_snapshot_missing: "尚無試驗版快照",
-  phase1_snapshot_stale: "試驗版快照已過期",
-  phase1_snapshot_read_failed: "試驗版快照讀取失敗",
-};
-
 const RUN_STATUS_LABEL: Record<DailyRadarRunStatus, string> = {
   completed: "掃描完成",
   running: "掃描中",
@@ -132,7 +131,7 @@ const DATA_SOURCE_LABEL: Record<string, string> = {
 };
 
 function formatDataSourceLabel(source: string): string {
-  return DATA_SOURCE_LABEL[source] ?? `其他資料來源（${source}）`;
+  return DATA_SOURCE_LABEL[source] ?? "其他資料來源";
 }
 
 function isTraceRecord(value: unknown): value is Record<string, unknown> {
@@ -331,20 +330,19 @@ const MATCHED_RULE_VALUE_LABEL: Record<string, string> = {
 };
 
 function formatBackgroundContextType(value: string): string {
-  return BACKGROUND_CONTEXT_TYPE_LABEL[value] ?? formatTraceKey(value);
+  return BACKGROUND_CONTEXT_TYPE_LABEL[value] ?? "其他背景資料";
 }
 
 function formatBackgroundFreshness(value: string): string {
-  return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? formatMatchedRuleValue(value);
+  return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? "狀態未明";
 }
 
 function formatPhase1AvwapFreshness(value: string): string {
-  return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? formatMatchedRuleValue(value);
+  return BACKGROUND_CONTEXT_FRESHNESS_LABEL[value] ?? "狀態未明";
 }
 
 function formatPhase1AvwapMissingReason(reason: string | null | undefined): string {
-  if (!reason) return "資料不足";
-  return PHASE1_AVWAP_MISSING_REASON_LABEL[reason] ?? reason;
+  return formatDataMissingReason(reason, "AVWAP 資料不足");
 }
 
 function backgroundLabelClass(label: DailyRadarBackgroundContextLabel): string {
@@ -780,7 +778,7 @@ function BackgroundContextLabels({ labels }: { labels: DailyRadarBackgroundConte
               <p className="mt-3 text-sm leading-relaxed text-current">{getBackgroundContextUse(label)}</p>
               <p className="mt-2 text-xs opacity-70">
                 資料日期：{formatDate(label.as_of_date)}
-                {label.missing_reason ? `，缺資料原因：${label.missing_reason}` : ""}
+                {label.missing_reason ? `，缺資料原因：${formatDataMissingReason(label.missing_reason)}` : ""}
               </p>
             </article>
           ))
@@ -865,11 +863,13 @@ function Phase1AvwapContextPanel({ candidate }: { candidate: DailyRadarCandidate
             </div>
             <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
               <p className="text-xs font-medium text-text-muted">資料集</p>
-              <p className="mt-1 text-sm font-semibold text-text-primary">{context.dataset}</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">{formatMarketDataset(context.dataset)}</p>
             </div>
             <div className="rounded-lg border border-border-subtle bg-surface px-3 py-2">
               <p className="text-xs font-medium text-text-muted">調整模式</p>
-              <p className="mt-1 text-sm font-semibold text-text-primary">{context.adjustment_mode}</p>
+              <p className="mt-1 text-sm font-semibold text-text-primary">
+                {formatPriceAdjustmentMode(context.adjustment_mode)}
+              </p>
             </div>
           </div>
 

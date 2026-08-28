@@ -154,6 +154,31 @@ def test_generate_candidate_explanation_is_deterministic_for_same_payload() -> N
     ]
 
 
+@pytest.mark.parametrize(
+    ("missing_reason", "expected_label"),
+    [
+        ("insufficient_aligned_history", "個股與基準指數可對齊的歷史資料不足"),
+        ("benchmark_stale", "基準指數資料已過期"),
+        ("new_internal_reason", "可用的相對強弱資料不足"),
+    ],
+)
+def test_generate_candidate_explanation_localizes_relative_strength_missing_reason(
+    missing_reason: str,
+    expected_label: str,
+) -> None:
+    candidate = _candidate("support_retest", symbol="2303.TW", name="聯電")
+    candidate["score_breakdown"]["relative_strength"] = {
+        "freshness": "missing",
+        "missing_reason": missing_reason,
+    }
+
+    explanation = generate_candidate_explanation(candidate)
+    evidence = " ".join(explanation["evidence_points"])
+
+    assert expected_label in evidence
+    assert missing_reason not in evidence
+
+
 def test_generated_explanation_copy_uses_observation_language_only() -> None:
     explanations = [
         generate_candidate_explanation(

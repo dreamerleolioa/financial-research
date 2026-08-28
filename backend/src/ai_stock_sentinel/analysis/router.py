@@ -567,12 +567,13 @@ def analyze(
 
     try:
         result: dict[str, Any] = invoke_graph(graph, initial_state)
-    except Exception as exc:
+    except Exception:
+        logger.exception("analyze_graph_failed", extra={"symbol": payload.symbol})
         return AnalyzeResponse(
             errors=[
                 AnalyzeResponse.ErrorDetail(
                     code="ANALYZE_RUNTIME_ERROR",
-                    message=str(exc),
+                    message="分析暫時無法完成，請稍後再試。",
                 )
             ]
         )
@@ -697,12 +698,13 @@ def analyze_position(
 
     try:
         result: dict[str, Any] = invoke_graph(graph, initial_state)
-    except Exception as exc:
+    except Exception:
+        logger.exception("position_analyze_graph_failed", extra={"symbol": payload.symbol})
         return AnalyzeResponse(
             errors=[
                 AnalyzeResponse.ErrorDetail(
                     code="ANALYZE_RUNTIME_ERROR",
-                    message=str(exc),
+                    message="持倉分析暫時無法完成，請稍後再試。",
                 )
             ]
         )

@@ -162,6 +162,7 @@ Query key 由 `frontend/src/features/portfolio/queryKeys.ts` 集中定義：
 - 缺少 `technical_profile` 時，面板 fallback 為 legacy raw 技術指標值，不顯示分層結論。
 - 缺少 raw `technical_indicators` 時，面板保留分層摘要可見性，並在完整指標值區顯示資料不足提示。
 - 分層 signal row 只顯示中文狀態與 impact，不顯示 backend reason 原文；完整推理仍保留在 API trace，不作預設 UI 噪音。
+- Analyze、Watchlist、Daily Radar 與 copy-to-AI 的資料缺口文案統一經 `frontend/src/lib/presentationLabels.ts` 轉換；未知 `missing_reason` 只顯示中性的資料不足說明，不得把 snake_case 代碼直接顯示在主要 UI。Analyze `errors[]` 仍保留 code 供 trace，但錯誤橫幅只顯示穩定的使用者文案，不顯示 `[ERROR_CODE]`、provider 名稱或 exception message。AVWAP 的 dataset 與 adjustment mode 也需轉成可讀名稱。
 - `technical_profile.data_quality.is_final === false` 或 response `is_final === false` 時，前端需顯示盤中 caveat，不能當成完整收盤判斷。
 - `technical_profile.data_quality.ohlcv_aligned === false` 時，支撐壓力相關分層需顯示 caveat；前端不得自行補 high/low 或推算支撐壓力分數。
 - 前端只顯示 data-quality caveat，不直接顯示 backend `technical_profile.caveats` 的內部分層規則提醒；這些 rule trace 留在 API/debug contract。

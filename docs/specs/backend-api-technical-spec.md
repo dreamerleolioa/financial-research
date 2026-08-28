@@ -2160,6 +2160,8 @@ Alembic migration `f7a8b9c0d1e2_backfill_tdcc_weekly_holders_v2_payload.py` 是 
 }
 ```
 
+未預期例外的完整內容只能寫入 backend log；API `message` 必須使用穩定且不含 provider、連線細節、憑證或 stack trace 的使用者文案。Frontend 依 `code` 轉成顯示文字，不能直接呈現未知 code 或原始 `message`。
+
 目前錯誤碼定義：
 
 - `ANALYZE_RUNTIME_ERROR`：graph 執行期間拋出未預期例外

@@ -35,10 +35,11 @@ export class DailyRadarApiError extends Error implements DailyRadarDisplayError 
 
 export function toDailyRadarDisplayError(error: unknown): DailyRadarDisplayError {
   if (error instanceof DailyRadarApiError) {
-    return { message: error.message, status: error.status, detail: error.detail };
-  }
-  if (error instanceof Error) {
-    return { message: error.message };
+    return {
+      message: "Daily Radar 觀察資料讀取失敗，請稍後再試。",
+      status: error.status,
+      detail: error.detail,
+    };
   }
   return { message: "Daily Radar 觀察資料讀取失敗，請稍後再試。" };
 }

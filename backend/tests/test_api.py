@@ -242,6 +242,8 @@ def test_analyze_graph_exception_returns_error_code() -> None:
     assert body["snapshot"] == {}
     assert body["analysis"] == ""
     assert body["errors"][0]["code"] == "ANALYZE_RUNTIME_ERROR"
+    assert body["errors"][0]["message"] == "分析暫時無法完成，請稍後再試。"
+    assert "yfinance" not in body["errors"][0]["message"]
 
 
 def test_analyze_missing_snapshot_returns_traceable_error() -> None:

@@ -97,7 +97,8 @@ def test_crawl_node_accumulates_errors_on_failure() -> None:
     assert len(result["errors"]) == 2
     assert result["errors"][0]["code"] == "PRIOR_ERROR"
     assert result["errors"][1]["code"] == "CRAWL_ERROR"
-    assert "network timeout" in result["errors"][1]["message"]
+    assert result["errors"][1]["message"] == "無法取得市場快照，請稍後再試。"
+    assert "network timeout" not in result["errors"][1]["message"]
 
 
 # ── fetch_institutional_node ─────────────────────────────────────────────────

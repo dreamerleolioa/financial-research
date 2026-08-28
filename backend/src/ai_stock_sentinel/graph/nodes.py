@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import date
@@ -12,6 +13,9 @@ from ai_stock_sentinel.analysis.strategy_generator import calculate_action_plan_
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.state import GraphState
 from ai_stock_sentinel.technical.profile import build_technical_profile_from_snapshot
+
+
+logger = logging.getLogger(__name__)
 
 
 def _pct_distance(value: float | None, reference: float | None) -> float | None:
@@ -120,10 +124,12 @@ def crawl_node(state: GraphState, *, crawler: YFinanceCrawler) -> dict[str, Any]
     try:
         snapshot = crawler.fetch_basic_snapshot(symbol=state["symbol"])
         return {"snapshot": asdict(snapshot), "errors": []}
-    except Exception as exc:
+    except Exception:
+        logger.exception("market_snapshot_fetch_failed", extra={"symbol": state["symbol"]})
         return {
             "snapshot": None,
-            "errors": state["errors"] + [{"code": "CRAWL_ERROR", "message": str(exc)}],
+            "errors": state["errors"]
+            + [{"code": "CRAWL_ERROR", "message": "無法取得市場快照，請稍後再試。"}],
         }
 
 

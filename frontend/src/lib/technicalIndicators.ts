@@ -1,5 +1,6 @@
 import type { AnalyzeResponse, ChipStabilityContext, Phase1Observation, TechnicalIndicators } from "./analysisTypes";
 import { formatPrice, formatVolume } from "./formatters";
+import { formatDataMissingReason } from "./presentationLabels";
 
 export type CopyStatus = "idle" | "success" | "error";
 
@@ -105,13 +106,6 @@ const PHASE1_ANCHOR_LABEL: Record<string, string> = {
   entry: "持股進場日 AVWAP",
 };
 
-const PHASE1_MISSING_REASON_LABEL: Record<string, string> = {
-  not_in_phase1_universe: "不在試驗版管理範圍",
-  phase1_snapshot_missing: "尚無試驗版快照",
-  phase1_snapshot_stale: "試驗版快照已過期",
-  phase1_snapshot_read_failed: "試驗版快照讀取失敗",
-};
-
 const TECHNICAL_LABELS = {
   bollinger_position: BOLLINGER_POSITION_LABEL,
   macd_bias: MACD_BIAS_LABEL,
@@ -208,8 +202,7 @@ function formatPhase1Distance(value: number | null | undefined): string {
 }
 
 function formatPhase1MissingReason(reason: string | null | undefined): string {
-  if (!reason) return "資料不足";
-  return PHASE1_MISSING_REASON_LABEL[reason] ?? reason;
+  return formatDataMissingReason(reason, "AVWAP 資料不足");
 }
 
 function buildPhase1AvwapCopyRows(

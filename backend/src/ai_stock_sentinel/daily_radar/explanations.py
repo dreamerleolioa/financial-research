@@ -33,6 +33,15 @@ DEFAULT_RISK_NOTE: Final[dict[str, str]] = {
     "note": "資料更新與大盤波動仍需納入隔日觀察。",
 }
 
+RELATIVE_STRENGTH_MISSING_REASON_LABEL: Final[dict[str, str]] = {
+    "candidate_price_history_missing": "個股價格歷史不足",
+    "benchmark_price_history_missing": "基準指數價格歷史不足",
+    "benchmark_data_date_missing": "基準指數缺少資料日期",
+    "benchmark_stale": "基準指數資料已過期",
+    "insufficient_aligned_history": "個股與基準指數可對齊的歷史資料不足",
+    "invalid_aligned_price_history": "個股與基準指數的對齊價格資料無效",
+}
+
 
 def generate_candidate_explanation(candidate: Mapping[str, Any]) -> dict[str, Any]:
     primary_bucket = _known_bucket(candidate.get("primary_bucket"))
@@ -103,7 +112,12 @@ def _evidence_points(
         direction = "高於" if relative_value >= 0 else "低於"
         evidence.append(f"相對表現：近 {relative_strength.get('lookback_days')} 個可對齊交易日{direction} {benchmark_symbol} {abs(relative_value) * 100:.2f} 個百分點。")
     elif relative_strength.get("missing_reason"):
-        evidence.append(f"相對表現：資料不足，原因為 {relative_strength.get('missing_reason')}。")
+        missing_reason = str(relative_strength.get("missing_reason"))
+        reason_label = RELATIVE_STRENGTH_MISSING_REASON_LABEL.get(
+            missing_reason,
+            "可用的相對強弱資料不足",
+        )
+        evidence.append(f"相對表現：資料不足，原因為{reason_label}。")
 
     cross_confirmation = _number(score_breakdown.get("cross_confirmation"))
     if cross_confirmation is not None:
