@@ -137,6 +137,72 @@ def test_daily_radar_internal_auth_accepts_x_internal_token(monkeypatch) -> None
     assert response.json() == {"status": "ok"}
 
 
+def test_symbol_metadata_resolver_reads_official_industry_classification() -> None:
+    from ai_stock_sentinel.data_sources.symbol_metadata import SymbolMetadataResolver
+
+    def fake_get(url: str, **_kwargs):
+        if url.endswith("/exchangeReport/STOCK_DAY_ALL"):
+            return [{"Code": "2330", "Name": "台積電"}]
+        if url.endswith("/opendata/t187ap03_L"):
+            return [{"公司代號": "2330", "公司簡稱": "台積電", "產業別": "24"}]
+        if url.endswith("/tpex_mainboard_daily_close_quotes"):
+            return [{"SecuritiesCompanyCode": "6488", "SecuritiesCompanyName": "環球晶"}]
+        if url.endswith("/mopsfin_t187ap03_O"):
+            return [
+                {
+                    "SecuritiesCompanyCode": "6488",
+                    "CompanyAbbreviation": "環球晶",
+                    "SecuritiesIndustryCode": "24",
+                }
+            ]
+        raise AssertionError(f"unexpected URL: {url}")
+
+    resolver = SymbolMetadataResolver(request_get=fake_get)
+
+    assert resolver.resolve_industry("2330.TW") == "半導體業"
+    assert resolver.resolve_industry("6488.TWO") == "半導體業"
+
+
+def test_fetch_fundamental_data_adds_official_industry_to_serialized_contract(
+    monkeypatch,
+) -> None:
+    from ai_stock_sentinel.data_sources.fundamental import tools as fundamental_tools
+
+    provider = SimpleNamespace(
+        fetch=lambda _symbol, _current_price: FundamentalData(
+            symbol="2330.TW",
+            ttm_eps=40,
+        )
+    )
+    monkeypatch.setattr(
+        fundamental_tools,
+        "FinMindFundamentalProvider",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        fundamental_tools,
+        "resolve_symbol_industry",
+        lambda _symbol: "半導體業",
+    )
+
+    result = fundamental_tools.fetch_fundamental_data("2330.TW", 1000)
+
+    assert result["industry"] == "半導體業"
+
+
+def test_daily_radar_industry_failure_log_does_not_expose_symbol(caplog) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    def raise_provider_error(_symbol: str) -> str | None:
+        raise RuntimeError("provider unavailable")
+
+    assert daily_radar_router._safe_resolve_industry(
+        "2330.TW",
+        resolver=raise_provider_error,
+    ) is None
+    assert "2330" not in caplog.text
+
+
 class FakeUniverseProvider:
     name = "twse_rwd"
 
@@ -537,6 +603,11 @@ def _api_client(
 
     monkeypatch.setattr(daily_radar_router, "run_daily_radar", fake_run_daily_radar)
     monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 1))
+    monkeypatch.setattr(
+        daily_radar_router,
+        "resolve_symbol_industry",
+        lambda symbol: "半導體業" if symbol in {"2330.TW", "2454.TW"} else None,
+    )
     api.app.dependency_overrides[get_db] = lambda: db_session
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
@@ -2238,6 +2309,7 @@ def test_daily_radar_refresh_managed_raw_data_covers_holdings_without_exposing_s
     ).all()
     assert {row.symbol for row in rows} == {"2330.TW", "2454.TW"}
     assert all(row.raw_data_is_final for row in rows)
+    assert all(row.fundamental["industry"] == "半導體業" for row in rows)
     daily_radar_db_session.refresh(prepared)
     managed_status = prepared.step_statuses["refresh-managed-raw-data"]
     assert managed_status["status"] == "completed"
@@ -2721,11 +2793,13 @@ def test_ai_fundamental_materialization_clears_future_values_for_historical_as_o
         [row],
         provider=MissingPointInTimeFundamentalProvider(),
         as_of_date=date(2026, 6, 1),
+        industry_resolver=lambda _symbol: "半導體業",
     )
 
     assert errors == []
     assert row.fundamental["ttm_eps"] is None
     assert row.fundamental["pe_current"] is None
+    assert row.fundamental["industry"] == "半導體業"
     assert row.fundamental["margin"] == {"margin_delta_pct": 2.0, "margin_to_volume": 0.3}
     assert row.fundamental["data_dates"] == {
         "margin": "2026-06-01",

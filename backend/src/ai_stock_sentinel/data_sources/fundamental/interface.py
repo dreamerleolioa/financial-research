@@ -22,6 +22,7 @@ class FundamentalData:
     yield_signal: str = "unknown"              # "high_yield" | "mid_yield" | "low_yield" | "unknown"
 
     # 元資料
+    industry: str | None = None                 # TWSE/TPEx 官方證券產業分類
     source_provider: str = ""
     warnings: list[str] = field(default_factory=list)
 

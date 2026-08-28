@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from datetime import date, timedelta
 from typing import Any, Literal
@@ -16,6 +16,7 @@ from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.data_sources.fundamental.interface import PointInTimeFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_industry
 from ai_stock_sentinel.daily_radar.data_quality import (
     margin_evidence_is_complete,
     missing_daily_radar_candidate_technical_fields,
@@ -831,12 +832,20 @@ def refresh_daily_radar_managed_raw_data_endpoint(
         symbols=selection.symbols,
     )
     reusable_before = reusable_daily_radar_raw_rows(existing_rows)
+    # Industry metadata is public network I/O. Release the read transaction
+    # before resolving it, then apply the in-memory mapping to persisted rows.
+    db.rollback()
+    industries_by_symbol = _industry_classifications_by_symbol(selection.symbols)
     try:
         refreshed_rows = ensure_daily_radar_raw_rows(
             db,
             run_date,
             selection.symbols,
             technical_fetcher=technical_fetcher,
+        )
+        _materialize_industry_classifications(
+            refreshed_rows,
+            resolver=industries_by_symbol.get,
         )
     except Exception as exc:
         logger.error(
@@ -943,6 +952,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
     }
     # Do not hold a database transaction open while external providers run.
     db.rollback()
+    industries_by_symbol = _industry_classifications_by_symbol(symbols)
     try:
         if isinstance(institutional_provider, OfficialInstitutionalEvidenceProvider):
             evidence_result = institutional_provider.fetch(
@@ -1021,6 +1031,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
         pool_rows,
         provider=fundamental_provider,
         as_of_date=run_date,
+        industry_resolver=industries_by_symbol.get,
     )
     db.flush()
     refreshed_rows = [
@@ -1936,6 +1947,7 @@ def _materialize_ai_business_fundamentals(
     *,
     provider: PointInTimeFundamentalProvider,
     as_of_date: date,
+    industry_resolver: Callable[[str], str | None] | None = None,
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     for row in rows:
@@ -1968,12 +1980,60 @@ def _materialize_ai_business_fundamentals(
             "source_provider": data.source_provider,
             "warnings": list(data.warnings),
         }
+        industry = data.industry or _safe_resolve_industry(
+            row.symbol,
+            resolver=industry_resolver,
+        )
+        if industry:
+            projected["industry"] = industry
         existing.update(projected)
         data_dates = dict(_mapping(existing.get("data_dates")))
         data_dates["fundamental"] = as_of_date.isoformat()
         existing["data_dates"] = data_dates
         row.fundamental = existing
     return errors
+
+
+def _materialize_industry_classifications(
+    rows: Iterable[Any],
+    *,
+    resolver: Callable[[str], str | None] | None = None,
+) -> None:
+    for row in rows:
+        industry = _safe_resolve_industry(row.symbol, resolver=resolver)
+        if not industry:
+            continue
+        fundamental = dict(_mapping(row.fundamental))
+        fundamental["industry"] = industry
+        row.fundamental = fundamental
+
+
+def _industry_classifications_by_symbol(
+    symbols: Iterable[str],
+    *,
+    resolver: Callable[[str], str | None] | None = None,
+) -> dict[str, str]:
+    classifications: dict[str, str] = {}
+    for symbol in symbols:
+        industry = _safe_resolve_industry(symbol, resolver=resolver)
+        if industry:
+            classifications[symbol] = industry
+    return classifications
+
+
+def _safe_resolve_industry(
+    symbol: str,
+    *,
+    resolver: Callable[[str], str | None] | None = None,
+) -> str | None:
+    try:
+        return (resolver or resolve_symbol_industry)(symbol)
+    except Exception as exc:
+        logger.warning(
+            "Official industry classification unavailable error_type=%s",
+            exc.__class__.__name__,
+        )
+        return None
 
 
 def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
