@@ -5,7 +5,7 @@
 > 狀態：Draft v1.6
 > 定位：將單次診斷系統升級為具備記憶、自我修正能力的閉環量化平台
 > 前置依賴：Phase 6 持股診斷系統（`POST /analyze/position`）完成
-> 退役說明（2026-08-28）：本文件的 LLM 分析、新聞清潔與 token 成本段落只保留歷史脈絡。現行自動化、Analyze、Position 與 Daily Radar 均為 deterministic workflow，不呼叫模型 provider。
+> 退役說明（2026-08-28）：本文件的 LLM 分析、新聞清潔、token 成本與舊外部調度設計只保留歷史脈絡。現行自動化由 GitHub Actions 與後端 managed endpoints 負責；Analyze、Position 與 Daily Radar 均為 deterministic workflow，不呼叫模型 provider。
 
 ---
 
@@ -17,7 +17,7 @@ Phase 1–6 完成了從市場偵察到持股診斷的核心分析能力，但�
 
 > **讓系統記住昨天說了什麼，並在今天說出更聰明的話。**
 
-透過引入 **n8n（自動化調度中樞）** 與 **Self-hosted PostgreSQL（數據持久化中心）**，系統將從單點分析進化為：
+透過 **GitHub Actions（排程與執行紀錄）**、**FastAPI managed endpoints（資料準備邊界）** 與 **Self-hosted PostgreSQL（數據持久化中心）**，系統將從單點分析進化為：
 
 | 能力層級 | Phase 1–6（現況）    | Phase 7+（目標）       |
 | -------- | -------------------- | ---------------------- |
@@ -250,14 +250,14 @@ CREATE INDEX idx_raw_institutional_gin ON stock_raw_data USING GIN (institutiona
 
 來源一：兩支分析端點在 `graph.invoke` 完成後順帶寫入。
 
-來源二：n8n Workflow A 於收盤後批次抓取原始資料，將 `stock_raw_data.raw_data_is_final` 寫為 `TRUE`。
+來源二：GitHub Actions 於收盤後呼叫 `refresh-managed-raw-data`，針對 active positions 與近期分析標的補齊原始資料，將 `stock_raw_data.raw_data_is_final` 寫為 `TRUE`。
 
 **語義拆分**：
 
 - `raw_data_is_final`：表示原始資料已是收盤後版本
 - `analysis_is_final`：表示分析文本 / 信心分數 / 建議欄位已依收盤後資料重新產出
 
-n8n Workflow A 只保證 `stock_raw_data` 在收盤後被補齊成 final，不負責批次重跑所有股票的 LLM 分析。是否將某日分析升級為 `analysis_is_final = TRUE`，由使用者查詢該日分析結果或未來額外的熱區批次 finalize 流程決定。
+`refresh-managed-raw-data` 只保證 managed symbol universe 的 `stock_raw_data` 在收盤後被補齊成 final，不負責改寫 Daily Radar membership 或批次重跑分析。是否將某日分析升級為 `analysis_is_final = TRUE`，由使用者查詢該日分析結果或其他明確的 finalize 流程決定。
 
 ---
 
@@ -342,8 +342,8 @@ CREATE INDEX idx_cache_indicators_gin
       ▲
       │ 使用者查詢時若有持倉，分析結果同步寫入 daily_analysis_log
       │
-    │ 每日 18:30 cron（只更新收盤後原始數據）
-    └─ n8n 更新 stock_raw_data.raw_data_is_final = TRUE
+    │ 每個開市日 22:40 managed refresh（只更新收盤後原始數據）
+    └─ GitHub Actions 呼叫後端，更新 stock_raw_data.raw_data_is_final = TRUE
 ```
 
 **關鍵行為**：
@@ -352,7 +352,7 @@ CREATE INDEX idx_cache_indicators_gin
 - **分析快取跨使用者共用**：`stock_analysis_cache` 不含 `user_id`，同一股票同一天的分析結果全體使用者共享，不重複燒 LLM token
 - **原始股票資料跨端點共用**：`/analyze/position` 與 `/analyze` 應優先讀取 `stock_raw_data` 的同日資料，共用技術面 / 籌碼面 / 基本面 payload
 - **持倉寫回**：即時分析完成後，若使用者有該股的 active 持倉，同步寫一筆至 `daily_analysis_log`（含 `user_id`），列表頁立即可見
-- **收盤後資料責任**：n8n Workflow A 必須將 watchlist 的 `stock_raw_data` 補齊為收盤後版本；是否產生 final analysis 不由 n8n 強制負責
+- **收盤後資料責任**：`refresh-managed-raw-data` 必須將 active positions 與近期分析標的的 `stock_raw_data` 補齊為收盤後版本；是否產生 final analysis 不由此 refresh step 強制負責
 
 ### 3.3 即時分析三段式快取邏輯
 
@@ -507,7 +507,7 @@ if has_active_portfolio(current_user.id, payload.symbol, db):
 | 階段                 | 時間範圍      | `raw_data_is_final` | `analysis_is_final` | 快取行為                                                                                      |
 | -------------------- | ------------- | ------------------- | ------------------- | --------------------------------------------------------------------------------------------- |
 | **盤中階段**         | 09:00 – 13:30 | `FALSE`             | `FALSE`             | 當日首位查詢者產生臨時分析，後續同時段查詢直接命中，不重複分析                                |
-| **收盤後未重算分析** | 13:30 之後    | `TRUE`              | `FALSE`             | n8n 可先把 raw data 定稿；若當日沒有人再次查詢，分析仍保留為臨時版本                          |
+| **收盤後未重算分析** | 13:30 之後    | `TRUE`              | `FALSE`             | managed refresh 可先把 raw data 定稿；若當日沒有人再次查詢，分析仍保留為臨時版本              |
 | **收盤後已重算分析** | 13:30 之後    | `TRUE`              | `TRUE`              | 當使用者在收盤後查詢，或未來額外 workflow 針對部分標的做 finalize，才寫入真正可復盤的定稿分析 |
 
 #### API 層判斷邏輯（`POST /analyze/position` / `POST /analyze` L1 檢查）
@@ -568,123 +568,61 @@ L3 觸發（今日尚無 raw data / analysis cache）
 
 ---
 
-## 4. n8n 自動化工作流設計
+## 4. Managed raw-data 自動化工作流
 
 ### 4.1 架構總覽
 
-```
-── Zeabur 專案（同一內網）──────────────────────────────┐
-│                                                        │
-│  n8n                                                   │
-│      └─── 每日數據更新流 (Cron: 每日 18:30)            │
-│               └─── 收集 watchlist → 批次抓原始數據     │
-│                        → HTTP POST /internal/fetch-raw-data
-│                                                        │
-│  FastAPI Backend (AI Stock Sentinel)                   │
-│      ├── POST /analyze/position  （三段式快取邏輯）     │
-│      └── POST /internal/fetch-raw-data（n8n cron 呼叫）│
-│                                                        │
-│  PostgreSQL (Zeabur)                                   │
-│      ├── user_portfolio                                │
-│      ├── stock_raw_data          ← 原始數據快取        │
-│      ├── stock_analysis_cache    ← 分析結果快取（跨使用者共用）
-│      └── daily_analysis_log      ← 持倉歷史（含 user_id）
-│                                                        │
-└────────────────────────────────────────────────────────┘
+```text
+GitHub Actions（開市日 22:40）
+    │
+    ├─ 解析並固定 intended run_date
+    ├─ 以 DAILY_RADAR_INTERNAL_TOKEN 呼叫 FastAPI
+    ▼
+POST /internal/daily-radar/refresh-managed-raw-data
+    │
+    ├─ active positions 優先
+    ├─ 合併 run_date 前 30 日內的分析 cache
+    ├─ 去重並限制最多 250 個 symbols
+    └─ 應用程式統一抓取、分類與持久化 final raw rows
+    ▼
+PostgreSQL / stock_raw_data
 ```
 
-**傳輸效率**：n8n、FastAPI、PostgreSQL 同在 Zeabur 內網，數據交換不經公網，無額外隧道建立開銷，延遲最低且安全性最高。
+排程設定、執行紀錄與 retry surface 由 GitHub Actions 管理；股票選取、外部 provider 呼叫、資料驗證與 transaction 則由 FastAPI application service 負責。workflow 不持有資料庫寫入權限，也不直接組合 SQL。
 
 ---
 
-### 4.2 工作流 A：每日數據更新流
+### 4.2 每日 managed refresh
 
-**觸發條件**：Cron 表達式 `30 18 * * 1-5`（台灣時間，週一至週五收盤後）
+**觸發條件**：`.github/workflows/daily-radar.yml` 在台灣市場開市日 22:40 執行；手動維護時可指定 `run_date` 與 `refresh-managed-raw-data` step。
 
-**定位調整**：此流程只負責收盤後 raw data 定稿，不批次重跑所有當日分析。
+**責任邊界**：
 
-- 預拉收盤後 raw data，寫入 `stock_raw_data`
-- 將 `stock_raw_data.raw_data_is_final` 寫為 `TRUE`
-- 不主動覆寫 `stock_analysis_cache` 或 `daily_analysis_log` 的分析結果
+- 以 active positions 為最高優先，補齊實際持倉需要的 final raw data。
+- 合併近 30 日分析 cache，維持近期研究標的的資料可用性。
+- 若 symbol 已屬同日 Daily Radar selected universe，計入 overlap；已存在且合格的同日 final row 則直接重用。
+- 只更新 `stock_raw_data`，不改 selected symbols、universe tracks、scoring membership 或 canonical candidates。
+- 不主動覆寫 `stock_analysis_cache` 或 `daily_analysis_log` 的分析結果。
 
-換言之，收盤後的 n8n 流程負責完成「資料定稿」，不是強制完成「分析定稿」。
-
-**完整節點設計**
-
-```
-[Cron Trigger] 30 18 * * 1-5
-    │
-    ▼
-[Postgres Node] 收集 watchlist
-    Query:
-        SELECT DISTINCT symbol FROM user_portfolio WHERE is_active = TRUE
-        UNION
-        SELECT DISTINCT symbol FROM stock_analysis_cache
-        WHERE record_date >= CURRENT_DATE - 30  -- 近 30 天被查過的
-    │
-    ▼
-[Split In Batches] ── 每批 1 筆
-    │
-    ▼
-[HTTP Request Node] ── 呼叫後端原始數據抓取端點
-    POST /internal/fetch-raw-data
-    Body: { "symbol": "{{ $json.symbol }}", "date": "today" }
-    │
-    ▼
-[Wait Node] ── 1 秒（避免外部 API 速率限制）
-```
-
-**補充規則**：
-
-- Workflow A 不應為了壓低未定稿比例而批次重跑全部股票的 LLM 分析，避免固定的高額 token 成本。
-- 若未來產品需要，可新增獨立的 Workflow B，只針對 active 持倉或熱門股票批次產生 final analysis。
-- 即使某日只有 `raw_data_is_final = TRUE`，沒有 `analysis_is_final = TRUE`，也屬於合法且預期的狀態。
+`raw_data_is_final = TRUE` 且 `analysis_is_final = FALSE` 仍是合法狀態：前者代表收盤資料已定稿，後者代表當日分析沒有因這個 refresh step 被重新產生。
 
 ---
 
-### 4.3 n8n 批次寫入規範（Network Efficiency）
+### 4.3 執行與隱私契約
 
-> **背景**：n8n 與 PostgreSQL 同在 Zeabur 內網，雖然無隧道開銷，逐筆（row-by-row）`INSERT` 仍會造成不必要的往返次數。批次合併寫入是基本的效能規範。
+workflow 與 API response 只允許輸出下列聚合欄位：
 
-#### 批次寫入規範
+- `target_symbol_count`
+- `active_symbol_count`
+- `recent_analysis_symbol_count`
+- `selected_overlap_count`
+- `reused_record_count`
+- `records_written`
+- `missing_record_count`
+- `deferred_recent_symbol_count`
+- `error_codes`
 
-**禁止做法**：在 n8n 的迴圈中對 `stock_raw_data` 逐筆執行 `INSERT`：
-
-```sql
--- ❌ 禁止：每筆一次 INSERT，100 筆 = 100 次往返
-INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2330.TW', '2026-03-12', '{}');
-INSERT INTO stock_raw_data (symbol, record_date, technical) VALUES ('2454.TW', '2026-03-12', '{}');
--- ...
-```
-
-**正確做法**：在 n8n 使用 **Execute Query 節點**，將多筆資料合併為單一 `INSERT ... VALUES` 語句：
-
-```sql
--- ✅ 正確：N 筆合一次 INSERT
-INSERT INTO stock_raw_data (symbol, record_date, technical, institutional, fetched_at)
-VALUES
-    ('2330.TW', '2026-03-12', '{"rsi_14": 68.5, "close_price": 985.0}'::JSONB, '{}'::JSONB, NOW()),
-    ('2454.TW', '2026-03-12', '{"rsi_14": 55.2, "close_price": 1230.0}'::JSONB, '{}'::JSONB, NOW()),
-    ('2317.TW', '2026-03-12', '{"rsi_14": 72.1, "close_price": 118.5}'::JSONB, '{}'::JSONB, NOW())
-ON CONFLICT (symbol, record_date) DO UPDATE
-    SET technical   = EXCLUDED.technical,
-        institutional = EXCLUDED.institutional,
-        fetched_at  = EXCLUDED.fetched_at;
-```
-
-#### n8n 節點設計要點
-
-| 設定項             | 建議值                         | 原因                                                          |
-| ------------------ | ------------------------------ | ------------------------------------------------------------- |
-| **節點類型**       | Execute Query（非 Insert Row） | Insert Row 為逐筆操作，必須改用 Execute Query 組合多值 INSERT |
-| **Wait Node** 間隔 | 1 秒（每批次後）               | 避免對外部資料來源（yfinance 等）造成速率限制                 |
-
-#### 工作流 A 節點更新
-
-Section 4.2 的 `[Split In Batches]` 設定調整：
-
-- 原設定：每批 1 筆（適合 HTTP Request 節點的速率控制）
-- **原始數據寫入路徑**：改為每批 50 筆 → Function 節點組裝多值 INSERT → Execute Query 節點送出
+不得在 GitHub Actions log 或 API error detail 中輸出持股 symbol。單一 symbol 的 provider failure 應轉成有限且穩定的 error code；整體 step 是 optional，失敗時必須留下 prepared-run status，但不得假裝成功或改變 scoring 必要條件。
 
 ---
 
@@ -981,14 +919,13 @@ correlation_matrix = {
 | P1     | SQLAlchemy 接入（FastAPI）                          | 建立 `User`、`DailyAnalysisLog`、`StockRawData`、`StockAnalysisCache` ORM Model，實作 CRUD | 1 天     |
 | P1     | 三段式快取邏輯實作                                  | `POST /analyze/position` 與 `POST /analyze` 同步加入快取判斷（Section 3.3）                | 1 天     |
 | P1     | 完整回應快取欄位補齊                                | `stock_analysis_cache` 新增 `full_result`，L1 命中時可還原完整 `AnalyzeResponse`           | 0.5 天   |
-| P1     | `POST /internal/fetch-raw-data` 端點                | n8n Workflow A：抓取收盤後原始數據，並將 `raw_data_is_final=TRUE`                          | 0.5 天   |
+| P1     | `POST /internal/daily-radar/refresh-managed-raw-data` | 以 active positions 與近期分析標的為 managed universe，補齊收盤後原始數據                 | 0.5 天   |
 | P1     | `history_loader.py` 實作                            | 昨日上下文讀取服務（Section 5.1）                                                          | 0.5 天   |
 | P1     | 昨日未定稿快取補正                                  | 端點分析前自動 backfill 昨日收盤技術指標，避免歷史上下文讀到盤中快取                       | 0.5 天   |
 | P1     | `GET /portfolio` 端點                               | 提供 active 持倉列表，供前端「我的持股」頁初始化（Section 3.7）                            | 0.5 天   |
 | P1     | `GET /portfolio/{id}/history` 端點                  | 歷史分析 API，從 `daily_analysis_log` 讀取診斷紀錄（Section 3.4）                          | 0.5 天   |
 | P1     | 即時分析結果寫回 DB                                 | 兩支分析端點完成後依序寫入 `stock_analysis_cache` 與 `daily_analysis_log`（Section 3.5）   | 0.5 天   |
-| P1     | n8n 每日數據更新流部署                              | 建立 Workflow A（raw data finalize only）                                                  | 1 天     |
-| P2     | 安全隧道設定（Cloudflare Tunnel）                   | 保護 n8n 至本地 DB 的連線                                                                  | 0.5 天   |
+| P1     | GitHub Actions managed refresh 部署                 | 在開市日 22:40 呼叫 managed endpoint，保存聚合執行結果                                    | 1 天     |
 
 ### Phase 8：邏輯強化（後續規劃）
 
@@ -1017,14 +954,14 @@ correlation_matrix = {
 | 即時分析快取策略            | 三段式快取（分析快取 → 原始數據 → 即時抓取）       | 最大化快取命中率，只在必要時才燒 LLM token                             |
 | 快取回應保真策略            | `stock_analysis_cache.full_result`                 | L1 命中時回傳完整 `AnalyzeResponse`，避免快取命中與首次分析欄位不一致  |
 | 分析快取 user_id            | 不含 user_id（跨使用者共用）                       | 同一股票同一天的分析結果對所有使用者相同，無需重複計算                 |
-| n8n cron 定位               | 收盤後 raw data finalize                           | 保證回測與隔日計算所需資料完整，不強制重跑所有分析                     |
+| managed refresh 定位        | 收盤後 raw data finalize                           | 補齊 managed symbols 的隔日研究資料，不強制重跑所有分析                 |
 | 原始數據更新頻率            | 收盤後每日一次                                     | 系統定位為收盤後復盤，不需盤中即時數據                                 |
 | 昨日快取邊界修正            | 僅補 raw data，不補跑昨日 final analysis           | 確保 `history_loader` 可讀到收盤數據，同時不讓昨日未執行的分析影響隔日 |
 | 即時分析寫回 DB             | 交易日自動 UPSERT                                  | 使用者加入持倉後列表立即有資料，不需等隔天 cron                        |
 | `daily_analysis_log` 唯一鍵 | `(user_id, symbol, record_date)`                   | 不同使用者可各自擁有同一股票的分析紀錄                                 |
 | DB 型別                     | PostgreSQL（JSONB）                                | JSONB GIN 索引支援指標值的高效查詢                                     |
-| 自動化引擎                  | n8n                                                | 低代碼、支援 Postgres Node、Webhook、排程，適合小型量化平台            |
-| 部署環境                    | Zeabur 全雲端（n8n + FastAPI + PostgreSQL 同專案） | 內網通訊零公網暴露，延遲最低，無需安全隧道                             |
+| 自動化引擎                  | GitHub Actions + FastAPI managed endpoints         | 排程、執行紀錄與資料寫入責任分離，且 workflow 設定可隨 repo review     |
+| 部署環境                    | GitHub Actions + Zeabur（FastAPI + PostgreSQL）    | workflow 經 Bearer token 呼叫正式後端，資料持久化由應用程式統一負責    |
 | 歷史數據注入                | DB 查詢後傳入 Prompt                               | 嚴守 Tool Use 原則，LLM 不猜歷史數值                                   |
 | 權重校準流程                | 人工審核後調整                                     | 防止自動調權引入系統性偏差                                             |
 | 出場後的倉位處理            | `is_active = FALSE`（軟刪除）                      | 保留歷史診斷 log 的可追溯性                                            |
@@ -1036,4 +973,4 @@ correlation_matrix = {
 
 ---
 
-_文件版本：v2.0 | 最後更新：2026-03-16 | 變更：改採雙旗標語義：`raw_data_is_final` 與 `analysis_is_final`；n8n Workflow A 僅負責收盤後 raw data finalize，不再強制批次重跑 LLM 分析；保留 5.4 編輯持股與 5.5 刪除持股需求規格。_
+_文件版本：v2.1 | 最後更新：2026-08-28 | 變更：保留 `raw_data_is_final` 與 `analysis_is_final` 雙旗標語義；收盤後 raw data finalize 改由 GitHub Actions 呼叫 managed endpoint，並退役舊外部調度與單一 symbol ingestion endpoint。_

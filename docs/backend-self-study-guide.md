@@ -336,7 +336,6 @@ read_shared_context_for_symbol(
 Internal API：
 
 - Daily Radar run、chip context update、forward validation、rule review 都需要 `DAILY_RADAR_INTERNAL_TOKEN`。
-- 舊的 `/internal/fetch-raw-data` 使用 internal API key dependency。
 
 ---
 
