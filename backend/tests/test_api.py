@@ -1098,6 +1098,7 @@ def test_analyze_position_returns_position_analysis_block() -> None:
     assert pa["risk_state_label"] == "風險狀態穩定"
     assert pa["risk_control_reference"]["reference_type"] == "dynamic_defense_reference"
     assert "recommended_action" in pa["command_language_deprecated"]
+    assert graph.invoke.call_args.args[0]["skip_ai"] is True
 
 
 def test_analyze_position_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
@@ -1859,6 +1860,7 @@ def test_analyze_general_endpoint_reads_only_general_cache(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert calls == [("2330.TW", "general")]
+    assert graph.invoke.call_args.args[0]["skip_ai"] is True
 
 
 def test_analyze_skip_ai_uses_recent_raw_cache_without_symbol_check_or_rewrite(monkeypatch) -> None:

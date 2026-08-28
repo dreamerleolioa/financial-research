@@ -20,13 +20,14 @@ MAX_RETRIES = 3
 def build_graph(
     *,
     crawler: YFinanceCrawler,
-    analyzer: StockAnalyzer,
+    analyzer: StockAnalyzer | None,
     rss_client: RssNewsClient | None = None,
     news_cleaner: FinancialNewsCleaner | None = None,
     institutional_fetcher: Callable[[str], dict[str, Any]] | None = None,
     fundamental_fetcher: Callable[[str, float], dict[str, Any]] | None = None,
     max_retries: int = MAX_RETRIES,
     _force_insufficient: bool = False,
+    llm_enabled: bool = True,
 ):
     """組裝並編譯 LangGraph 狀態機。
 
@@ -35,7 +36,7 @@ def build_graph(
     _force_insufficient: 測試用，強制讓 judge 永遠回傳 insufficient。
     """
     _rss_client = rss_client or RssNewsClient()
-    _news_cleaner = news_cleaner or FinancialNewsCleaner()
+    _news_cleaner = news_cleaner or (FinancialNewsCleaner() if llm_enabled else None)
     _institutional_fetcher = institutional_fetcher or (lambda symbol: fetch_institutional_flow(symbol, days=10))
     _fundamental_fetcher = fundamental_fetcher or fetch_fundamental_data
 

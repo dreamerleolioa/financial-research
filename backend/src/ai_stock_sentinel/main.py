@@ -10,49 +10,22 @@ except ImportError:
     def load_dotenv() -> bool:
         return False
 
-from ai_stock_sentinel.analysis.langchain_analyzer import LangChainStockAnalyzer
-from ai_stock_sentinel.analysis.news_cleaner import FinancialNewsCleaner
-from ai_stock_sentinel.config import configure_logging, load_settings
-from ai_stock_sentinel.data_sources.rss_news_client import RssNewsClient
+from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.builder import build_graph
 
 
 def build_graph_deps():
-    """Return (crawler, analyzer, rss_client, news_cleaner) ready to pass to build_graph()."""
+    """Return graph dependencies without constructing any external LLM client.
+
+    The graph still accepts the legacy dependency tuple during the staged
+    migration, but every application entry point forces deterministic mode.
+    Passing ``None`` for the retired collaborators also makes an accidental
+    model call fail closed instead of using production credentials.
+    """
     load_dotenv()
-    settings = load_settings()
-
-    llm = None
-
-    # 優先用 Anthropic
-    if settings.anthropic_api_key:
-        try:
-            from langchain_anthropic import ChatAnthropic
-            llm = ChatAnthropic(
-                api_key=settings.anthropic_api_key,
-                model=settings.anthropic_model,
-                temperature=0.2,
-            )
-        except ImportError:
-            pass  # langchain-anthropic 未安裝，繼續嘗試 OpenAI
-
-    # Fallback 到 OpenAI
-    if llm is None and settings.openai_api_key:
-        from langchain_openai import ChatOpenAI
-
-        llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            temperature=0.2,
-        )
-
-    analyzer = LangChainStockAnalyzer(llm=llm)
     crawler = YFinanceCrawler()
-    rss_client = RssNewsClient()
-    model_name = settings.anthropic_model if settings.anthropic_api_key else settings.openai_model
-    news_cleaner = FinancialNewsCleaner(model=model_name)
-    return crawler, analyzer, rss_client, news_cleaner
+    return crawler, None, None, None
 
 
 def read_news_input(news_file: str | None, news_text: str | None) -> str | None:
@@ -83,6 +56,7 @@ def main() -> None:
         analyzer=analyzer,
         rss_client=rss_client,
         news_cleaner=news_cleaner,
+        llm_enabled=False,
     )
 
     initial_state = {
@@ -121,6 +95,7 @@ def main() -> None:
         "action_plan": None,
         "fundamental_data": None,
         "fundamental_context": None,
+        "skip_ai": True,
     }
 
     result = graph.invoke(initial_state)

@@ -635,7 +635,7 @@ def _aggregate_cleaned_news(cleaned_items: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any]:
+def analyze_node(state: GraphState, *, analyzer: StockAnalyzer | None) -> dict[str, Any]:
     """執行分析，回傳 analysis_detail (AnalysisDetail) 與向後相容的 analysis (str)。
 
     傳入 technical_context、institutional_context、confidence_score、cross_validation_note
@@ -645,6 +645,12 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
         return {
             "analysis": "AI 分析已跳過，僅顯示基本面與技術指標。",
             "analysis_detail": None,
+        }
+    if analyzer is None:
+        return {
+            "analysis": None,
+            "analysis_detail": None,
+            "errors": state["errors"] + [{"code": "LLM_DISABLED", "message": "LLM analysis is disabled."}],
         }
     snapshot_dict = state["snapshot"]
     if not snapshot_dict:
@@ -720,11 +726,17 @@ def analyze_node(state: GraphState, *, analyzer: StockAnalyzer) -> dict[str, Any
     }
 
 
-def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner) -> dict[str, Any]:
+def clean_node(state: GraphState, *, news_cleaner: FinancialNewsCleaner | None) -> dict[str, Any]:
     """將 news_content 清潔成結構化 cleaned_news；若無 news_content 則跳過。"""
     news_content = state["news_content"]
     if not news_content or state.get("skip_ai"):
         return {"cleaned_news": None, "cleaned_news_items": []}
+    if news_cleaner is None:
+        return {
+            "cleaned_news": None,
+            "cleaned_news_items": [],
+            "errors": state["errors"] + [{"code": "LLM_DISABLED", "message": "LLM news cleaning is disabled."}],
+        }
     try:
         raw_items = state.get("raw_news_items") or []
         if raw_items:

@@ -71,6 +71,16 @@ def test_main_does_not_call_build_agent(capsys):
     )
 
 
+def test_build_graph_deps_does_not_construct_llm_clients() -> None:
+    """The production dependency factory must not initialize an LLM provider."""
+    crawler, analyzer, rss_client, news_cleaner = main_module.build_graph_deps()
+
+    assert crawler is not None
+    assert analyzer is None
+    assert rss_client is None
+    assert news_cleaner is None
+
+
 # ---------------------------------------------------------------------------
 # CLI behaviour: --symbol
 # ---------------------------------------------------------------------------
@@ -262,5 +272,7 @@ def test_main_initial_state_has_required_keys(capsys):
         "technical_context", "institutional_context", "institutional_flow",
         "strategy_type", "entry_zone", "stop_loss", "holding_period",
         "confidence_score", "cross_validation_note",
+        "skip_ai",
     }
     assert required_keys.issubset(state.keys())
+    assert state["skip_ai"] is True

@@ -70,5 +70,7 @@ def build_analyze_initial_state(
         "fundamental_context": cached_fundamental_context,
         "prev_context": prev_context,
         "is_final": now_time >= market_close,
-        "skip_ai": payload.skip_ai,
+        # Retained in GraphState during the staged migration, but application
+        # analysis is now always deterministic regardless of the legacy flag.
+        "skip_ai": True,
     }

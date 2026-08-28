@@ -66,4 +66,5 @@ def build_position_analyze_initial_state(
         "holding_days": None,
         "prev_context": prev_context,
         "is_final": now_time >= market_close,
+        "skip_ai": True,
     }
