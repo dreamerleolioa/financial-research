@@ -33,7 +33,9 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     candidate_forward_validation_benchmark_symbol,
 )
 from ai_stock_sentinel.daily_radar.data_quality import (
+    DAILY_RADAR_REPLAY_INPUT_VERSION,
     margin_evidence_is_complete,
+    missing_current_technical_contract_fields,
     missing_scoring_fields,
     required_institutional_scoring_fields,
 )
@@ -1468,7 +1470,7 @@ def _is_complete_daily_radar_replay_input(
     replay_input = input_snapshot.get("replay_input")
     if not isinstance(replay_input, Mapping):
         return False
-    if replay_input.get("schema_version") != "daily-radar-replay-input-v1":
+    if replay_input.get("schema_version") != DAILY_RADAR_REPLAY_INPUT_VERSION:
         return False
     if not isinstance(replay_input.get("market_context"), Mapping):
         return False
@@ -1531,6 +1533,12 @@ def _is_complete_daily_radar_replay_input(
         margin=margin,
     ):
         return False
+    if missing_current_technical_contract_fields(
+        ohlcv=ohlcv,
+        indicators=indicators,
+        technical_profile=_mapping(record.get("technical_profile")),
+    ):
+        return False
     if not margin_evidence_is_complete(margin):
         return False
     numeric_fields = (
@@ -1556,9 +1564,6 @@ def _is_complete_daily_radar_replay_input(
     ):
         return False
     if not str(institutional_flow.get("flow_state") or ""):
-        return False
-    technical_profile = _mapping(record.get("technical_profile"))
-    if not str(technical_profile.get("version") or ""):
         return False
     data_dates = _mapping(record.get("data_dates"))
     for key in (

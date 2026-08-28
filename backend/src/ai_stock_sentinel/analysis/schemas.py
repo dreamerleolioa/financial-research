@@ -63,6 +63,8 @@ class TechnicalIndicators(BaseModel):
     low_20d: float | None = None
     high_60d: float | None = None
     low_60d: float | None = None
+    prior_high_20d: float | None = None
+    prior_low_20d: float | None = None
     bollinger_upper: float | None = None
     bollinger_mid: float | None = None
     bollinger_lower: float | None = None
@@ -71,6 +73,7 @@ class TechnicalIndicators(BaseModel):
     macd_line: float | None = None
     macd_signal: float | None = None
     macd_hist: float | None = None
+    macd_hist_pct: float | None = None
     macd_bias: str | None = None
     kd_k: float | None = None
     kd_d: float | None = None

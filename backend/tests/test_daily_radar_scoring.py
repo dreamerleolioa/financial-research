@@ -153,6 +153,23 @@ def _market_context_with_benchmark(closes: list[float]) -> dict[str, Any]:
     return market_context
 
 
+def _scaled_price_record(record: dict[str, Any], factor: float) -> dict[str, Any]:
+    scaled = deepcopy(record)
+    for key in ("open", "high", "low", "close", "previous_close"):
+        scaled["ohlcv"][key] *= factor
+    for key in (
+        "ma5",
+        "ma20",
+        "ma60",
+        "macd_histogram",
+        "atr14",
+        "support_level",
+        "resistance_level",
+    ):
+        scaled["indicators"][key] *= factor
+    return scaled
+
+
 def _assert_score_contract(result: dict[str, Any]) -> None:
     assert set(result["bucket_scores"]) == set(DAILY_RADAR_BUCKETS)
     assert 0 <= result["observation_score"] <= 100
@@ -169,6 +186,26 @@ def _assert_score_contract(result: dict[str, Any]) -> None:
         "risk_adjustment",
         "observation_score",
     } <= set(result["score_breakdown"])
+
+
+def test_macd_threshold_rules_are_invariant_to_stock_price_scale() -> None:
+    base = deepcopy(_joined_records_by_symbol()["3034.TW"])
+    base["indicators"].pop("macd_hist_pct", None)
+    scaled = _scaled_price_record(base, 10.0)
+
+    base_result = score_daily_radar_record(base, market_context=_market_context())
+    scaled_result = score_daily_radar_record(scaled, market_context=_market_context())
+
+    assert scaled_result["bucket_scores"]["bottoming_reversal"] == base_result["bucket_scores"]["bottoming_reversal"]
+    assert scaled_result["bucket_scores"]["support_retest"] == base_result["bucket_scores"]["support_retest"]
+    expected_pct = base["indicators"]["macd_histogram"] / base["ohlcv"]["close"] * 100
+    for rule_id in ("bottoming_macd_improving", "support_retest_macd_stable"):
+        base_rule = next(rule for rule in base_result["matched_rules"] if rule["rule_id"] == rule_id)
+        scaled_rule = next(rule for rule in scaled_result["matched_rules"] if rule["rule_id"] == rule_id)
+        assert base_rule["details"]["macd_hist_pct"] == pytest.approx(expected_pct)
+        assert scaled_rule["details"]["macd_hist_pct"] == pytest.approx(
+            base_rule["details"]["macd_hist_pct"]
+        )
 
 
 def test_daily_radar_fixtures_load_from_local_json_files_without_network(monkeypatch) -> None:
@@ -543,10 +580,10 @@ def test_daily_radar_scoring_preserves_traceable_bucket_rules_and_breakdown() ->
     assert breakdown["risk_penalties"] == []
     assert result["data_dates"]["market_index"] == "2026-05-29"
     assert result["input_snapshot"]["market_context"]["regime"] == "constructive"
-    assert result["scoring_version"] == "daily-radar-scoring-v2.5"
-    assert result["rule_version"] == "daily-radar-rules-v2.4"
-    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.5"
-    assert breakdown["rule_version"] == "daily-radar-rules-v2.4"
+    assert result["scoring_version"] == "daily-radar-scoring-v2.6"
+    assert result["rule_version"] == "daily-radar-rules-v2.5"
+    assert breakdown["scoring_version"] == "daily-radar-scoring-v2.6"
+    assert breakdown["rule_version"] == "daily-radar-rules-v2.5"
 
 
 def test_daily_radar_counterfactual_exclusion_uses_same_input_without_mutating_default_score() -> None:
@@ -646,11 +683,11 @@ def test_daily_radar_scoring_applies_relative_strength_component_and_replayable_
     assert result["data_dates"]["relative_strength"] == "2026-05-29"
     assert result["input_snapshot"]["relative_strength"] == relative_strength
     assert result["input_snapshot"]["versions"] == {
-        "scoring_version": "daily-radar-scoring-v2.5",
-        "rule_version": "daily-radar-rules-v2.4",
+        "scoring_version": "daily-radar-scoring-v2.6",
+        "rule_version": "daily-radar-rules-v2.5",
         "config_version": "daily-radar-scoring-config-v1",
     }
-    assert result["input_snapshot"]["replay_input"]["schema_version"] == "daily-radar-replay-input-v1"
+    assert result["input_snapshot"]["replay_input"]["schema_version"] == "daily-radar-replay-input-v2"
     assert result["input_snapshot"]["replay_input"]["baseline_config"]["primary_bucket_weight"] == 0.8
     assert evidence["evidence_type"] == "relative_strength"
     assert evidence["source"]["domain"] == "daily_trigger_signal"

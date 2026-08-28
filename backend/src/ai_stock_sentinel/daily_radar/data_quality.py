@@ -6,9 +6,13 @@ from datetime import date
 from typing import Any
 
 from ai_stock_sentinel.daily_radar.universe import TRACK_PRIORITY
-from ai_stock_sentinel.technical.profile import TECHNICAL_LAYER_VERSION
+from ai_stock_sentinel.technical.profile import (
+    TECHNICAL_LAYER_VERSION,
+    TECHNICAL_METRICS_VERSION,
+)
 
 
+DAILY_RADAR_REPLAY_INPUT_VERSION = "daily-radar-replay-input-v2"
 REQUIRED_SCORING_FIELDS: dict[str, tuple[str, ...]] = {
     "ohlcv": (
         "open",
@@ -121,8 +125,13 @@ def missing_daily_radar_candidate_technical_fields(
 ) -> list[str]:
     missing_fields = missing_technical_scoring_fields(technical)
     technical_profile = _mapping(technical.get("technical_profile"))
-    if str(technical_profile.get("version") or "").strip() != TECHNICAL_LAYER_VERSION:
-        missing_fields.append("technical_profile.version")
+    missing_fields.extend(
+        missing_current_technical_contract_fields(
+            ohlcv=_mapping(technical.get("ohlcv")),
+            indicators=_mapping(technical.get("indicators")),
+            technical_profile=technical_profile,
+        )
+    )
 
     price_history = technical.get("price_history")
     if not _has_replayable_price_history(price_history, record_date=record_date):
@@ -133,6 +142,65 @@ def missing_daily_radar_candidate_technical_fields(
         if not _valid_data_date(data_dates.get(field), record_date=record_date):
             missing_fields.append(f"data_dates.{field}")
     return missing_fields
+
+
+def missing_current_technical_contract_fields(
+    *,
+    ohlcv: Mapping[str, Any],
+    indicators: Mapping[str, Any],
+    technical_profile: Mapping[str, Any],
+) -> list[str]:
+    """Validate fields whose semantics changed with the current technical layer."""
+    missing: list[str] = []
+    if str(technical_profile.get("version") or "").strip() != TECHNICAL_LAYER_VERSION:
+        missing.append("technical_profile.version")
+
+    formula_versions = _mapping(technical_profile.get("formula_versions"))
+    if formula_versions.get("metrics") != TECHNICAL_METRICS_VERSION:
+        missing.append("technical_profile.formula_versions.metrics")
+    if formula_versions.get("layering") != TECHNICAL_LAYER_VERSION:
+        missing.append("technical_profile.formula_versions.layering")
+
+    data_quality = _mapping(technical_profile.get("data_quality"))
+    required_quality_values = {
+        "ohlcv_aligned": True,
+        "price_level_basis": "ohlc_high_low",
+        "price_level_completed_bars_only": True,
+        "price_level_missing_reason": None,
+    }
+    for field, expected in required_quality_values.items():
+        if field not in data_quality or data_quality.get(field) != expected:
+            missing.append(f"technical_profile.data_quality.{field}")
+
+    if not _is_finite_number(indicators.get("macd_hist_pct")):
+        missing.append("indicators.macd_hist_pct")
+    for field in ("support_level", "resistance_level"):
+        if not _is_positive_finite_number(indicators.get(field)):
+            missing.append(f"indicators.{field}")
+    if not _is_positive_finite_number(ohlcv.get("close")):
+        missing.append("ohlcv.close_positive")
+    if (
+        _is_positive_finite_number(indicators.get("support_level"))
+        and _is_positive_finite_number(indicators.get("resistance_level"))
+        and float(indicators["support_level"]) > float(indicators["resistance_level"])
+    ):
+        missing.append("indicators.support_resistance_order")
+
+    if (
+        _is_finite_number(indicators.get("macd_hist_pct"))
+        and _is_finite_number(indicators.get("macd_histogram"))
+        and _is_finite_number(ohlcv.get("close"))
+    ):
+        close = float(ohlcv["close"])
+        expected_pct = float(indicators["macd_histogram"]) / close * 100 if close > 0 else math.nan
+        if not math.isfinite(expected_pct) or not math.isclose(
+            float(indicators["macd_hist_pct"]),
+            expected_pct,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            missing.append("indicators.macd_hist_pct_consistency")
+    return list(dict.fromkeys(missing))
 
 
 def required_institutional_scoring_fields(
@@ -199,6 +267,10 @@ def _is_finite_number(value: Any) -> bool:
         return False
 
 
+def _is_positive_finite_number(value: Any) -> bool:
+    return _is_finite_number(value) and float(value) > 0
+
+
 def margin_evidence_is_complete(margin: Mapping[str, Any]) -> bool:
     delta_pct_available = _is_finite_number(margin.get("margin_delta_pct")) or (
         margin.get("margin_delta_pct_unavailable_reason") == "baseline_zero"
@@ -227,10 +299,12 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 
 __all__ = [
+    "DAILY_RADAR_REPLAY_INPUT_VERSION",
     "REQUIRED_SCORING_FIELDS",
     "margin_evidence_is_complete",
     "missing_scoring_fields",
     "missing_daily_radar_candidate_technical_fields",
+    "missing_current_technical_contract_fields",
     "missing_technical_scoring_fields",
     "required_institutional_scoring_fields",
 ]

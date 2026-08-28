@@ -120,7 +120,10 @@ make run-api
     "macd_line": 4.213,
     "macd_signal": 3.105,
     "macd_hist": 1.108,
+    "macd_hist_pct": 0.1224,
     "macd_bias": "bullish",
+    "prior_high_20d": 928.0,
+    "prior_low_20d": 865.0,
     "kd_k": 84.6,
     "kd_d": 78.2,
     "kd_signal": "neutral",
@@ -132,7 +135,7 @@ make run-api
     "obv_signal": "price_volume_confirm"
   },
   "technical_profile": {
-    "version": "technical-layer-v3",
+    "version": "technical-layer-v4",
     "primary_score_inputs": {
       "ma_structure": {
         "state": "bullish_alignment",
@@ -179,11 +182,14 @@ make run-api
       "ohlcv_aligned": true,
       "volume_aligned": true,
       "price_level_basis": "ohlc_high_low",
+      "price_level_data_date": "2026-03-02",
+      "price_level_completed_bars_only": true,
+      "price_level_missing_reason": null,
       "missing_fields": []
     },
     "formula_versions": {
-      "metrics": "technical-metrics-v3",
-      "layering": "technical-layer-v3"
+      "metrics": "technical-metrics-v4",
+      "layering": "technical-layer-v4"
     },
     "companion_context_refs": {
       "chip_stability_context": "tdcc_weekly_major_holders"
@@ -307,7 +313,7 @@ make run-api
 
 > **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver、portfolio risk score 或 action/verdict/classification 覆寫。
 
-> **Canonical technical profile（2026-06-24）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v3`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 必須用當前 bar 之前的 20 根已完成 bar 判斷 breakdown/near-support/near-resistance；raw `technical_indicators.high_20d` / `low_20d` 可作 display 數值並包含當前 bar，但不得直接拿來判斷當前 close 是否跌破支撐。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v3 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
+> **Canonical technical profile（2026-08-28）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v4`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 與 Daily Radar compatibility scoring 都必須使用當前 bar 之前的 20 根已完成 bar；`technical_indicators.prior_high_20d` / `prior_low_20d` 是可回放的判斷基準，`high_20d` / `low_20d` 則保留包含當前 bar 的純顯示值。`macd_hist_pct = macd_hist / close * 100` 是跨股價尺度比較與門檻判斷的 canonical 值，禁止用 MACD 原始絕對值套用跨股票固定門檻。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v4 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
 
 > **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / Watchlist / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
@@ -1946,8 +1952,8 @@ Daily Radar run status：
   - `score_breakdown.relative_strength` 表示 benchmark symbol、lookback window、candidate return、benchmark return、relative value、score impact、freshness、data dates、aligned dates 與 missing reason。資料不足時 `relative_value` 為 `null`，不可補 0 假裝中性。
   - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
-  - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。舊候選缺少此欄位時，月報必須標記 `replay_input_incomplete`，不得猜測。
-  - Current version trace：`daily-radar-scoring-v2.5` / `daily-radar-rules-v2.4` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則；v2.4 scoring 起，legacy `same_day_institutional` 候選會以合法的單一法人正數淨買超計入同日法人分數；v2.5 scoring / v2.4 rules 起，archive-backed `foreign_same_day` / `trust_same_day` 與 actor-specific 近期累積淨買超也會進入同一組互斥法人規則，且不與三大法人合計轉正或外資投信方向一致重複計分。
+  - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。v2 起將支撐壓力改為 prior-window，並以 `macd_hist_pct` 套用跨股票門檻；舊候選缺少此欄位或版本不符時，月報必須標記 `replay_input_incomplete`，不得猜測。
+  - Current version trace：`daily-radar-scoring-v2.6` / `daily-radar-rules-v2.5` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則；v2.4 scoring 起，legacy `same_day_institutional` 候選會以合法的單一法人正數淨買超計入同日法人分數；v2.5 scoring / v2.4 rules 起，archive-backed `foreign_same_day` / `trust_same_day` 與 actor-specific 近期累積淨買超也會進入同一組互斥法人規則，且不與三大法人合計轉正或外資投信方向一致重複計分；v2.6 scoring / v2.5 rules 起，支撐壓力排除訊號當日 bar，MACD 固定門檻改用相對收盤價百分比。
 
 - **Calibration workflow**
   - Daily Radar calibration report 可由 `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` 重跑。

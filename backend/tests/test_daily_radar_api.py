@@ -610,6 +610,7 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "macd": 1.2,
             "macd_signal": 0.8,
             "macd_histogram": 0.4,
+            "macd_hist_pct": 0.4 / 106.0 * 100,
             "kd_k": 72.0,
             "kd_d": 65.0,
             "atr14": 3.2,
@@ -618,7 +619,19 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv": 12_000_000,
             "obv_trend": "rising",
         },
-        "technical_profile": {"version": "technical-layer-v3"},
+        "technical_profile": {
+            "version": "technical-layer-v4",
+            "formula_versions": {
+                "metrics": "technical-metrics-v4",
+                "layering": "technical-layer-v4",
+            },
+            "data_quality": {
+                "ohlcv_aligned": True,
+                "price_level_basis": "ohlc_high_low",
+                "price_level_completed_bars_only": True,
+                "price_level_missing_reason": None,
+            },
+        },
         "price_history": [{"date": run_date.isoformat(), "close": 106.0}],
         "data_dates": {
             "ohlcv": run_date.isoformat(),

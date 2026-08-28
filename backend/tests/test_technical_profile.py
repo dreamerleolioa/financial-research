@@ -72,6 +72,9 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
     assert raw["avg_volume_20"] == pytest.approx(sum(volumes[-20:]) / 20)
     assert raw["avg_volume_60"] == pytest.approx(sum(volumes[-60:]) / 60)
     assert raw["macd_hist"] is not None
+    assert raw["macd_hist_pct"] == pytest.approx(raw["macd_hist"] / closes[-1] * 100)
+    assert raw["prior_high_20d"] == max(highs[-21:-1])
+    assert raw["prior_low_20d"] == min(lows[-21:-1])
     assert profile["version"] == TECHNICAL_LAYER_VERSION
     assert profile["formula_versions"] == {
         "metrics": TECHNICAL_METRICS_VERSION,
@@ -106,6 +109,104 @@ def test_profile_builder_returns_raw_indicators_and_layered_profile() -> None:
     assert "volatility_regime" not in raw
     assert "technical_conflicts" not in raw
     assert "signal_conflicts" not in profile
+
+
+def test_prior_price_levels_exclude_the_signal_bar() -> None:
+    closes = [100.0 + index for index in range(21)]
+    highs = [close + 2.0 for close in closes]
+    lows = [close - 2.0 for close in closes]
+    highs[-1] = 999.0
+    lows[-1] = 1.0
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=[1000.0] * len(closes),
+        is_final=True,
+    )
+
+    assert payload is not None
+    indicators = payload["technical_indicators"]
+    assert indicators["high_20d"] == 999.0
+    assert indicators["low_20d"] == 1.0
+    assert indicators["prior_high_20d"] == max(highs[-21:-1])
+    assert indicators["prior_low_20d"] == min(lows[-21:-1])
+
+
+def test_intraday_prior_price_levels_keep_the_latest_completed_bar() -> None:
+    closes = [100.0 + index for index in range(21)]
+    highs = [close + 2.0 for close in closes]
+    lows = [close - 2.0 for close in closes]
+    highs[-1] = 999.0
+    lows[-1] = 1.0
+    close_dates = [f"2026-07-{index + 12:02d}" for index in range(20)] + ["2026-08-01"]
+
+    payload = build_technical_profile_payload(
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=[1000.0] * len(closes),
+        close_dates=close_dates,
+        high_dates=close_dates,
+        low_dates=close_dates,
+        data_date="2026-08-01",
+        observation_date="2026-08-02",
+        is_final=False,
+    )
+
+    assert payload is not None
+    indicators = payload["technical_indicators"]
+    assert indicators["prior_high_20d"] == 999.0
+    assert indicators["prior_low_20d"] == 1.0
+    assert payload["technical_profile"]["data_quality"]["price_level_data_date"] == "2026-08-01"
+
+
+def test_snapshot_price_levels_fail_closed_when_equal_length_ohlc_dates_do_not_align() -> None:
+    closes, highs, lows, volumes = _series(length=61)
+    close_dates = [f"2026-06-{index + 1:02d}" for index in range(30)] + [
+        f"2026-07-{index + 1:02d}" for index in range(31)
+    ]
+    snapshot = {
+        "recent_closes": closes,
+        "recent_highs": highs,
+        "recent_lows": lows,
+        "recent_volumes": volumes,
+        "recent_close_dates": close_dates,
+        "recent_high_dates": [*close_dates[1:], "2026-08-01"],
+        "recent_low_dates": close_dates,
+        "recent_volume_dates": close_dates,
+        "current_price": closes[-1],
+        "data_dates": {"ohlcv": close_dates[-1]},
+        "fetched_at": "2026-08-01T10:00:00+08:00",
+    }
+
+    payload = build_technical_profile_from_snapshot(snapshot, is_final=False)
+
+    assert payload is not None
+    assert payload["technical_indicators"]["prior_high_20d"] is None
+    assert payload["technical_indicators"]["prior_low_20d"] is None
+    data_quality = payload["technical_profile"]["data_quality"]
+    assert data_quality["ohlcv_aligned"] is False
+    assert data_quality["price_level_missing_reason"] == "ohlc_not_aligned"
+
+
+@pytest.mark.parametrize(
+    ("value", "close"),
+    [
+        (float("nan"), 100.0),
+        (float("inf"), 100.0),
+        (1.0, float("nan")),
+        (1.0, float("inf")),
+        (1.0, 0.0),
+        (1.0, -100.0),
+    ],
+)
+def test_normalized_price_value_rejects_non_finite_or_non_positive_inputs(
+    value: float,
+    close: float,
+) -> None:
+    assert canonical_metrics.normalize_price_value_pct(value, close) is None
 
 
 def test_temporal_evidence_does_not_change_score_buckets() -> None:

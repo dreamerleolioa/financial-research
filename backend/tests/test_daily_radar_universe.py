@@ -20,6 +20,7 @@ from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
 )
 from ai_stock_sentinel.daily_radar.universe import (
     InstitutionalLeaderRow,
+    _reversal_metrics,
     is_daily_radar_supported_symbol,
     select_daily_radar_universe,
     select_dual_track_universe,
@@ -137,6 +138,33 @@ def _technical_record(
             "macd_histogram": macd_histogram,
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("macd_hist_pct", "macd_histogram"),
+    [
+        (-0.1, None),
+        (None, -0.1),
+        (float("nan"), -0.1),
+    ],
+)
+def test_reversal_metrics_accepts_canonical_or_legacy_macd_without_non_finite_override(
+    macd_hist_pct: float | None,
+    macd_histogram: float | None,
+) -> None:
+    record = _technical_record("2330.TW")
+    indicators = record["indicators"]
+    indicators["macd_hist_pct"] = macd_hist_pct
+    if macd_histogram is None:
+        indicators.pop("macd_histogram")
+    else:
+        indicators["macd_histogram"] = macd_histogram
+
+    metrics = _reversal_metrics(record["ohlcv"], indicators)
+
+    assert metrics.get("missing_data") is not True
+    assert metrics["macd_hist_pct"] == pytest.approx(-0.1 if macd_hist_pct == -0.1 else -0.1 / 106.0 * 100)
+    assert "macd_stabilizing" in metrics["reasons"]
 
 
 def test_select_dual_track_universe_unions_top_n_tracks_with_overlap_offline(

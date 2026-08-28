@@ -273,6 +273,7 @@ function rawIndicatorRows(
     ["ma20_slope", "MA20 5日斜率", formatSignedPercent(indicators.ma20_slope_pct_5d, 3)],
     ["ma60_slope", "MA60 10日斜率", formatSignedPercent(indicators.ma60_slope_pct_10d, 3)],
     ["range_20d", "20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
+    ["prior_range_20d", "前 20 日壓力/支撐", pricePair(indicators.prior_high_20d, indicators.prior_low_20d)],
     ["range_60d", "60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
     ["bollinger_position", "布林通道", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
     ["macd_bias", "MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
@@ -328,6 +329,7 @@ function rawIndicatorRows(
       "MACD 線/訊號/柱",
       `${formatIndicatorNumber(indicators.macd_line, 3)} / ${formatIndicatorNumber(indicators.macd_signal, 3)} / ${formatIndicatorNumber(indicators.macd_hist, 3)}`,
     ],
+    ["macd_hist_pct", "MACD 柱體/股價", formatSignedPercent(indicators.macd_hist_pct, 4)],
   ];
 }
 

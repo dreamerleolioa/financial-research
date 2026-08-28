@@ -320,7 +320,7 @@ def test_replay_ranks_full_candidate_pool_before_joining_validated_outcomes() ->
                 "record_date": "2026-06-01",
                 "input_snapshot": {
                     "replay_input": {
-                        "schema_version": "daily-radar-replay-input-v1",
+                        "schema_version": "daily-radar-replay-input-v2",
                         "record": _replay_record(
                             f"{candidate_id:04d}.TW",
                             positive_days=positive_days,
@@ -1458,7 +1458,7 @@ def _governance_replay_row(
     )
     replay_input = (
         {
-            "schema_version": "daily-radar-replay-input-v1",
+            "schema_version": "daily-radar-replay-input-v2",
             "record": record,
             "market_context": market_context,
             "prefilter_result": prefilter_result,
@@ -1530,13 +1530,28 @@ def _replay_record(symbol: str, *, positive_days: int) -> dict[str, Any]:
             "rsi14": 60.0,
             "bias20": 3.0,
             "macd_histogram": 1.0,
+            "macd_hist_pct": 1.0 / 101.0 * 100,
             "kd_k": 60.0,
             "kd_d": 55.0,
             "atr14": 2.0,
             "volume_ratio": 1.2,
             "missing_trading_days_60": 0,
+            "support_level": 99.0,
+            "resistance_level": 102.0,
         },
-        "technical_profile": {"version": "technical-layer-v1"},
+        "technical_profile": {
+            "version": "technical-layer-v4",
+            "formula_versions": {
+                "metrics": "technical-metrics-v4",
+                "layering": "technical-layer-v4",
+            },
+            "data_quality": {
+                "ohlcv_aligned": True,
+                "price_level_basis": "ohlc_high_low",
+                "price_level_completed_bars_only": True,
+                "price_level_missing_reason": None,
+            },
+        },
         "price_history": [
             {"date": "2026-05-29", "close": 100.0},
             {"date": "2026-06-01", "close": 101.0},
@@ -1558,3 +1573,27 @@ def _replay_record(symbol: str, *, positive_days: int) -> dict[str, Any]:
             "margin": "2026-06-01",
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("path", "field"),
+    [
+        (("indicators",), "macd_hist_pct"),
+        (("indicators",), "support_level"),
+        (("indicators",), "resistance_level"),
+        (("technical_profile", "formula_versions"), "metrics"),
+        (("technical_profile", "data_quality"), "price_level_completed_bars_only"),
+    ],
+)
+def test_governance_replay_rejects_incomplete_v2_technical_contract(
+    path: tuple[str, ...],
+    field: str,
+) -> None:
+    row = _governance_replay_row(1, with_replay_input=True)
+    record = row["candidate_snapshot"]["input_snapshot"]["replay_input"]["record"]
+    target: dict[str, Any] = record
+    for key in path:
+        target = target[key]
+    target.pop(field)
+
+    assert not rule_governance_module._is_complete_daily_radar_replay_input(row)

@@ -72,6 +72,7 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "macd": 1.2,
             "macd_signal": 0.8,
             "macd_histogram": 0.4,
+            "macd_hist_pct": 0.4 / 106.0 * 100,
             "kd_k": 72.0,
             "kd_d": 65.0,
             "atr14": 3.2,
@@ -80,7 +81,19 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv": 12_000_000,
             "obv_trend": "rising",
         },
-        "technical_profile": {"version": "technical-layer-v3"},
+        "technical_profile": {
+            "version": "technical-layer-v4",
+            "formula_versions": {
+                "metrics": "technical-metrics-v4",
+                "layering": "technical-layer-v4",
+            },
+            "data_quality": {
+                "ohlcv_aligned": True,
+                "price_level_basis": "ohlc_high_low",
+                "price_level_completed_bars_only": True,
+                "price_level_missing_reason": None,
+            },
+        },
         "price_history": [{"date": run_date.isoformat(), "close": 106.0}],
         "data_dates": {
             "ohlcv": run_date.isoformat(),
@@ -233,7 +246,7 @@ def test_ensure_daily_radar_raw_rows_refetches_outdated_technical_profile(
 
     assert fetcher.calls == [(["2330.TW"], run_date)]
     assert [row.id for row in rows] == [existing_row.id]
-    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v3"
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v4"
     assert "signal_conflicts" not in rows[0].technical["technical_profile"]
 
 
@@ -264,6 +277,83 @@ def test_ensure_daily_radar_raw_rows_refetches_incomplete_final_technical_payloa
     assert rows[0].technical["ohlcv"]["previous_close"] == 102.0
 
 
+@pytest.mark.parametrize(
+    ("path", "field"),
+    [
+        (("indicators",), "macd_hist_pct"),
+        (("indicators",), "support_level"),
+        (("indicators",), "resistance_level"),
+        (("technical_profile", "formula_versions"), "metrics"),
+        (("technical_profile", "data_quality"), "price_level_completed_bars_only"),
+    ],
+)
+def test_ensure_daily_radar_raw_rows_refetches_incomplete_v4_semantic_contract(
+    db_session: Session,
+    path: tuple[str, ...],
+    field: str,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    target: dict[str, Any] = incomplete_technical
+    for key in path:
+        target = target[key]
+    target.pop(field)
+    existing_row = _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    rows = ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    assert [row.id for row in rows] == [existing_row.id]
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v4"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("support_level", -1.0),
+        ("resistance_level", 0.0),
+        ("support_level", 120.0),
+    ],
+)
+def test_ensure_daily_radar_raw_rows_refetches_invalid_v4_price_level_contract(
+    db_session: Session,
+    field: str,
+    value: float,
+) -> None:
+    run_date = date(2026, 6, 2)
+    incomplete_technical = _technical_payload("2330.TW", run_date)
+    incomplete_technical["indicators"][field] = value
+    _add_raw_data(
+        db_session,
+        symbol="2330.TW",
+        record_date=run_date,
+        is_final=True,
+        technical=incomplete_technical,
+    )
+    fetcher = FakeBatchFetcher()
+
+    ensure_daily_radar_raw_rows(
+        db_session,
+        run_date,
+        ["2330.TW"],
+        technical_fetcher=fetcher,
+    )
+
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+
+
 def test_ensure_daily_radar_raw_rows_refetches_final_row_without_replay_evidence(
     db_session: Session,
 ) -> None:
@@ -288,7 +378,7 @@ def test_ensure_daily_radar_raw_rows_refetches_final_row_without_replay_evidence
     )
 
     assert fetcher.calls == [(["2330.TW"], run_date)]
-    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v3"
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v4"
     assert rows[0].technical["price_history"] == [{"date": run_date.isoformat(), "close": 106.0}]
 
 
@@ -633,14 +723,17 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
     assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
     assert payloads["2330.TW"]["name"] == "台積電"
     assert payloads["2454.TW"]["indicators"]["missing_trading_days_60"] == 0
-    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v3"
+    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v4"
     assert payloads["2330.TW"]["technical_profile"]["formula_versions"] == {
-        "metrics": "technical-metrics-v3",
-        "layering": "technical-layer-v3",
+        "metrics": "technical-metrics-v4",
+        "layering": "technical-layer-v4",
     }
     assert payloads["2330.TW"]["technical_profile"]["data_quality"]["data_date"] == "2026-06-02"
     assert payloads["2330.TW"]["data_dates"]["technical_profile"] == "2026-06-02"
     assert payloads["2330.TW"]["indicators"]["macd_histogram"] is not None
+    assert payloads["2330.TW"]["indicators"]["macd_hist_pct"] is not None
+    assert payloads["2330.TW"]["indicators"]["support_level"] == pytest.approx(136.0)
+    assert payloads["2330.TW"]["indicators"]["resistance_level"] == pytest.approx(160.0)
     assert payloads["2330.TW"]["indicators"]["mfi14"] is not None
     assert payloads["2330.TW"]["indicators"]["atr14"] is not None
     assert len(payloads["2330.TW"]["price_history"]) == 60

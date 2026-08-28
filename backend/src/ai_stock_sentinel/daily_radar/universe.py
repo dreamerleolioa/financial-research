@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any, Literal, Protocol, Sequence, TypeAlias
+
+from ai_stock_sentinel.technical.metrics import normalize_price_value_pct
 
 DailyRadarUniverseTrack: TypeAlias = Literal[
     "foreign_same_day",
@@ -444,26 +447,37 @@ def _price_volume_metrics(ohlcv: Mapping[str, Any], indicators: Mapping[str, Any
 
 
 def _reversal_metrics(ohlcv: Mapping[str, Any], indicators: Mapping[str, Any]) -> dict[str, Any]:
+    close = _float(ohlcv.get("close"))
+    previous_close = _float(ohlcv.get("previous_close"))
+    low = _float(ohlcv.get("low"))
+    support = _float(indicators.get("support_level"))
+    kd_k = _float(indicators.get("kd_k"))
+    kd_d = _float(indicators.get("kd_d"))
+    rsi14 = _float(indicators.get("rsi14"))
+    macd_histogram_pct = _normalized_macd_hist_pct(
+        close=close,
+        indicators=indicators,
+    )
     required = _missing_fields(
-        ("ohlcv.close", _float(ohlcv.get("close"))),
-        ("ohlcv.previous_close", _float(ohlcv.get("previous_close"))),
-        ("ohlcv.low", _float(ohlcv.get("low"))),
-        ("indicators.support_level", _float(indicators.get("support_level"))),
-        ("indicators.kd_k", _float(indicators.get("kd_k"))),
-        ("indicators.kd_d", _float(indicators.get("kd_d"))),
-        ("indicators.rsi14", _float(indicators.get("rsi14"))),
-        ("indicators.macd_histogram", _float(indicators.get("macd_histogram"))),
+        ("ohlcv.close", close),
+        ("ohlcv.previous_close", previous_close),
+        ("ohlcv.low", low),
+        ("indicators.support_level", support),
+        ("indicators.kd_k", kd_k),
+        ("indicators.kd_d", kd_d),
+        ("indicators.rsi14", rsi14),
+        ("indicators.macd_hist_pct", macd_histogram_pct),
     )
     if required:
         return _missing_metrics("reversal", required)
-    close = float(ohlcv["close"])
-    previous_close = float(ohlcv["previous_close"])
-    low = float(ohlcv["low"])
-    support = float(indicators["support_level"])
-    kd_k = float(indicators["kd_k"])
-    kd_d = float(indicators["kd_d"])
-    rsi14 = float(indicators["rsi14"])
-    macd_histogram = float(indicators["macd_histogram"])
+    assert close is not None
+    assert previous_close is not None
+    assert low is not None
+    assert support is not None
+    assert kd_k is not None
+    assert kd_d is not None
+    assert rsi14 is not None
+    assert macd_histogram_pct is not None
     score = 0.0
     reasons: list[str] = []
     if close > previous_close:
@@ -478,7 +492,7 @@ def _reversal_metrics(ohlcv: Mapping[str, Any], indicators: Mapping[str, Any]) -
     if 35 <= rsi14 <= 60:
         score += 15
         reasons.append("rsi_recovery_zone")
-    if macd_histogram >= -0.15:
+    if macd_histogram_pct is not None and macd_histogram_pct >= -0.15:
         score += 15
         reasons.append("macd_stabilizing")
     return _technical_metrics(
@@ -492,7 +506,7 @@ def _reversal_metrics(ohlcv: Mapping[str, Any], indicators: Mapping[str, Any]) -
         kd_k=kd_k,
         kd_d=kd_d,
         rsi14=rsi14,
-        macd_histogram=macd_histogram,
+        macd_hist_pct=macd_histogram_pct,
     )
 
 
@@ -604,9 +618,24 @@ def _float(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _normalized_macd_hist_pct(
+    *,
+    close: float | None,
+    indicators: Mapping[str, Any],
+) -> float | None:
+    normalized = _float(indicators.get("macd_hist_pct"))
+    if normalized is not None:
+        return normalized
+    return normalize_price_value_pct(
+        _float(indicators.get("macd_histogram")),
+        close,
+    )
 
 
 def _ordered_tracks(tracks: Iterable[DailyRadarUniverseTrack]) -> tuple[DailyRadarUniverseTrack, ...]:

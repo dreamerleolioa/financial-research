@@ -7,16 +7,20 @@ import math
 from typing import Any, cast
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS, DAILY_RADAR_RISK_LABELS
-from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
+from ai_stock_sentinel.daily_radar.data_quality import (
+    DAILY_RADAR_REPLAY_INPUT_VERSION,
+    missing_scoring_fields,
+)
 from ai_stock_sentinel.daily_radar.relative_strength import (
     DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS,
     calculate_relative_strength,
 )
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
+from ai_stock_sentinel.technical.metrics import normalize_price_value_pct
 
 
-SCORING_VERSION = "daily-radar-scoring-v2.5"
-RULE_VERSION = "daily-radar-rules-v2.4"
+SCORING_VERSION = "daily-radar-scoring-v2.6"
+RULE_VERSION = "daily-radar-rules-v2.5"
 SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v1"
 
 RULE_SCORE_ADJUSTMENTS: dict[str, int] = {
@@ -286,7 +290,7 @@ def score_daily_radar_record(
             ),
             "evidence": [_relative_strength_evidence(normalized["symbol"], relative_strength_component)],
             "replay_input": {
-                "schema_version": "daily-radar-replay-input-v1",
+                "schema_version": DAILY_RADAR_REPLAY_INPUT_VERSION,
                 "record": {
                     "symbol": normalized["symbol"],
                     "name": normalized["name"],
@@ -476,7 +480,7 @@ def _score_bottoming_reversal(
     atr14 = _float(indicators.get("atr14"))
     kd_k = _float(indicators.get("kd_k"))
     kd_d = _float(indicators.get("kd_d"))
-    macd_histogram = _float(indicators.get("macd_histogram"))
+    macd_histogram_pct = _macd_hist_pct(ohlcv, indicators)
 
     if _has_numbers(ohlcv, "low") and _has_numbers(indicators, "support_level", "atr14") and support and low <= support + atr14:
         score += 20
@@ -484,12 +488,12 @@ def _score_bottoming_reversal(
     if _has_numbers(ohlcv, "close", "previous_close") and close > previous_close:
         score += 10
         rules.append(_rule("bottoming_close_recovers", "收盤較前一交易日回穩", close=close, previous_close=previous_close))
-    if _has_numbers(indicators, "macd_histogram") and -0.25 <= macd_histogram <= 0.5:
+    if macd_histogram_pct is not None and -0.25 <= macd_histogram_pct <= 0.5:
         score += 18
-        rules.append(_rule("bottoming_macd_improving", "MACD 柱狀體跌勢收斂", macd_histogram=macd_histogram))
-    elif macd_histogram > 0:
+        rules.append(_rule("bottoming_macd_improving", "MACD 柱狀體跌勢收斂", macd_hist_pct=macd_histogram_pct))
+    elif macd_histogram_pct is not None and macd_histogram_pct > 0:
         score += 8
-        rules.append(_rule("bottoming_macd_positive", "MACD 柱狀體轉正", macd_histogram=macd_histogram))
+        rules.append(_rule("bottoming_macd_positive", "MACD 柱狀體轉正", macd_hist_pct=macd_histogram_pct))
     if _has_numbers(indicators, "kd_k", "kd_d") and kd_k > kd_d and kd_k <= 35:
         score += 18
         rules.append(_rule("bottoming_kd_low_turn", "KD 低位翻正", kd_k=kd_k, kd_d=kd_d))
@@ -558,9 +562,10 @@ def _score_support_retest(
     if _has_numbers(margin, "margin_delta_pct") and _float(margin.get("margin_delta_pct")) <= 0:
         score += 8
         rules.append(_rule("support_retest_margin_not_expanding", "融資未同步擴張", margin_delta_pct=_float(margin.get("margin_delta_pct"))))
-    if _has_numbers(indicators, "macd_histogram") and _float(indicators.get("macd_histogram")) >= -0.15:
+    macd_histogram_pct = _macd_hist_pct(ohlcv, indicators)
+    if macd_histogram_pct is not None and macd_histogram_pct >= -0.15:
         score += 7
-        rules.append(_rule("support_retest_macd_stable", "MACD 柱狀體未明顯轉弱", macd_histogram=_float(indicators.get("macd_histogram"))))
+        rules.append(_rule("support_retest_macd_stable", "MACD 柱狀體未明顯轉弱", macd_hist_pct=macd_histogram_pct))
     if _has_numbers(ohlcv, "close") and _has_numbers(indicators, "support_level") and support and close < support:
         score -= 20
         rules.append(_rule("support_retest_close_below_support", "收盤跌破支撐區", close=close, support_level=support))
@@ -1060,6 +1065,19 @@ def _has_numbers(payload: Mapping[str, Any], *keys: str) -> bool:
         not isinstance(payload.get(key), bool)
         and payload.get(key) is not None
         for key in keys
+    )
+
+
+def _macd_hist_pct(
+    ohlcv: Mapping[str, Any],
+    indicators: Mapping[str, Any],
+) -> float | None:
+    normalized = _finite_float_or_none(indicators.get("macd_hist_pct"))
+    if normalized is not None:
+        return normalized
+    return normalize_price_value_pct(
+        _finite_float_or_none(indicators.get("macd_histogram")),
+        _finite_float_or_none(ohlcv.get("close")),
     )
 
 

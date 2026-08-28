@@ -22,12 +22,13 @@ from ai_stock_sentinel.technical.metrics import (
     ma,
     macd,
     mfi,
+    normalize_price_value_pct,
     obv,
     stochastic_kd,
 )
 
-TECHNICAL_METRICS_VERSION = "technical-metrics-v3"
-TECHNICAL_LAYER_VERSION = "technical-layer-v3"
+TECHNICAL_METRICS_VERSION = "technical-metrics-v4"
+TECHNICAL_LAYER_VERSION = "technical-layer-v4"
 REQUIRED_LOOKBACK_DAYS = 60
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -66,6 +67,8 @@ def build_technical_profile_from_snapshot(
         lows=_numbers(snapshot.get("recent_lows")),
         volumes=_numbers(snapshot.get("recent_volumes")),
         close_dates=_strings(snapshot.get("recent_close_dates")),
+        high_dates=_strings(snapshot.get("recent_high_dates")),
+        low_dates=_strings(snapshot.get("recent_low_dates")),
         volume_dates=_strings(snapshot.get("recent_volume_dates")),
         current_price=current_price,
         data_date=snapshot_data_date,
@@ -81,13 +84,15 @@ def build_technical_profile_payload(
     lows: Sequence[float] | None = None,
     volumes: Sequence[float] | None = None,
     close_dates: Sequence[str] | None = None,
+    high_dates: Sequence[str] | None = None,
+    low_dates: Sequence[str] | None = None,
     volume_dates: Sequence[str] | None = None,
     current_price: float | None = None,
     data_date: str | None = None,
     observation_date: str | None = None,
     is_final: bool = True,
 ) -> dict[str, Any] | None:
-    """Return backward-compatible raw indicators plus the v3 layered profile."""
+    """Return backward-compatible raw indicators plus the v4 layered profile."""
     close_values = [float(value) for value in closes if value is not None]
     if not close_values:
         return None
@@ -96,7 +101,12 @@ def build_technical_profile_payload(
     low_values = _aligned_values(lows, close_values)
     volume_values = _aligned_values(volumes, close_values)
     average_volume_values = _valid_volume_values(volumes)
-    aligned_hilo = high_values is not None and low_values is not None
+    aligned_hilo = (
+        high_values is not None
+        and low_values is not None
+        and _series_dates_align(close_dates, high_dates, len(close_values))
+        and _series_dates_align(close_dates, low_dates, len(close_values))
+    )
     aligned_volume = volume_values is not None
 
     high_source = high_values if aligned_hilo else close_values
@@ -127,8 +137,31 @@ def build_technical_profile_payload(
     )
     avg_volume_20 = _average_volume(completed_volume_values, 20)
     avg_volume_60 = _average_volume(completed_volume_values, 60)
-    primary_high_20d = _prior_window_max(high_values, 20) if aligned_hilo else None
-    primary_low_20d = _prior_window_min(low_values, 20) if aligned_hilo else None
+    price_level_inputs = (
+        _completed_price_level_inputs(
+            closes=close_values,
+            highs=high_values,
+            lows=low_values,
+            close_dates=close_dates,
+            data_date=data_date,
+            observation_date=observation_date,
+            is_final=is_final,
+        )
+        if aligned_hilo
+        else None
+    )
+    completed_highs = price_level_inputs[0] if price_level_inputs else None
+    completed_lows = price_level_inputs[1] if price_level_inputs else None
+    primary_high_20d = (
+        max(completed_highs[-20:])
+        if completed_highs and len(completed_highs) >= 20
+        else None
+    )
+    primary_low_20d = (
+        min(completed_lows[-20:])
+        if completed_lows and len(completed_lows) >= 20
+        else None
+    )
     volume_ratio = _volume_ratio(volume_values)
     bias20 = calc_bias(close, ma20) if ma20 is not None else None
     rsi14 = calc_rsi(close_values, period=14)
@@ -164,6 +197,8 @@ def build_technical_profile_payload(
         "low_20d": low_20d,
         "high_60d": high_60d,
         "low_60d": low_60d,
+        "prior_high_20d": primary_high_20d,
+        "prior_low_20d": primary_low_20d,
         "bollinger_upper": bb["bollinger_upper"] if bb else None,
         "bollinger_mid": bb["bollinger_mid"] if bb else None,
         "bollinger_lower": bb["bollinger_lower"] if bb else None,
@@ -172,6 +207,10 @@ def build_technical_profile_payload(
         "macd_line": macd_data["macd_line"] if macd_data else None,
         "macd_signal": macd_data["macd_signal"] if macd_data else None,
         "macd_hist": macd_data["macd_hist"] if macd_data else None,
+        "macd_hist_pct": normalize_price_value_pct(
+            macd_data["macd_hist"] if macd_data else None,
+            close,
+        ),
         "macd_bias": macd_data["macd_bias"] if macd_data else None,
         "kd_k": kd_data["k"] if kd_data else None,
         "kd_d": kd_data["d"] if kd_data else None,
@@ -260,6 +299,17 @@ def build_technical_profile_payload(
                 "ohlcv_aligned": aligned_hilo,
                 "volume_aligned": aligned_volume,
                 "price_level_basis": "ohlc_high_low" if aligned_hilo else "close_fallback",
+                "price_level_data_date": price_level_inputs[2] if price_level_inputs else None,
+                "price_level_completed_bars_only": price_level_inputs is not None,
+                "price_level_missing_reason": (
+                    "ohlc_not_aligned"
+                    if not aligned_hilo
+                    else "completed_bar_dates_unavailable"
+                    if price_level_inputs is None
+                    else "insufficient_completed_bars"
+                    if primary_high_20d is None or primary_low_20d is None
+                    else None
+                ),
                 "temporal_data_date": temporal_inputs[3] if temporal_inputs else None,
                 "temporal_completed_bars_only": temporal_inputs is not None,
                 "temporal_missing_reason": (
@@ -315,6 +365,42 @@ def _completed_temporal_inputs(
     if not is_final and temporal_date is None:
         return None
     return list(closes[:end]), completed_highs, completed_lows, temporal_date
+
+
+def _completed_price_level_inputs(
+    *,
+    closes: Sequence[float],
+    highs: Sequence[float],
+    lows: Sequence[float],
+    close_dates: Sequence[str] | None,
+    data_date: str | None,
+    observation_date: str | None,
+    is_final: bool,
+) -> tuple[list[float], list[float], str | None] | None:
+    """Return bars completed before the signal price without dropping a delayed prior-day bar."""
+    end = len(closes)
+    dates = list(close_dates or [])
+    dates_aligned = len(dates) == len(closes)
+    if is_final:
+        end -= 1
+    else:
+        if not dates_aligned or observation_date is None:
+            return None
+        normalized_observation_date = _iso_date_or_none(observation_date)
+        normalized_data_date = _iso_date_or_none(data_date)
+        latest_bar_date = _iso_date_or_none(dates[-1]) if dates else None
+        if normalized_observation_date is None or latest_bar_date is None:
+            return None
+        if normalized_data_date is not None and normalized_data_date > normalized_observation_date:
+            return None
+        if latest_bar_date > normalized_observation_date:
+            return None
+        if latest_bar_date == normalized_observation_date:
+            end -= 1
+    if end <= 0:
+        return None
+    price_level_date = _iso_date_or_none(dates[end - 1]) if dates_aligned else None
+    return list(highs[:end]), list(lows[:end]), price_level_date
 
 
 def _temporal_metrics(
@@ -686,6 +772,9 @@ def _missing_fields(
     for field in (
         "ma20",
         "macd_hist",
+        "macd_hist_pct",
+        "prior_high_20d",
+        "prior_low_20d",
         "atr",
         "mfi",
         "kd_k",
@@ -776,18 +865,6 @@ def _average_volume(volumes: Sequence[float] | None, window: int) -> float | Non
     return average if math.isfinite(average) else None
 
 
-def _prior_window_max(values: Sequence[float] | None, window: int) -> float | None:
-    if values is None or len(values) < window + 1:
-        return None
-    return max(values[-(window + 1):-1])
-
-
-def _prior_window_min(values: Sequence[float] | None, window: int) -> float | None:
-    if values is None or len(values) < window + 1:
-        return None
-    return min(values[-(window + 1):-1])
-
-
 def _signal(state: str, impact: int, reason: str, **extra: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "state": state,
@@ -831,6 +908,22 @@ def _aligned_values(values: Sequence[float] | None, closes: Sequence[float]) -> 
         return None
     numbers = [float(value) for value in values if value is not None]
     return numbers if len(numbers) == len(closes) else None
+
+
+def _series_dates_align(
+    reference_dates: Sequence[str] | None,
+    candidate_dates: Sequence[str] | None,
+    expected_length: int,
+) -> bool:
+    reference = list(reference_dates or [])
+    candidate = list(candidate_dates or [])
+    if not reference and not candidate:
+        return True
+    return (
+        len(reference) == expected_length
+        and len(candidate) == expected_length
+        and reference == candidate
+    )
 
 
 def _valid_volume_values(values: Sequence[float] | None) -> list[float] | None:

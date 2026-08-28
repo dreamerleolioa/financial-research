@@ -13,6 +13,8 @@ export interface TechnicalIndicators {
   avg_volume_60: number | null;
   high_20d: number | null;
   low_20d: number | null;
+  prior_high_20d?: number | null;
+  prior_low_20d?: number | null;
   high_60d: number | null;
   low_60d: number | null;
   bollinger_upper: number | null;
@@ -23,6 +25,7 @@ export interface TechnicalIndicators {
   macd_line: number | null;
   macd_signal: number | null;
   macd_hist: number | null;
+  macd_hist_pct?: number | null;
   macd_bias: string | null;
   kd_k: number | null;
   kd_d: number | null;

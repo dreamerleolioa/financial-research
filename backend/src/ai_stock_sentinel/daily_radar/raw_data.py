@@ -374,6 +374,9 @@ def _build_technical_payload(symbol: str, frame: Any, *, run_date: date, name: s
         highs=highs,
         lows=lows,
         volumes=volumes,
+        close_dates=_series_dates(frame, "Close"),
+        high_dates=_series_dates(frame, "High"),
+        low_dates=_series_dates(frame, "Low"),
         current_price=close,
         data_date=data_date,
         is_final=True,
@@ -425,11 +428,15 @@ def _build_local_technical_payload(
     volumes = [float(row.volume) for row in rows]
     data_date = rows[-1].trade_date.isoformat()
     close = closes[-1]
+    bar_dates = [row.trade_date.isoformat() for row in rows]
     profile_payload = build_technical_profile_payload(
         closes=closes,
         highs=highs,
         lows=lows,
         volumes=volumes,
+        close_dates=bar_dates,
+        high_dates=bar_dates,
+        low_dates=bar_dates,
         current_price=close,
         data_date=data_date,
         is_final=True,
@@ -475,8 +482,8 @@ def _daily_radar_indicators_from_profile(
     lookback_days: int,
 ) -> dict[str, Any]:
     has_ohlc_price_levels = _has_ohlc_price_levels(technical_profile)
-    support = technical_indicators.get("low_20d") if has_ohlc_price_levels else None
-    resistance = technical_indicators.get("high_20d") if has_ohlc_price_levels else None
+    support = technical_indicators.get("prior_low_20d") if has_ohlc_price_levels else None
+    resistance = technical_indicators.get("prior_high_20d") if has_ohlc_price_levels else None
     return {
         "ma5": technical_indicators.get("ma5"),
         "ma20": technical_indicators.get("ma20"),
@@ -489,6 +496,7 @@ def _daily_radar_indicators_from_profile(
         "macd": technical_indicators.get("macd_line"),
         "macd_signal": technical_indicators.get("macd_signal"),
         "macd_histogram": technical_indicators.get("macd_hist"),
+        "macd_hist_pct": technical_indicators.get("macd_hist_pct"),
         "kd_k": technical_indicators.get("kd_k"),
         "kd_d": technical_indicators.get("kd_d"),
         "atr14": technical_indicators.get("atr"),
@@ -576,6 +584,20 @@ def _series_numbers(frame: Any, field_name: str) -> list[float]:
         series = series.dropna()
     values = series.tolist() if hasattr(series, "tolist") else list(series)
     return [_to_float(value) for value in values if _to_float(value) is not None]
+
+
+def _series_dates(frame: Any, field_name: str) -> list[str]:
+    column_name = _matching_column_name(frame, field_name)
+    index = getattr(frame, "index", None)
+    if column_name is None or index is None:
+        return []
+    series = frame[column_name]
+    items = list(series.items()) if hasattr(series, "items") else list(zip(index, list(series)))
+    return [
+        _index_value_date(index_value).isoformat()
+        for index_value, raw_value in items
+        if _to_float(raw_value) is not None
+    ]
 
 
 def _matching_column_name(frame: Any, field_name: str) -> Any:
