@@ -1963,6 +1963,7 @@ Daily Radar run status：
 #### Internal calibration lifecycle
 
 - `POST /internal/daily-radar/forward-validation/run`：以 `mode = due` 評估最新公開 run 中已成熟的 5 / 10 / 20 交易日窗口；同日 rerun 只採最新公開 run。
+  - `daily-radar-forward-validation-report-v2` 的 production report 會在 upsert 後重新讀取已持久化的固定日期 cohort，避免 due rerun 只回傳本批新到期窗口。`selection_diagnostics` 分成 `selected`、可比較 `shadow` 與 `eligibility_audit`，逐 cohort 揭露驗證／跳過率，並同時輸出 absolute-positive 與 benchmark-outperformance 的 conditional precision、observed-pool recall 與 shadow miss share。這些指標只描述目前 Daily Radar universe 內且可驗證的比較池，不代表全市場召回率；既有 bucket／rule／risk／ablation 報表維持 selected-only。
 - `POST /internal/analysis-calibration/forward-validation/run`：評估 append-only、final `/analyze` 樣本的 5 / 10 / 20 交易日 outcome。
 - `POST /internal/daily-radar/rule-review/monthly`：輸出 Daily Radar baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - `POST /internal/analysis-calibration/monthly`：輸出一般分析 confidence baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。

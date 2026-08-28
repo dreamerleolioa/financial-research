@@ -52,7 +52,10 @@ def resolve_phase1_managed_universe(
 
     latest_run = get_latest_daily_radar_run(session, market=market)
     if latest_run is not None:
-        for candidate in sorted(latest_run.candidates, key=_candidate_sort_key):
+        for candidate in sorted(
+            (candidate for candidate in latest_run.candidates if candidate.selection_status == "selected"),
+            key=_candidate_sort_key,
+        ):
             item = _ensure_item(by_symbol, candidate.symbol)
             _append_source(item, "daily_radar_candidate")
 

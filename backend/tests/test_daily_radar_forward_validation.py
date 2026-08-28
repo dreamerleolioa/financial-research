@@ -31,12 +31,14 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DAILY_RADAR_FORWARD_ADAPTER,
     FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
+    build_forward_validation_report_from_outcomes,
     evaluate_forward_window,
     exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs,
     forward_validation_fixture_inputs,
     load_benchmark_prices_from_prepared_market_context,
     merge_price_series,
+    persisted_forward_validation_outcomes,
     symbols_requiring_forward_price_refresh,
     upsert_forward_validation_results,
     validate_forward_validation_benchmark,
@@ -307,6 +309,178 @@ def test_forward_validation_fixture_report_is_deterministic_and_grouped() -> Non
     assert first["version_manifest"]["live_ranking_changed"] is False
 
 
+def test_forward_validation_reports_precision_recall_and_false_negative_from_shadow_pool() -> None:
+    candidates, prices_by_symbol, benchmark_prices, benchmark_symbol = forward_validation_fixture_inputs(
+        fixture_dir=FIXTURE_DIR,
+        run_date=date(2026, 5, 29),
+        market="TW",
+    )
+    candidates[0]["selection_status"] = "shadow"
+    candidates[0]["prefilter_status"] = "rejected"
+    candidates[0]["prefilter_reasons"] = [{"code": "overextended"}]
+
+    evaluation = build_forward_validation_report(
+        candidates,
+        price_series_by_symbol=prices_by_symbol,
+        benchmark_prices=benchmark_prices,
+        market="TW",
+        sample_source="fixture_with_shadow",
+        as_of_date=date(2026, 6, 26),
+        windows=[5],
+        benchmark_symbol=benchmark_symbol,
+    )
+
+    rows = [row for row in evaluation.outcomes if row["status"] == "validated"]
+    selected_rows = [row for row in rows if row["candidate_snapshot"]["selection_status"] == "selected"]
+    shadow_rows = [row for row in rows if row["candidate_snapshot"]["selection_status"] == "shadow"]
+    selected_hits = sum(row["outcome"]["hit_above_threshold"] is True for row in selected_rows)
+    shadow_hits = sum(row["outcome"]["hit_above_threshold"] is True for row in shadow_rows)
+    diagnostics = evaluation.report["selection_diagnostics"]["5"]
+
+    assert diagnostics["selected_validation"]["validated_count"] == len(selected_rows)
+    assert diagnostics["comparable_shadow_validation"]["validated_count"] == len(shadow_rows) == 1
+    absolute = diagnostics["absolute_positive"]
+    assert absolute["selected_hit_count"] == selected_hits
+    assert absolute["comparable_shadow_hit_count"] == shadow_hits
+    assert absolute["conditional_selected_precision"] == round(selected_hits / len(selected_rows), 4)
+    assert absolute["observed_comparable_shadow_miss_share"] == round(
+        shadow_hits / (selected_hits + shadow_hits),
+        4,
+    )
+    assert evaluation.report["metadata"]["aggregation_scope"] == "evaluation_batch"
+    selected_bucket_samples = sum(
+        metrics["5"]["sample_count"]
+        for metrics in evaluation.report["bucket_outcomes"].values()
+    )
+    assert selected_bucket_samples == len(selected_rows)
+
+
+def test_forward_validation_separates_absolute_hit_from_benchmark_outperformance() -> None:
+    candidate = _candidate_snapshot()
+    candidate["selection_status"] = "selected"
+    outcome = evaluate_forward_window(
+        candidate,
+        price_series=[
+            _price("2026-06-01", 100, 100, 100, 100),
+            _price("2026-06-02", 105, 105, 105, 105),
+        ],
+        benchmark_prices=[
+            _price("2026-06-01", 1000, 1000, 1000, 1000),
+            _price("2026-06-02", 1100, 1100, 1100, 1100),
+        ],
+        window_days=1,
+        as_of_date=date(2026, 6, 2),
+        benchmark_symbol="TAIEX",
+        validation_version=FORWARD_VALIDATION_VERSION,
+        hit_threshold_pct=0,
+    )
+
+    report = build_forward_validation_report_from_outcomes(
+        [candidate],
+        [outcome],
+        market="TW",
+        sample_source="unit",
+        as_of_date=date(2026, 6, 2),
+        windows=[1],
+    )
+
+    diagnostics = report["selection_diagnostics"]["1"]
+    assert diagnostics["absolute_positive"]["selected_hit_count"] == 1
+    assert diagnostics["benchmark_outperformance"]["selected_hit_count"] == 0
+
+
+def test_forward_validation_selection_diagnostics_disclose_skips_and_zero_denominators() -> None:
+    selected = _candidate_snapshot()
+    selected["selection_status"] = "selected"
+    shadow = _candidate_snapshot()
+    shadow["candidate_id"] = 2
+    shadow["symbol"] = "2454.TW"
+    shadow["selection_status"] = "shadow"
+    shadow["shadow_cohort"] = "comparable"
+    skipped = {
+        "candidate_id": 2,
+        "symbol": "2454.TW",
+        "signal_date": "2026-06-01",
+        "window_days": 5,
+        "validation_version": FORWARD_VALIDATION_VERSION,
+        "benchmark_symbol": "TAIEX",
+        "candidate_snapshot": DAILY_RADAR_FORWARD_ADAPTER.candidate_snapshot(shadow),
+        "status": "skipped",
+        "target_date": None,
+        "skip_reason": "missing_future_price",
+        "outcome": {},
+    }
+
+    report = build_forward_validation_report_from_outcomes(
+        [selected, shadow],
+        [skipped],
+        market="TW",
+        sample_source="unit",
+        as_of_date=date(2026, 6, 30),
+        windows=[5],
+    )
+
+    diagnostics = report["selection_diagnostics"]["5"]
+    assert diagnostics["selected_validation"]["attempted_count"] == 0
+    assert diagnostics["comparable_shadow_validation"] == {
+        "attempted_count": 1,
+        "validated_count": 0,
+        "skipped_count": 1,
+        "validation_rate": 0.0,
+        "skip_rate": 1.0,
+        "skip_reasons": {"missing_future_price": 1},
+    }
+    assert diagnostics["absolute_positive"]["conditional_selected_precision"] is None
+    assert diagnostics["absolute_positive"]["conditional_recall_within_observed_comparable_pool"] is None
+
+
+def test_persisted_skipped_outcome_is_not_visible_before_its_evaluation_as_of_date() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        snapshot = forward_validation_candidates_from_runs(session, market="TW")[0]
+        skipped = {
+            "candidate_id": candidate.id,
+            "symbol": candidate.symbol,
+            "signal_date": run.run_date.isoformat(),
+            "window_days": 5,
+            "validation_version": FORWARD_VALIDATION_VERSION,
+            "benchmark_symbol": "TAIEX",
+            "evaluation_as_of_date": "2026-06-08",
+            "candidate_snapshot": DAILY_RADAR_FORWARD_ADAPTER.candidate_snapshot(snapshot),
+            "status": "skipped",
+            "target_date": None,
+            "skip_reason": "missing_future_price",
+            "outcome": {},
+        }
+        upsert_forward_validation_results(session, [skipped])
+
+        assert persisted_forward_validation_outcomes(
+            session,
+            [snapshot],
+            windows=[5],
+            as_of_date=date(2026, 6, 2),
+        ) == []
+        visible = persisted_forward_validation_outcomes(
+            session,
+            [snapshot],
+            windows=[5],
+            as_of_date=date(2026, 6, 8),
+        )
+
+    assert len(visible) == 1
+    assert visible[0]["skip_reason"] == "missing_future_price"
+
+
 def test_forward_validation_internal_api_writes_idempotent_results(monkeypatch) -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -380,10 +554,19 @@ def test_forward_validation_internal_api_writes_idempotent_results(monkeypatch) 
     assert first.json()["validated_count"] == 1
     assert second.json()["records_written"] == 0
     assert second.json()["validated_count"] == 0
+    assert first.json()["report"] == second.json()["report"]
+    assert first.json()["report"]["metadata"]["aggregation_scope"] == "persisted_fixed_date_cohort"
 
     with Session(engine) as session:
         assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 1
         row = session.execute(select(DailyRadarForwardValidationResult)).scalar_one()
+        candidates = forward_validation_candidates_from_runs(session, market="TW")
+        assert persisted_forward_validation_outcomes(
+            session,
+            candidates,
+            windows=[5],
+            as_of_date=date(2026, 6, 7),
+        ) == []
 
     assert row.status == "validated"
     assert row.window_days == 5

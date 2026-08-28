@@ -12,6 +12,8 @@ from ai_stock_sentinel.daily_radar.types import DailyRadarRiskLabel
 
 
 PrefilterStatus = Literal["accepted", "rejected", "stale_data"]
+SHADOW_EXCLUDED_REASON_CODES = frozenset({"data_gap", "stale_core_data"})
+SHADOW_ELIGIBILITY_REASON_CODES = frozenset({"low_liquidity", "min_price"})
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,82 @@ def run_stage1_prefilter(
 
     non_accepted = [result for result in results if result["prefilter_status"] != "accepted"]
     return accepted + non_accepted
+
+
+def run_stage1_prefilter_with_shadow(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    selected_limit: int = 100,
+    config: PrefilterConfig | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep a deterministic non-public comparison pool without scoring stale or incomplete rows."""
+    unique_records: list[Mapping[str, Any]] = []
+    duplicate_symbols: list[str] = []
+    seen_symbols: set[str] = set()
+    for record in records:
+        symbol = str(record.get("symbol") or "").strip()
+        if symbol in seen_symbols:
+            duplicate_symbols.append(symbol)
+            continue
+        seen_symbols.add(symbol)
+        unique_records.append(record)
+    results = [prefilter_record(record, config=config) for record in unique_records]
+    accepted = sorted(
+        (result for result in results if result["prefilter_status"] == "accepted"),
+        key=_prefilter_rank_key,
+    )
+    ranked_accepted = [dict(result) | {"prefilter_rank": rank} for rank, result in enumerate(accepted, 1)]
+    selected = [dict(result) | {"selection_status": "selected"} for result in ranked_accepted[:selected_limit]]
+    overflow = [
+        dict(result) | {"selection_status": "shadow", "shadow_reason": "candidate_limit"}
+        for result in ranked_accepted[selected_limit:]
+    ]
+    rejected = sorted(
+        (
+            result
+            for result in results
+            if result["prefilter_status"] == "rejected"
+            and not SHADOW_EXCLUDED_REASON_CODES.intersection(
+                str(reason.get("code") or "") for reason in result.get("prefilter_reasons") or []
+            )
+        ),
+        key=_prefilter_rank_key,
+    )
+    rejected_shadow = [
+        dict(result)
+        | {
+            "selection_status": "shadow",
+            "shadow_reason": "prefilter_rejected",
+            "shadow_cohort": _shadow_cohort(result),
+        }
+        for result in rejected
+    ]
+    overflow = [dict(result) | {"shadow_cohort": "comparable"} for result in overflow]
+    shadow = overflow + rejected_shadow
+    retained_symbols = {str(result.get("symbol")) for result in selected + shadow}
+    excluded = [result for result in results if str(result.get("symbol")) not in retained_symbols]
+    return {
+        "selected": selected,
+        "shadow": shadow,
+        "excluded": excluded,
+        "duplicates": [{"symbol": symbol} for symbol in sorted(set(duplicate_symbols))],
+    }
+
+
+def _prefilter_rank_key(result: Mapping[str, Any]) -> tuple[float, str]:
+    liquidity = _mapping(_mapping(result.get("debug")).get("liquidity"))
+    return (-_float(liquidity.get("avg_turnover_value_million")), str(result.get("symbol") or ""))
+
+
+def _shadow_cohort(result: Mapping[str, Any]) -> str:
+    reason_codes = {
+        str(reason.get("code") or "")
+        for reason in result.get("prefilter_reasons") or []
+        if isinstance(reason, Mapping)
+    }
+    if reason_codes.intersection(SHADOW_ELIGIBILITY_REASON_CODES):
+        return "eligibility_audit"
+    return "comparable"
 
 
 def _build_debug(

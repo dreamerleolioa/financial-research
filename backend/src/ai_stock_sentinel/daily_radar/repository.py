@@ -182,6 +182,10 @@ def replace_run_candidates(
             score_breakdown=dict(_mapping(payload.get("score_breakdown"))),
             input_snapshot=dict(_mapping(payload.get("input_snapshot"))),
             data_dates=dict(_mapping(payload.get("data_dates"))),
+            selection_status=str(payload.get("selection_status") or "selected"),
+            prefilter_status=str(payload.get("prefilter_status") or "accepted"),
+            prefilter_reasons=list(payload.get("prefilter_reasons") or []),
+            shadow_cohort=payload.get("shadow_cohort"),
         )
         session.add(candidate)
         persisted.append(candidate)
@@ -243,6 +247,7 @@ def get_symbol_candidate_history(
             DailyRadarRun.run_date >= earliest_date,
             DailyRadarRun.run_date < before_date,
             DailyRadarCandidate.symbol.in_(symbol_set),
+            DailyRadarCandidate.selection_status == "selected",
         )
         .order_by(
             DailyRadarRun.run_date.desc(),

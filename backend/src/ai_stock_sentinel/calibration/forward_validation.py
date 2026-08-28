@@ -101,6 +101,7 @@ def evaluate_forward_window(
         "window_days": int(window_days),
         "validation_version": validation_version,
         "benchmark_symbol": benchmark_symbol,
+        "evaluation_as_of_date": as_of_date.isoformat() if as_of_date is not None else None,
         "candidate_snapshot": dict(adapter.candidate_snapshot(candidate)),
     }
     if signal_date is None:

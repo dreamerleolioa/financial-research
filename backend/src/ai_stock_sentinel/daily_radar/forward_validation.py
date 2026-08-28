@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -34,7 +34,7 @@ from ai_stock_sentinel.db.models import (
 
 
 FORWARD_VALIDATION_VERSION = "daily-radar-forward-validation-v2"
-FORWARD_VALIDATION_REPORT_VERSION = "daily-radar-forward-validation-report-v1"
+FORWARD_VALIDATION_REPORT_VERSION = "daily-radar-forward-validation-report-v2"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
 
 
@@ -57,6 +57,7 @@ def build_forward_validation_report(
     validation_version: str = FORWARD_VALIDATION_VERSION,
     hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
     windows_by_candidate: Mapping[str, Sequence[int]] | None = None,
+    aggregation_scope: str = "evaluation_batch",
 ) -> ForwardValidationEvaluation:
     active_windows = _ordered_positive_values(windows)
     candidate_list = [dict(candidate) for candidate in candidates]
@@ -74,8 +75,70 @@ def build_forward_validation_report(
     )
     outcomes = evaluation.outcomes
 
-    valid_outcomes = [outcome for outcome in outcomes if outcome["status"] == "validated"]
-    report = {
+    report = _build_report_from_outcomes(
+        candidate_list,
+        outcomes,
+        market=market,
+        sample_source=sample_source,
+        as_of_date=as_of_date,
+        active_windows=active_windows,
+        benchmark_symbol=benchmark_symbol,
+        validation_version=validation_version,
+        hit_threshold_pct=hit_threshold_pct,
+        aggregation_scope=aggregation_scope,
+    )
+    return ForwardValidationEvaluation(report=report, outcomes=outcomes)
+
+
+def build_forward_validation_report_from_outcomes(
+    candidates: Iterable[Mapping[str, Any]],
+    outcomes: Iterable[Mapping[str, Any]],
+    *,
+    market: str,
+    sample_source: str,
+    as_of_date: date | None,
+    windows: Sequence[int] = DEFAULT_FORWARD_WINDOWS,
+    benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
+    validation_version: str = FORWARD_VALIDATION_VERSION,
+    hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
+    aggregation_scope: str = "persisted_fixed_date_cohort",
+) -> dict[str, Any]:
+    return _build_report_from_outcomes(
+        [dict(candidate) for candidate in candidates],
+        [dict(outcome) for outcome in outcomes],
+        market=market,
+        sample_source=sample_source,
+        as_of_date=as_of_date,
+        active_windows=_ordered_positive_values(windows),
+        benchmark_symbol=benchmark_symbol,
+        validation_version=validation_version,
+        hit_threshold_pct=hit_threshold_pct,
+        aggregation_scope=aggregation_scope,
+    )
+
+
+def _build_report_from_outcomes(
+    candidates: Sequence[Mapping[str, Any]],
+    outcomes: Sequence[Mapping[str, Any]],
+    *,
+    market: str,
+    sample_source: str,
+    as_of_date: date | None,
+    active_windows: Sequence[int],
+    benchmark_symbol: str,
+    validation_version: str,
+    hit_threshold_pct: float,
+    aggregation_scope: str,
+) -> dict[str, Any]:
+    outcome_rows = [dict(outcome) for outcome in outcomes]
+    valid_outcomes = [outcome for outcome in outcome_rows if outcome["status"] == "validated"]
+    selected_valid_outcomes = [
+        outcome for outcome in valid_outcomes if _selection_status(outcome) == "selected"
+    ]
+    shadow_valid_outcomes = [
+        outcome for outcome in valid_outcomes if _selection_status(outcome) == "shadow"
+    ]
+    return {
         "metadata": {
             "report_version": FORWARD_VALIDATION_REPORT_VERSION,
             "validation_version": validation_version,
@@ -85,20 +148,48 @@ def build_forward_validation_report(
             "windows": active_windows,
             "benchmark_symbol": benchmark_symbol,
             "hit_threshold_pct": hit_threshold_pct,
+            "aggregation_scope": aggregation_scope,
             "positioning": "rule_quality_calibration_diagnostic_not_performance_marketing",
         },
-        "sample_summary": _sample_summary(candidate_list, outcomes, active_windows),
-        "bucket_outcomes": _grouped_outcomes(valid_outcomes, _primary_bucket),
-        "secondary_bucket_outcomes": _grouped_outcomes(valid_outcomes, _secondary_buckets),
-        "rule_outcomes": _grouped_outcomes(valid_outcomes, _matched_rule_codes),
-        "risk_label_outcomes": _grouped_outcomes(valid_outcomes, _risk_labels),
-        "market_regime_outcomes": _grouped_outcomes(valid_outcomes, _market_regime),
-        "relative_strength_bucket_outcomes": _grouped_outcomes(valid_outcomes, _relative_strength_bucket),
-        "repeat_status_outcomes": _grouped_outcomes(valid_outcomes, _repeat_status),
-        "score_decile_outcomes": _grouped_outcomes(valid_outcomes, _score_decile),
-        "data_freshness_outcomes": _grouped_outcomes(valid_outcomes, _data_freshness_status_from_outcome),
-        "ablation_candidates": _ablation_candidates(valid_outcomes),
-        "skip_reasons": evaluation.skipped_reasons,
+        "sample_summary": _sample_summary(candidates, outcome_rows, active_windows),
+        "selection_diagnostics": _selection_diagnostics(
+            outcome_rows,
+            active_windows,
+            hit_threshold_pct=hit_threshold_pct,
+        ),
+        "shadow_prefilter_reason_outcomes": _grouped_outcomes(
+            shadow_valid_outcomes,
+            _prefilter_reason_codes,
+        ),
+        "eligibility_audit_outcomes": _grouped_outcomes(
+            [row for row in shadow_valid_outcomes if _shadow_cohort(row) == "eligibility_audit"],
+            _prefilter_reason_codes,
+        ),
+        "bucket_outcomes": _grouped_outcomes(selected_valid_outcomes, _primary_bucket),
+        "secondary_bucket_outcomes": _grouped_outcomes(selected_valid_outcomes, _secondary_buckets),
+        "rule_outcomes": _grouped_outcomes(selected_valid_outcomes, _matched_rule_codes),
+        "risk_label_outcomes": _grouped_outcomes(selected_valid_outcomes, _risk_labels),
+        "market_regime_outcomes": _grouped_outcomes(selected_valid_outcomes, _market_regime),
+        "relative_strength_bucket_outcomes": _grouped_outcomes(
+            selected_valid_outcomes,
+            _relative_strength_bucket,
+        ),
+        "repeat_status_outcomes": _grouped_outcomes(selected_valid_outcomes, _repeat_status),
+        "score_decile_outcomes": _grouped_outcomes(selected_valid_outcomes, _score_decile),
+        "data_freshness_outcomes": _grouped_outcomes(
+            selected_valid_outcomes,
+            _data_freshness_status_from_outcome,
+        ),
+        "ablation_candidates": _ablation_candidates(selected_valid_outcomes),
+        "skip_reasons": dict(
+            sorted(
+                Counter(
+                    str(row.get("skip_reason") or "unknown")
+                    for row in outcome_rows
+                    if row["status"] == "skipped"
+                ).items()
+            )
+        ),
         "version_manifest": {
             "scoring_version": SCORING_VERSION,
             "rule_version": RULE_VERSION,
@@ -109,7 +200,6 @@ def build_forward_validation_report(
             "diagnostic_only": True,
         },
     }
-    return ForwardValidationEvaluation(report=report, outcomes=outcomes)
 
 
 def evaluate_forward_window(
@@ -335,6 +425,7 @@ def upsert_forward_validation_results(
                 signal_date=signal_date,
                 target_date=_parse_date(outcome.get("target_date")),
                 benchmark_symbol=benchmark_symbol,
+                evaluation_as_of_date=_parse_date(outcome.get("evaluation_as_of_date")),
                 outcome=payload,
                 skip_reason=outcome.get("skip_reason"),
             )
@@ -343,6 +434,7 @@ def upsert_forward_validation_results(
             existing.signal_date = signal_date
             existing.target_date = _parse_date(outcome.get("target_date"))
             existing.benchmark_symbol = benchmark_symbol
+            existing.evaluation_as_of_date = _parse_date(outcome.get("evaluation_as_of_date"))
             existing.outcome = payload
             existing.skip_reason = outcome.get("skip_reason")
         session.add(existing)
@@ -363,6 +455,85 @@ def upsert_forward_validation_results(
         "retryable_skipped_count": retryable_skipped,
         "terminal_skipped_count": terminal_skipped,
     }
+
+
+def persisted_forward_validation_outcomes(
+    session: Session,
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    windows: Sequence[int],
+    as_of_date: date,
+    validation_version: str = FORWARD_VALIDATION_VERSION,
+) -> list[dict[str, Any]]:
+    candidate_by_id = {
+        int(candidate["candidate_id"]): dict(candidate)
+        for candidate in candidates
+        if candidate.get("candidate_id") is not None
+    }
+    if not candidate_by_id:
+        return []
+    active_windows = _ordered_positive_values(windows)
+    results = session.execute(
+        select(DailyRadarForwardValidationResult)
+        .where(
+            DailyRadarForwardValidationResult.candidate_id.in_(candidate_by_id),
+            DailyRadarForwardValidationResult.window_days.in_(active_windows),
+            DailyRadarForwardValidationResult.validation_version == validation_version,
+        )
+        .order_by(
+            DailyRadarForwardValidationResult.signal_date.asc(),
+            DailyRadarForwardValidationResult.candidate_id.asc(),
+            DailyRadarForwardValidationResult.window_days.asc(),
+        )
+    ).scalars()
+    outcomes: list[dict[str, Any]] = []
+    for result in results:
+        candidate = candidate_by_id[result.candidate_id]
+        candidate_signal_date = _parse_date(candidate.get("record_date"))
+        expected_benchmark = candidate_forward_validation_benchmark_symbol(
+            candidate.get("input_snapshot")
+        )
+        if (
+            result.status not in {"validated", "skipped"}
+            or candidate_signal_date is None
+            or result.signal_date != candidate_signal_date
+            or result.benchmark_symbol != expected_benchmark
+        ):
+            continue
+        if (
+            result.status == "validated"
+            and (result.target_date is None or result.target_date > as_of_date)
+        ):
+            continue
+        if (
+            result.status == "skipped"
+            and (
+                result.evaluation_as_of_date is None
+                or result.evaluation_as_of_date > as_of_date
+            )
+        ):
+            continue
+        outcomes.append(
+            {
+                "candidate_id": result.candidate_id,
+                "symbol": str(candidate.get("symbol") or ""),
+                "signal_date": result.signal_date.isoformat(),
+                "window_days": result.window_days,
+                "validation_version": result.validation_version,
+                "benchmark_symbol": result.benchmark_symbol,
+                "evaluation_as_of_date": (
+                    result.evaluation_as_of_date.isoformat()
+                    if result.evaluation_as_of_date
+                    else None
+                ),
+                "candidate_snapshot": dict(DAILY_RADAR_FORWARD_ADAPTER.candidate_snapshot(candidate)),
+                "status": result.status,
+                "target_date": result.target_date.isoformat() if result.target_date else None,
+                "skip_reason": result.skip_reason,
+                "outcome": dict(result.outcome or {}) if result.status == "validated" else {},
+            }
+        )
+    return outcomes
 
 
 def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWARD_WINDOWS)) -> date:
@@ -518,6 +689,121 @@ def _sample_summary(
     }
 
 
+def _selection_diagnostics(
+    outcomes: Sequence[Mapping[str, Any]],
+    windows: Sequence[int],
+    *,
+    hit_threshold_pct: float,
+) -> dict[str, dict[str, Any]]:
+    diagnostics: dict[str, dict[str, Any]] = {}
+    for window in windows:
+        rows = [row for row in outcomes if int(row.get("window_days") or 0) == window]
+        selected = [row for row in rows if _selection_status(row) == "selected"]
+        comparable_shadow = [
+            row
+            for row in rows
+            if _selection_status(row) == "shadow" and _shadow_cohort(row) == "comparable"
+        ]
+        eligibility_audit = [
+            row
+            for row in rows
+            if _selection_status(row) == "shadow" and _shadow_cohort(row) == "eligibility_audit"
+        ]
+        selected_valid = _validated_rows(selected)
+        comparable_valid = _validated_rows(comparable_shadow)
+        comparable_pool = selected_valid + comparable_valid
+        diagnostics[str(window)] = {
+            "population_scope": "selected_plus_comparable_shadow_within_daily_universe",
+            "selected_validation": _validation_summary(selected),
+            "comparable_shadow_validation": _validation_summary(comparable_shadow),
+            "eligibility_audit_validation": _validation_summary(eligibility_audit),
+            "absolute_positive": _conditional_selection_metric(
+                selected_valid,
+                comparable_valid,
+                hit=lambda row: _is_hit(row),
+            ),
+            "benchmark_outperformance": _conditional_selection_metric(
+                selected_valid,
+                comparable_valid,
+                hit=lambda row: _is_benchmark_outperformance(row, hit_threshold_pct),
+            ),
+            "validated_selected_share_within_comparable_pool": _ratio(
+                len(selected_valid),
+                len(comparable_pool),
+            ),
+        }
+    return diagnostics
+
+
+def _selection_status(outcome: Mapping[str, Any]) -> str:
+    return str(_mapping(outcome.get("candidate_snapshot")).get("selection_status") or "selected")
+
+
+def _shadow_cohort(outcome: Mapping[str, Any]) -> str:
+    snapshot = _mapping(outcome.get("candidate_snapshot"))
+    explicit = str(snapshot.get("shadow_cohort") or "")
+    if explicit in {"comparable", "eligibility_audit"}:
+        return explicit
+    reason_codes = set(_prefilter_reason_codes(outcome))
+    if reason_codes.intersection({"low_liquidity", "min_price"}):
+        return "eligibility_audit"
+    return "comparable"
+
+
+def _validated_rows(outcomes: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [row for row in outcomes if row.get("status") == "validated"]
+
+
+def _validation_summary(outcomes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    attempted_count = len(outcomes)
+    validated_count = sum(row.get("status") == "validated" for row in outcomes)
+    skipped = [row for row in outcomes if row.get("status") == "skipped"]
+    skip_reasons = Counter(str(row.get("skip_reason") or "unknown") for row in skipped)
+    return {
+        "attempted_count": attempted_count,
+        "validated_count": validated_count,
+        "skipped_count": len(skipped),
+        "validation_rate": _ratio(validated_count, attempted_count),
+        "skip_rate": _ratio(len(skipped), attempted_count),
+        "skip_reasons": dict(sorted(skip_reasons.items())),
+    }
+
+
+def _conditional_selection_metric(
+    selected: Sequence[Mapping[str, Any]],
+    comparable_shadow: Sequence[Mapping[str, Any]],
+    *,
+    hit: Callable[[Mapping[str, Any]], bool],
+) -> dict[str, Any]:
+    selected_hits = sum(bool(hit(row)) for row in selected)
+    shadow_hits = sum(bool(hit(row)) for row in comparable_shadow)
+    observed_positive_count = selected_hits + shadow_hits
+    return {
+        "selected_hit_count": selected_hits,
+        "comparable_shadow_hit_count": shadow_hits,
+        "conditional_selected_precision": _ratio(selected_hits, len(selected)),
+        "conditional_recall_within_observed_comparable_pool": _ratio(
+            selected_hits,
+            observed_positive_count,
+        ),
+        "observed_comparable_shadow_miss_share": _ratio(
+            shadow_hits,
+            observed_positive_count,
+        ),
+    }
+
+
+def _is_hit(outcome: Mapping[str, Any]) -> bool:
+    return _mapping(outcome.get("outcome")).get("hit_above_threshold") is True
+
+
+def _is_benchmark_outperformance(outcome: Mapping[str, Any], threshold_pct: float) -> bool:
+    excess_return = _float_or_none(
+        _mapping(outcome.get("outcome")).get("excess_return_vs_benchmark_pct")
+    )
+    return excess_return is not None and excess_return > threshold_pct
+
+
 def _grouped_outcomes(
     outcomes: Sequence[Mapping[str, Any]],
     dimension: Any,
@@ -593,6 +879,14 @@ def _candidate_dimensions(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "repeat_status": str(candidate.get("repeat_status") or "unknown"),
         "score_decile": _score_decile_from_candidate(candidate),
         "data_freshness_status": _data_freshness_status(candidate),
+        "selection_status": str(candidate.get("selection_status") or "selected"),
+        "shadow_cohort": candidate.get("shadow_cohort"),
+        "prefilter_status": str(candidate.get("prefilter_status") or "accepted"),
+        "prefilter_reason_codes": [
+            str(reason.get("code") or "")
+            for reason in candidate.get("prefilter_reasons") or []
+            if isinstance(reason, Mapping) and str(reason.get("code") or "")
+        ],
     }
 
 
@@ -612,6 +906,11 @@ def _matched_rule_codes(outcome: Mapping[str, Any]) -> list[str]:
 
 def _risk_labels(outcome: Mapping[str, Any]) -> list[str]:
     values = _mapping(outcome.get("candidate_snapshot")).get("risk_labels")
+    return list(values) if isinstance(values, list) and values else ["none"]
+
+
+def _prefilter_reason_codes(outcome: Mapping[str, Any]) -> list[str]:
+    values = _mapping(outcome.get("candidate_snapshot")).get("prefilter_reason_codes")
     return list(values) if isinstance(values, list) and values else ["none"]
 
 
@@ -718,6 +1017,10 @@ def _candidate_snapshot(candidate: DailyRadarCandidate, run: DailyRadarRun) -> d
         "score_breakdown": dict(candidate.score_breakdown or {}),
         "input_snapshot": dict(candidate.input_snapshot or {}),
         "data_dates": dict(candidate.data_dates or {}),
+        "selection_status": candidate.selection_status,
+        "prefilter_status": candidate.prefilter_status,
+        "prefilter_reasons": list(candidate.prefilter_reasons or []),
+        "shadow_cohort": candidate.shadow_cohort,
     }
 
 
@@ -832,6 +1135,7 @@ __all__ = [
     "FORWARD_VALIDATION_VERSION",
     "ForwardValidationEvaluation",
     "build_forward_validation_report",
+    "build_forward_validation_report_from_outcomes",
     "candidate_forward_validation_benchmark_symbol",
     "default_due_start_date",
     "due_windows_by_candidate",
@@ -842,6 +1146,7 @@ __all__ = [
     "load_forward_prices_from_fixture",
     "load_benchmark_prices_from_prepared_market_context",
     "load_price_series_from_raw_data",
+    "persisted_forward_validation_outcomes",
     "benchmark_requires_forward_price_refresh",
     "merge_price_series",
     "symbols_requiring_forward_price_refresh",

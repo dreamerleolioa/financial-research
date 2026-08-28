@@ -368,7 +368,11 @@ def _latest_daily_radar_symbols(session: Session, *, market: str) -> list[str]:
     latest_run = get_latest_daily_radar_run(session, market=market)
     if latest_run is None:
         return []
-    return [candidate.symbol for candidate in latest_run.candidates]
+    return [
+        candidate.symbol
+        for candidate in latest_run.candidates
+        if candidate.selection_status == "selected"
+    ]
 
 
 def _collect_symbols(

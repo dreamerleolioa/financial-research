@@ -83,12 +83,14 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DAILY_RADAR_FORWARD_ADAPTER,
     DEFAULT_FORWARD_WINDOWS,
     build_forward_validation_report,
+    build_forward_validation_report_from_outcomes,
     default_due_start_date,
     due_windows_by_candidate,
     exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs,
     load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
+    persisted_forward_validation_outcomes,
     upsert_forward_validation_results,
     validate_forward_validation_benchmark,
 )
@@ -1475,6 +1477,22 @@ def run_daily_radar_forward_validation_endpoint(
         windows_by_candidate=windows_by_candidate,
     )
     write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
+    persisted_outcomes = persisted_forward_validation_outcomes(
+        db,
+        candidates,
+        windows=request.windows,
+        as_of_date=as_of_date,
+    )
+    report = build_forward_validation_report_from_outcomes(
+        candidates,
+        persisted_outcomes,
+        market=request.market,
+        sample_source="production_db_persisted_cohort",
+        as_of_date=as_of_date,
+        windows=request.windows,
+        benchmark_symbol=request.benchmark_symbol,
+        aggregation_scope="persisted_fixed_date_cohort",
+    )
     db.commit()
     return DailyRadarForwardValidationRunResponse(
         status="completed",
@@ -1487,7 +1505,7 @@ def run_daily_radar_forward_validation_endpoint(
         skipped_count=write_summary["skipped_count"],
         retryable_skipped_count=write_summary["retryable_skipped_count"],
         terminal_skipped_count=write_summary["terminal_skipped_count"],
-        report=evaluation.report,
+        report=report,
     )
 
 

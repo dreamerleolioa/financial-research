@@ -369,6 +369,7 @@ def validation_rows_from_results(
             DailyRadarRun.market == market,
             date_predicate,
             DailyRadarRun.id.in_(latest_run_ids),
+            DailyRadarCandidate.selection_status == "selected",
         )
         .order_by(
             DailyRadarRun.run_date.asc(),
@@ -989,6 +990,7 @@ def _daily_radar_completeness_watermarks(
             DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
             DailyRadarRun.run_date <= through_date,
             DailyRadarRun.id.in_(latest_run_ids),
+            DailyRadarCandidate.selection_status == "selected",
         )
         .group_by(year_value, month_value, windows.c.window_days)
         .order_by(
@@ -1387,7 +1389,8 @@ def _daily_radar_replay_workload_preflight(
     candidate_count = int(
         session.scalar(
             select(func.count(DailyRadarCandidate.id)).where(
-                DailyRadarCandidate.run_id.in_(latest_run_ids)
+                DailyRadarCandidate.run_id.in_(latest_run_ids),
+                DailyRadarCandidate.selection_status == "selected",
             )
         )
         or 0

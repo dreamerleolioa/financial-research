@@ -901,6 +901,16 @@ class DailyRadarCandidate(Base):
         Index("idx_daily_radar_candidates_symbol", "symbol"),
         Index("idx_daily_radar_candidates_primary_bucket", "primary_bucket"),
         Index("idx_daily_radar_candidates_observation_score", "observation_score"),
+        Index("idx_daily_radar_candidates_selection_status", "selection_status"),
+        CheckConstraint(
+            "selection_status IN ('selected', 'shadow')",
+            name="ck_daily_radar_candidate_selection_status",
+        ),
+        CheckConstraint(
+            "(selection_status = 'selected' AND shadow_cohort IS NULL) OR "
+            "(selection_status = 'shadow' AND shadow_cohort IN ('comparable', 'eligibility_audit'))",
+            name="ck_daily_radar_candidate_shadow_cohort",
+        ),
     )
 
     id:                Mapped[int]         = mapped_column(Integer, primary_key=True)
@@ -918,6 +928,10 @@ class DailyRadarCandidate(Base):
     score_breakdown:   Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     input_snapshot:    Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     data_dates:        Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    selection_status:  Mapped[str]         = mapped_column(String(20), nullable=False, default="selected", server_default="selected")
+    prefilter_status:  Mapped[str]         = mapped_column(String(20), nullable=False, default="accepted", server_default="accepted")
+    prefilter_reasons: Mapped[list | None]  = mapped_column(JSONB, nullable=True)
+    shadow_cohort:     Mapped[str | None]   = mapped_column(String(30), nullable=True)
     created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     run: Mapped["DailyRadarRun"] = relationship(back_populates="candidates")
@@ -949,6 +963,7 @@ class DailyRadarForwardValidationResult(Base):
     signal_date: Mapped[date] = mapped_column(Date, nullable=False)
     target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     benchmark_symbol: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    evaluation_as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     outcome: Mapped[dict] = mapped_column(JSONB, nullable=False)
     skip_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
