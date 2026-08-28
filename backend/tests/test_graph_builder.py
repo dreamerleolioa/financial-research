@@ -63,7 +63,7 @@ def test_graph_runs_deterministic_analysis_without_llm_nodes() -> None:
     result = _graph(crawler).invoke(_initial_state())
 
     assert result["snapshot"]["symbol"] == "2330.TW"
-    assert result["technical_profile"]["version"] == "technical-layer-v3"
+    assert result["technical_profile"]["version"] == "technical-layer-v4"
     assert result["signal_confidence"] is not None
     assert result["strategy_type"] is not None
     assert result.get("analysis_detail") is None

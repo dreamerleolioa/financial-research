@@ -52,6 +52,7 @@ from ai_stock_sentinel.db.models import (
     DailyRadarRun,
     Phase1AvwapSnapshot,
     SharedBackgroundContext,
+    StockAnalysisCache,
     StockRawData,
     TaiwanInstitutionalFlow,
     TaiwanInstitutionalReportSnapshot,
@@ -134,6 +135,72 @@ def test_daily_radar_internal_auth_accepts_x_internal_token(monkeypatch) -> None
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_symbol_metadata_resolver_reads_official_industry_classification() -> None:
+    from ai_stock_sentinel.data_sources.symbol_metadata import SymbolMetadataResolver
+
+    def fake_get(url: str, **_kwargs):
+        if url.endswith("/exchangeReport/STOCK_DAY_ALL"):
+            return [{"Code": "2330", "Name": "台積電"}]
+        if url.endswith("/opendata/t187ap03_L"):
+            return [{"公司代號": "2330", "公司簡稱": "台積電", "產業別": "24"}]
+        if url.endswith("/tpex_mainboard_daily_close_quotes"):
+            return [{"SecuritiesCompanyCode": "6488", "SecuritiesCompanyName": "環球晶"}]
+        if url.endswith("/mopsfin_t187ap03_O"):
+            return [
+                {
+                    "SecuritiesCompanyCode": "6488",
+                    "CompanyAbbreviation": "環球晶",
+                    "SecuritiesIndustryCode": "24",
+                }
+            ]
+        raise AssertionError(f"unexpected URL: {url}")
+
+    resolver = SymbolMetadataResolver(request_get=fake_get)
+
+    assert resolver.resolve_industry("2330.TW") == "半導體業"
+    assert resolver.resolve_industry("6488.TWO") == "半導體業"
+
+
+def test_fetch_fundamental_data_adds_official_industry_to_serialized_contract(
+    monkeypatch,
+) -> None:
+    from ai_stock_sentinel.data_sources.fundamental import tools as fundamental_tools
+
+    provider = SimpleNamespace(
+        fetch=lambda _symbol, _current_price: FundamentalData(
+            symbol="2330.TW",
+            ttm_eps=40,
+        )
+    )
+    monkeypatch.setattr(
+        fundamental_tools,
+        "FinMindFundamentalProvider",
+        lambda: provider,
+    )
+    monkeypatch.setattr(
+        fundamental_tools,
+        "resolve_symbol_industry",
+        lambda _symbol: "半導體業",
+    )
+
+    result = fundamental_tools.fetch_fundamental_data("2330.TW", 1000)
+
+    assert result["industry"] == "半導體業"
+
+
+def test_daily_radar_industry_failure_log_does_not_expose_symbol(caplog) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    def raise_provider_error(_symbol: str) -> str | None:
+        raise RuntimeError("provider unavailable")
+
+    assert daily_radar_router._safe_resolve_industry(
+        "2330.TW",
+        resolver=raise_provider_error,
+    ) is None
+    assert "2330" not in caplog.text
 
 
 class FakeUniverseProvider:
@@ -536,6 +603,11 @@ def _api_client(
 
     monkeypatch.setattr(daily_radar_router, "run_daily_radar", fake_run_daily_radar)
     monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 1))
+    monkeypatch.setattr(
+        daily_radar_router,
+        "resolve_symbol_industry",
+        lambda symbol: "半導體業" if symbol in {"2330.TW", "2454.TW"} else None,
+    )
     api.app.dependency_overrides[get_db] = lambda: db_session
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
@@ -610,6 +682,7 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "macd": 1.2,
             "macd_signal": 0.8,
             "macd_histogram": 0.4,
+            "macd_hist_pct": 0.4 / 106.0 * 100,
             "kd_k": 72.0,
             "kd_d": 65.0,
             "atr14": 3.2,
@@ -618,7 +691,19 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv": 12_000_000,
             "obv_trend": "rising",
         },
-        "technical_profile": {"version": "technical-layer-v3"},
+        "technical_profile": {
+            "version": "technical-layer-v4",
+            "formula_versions": {
+                "metrics": "technical-metrics-v4",
+                "layering": "technical-layer-v4",
+            },
+            "data_quality": {
+                "ohlcv_aligned": True,
+                "price_level_basis": "ohlc_high_low",
+                "price_level_completed_bars_only": True,
+                "price_level_missing_reason": None,
+            },
+        },
         "price_history": [{"date": run_date.isoformat(), "close": 106.0}],
         "data_dates": {
             "ohlcv": run_date.isoformat(),
@@ -2150,6 +2235,151 @@ def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
 
 
+def test_daily_radar_refresh_managed_raw_data_covers_holdings_without_exposing_symbols(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add_all(
+        [
+            prepared,
+            UserPortfolio(
+                symbol="2330.TW",
+                entry_price=100,
+                quantity=1,
+                entry_date=date(2026, 5, 1),
+                is_active=True,
+            ),
+            StockAnalysisCache(
+                symbol="2454.TW",
+                record_date=run_date,
+                analysis_type="general",
+                analysis_is_final=True,
+            ),
+        ]
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-managed-raw-data",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        repeated = client.post(
+            "/internal/daily-radar/refresh-managed-raw-data",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "completed",
+        "step": "refresh-managed-raw-data",
+        "run_date": run_date.isoformat(),
+        "market": "TW",
+        "target_symbol_count": 2,
+        "active_symbol_count": 1,
+        "recent_analysis_symbol_count": 1,
+        "overlap_symbol_count": 0,
+        "selected_overlap_count": 1,
+        "reused_record_count": 0,
+        "records_written": 2,
+        "missing_record_count": 0,
+        "deferred_recent_symbol_count": 0,
+        "error_codes": [],
+    }
+    assert "2330" not in response.text
+    assert "2454" not in response.text
+    assert repeated.json()["reused_record_count"] == 2
+    assert repeated.json()["records_written"] == 0
+    assert len(client.fake_technical_fetcher.calls) == 1  # type: ignore[attr-defined]
+    rows = daily_radar_db_session.scalars(
+        select(StockRawData).where(StockRawData.record_date == run_date)
+    ).all()
+    assert {row.symbol for row in rows} == {"2330.TW", "2454.TW"}
+    assert all(row.raw_data_is_final for row in rows)
+    assert all(row.fundamental["industry"] == "半導體業" for row in rows)
+    daily_radar_db_session.refresh(prepared)
+    managed_status = prepared.step_statuses["refresh-managed-raw-data"]
+    assert managed_status["status"] == "completed"
+    assert managed_status["required_for_scoring"] is False
+    assert "2330" not in str(managed_status)
+    assert "2454" not in str(managed_status)
+    assert prepared.selected_symbols == ["2330.TW"]
+
+
+def test_daily_radar_refresh_managed_raw_data_failure_is_privacy_safe_and_optional(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+
+    run_date = date(2026, 6, 1)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add_all(
+        [
+            prepared,
+            UserPortfolio(
+                symbol="2454.TW",
+                entry_price=100,
+                quantity=1,
+                entry_date=date(2026, 5, 1),
+                is_active=True,
+            ),
+        ]
+    )
+    daily_radar_db_session.commit()
+    client = _api_client(
+        monkeypatch,
+        daily_radar_db_session,
+        technical_fetcher=EmptyBatchTechnicalFetcher(),
+    )
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-managed-raw-data",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        unsupported_market = client.post(
+            "/internal/daily-radar/refresh-managed-raw-data",
+            json={"run_date": run_date.isoformat(), "market": "US"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["missing_record_count"] == 1
+    assert response.json()["error_codes"] == ["managed_raw_data_incomplete"]
+    assert "2454" not in response.text
+    assert unsupported_market.status_code == 422
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-managed-raw-data"]["status"] == "failed"
+    assert (
+        "refresh-managed-raw-data"
+        not in daily_radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS
+    )
+
+
 def test_daily_radar_refresh_ohlcv_projects_fresh_full_margin_cache_into_raw_rows(
     monkeypatch,
     daily_radar_db_session: Session,
@@ -2563,11 +2793,13 @@ def test_ai_fundamental_materialization_clears_future_values_for_historical_as_o
         [row],
         provider=MissingPointInTimeFundamentalProvider(),
         as_of_date=date(2026, 6, 1),
+        industry_resolver=lambda _symbol: "半導體業",
     )
 
     assert errors == []
     assert row.fundamental["ttm_eps"] is None
     assert row.fundamental["pe_current"] is None
+    assert row.fundamental["industry"] == "半導體業"
     assert row.fundamental["margin"] == {"margin_delta_pct": 2.0, "margin_to_volume": 0.3}
     assert row.fundamental["data_dates"] == {
         "margin": "2026-06-01",
@@ -3185,6 +3417,7 @@ def daily_radar_db_session() -> Session:
             DailyRadarCandidate.__table__,
             Phase1AvwapSnapshot.__table__,
             SharedBackgroundContext.__table__,
+            StockAnalysisCache.__table__,
             StockRawData.__table__,
             TaiwanInstitutionalReportSnapshot.__table__,
             TaiwanInstitutionalFlow.__table__,

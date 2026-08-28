@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -16,6 +16,7 @@ from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.data_sources.fundamental.interface import PointInTimeFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_industry
 from ai_stock_sentinel.daily_radar.data_quality import (
     margin_evidence_is_complete,
     missing_daily_radar_candidate_technical_fields,
@@ -57,6 +58,11 @@ from ai_stock_sentinel.daily_radar.market_session import (
     MarketSessionProviderError,
     TwseMarketSessionProvider,
 )
+from ai_stock_sentinel.daily_radar.managed_raw_data import (
+    MANAGED_RAW_DATA_SYMBOL_LIMIT,
+    ManagedRawDataSelection,
+    select_managed_raw_data_symbols,
+)
 from ai_stock_sentinel.daily_radar.name_backfill import (
     SymbolNameResolver,
     backfill_daily_radar_symbol_names,
@@ -83,12 +89,14 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DAILY_RADAR_FORWARD_ADAPTER,
     DEFAULT_FORWARD_WINDOWS,
     build_forward_validation_report,
+    build_forward_validation_report_from_outcomes,
     default_due_start_date,
     due_windows_by_candidate,
     exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs,
     load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
+    persisted_forward_validation_outcomes,
     upsert_forward_validation_results,
     validate_forward_validation_benchmark,
 )
@@ -136,6 +144,8 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarInstitutionalUniverseReplayResponse,
     DailyRadarMarketSessionRequest,
     DailyRadarMarketSessionResponse,
+    DailyRadarManagedRawDataRefreshRequest,
+    DailyRadarManagedRawDataRefreshResponse,
     DailyRadarMarketBarsRefreshRequest,
     DailyRadarMarketBarsRefreshResponse,
     DailyRadarMonthlyRuleReviewRequest,
@@ -159,7 +169,7 @@ from ai_stock_sentinel.daily_radar.universe import (
     refresh_daily_radar_universe_technical_tracks,
     select_daily_radar_universe,
 )
-from ai_stock_sentinel.db.models import StockRawData
+from ai_stock_sentinel.db.models import DailyRadarPreparedRun, StockRawData
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.phase1_avwap.provider import ArchiveFirstDailyPriceProvider, TwseDailyPriceProvider
 from ai_stock_sentinel.phase1_avwap.service import DailyPriceProvider, refresh_phase1_avwap_snapshots_for_symbols
@@ -777,6 +787,107 @@ def refresh_daily_radar_ohlcv_endpoint(
 
 
 @router.post(
+    "/internal/daily-radar/refresh-managed-raw-data",
+    response_model=DailyRadarManagedRawDataRefreshResponse,
+    dependencies=[Depends(require_daily_radar_internal_auth)],
+)
+def refresh_daily_radar_managed_raw_data_endpoint(
+    payload: DailyRadarManagedRawDataRefreshRequest | None = None,
+    db: Session = Depends(get_db),
+    technical_fetcher: BatchTechnicalFetcher = Depends(
+        get_daily_radar_technical_fetcher
+    ),
+) -> DailyRadarManagedRawDataRefreshResponse:
+    request = payload or DailyRadarManagedRawDataRefreshRequest()
+    run_date = request.run_date or _backend_today()
+    selection = select_managed_raw_data_symbols(
+        db,
+        run_date=run_date,
+        max_symbols=MANAGED_RAW_DATA_SYMBOL_LIMIT,
+    )
+    prepared = get_daily_radar_prepared_run(
+        db,
+        run_date=run_date,
+        market=request.market,
+    )
+    selected_overlap_count = _managed_selected_overlap_count(
+        selection,
+        prepared.selected_symbols if prepared is not None else (),
+    )
+    if selection.active_symbols_over_budget:
+        return _finish_managed_raw_data_refresh(
+            db,
+            prepared=prepared,
+            request=request,
+            run_date=run_date,
+            selection=selection,
+            selected_overlap_count=selected_overlap_count,
+            status="failed",
+            error_codes=["active_symbol_budget_exceeded"],
+        )
+
+    existing_rows = get_final_raw_data_rows_for_symbols(
+        db,
+        run_date=run_date,
+        symbols=selection.symbols,
+    )
+    reusable_before = reusable_daily_radar_raw_rows(existing_rows)
+    # Industry metadata is public network I/O. Release the read transaction
+    # before resolving it, then apply the in-memory mapping to persisted rows.
+    db.rollback()
+    industries_by_symbol = _industry_classifications_by_symbol(selection.symbols)
+    try:
+        refreshed_rows = ensure_daily_radar_raw_rows(
+            db,
+            run_date,
+            selection.symbols,
+            technical_fetcher=technical_fetcher,
+        )
+        _materialize_industry_classifications(
+            refreshed_rows,
+            resolver=industries_by_symbol.get,
+        )
+    except Exception as exc:
+        logger.error(
+            "Managed raw-data refresh failed; error_type=%s",
+            exc.__class__.__name__,
+        )
+        db.rollback()
+        prepared = get_daily_radar_prepared_run(
+            db,
+            run_date=run_date,
+            market=request.market,
+        )
+        return _finish_managed_raw_data_refresh(
+            db,
+            prepared=prepared,
+            request=request,
+            run_date=run_date,
+            selection=selection,
+            selected_overlap_count=selected_overlap_count,
+            status="failed",
+            error_codes=["managed_raw_data_refresh_failed"],
+        )
+
+    missing_record_count = len(selection.symbols) - len(refreshed_rows)
+    return _finish_managed_raw_data_refresh(
+        db,
+        prepared=prepared,
+        request=request,
+        run_date=run_date,
+        selection=selection,
+        selected_overlap_count=selected_overlap_count,
+        status="failed" if missing_record_count else "completed",
+        reused_record_count=len(reusable_before),
+        records_written=max(0, len(refreshed_rows) - len(reusable_before)),
+        missing_record_count=missing_record_count,
+        error_codes=(
+            ["managed_raw_data_incomplete"] if missing_record_count else []
+        ),
+    )
+
+
+@router.post(
     "/internal/daily-radar/refresh-ai-evidence",
     response_model=DailyRadarRefreshStepResponse,
     dependencies=[Depends(require_daily_radar_internal_auth)],
@@ -841,6 +952,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
     }
     # Do not hold a database transaction open while external providers run.
     db.rollback()
+    industries_by_symbol = _industry_classifications_by_symbol(symbols)
     try:
         if isinstance(institutional_provider, OfficialInstitutionalEvidenceProvider):
             evidence_result = institutional_provider.fetch(
@@ -919,6 +1031,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
         pool_rows,
         provider=fundamental_provider,
         as_of_date=run_date,
+        industry_resolver=industries_by_symbol.get,
     )
     db.flush()
     refreshed_rows = [
@@ -1475,6 +1588,22 @@ def run_daily_radar_forward_validation_endpoint(
         windows_by_candidate=windows_by_candidate,
     )
     write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
+    persisted_outcomes = persisted_forward_validation_outcomes(
+        db,
+        candidates,
+        windows=request.windows,
+        as_of_date=as_of_date,
+    )
+    report = build_forward_validation_report_from_outcomes(
+        candidates,
+        persisted_outcomes,
+        market=request.market,
+        sample_source="production_db_persisted_cohort",
+        as_of_date=as_of_date,
+        windows=request.windows,
+        benchmark_symbol=request.benchmark_symbol,
+        aggregation_scope="persisted_fixed_date_cohort",
+    )
     db.commit()
     return DailyRadarForwardValidationRunResponse(
         status="completed",
@@ -1487,7 +1616,7 @@ def run_daily_radar_forward_validation_endpoint(
         skipped_count=write_summary["skipped_count"],
         retryable_skipped_count=write_summary["retryable_skipped_count"],
         terminal_skipped_count=write_summary["terminal_skipped_count"],
-        report=evaluation.report,
+        report=report,
     )
 
 
@@ -1818,6 +1947,7 @@ def _materialize_ai_business_fundamentals(
     *,
     provider: PointInTimeFundamentalProvider,
     as_of_date: date,
+    industry_resolver: Callable[[str], str | None] | None = None,
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     for row in rows:
@@ -1850,12 +1980,60 @@ def _materialize_ai_business_fundamentals(
             "source_provider": data.source_provider,
             "warnings": list(data.warnings),
         }
+        industry = data.industry or _safe_resolve_industry(
+            row.symbol,
+            resolver=industry_resolver,
+        )
+        if industry:
+            projected["industry"] = industry
         existing.update(projected)
         data_dates = dict(_mapping(existing.get("data_dates")))
         data_dates["fundamental"] = as_of_date.isoformat()
         existing["data_dates"] = data_dates
         row.fundamental = existing
     return errors
+
+
+def _materialize_industry_classifications(
+    rows: Iterable[Any],
+    *,
+    resolver: Callable[[str], str | None] | None = None,
+) -> None:
+    for row in rows:
+        industry = _safe_resolve_industry(row.symbol, resolver=resolver)
+        if not industry:
+            continue
+        fundamental = dict(_mapping(row.fundamental))
+        fundamental["industry"] = industry
+        row.fundamental = fundamental
+
+
+def _industry_classifications_by_symbol(
+    symbols: Iterable[str],
+    *,
+    resolver: Callable[[str], str | None] | None = None,
+) -> dict[str, str]:
+    classifications: dict[str, str] = {}
+    for symbol in symbols:
+        industry = _safe_resolve_industry(symbol, resolver=resolver)
+        if industry:
+            classifications[symbol] = industry
+    return classifications
+
+
+def _safe_resolve_industry(
+    symbol: str,
+    *,
+    resolver: Callable[[str], str | None] | None = None,
+) -> str | None:
+    try:
+        return (resolver or resolve_symbol_industry)(symbol)
+    except Exception as exc:
+        logger.warning(
+            "Official industry classification unavailable error_type=%s",
+            exc.__class__.__name__,
+        )
+        return None
 
 
 def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
@@ -1909,6 +2087,66 @@ def _supported_daily_radar_symbols(symbols: Iterable[str]) -> tuple[list[str], d
             continue
         skipped_symbol_reasons[normalized] = "unsupported_daily_radar_symbol"
     return supported_symbols, skipped_symbol_reasons
+
+
+def _managed_selected_overlap_count(
+    selection: ManagedRawDataSelection,
+    selected_symbols: Iterable[str],
+) -> int:
+    selected_symbol_set = {str(symbol) for symbol in selected_symbols}
+    return sum(symbol in selected_symbol_set for symbol in selection.symbols)
+
+
+def _finish_managed_raw_data_refresh(
+    db: Session,
+    *,
+    prepared: DailyRadarPreparedRun | None,
+    request: DailyRadarManagedRawDataRefreshRequest,
+    run_date: date,
+    selection: ManagedRawDataSelection,
+    selected_overlap_count: int,
+    status: Literal["completed", "failed"],
+    reused_record_count: int = 0,
+    records_written: int = 0,
+    missing_record_count: int = 0,
+    error_codes: list[str] | None = None,
+) -> DailyRadarManagedRawDataRefreshResponse:
+    safe_error_codes = list(error_codes or [])
+    target_symbol_count = (
+        selection.active_symbol_count
+        if selection.active_symbols_over_budget
+        else len(selection.symbols)
+    )
+    response_details = {
+        "target_symbol_count": target_symbol_count,
+        "active_symbol_count": selection.active_symbol_count,
+        "recent_analysis_symbol_count": selection.recent_analysis_symbol_count,
+        "overlap_symbol_count": selection.overlap_symbol_count,
+        "selected_overlap_count": selected_overlap_count,
+        "reused_record_count": reused_record_count,
+        "records_written": records_written,
+        "missing_record_count": missing_record_count,
+        "deferred_recent_symbol_count": selection.deferred_recent_symbol_count,
+        "error_codes": safe_error_codes,
+    }
+    if prepared is not None:
+        update_daily_radar_prepared_step_status(
+            db,
+            prepared,
+            step="refresh-managed-raw-data",
+            status=status,
+            details={
+                "required_for_scoring": False,
+                **response_details,
+            },
+        )
+    db.commit()
+    return DailyRadarManagedRawDataRefreshResponse(
+        status=status,
+        run_date=run_date,
+        market=request.market,
+        **response_details,
+    )
 
 
 def _require_complete_daily_radar_raw_rows(

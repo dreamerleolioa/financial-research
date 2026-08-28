@@ -106,7 +106,11 @@ def calibration_candidates_from_runs(
     query = (
         select(DailyRadarCandidate, DailyRadarRun)
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
-        .where(DailyRadarRun.market == market, DailyRadarRun.status.in_(statuses))
+        .where(
+            DailyRadarRun.market == market,
+            DailyRadarRun.status.in_(statuses),
+            DailyRadarCandidate.selection_status == "selected",
+        )
     )
     if start_date is not None:
         query = query.where(DailyRadarRun.run_date >= start_date)

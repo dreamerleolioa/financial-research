@@ -7,17 +7,21 @@ import math
 from typing import Any, cast
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS, DAILY_RADAR_RISK_LABELS
-from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
+from ai_stock_sentinel.daily_radar.data_quality import (
+    DAILY_RADAR_REPLAY_INPUT_VERSION,
+    missing_scoring_fields,
+)
 from ai_stock_sentinel.daily_radar.relative_strength import (
     DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS,
     calculate_relative_strength,
 )
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
+from ai_stock_sentinel.technical.metrics import normalize_price_value_pct
 
 
-SCORING_VERSION = "daily-radar-scoring-v2.5"
-RULE_VERSION = "daily-radar-rules-v2.4"
-SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v1"
+SCORING_VERSION = "daily-radar-scoring-v2.7"
+RULE_VERSION = "daily-radar-rules-v2.6"
+SCORING_CONFIG_VERSION = "daily-radar-scoring-config-v2"
 
 RULE_SCORE_ADJUSTMENTS: dict[str, int] = {
     "institutional_consecutive_flow": 28,
@@ -65,6 +69,99 @@ RULE_SCORE_ADJUSTMENTS: dict[str, int] = {
     "support_retest_margin_not_expanding": 8,
     "support_retest_macd_stable": 7,
     "support_retest_close_below_support": -20,
+}
+
+RULE_BUCKETS: dict[str, str] = (
+    {
+        rule_code: "institutional_accumulation"
+        for rule_code in RULE_SCORE_ADJUSTMENTS
+        if rule_code.startswith("institutional_")
+    }
+    | {
+        rule_code: "price_volume_strengthening"
+        for rule_code in RULE_SCORE_ADJUSTMENTS
+        if rule_code.startswith("price_volume_")
+    }
+    | {
+        rule_code: "bottoming_reversal"
+        for rule_code in RULE_SCORE_ADJUSTMENTS
+        if rule_code.startswith("bottoming_")
+    }
+    | {
+        rule_code: "support_retest"
+        for rule_code in RULE_SCORE_ADJUSTMENTS
+        if rule_code.startswith("support_retest_")
+    }
+)
+
+RULE_SIGNAL_FAMILIES: dict[str, str] = {
+    "institutional_consecutive_flow": "institutional_flow",
+    "institutional_multi_day_flow": "institutional_flow",
+    "institutional_early_flow": "institutional_flow",
+    "institutional_aligned_participants": "institutional_flow",
+    "institutional_net_positive": "institutional_flow",
+    "institutional_same_day_net_buy": "institutional_flow",
+    "institutional_constructive_state": "institutional_flow",
+    "institutional_volume_confirmed_state": "institutional_flow",
+    "institutional_early_stabilization": "institutional_flow",
+    "institutional_flow_ratio_high": "institutional_flow",
+    "institutional_flow_ratio_constructive": "institutional_flow",
+    "institutional_flow_ratio_positive": "institutional_flow",
+    "institutional_not_overextended": "momentum",
+    "institutional_margin_contained": "margin",
+    "institutional_close_below_open": "price_structure",
+    "price_volume_expanded_participation": "participation",
+    "price_volume_constructive_participation": "participation",
+    "price_volume_near_range_high": "price_structure",
+    "price_volume_ma20_reclaim": "price_structure",
+    "price_volume_obv_rising": "participation",
+    "price_volume_obv_turning": "participation",
+    "price_volume_mfi_confirmed": "participation",
+    "price_volume_macd_positive": "momentum",
+    "price_volume_close_above_previous": "price_structure",
+    "price_volume_volume_without_range_reclaim": "price_structure",
+    "bottoming_low_holds_support_zone": "price_structure",
+    "bottoming_close_recovers": "price_structure",
+    "bottoming_macd_improving": "momentum",
+    "bottoming_macd_positive": "momentum",
+    "bottoming_kd_low_turn": "momentum",
+    "bottoming_bias_near_midline": "momentum",
+    "bottoming_participation_turning": "participation",
+    "bottoming_rsi_mid_recovery": "momentum",
+    "bottoming_margin_easing": "margin",
+    "bottoming_participation_insufficient": "participation",
+    "support_retest_near_key_level": "price_structure",
+    "support_retest_reclaimed_area": "price_structure",
+    "support_retest_ma20_area": "price_structure",
+    "support_retest_ma60_area": "price_structure",
+    "support_retest_orderly_participation": "participation",
+    "support_retest_atr_contained": "volatility",
+    "support_retest_participation_stable": "participation",
+    "support_retest_margin_not_expanding": "margin",
+    "support_retest_macd_stable": "momentum",
+    "support_retest_close_below_support": "price_structure",
+}
+
+BUCKET_SIGNAL_FAMILY_CAPS: dict[str, dict[str, int]] = {
+    "institutional_accumulation": {"institutional_flow": 65},
+    "price_volume_strengthening": {
+        "participation": 40,
+        "price_structure": 36,
+        "momentum": 10,
+    },
+    "bottoming_reversal": {
+        "price_structure": 30,
+        "momentum": 50,
+        "participation": 12,
+        "margin": 8,
+    },
+    "support_retest": {
+        "price_structure": 50,
+        "participation": 20,
+        "volatility": 10,
+        "momentum": 7,
+        "margin": 8,
+    },
 }
 
 
@@ -130,17 +227,25 @@ def score_daily_radar_record(
     flow = normalized["institutional_flow"]
     margin = normalized["margin"]
 
-    bucket_rule_sets = {
+    raw_bucket_rule_sets = {
         "institutional_accumulation": _score_institutional_accumulation(ohlcv, indicators, flow, margin),
         "price_volume_strengthening": _score_price_volume_strengthening(ohlcv, indicators),
         "bottoming_reversal": _score_bottoming_reversal(ohlcv, indicators, margin),
         "support_retest": _score_support_retest(ohlcv, indicators, margin),
     }
     if excluded:
-        bucket_rule_sets = {
+        raw_bucket_rule_sets = {
             bucket: _without_rules(rule_set, excluded)
-            for bucket, rule_set in bucket_rule_sets.items()
+            for bucket, rule_set in raw_bucket_rule_sets.items()
         }
+    capped_bucket_rule_sets = {
+        bucket: _apply_signal_family_caps(bucket, rule_set)
+        for bucket, rule_set in raw_bucket_rule_sets.items()
+    }
+    bucket_rule_sets = {
+        bucket: (int(round(result["effective_score"])), result["rules"])
+        for bucket, result in capped_bucket_rule_sets.items()
+    }
     bucket_scores = {
         bucket: _clamp_score(score)
         for bucket, (score, _rules) in bucket_rule_sets.items()
@@ -235,6 +340,15 @@ def score_daily_radar_record(
             "scoring_version": SCORING_VERSION,
             "rule_version": RULE_VERSION,
             "bucket_scores": bucket_scores,
+            "bucket_signal_families": {
+                bucket: {
+                    "raw_score": result["raw_score"],
+                    "effective_score": round(float(result["effective_score"]), 4),
+                    "capped_points": result["capped_points"],
+                    "families": result["families"],
+                }
+                for bucket, result in capped_bucket_rule_sets.items()
+            },
             "primary_bucket_score": primary_bucket_score,
             "weighted_primary_bucket_score": weighted_primary_bucket_score,
             "cross_confirmation": _weighted_component(
@@ -286,7 +400,7 @@ def score_daily_radar_record(
             ),
             "evidence": [_relative_strength_evidence(normalized["symbol"], relative_strength_component)],
             "replay_input": {
-                "schema_version": "daily-radar-replay-input-v1",
+                "schema_version": DAILY_RADAR_REPLAY_INPUT_VERSION,
                 "record": {
                     "symbol": normalized["symbol"],
                     "name": normalized["name"],
@@ -476,7 +590,7 @@ def _score_bottoming_reversal(
     atr14 = _float(indicators.get("atr14"))
     kd_k = _float(indicators.get("kd_k"))
     kd_d = _float(indicators.get("kd_d"))
-    macd_histogram = _float(indicators.get("macd_histogram"))
+    macd_histogram_pct = _macd_hist_pct(ohlcv, indicators)
 
     if _has_numbers(ohlcv, "low") and _has_numbers(indicators, "support_level", "atr14") and support and low <= support + atr14:
         score += 20
@@ -484,12 +598,12 @@ def _score_bottoming_reversal(
     if _has_numbers(ohlcv, "close", "previous_close") and close > previous_close:
         score += 10
         rules.append(_rule("bottoming_close_recovers", "收盤較前一交易日回穩", close=close, previous_close=previous_close))
-    if _has_numbers(indicators, "macd_histogram") and -0.25 <= macd_histogram <= 0.5:
+    if macd_histogram_pct is not None and -0.25 <= macd_histogram_pct <= 0.5:
         score += 18
-        rules.append(_rule("bottoming_macd_improving", "MACD 柱狀體跌勢收斂", macd_histogram=macd_histogram))
-    elif macd_histogram > 0:
+        rules.append(_rule("bottoming_macd_improving", "MACD 柱狀體跌勢收斂", macd_hist_pct=macd_histogram_pct))
+    elif macd_histogram_pct is not None and macd_histogram_pct > 0:
         score += 8
-        rules.append(_rule("bottoming_macd_positive", "MACD 柱狀體轉正", macd_histogram=macd_histogram))
+        rules.append(_rule("bottoming_macd_positive", "MACD 柱狀體轉正", macd_hist_pct=macd_histogram_pct))
     if _has_numbers(indicators, "kd_k", "kd_d") and kd_k > kd_d and kd_k <= 35:
         score += 18
         rules.append(_rule("bottoming_kd_low_turn", "KD 低位翻正", kd_k=kd_k, kd_d=kd_d))
@@ -558,9 +672,10 @@ def _score_support_retest(
     if _has_numbers(margin, "margin_delta_pct") and _float(margin.get("margin_delta_pct")) <= 0:
         score += 8
         rules.append(_rule("support_retest_margin_not_expanding", "融資未同步擴張", margin_delta_pct=_float(margin.get("margin_delta_pct"))))
-    if _has_numbers(indicators, "macd_histogram") and _float(indicators.get("macd_histogram")) >= -0.15:
+    macd_histogram_pct = _macd_hist_pct(ohlcv, indicators)
+    if macd_histogram_pct is not None and macd_histogram_pct >= -0.15:
         score += 7
-        rules.append(_rule("support_retest_macd_stable", "MACD 柱狀體未明顯轉弱", macd_histogram=_float(indicators.get("macd_histogram"))))
+        rules.append(_rule("support_retest_macd_stable", "MACD 柱狀體未明顯轉弱", macd_hist_pct=macd_histogram_pct))
     if _has_numbers(ohlcv, "close") and _has_numbers(indicators, "support_level") and support and close < support:
         score -= 20
         rules.append(_rule("support_retest_close_below_support", "收盤跌破支撐區", close=close, support_level=support))
@@ -933,6 +1048,89 @@ def _without_rules(
     )
 
 
+def _apply_signal_family_caps(
+    bucket: str,
+    rule_set: tuple[int, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    raw_score, rules = rule_set
+    calculated_raw_score = sum(
+        RULE_SCORE_ADJUSTMENTS[str(rule["rule_id"])] for rule in rules
+    )
+    if calculated_raw_score != raw_score:
+        raise ValueError(
+            f"Daily Radar rule score drift for {bucket}: "
+            f"declared={raw_score}, calculated={calculated_raw_score}"
+        )
+    caps = BUCKET_SIGNAL_FAMILY_CAPS.get(bucket, {})
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for rule in rules:
+        rule_id = str(rule["rule_id"])
+        family = RULE_SIGNAL_FAMILIES.get(rule_id, "independent")
+        grouped.setdefault(family, []).append(rule)
+
+    family_breakdown: dict[str, dict[str, Any]] = {}
+    enriched_by_id: dict[str, dict[str, Any]] = {}
+    effective_score = 0.0
+    for family, family_rules in grouped.items():
+        adjustments = [RULE_SCORE_ADJUSTMENTS[str(rule["rule_id"])] for rule in family_rules]
+        positive_raw = sum(max(0, adjustment) for adjustment in adjustments)
+        negative_raw = sum(min(0, adjustment) for adjustment in adjustments)
+        cap = caps.get(family)
+        positive_effective = min(positive_raw, cap) if cap is not None else positive_raw
+        scale = positive_effective / positive_raw if positive_raw else 1.0
+        family_effective = float(positive_effective + negative_raw)
+        effective_score += family_effective
+        family_breakdown[family] = {
+            "raw_positive_score": positive_raw,
+            "negative_score": negative_raw,
+            "cap": cap,
+            "effective_score": round(family_effective, 4),
+            "capped_points": positive_raw - positive_effective,
+            "rule_codes": [str(rule["rule_id"]) for rule in family_rules],
+        }
+        effective_adjustments = [
+            round(adjustment * scale, 4) if adjustment > 0 else float(adjustment)
+            for adjustment in adjustments
+        ]
+        positive_indexes = [
+            index for index, adjustment in enumerate(adjustments) if adjustment > 0
+        ]
+        if positive_indexes:
+            residual = round(
+                positive_effective
+                - sum(effective_adjustments[index] for index in positive_indexes),
+                4,
+            )
+            last_positive_index = positive_indexes[-1]
+            effective_adjustments[last_positive_index] = round(
+                effective_adjustments[last_positive_index] + residual,
+                4,
+            )
+        for rule, adjustment, effective_adjustment in zip(
+            family_rules,
+            adjustments,
+            effective_adjustments,
+            strict=True,
+        ):
+            enriched_by_id[str(rule["rule_id"])] = dict(rule) | {
+                "signal_family": family,
+                "raw_score_adjustment": adjustment,
+                "effective_score_adjustment": effective_adjustment,
+                "capped_points": round(
+                    max(0.0, float(adjustment) - effective_adjustment),
+                    4,
+                ),
+            }
+
+    return {
+        "raw_score": raw_score,
+        "effective_score": effective_score,
+        "capped_points": round(float(raw_score) - effective_score, 4),
+        "families": family_breakdown,
+        "rules": [enriched_by_id[str(rule["rule_id"])] for rule in rules],
+    }
+
+
 def _risk_penalty_rule_code(penalty: Mapping[str, Any]) -> str:
     return f"risk_label_{penalty.get('label')}"
 
@@ -1063,6 +1261,19 @@ def _has_numbers(payload: Mapping[str, Any], *keys: str) -> bool:
     )
 
 
+def _macd_hist_pct(
+    ohlcv: Mapping[str, Any],
+    indicators: Mapping[str, Any],
+) -> float | None:
+    normalized = _finite_float_or_none(indicators.get("macd_hist_pct"))
+    if normalized is not None:
+        return normalized
+    return normalize_price_value_pct(
+        _finite_float_or_none(indicators.get("macd_histogram")),
+        _finite_float_or_none(ohlcv.get("close")),
+    )
+
+
 def _int(value: Any) -> int:
     if isinstance(value, bool) or value is None:
         return 0
@@ -1081,7 +1292,10 @@ def _clamp_score(value: float | int) -> int:
 
 
 __all__ = [
+    "BUCKET_SIGNAL_FAMILY_CAPS",
     "RULE_VERSION",
+    "RULE_BUCKETS",
+    "RULE_SIGNAL_FAMILIES",
     "SCORING_CONFIG_VERSION",
     "ScoringConfig",
     "SCORING_VERSION",

@@ -1,6 +1,17 @@
 from unittest.mock import patch, MagicMock
+
+import pytest
+
 from ai_stock_sentinel.data_sources.fundamental.tools import fetch_fundamental_data
 from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalData, FundamentalError
+
+
+@pytest.fixture(autouse=True)
+def _stub_official_industry_resolver(monkeypatch):
+    monkeypatch.setattr(
+        "ai_stock_sentinel.data_sources.fundamental.tools.resolve_symbol_industry",
+        lambda _symbol: "半導體業",
+    )
 
 
 def test_returns_dict_on_success():

@@ -15,8 +15,12 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, Phase1AvwapSnapshot
 from ai_stock_sentinel.db.session import Base
 from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_fixture_records
+from ai_stock_sentinel.daily_radar.calibration import calibration_candidates_from_runs
+from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
 from ai_stock_sentinel.daily_radar import service as service_module
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
+from ai_stock_sentinel.daily_radar.presenter import public_run_response
+from ai_stock_sentinel.daily_radar.repository import get_symbol_candidate_history
 from ai_stock_sentinel.phase1_avwap.repository import upsert_phase1_avwap_snapshot
 from ai_stock_sentinel.phase1_avwap.provider import DEFAULT_PHASE1_DATASET, TWSE_STOCK_DAY_DATASET
 
@@ -74,11 +78,31 @@ def test_run_daily_radar_orchestrates_fixture_prefilter_scoring_explanations_and
         .where(DailyRadarCandidate.run_id == run.id)
         .order_by(DailyRadarCandidate.observation_score.desc(), DailyRadarCandidate.symbol.asc())
     ).all()
-    assert [candidate.symbol for candidate in candidates] == ["2303.TW", "3034.TW", "2330.TW", "2454.TW"]
-    by_symbol = {candidate.symbol: candidate for candidate in candidates}
+    selected = [candidate for candidate in candidates if candidate.selection_status == "selected"]
+    shadow = [candidate for candidate in candidates if candidate.selection_status == "shadow"]
+    assert [candidate.symbol for candidate in selected] == ["3034.TW", "2303.TW", "2454.TW", "2330.TW"]
+    assert {candidate.symbol for candidate in shadow} == {"1605.TW", "3661.TW"}
+    assert {candidate.prefilter_status for candidate in shadow} == {"rejected"}
+    assert all(candidate.prefilter_reasons for candidate in shadow)
+    public_symbols = {
+        candidate.symbol
+        for candidate in public_run_response(run, bucket=None, limit=100).candidates
+    }
+    assert public_symbols == {candidate.symbol for candidate in selected}
+    assert get_symbol_candidate_history(
+        db_session,
+        symbols=["1605.TW"],
+        market="TW",
+        before_date=date(2026, 5, 30),
+    ) == []
+    calibration_rows = calibration_candidates_from_runs(db_session, market="TW")
+    assert {row["symbol"] for row in calibration_rows} == {candidate.symbol for candidate in selected}
+    validation_rows = forward_validation_candidates_from_runs(db_session, market="TW")
+    assert {row["selection_status"] for row in validation_rows} == {"selected", "shadow"}
+    by_symbol = {candidate.symbol: candidate for candidate in selected}
     first = by_symbol["2330.TW"]
     assert first.explanation.startswith("法人籌碼延續觀察")
-    assert first.repeat_status == "upgraded"
+    assert first.repeat_status == "repeat"
     assert first.bucket_scores
     assert first.risk_labels == []
     assert first.matched_rules
@@ -111,6 +135,67 @@ def test_run_daily_radar_marks_stale_data_when_no_fresh_candidate_can_be_persist
             "reasons": ["low_liquidity", "stale_core_data"],
         }
     ]
+
+
+def test_run_daily_radar_deduplicates_shadow_symbols_without_integrity_error(db_session: Session) -> None:
+    record = load_daily_radar_fixture_records(FIXTURE_DIR)[0]
+    conflicting_duplicate = deepcopy(record)
+    conflicting_duplicate["record_date"] = "2026-05-28"
+    conflicting_duplicate["ohlcv"]["close"] = 999
+
+    run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=[record, conflicting_duplicate],
+        candidate_limit=1,
+    )
+    db_session.commit()
+
+    candidates = db_session.scalars(
+        select(DailyRadarCandidate).where(DailyRadarCandidate.run_id == run.id)
+    ).all()
+    assert run.status == "completed"
+    assert [candidate.symbol for candidate in candidates] == [record["symbol"]]
+    assert candidates[0].input_snapshot["ohlcv"]["close"] == record["ohlcv"]["close"]
+    assert {error["code"] for error in run.errors or []} == {"duplicate_universe_symbol"}
+
+
+def test_run_daily_radar_keeps_shadow_when_internal_explanation_fails(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [
+        record
+        for record in load_daily_radar_fixture_records(FIXTURE_DIR)
+        if record["symbol"] in {"2330.TW", "3661.TW"}
+    ]
+    original_explanation = service_module.generate_candidate_explanation
+
+    def fail_for_shadow(candidate: dict[str, Any]) -> dict[str, Any]:
+        if candidate["symbol"] == "3661.TW":
+            raise ValueError("internal explanation failure")
+        return original_explanation(candidate)
+
+    monkeypatch.setattr(service_module, "generate_candidate_explanation", fail_for_shadow)
+
+    run = run_daily_radar(
+        date(2026, 5, 29),
+        "TW",
+        session=db_session,
+        records=records,
+    )
+    db_session.commit()
+
+    shadow = db_session.scalar(
+        select(DailyRadarCandidate).where(
+            DailyRadarCandidate.run_id == run.id,
+            DailyRadarCandidate.selection_status == "shadow",
+        )
+    )
+    assert shadow is not None
+    assert shadow.symbol == "3661.TW"
+    assert shadow.explanation == "內部影子樣本；說明產生失敗"
 
 
 def test_run_daily_radar_summarizes_per_symbol_errors_without_failing_full_run(
@@ -226,8 +311,8 @@ def test_run_daily_radar_persists_relative_strength_version_and_replayable_evide
     relative_strength = candidate.score_breakdown["relative_strength"]
     evidence = candidate.input_snapshot["evidence"][0]
 
-    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.5"
-    assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.4"
+    assert candidate.score_breakdown["scoring_version"] == "daily-radar-scoring-v2.7"
+    assert candidate.score_breakdown["rule_version"] == "daily-radar-rules-v2.6"
     assert relative_strength["benchmark_symbol"] == "TAIEX"
     assert relative_strength["lookback_days"] == 20
     assert relative_strength["relative_value"] > 0

@@ -5,7 +5,7 @@
 > 更新摘要：2026-08-28 起 `/analyze` 與 `/analyze/position` 完全移除 LLM 與 RSS 新聞執行路徑，改為 crawl → external data → judge → preprocess → score → strategy 的 deterministic contract。`persist_result` 控制是否讀寫完整分析快取；`skip_ai` 與 `news_text` 只保留 deprecated request 相容。舊 LLM/news response 欄位暫留但固定為空值，舊快取也不得重新送出歷史 AI 內容。本文後段若仍提及 LLM prompt 或 cleaner，視為歷史設計而非現行 runtime contract。
 > Cache 邊界：deterministic contract 的 `STRATEGY_VERSION` 為 `2.0.0`。`1.0.0` 與更舊的當日快取可能含新聞／LLM 派生的 confidence、strategy、action plan 或 position recommendation，必須視為版本失效並重跑，不得只清空顯示欄位後沿用派生決策。
 > Release Gate 仍包含 portfolio risk data-gap、Determinism Gate、Shared Context Gate 與 Copy Guard Gate；本次移除模型不得放寬既有投資紀律邊界。
-> Technical profile v3 保留純量化的 `ma20_slope_pct_5d`、`ma60_slope_pct_10d`、`macd_hist_slope_pct_3d`、`macd_hist_trend`、`atr_pct_percentile_60d`、`bollinger_bandwidth_percentile_60d` 與 profile 內的 `temporal_evidence`；移除跨指標綜合判斷 `volatility_regime`、`technical_conflicts`、`signal_conflicts`。新增時序欄位目前全為 evidence-only、`impact=0`，不得改變 `score_summary`；盤中若無日期可證明 completed bars，temporal evidence 必須 fail closed。
+> Technical profile v4 保留純量化的 `ma20_slope_pct_5d`、`ma60_slope_pct_10d`、`macd_hist_slope_pct_3d`、`macd_hist_trend`、`atr_pct_percentile_60d`、`bollinger_bandwidth_percentile_60d` 與 profile 內的 `temporal_evidence`；移除跨指標綜合判斷 `volatility_regime`、`technical_conflicts`、`signal_conflicts`。新增時序欄位目前全為 evidence-only、`impact=0`，不得改變 `score_summary`；盤中若無日期可證明 completed bars，temporal evidence 必須 fail closed。
 
 ## 1) 目的
 
@@ -120,7 +120,10 @@ make run-api
     "macd_line": 4.213,
     "macd_signal": 3.105,
     "macd_hist": 1.108,
+    "macd_hist_pct": 0.1224,
     "macd_bias": "bullish",
+    "prior_high_20d": 928.0,
+    "prior_low_20d": 865.0,
     "kd_k": 84.6,
     "kd_d": 78.2,
     "kd_signal": "neutral",
@@ -132,7 +135,7 @@ make run-api
     "obv_signal": "price_volume_confirm"
   },
   "technical_profile": {
-    "version": "technical-layer-v3",
+    "version": "technical-layer-v4",
     "primary_score_inputs": {
       "ma_structure": {
         "state": "bullish_alignment",
@@ -179,11 +182,14 @@ make run-api
       "ohlcv_aligned": true,
       "volume_aligned": true,
       "price_level_basis": "ohlc_high_low",
+      "price_level_data_date": "2026-03-02",
+      "price_level_completed_bars_only": true,
+      "price_level_missing_reason": null,
       "missing_fields": []
     },
     "formula_versions": {
-      "metrics": "technical-metrics-v3",
-      "layering": "technical-layer-v3"
+      "metrics": "technical-metrics-v4",
+      "layering": "technical-layer-v4"
     },
     "companion_context_refs": {
       "chip_stability_context": "tdcc_weekly_major_holders"
@@ -307,7 +313,7 @@ make run-api
 
 > **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver、portfolio risk score 或 action/verdict/classification 覆寫。
 
-> **Canonical technical profile（2026-06-24）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v3`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 必須用當前 bar 之前的 20 根已完成 bar 判斷 breakdown/near-support/near-resistance；raw `technical_indicators.high_20d` / `low_20d` 可作 display 數值並包含當前 bar，但不得直接拿來判斷當前 close 是否跌破支撐。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v3 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
+> **Canonical technical profile（2026-08-28）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v4`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 與 Daily Radar compatibility scoring 都必須使用當前 bar 之前的 20 根已完成 bar；`technical_indicators.prior_high_20d` / `prior_low_20d` 是可回放的判斷基準，`high_20d` / `low_20d` 則保留包含當前 bar 的純顯示值。`macd_hist_pct = macd_hist / close * 100` 是跨股價尺度比較與門檻判斷的 canonical 值，禁止用 MACD 原始絕對值套用跨股票固定門檻。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v4 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
 
 > **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / Watchlist / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
@@ -706,7 +712,7 @@ make run-api
 - **期間語義**：前端以 `lifecycle_end_date`，也就是最終出清事件日，決定交易屬於哪個期間；一旦該交易入選，`exit_batches` 必須保留整個生命週期的所有出場，不得先按單批 `exit_date` 截斷。
 - **完整交易損益**：`total_realized_pnl` 必須由完整事件帳本重算，與 lifecycle review 共用加權成本會計口徑；初始進場與新增批次的手續費／稅費計入成本基礎，結案事件的手續費／稅費自收入扣除。不得直接加總 closed portfolio rows 的 `realized_pnl`，避免遺漏只記錄於 entry event 的成本。
 - **批次識別**：`exit_batches` 依事件日、建立時間與 event id 排序，依序顯示 `第 N 次減碼`，`full_exit` 固定顯示 `最終出清`；不得把 portfolio row id 當成人類可讀的交易序號。
-- **卡片摘要**：若 group 已有目前版本的 v4 lifecycle review，`review_summary` 回傳 `outcome`、`process_quality` 與優先取 `improve`、其次 `keep`、最後 `next_actions` 的 `key_feedback`。沒有 v4 review 時回傳 `null`，GET 不主動建立 review。
+- **卡片摘要**：若 group 已有目前版本的 v5 lifecycle review，`review_summary` 回傳 `outcome`、`process_quality` 與優先取 `improve`、其次 `keep`、最後 `next_actions` 的 `key_feedback`。沒有 v5 review 時回傳 `null`，GET 不主動建立 review。
 
 ### `POST /portfolio`
 
@@ -865,13 +871,26 @@ make run-api
 }
 ```
 
-`portfolio_revision` 是後端以 active position、lifecycle plan、正式 raw data、Phase 1 與 weekly context inputs 產生的 opaque SHA-256 revision；價格 override 不參與 revision。前端只可用於判斷 request-scoped price overlay 是否仍屬於同一份 portfolio 結構，不得解析其內容。
+`portfolio_revision` 是後端以 active position、account settings、lifecycle plan、正式 raw data、Phase 1 與 weekly context inputs 產生的 opaque SHA-256 revision；價格 override 不參與 revision。前端只可用於判斷 request-scoped price overlay 是否仍屬於同一份 portfolio 結構，不得解析其內容。
+
+### `GET /portfolio/account-settings`
+
+- **用途**：讀取目前登入使用者的帳戶現金餘額設定。未曾設定時回 `status = "not_recorded"` 與 `cash_balance = null`，不得把未記錄解讀為 0。
+- **資料隔離**：只可依登入 `user_id` 讀取 `portfolio_account_settings`，不得接受 client 傳入其他使用者 id。
+
+### `PUT /portfolio/account-settings`
+
+- **用途**：建立或更新目前登入使用者的可用現金餘額，供 portfolio risk summary 計算帳戶權益母體。
+- **輸入限制**：`cash_balance` 必須是有限、非負且最多兩位小數的 JSON number；API 上限為 `9,999,999,999,999.99`，低於 `NUMERIC(18,2)` 的 DB-only 上限，以確保 JavaScript Number 對每一分仍可區分並可 round-trip。不合法輸入回 `422`。
+- **併發行為**：upsert 前以目前使用者 parent row 序列化首次建立路徑，避免同一使用者跨裝置同時新增時撞 primary key。成功後 portfolio revision 必須改變，使舊的 request-scoped risk-summary overlay 失效。
 
 ### `GET /portfolio/risk-summary`
 
-- **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data` 與既有 lifecycle plan 產生 deterministic portfolio-level risk diagnostics。
-- **資料邊界**：只讀 `user_portfolio`、`position_lifecycle_plan`、`stock_raw_data` 與 active holdings 對應的 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 provider backfill、snapshot refresh、watchlist lookup 或 latest Daily Radar candidate lookup。
-- **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。若 sector/theme data 不可靠，concentration 僅做 symbol / setup-type / risk-state / stop-rule 類別，不硬編產業分類。
+- **用途**：Phase 5 read-only portfolio risk summary。以目前登入使用者的 active positions、最新可用 `stock_raw_data`、既有 lifecycle plan 與可選的帳戶現金設定，產生 deterministic portfolio-level risk diagnostics；response 版本為 `portfolio-risk-summary-v2`。
+- **資料邊界**：只讀 `user_portfolio`、`portfolio_account_settings`、`position_lifecycle_plan`、`stock_raw_data` 與 active holdings 對應的 `phase1_avwap_snapshots` cache；不得建立、修改或刪除持股、交易事件、review、watchlist、Daily Radar 或任何 portfolio state。Portfolio read path 的 Phase 1 AVWAP 欄位只讀既有 snapshot，不觸發 provider backfill、snapshot refresh、watchlist lookup 或 latest Daily Radar candidate lookup。
+- **資金分母**：若已記錄現金，`account_equity = invested_market_value + cash_balance`，持股權重、總風險百分比與集中度的資金分母使用帳戶權益；未記錄現金時 `account_capital.status = "cash_not_recorded"`，明示回退至持股市值，禁止把缺值當成 0 現金或暗示這是完整帳戶曝險。
+- **語言邊界**：此 response 是風險紀律診斷，不輸出 portfolio action、recommended action 或交易命令。產業分類只可讀正式 raw-data fundamental payload 的明確 `industry` / `industry_name` / `industry_category` / `sector` 欄位，缺漏時回報 coverage，不可依股票代碼或名稱猜測產業。只要 eligible active holding 有缺價或未分類，coverage 不得回 available，產業 row 只能回 `status = "partial"`，不得用部分樣本下 definitive `ok/watch/elevated` 結論。
+- **共同波動**：持股兩兩相關性只使用帶日期且可對齊的歷史收盤價轉成日報酬；每一組至少需要 20 筆重疊報酬，否則該組回 insufficient。Response 必須同時揭露 possible / eligible pair count 與 pair coverage，避免少數可算組合被誤讀成全投資組合。結果只描述歷史共同波動，不得當成未來相關性預測或直接交易訊號。
 - **缺資料行為**：`missing_price`、`missing_defense_reference`、`zero_quantity`、`stale_price` 皆以 `data_quality.caveats[]` 明示；缺少必要欄位時相關部位的 `estimated_risk_amount` 與 `estimated_risk_pct_of_portfolio` 可為 `null`，不得捏造成 0。
 - **價格來源說明**：每筆 `position_risks[].price_context` 明示 stored final price 的 `data_date`、`as_of`、`is_final` 與 `refresh_status = "not_requested"`。此 GET 仍不得觸發 provider；只有上述 POST 可建立 request-scoped 最新報價 override。
 - **Phase 1 AVWAP 行為**：`position_risks[].phase1_position_state` 是 holding-specific state trace；`phase1_current_day_lists` 是 Portfolio UI 的持股 AVWAP observation projection。Backend 只由 active holdings 產生 `holding_management_candidates` / `holding_risk_alerts`；`pullback_observation_candidates`、`breakout_confirmation_candidates` 與 `overheated_do_not_chase_candidates` 可為相容 response shape 保留空陣列，但 `/portfolio/risk-summary` read path 與 summary builder 不接受 watchlist 或 latest Daily Radar candidate observation map，也不產生非持股清單。非持股 AVWAP 候選應在 Daily Radar 或 watchlist 語境顯示。Portfolio read path 會使用 requested date 當日或以前最新 fresh snapshot，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；最多回看 7 個 calendar days，超過時回 `freshness = "missing"` / `missing_reason = "phase1_snapshot_stale"`；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。Holding-specific entry anchor 與 avg cost 只在 Portfolio read projection 時由目前使用者的 portfolio rows 套用到 shared market snapshot，不寫回 `phase1_avwap_snapshots`。此 projection 只讀 cache，不觸發 provider backfill，不改 Daily Radar ranking/scoring。
@@ -881,12 +900,21 @@ make run-api
 
 ```json
 {
-  "version": "portfolio-risk-summary-v1",
+  "version": "portfolio-risk-summary-v2",
   "as_of_date": "2026-06-12",
   "portfolio_value": 120000.0,
+  "account_capital": {
+    "status": "recorded",
+    "cash_balance": 80000.0,
+    "invested_market_value": 120000.0,
+    "account_equity": 200000.0,
+    "cash_pct_of_account_equity": 40.0,
+    "invested_pct_of_account_equity": 60.0,
+    "risk_percentage_denominator": "account_equity"
+  },
   "total_unrealized_pnl": 20000.0,
   "total_at_risk": 25000.0,
-  "total_at_risk_pct": 20.8333,
+  "total_at_risk_pct": 12.5,
   "position_risks": [
     {
       "symbol": "2330.TW",
@@ -909,11 +937,13 @@ make run-api
         "source": "planned_stop_price"
       },
       "estimated_risk_amount": 25000.0,
-      "estimated_risk_pct_of_portfolio": 20.8333,
-      "portfolio_weight_pct": 100.0,
+      "estimated_risk_pct_of_portfolio": 12.5,
+      "portfolio_weight_pct": 60.0,
+      "invested_weight_pct": 100.0,
+      "account_equity_weight_pct": 60.0,
       "risk_state": "elevated",
       "discipline_triggers": [
-        "單一部位估計曝險占投資組合 20.83%，高於 5% 檢查線。"
+        "單一部位估計曝險占投資組合 12.50%，高於 5% 檢查線。"
       ],
       "phase1_position_state": {
         "symbol": "2330.TW",
@@ -1019,10 +1049,33 @@ make run-api
         "type": "symbol",
         "key": "2330.TW",
         "market_value": 120000.0,
-        "pct_of_portfolio": 100.0,
+        "pct_of_portfolio": 60.0,
         "status": "elevated"
       }
-    ]
+    ],
+    "by_industry": [
+      {
+        "type": "industry",
+        "key": "半導體業",
+        "symbols": ["2330.TW"],
+        "market_value": 120000.0,
+        "pct_of_invested": 100.0,
+        "pct_of_capital_base": 60.0,
+        "status": "elevated"
+      }
+    ],
+    "industry_coverage": {
+      "status": "available",
+      "classified_market_value": 120000.0,
+      "pct_of_invested": 100.0,
+      "eligible_position_count": 1,
+      "valued_position_count": 1,
+      "classified_position_count": 1,
+      "unvalued_position_count": 0,
+      "unclassified_valued_position_count": 0
+    },
+    "industry_watch_threshold_pct": 40.0,
+    "industry_elevated_threshold_pct": 60.0
   },
   "shared_exposures": [
     {
@@ -1031,12 +1084,26 @@ make run-api
       "symbols": ["2330.TW"],
       "count": 1,
       "market_value": 120000.0,
-      "pct_of_portfolio": 100.0
+      "pct_of_portfolio": 60.0
     }
   ],
+  "correlation_risk": {
+    "status": "insufficient_data",
+    "minimum_overlapping_return_count": 20,
+    "eligible_position_count": 1,
+    "valued_position_count": 1,
+    "possible_pair_count": 0,
+    "eligible_pair_count": 0,
+    "pair_coverage_pct": null,
+    "weighted_average_correlation": null,
+    "watch_threshold": 0.65,
+    "elevated_threshold": 0.8,
+    "pairs": [],
+    "interpretation": "descriptive_co_movement_not_forward_prediction"
+  },
   "risk_budget_status": {
     "status": "constrained",
-    "total_at_risk_pct": 20.8333,
+    "total_at_risk_pct": 12.5,
     "watch_threshold_pct": 5.0,
     "constrained_threshold_pct": 10.0,
     "notes": []
@@ -1551,8 +1618,8 @@ make run-api
 
 - **用途**：為同一 `position_group_id` 建立或更新 deterministic rule-based Position Lifecycle Review；若同版 saved review 已存在且來源資料未變，直接回傳既有 review。
 - **權限邊界**：只能建立目前登入使用者自己的 position group lifecycle review；非擁有者回傳 `403`。
-- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v4 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 / v2 / v3 可讀，但 POST 會建立 v4，避免舊版分類語意與新規則混用。
-- **版本策略**：`review_version` 為 `position-lifecycle-review-v4`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。v4 在保留 v3 deterministic classification 的同時，新增獨立的 `outcome` 與 `process_quality`，禁止用獲利或虧損直接代替操作品質判斷；另以 `dimensions` 分開呈現進場、部位管理、風險與出場、紀錄品質，狀態採類別而非 0–100 分數。`feedback.keep` 與 `feedback.improve` 只可由實際命中的 positive / risk labels 產生，`feedback.next_actions` 必須附來源引用。規則版本為 `position-lifecycle-ruleset-v4.1`；market evidence gap 只可把受影響的進場、部位管理或風險出場面向標成 `insufficient`，不可把 `record_quality` 降級，也不可要求使用者補記已存在的原因。只有 event、ledger、費稅或 decision context 等紀錄缺口才可把 `record_quality` 標成 `insufficient`。預留但尚未實作的 benchmark / sector relative-return 欄位可維持 `null`，不得因此把 `data_quality` 標為不足。`planned_risk_amount` 與 `planned_stop_price` 都是選填欄位，兩者皆未提供時 `planned_1r_amount` 與 R-multiple 指標維持 `null`，但不構成事件、ledger 或市場證據缺口，也不得單獨觸發 `insufficient_data`。若資料庫已有不在已知 v1/v2/v3/v4 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v4 或降級覆寫。
+- **持久化語義**：第一次 POST 建立 `position_lifecycle_review`，`review_result` 與 `evidence_payload` 在同一 transaction 寫入。POST 先鎖定 group 的 portfolio rows，避免並行建立或 stale overwrite。第二次以後 POST 以 event facts、plan facts/provenance、compact market snapshot、相對績效使用的 benchmark snapshot、point-in-time shared-context replay trace 與 ruleset 共同建立 `source_fingerprint`；同版同 fingerprint 維持 idempotent，任一 review-relevant source 改變時更新同一筆 v5 review。若 event / plan / shared-context facts 未變而新 market snapshot 降級成帶 missing reason 的 fallback，或相同品質下 normalized trading-bar coverage 下降，保留較完整的既有 review。舊 v1 / v2 / v3 / v4 可讀，但 POST 會建立 v5，避免舊版分類語意與新規則混用。
+- **版本策略**：`review_version` 為 `position-lifecycle-review-v5`，規則版本為 `position-lifecycle-ruleset-v5`，以 `user_id + position_group_id + review_version` 唯一避免同版重複保存。v5 保留 v4 的 outcome/process/dimensions 語意，並新增三組 deterministic trace：(1) `objective_plan_adherence` 只核對 event-time plan 與可觀測事件／完成行情，事後補填計畫不得回寫歷史判斷；持有期間契約固定為 0–10、11–60、61–179、180 日以上，`pullback_holds_ma20` 必須守住且距 MA20 不超過 3%，固定價格型防守使用盤中 low 判斷；單一 evaluated check 只顯示 `limited_evidence`，至少兩項才投影到 `observed_plan_adherence_score` / `plan_adherence_score`，自報 yes / partial / no 仍只留在 `declared_plan_adherence_score`；(2) benchmark relative return 以每次進出場現金流配對事件日前一根 completed benchmark bar，不使用事件日收盤；只有交易本金可換成 benchmark units，進出場已記錄費稅分別計入成本與扣除 proceeds；coverage 不完整時 fail closed 為 unavailable；(3) `personal_setup_stats` 僅聚合目前使用者、current v5/current ruleset review、已完整結案且 setup 在進場當下保存的樣本，並回傳已複盤／eligible coverage；少於 5 筆標示 `insufficient_sample`，覆蓋不完整標示 `descriptive_partial_coverage`，所有結果只作描述、不得解讀為因果。Sector relative return 只有在可靠 sector benchmark identity 與完整序列都存在時才計算；目前沒有可靠 mapping 時維持 unavailable，但不得因此把核心 `data_quality` 標為不足。`planned_risk_amount` 與 `planned_stop_price` 都是選填欄位，兩者皆未提供時 `planned_1r_amount` 與 R-multiple 指標維持 `null`，但不構成事件、ledger 或市場證據缺口。若資料庫已有不在已知 v1/v2/v3/v4/v5 集合內的版本，GET 與 POST 都原樣回傳最新未知版本並維持唯讀，不建立 v5 或降級覆寫。
 - **LLM 邊界**：本端點不呼叫 LLM，不新增 LLM summary；`llm_summary` 固定為 `null`。Phase F 若要加入 summary，必須另行升版或新增 explicit narrative refresh contract。
 - **Evidence 邊界**：`evidence_payload` 只存 compact event facts、review-relevant plan snapshot、lifecycle metrics、entry/exit sequence metrics、advanced internal trace、point-in-time indicator snapshots、capped detected events、market regime snapshots、compact market snapshot、Phase 2D point-in-time shared context references、source summary、data quality、ruleset 與 fingerprint；不存 raw LLM prompts、raw user notes、未記錄意圖推論、plan thesis 或 planned invalidation。正式 lifecycle market query 從首次進場前 120 個日曆日開始，只讀 `raw_data_is_final = true` 的 Daily Radar／正式 `StockRawData`，保留完整持有期間直到最後 lifecycle event，不另行呼叫 provider；較早歷史不得無界載入。Point-in-time close 會在 completed `recent_closes`、同日與前一筆 final row 的 dated `technical.price_history`、以及事件日前 outer closes 中選擇筆數最多的來源，並嚴格排除 `date >= event_date`；短但非空的 `recent_closes` 不得遮住較完整的 `price_history`。仍無法計算的 MA20、MA60、RSI14、量比才讀取 completed persisted indicators。寫入 evidence 前，`price_history` 會攤平成依交易日去重的 bars，可作 fallback 的四項 indicators 也會保存在對應 outer bar，使 source fingerprint 涵蓋所有可被分析選用的輸入；同日重疊 trailing history 以較新非空值更新並保留其缺少的 completed 欄位，outer bar 只補缺，不得用盤中／partial quote 覆蓋完整 OHLCV。legacy 無日期 series 只保留最長一份，避免每個 `StockRawData` row 重複保存整段歷史。`quality.row_count` 表示來源 rows，`quality.persisted_bar_count` 表示 compact 後實際保存的 bars。
 - **Shared context point-in-time 邊界（Phase 2D）**：`review_result.shared_context` 與 `evidence_payload.shared_context` 以每個 `PositionEvent.event_date` 作為 `reference_date`，只引用適用目標 consumer 且 `as_of_date <= event_date` 的 shared background context。`shared_background_contexts` 以 `symbol` / `context_type` / `replay_key` 保留歷史 trace；若沒有可用歷史 context 且只存在晚於事件日的 context，會以 `missing_reason = "future_context_excluded"` 保留 caveat，並保留原始 excluded `as_of_date` trace；不得使用該未來資料批評 entry/exit-time decision。Shared context 只作 evidence/caveat/data quality，不改 `lifecycle_review.classification.primary_label`、tier、deterministic metrics 或 fixed-option decision-context 判讀。
@@ -1564,7 +1631,7 @@ make run-api
   "user_id": 1,
   "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
   "symbol": "2330.TW",
-  "review_version": "position-lifecycle-review-v4",
+  "review_version": "position-lifecycle-review-v5",
   "review_result": {
     "position_group_id": "550e8400-e29b-41d4-a716-446655440000",
     "symbol": "2330.TW",
@@ -1589,9 +1656,22 @@ make run-api
     },
     "advanced_internal": {
       "declared_plan_adherence_score": 75.0,
-      "observed_plan_adherence_score": null,
-      "plan_adherence_score": null,
-      "decision_quality_score": null
+      "objective_plan_adherence": {
+        "status": "sufficient",
+        "score": 100.0,
+        "evaluated_check_count": 2,
+        "passed_check_count": 2,
+        "failed_check_count": 0
+      },
+      "observed_plan_adherence_score": 100.0,
+      "plan_adherence_score": 100.0,
+      "decision_quality_score": null,
+      "benchmark_symbol": "TAIEX",
+      "benchmark_return_pct": 3.1,
+      "benchmark_relative_return_pct": 2.32,
+      "benchmark_relative_status": "available",
+      "sector_relative_return_pct": null,
+      "sector_relative_status": "unavailable_missing_benchmark_identity"
     },
     "event_indicator_snapshots": [
       {
@@ -1727,9 +1807,11 @@ make run-api
   - `review_result.shared_context` / `evidence_payload.shared_context`：每個事件的 shared context read payload，包含 `source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `data_quality`；missing/stale/future-excluded 均非阻塞。
   - `review_result.decision_context.status`：`present` / `retrospective_only` / `insufficient`。只有 `present` 且 `historical_judgment_eligible = true` 可參與歷史計畫判定；其餘狀態需明確提示不要推論或事後改寫原始意圖。
   - `review_result.decision_context.source` / `created_after_entry`：用於標示 plan provenance；`source = user_backfilled` 或 `created_after_entry = true` 時必須顯示事後補填 caveat，不可視為原始 entry-time intent。
-  - `review_result.decision_context.planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts。只有 event-time plan 可用於 `add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；backfilled plan 僅作 retrospective context。
+  - `review_result.decision_context.setup_type`、`planned_holding_period`、`default_stop_rule`、`add_entry_condition`：固定選項 plan facts。只有 event-time plan 可用於歷史 objective checks 與個人 setup cohort；backfilled plan 僅作 retrospective context。
   - `review_result.advanced_internal.declared_plan_adherence_score`：使用者自報的 yes / partial / no trace；不得當成客觀 observed score。
-  - `review_result.advanced_internal.observed_plan_adherence_score` / `plan_adherence_score` / `decision_quality_score`：目前在沒有獨立客觀觀測器時為 `null`，避免自報答案直接產生權威分數或 constructive tier。
+  - `review_result.advanced_internal.objective_plan_adherence`：逐項輸出 holding period、add-entry condition、stop-rule 的 pass / fail / not-triggered / unobservable trace；只有至少兩項可評估檢查才把 score 投影到 `observed_plan_adherence_score` / `plan_adherence_score`。`decision_quality_score` 仍為 `null`，不得用結果好壞反推決策品質。
+  - `review_result.advanced_internal.benchmark_relative_return_pct`：使用 matched cash-flow benchmark 的超額報酬；`relative_performance_methodology = matched_cash_flow_aligned_prior_completed_bar_v1`。每筆現金流必須以個股交易日曆找到事件日前一根 completed bar，且 benchmark 必須有同日價格；同日收盤、stale fallback 與 coverage 不完整序列不得使用。
+  - `personal_setup_stats`：response-time 個人描述統計，不寫入 review fingerprint；只讀 current v5/current ruleset reviews、完整結案生命週期與 event-time setup，輸出 sample count、勝率、平均／中位報酬、可用 benchmark-relative、observed-adherence 樣本數，以及 reviewed / eligible coverage。所有樣本數都不得解讀為因果或未來績效；少於 5 筆或 coverage 不完整時代表性更有限。
   - Phase E 已穩定的 lifecycle review labels 包含 `ma20_pullback_supported`、`add_entry_plan_violation`、`unacted_stop_rule_break`、`holding_period_needs_review`；這些 labels 需以 `reasons`、`caveats`、`source_refs` 追溯到 `event_facts`、`event_indicator_snapshots` 或 `decision_context`，不得使用未來資料批評 entry-time decision，也不得以 raw 0-100 score 作為預設主視覺。
 
 > **Position Lifecycle Review 邊界**：本端點與 Single Trade Review 分離。`/portfolio/{portfolio_id}/review` 繼續代表 one sell decision；`/portfolio/groups/{position_group_id}/lifecycle-review` 代表 whole multi-entry/multi-exit lifecycle。兩者資料表、endpoint 與 review version 均不同。
@@ -1946,8 +2028,8 @@ Daily Radar run status：
   - `score_breakdown.relative_strength` 表示 benchmark symbol、lookback window、candidate return、benchmark return、relative value、score impact、freshness、data dates、aligned dates 與 missing reason。資料不足時 `relative_value` 為 `null`，不可補 0 假裝中性。
   - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
-  - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。舊候選缺少此欄位時，月報必須標記 `replay_input_incomplete`，不得猜測。
-  - Current version trace：`daily-radar-scoring-v2.5` / `daily-radar-rules-v2.4` / `daily-radar-scoring-config-v1`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則；v2.4 scoring 起，legacy `same_day_institutional` 候選會以合法的單一法人正數淨買超計入同日法人分數；v2.5 scoring / v2.4 rules 起，archive-backed `foreign_same_day` / `trust_same_day` 與 actor-specific 近期累積淨買超也會進入同一組互斥法人規則，且不與三大法人合計轉正或外資投信方向一致重複計分。
+  - `input_snapshot.replay_input` 自 `daily-radar-replay-input-v1` 起保存完整 deterministic scoring input、baseline `ScoringConfig` 與 config version。v2 起將支撐壓力改為 prior-window，並以 `macd_hist_pct` 套用跨股票門檻；舊候選缺少此欄位或版本不符時，月報必須標記 `replay_input_incomplete`，不得猜測。
+  - Current version trace：`daily-radar-scoring-v2.7` / `daily-radar-rules-v2.6` / `daily-radar-scoring-config-v2`。v2.3 起，缺少必要 scoring inputs 會標記 `data_gap`，缺值本身不得觸發正向規則；v2.4 scoring 起，legacy `same_day_institutional` 候選會以合法的單一法人正數淨買超計入同日法人分數；v2.5 scoring / v2.4 rules 起，archive-backed `foreign_same_day` / `trust_same_day` 與 actor-specific 近期累積淨買超也會進入同一組互斥法人規則，且不與三大法人合計轉正或外資投信方向一致重複計分；v2.6 scoring / v2.5 rules 起，支撐壓力排除訊號當日 bar，MACD 固定門檻改用相對收盤價百分比；v2.7 scoring / v2.6 rules 起，同 bucket 的相同訊號家族套用正向分數 cap，負向規則維持完整扣分，breakdown 保留 raw、effective 與 capped points。
 
 - **Calibration workflow**
   - Daily Radar calibration report 可由 `uv run python scripts/daily_radar_calibration.py --source fixture --run-date 2026-05-29` 重跑。
@@ -1957,6 +2039,7 @@ Daily Radar run status：
 #### Internal calibration lifecycle
 
 - `POST /internal/daily-radar/forward-validation/run`：以 `mode = due` 評估最新公開 run 中已成熟的 5 / 10 / 20 交易日窗口；同日 rerun 只採最新公開 run。
+  - `daily-radar-forward-validation-report-v2` 的 production report 會在 upsert 後重新讀取已持久化的固定日期 cohort，避免 due rerun 只回傳本批新到期窗口。`selection_diagnostics` 分成 `selected`、可比較 `shadow` 與 `eligibility_audit`，逐 cohort 揭露驗證／跳過率，並同時輸出 absolute-positive 與 benchmark-outperformance 的 conditional precision、observed-pool recall 與 shadow miss share。這些指標只描述目前 Daily Radar universe 內且可驗證的比較池，不代表全市場召回率；既有 bucket／rule／risk／ablation 報表維持 selected-only。
 - `POST /internal/analysis-calibration/forward-validation/run`：評估 append-only、final `/analyze` 樣本的 5 / 10 / 20 交易日 outcome。
 - `POST /internal/daily-radar/rule-review/monthly`：輸出 Daily Radar baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - `POST /internal/analysis-calibration/monthly`：輸出一般分析 confidence baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
@@ -1967,7 +2050,7 @@ Daily Radar run status：
 - 一般分析與 Daily Radar 的月份 maturity 都必須以 5／10／20 日三個窗口共同判斷；只完成 20 日窗口的月份不得進入最近六個月 cohort。
 - 一般分析與 Daily Radar 的 candidate config 都必須逐一通過 5 / 10 / 20 日 holdout gate，不得用跨 horizon 聚合改善掩蓋單一窗口退化。
 - 一般分析 `general-analysis-confidence-review-v7` 的 replay eligibility 必須驗證 current schema、`base_score` 0–100 整數、方向 labels、0–1.6 有限 `sentiment_strength`、布林 `date_unknown` 與完整 current `ConfidenceScoringConfig`；結構通過後先計算 aggregate workload，最多 300,000 次 estimated scoring calls 與 40,000,000 次 before／after bootstrap row-iterations，任一超限即輸出 `replay_workload_limit_exceeded` 並在 baseline replay 前停止。容量允許時按 sample 單次重播 current baseline，並和 production 保存的 `signal_confidence` 比較。任一 mismatch 以 `baseline_replay_mismatch` 排除並重算 coverage；即使整體與逐月 coverage 仍達 threshold，`baseline_replay_complete = false` 也必須阻止所有 candidate config eligibility。
-- Daily Radar `daily-radar-rule-review-v5` 為最新公開 run 的全部 candidate 建立 5 / 10 / 20 日完整池；validation result 不存在時保留 `status = missing`，不得讓候選從 ranking pool 消失。Replay eligibility 必須驗證 schema、current scoring/rule/config versions、baseline config、record identity/date、必要 scoring fields 的有限數值、data dates、accepted prefilter 與 technical profile，不得只看 `schema_version` 或空容器。結構驗證通過後，baseline replay 還必須逐 candidate 重現原 production 的 observation score、primary/secondary buckets、bucket scores、risk labels 與 matched rule IDs；任一不一致以 `baseline_replay_mismatch` 排除，並將該交易日／窗口 ranking pool 標為 `incomplete`。90% replay coverage 保留作資料品質診斷，但任何 ranking／counterfactual governance 必須逐交易日、逐窗口具備 100% replay ranking pool；不完整時輸出 `ranking_pool_status = incomplete`、`replay_ranking_pool_incomplete` 並禁止調整資格，沒有成熟 cohort 時則為 `not_applicable`，active ablation 輸出 `not_applicable_no_cohort` 而不執行 replay。除單一交易日／窗口 production cap 250 candidates 外，月報在 scoring 前另計算 aggregate workload：最多 300,000 次 estimated scoring calls 與 220,000,000 bootstrap row-iterations，任一超限即輸出 `capacity_exceeded`／`replay_workload_limit_exceeded` 並停止 replay。報表共用一次 baseline replay，同一 config 下每個 candidate 只 scoring 一次再投影到三個 outcome windows；mean bootstrap 將 validated selected rows 預聚合為每日期 sum／count 後重抽統計量，每次抽樣仍先把 before／after 平均值四捨五入至四位再計算 delta，並以完整 training dates 作 block universe，保留無 selected rows 日期的統計語意。結果最後接 validated outcome 並輸出 `counterfactual_ablation_summary`；只有 live-score tiers 可執行 counterfactual ablation，context-only 群組輸出 `not_in_live_score`。`co_occurrence_summary` 僅是相關性診斷。任何 recommendation 都不直接更新 live config、rule version 或 ranking。
+- Daily Radar `daily-radar-rule-review-v6` 為最新公開 run 的全部 candidate 建立 5 / 10 / 20 日完整池；validation result 不存在時保留 `status = missing`，不得讓候選從 ranking pool 消失。Replay eligibility 必須驗證 schema、current scoring/rule/config versions、baseline config、record identity/date、必要 scoring fields 的有限數值、data dates、accepted prefilter 與 technical profile，不得只看 `schema_version` 或空容器。結構驗證通過後，baseline replay 還必須逐 candidate 重現原 production 的 observation score、primary/secondary buckets、bucket scores、risk labels 與 matched rule IDs；任一不一致以 `baseline_replay_mismatch` 排除，並將該交易日／窗口 ranking pool 標為 `incomplete`。90% replay coverage 保留作資料品質診斷，但任何 ranking／counterfactual governance 必須逐交易日、逐窗口具備 100% replay ranking pool；不完整時輸出 `ranking_pool_status = incomplete`、`replay_ranking_pool_incomplete` 並禁止調整資格，沒有成熟 cohort 時則為 `not_applicable`，active ablation 輸出 `not_applicable_no_cohort` 而不執行 replay。除單一交易日／窗口 production cap 250 candidates 外，月報在 scoring 前另計算 aggregate workload：最多 300,000 次 estimated scoring calls 與 220,000,000 bootstrap row-iterations，且 estimated scoring calls 必須包含每個 active group 的全域 ablation與其實際存在的 bucket-owned rules 局部 ablation；任一超限即輸出 `capacity_exceeded`／`replay_workload_limit_exceeded` 並停止 replay。報表共用一次 baseline replay，同一 config 下每個 candidate 只 scoring 一次再投影到三個 outcome windows；mean bootstrap 將 validated selected rows 預聚合為每日期 sum／count 後重抽統計量，每次抽樣仍先把 before／after 平均值四捨五入至四位再計算 delta，並以完整 training dates 作 block universe，保留無 selected rows 日期的統計語意。結果最後接 validated outcome 並輸出 `counterfactual_ablation_summary`；只有 live-score tiers 可執行 counterfactual ablation，context-only 群組輸出 `not_in_live_score`。v6 另以 baseline primary bucket 固定 cohort 輸出 `bucket_impacts`，且每個 bucket 只移除該 bucket 擁有的 group rules，避免其他 bucket 同時變動造成錯誤因果歸因；`co_occurrence_summary` 僅是相關性診斷。任何 recommendation 都不直接更新 live config、rule version 或 ranking。
 - Daily Radar validation identity 另綁定 candidate scoring snapshot 的 `benchmark_symbol` 與所屬 run date：forward-validation request 或新 outcome 錯配時直接拒絕，既有錯配 row 視為 `validation_identity_mismatch` 並重新排入 due evaluation，不得進入 rule recommendation、maturity 或 replay。月報的 aggregate workload 必須先用只計數、不選取 candidate JSON snapshot 的 SQL preflight 判斷；超限時不得再 hydrate optimizer detail。
 
 - Daily Radar replay identity 另要求 validation row `signal_date`、candidate snapshot `record_date` 與 replay record `record_date` 三者完全一致；任一缺漏或不一致都以 `replay_input_incomplete` fail closed，錯日期 outcome 不得進入治理。

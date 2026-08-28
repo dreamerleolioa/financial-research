@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.chip_stability_context import weekly_major_holders_projection_by_symbol
 from ai_stock_sentinel.clock import today_taipei
+from ai_stock_sentinel.db.models import PortfolioAccountSettings
 from ai_stock_sentinel.portfolio.repository import (
     latest_final_raw_data_by_symbol,
     list_active_portfolios,
@@ -32,6 +33,7 @@ def build_user_portfolio_risk_summary(
     price_quotes_by_symbol: dict[str, dict] | None = None,
 ) -> dict:
     rows = list_active_portfolios(db, user_id=user_id)
+    account_settings = db.get(PortfolioAccountSettings, user_id)
     group_ids = [row.position_group_id for row in rows]
     plans = list_lifecycle_plans_for_groups(db, user_id=user_id, position_group_ids=group_ids)
     plans_by_group = {plan.position_group_id: plan for plan in plans}
@@ -70,6 +72,7 @@ def build_user_portfolio_risk_summary(
         phase1_position_states_by_symbol=phase1_position_states_by_symbol,
         weekly_major_holders_by_symbol=weekly_major_holders_by_symbol,
         price_quotes_by_symbol=price_quotes_by_symbol,
+        cash_balance=(account_settings.cash_balance if account_settings is not None else None),
         as_of_date=summary_date,
     )
     summary["portfolio_revision"] = _portfolio_revision(
@@ -78,6 +81,7 @@ def build_user_portfolio_risk_summary(
         raw_data_by_symbol=raw_data_by_symbol,
         phase1_position_states_by_symbol=phase1_position_states_by_symbol,
         weekly_major_holders_by_symbol=weekly_major_holders_by_symbol,
+        account_settings=account_settings,
     )
     return summary
 
@@ -89,6 +93,7 @@ def _portfolio_revision(
     raw_data_by_symbol: dict[str, object],
     phase1_position_states_by_symbol: dict[str, dict] | None,
     weekly_major_holders_by_symbol: dict[str, dict],
+    account_settings: object | None = None,
 ) -> str:
     payload = {
         "positions": sorted(
@@ -105,6 +110,7 @@ def _portfolio_revision(
         },
         "phase1": phase1_position_states_by_symbol or {},
         "weekly_major_holders": weekly_major_holders_by_symbol,
+        "account_settings": _model_contract(account_settings) if account_settings is not None else None,
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

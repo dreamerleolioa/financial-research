@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import pandas as pd
 from fastapi.testclient import TestClient
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -26,17 +27,19 @@ from ai_stock_sentinel.calibration.forward_validation import (
 from ai_stock_sentinel.calibration.forward_validation_planning import (
     evaluation_ready_windows_by_candidate,
 )
-from ai_stock_sentinel.calibration.price_provider import get_forward_price_provider
+from ai_stock_sentinel.calibration.price_provider import _price_rows, get_forward_price_provider
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DAILY_RADAR_FORWARD_ADAPTER,
     FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
+    build_forward_validation_report_from_outcomes,
     evaluate_forward_window,
     exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs,
     forward_validation_fixture_inputs,
     load_benchmark_prices_from_prepared_market_context,
     merge_price_series,
+    persisted_forward_validation_outcomes,
     symbols_requiring_forward_price_refresh,
     upsert_forward_validation_results,
     validate_forward_validation_benchmark,
@@ -307,6 +310,178 @@ def test_forward_validation_fixture_report_is_deterministic_and_grouped() -> Non
     assert first["version_manifest"]["live_ranking_changed"] is False
 
 
+def test_forward_validation_reports_precision_recall_and_false_negative_from_shadow_pool() -> None:
+    candidates, prices_by_symbol, benchmark_prices, benchmark_symbol = forward_validation_fixture_inputs(
+        fixture_dir=FIXTURE_DIR,
+        run_date=date(2026, 5, 29),
+        market="TW",
+    )
+    candidates[0]["selection_status"] = "shadow"
+    candidates[0]["prefilter_status"] = "rejected"
+    candidates[0]["prefilter_reasons"] = [{"code": "overextended"}]
+
+    evaluation = build_forward_validation_report(
+        candidates,
+        price_series_by_symbol=prices_by_symbol,
+        benchmark_prices=benchmark_prices,
+        market="TW",
+        sample_source="fixture_with_shadow",
+        as_of_date=date(2026, 6, 26),
+        windows=[5],
+        benchmark_symbol=benchmark_symbol,
+    )
+
+    rows = [row for row in evaluation.outcomes if row["status"] == "validated"]
+    selected_rows = [row for row in rows if row["candidate_snapshot"]["selection_status"] == "selected"]
+    shadow_rows = [row for row in rows if row["candidate_snapshot"]["selection_status"] == "shadow"]
+    selected_hits = sum(row["outcome"]["hit_above_threshold"] is True for row in selected_rows)
+    shadow_hits = sum(row["outcome"]["hit_above_threshold"] is True for row in shadow_rows)
+    diagnostics = evaluation.report["selection_diagnostics"]["5"]
+
+    assert diagnostics["selected_validation"]["validated_count"] == len(selected_rows)
+    assert diagnostics["comparable_shadow_validation"]["validated_count"] == len(shadow_rows) == 1
+    absolute = diagnostics["absolute_positive"]
+    assert absolute["selected_hit_count"] == selected_hits
+    assert absolute["comparable_shadow_hit_count"] == shadow_hits
+    assert absolute["conditional_selected_precision"] == round(selected_hits / len(selected_rows), 4)
+    assert absolute["observed_comparable_shadow_miss_share"] == round(
+        shadow_hits / (selected_hits + shadow_hits),
+        4,
+    )
+    assert evaluation.report["metadata"]["aggregation_scope"] == "evaluation_batch"
+    selected_bucket_samples = sum(
+        metrics["5"]["sample_count"]
+        for metrics in evaluation.report["bucket_outcomes"].values()
+    )
+    assert selected_bucket_samples == len(selected_rows)
+
+
+def test_forward_validation_separates_absolute_hit_from_benchmark_outperformance() -> None:
+    candidate = _candidate_snapshot()
+    candidate["selection_status"] = "selected"
+    outcome = evaluate_forward_window(
+        candidate,
+        price_series=[
+            _price("2026-06-01", 100, 100, 100, 100),
+            _price("2026-06-02", 105, 105, 105, 105),
+        ],
+        benchmark_prices=[
+            _price("2026-06-01", 1000, 1000, 1000, 1000),
+            _price("2026-06-02", 1100, 1100, 1100, 1100),
+        ],
+        window_days=1,
+        as_of_date=date(2026, 6, 2),
+        benchmark_symbol="TAIEX",
+        validation_version=FORWARD_VALIDATION_VERSION,
+        hit_threshold_pct=0,
+    )
+
+    report = build_forward_validation_report_from_outcomes(
+        [candidate],
+        [outcome],
+        market="TW",
+        sample_source="unit",
+        as_of_date=date(2026, 6, 2),
+        windows=[1],
+    )
+
+    diagnostics = report["selection_diagnostics"]["1"]
+    assert diagnostics["absolute_positive"]["selected_hit_count"] == 1
+    assert diagnostics["benchmark_outperformance"]["selected_hit_count"] == 0
+
+
+def test_forward_validation_selection_diagnostics_disclose_skips_and_zero_denominators() -> None:
+    selected = _candidate_snapshot()
+    selected["selection_status"] = "selected"
+    shadow = _candidate_snapshot()
+    shadow["candidate_id"] = 2
+    shadow["symbol"] = "2454.TW"
+    shadow["selection_status"] = "shadow"
+    shadow["shadow_cohort"] = "comparable"
+    skipped = {
+        "candidate_id": 2,
+        "symbol": "2454.TW",
+        "signal_date": "2026-06-01",
+        "window_days": 5,
+        "validation_version": FORWARD_VALIDATION_VERSION,
+        "benchmark_symbol": "TAIEX",
+        "candidate_snapshot": DAILY_RADAR_FORWARD_ADAPTER.candidate_snapshot(shadow),
+        "status": "skipped",
+        "target_date": None,
+        "skip_reason": "missing_future_price",
+        "outcome": {},
+    }
+
+    report = build_forward_validation_report_from_outcomes(
+        [selected, shadow],
+        [skipped],
+        market="TW",
+        sample_source="unit",
+        as_of_date=date(2026, 6, 30),
+        windows=[5],
+    )
+
+    diagnostics = report["selection_diagnostics"]["5"]
+    assert diagnostics["selected_validation"]["attempted_count"] == 0
+    assert diagnostics["comparable_shadow_validation"] == {
+        "attempted_count": 1,
+        "validated_count": 0,
+        "skipped_count": 1,
+        "validation_rate": 0.0,
+        "skip_rate": 1.0,
+        "skip_reasons": {"missing_future_price": 1},
+    }
+    assert diagnostics["absolute_positive"]["conditional_selected_precision"] is None
+    assert diagnostics["absolute_positive"]["conditional_recall_within_observed_comparable_pool"] is None
+
+
+def test_persisted_skipped_outcome_is_not_visible_before_its_evaluation_as_of_date() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        snapshot = forward_validation_candidates_from_runs(session, market="TW")[0]
+        skipped = {
+            "candidate_id": candidate.id,
+            "symbol": candidate.symbol,
+            "signal_date": run.run_date.isoformat(),
+            "window_days": 5,
+            "validation_version": FORWARD_VALIDATION_VERSION,
+            "benchmark_symbol": "TAIEX",
+            "evaluation_as_of_date": "2026-06-08",
+            "candidate_snapshot": DAILY_RADAR_FORWARD_ADAPTER.candidate_snapshot(snapshot),
+            "status": "skipped",
+            "target_date": None,
+            "skip_reason": "missing_future_price",
+            "outcome": {},
+        }
+        upsert_forward_validation_results(session, [skipped])
+
+        assert persisted_forward_validation_outcomes(
+            session,
+            [snapshot],
+            windows=[5],
+            as_of_date=date(2026, 6, 2),
+        ) == []
+        visible = persisted_forward_validation_outcomes(
+            session,
+            [snapshot],
+            windows=[5],
+            as_of_date=date(2026, 6, 8),
+        )
+
+    assert len(visible) == 1
+    assert visible[0]["skip_reason"] == "missing_future_price"
+
+
 def test_forward_validation_internal_api_writes_idempotent_results(monkeypatch) -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -380,10 +555,19 @@ def test_forward_validation_internal_api_writes_idempotent_results(monkeypatch) 
     assert first.json()["validated_count"] == 1
     assert second.json()["records_written"] == 0
     assert second.json()["validated_count"] == 0
+    assert first.json()["report"] == second.json()["report"]
+    assert first.json()["report"]["metadata"]["aggregation_scope"] == "persisted_fixed_date_cohort"
 
     with Session(engine) as session:
         assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 1
         row = session.execute(select(DailyRadarForwardValidationResult)).scalar_one()
+        candidates = forward_validation_candidates_from_runs(session, market="TW")
+        assert persisted_forward_validation_outcomes(
+            session,
+            candidates,
+            windows=[5],
+            as_of_date=date(2026, 6, 7),
+        ) == []
 
     assert row.status == "validated"
     assert row.window_days == 5
@@ -720,6 +904,92 @@ def test_benchmark_prices_fall_back_to_latest_prepared_market_context() -> None:
     ]
 
 
+def test_benchmark_price_loader_uses_older_complete_required_date_fallback() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarPreparedRun.__table__])
+    with Session(engine) as session:
+        for run_date, history in [
+            (
+                date(2026, 6, 8),
+                [
+                    {"date": "2026-06-05", "close": 1000},
+                    {"date": "2026-06-08", "close": 1010},
+                ],
+            ),
+            (
+                date(2026, 6, 9),
+                [{"date": "2026-06-08", "close": 1010}],
+            ),
+        ]:
+            session.add(DailyRadarPreparedRun(
+                run_date=run_date,
+                market="TW",
+                status="prepared",
+                selected_symbols=[],
+                universe=[],
+                symbol_count=0,
+                market_context={
+                    "benchmark": {
+                        "symbol": "TAIEX",
+                        "price_history": history,
+                    },
+                },
+                step_statuses={},
+                errors=[],
+            ))
+        session.commit()
+
+        prices = load_benchmark_prices_from_prepared_market_context(
+            session,
+            market="TW",
+            benchmark_symbol="TAIEX",
+            as_of_date=date(2026, 6, 9),
+            required_dates=[date(2026, 6, 5), date(2026, 6, 8)],
+        )
+
+    assert [row["date"] for row in prices] == ["2026-06-05", "2026-06-08"]
+
+
+def test_benchmark_price_loader_rejects_non_finite_newest_complete_run() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarPreparedRun.__table__])
+    with Session(engine) as session:
+        for run_date, final_close in [
+            (date(2026, 6, 8), 1010.0),
+            (date(2026, 6, 9), float("inf")),
+        ]:
+            session.add(DailyRadarPreparedRun(
+                run_date=run_date,
+                market="TW",
+                status="prepared",
+                selected_symbols=[],
+                universe=[],
+                symbol_count=0,
+                market_context={
+                    "benchmark": {
+                        "symbol": "TAIEX",
+                        "price_history": [
+                            {"date": "2026-06-05", "close": 1000},
+                            {"date": "2026-06-08", "close": final_close},
+                        ],
+                    },
+                },
+                step_statuses={},
+                errors=[],
+            ))
+        session.commit()
+
+        prices = load_benchmark_prices_from_prepared_market_context(
+            session,
+            market="TW",
+            benchmark_symbol="TAIEX",
+            as_of_date=date(2026, 6, 9),
+            required_dates=[date(2026, 6, 5), date(2026, 6, 8)],
+        )
+
+    assert prices[-1]["close"] == 1010.0
+
+
 def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
@@ -764,6 +1034,7 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
                     "status": "skipped",
                     "signal_date": "2026-06-01",
                     "benchmark_symbol": "TAIEX",
+                    "evaluation_as_of_date": "2026-06-10",
                     "outcome": {},
                     "skip_reason": "stale_candidate_price",
                 }
@@ -791,6 +1062,52 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
     assert pending == {f"id:{candidate.id}": [5]}
     assert stale == {}
     assert completed == {}
+
+
+def test_legacy_terminal_skip_without_evaluation_date_is_requeued() -> None:
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            DailyRadarRun.__table__,
+            DailyRadarCandidate.__table__,
+            DailyRadarForwardValidationResult.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        run = _add_run(session)
+        candidate = _add_candidate(session, run)
+        session.flush()
+        session.add(
+            DailyRadarForwardValidationResult(
+                candidate_id=candidate.id,
+                window_days=5,
+                validation_version=FORWARD_VALIDATION_VERSION,
+                status="skipped",
+                signal_date=run.run_date,
+                target_date=None,
+                benchmark_symbol="TAIEX",
+                evaluation_as_of_date=None,
+                outcome={},
+                skip_reason="stale_candidate_price",
+            )
+        )
+        session.flush()
+
+        pending = exclude_persisted_daily_radar_windows(
+            session,
+            {f"id:{candidate.id}": [5]},
+        )
+        snapshot = forward_validation_candidates_from_runs(session, market="TW")[0]
+        persisted = persisted_forward_validation_outcomes(
+            session,
+            [snapshot],
+            windows=[5],
+            as_of_date=date(2026, 6, 30),
+        )
+
+    assert pending == {f"id:{candidate.id}": [5]}
+    assert persisted == []
 
 
 def test_daily_radar_validation_rejects_and_requeues_identity_mismatches() -> None:
@@ -934,6 +1251,86 @@ def test_forward_price_refresh_only_targets_incomplete_due_symbols_and_merges_ro
 
     assert required == ["2317.TW"]
     assert [row["date"] for row in merged["2317.TW"]] == ["2026-06-01", "2026-06-02"]
+
+
+def test_forward_price_refresh_treats_close_only_rows_as_incomplete_ohlc() -> None:
+    candidate = _candidate_snapshot() | {"candidate_id": 1, "symbol": "2330.TW"}
+    rows = [
+        _price("2026-06-01", 100, 100, 100, 100),
+        {"date": "2026-06-02", "close": 101},
+        _price("2026-06-03", 102, 102, 102, 102),
+        _price("2026-06-04", 103, 103, 103, 103),
+        _price("2026-06-05", 104, 104, 104, 104),
+        _price("2026-06-08", 105, 105, 105, 105),
+    ]
+
+    required = symbols_requiring_forward_price_refresh(
+        [candidate],
+        windows_by_candidate={"id:1": [5]},
+        price_series_by_symbol={"2330.TW": rows},
+        as_of_date=date(2026, 6, 8),
+    )
+
+    assert required == ["2330.TW"]
+
+
+@pytest.mark.parametrize(
+    "invalid_high",
+    [float("nan"), 10**1000],
+    ids=["nan", "overflow"],
+)
+def test_forward_price_provider_does_not_fabricate_missing_high_low_from_close(
+    invalid_high: float | int,
+) -> None:
+    frame_index = pd.to_datetime(["2026-06-02"])
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0],
+            "High": pd.Series([invalid_high], index=frame_index, dtype=object),
+            "Low": [float("nan")],
+            "Close": [100.0],
+        },
+        index=frame_index,
+    )
+
+    assert _price_rows(frame) == [
+        {"date": "2026-06-02", "open": 100.0, "high": None, "low": None, "close": 100.0},
+    ]
+
+
+def test_merge_price_series_does_not_erase_existing_ohlc_with_close_only_row() -> None:
+    merged = merge_price_series(
+        {"2330.TW": [_price("2026-06-02", 95, 110, 80, 100)]},
+        {"2330.TW": [{"date": "2026-06-02", "close": 101}]},
+    )
+
+    assert merged["2330.TW"] == [
+        {"date": "2026-06-02", "open": 95.0, "high": 110.0, "low": 80.0, "close": 101.0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid_high",
+    [float("nan"), float("inf"), 0, -1, 10**1000],
+    ids=["nan", "infinity", "zero", "negative", "overflow"],
+)
+def test_merge_price_series_keeps_valid_fallback_for_invalid_refresh_field(
+    invalid_high: float,
+) -> None:
+    merged = merge_price_series(
+        {"2330.TW": [_price("2026-06-02", 95, 110, 80, 100)]},
+        {"2330.TW": [{
+            "date": "2026-06-02",
+            "open": 96,
+            "high": invalid_high,
+            "low": 81,
+            "close": 101,
+        }]},
+    )
+
+    assert merged["2330.TW"] == [
+        {"date": "2026-06-02", "open": 96.0, "high": 110.0, "low": 81.0, "close": 101.0},
+    ]
 
 
 def test_forward_price_refresh_targets_symbol_missing_a_benchmark_trading_date() -> None:
@@ -1342,7 +1739,10 @@ def _add_raw(session: Session, symbol: str, row_date: date, close: float) -> Non
         StockRawData(
             symbol=symbol,
             record_date=row_date,
-            technical={"ohlcv": {"open": close, "high": close + 2, "low": close - 2, "close": close}},
+            technical={
+                "ohlcv": {"open": close, "high": close + 2, "low": close - 2, "close": close},
+                "data_dates": {"ohlcv": row_date.isoformat()},
+            },
             institutional={},
             fundamental={},
             raw_data_is_final=True,

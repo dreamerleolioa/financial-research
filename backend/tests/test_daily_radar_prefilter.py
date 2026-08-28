@@ -15,6 +15,7 @@ from ai_stock_sentinel.daily_radar.data_loader import (
 from ai_stock_sentinel.daily_radar.prefilter import (
     prefilter_record,
     run_stage1_prefilter,
+    run_stage1_prefilter_with_shadow,
 )
 
 
@@ -34,6 +35,60 @@ def _records_by_symbol() -> dict[str, dict[str, Any]]:
 
 def _reason_codes(result: dict[str, Any]) -> set[str]:
     return {reason["code"] for reason in result["prefilter_reasons"]}
+
+
+def test_prefilter_shadow_pool_keeps_overflow_and_valid_rejections_but_excludes_bad_data() -> None:
+    records = list(_records_by_symbol().values())
+
+    batch = run_stage1_prefilter_with_shadow(records, selected_limit=2)
+
+    assert len(batch["selected"]) == 2
+    assert all(row["selection_status"] == "selected" for row in batch["selected"])
+    shadow_by_symbol = {row["symbol"]: row for row in batch["shadow"]}
+    assert {"2330.TW", "2454.TW", "3034.TW", "2303.TW"}.issuperset(
+        {symbol for symbol, row in shadow_by_symbol.items() if row["shadow_reason"] == "candidate_limit"}
+    )
+    assert shadow_by_symbol["3661.TW"]["shadow_reason"] == "prefilter_rejected"
+    assert shadow_by_symbol["1605.TW"]["shadow_reason"] == "prefilter_rejected"
+    assert {row["symbol"] for row in batch["excluded"]} == {"1101.TW", "2603.TW"}
+
+
+def test_prefilter_shadow_pool_deduplicates_symbols_before_selection() -> None:
+    record = _records_by_symbol()["2330.TW"]
+
+    batch = run_stage1_prefilter_with_shadow(
+        [record, copy.deepcopy(record)],
+        selected_limit=1,
+    )
+
+    assert [row["symbol"] for row in batch["selected"]] == ["2330.TW"]
+    assert batch["shadow"] == []
+    assert batch["duplicates"] == [{"symbol": "2330.TW"}]
+
+
+def test_prefilter_shadow_pool_keeps_all_cohorts_when_accepted_overflow_is_large() -> None:
+    base = _records_by_symbol()["2330.TW"]
+    accepted = []
+    for index in range(5):
+        record = copy.deepcopy(base)
+        record["symbol"] = f"A{index}.TW"
+        accepted.append(record)
+    rejected = copy.deepcopy(base)
+    rejected["symbol"] = "RULE.TW"
+    rejected["indicators"]["rsi14"] = 99
+    eligibility = copy.deepcopy(base)
+    eligibility["symbol"] = "ELIG.TW"
+    eligibility["ohlcv"]["avg_volume_20"] = 1
+
+    batch = run_stage1_prefilter_with_shadow(
+        [*accepted, rejected, eligibility],
+        selected_limit=1,
+    )
+
+    shadow = {row["symbol"]: row for row in batch["shadow"]}
+    assert set(shadow) == {"A1.TW", "A2.TW", "A3.TW", "A4.TW", "RULE.TW", "ELIG.TW"}
+    assert shadow["RULE.TW"]["shadow_cohort"] == "comparable"
+    assert shadow["ELIG.TW"]["shadow_cohort"] == "eligibility_audit"
 
 
 def test_loader_joins_daily_radar_fixture_records_without_network(monkeypatch: pytest.MonkeyPatch) -> None:

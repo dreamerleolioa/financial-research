@@ -60,7 +60,7 @@ def test_calibration_fixture_report_is_stable_and_structured() -> None:
         "price_volume_strengthening": 1,
         "support_retest": 1,
     }
-    assert first["version_manifest"]["scoring_version"] == "daily-radar-scoring-v2.5"
+    assert first["version_manifest"]["scoring_version"] == "daily-radar-scoring-v2.7"
     assert first["version_manifest"]["live_scoring_changed"] is False
 
 

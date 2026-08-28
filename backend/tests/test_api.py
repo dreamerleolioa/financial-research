@@ -597,7 +597,7 @@ def test_analyze_response_includes_extended_technical_indicators(monkeypatch: py
     assert indicators["obv_trend_mid_long"] is None
     assert indicators["obv_trend_mid_long_window"] is None
     profile = body["technical_profile"]
-    assert profile["version"] == "technical-layer-v3"
+    assert profile["version"] == "technical-layer-v4"
     assert profile["primary_score_inputs"]["ma_structure"]["state"] in {
         "bullish_alignment",
         "above_ma20",
@@ -1710,7 +1710,7 @@ def test_cache_hit_backfills_technical_profile_for_legacy_full_result() -> None:
         sum(full["snapshot"]["recent_volumes"][-60:]) / 60
     )
     assert response.technical_profile is not None
-    assert response.technical_profile["version"] == "technical-layer-v3"
+    assert response.technical_profile["version"] == "technical-layer-v4"
     assert response.technical_profile["data_quality"]["data_date"] == "2026-06-23"
     assert response.technical_profile["data_quality"]["is_final"] is True
 
@@ -1785,7 +1785,7 @@ def test_cache_hit_rebuilds_outdated_technical_profile() -> None:
     assert response.technical_indicators.avg_volume_60 == display_only["avg_volume_60"]
     assert "legacy_field" not in response.technical_profile["data_quality"]["missing_fields"]
     assert response.technical_profile["data_quality"]["is_final"] is True
-    assert response.technical_profile["version"] == "technical-layer-v3"
+    assert response.technical_profile["version"] == "technical-layer-v4"
     assert "ma_structure" in response.technical_profile["primary_score_inputs"]
     assert "temporal_evidence" in response.technical_profile
     assert "signal_conflicts" not in response.technical_profile

@@ -33,7 +33,11 @@ def public_run_response(
     bucket: str | None,
     limit: int,
 ) -> DailyRadarRunResponse:
-    candidates = [candidate_response(candidate) for candidate in _ordered_candidates(run.candidates)]
+    candidates = [
+        candidate_response(candidate)
+        for candidate in _ordered_candidates(run.candidates)
+        if candidate.selection_status == "selected"
+    ]
     if bucket is not None:
         candidates = [candidate for candidate in candidates if matches_bucket(candidate.model_dump(), bucket)]
     candidates = candidates[:limit]

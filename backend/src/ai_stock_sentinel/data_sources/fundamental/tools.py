@@ -6,6 +6,7 @@ from dataclasses import asdict
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalError
 from ai_stock_sentinel.data_sources.fundamental.official_provider import OfficialCachedFundamentalProvider
+from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_industry
 from ai_stock_sentinel.db.session import create_session
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,12 @@ def fetch_fundamental_data(symbol: str, current_price: float) -> dict:
             session,
             provider_mode=provider_mode,
         )
-        result = _fetch_with_provider(provider, symbol=symbol, current_price=current_price)
+        result = _fetch_with_provider(
+            provider,
+            symbol=symbol,
+            current_price=current_price,
+            enrich_industry=False,
+        )
         if "error" in result:
             _safe_session_rollback(session)
         else:
@@ -51,21 +57,44 @@ def fetch_fundamental_data(symbol: str, current_price: float) -> dict:
                     "message": str(exc),
                     "symbol": symbol,
                 }
-        return result
     finally:
         _safe_session_close(session)
+    if "error" not in result and not result.get("industry"):
+        result["industry"] = _safe_resolve_industry(symbol)
+    return result
 
 
-def _fetch_with_provider(provider, *, symbol: str, current_price: float) -> dict:
+def _fetch_with_provider(
+    provider,
+    *,
+    symbol: str,
+    current_price: float,
+    enrich_industry: bool = True,
+) -> dict:
     try:
         data = provider.fetch(symbol, current_price)
-        return asdict(data)
+        payload = asdict(data)
+        if enrich_industry and not payload.get("industry"):
+            payload["industry"] = _safe_resolve_industry(symbol)
+        return payload
     except FundamentalError as e:
         logger.warning("FundamentalProvider error [%s]: %s", e.code, e)
         return {"error": e.code, "message": str(e), "symbol": symbol}
     except Exception as e:
         logger.exception("Unexpected error in fetch_fundamental_data")
         return {"error": "FUNDAMENTAL_UNKNOWN_ERROR", "message": str(e), "symbol": symbol}
+
+
+def _safe_resolve_industry(symbol: str) -> str | None:
+    try:
+        return resolve_symbol_industry(symbol)
+    except Exception as exc:
+        logger.warning(
+            "Official industry classification unavailable symbol=%s error_type=%s",
+            symbol,
+            exc.__class__.__name__,
+        )
+        return None
 
 
 def _safe_session_rollback(session) -> None:

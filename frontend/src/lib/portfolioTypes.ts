@@ -76,6 +76,7 @@ export interface PortfolioPhase1PositionState {
 export interface PortfolioPositionRisk {
   symbol: string;
   name?: string | null;
+  industry?: string | null;
   quantity: number | null;
   current_price: number | null;
   price_context?: PortfolioPriceContext;
@@ -94,6 +95,8 @@ export interface PortfolioPositionRisk {
   estimated_risk_amount: number | null;
   estimated_risk_pct_of_portfolio: number | null;
   portfolio_weight_pct: number | null;
+  invested_weight_pct?: number | null;
+  account_equity_weight_pct?: number | null;
   risk_state: "contained" | "watch" | "elevated" | "defense_reference_touched" | "data_incomplete";
   discipline_triggers: string[];
   phase1_position_state?: PortfolioPhase1PositionState | null;
@@ -137,10 +140,19 @@ export interface PortfolioPhase1CurrentDayLists {
 }
 
 export interface PortfolioRiskSummary {
-  version: string;
+  version: "portfolio-risk-summary-v2";
   portfolio_revision?: string;
   as_of_date: string;
   portfolio_value: number;
+  account_capital: {
+    status: "recorded" | "cash_not_recorded";
+    cash_balance: number | null;
+    invested_market_value: number;
+    account_equity: number | null;
+    cash_pct_of_account_equity: number | null;
+    invested_pct_of_account_equity: number | null;
+    risk_percentage_denominator: "account_equity" | "invested_market_value_fallback";
+  };
   total_unrealized_pnl: number;
   total_at_risk: number;
   total_at_risk_pct: number | null;
@@ -155,6 +167,27 @@ export interface PortfolioRiskSummary {
       pct_of_portfolio: number | null;
       status: "ok" | "watch" | "elevated";
     }>;
+    by_industry: Array<{
+      type: "industry";
+      key: string;
+      symbols: string[];
+      market_value: number;
+      pct_of_invested: number | null;
+      pct_of_capital_base: number | null;
+      status: "ok" | "watch" | "elevated" | "partial";
+    }>;
+    industry_coverage: {
+      status: "available" | "partial" | "unavailable";
+      classified_market_value: number;
+      pct_of_invested: number | null;
+      eligible_position_count: number;
+      valued_position_count: number;
+      classified_position_count: number;
+      unvalued_position_count: number;
+      unclassified_valued_position_count: number;
+    };
+    industry_watch_threshold_pct: number;
+    industry_elevated_threshold_pct: number;
   };
   shared_exposures: Array<{
     type: string;
@@ -164,6 +197,26 @@ export interface PortfolioRiskSummary {
     market_value: number;
     pct_of_portfolio: number | null;
   }>;
+  correlation_risk: {
+    status: "available" | "partial" | "insufficient_data";
+    minimum_overlapping_return_count: number;
+    eligible_position_count: number;
+    valued_position_count: number;
+    possible_pair_count: number;
+    eligible_pair_count: number;
+    pair_coverage_pct: number | null;
+    weighted_average_correlation: number | null;
+    watch_threshold: number;
+    elevated_threshold: number;
+    pairs: Array<{
+      symbols: [string, string];
+      correlation: number;
+      overlapping_return_count: number;
+      combined_invested_weight_pct: number;
+      status: "contained" | "watch" | "elevated";
+    }>;
+    interpretation: "descriptive_co_movement_not_forward_prediction" | string;
+  };
   risk_budget_status: {
     status: "available" | "watch" | "constrained" | "unknown";
     total_at_risk_pct: number | null;
@@ -176,6 +229,12 @@ export interface PortfolioRiskSummary {
     caveats: PortfolioRiskCaveat[];
     price_stale_after_days: number;
   };
+}
+
+export interface PortfolioAccountSettings {
+  status: "recorded" | "not_recorded";
+  cash_balance: number | null;
+  updated_at: string | null;
 }
 
 export interface ClosedPortfolioItem {
@@ -585,13 +644,34 @@ export interface PositionLifecycleAdvancedInternal {
   mfe_r_multiple?: number | null;
   mfe_capture_rate?: number | null;
   declared_plan_adherence_score?: number | null;
+  objective_plan_adherence?: {
+    status: string;
+    score: number | null;
+    evaluated_check_count: number;
+    passed_check_count: number;
+    failed_check_count: number;
+    minimum_checks_for_observed_score: number;
+    checks: Array<{
+      code: string;
+      status: string;
+      summary: string;
+      source_refs: string[];
+    }>;
+  };
   observed_plan_adherence_score?: number | null;
   plan_adherence_score?: number | null;
   decision_quality_score?: number | null;
   capital_at_risk_by_event?: PositionLifecycleRiskPoint[];
   exposure_curve?: PositionLifecycleRiskPoint[];
   benchmark_relative_return_pct?: number | null;
+  benchmark_return_pct?: number | null;
+  benchmark_symbol?: string | null;
+  benchmark_relative_status?: string;
   sector_relative_return_pct?: number | null;
+  sector_return_pct?: number | null;
+  sector_benchmark_symbol?: string | null;
+  sector_relative_status?: string;
+  relative_performance_methodology?: string;
   [key: string]: unknown;
 }
 
@@ -634,6 +714,7 @@ export interface PositionLifecycleDecisionContext {
   historical_judgment_eligible?: boolean;
   source?: string | null;
   created_after_entry?: boolean | null;
+  setup_type?: LifecycleSetupType | null;
   planned_holding_period?: PlannedHoldingPeriod | null;
   default_stop_rule?: DefaultStopRule | null;
   add_entry_condition?: AddEntryCondition | null;
@@ -772,8 +853,28 @@ export interface PositionLifecycleReviewResponse {
   review_result: PositionLifecycleReviewResult;
   evidence_payload: PositionLifecycleReviewEvidencePayload;
   llm_summary: string | null;
+  personal_setup_stats?: PositionLifecyclePersonalSetupStats;
   created_at: string;
   updated_at: string;
+}
+
+export interface PositionLifecyclePersonalSetupStats {
+  status: "descriptive" | "insufficient_sample" | "unavailable_historical_setup" | string;
+  setup_type: LifecycleSetupType | null;
+  sample_count: number;
+  minimum_descriptive_sample_count: number;
+  eligible_closed_setup_count?: number;
+  reviewed_setup_count?: number;
+  review_coverage_pct?: number | null;
+  profitable_count?: number;
+  win_rate_pct?: number | null;
+  average_return_pct?: number | null;
+  median_return_pct?: number | null;
+  benchmark_relative_sample_count?: number;
+  average_benchmark_relative_return_pct?: number | null;
+  observed_adherence_sample_count?: number;
+  average_observed_plan_adherence_score?: number | null;
+  interpretation?: "descriptive_only_not_causal" | string;
 }
 
 export const LIFECYCLE_SETUP_TYPE_VALUES = [

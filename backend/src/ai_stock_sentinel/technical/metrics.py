@@ -1,6 +1,8 @@
 """純數學計算工具，不依賴任何專案內模組（無循環引用風險）。"""
 from __future__ import annotations
 
+import math
+
 
 def ma(closes: list[float], n: int) -> float | None:
     if len(closes) < n:
@@ -13,6 +15,19 @@ def calc_bias(close: float, ma_val: float) -> float | None:
     if ma_val == 0:
         return None
     return (close - ma_val) / ma_val * 100
+
+
+def normalize_price_value_pct(value: float | None, close: float | None) -> float | None:
+    """Normalize a price-unit indicator so thresholds compare across symbols."""
+    if (
+        value is None
+        or close is None
+        or not math.isfinite(value)
+        or not math.isfinite(close)
+        or close <= 0
+    ):
+        return None
+    return value / close * 100
 
 
 def calc_rsi(closes: list[float], period: int = 14) -> float | None:

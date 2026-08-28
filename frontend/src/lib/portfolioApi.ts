@@ -11,6 +11,7 @@ import type {
   LifecyclePlanResponse,
   PlanAdherence,
   PortfolioDecisionContextStatusMap,
+  PortfolioAccountSettings,
   PortfolioItem,
   PortfolioRiskSummary,
   PositionEvent,
@@ -122,6 +123,17 @@ export function fetchDecisionContextStatus(): Promise<PortfolioDecisionContextSt
 export async function fetchPortfolioRiskSummary(): Promise<PortfolioRiskSummary> {
   const data = await requestJson<unknown>("/portfolio/risk-summary");
   return parsePortfolioRiskSummary(data);
+}
+
+export function fetchPortfolioAccountSettings(): Promise<PortfolioAccountSettings> {
+  return requestJson<PortfolioAccountSettings>("/portfolio/account-settings");
+}
+
+export function updatePortfolioAccountSettings(cashBalance: number): Promise<PortfolioAccountSettings> {
+  return requestJson<PortfolioAccountSettings>("/portfolio/account-settings", {
+    method: "PUT",
+    body: { cash_balance: cashBalance },
+  });
 }
 
 export async function refreshPortfolioPrices(portfolioIds?: number[]): Promise<PortfolioRiskSummary> {

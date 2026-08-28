@@ -7,6 +7,7 @@ from ai_stock_sentinel.db.models import (
     AnalysisForwardValidationResult,
     DailyAnalysisLog,
     DailyRadarCandidate,
+    DailyRadarForwardValidationResult,
     DailyRadarPreparedRun,
     DailyRadarRun,
     POSITION_EVENT_CONFIDENCE_LEVELS,
@@ -37,6 +38,22 @@ from sqlalchemy.dialects.postgresql import JSONB
 def test_user_table_exists_in_base():
     """users 表應在 Base.metadata 中。"""
     assert "users" in Base.metadata.tables
+
+
+def test_daily_radar_candidate_tracks_selected_and_shadow_rows() -> None:
+    columns = {column.name for column in DailyRadarCandidate.__table__.columns}
+    constraints = {
+        constraint.name
+        for constraint in DailyRadarCandidate.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert {"selection_status", "prefilter_status", "prefilter_reasons", "shadow_cohort"} <= columns
+    assert "ck_daily_radar_candidate_selection_status" in constraints
+    assert "ck_daily_radar_candidate_shadow_cohort" in constraints
+    assert "evaluation_as_of_date" in {
+        column.name for column in DailyRadarForwardValidationResult.__table__.columns
+    }
 
 
 def test_analysis_calibration_models_are_append_only_and_window_versioned() -> None:

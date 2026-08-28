@@ -16,7 +16,7 @@ from ai_stock_sentinel.daily_radar.data_loader import (
     load_daily_radar_fixture_records,
 )
 from ai_stock_sentinel.daily_radar.explanations import generate_candidate_explanation
-from ai_stock_sentinel.daily_radar.prefilter import run_stage1_prefilter
+from ai_stock_sentinel.daily_radar.prefilter import run_stage1_prefilter_with_shadow
 from ai_stock_sentinel.daily_radar.repository import (
     create_daily_radar_run,
     get_symbol_candidate_history,
@@ -110,23 +110,44 @@ def _run_daily_radar_with_session(
             active_market_context = dict(_load_optional_json(active_fixture_dir / "market_context.json"))
         else:
             active_market_context = {}
-        prefilter_results = run_stage1_prefilter(
-            loaded_records,
-            limit=candidate_limit,
-            include_rejected=True,
+        canonical_records, duplicate_symbols = _deduplicate_records(loaded_records)
+        prefilter_batch = run_stage1_prefilter_with_shadow(
+            canonical_records,
+            selected_limit=candidate_limit,
         )
-        accepted_prefilters = [
-            result for result in prefilter_results if result["prefilter_status"] == "accepted"
-        ]
+        accepted_prefilters = prefilter_batch["selected"]
+        shadow_prefilters = prefilter_batch["shadow"]
+        prefilter_results = accepted_prefilters + shadow_prefilters + prefilter_batch["excluded"]
+        errors.extend(
+            {"code": "duplicate_universe_symbol", "symbol": str(row["symbol"])}
+            for row in [*({"symbol": symbol} for symbol in duplicate_symbols), *prefilter_batch["duplicates"]]
+        )
         errors.extend(_prefilter_errors(prefilter_results))
 
-        records_by_symbol = {str(record["symbol"]): record for record in loaded_records}
+        records_by_symbol = {str(record["symbol"]): record for record in canonical_records}
         prefilter_by_symbol = {str(result["symbol"]): result for result in accepted_prefilters}
         scored_candidates = _score_candidates(
             records_by_symbol=records_by_symbol,
             prefilter_by_symbol=prefilter_by_symbol,
             market_context=active_market_context,
             errors=errors,
+        )
+        scored_candidates = _with_selection_metadata(
+            scored_candidates,
+            prefilter_by_symbol=prefilter_by_symbol,
+            selection_status="selected",
+        )
+        shadow_by_symbol = {str(result["symbol"]): result for result in shadow_prefilters}
+        shadow_candidates = _score_candidates(
+            records_by_symbol=records_by_symbol,
+            prefilter_by_symbol=shadow_by_symbol,
+            market_context=active_market_context,
+            errors=errors,
+        )
+        shadow_candidates = _with_selection_metadata(
+            shadow_candidates,
+            prefilter_by_symbol=shadow_by_symbol,
+            selection_status="shadow",
         )
         scored_candidates = _with_background_contexts(
             scored_candidates,
@@ -152,8 +173,16 @@ def _run_daily_radar_with_session(
         )
         final_candidates = _with_explanations(cooled_candidates, errors)
         final_candidates.sort(key=lambda candidate: (-int(candidate["observation_score"]), str(candidate["symbol"])))
+        final_shadow_candidates = _with_explanations(
+            shadow_candidates,
+            errors,
+            keep_on_error=True,
+        )
+        final_shadow_candidates.sort(
+            key=lambda candidate: (-int(candidate["observation_score"]), str(candidate["symbol"]))
+        )
 
-        replace_run_candidates(session, run, final_candidates)
+        replace_run_candidates(session, run, [*final_candidates, *final_shadow_candidates])
         status = _final_status(
             universe_count=len(loaded_records),
             accepted_count=len(accepted_prefilters),
@@ -190,6 +219,23 @@ def _load_records(
     return load_daily_radar_fixture_records(fixture_dir or _default_fixture_dir())
 
 
+def _deduplicate_records(
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    canonical: list[dict[str, Any]] = []
+    duplicate_symbols: set[str] = set()
+    seen_symbols: set[str] = set()
+    for record in records:
+        normalized = dict(record)
+        symbol = str(normalized.get("symbol") or "").strip()
+        if symbol in seen_symbols:
+            duplicate_symbols.add(symbol)
+            continue
+        seen_symbols.add(symbol)
+        canonical.append(normalized)
+    return canonical, sorted(duplicate_symbols)
+
+
 def _score_candidates(
     *,
     records_by_symbol: Mapping[str, Mapping[str, Any]],
@@ -212,9 +258,33 @@ def _score_candidates(
     return candidates
 
 
+def _with_selection_metadata(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    prefilter_by_symbol: Mapping[str, Mapping[str, Any]],
+    selection_status: str,
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        prefilter = prefilter_by_symbol[symbol]
+        enriched.append(
+            dict(candidate)
+            | {
+                "selection_status": selection_status,
+                "prefilter_status": str(prefilter.get("prefilter_status") or "accepted"),
+                "prefilter_reasons": list(prefilter.get("prefilter_reasons") or []),
+                "shadow_cohort": prefilter.get("shadow_cohort"),
+            }
+        )
+    return enriched
+
+
 def _with_explanations(
     candidates: Iterable[Mapping[str, Any]],
     errors: list[dict[str, Any]],
+    *,
+    keep_on_error: bool = False,
 ) -> list[dict[str, Any]]:
     explained: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -223,6 +293,8 @@ def _with_explanations(
             explanation = generate_candidate_explanation(candidate)
         except Exception as exc:
             errors.append({"code": "candidate_processing_error", "symbol": symbol, "message": str(exc)})
+            if keep_on_error:
+                explained.append(dict(candidate) | {"explanation": "內部影子樣本；說明產生失敗"})
             continue
         explained.append(dict(candidate) | {"explanation": explanation["text"]})
     return explained

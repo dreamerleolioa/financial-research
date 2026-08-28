@@ -203,16 +203,54 @@ export const radarRun = {
 };
 
 const emptyRiskSummary = {
-  version: "1.0",
+  version: "portfolio-risk-summary-v2",
   portfolio_revision: "e2e-portfolio-revision",
   as_of_date: "2026-07-16",
   portfolio_value: 0,
+  account_capital: {
+    status: "cash_not_recorded",
+    cash_balance: null,
+    invested_market_value: 0,
+    account_equity: null,
+    cash_pct_of_account_equity: null,
+    invested_pct_of_account_equity: null,
+    risk_percentage_denominator: "invested_market_value_fallback",
+  },
   total_unrealized_pnl: 0,
   total_at_risk: 0,
   total_at_risk_pct: 0,
   position_risks: [],
-  concentration: { by_symbol: [] },
+  concentration: {
+    by_symbol: [],
+    by_industry: [],
+    industry_coverage: {
+      status: "unavailable",
+      classified_market_value: 0,
+      pct_of_invested: null,
+      eligible_position_count: 0,
+      valued_position_count: 0,
+      classified_position_count: 0,
+      unvalued_position_count: 0,
+      unclassified_valued_position_count: 0,
+    },
+    industry_watch_threshold_pct: 40,
+    industry_elevated_threshold_pct: 60,
+  },
   shared_exposures: [],
+  correlation_risk: {
+    status: "insufficient_data",
+    minimum_overlapping_return_count: 20,
+    eligible_position_count: 0,
+    valued_position_count: 0,
+    possible_pair_count: 0,
+    eligible_pair_count: 0,
+    pair_coverage_pct: null,
+    weighted_average_correlation: null,
+    watch_threshold: 0.65,
+    elevated_threshold: 0.8,
+    pairs: [],
+    interpretation: "descriptive_co_movement_not_forward_prediction",
+  },
   risk_budget_status: {
     status: "available",
     total_at_risk_pct: 0,
@@ -230,6 +268,10 @@ const emptyRiskSummary = {
 export const populatedRiskSummary = {
   ...emptyRiskSummary,
   portfolio_value: 1_085_000,
+  account_capital: {
+    ...emptyRiskSummary.account_capital,
+    invested_market_value: 1_085_000,
+  },
   total_unrealized_pnl: 67_000,
   total_at_risk: 37_000,
   total_at_risk_pct: 3.41,
@@ -237,6 +279,7 @@ export const populatedRiskSummary = {
     {
       symbol: "2330.TW",
       name: "台積電",
+      industry: null,
       quantity: 1000,
       current_price: 1085,
       entry_price: 1018,
@@ -247,6 +290,8 @@ export const populatedRiskSummary = {
       estimated_risk_amount: 37_000,
       estimated_risk_pct_of_portfolio: 3.41,
       portfolio_weight_pct: 100,
+      invested_weight_pct: 100,
+      account_equity_weight_pct: null,
       risk_state: "contained",
       discipline_triggers: [],
       data_quality: { status: "ok", caveats: [] },
@@ -262,6 +307,24 @@ export const populatedRiskSummary = {
         status: "elevated",
       },
     ],
+    by_industry: [],
+    industry_coverage: {
+      status: "unavailable",
+      classified_market_value: 0,
+      pct_of_invested: 0,
+      eligible_position_count: 1,
+      valued_position_count: 1,
+      classified_position_count: 0,
+      unvalued_position_count: 0,
+      unclassified_valued_position_count: 1,
+    },
+    industry_watch_threshold_pct: 40,
+    industry_elevated_threshold_pct: 60,
+  },
+  correlation_risk: {
+    ...emptyRiskSummary.correlation_risk,
+    eligible_position_count: 1,
+    valued_position_count: 1,
   },
 };
 
@@ -386,6 +449,14 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
         : json(route, options.tradeReviewPost);
     }
     if (method === "GET" && pathname === "/portfolio/risk-summary") return json(route, riskSummary);
+    if (method === "PUT" && pathname === "/portfolio/account-settings") {
+      const body = request.postDataJSON() as { cash_balance?: number };
+      return json(route, {
+        status: "recorded",
+        cash_balance: body.cash_balance ?? null,
+        updated_at: "2026-07-31T10:30:00+08:00",
+      });
+    }
     if (method === "POST" && pathname === "/portfolio/risk-summary/refresh-prices") {
       const queuedSummary = options.priceRefreshSummaries?.[priceRefreshResponseIndex];
       priceRefreshResponseIndex += 1;
