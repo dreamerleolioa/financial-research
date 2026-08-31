@@ -202,6 +202,165 @@ export const radarRun = {
   ],
 };
 
+export const activeEtfDaily = {
+  data_date: "2026-08-28",
+  available_dates: ["2026-08-28", "2026-08-27"],
+  generated_at: "2026-08-31T08:05:00+08:00",
+  expected_funds: 3,
+  covered_funds: 2,
+  summary: {
+    changed_funds: 2,
+    changed_stocks: 3,
+    changed_rows: 4,
+    additions: 2,
+    increases: 1,
+    decreases: 1,
+    removals: 0,
+  },
+  funds: [
+    {
+      fund_code: "00985A",
+      name: "野村臺灣智慧優選主動式ETF",
+      category: "國內成分證券ETF",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00985A.TW",
+      status: "ready",
+      data_date: "2026-08-28",
+      previous_date: "2026-08-27",
+      latest_data_date: "2026-08-28",
+      fetched_at: "2026-08-31T07:58:00+08:00",
+      change_count: 2,
+      common_scale_ratio: 1.04,
+    },
+    {
+      fund_code: "00982A",
+      name: "主動群益台灣強棒",
+      category: "國內成分證券ETF",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00982A.TW",
+      status: "ready",
+      data_date: "2026-08-28",
+      previous_date: "2026-08-27",
+      latest_data_date: "2026-08-28",
+      fetched_at: "2026-08-31T07:59:00+08:00",
+      change_count: 2,
+      common_scale_ratio: 1.01,
+    },
+    {
+      fund_code: "00409A",
+      name: "測試尚未更新基金",
+      category: "國內成分證券ETF",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00409A.TW",
+      status: "missing",
+      data_date: null,
+      previous_date: null,
+      latest_data_date: "2026-08-27",
+      fetched_at: null,
+      change_count: 0,
+      common_scale_ratio: null,
+    },
+  ],
+  changes: [
+    {
+      action: "added",
+      fund_code: "00985A",
+      fund_name: "野村臺灣智慧優選主動式ETF",
+      symbol: "2330.TW",
+      name: "台積電",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00985A.TW",
+      fetched_at: "2026-08-31T07:58:00+08:00",
+      data_date: "2026-08-28",
+      previous_date: "2026-08-27",
+      current_shares: 800000,
+      previous_shares: 0,
+      share_delta: 800000,
+      share_delta_pct: null,
+      current_weight_pct: "8.25",
+      previous_weight_pct: "0",
+      weight_delta_pct_points: "8.25",
+      relative_share_change_pct: null,
+      likely_fund_scale_change: false,
+    },
+    {
+      action: "increased",
+      fund_code: "00985A",
+      fund_name: "野村臺灣智慧優選主動式ETF",
+      symbol: "2454.TW",
+      name: "聯發科",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00985A.TW",
+      fetched_at: "2026-08-31T07:58:00+08:00",
+      data_date: "2026-08-28",
+      previous_date: "2026-08-27",
+      current_shares: 520000,
+      previous_shares: 500000,
+      share_delta: 20000,
+      share_delta_pct: "4",
+      current_weight_pct: "6.45",
+      previous_weight_pct: "6.32",
+      weight_delta_pct_points: "0.13",
+      relative_share_change_pct: "0",
+      likely_fund_scale_change: true,
+    },
+    {
+      action: "added",
+      fund_code: "00982A",
+      fund_name: "主動群益台灣強棒",
+      symbol: "2330.TW",
+      name: "台積電",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00982A.TW",
+      fetched_at: "2026-08-31T07:59:00+08:00",
+      data_date: "2026-08-28",
+      previous_date: "2026-08-27",
+      current_shares: 320000,
+      previous_shares: 0,
+      share_delta: 320000,
+      share_delta_pct: null,
+      current_weight_pct: "4.70",
+      previous_weight_pct: "0",
+      weight_delta_pct_points: "4.70",
+      relative_share_change_pct: null,
+      likely_fund_scale_change: false,
+    },
+    {
+      action: "decreased",
+      fund_code: "00982A",
+      fund_name: "主動群益台灣強棒",
+      symbol: "2317.TW",
+      name: "鴻海",
+      source_provider: "moneydj",
+      source_url: "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00982A.TW",
+      fetched_at: "2026-08-31T07:59:00+08:00",
+      data_date: "2026-08-28",
+      previous_date: "2026-08-27",
+      current_shares: 460000,
+      previous_shares: 500000,
+      share_delta: -40000,
+      share_delta_pct: "-8",
+      current_weight_pct: "3.61",
+      previous_weight_pct: "3.95",
+      weight_delta_pct_points: "-0.34",
+      relative_share_change_pct: "-8.91",
+      likely_fund_scale_change: false,
+    },
+  ],
+  consensus: [
+    {
+      symbol: "2330.TW",
+      name: "台積電",
+      direction: "increase",
+      fund_count: 2,
+      added_count: 2,
+      increased_count: 0,
+      decreased_count: 0,
+      removed_count: 0,
+    },
+  ],
+};
+
 const emptyRiskSummary = {
   version: "portfolio-risk-summary-v2",
   portfolio_revision: "e2e-portfolio-revision",
@@ -344,6 +503,7 @@ interface ApiMockOptions {
   latestHistory?: Record<string, unknown | null>;
   priceRefreshDelayMs?: number;
   dailyRadar?: unknown | null;
+  activeEtfDaily?: unknown | null;
   analyzeResult?: unknown;
   analyzeResponsesBySymbol?: Record<string, MockResponse>;
   requestLog?: string[];
@@ -407,6 +567,7 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
   let priceRefreshResponseIndex = 0;
   let tradeReviewPostResponseIndex = 0;
   const dailyRadar = options.dailyRadar === undefined ? null : options.dailyRadar;
+  const activeEtfResponse = options.activeEtfDaily === undefined ? null : options.activeEtfDaily;
   const analyzeResult = options.analyzeResult ?? quickAnalyzeResult;
 
   await page.route("https://accounts.google.com/**", (route) => route.abort());
@@ -499,6 +660,11 @@ export async function installApiMocks(page: Page, options: ApiMockOptions = {}) 
       return dailyRadar
         ? json(route, dailyRadar)
         : json(route, { detail: "No public Daily Radar run is available." }, 404);
+    }
+    if (method === "GET" && pathname === "/active-etf-holdings/daily") {
+      return activeEtfResponse
+        ? json(route, activeEtfResponse)
+        : json(route, { detail: { code: "active_etf_holdings_not_found" } }, 404);
     }
 
     return json(route, { detail: `Unhandled E2E route: ${method} ${pathname}` }, 404);

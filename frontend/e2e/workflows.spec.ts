@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  activeEtfDaily,
   authenticate,
   closedPortfolioItem,
   currentTradeReview,
@@ -13,6 +14,68 @@ import {
   radarRun,
   watchlistItem,
 } from "./fixtures";
+
+test("Active ETF tracking filters funds, shows consensus, and restores drawer focus", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily });
+
+  await page.goto("/active-etf");
+  await expect(page.getByText("2 / 3", { exact: true })).toBeVisible();
+  await expect(page.getByText("部分基金尚未更新", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看 2330.TW 台積電 持股變化" })).toHaveCount(2);
+
+  await page
+    .getByRole("button", { name: /00985A/ })
+    .first()
+    .click();
+  await expect(page.getByRole("button", { name: "查看 2330.TW 台積電 持股變化" })).toHaveCount(1);
+  await expect(page.getByRole("table").getByText("2454.TW", { exact: true })).toBeVisible();
+  await expect(page.getByText("2317.TW", { exact: true })).toHaveCount(0);
+
+  const openDrawerButton = page.getByRole("button", { name: "查看 2454.TW 聯發科 持股變化" });
+  await openDrawerButton.click();
+  const drawer = page.getByRole("dialog", { name: "2454.TW 聯發科" });
+  await expect(drawer).toContainText("可能受基金規模變動影響");
+  await expect(page.getByRole("button", { name: "關閉持股變化明細" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+  await expect(openDrawerButton).toBeFocused();
+
+  await page.getByRole("button", { name: "個股共識" }).click();
+  await expect(page.getByText("共同增加", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 檔", { exact: true })).toBeVisible();
+});
+
+test("Active ETF tracking reveals large change sets in bounded batches", async ({ page }) => {
+  const baseChange = activeEtfDaily.changes[0];
+  const changes = Array.from({ length: 101 }, (_, index) => ({
+    ...baseChange,
+    symbol: `${String(index + 1).padStart(4, "0")}.TW`,
+    name: `批次標的 ${index + 1}`,
+  }));
+  await authenticate(page);
+  await installApiMocks(page, {
+    activeEtfDaily: {
+      ...activeEtfDaily,
+      summary: {
+        ...activeEtfDaily.summary,
+        changed_rows: changes.length,
+        changed_stocks: changes.length,
+      },
+      funds: activeEtfDaily.funds.map((fund, index) =>
+        index === 0 ? { ...fund, change_count: changes.length } : { ...fund, change_count: 0 },
+      ),
+      changes,
+    },
+  });
+
+  await page.goto("/active-etf");
+  await expect(page.getByText("已顯示 100 / 101 筆", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "顯示更多" }).click();
+  await expect(page.getByText("已顯示 101 / 101 筆", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "顯示更多" })).toHaveCount(0);
+});
 
 test("Analyze deterministic research supports copy and a keyboard-contained add-position dialog", async ({
   page,

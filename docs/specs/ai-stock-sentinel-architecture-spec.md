@@ -9,7 +9,7 @@
 
 ## 0. 目前實作快照（2026-06-18）
 
-本專案目前不是單一股票分析 demo，而是由四個產品表面共用資料層與研究紀律的系統：
+本專案目前不是單一股票分析 demo，而是由五個產品表面共用資料層與研究紀律的系統：
 
 | 表面 | 主要入口 | 核心責任 | 長期邊界 |
 | ---- | -------- | -------- | -------- |
@@ -17,6 +17,7 @@
 | 持股診斷 | `POST /analyze/position`, frontend `/portfolio` | 以既有成本、持有天數、技術防守線與風險語言檢查續抱/減碼/出場 | 所有判定與文案由版本化 Python 規則產生 |
 | 持股紀律與復盤 | `/portfolio/*` | 持股 CRUD、加碼事件、結案、entry record、lifecycle plan、trade review、group lifecycle review | 以 `position_group_id` 串起同一交易生命週期；可回放事件與決策脈絡 |
 | Daily Radar | `/internal/daily-radar/*`, `GET /daily-radar/*`, frontend `/daily-radar` | 收盤後產生隔日觀察清單、保存 deterministic scoring trace、forward validation 與 rule governance | 不是 LLM 選股；`observation_score` 供排序/校準/trace，不是勝率或交易建議 |
+| 主動式 ETF 持股追蹤 | `POST /internal/active-etf-holdings/refresh`, `GET /active-etf-holdings/daily`, frontend `/active-etf` | 保存各基金每日公開持股快照，顯示連續資料日的股數、權重差異與跨基金共同變化 | 獨立觀察面；不寫入 Daily Radar universe，不改 scoring/ranking，基金申贖造成的共同規模變化須保留 caveat |
 
 ### 0.1 Runtime 與框架
 

@@ -9,6 +9,7 @@ import { useDarkMode } from "./stores/theme";
 import { ProductBrand } from "./components/brand/ProductBrand";
 
 const routeTitles = [
+  { matches: (pathname: string) => pathname.startsWith("/active-etf"), title: "主動式 ETF 持股追蹤" },
   { matches: (pathname: string) => pathname.startsWith("/watchlist"), title: "關注列表" },
   { matches: (pathname: string) => pathname.startsWith("/portfolio"), title: "持股管理" },
   { matches: (pathname: string) => pathname.startsWith("/daily-radar"), title: "每日盤後觀察雷達" },
