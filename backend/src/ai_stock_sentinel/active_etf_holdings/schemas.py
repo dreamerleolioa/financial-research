@@ -82,6 +82,8 @@ class ActiveEtfChange(BaseModel):
     name: str
     source_provider: str
     source_url: str
+    verification_status: Literal["verified", "single_source"]
+    source_count: int
     fetched_at: datetime
     data_date: date
     previous_date: date

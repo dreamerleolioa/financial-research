@@ -593,6 +593,8 @@ def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
     assert next(change for change in response.changes if change.symbol == "3711.TW").action == "added"
     assert next(change for change in response.changes if change.symbol == "2454.TW").action == "removed"
     assert all(change.source_provider == "moneydj" for change in response.changes)
+    assert all(change.verification_status == "verified" for change in response.changes)
+    assert all(change.source_count == 2 for change in response.changes)
 
 
 def test_refresh_preserves_successes_and_reports_failed_funds(
@@ -649,7 +651,7 @@ def test_refresh_preserves_explicitly_unpublished_error_code(
     assert result.errors[0].code == "active_etf_holdings_not_published"
 
 
-def test_single_source_snapshot_is_retained_but_does_not_publish_changes(
+def test_single_source_snapshot_is_retained_and_publishes_changes(
     etf_db_session: Session,
 ) -> None:
     first = _snapshot(
@@ -675,10 +677,48 @@ def test_single_source_snapshot_is_retained_but_does_not_publish_changes(
 
     assert result.single_source_snapshots == 1
     assert response is not None
-    assert response.covered_funds == 0
-    assert response.funds[0].status == "single_source"
+    assert response.covered_funds == 1
+    assert response.funds[0].status == "ready"
     assert response.funds[0].verification_reason == "official_source_unsupported"
-    assert response.changes == []
+    assert response.funds[0].previous_date == date(2026, 8, 27)
+    assert response.changes[0].action == "increased"
+    assert response.changes[0].verification_status == "single_source"
+    assert response.changes[0].source_count == 1
+    assert response.consensus[0].symbol == "2330.TW"
+    assert response.consensus[0].fund_count == 1
+
+
+def test_verified_current_snapshot_uses_single_source_baseline_without_claiming_dual_source(
+    etf_db_session: Session,
+) -> None:
+    first = _snapshot(
+        date(2026, 8, 27),
+        [("2330.TW", "台積電", 100, "10")],
+    )
+    second = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 120, "11")],
+    )
+    refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": first}),
+        max_workers=1,
+    )
+    refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": second}),
+        verification_provider=FakeVerificationProvider(
+            {"00985A": _official_snapshot(second)}
+        ),
+        max_workers=1,
+    )
+
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert response is not None
+    assert response.funds[0].verification_status == "verified"
+    assert response.changes[0].verification_status == "single_source"
+    assert response.changes[0].source_count == 1
 
 
 def test_failed_recheck_preserves_verified_snapshot_when_primary_is_unchanged(
@@ -803,7 +843,9 @@ def test_failed_recheck_downgrades_snapshot_when_primary_content_changed(
         select(func.count()).select_from(ActiveEtfSourceObservation)
     ) == 2
     assert response is not None
-    assert response.funds[0].status == "single_source"
+    assert response.covered_funds == 1
+    assert response.funds[0].status == "no_baseline"
+    assert response.funds[0].verification_status == "single_source"
     assert response.changes == []
 
 
@@ -1003,7 +1045,8 @@ def test_daily_response_excludes_stale_funds_from_date_and_builds_consensus(
 
     assert partial_response is not None
     assert partial_response.covered_funds == 1
-    assert not partial_response.consensus
+    assert partial_response.consensus[0].symbol == "2330.TW"
+    assert partial_response.consensus[0].fund_count == 1
     stale_fund = next(fund for fund in partial_response.funds if fund.fund_code == "00982A")
     assert stale_fund.status == "missing"
     assert stale_fund.latest_data_date == date(2026, 8, 27)
