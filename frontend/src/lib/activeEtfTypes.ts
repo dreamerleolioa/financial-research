@@ -1,5 +1,14 @@
 export type ActiveEtfAction = "added" | "increased" | "decreased" | "removed";
-export type ActiveEtfFundStatus = "ready" | "no_baseline" | "missing";
+export type ActiveEtfFundStatus = "ready" | "no_baseline" | "missing" | "single_source" | "source_conflict";
+export type ActiveEtfVerificationStatus = "verified" | "single_source" | "conflict";
+
+export interface ActiveEtfSourceEvidence {
+  source_provider: string;
+  source_url: string;
+  data_date: string;
+  fetched_at: string;
+  payload_hash: string;
+}
 
 export interface ActiveEtfCoverageFund {
   fund_code: string;
@@ -8,6 +17,10 @@ export interface ActiveEtfCoverageFund {
   source_provider: string;
   source_url: string;
   status: ActiveEtfFundStatus;
+  verification_status: ActiveEtfVerificationStatus | null;
+  source_count: number;
+  verification_reason: string | null;
+  sources: ActiveEtfSourceEvidence[];
   data_date: string | null;
   previous_date: string | null;
   latest_data_date: string | null;

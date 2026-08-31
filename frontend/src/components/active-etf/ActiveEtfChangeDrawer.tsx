@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef } from "react";
-import type { ActiveEtfChange } from "../../lib/activeEtfTypes";
+import type { ActiveEtfChange, ActiveEtfCoverageFund } from "../../lib/activeEtfTypes";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -49,7 +49,8 @@ function formatSigned(value: number, digits = 2): string {
 
 function formatSource(provider: string): string {
   if (provider.toLowerCase() === "moneydj") return "MoneyDJ";
-  return "公開資料來源";
+  if (provider.toLowerCase() === "issuer_official") return "發行投信官方資料";
+  return provider;
 }
 
 function Metric({ label, value, helper }: { label: string; value: string; helper?: string }) {
@@ -62,7 +63,15 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
   );
 }
 
-export function ActiveEtfChangeDrawer({ change, onClose }: { change: ActiveEtfChange; onClose: () => void }) {
+export function ActiveEtfChangeDrawer({
+  change,
+  fund,
+  onClose,
+}: {
+  change: ActiveEtfChange;
+  fund: ActiveEtfCoverageFund;
+  onClose: () => void;
+}) {
   const titleId = useId();
   const drawerRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -192,7 +201,10 @@ export function ActiveEtfChangeDrawer({ change, onClose }: { change: ActiveEtfCh
           )}
 
           <section className="rounded-[10px] border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold text-text-primary">比較與來源</h3>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-text-primary">比較與來源</h3>
+              <span className="ui-badge bg-positive/12 text-positive">已雙來源確認</span>
+            </div>
             <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
               <div>
                 <dt className="text-text-faint">比較區間</dt>
@@ -209,15 +221,29 @@ export function ActiveEtfChangeDrawer({ change, onClose }: { change: ActiveEtfCh
                 </dd>
               </div>
             </dl>
-            <a
-              href={change.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="ui-button-secondary mt-4 w-full sm:w-auto"
-            >
-              查看 {formatSource(change.source_provider)} 原始持股頁
-              <span aria-hidden="true">↗</span>
-            </a>
+            <div className="mt-4 grid gap-2">
+              {fund.sources.map((source) => (
+                <a
+                  key={`${source.source_provider}-${source.data_date}`}
+                  href={source.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex min-h-11 items-center justify-between gap-3 rounded-[10px] border border-border-subtle bg-surface-raised px-3 py-2 text-sm text-text-muted transition-colors hover:bg-card-hover hover:text-text-primary"
+                >
+                  <span>
+                    <strong className="block font-medium text-text-primary">
+                      {formatSource(source.source_provider)}
+                    </strong>
+                    <span className="mt-0.5 block text-xs tabular-nums text-text-faint">
+                      資料日 {source.data_date} · 校驗碼 {source.payload_hash.slice(0, 8)}
+                    </span>
+                  </span>
+                  <span className="shrink-0" aria-hidden="true">
+                    ↗
+                  </span>
+                </a>
+              ))}
+            </div>
           </section>
 
           <p className="text-xs leading-relaxed text-text-faint">

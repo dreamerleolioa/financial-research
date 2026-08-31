@@ -21,8 +21,11 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await installApiMocks(page, { activeEtfDaily });
 
   await page.goto("/active-etf");
-  await expect(page.getByText("2 / 3", { exact: true })).toBeVisible();
-  await expect(page.getByText("部分基金尚未更新", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 / 5", { exact: true })).toBeVisible();
+  await expect(page.getByText("尚有未確認基金", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("只有「已雙來源確認」且已有前次確認快照的基金，才會發布持股變化與跨基金共識。", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "查看 2330.TW 台積電 持股變化" })).toHaveCount(2);
 
   await page
@@ -37,10 +40,17 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await openDrawerButton.click();
   const drawer = page.getByRole("dialog", { name: "2454.TW 聯發科" });
   await expect(drawer).toContainText("可能受基金規模變動影響");
+  await expect(drawer.getByText("發行投信官方資料", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("MoneyDJ", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "關閉持股變化明細" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(openDrawerButton).toBeFocused();
+
+  await page.getByRole("button", { name: /00982A/ }).click();
+  await expect(page.getByText("尚未接上完整的發行投信官方持股來源", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /00983A/ }).click();
+  await expect(page.getByText("兩個來源的持股代碼或股數不一致", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("共同增加", { exact: true })).toBeVisible();
@@ -60,6 +70,7 @@ test("Active ETF tracking reveals large change sets in bounded batches", async (
       ...activeEtfDaily,
       summary: {
         ...activeEtfDaily.summary,
+        changed_funds: 1,
         changed_rows: changes.length,
         changed_stocks: changes.length,
       },
@@ -83,6 +94,20 @@ test("Active ETF tracking rejects malformed decimal fields at the API boundary",
     activeEtfDaily: {
       ...activeEtfDaily,
       changes: [{ ...activeEtfDaily.changes[0], current_weight_pct: "" }],
+    },
+  });
+
+  await page.goto("/active-etf");
+  await expect(page.getByRole("heading", { name: "持股變化暫時無法載入", level: 2 })).toBeVisible();
+  await expect(page.getByText("新增持股", { exact: true })).toHaveCount(0);
+});
+
+test("Active ETF tracking rejects changes attributed to an unverified fund", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    activeEtfDaily: {
+      ...activeEtfDaily,
+      changes: [{ ...activeEtfDaily.changes[0], fund_code: "00982A", fund_name: "主動群益台灣強棒" }],
     },
   });
 
