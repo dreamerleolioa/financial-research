@@ -134,6 +134,25 @@ def refresh_active_etf_holdings(
                         verification_fetch_failed,
                     )
                 )
+            except ActiveEtfProviderError as exc:
+                error_code = str(exc)
+                if error_code == "active_etf_holdings_not_published":
+                    logger.info(
+                        "Active ETF holdings not published fund_code=%s",
+                        fund_code,
+                    )
+                else:
+                    logger.exception(
+                        "Active ETF holding fetch failed fund_code=%s",
+                        fund_code,
+                    )
+                    error_code = "active_etf_snapshot_fetch_failed"
+                errors.append(
+                    ActiveEtfRefreshError(
+                        fund_code=fund_code,
+                        code=error_code,
+                    )
+                )
             except Exception:
                 logger.exception("Active ETF holding fetch failed fund_code=%s", fund_code)
                 errors.append(

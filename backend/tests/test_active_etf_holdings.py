@@ -251,6 +251,40 @@ def test_parse_moneydj_snapshot_reads_equities_and_skips_futures() -> None:
     assert len(snapshot.normalized_hash) == 64
 
 
+def test_parse_moneydj_snapshot_reports_explicitly_unpublished_holdings() -> None:
+    html = """
+    <h1>(00409A.TW)-全部持股</h1>
+    <div class="sdate3"></div>
+    <table>
+      <tr><th>持股名稱</th><th>投資比例(%)</th><th>持有股數</th></tr>
+      <tr class="emptyrow"><td colspan="3">查無資料</td></tr>
+    </table>
+    """
+
+    with pytest.raises(
+        ActiveEtfProviderError,
+        match="active_etf_holdings_not_published",
+    ):
+        parse_moneydj_holdings_html(
+            html,
+            fund=_fund("00409A", "主動復華全球50"),
+        )
+
+
+def test_parse_moneydj_snapshot_ignores_unrelated_empty_table() -> None:
+    holdings_html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text()
+    html = """
+    <table>
+      <tr><th>其他資料</th></tr>
+      <tr class="emptyrow"><td>查無資料</td></tr>
+    </table>
+    """ + holdings_html
+
+    snapshot = parse_moneydj_holdings_html(html, fund=_fund())
+
+    assert snapshot.data_date == date(2026, 8, 28)
+
+
 def test_parse_moneydj_snapshot_fails_closed_on_duplicate_equity() -> None:
     html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text().replace(
         "FICDFN*1.TF&amp;back=00985A.TW\">台積電期貨(FICDFN*1.TF)",
@@ -586,6 +620,33 @@ def test_refresh_preserves_successes_and_reports_failed_funds(
     assert result.snapshots_created == 1
     assert result.errors[0].fund_code == "00982A"
     assert result.errors[0].code == "active_etf_snapshot_fetch_failed"
+
+
+def test_refresh_preserves_explicitly_unpublished_error_code(
+    etf_db_session: Session,
+) -> None:
+    good_fund = _fund()
+    unpublished_fund = _fund("00409A", "主動復華全球50")
+
+    class PartiallyPublishedProvider(FakeProvider):
+        def fetch_snapshot(self, fund: ActiveEtfFundDescriptor) -> ActiveEtfFundSnapshot:
+            if fund.fund_code == "00409A":
+                raise ActiveEtfProviderError("active_etf_holdings_not_published")
+            return self.snapshots[fund.fund_code]
+
+    result = refresh_active_etf_holdings(
+        etf_db_session,
+        provider=PartiallyPublishedProvider(
+            {"00985A": _snapshot(date(2026, 8, 28), [("2330.TW", "台積電", 100, "10")])},
+            funds=[good_fund, unpublished_fund],
+        ),
+        max_workers=1,
+    )
+
+    assert result.status == "partial"
+    assert result.snapshots_created == 1
+    assert result.errors[0].fund_code == "00409A"
+    assert result.errors[0].code == "active_etf_holdings_not_published"
 
 
 def test_single_source_snapshot_is_retained_but_does_not_publish_changes(

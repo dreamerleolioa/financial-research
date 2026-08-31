@@ -85,9 +85,11 @@ class _HoldingsTableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tables: list[list[list[tuple[str, str | None]]]] = []
+        self.has_explicit_no_data_row = False
         self._table_depth = 0
         self._table: list[list[tuple[str, str | None]]] | None = None
         self._row: list[tuple[str, str | None]] | None = None
+        self._row_is_explicit_empty = False
         self._cell_text: list[str] | None = None
         self._cell_href: str | None = None
 
@@ -101,6 +103,8 @@ class _HoldingsTableParser(HTMLParser):
             return
         if tag == "tr":
             self._row = []
+            row_classes = str(dict(attrs).get("class") or "").split()
+            self._row_is_explicit_empty = "emptyrow" in row_classes
         elif tag in {"td", "th"} and self._row is not None:
             self._cell_text = []
             self._cell_href = None
@@ -126,9 +130,16 @@ class _HoldingsTableParser(HTMLParser):
             self._cell_text = None
             self._cell_href = None
         elif tag == "tr" and self._row is not None and self._table is not None:
+            if (
+                self._row_is_explicit_empty
+                and _holdings_column_indexes(self._table) is not None
+                and any("查無資料" in text for text, _href in self._row)
+            ):
+                self.has_explicit_no_data_row = True
             if self._row:
                 self._table.append(self._row)
             self._row = None
+            self._row_is_explicit_empty = False
 
 
 def parse_twse_active_equity_funds(payload: object) -> list[ActiveEtfFundDescriptor]:
@@ -187,6 +198,10 @@ def parse_moneydj_holdings_html(
     expected_heading = f"({fund.fund_code}.TW)-全部持股"
     if expected_heading not in html:
         raise ActiveEtfProviderError("active_etf_fund_identity_mismatch")
+    parser = _HoldingsTableParser()
+    parser.feed(html)
+    if parser.has_explicit_no_data_row:
+        raise ActiveEtfProviderError("active_etf_holdings_not_published")
     date_match = _DATA_DATE_RE.search(html)
     if date_match is None:
         raise ActiveEtfProviderError("active_etf_data_date_missing")
@@ -198,8 +213,6 @@ def parse_moneydj_holdings_html(
     if data_date > today_taipei(observed_at):
         raise ActiveEtfProviderError("active_etf_data_date_in_future")
 
-    parser = _HoldingsTableParser()
-    parser.feed(html)
     table_with_columns = next(
         (
             (_table, columns)
