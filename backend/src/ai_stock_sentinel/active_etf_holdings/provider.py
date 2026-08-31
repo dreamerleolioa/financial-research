@@ -177,9 +177,11 @@ def parse_moneydj_holdings_html(
     html: str,
     *,
     fund: ActiveEtfFundDescriptor,
+    raw_payload: bytes | None = None,
     fetched_at: datetime | None = None,
 ) -> ActiveEtfFundSnapshot:
-    if len(html) > _MAX_HTML_CHARACTERS:
+    payload_bytes = raw_payload if raw_payload is not None else html.encode("utf-8")
+    if len(html) > _MAX_HTML_CHARACTERS or len(payload_bytes) > _MAX_HTML_CHARACTERS:
         raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
     expected_heading = f"({fund.fund_code}.TW)-全部持股"
     if expected_heading not in html:
@@ -240,7 +242,7 @@ def parse_moneydj_holdings_html(
     if not holdings:
         raise ActiveEtfProviderError("active_etf_holdings_empty")
 
-    raw_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+    raw_hash = hashlib.sha256(payload_bytes).hexdigest()
     normalized_payload = {
         "data_date": data_date.isoformat(),
         "fund_code": fund.fund_code,
@@ -266,7 +268,7 @@ def parse_moneydj_holdings_html(
         skipped_instrument_count=skipped_count,
         payload_hash=raw_hash,
         normalized_hash=normalized_hash,
-        raw_payload=html.encode("utf-8"),
+        raw_payload=payload_bytes,
         source_url=fund.source_url,
     )
 
@@ -420,10 +422,21 @@ class MoneyDjActiveEtfProvider:
             headers=_REQUEST_HEADERS,
         )
         _raise_for_status(response)
+        response_content = getattr(response, "content", None)
+        if isinstance(response_content, bytes) and len(response_content) > _MAX_HTML_CHARACTERS:
+            raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
         html = getattr(response, "text", None)
         if not isinstance(html, str) or not html.strip():
             raise ActiveEtfProviderError("active_etf_holdings_response_empty")
-        return parse_moneydj_holdings_html(html, fund=fund)
+        return parse_moneydj_holdings_html(
+            html,
+            fund=fund,
+            raw_payload=(
+                response_content
+                if isinstance(response_content, bytes) and response_content
+                else None
+            ),
+        )
 
 
 def _raise_for_status(response: Any) -> None:

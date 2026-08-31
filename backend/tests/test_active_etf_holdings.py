@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -196,10 +197,17 @@ def _official_snapshot(snapshot: ActiveEtfFundSnapshot) -> ActiveEtfFundSnapshot
 
 
 class FakeResponse:
-    def __init__(self, *, payload=None, text: str = "", status_code: int = 200) -> None:
+    def __init__(
+        self,
+        *,
+        payload=None,
+        text: str = "",
+        content: bytes | None = None,
+        status_code: int = 200,
+    ) -> None:
         self._payload = payload
         self.text = text
-        self.content = text.encode() if text else b""
+        self.content = content if content is not None else (text.encode() if text else b"")
         self.status_code = status_code
 
     def json(self):
@@ -339,6 +347,19 @@ def test_moneydj_provider_uses_twse_registry_and_public_holdings_page() -> None:
     assert len(calls) == 2
     assert "activeList" in calls[0]
     assert "etfid=00985A.TW" in calls[1]
+
+
+def test_moneydj_provider_preserves_exact_response_bytes() -> None:
+    html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text()
+    raw_payload = b"upstream-prefix:" + html.encode("utf-8")
+    provider = MoneyDjActiveEtfProvider(
+        request_get=lambda *args, **kwargs: FakeResponse(text=html, content=raw_payload)
+    )
+
+    snapshot = provider.fetch_snapshot(_fund())
+
+    assert snapshot.raw_payload == raw_payload
+    assert snapshot.payload_hash == hashlib.sha256(raw_payload).hexdigest()
 
 
 def test_parse_nomura_official_snapshot_preserves_exact_share_inventory() -> None:
