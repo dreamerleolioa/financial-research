@@ -6,8 +6,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric,
-    String, Text, UniqueConstraint, text,
+    BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary,
+    Numeric, String, Text, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -849,6 +849,10 @@ class ActiveEtfFund(Base):
         back_populates="fund",
         passive_deletes=True,
     )
+    source_observations: Mapped[list["ActiveEtfSourceObservation"]] = relationship(
+        back_populates="fund",
+        passive_deletes=True,
+    )
 
 
 class ActiveEtfHoldingSnapshot(Base):
@@ -859,6 +863,14 @@ class ActiveEtfHoldingSnapshot(Base):
         CheckConstraint(
             "skipped_instrument_count >= 0",
             name="ck_active_etf_snapshot_skipped_instrument_count",
+        ),
+        CheckConstraint(
+            "verification_status IN ('verified', 'single_source', 'conflict')",
+            name="ck_active_etf_snapshot_verification_status",
+        ),
+        CheckConstraint(
+            "source_count >= 1",
+            name="ck_active_etf_snapshot_source_count",
         ),
         Index("idx_active_etf_snapshots_data_date", "data_date"),
         Index("idx_active_etf_snapshots_fund_date", "fund_code", "data_date"),
@@ -878,6 +890,15 @@ class ActiveEtfHoldingSnapshot(Base):
     holding_count: Mapped[int] = mapped_column(Integer, nullable=False)
     skipped_instrument_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     source_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'"))
+    verification_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="single_source", server_default="single_source"
+    )
+    source_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    verification_details: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -916,6 +937,101 @@ class ActiveEtfHolding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     snapshot: Mapped["ActiveEtfHoldingSnapshot"] = relationship(back_populates="holdings")
+
+
+class ActiveEtfSourceObservation(Base):
+    __tablename__ = "active_etf_source_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "fund_code",
+            "data_date",
+            "source_provider",
+            name="uq_active_etf_observation_fund_date_provider",
+        ),
+        CheckConstraint(
+            "raw_size_bytes >= 0 AND raw_size_bytes <= 5000000",
+            name="ck_active_etf_observation_raw_size",
+        ),
+        CheckConstraint("holding_count >= 0", name="ck_active_etf_observation_holding_count"),
+        CheckConstraint(
+            "skipped_instrument_count >= 0",
+            name="ck_active_etf_observation_skipped_count",
+        ),
+        Index("idx_active_etf_observations_data_date", "data_date"),
+        Index("idx_active_etf_observations_fund_date", "fund_code", "data_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fund_code: Mapped[str] = mapped_column(
+        ForeignKey("active_etf_funds.fund_code", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    data_date: Mapped[date] = mapped_column(Date, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    raw_payload_gzip: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    raw_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    holding_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_instrument_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    fund: Mapped["ActiveEtfFund"] = relationship(back_populates="source_observations")
+    holdings: Mapped[list["ActiveEtfSourceHolding"]] = relationship(
+        back_populates="observation",
+        cascade="all, delete-orphan",
+        order_by="ActiveEtfSourceHolding.position_order",
+    )
+
+
+class ActiveEtfSourceHolding(Base):
+    __tablename__ = "active_etf_source_holdings"
+    __table_args__ = (
+        UniqueConstraint(
+            "observation_id",
+            "symbol",
+            name="uq_active_etf_source_holding_observation_symbol",
+        ),
+        CheckConstraint("shares >= 0", name="ck_active_etf_source_holding_shares"),
+        CheckConstraint(
+            "weight_pct >= 0 AND weight_pct <= 100",
+            name="ck_active_etf_source_holding_weight_pct",
+        ),
+        CheckConstraint(
+            "position_order >= 0",
+            name="ck_active_etf_source_holding_position_order",
+        ),
+        Index("idx_active_etf_source_holdings_observation", "observation_id"),
+        Index("idx_active_etf_source_holdings_symbol", "symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    observation_id: Mapped[int] = mapped_column(
+        ForeignKey("active_etf_source_observations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    weight_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    position_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    observation: Mapped["ActiveEtfSourceObservation"] = relationship(
+        back_populates="holdings"
+    )
 
 
 class BacktestRun(Base):
