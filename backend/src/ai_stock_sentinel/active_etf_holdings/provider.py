@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from typing import Any
@@ -36,6 +36,7 @@ _SAFE_SECURITY_CODE_RE = re.compile(r"^[A-Za-z0-9._/\-]{1,20}$")
 _NON_EQUITY_SUFFIXES = frozenset({"CUR", "FX", "TF"})
 _MAX_HOLDING_TABLE_ROWS = 2_000
 _MAX_HTML_CHARACTERS = 5_000_000
+_NOMURA_MAX_PCF_LOOKAHEAD_DAYS = 14
 _MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 _WEIGHT_QUANTUM = Decimal("0.0001")
 _REQUEST_HEADERS = {
@@ -333,6 +334,12 @@ def parse_nomura_holdings_payload(
     )
 
 
+def _nomura_payload_has_no_entries(payload: object) -> bool:
+    if not isinstance(payload, dict) or payload.get("StatusCode") != 0:
+        return False
+    return payload.get("Entries") in (None, [], {})
+
+
 class IssuerOfficialActiveEtfProvider:
     source_provider = "issuer_official"
 
@@ -354,36 +361,67 @@ class IssuerOfficialActiveEtfProvider:
         *,
         expected_data_date: date | None = None,
     ) -> ActiveEtfFundSnapshot:
-        if fund.fund_code in NOMURA_FUND_CODES:
-            response = self._request_post(
-                NOMURA_TRADE_INFO_URL,
-                timeout=self._timeout_seconds,
-                headers={**_REQUEST_HEADERS, "Content-Type": "application/json"},
-                json={
-                    "Type": 2,
-                    "Keyword": fund.fund_code,
-                    "FundNo": fund.fund_code,
-                    "Date": (expected_data_date or today_taipei()).isoformat(),
-                },
-            )
-            _raise_for_status(response)
-            response_content = getattr(response, "content", None)
-            if isinstance(response_content, bytes) and len(response_content) > _MAX_HTML_CHARACTERS:
-                raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
-            payload = response.json()
-            raw_payload = (
-                response_content
-                if isinstance(response_content, bytes) and response_content
-                else json.dumps(
-                    payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            )
+        if fund.fund_code not in NOMURA_FUND_CODES:
+            raise ActiveEtfProviderError("active_etf_official_source_unsupported")
+        if expected_data_date is None:
+            payload, raw_payload = self._fetch_nomura_payload(fund, today_taipei())
             return parse_nomura_holdings_payload(
                 payload,
                 fund=fund,
                 raw_payload=raw_payload,
             )
-        raise ActiveEtfProviderError("active_etf_official_source_unsupported")
+
+        request_date = expected_data_date + timedelta(days=1)
+        last_request_date = min(
+            expected_data_date + timedelta(days=_NOMURA_MAX_PCF_LOOKAHEAD_DAYS),
+            today_taipei() + timedelta(days=1),
+        )
+        while request_date <= last_request_date:
+            payload, raw_payload = self._fetch_nomura_payload(fund, request_date)
+            if _nomura_payload_has_no_entries(payload):
+                request_date += timedelta(days=1)
+                continue
+            snapshot = parse_nomura_holdings_payload(
+                payload,
+                fund=fund,
+                raw_payload=raw_payload,
+            )
+            if snapshot.data_date == expected_data_date:
+                return snapshot
+            if snapshot.data_date > expected_data_date:
+                break
+            request_date += timedelta(days=1)
+        raise ActiveEtfProviderError("active_etf_official_snapshot_date_unavailable")
+
+    def _fetch_nomura_payload(
+        self,
+        fund: ActiveEtfFundDescriptor,
+        request_date: date,
+    ) -> tuple[object, bytes]:
+        response = self._request_post(
+            NOMURA_TRADE_INFO_URL,
+            timeout=self._timeout_seconds,
+            headers={**_REQUEST_HEADERS, "Content-Type": "application/json"},
+            json={
+                "Type": 2,
+                "Keyword": fund.fund_code,
+                "FundNo": fund.fund_code,
+                "Date": request_date.isoformat(),
+            },
+        )
+        _raise_for_status(response)
+        response_content = getattr(response, "content", None)
+        if isinstance(response_content, bytes) and len(response_content) > _MAX_HTML_CHARACTERS:
+            raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
+        payload = response.json()
+        raw_payload = (
+            response_content
+            if isinstance(response_content, bytes) and response_content
+            else json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+        return payload, raw_payload
 
 
 class MoneyDjActiveEtfProvider:

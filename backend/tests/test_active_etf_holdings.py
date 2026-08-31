@@ -404,7 +404,7 @@ def test_parse_nomura_official_snapshot_preserves_exact_share_inventory() -> Non
 
 def test_issuer_provider_supports_only_complete_official_adapter() -> None:
     calls: list[dict] = []
-    payload = {
+    matching_payload = {
         "StatusCode": 0,
         "Entries": {
             "CFundId": "00985A",
@@ -423,6 +423,12 @@ def test_issuer_provider_supports_only_complete_official_adapter() -> None:
 
     def fake_post(url: str, **kwargs):
         calls.append({"url": url, **kwargs})
+        request_date = kwargs["json"]["Date"]
+        payload = (
+            matching_payload
+            if request_date == "2026-08-31"
+            else {"StatusCode": 0, "Entries": None}
+        )
         response = FakeResponse(payload=payload)
         response.content = b'{"official":true}'
         return response
@@ -434,7 +440,45 @@ def test_issuer_provider_supports_only_complete_official_adapter() -> None:
     assert provider.supports("00982A") is False
     assert snapshot.data_date == date(2026, 8, 28)
     assert calls[0]["json"]["FundNo"] == "00985A"
-    assert calls[0]["json"]["Date"] == "2026-08-28"
+    assert [call["json"]["Date"] for call in calls] == [
+        "2026-08-29",
+        "2026-08-30",
+        "2026-08-31",
+    ]
+
+
+def test_issuer_provider_rejects_nonmatching_official_snapshot() -> None:
+    calls: list[dict] = []
+    payload = {
+        "StatusCode": 0,
+        "Entries": {
+            "CFundId": "00985A",
+            "CPcfdate": "2026-08-29T00:00:00",
+            "CNavDt": "2026-08-29T00:00:00",
+            "Stocks": [
+                {
+                    "CStockCode": "2330",
+                    "CStockName": "台灣積體電路製造",
+                    "CQuantity": 588000,
+                    "CWeightsPct": 13.51,
+                }
+            ],
+        },
+    }
+
+    def fake_post(url: str, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeResponse(payload=payload)
+
+    provider = IssuerOfficialActiveEtfProvider(request_post=fake_post)
+
+    with pytest.raises(
+        ActiveEtfProviderError,
+        match="active_etf_official_snapshot_date_unavailable",
+    ):
+        provider.fetch_snapshot(_fund(), expected_data_date=date(2026, 8, 28))
+
+    assert [call["json"]["Date"] for call in calls] == ["2026-08-29"]
 
 
 def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
