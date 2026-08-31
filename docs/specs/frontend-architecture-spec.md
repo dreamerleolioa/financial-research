@@ -226,10 +226,11 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 `ActiveEtfPage` 是各家主動式 ETF 每日公開持股差異的獨立觀察面，不是 Daily Radar 的候選來源，也不改動任何 deterministic scoring、ranking 或風險標籤。
 
 - Route 與資料：`/active-etf` 透過 `useActiveEtfDailyQuery(dataDate)` 呼叫 authenticated `GET /active-etf-holdings/daily`。Query key 必須包含資料日，切換日期不可覆蓋其他日期 cache。
-- Coverage first：頁面先顯示選定資料日、實際覆蓋／預期基金數、變化基金、變化標的與變化筆數。缺少當日快照的基金標示為「當日未更新」，不得用其最近日期混入當日比較。
+- Quality first：頁面先顯示選定資料日、預期基金數、雙來源確認數、等待第二來源數與來源衝突數，並明示只有 `verified` 且存在前次 verified 快照的基金才會發布變化與共識。缺少當日快照的基金標示為「當日未更新」，不得用最近日期混入當日比較。
 - Fund changes：桌面寬螢幕使用基金索引加密集比較表；1024px 以下使用基金 select 與卡片，避免在中等寬度壓縮欄位。搜尋與 action filter 只改 client view，不改 server response 或排序語意。
 - Consensus：只呈現同一標的至少兩檔基金發生變化的描述性彙總。方向分歧必須明示，不得把跨基金同向變化描述成推薦或預測。
-- Detail drawer：顯示前後股數、權重、共同規模比例校正後的相對變化、資料日、擷取時間與公開來源連結。`likely_fund_scale_change` 為真時明示可能包含基金申贖造成的等比例調整；drawer 支援焦點圈限、Escape 關閉與觸發按鈕焦點還原。
+- Fund evidence：基金索引使用「已雙來源確認／等待第二來源／來源不一致／當日未更新」標示。選定基金後顯示 privacy-safe reconciliation reason，並逐來源列出 provider、資料日、短 hash 與原始公開頁連結。
+- Detail drawer：只會由已驗證的變化列開啟，顯示前後股數、權重、共同規模比例校正後的相對變化、資料日、擷取時間與兩個公開來源證據。`likely_fund_scale_change` 為真時明示可能包含基金申贖造成的等比例調整；drawer 支援焦點圈限、Escape 關閉與觸發按鈕焦點還原。
 
 ## API Boundary Validation
 
@@ -243,7 +244,7 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
   - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、`technical_profile`、Phase 1 `phase1_observation` trace、`chip_stability_context`
 - `frontend/src/lib/activeEtfSchemas.ts`
   - 驗證 `GET /active-etf-holdings/daily`
-  - 目標：coverage、fund status、持股變化、共識彙總與可安全開啟的 HTTP(S) 來源網址
+  - 目標：coverage、fund status／verification status 對齊、來源證據數、summary 計數、變化只能引用已驗證可比較基金，以及可安全開啟的 HTTP(S) 來源網址
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 

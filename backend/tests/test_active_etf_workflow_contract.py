@@ -30,6 +30,11 @@ def test_active_etf_workflow_uses_internal_auth_and_fails_on_partial_results() -
     assert "--connect-timeout 20" in text
     assert "--max-time 900" in text
     assert "--data '{}'" in text
-    assert '.status == "completed" and ((.errors // []) | length == 0)' in text
+    assert '.status == "completed"' in text
+    assert '((.errors // []) | length == 0)' in text
+    assert '((.verified_snapshots // 0) > 0)' in text
+    assert '((.conflicted_snapshots // 0) == 0)' in text
+    assert '(.single_source_snapshots // 0)' in text
+    assert '== .selected_funds' in text
     assert "sk-" not in text
     assert "token=" not in text.lower()

@@ -39,7 +39,7 @@
 | `data_sources/` | yfinance、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
 | `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Portfolio/Daily Radar read-only projections |
-| `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ 公開持股 adapter、逐基金 refresh transaction、相鄰快照差異與跨基金聚合；來源失敗形成 coverage/missing 診斷，不阻斷或修改 Daily Radar |
+| `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ primary adapter、發行投信官方 verification adapter、逐來源原始證據、逐基金對帳 transaction、已驗證相鄰快照差異與跨基金聚合；單一來源或衝突 fail closed，不阻斷或修改 Daily Radar |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
 | `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
@@ -85,8 +85,9 @@
 | `phase1_avwap_snapshots` | Phase 1 日頻 AVWAP shared market snapshot cache；以 `symbol` / `data_date` / logical `dataset` / `adjustment_mode` upsert，保存 market bars、generic anchors、data quality、missing reason 與 source trace；不得保存使用者持股 entry date、avg cost 或 holding-specific entry anchor |
 | `taiwan_daily_bars` | TWSE/TPEX 官方未還原日線行情本地歸檔；供 Phase 1 AVWAP 與基本面季末價格 local-first 讀取。Daily Radar technical history 維持 adjusted 語意，不直接讀此 unadjusted archive |
 | `active_etf_funds` | 主動式股票 ETF 登錄與啟用狀態；基金名單由 refresh service 冪等同步，不由 migration 固定 seed；退出追蹤時設為 disabled，不得連動刪除歷史快照 |
-| `active_etf_holding_snapshots` | 每檔基金每個來源宣告日期的一份 canonical 股票持股快照，保存來源、抓取時間、payload hash、parser version 與非股票工具略過數 |
+| `active_etf_holding_snapshots` | 每檔基金每個來源宣告日期的一份 canonical 股票持股快照，保存 primary trace、verification status/count/details、payload hash、parser version 與非股票工具略過數 |
 | `active_etf_holdings` | 快照內正規化股票代號、名稱、股數、權重與來源排序；每日增減由同基金相鄰快照 read-time 推導，不重複持久化 diff |
+| `active_etf_source_observations` / `active_etf_source_holdings` | MoneyDJ 與發行投信官方來源各自保存資料日、URL、擷取時間、parser、SHA-256、gzip 原始 payload 與正規化持股，供逐筆對帳與事後重播；不得由 canonical snapshot 取代 |
 | `company_fundamental_periods` | 財報期間 append-only revision；市場級官方來源保存累計 EPS，讀取時依 point-in-time revision 推導單季 EPS；缺季時優先保存 MOPS 官方歷史單季 EPS，仍不足才保存 FinMind bootstrap 單季 EPS；另保存觀察時間、payload hash 與原始 payload |
 | `company_dividend_events` | 股利事件 append-only revision；保存所屬期間、決議/除息日期、現金股利分項、payload hash 與原始 payload |
 
@@ -97,7 +98,7 @@
 | `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
 | `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時 scheduled pipeline 與一般手動 step skip，provider 異常時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是明確歷史日期的 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`；各 backfill 仍受 endpoint 日期範圍與未來日期驗證約束。開市後 17:30 先呼叫 `refresh-institutional-flows` 歸檔 TWSE/TPEX 市場級法人日報，18:00 `prepare-universe` 只從完整 archive 建立四條分法人軌道，再分段執行 `refresh-market-bars`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context`、`run-scoring`；每段共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期。23:00 的 AI evidence step 補同日完整 final 台股 raw pool 並留下 lane 缺漏，但不改 prepared universe 或 scoring required steps；scoring 只讀已落庫 cache/snapshot，對 institutional-flow archive/lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT AVWAP repair-and-rescore 補修排程，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
-| `active-etf-holdings.yml` | 台灣時間平日 08:00、14:00 呼叫 internal refresh，涵蓋不同投信公開持股發布時間；逐基金成功快照會保留，但任何 partial/error 讓 workflow fail 以暴露 coverage 缺口 |
+| `active-etf-holdings.yml` | 台灣時間平日 08:00、14:00 呼叫 internal refresh；逐基金成功快照會保留，但 partial/error、零 verified、任何 conflict 或品質計數缺口都讓 workflow fail；未介接完整官方來源的基金維持 single-source 可見狀態 |
 | `fundamental-data.yml` | 07:15 TWT 先以官方 OpenAPI 更新財報/股利版本庫，再以六批 × 十檔上限執行 MOPS 歷史季 EPS 優先、FinMind fallback 的 bounded 回填；未完成 job 由後續排程接續，手動模式亦可建立或續跑指定 job |
 | `daily-radar.yml` / `analysis-forward-validation.yml` | 分別每日累積 Daily Radar 與一般分析已成熟 5 / 10 / 20 日驗證結果 |
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
