@@ -43,6 +43,7 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await openDrawerButton.click();
   const drawer = page.getByRole("dialog", { name: "2454.TW 聯發科" });
   await expect(drawer).toContainText("可能受基金規模變動影響");
+  await expect(drawer.getByText("雙來源確認", { exact: true })).toBeVisible();
   await expect(drawer.getByText("發行投信官方資料", { exact: true })).toBeVisible();
   await expect(drawer.getByText("MoneyDJ", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "關閉持股變化明細" })).toBeFocused();
@@ -52,7 +53,13 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
 
   await page.getByRole("button", { name: /00982A/ }).click();
   await expect(page.getByText("尚未接上完整的發行投信官方持股來源", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "查看 2881.TW 富邦金 持股變化" })).toBeVisible();
+  const openSingleSourceDrawerButton = page.getByRole("button", { name: "查看 2881.TW 富邦金 持股變化" });
+  await expect(openSingleSourceDrawerButton).toBeVisible();
+  await openSingleSourceDrawerButton.click();
+  const singleSourceDrawer = page.getByRole("dialog", { name: "2881.TW 富邦金" });
+  await expect(singleSourceDrawer.getByText("單一來源", { exact: true })).toBeVisible();
+  await expect(singleSourceDrawer.getByText("雙來源確認", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /00983A/ }).click();
   await expect(page.getByText("兩個來源的持股代碼或股數不一致", { exact: true })).toBeVisible();
 
@@ -82,6 +89,30 @@ test("Active ETF tracking keeps source labels readable on mobile", async ({ page
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("2 檔共識", { exact: true })).toBeVisible();
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
+});
+
+test("Active ETF consensus labels multi-fund direction conflicts without overstating consensus", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    activeEtfDaily: {
+      ...activeEtfDaily,
+      consensus: activeEtfDaily.consensus.map((item, index) =>
+        index === 0
+          ? {
+              ...item,
+              direction: "mixed",
+              added_count: 1,
+              decreased_count: 1,
+            }
+          : item,
+      ),
+    },
+  });
+
+  await page.goto("/active-etf");
+  await page.getByRole("button", { name: "個股共識" }).click();
+  await expect(page.getByText("2 檔方向分歧", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 檔共識", { exact: true })).toHaveCount(0);
 });
 
 test("Active ETF tracking accepts the previous verified-only API contract during deployment", async ({ page }) => {

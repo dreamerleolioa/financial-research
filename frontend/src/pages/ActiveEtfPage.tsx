@@ -353,7 +353,8 @@ function ConsensusList({ consensus }: { consensus: ActiveEtfConsensus[] }) {
   return (
     <div className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
       {consensus.map((item, index) => {
-        const hasFundConsensus = item.fund_count >= 2;
+        const hasMultipleFunds = item.fund_count >= 2;
+        const hasFundConsensus = hasMultipleFunds && item.direction !== "mixed";
         const directionLabel =
           item.direction === "increase"
             ? hasFundConsensus
@@ -390,6 +391,8 @@ function ConsensusList({ consensus }: { consensus: ActiveEtfConsensus[] }) {
               <span className={`text-sm font-medium ${directionClass}`}>{directionLabel}</span>
               {hasFundConsensus ? (
                 <span className="ui-badge bg-positive/12 text-positive">{item.fund_count} 檔共識</span>
+              ) : hasMultipleFunds ? (
+                <span className="ui-badge bg-signal/15 text-signal">{item.fund_count} 檔方向分歧</span>
               ) : (
                 <span className="min-w-16 text-right font-mono text-sm tabular-nums text-text-muted">1 檔基金</span>
               )}

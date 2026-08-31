@@ -203,7 +203,11 @@ export function ActiveEtfChangeDrawer({
           <section className="rounded-[10px] border border-border bg-card p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-text-primary">比較與來源</h3>
-              <span className="ui-badge bg-positive/12 text-positive">已雙來源確認</span>
+              {change.verification_status === "verified" ? (
+                <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>
+              ) : (
+                <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">單一來源</span>
+              )}
             </div>
             <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
               <div>
