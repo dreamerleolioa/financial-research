@@ -35,7 +35,18 @@ class ActiveEtfRefreshResponse(BaseModel):
     snapshots_created: int
     snapshots_updated: int
     snapshots_reused: int
+    verified_snapshots: int = 0
+    single_source_snapshots: int = 0
+    conflicted_snapshots: int = 0
     errors: list[ActiveEtfRefreshError]
+
+
+class ActiveEtfSourceEvidence(BaseModel):
+    source_provider: str
+    source_url: str
+    data_date: date
+    fetched_at: datetime
+    payload_hash: str
 
 
 class ActiveEtfCoverageFund(BaseModel):
@@ -44,7 +55,17 @@ class ActiveEtfCoverageFund(BaseModel):
     category: str | None = None
     source_provider: str
     source_url: str
-    status: Literal["ready", "no_baseline", "missing"]
+    status: Literal[
+        "ready",
+        "no_baseline",
+        "missing",
+        "single_source",
+        "source_conflict",
+    ]
+    verification_status: Literal["verified", "single_source", "conflict"] | None = None
+    source_count: int = 0
+    verification_reason: str | None = None
+    sources: list[ActiveEtfSourceEvidence] = Field(default_factory=list)
     data_date: date | None = None
     previous_date: date | None = None
     latest_data_date: date | None = None

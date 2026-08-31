@@ -1,29 +1,28 @@
 from __future__ import annotations
 
+import gzip
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
-
 from ai_stock_sentinel import api
 from ai_stock_sentinel.active_etf_holdings.provider import (
     ActiveEtfFundDescriptor,
     ActiveEtfFundSnapshot,
     ActiveEtfHoldingRow,
     ActiveEtfProviderError,
+    IssuerOfficialActiveEtfProvider,
     MoneyDjActiveEtfProvider,
     parse_moneydj_holdings_html,
+    parse_nomura_holdings_payload,
     parse_twse_active_equity_funds,
 )
-from ai_stock_sentinel.active_etf_holdings.router import get_active_etf_holdings_provider
+from ai_stock_sentinel.active_etf_holdings.router import (
+    get_active_etf_holdings_provider,
+    get_active_etf_verification_provider,
+)
 from ai_stock_sentinel.active_etf_holdings.service import (
     get_active_etf_daily_response,
     refresh_active_etf_holdings,
@@ -34,10 +33,17 @@ from ai_stock_sentinel.db.models import (
     ActiveEtfFund,
     ActiveEtfHolding,
     ActiveEtfHoldingSnapshot,
+    ActiveEtfSourceHolding,
+    ActiveEtfSourceObservation,
     User,
 )
 from ai_stock_sentinel.db.session import Base, get_db
-
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "active_etf_holdings"
 
@@ -66,6 +72,8 @@ def etf_db_session() -> Session:
             ActiveEtfFund.__table__,
             ActiveEtfHoldingSnapshot.__table__,
             ActiveEtfHolding.__table__,
+            ActiveEtfSourceObservation.__table__,
+            ActiveEtfSourceHolding.__table__,
         ],
     )
     with Session(engine) as session:
@@ -109,6 +117,8 @@ def _snapshot(
         skipped_instrument_count=0,
         payload_hash=(normalized + "-raw").ljust(64, "0")[:64],
         normalized_hash=normalized.ljust(64, "0")[:64],
+        raw_payload=normalized.encode(),
+        source_url=descriptor.source_url,
     )
 
 
@@ -127,17 +137,69 @@ class FakeProvider:
     def fetch_registry(self) -> list[ActiveEtfFundDescriptor]:
         return self.funds
 
-    def fetch_snapshot(self, fund: ActiveEtfFundDescriptor) -> ActiveEtfFundSnapshot:
+    def fetch_snapshot(
+        self,
+        fund: ActiveEtfFundDescriptor,
+        *,
+        expected_data_date: date | None = None,
+    ) -> ActiveEtfFundSnapshot:
         value = self.snapshots[fund.fund_code]
         if isinstance(value, Exception):
             raise value
         return value
 
 
+class FakeVerificationProvider:
+    source_provider = "issuer_official"
+
+    def __init__(self, snapshots: dict[str, ActiveEtfFundSnapshot]) -> None:
+        self.snapshots = snapshots
+
+    def supports(self, fund_code: str) -> bool:
+        return fund_code in self.snapshots
+
+    def fetch_snapshot(
+        self,
+        fund: ActiveEtfFundDescriptor,
+        *,
+        expected_data_date: date | None = None,
+    ) -> ActiveEtfFundSnapshot:
+        value = self.snapshots[fund.fund_code]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def _official_snapshot(snapshot: ActiveEtfFundSnapshot) -> ActiveEtfFundSnapshot:
+    return ActiveEtfFundSnapshot(
+        fund=snapshot.fund,
+        data_date=snapshot.data_date,
+        fetched_at=snapshot.fetched_at,
+        holdings=tuple(
+            ActiveEtfHoldingRow(
+                symbol=row.symbol.split(".", 1)[0],
+                name=row.name,
+                shares=row.shares,
+                weight_pct=row.weight_pct,
+                position_order=row.position_order,
+            )
+            for row in snapshot.holdings
+        ),
+        skipped_instrument_count=0,
+        payload_hash=(snapshot.payload_hash[::-1]),
+        normalized_hash=(snapshot.normalized_hash[::-1]),
+        parser_version="issuer-test-v1",
+        raw_payload=b"official:" + snapshot.raw_payload,
+        source_provider="issuer_official",
+        source_url="https://issuer.example/holdings",
+    )
+
+
 class FakeResponse:
     def __init__(self, *, payload=None, text: str = "", status_code: int = 200) -> None:
         self._payload = payload
         self.text = text
+        self.content = text.encode() if text else b""
         self.status_code = status_code
 
     def json(self):
@@ -279,6 +341,79 @@ def test_moneydj_provider_uses_twse_registry_and_public_holdings_page() -> None:
     assert "etfid=00985A.TW" in calls[1]
 
 
+def test_parse_nomura_official_snapshot_preserves_exact_share_inventory() -> None:
+    payload = {
+        "StatusCode": 0,
+        "Entries": {
+            "CFundId": "00985A",
+            "CPcfdate": "2026-08-28T00:00:00",
+            "CNavDt": "2026-08-28T00:00:00",
+            "Stocks": [
+                {
+                    "CStockCode": "2330",
+                    "CStockName": "台灣積體電路製造",
+                    "CQuantity": 588000,
+                    "CWeightsPct": 13.51,
+                },
+                {
+                    "CStockCode": "2454",
+                    "CStockName": "聯發科技",
+                    "CQuantity": 26000,
+                    "CWeightsPct": 4.82,
+                },
+            ],
+        },
+    }
+
+    snapshot = parse_nomura_holdings_payload(
+        payload,
+        fund=_fund(),
+        raw_payload=b"nomura-json",
+        fetched_at=datetime(2026, 8, 31, 5, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.source_provider == "issuer_official"
+    assert snapshot.data_date == date(2026, 8, 28)
+    assert [(row.symbol, row.shares) for row in snapshot.holdings] == [
+        ("2330", 588000),
+        ("2454", 26000),
+    ]
+
+
+def test_issuer_provider_supports_only_complete_official_adapter() -> None:
+    calls: list[dict] = []
+    payload = {
+        "StatusCode": 0,
+        "Entries": {
+            "CFundId": "00985A",
+            "CPcfdate": "2026-08-31T00:00:00",
+            "CNavDt": "2026-08-28T00:00:00",
+            "Stocks": [
+                {
+                    "CStockCode": "2330",
+                    "CStockName": "台灣積體電路製造",
+                    "CQuantity": 588000,
+                    "CWeightsPct": 13.51,
+                }
+            ],
+        },
+    }
+
+    def fake_post(url: str, **kwargs):
+        calls.append({"url": url, **kwargs})
+        response = FakeResponse(payload=payload)
+        response.content = b'{"official":true}'
+        return response
+
+    provider = IssuerOfficialActiveEtfProvider(request_post=fake_post)
+    snapshot = provider.fetch_snapshot(_fund(), expected_data_date=date(2026, 8, 28))
+
+    assert provider.supports("00985A") is True
+    assert provider.supports("00982A") is False
+    assert snapshot.data_date == date(2026, 8, 28)
+    assert calls[0]["json"]["FundNo"] == "00985A"
+
+
 def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
     etf_db_session: Session,
 ) -> None:
@@ -296,6 +431,9 @@ def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
     first_result = refresh_active_etf_holdings(
         etf_db_session,
         provider=FakeProvider({"00985A": first}),
+        verification_provider=FakeVerificationProvider(
+            {"00985A": _official_snapshot(first)}
+        ),
         max_workers=1,
     )
     second = _snapshot(
@@ -313,11 +451,17 @@ def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
     second_result = refresh_active_etf_holdings(
         etf_db_session,
         provider=second_provider,
+        verification_provider=FakeVerificationProvider(
+            {"00985A": _official_snapshot(second)}
+        ),
         max_workers=1,
     )
     repeated_result = refresh_active_etf_holdings(
         etf_db_session,
         provider=second_provider,
+        verification_provider=FakeVerificationProvider(
+            {"00985A": _official_snapshot(second)}
+        ),
         max_workers=1,
     )
 
@@ -326,7 +470,11 @@ def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
     assert first_result.snapshots_created == 1
     assert second_result.snapshots_created == 1
     assert repeated_result.snapshots_reused == 1
+    assert repeated_result.verified_snapshots == 1
     assert etf_db_session.scalar(select(func.count()).select_from(ActiveEtfHoldingSnapshot)) == 2
+    observations = list(etf_db_session.scalars(select(ActiveEtfSourceObservation)))
+    assert len(observations) == 4
+    assert all(gzip.decompress(row.raw_payload_gzip) for row in observations)
     assert response is not None
     assert response.data_date == date(2026, 8, 28)
     assert response.funds[0].source_provider == "moneydj"
@@ -371,6 +519,87 @@ def test_refresh_preserves_successes_and_reports_failed_funds(
     assert result.snapshots_created == 1
     assert result.errors[0].fund_code == "00982A"
     assert result.errors[0].code == "active_etf_snapshot_fetch_failed"
+
+
+def test_single_source_snapshot_is_retained_but_does_not_publish_changes(
+    etf_db_session: Session,
+) -> None:
+    first = _snapshot(
+        date(2026, 8, 27),
+        [("2330.TW", "台積電", 100, "10")],
+    )
+    second = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 120, "11")],
+    )
+    refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": first}),
+        max_workers=1,
+    )
+    result = refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": second}),
+        max_workers=1,
+    )
+
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert result.single_source_snapshots == 1
+    assert response is not None
+    assert response.covered_funds == 0
+    assert response.funds[0].status == "single_source"
+    assert response.funds[0].verification_reason == "official_source_unsupported"
+    assert response.changes == []
+
+
+def test_conflicting_share_inventory_is_fail_closed_with_both_sources_retained(
+    etf_db_session: Session,
+) -> None:
+    primary = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 120, "11")],
+    )
+    official = _official_snapshot(primary)
+    official = ActiveEtfFundSnapshot(
+        fund=official.fund,
+        data_date=official.data_date,
+        fetched_at=official.fetched_at,
+        holdings=(
+            ActiveEtfHoldingRow(
+                symbol="2330",
+                name="台灣積體電路製造",
+                shares=119,
+                weight_pct=Decimal(11),
+                position_order=0,
+            ),
+        ),
+        skipped_instrument_count=0,
+        payload_hash=official.payload_hash,
+        normalized_hash=official.normalized_hash,
+        parser_version=official.parser_version,
+        raw_payload=official.raw_payload,
+        source_provider=official.source_provider,
+        source_url=official.source_url,
+    )
+
+    result = refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": primary}),
+        verification_provider=FakeVerificationProvider({"00985A": official}),
+        max_workers=1,
+    )
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert result.conflicted_snapshots == 1
+    assert response is not None
+    assert response.funds[0].status == "source_conflict"
+    assert response.funds[0].verification_reason == "holding_mismatch"
+    assert response.funds[0].source_count == 2
+    assert response.changes == []
+    assert etf_db_session.scalar(
+        select(func.count()).select_from(ActiveEtfSourceObservation)
+    ) == 2
 
 
 def test_refresh_rejects_explicit_empty_fund_selection(etf_db_session: Session) -> None:
@@ -446,6 +675,18 @@ def test_daily_response_excludes_stale_funds_from_date_and_builds_consensus(
             },
             funds=funds,
         ),
+        verification_provider=FakeVerificationProvider(
+            {
+                fund.fund_code: _official_snapshot(
+                    _snapshot(
+                        date(2026, 8, 27),
+                        [("2330.TW", "台積電", 100, "10")],
+                        fund=fund,
+                    )
+                )
+                for fund in funds
+            }
+        ),
         max_workers=1,
     )
     refresh_active_etf_holdings(
@@ -464,6 +705,24 @@ def test_daily_response_excludes_stale_funds_from_date_and_builds_consensus(
                 ),
             },
             funds=funds,
+        ),
+        verification_provider=FakeVerificationProvider(
+            {
+                first_fund.fund_code: _official_snapshot(
+                    _snapshot(
+                        date(2026, 8, 28),
+                        [("2330.TW", "台積電", 120, "11")],
+                        fund=first_fund,
+                    )
+                ),
+                second_fund.fund_code: _official_snapshot(
+                    _snapshot(
+                        date(2026, 8, 28),
+                        [("2330.TW", "台積電", 110, "10.5")],
+                        fund=second_fund,
+                    )
+                ),
+            }
         ),
         max_workers=1,
     )
@@ -503,10 +762,16 @@ def etf_client(etf_db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Test
         [("2330.TW", "台積電", 100, "10.00")],
     )
     provider = FakeProvider({"00985A": snapshot})
+    verification_provider = FakeVerificationProvider(
+        {"00985A": _official_snapshot(snapshot)}
+    )
     api.app.dependency_overrides[get_db] = lambda: etf_db_session
     api.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     api.app.dependency_overrides[require_daily_radar_internal_auth] = lambda: None
     api.app.dependency_overrides[get_active_etf_holdings_provider] = lambda: provider
+    api.app.dependency_overrides[get_active_etf_verification_provider] = (
+        lambda: verification_provider
+    )
     try:
         yield TestClient(api.app)
     finally:
@@ -514,6 +779,7 @@ def etf_client(etf_db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Test
         api.app.dependency_overrides.pop(get_current_user, None)
         api.app.dependency_overrides.pop(require_daily_radar_internal_auth, None)
         api.app.dependency_overrides.pop(get_active_etf_holdings_provider, None)
+        api.app.dependency_overrides.pop(get_active_etf_verification_provider, None)
 
 
 def test_active_etf_internal_refresh_and_authenticated_read_endpoint(
