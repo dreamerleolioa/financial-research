@@ -88,7 +88,9 @@ def refresh_active_etf_holdings(
     updated = 0
     reused = 0
     errors: list[ActiveEtfRefreshError] = []
-    snapshot_pairs: list[tuple[ActiveEtfFundSnapshot, ActiveEtfFundSnapshot | None]] = []
+    snapshot_pairs: list[
+        tuple[ActiveEtfFundSnapshot, ActiveEtfFundSnapshot | None, bool, bool]
+    ] = []
     worker_count = min(max(1, max_workers), 4, len(selected_codes))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
@@ -100,16 +102,20 @@ def refresh_active_etf_holdings(
             try:
                 primary_snapshot = future.result()
                 verification_snapshot = None
-                if (
+                verification_supported = (
                     verification_provider is not None
                     and verification_provider.supports(fund_code)
-                ):
+                )
+                verification_fetch_failed = False
+                if verification_supported:
                     try:
+                        assert verification_provider is not None
                         verification_snapshot = verification_provider.fetch_snapshot(
                             registry_by_code[fund_code],
                             expected_data_date=primary_snapshot.data_date,
                         )
                     except Exception:
+                        verification_fetch_failed = True
                         logger.exception(
                             "Active ETF verification fetch failed fund_code=%s",
                             fund_code,
@@ -120,7 +126,14 @@ def refresh_active_etf_holdings(
                                 code="active_etf_verification_fetch_failed",
                             )
                         )
-                snapshot_pairs.append((primary_snapshot, verification_snapshot))
+                snapshot_pairs.append(
+                    (
+                        primary_snapshot,
+                        verification_snapshot,
+                        verification_supported,
+                        verification_fetch_failed,
+                    )
+                )
             except Exception:
                 logger.exception("Active ETF holding fetch failed fund_code=%s", fund_code)
                 errors.append(
@@ -133,7 +146,12 @@ def refresh_active_etf_holdings(
     verified = 0
     single_source = 0
     conflicted = 0
-    for snapshot, verification_snapshot in sorted(
+    for (
+        snapshot,
+        verification_snapshot,
+        verification_supported,
+        verification_fetch_failed,
+    ) in sorted(
         snapshot_pairs,
         key=lambda item: item[0].fund.fund_code,
     ):
@@ -141,10 +159,7 @@ def refresh_active_etf_holdings(
             verification_status, verification_details = _reconcile_snapshots(
                 snapshot,
                 verification_snapshot,
-                verification_supported=(
-                    verification_provider is not None
-                    and verification_provider.supports(snapshot.fund.fund_code)
-                ),
+                verification_supported=verification_supported,
             )
             _upsert_observation(db, snapshot, source_provider=provider.source_provider)
             if verification_snapshot is not None:
@@ -154,13 +169,21 @@ def refresh_active_etf_holdings(
                     verification_snapshot,
                     source_provider=verification_provider.source_provider,
                 )
-            outcome = _upsert_snapshot(
+            if verification_fetch_failed and _has_matching_verified_snapshot(
                 db,
                 snapshot,
                 source_provider=provider.source_provider,
-                verification_status=verification_status,
-                verification_details=verification_details,
-            )
+            ):
+                verification_status = "verified"
+                outcome = "reused"
+            else:
+                outcome = _upsert_snapshot(
+                    db,
+                    snapshot,
+                    source_provider=provider.source_provider,
+                    verification_status=verification_status,
+                    verification_details=verification_details,
+                )
             db.commit()
         except Exception:
             db.rollback()
@@ -501,6 +524,25 @@ def _upsert_snapshot(
         ]
     )
     return outcome
+
+
+def _has_matching_verified_snapshot(
+    db: Session,
+    snapshot: ActiveEtfFundSnapshot,
+    *,
+    source_provider: str,
+) -> bool:
+    existing = db.scalar(
+        select(ActiveEtfHoldingSnapshot).where(
+            ActiveEtfHoldingSnapshot.fund_code == snapshot.fund.fund_code,
+            ActiveEtfHoldingSnapshot.data_date == snapshot.data_date,
+            ActiveEtfHoldingSnapshot.source_provider == source_provider,
+            ActiveEtfHoldingSnapshot.verification_status == "verified",
+        )
+    )
+    if existing is None:
+        return False
+    return (existing.source_metadata or {}).get("normalized_hash") == snapshot.normalized_hash
 
 
 def _upsert_observation(

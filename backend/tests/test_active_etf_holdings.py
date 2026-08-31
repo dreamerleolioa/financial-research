@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -572,6 +573,132 @@ def test_single_source_snapshot_is_retained_but_does_not_publish_changes(
     assert response.covered_funds == 0
     assert response.funds[0].status == "single_source"
     assert response.funds[0].verification_reason == "official_source_unsupported"
+    assert response.changes == []
+
+
+def test_failed_recheck_preserves_verified_snapshot_when_primary_is_unchanged(
+    etf_db_session: Session,
+) -> None:
+    previous = _snapshot(
+        date(2026, 8, 27),
+        [("2330.TW", "台積電", 100, "10")],
+    )
+    current = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 120, "11")],
+    )
+    for snapshot in (previous, current):
+        refresh_active_etf_holdings(
+            etf_db_session,
+            provider=FakeProvider({"00985A": snapshot}),
+            verification_provider=FakeVerificationProvider(
+                {"00985A": _official_snapshot(snapshot)}
+            ),
+            max_workers=1,
+        )
+    verified_before = etf_db_session.scalar(
+        select(ActiveEtfHoldingSnapshot).where(
+            ActiveEtfHoldingSnapshot.fund_code == "00985A",
+            ActiveEtfHoldingSnapshot.data_date == current.data_date,
+        )
+    )
+    assert verified_before is not None
+    verification_details_before = verified_before.verification_details
+    refetched = replace(
+        current,
+        fetched_at=datetime(2026, 8, 28, 7, tzinfo=timezone.utc),
+        payload_hash="f" * 64,
+        raw_payload=b"refetched-primary-payload",
+    )
+
+    result = refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": refetched}),
+        verification_provider=FakeVerificationProvider(
+            {"00985A": ActiveEtfProviderError("issuer_temporarily_unavailable")}
+        ),
+        max_workers=1,
+    )
+    persisted = etf_db_session.scalar(
+        select(ActiveEtfHoldingSnapshot).where(
+            ActiveEtfHoldingSnapshot.fund_code == "00985A",
+            ActiveEtfHoldingSnapshot.data_date == current.data_date,
+        )
+    )
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert result.status == "partial"
+    assert result.snapshots_reused == 1
+    assert result.verified_snapshots == 1
+    assert result.single_source_snapshots == 0
+    assert result.errors[0].code == "active_etf_verification_fetch_failed"
+    assert persisted is not None
+    assert persisted.verification_status == "verified"
+    assert persisted.source_count == 2
+    assert persisted.payload_hash == current.payload_hash
+    assert persisted.verification_details == verification_details_before
+    primary_observation = etf_db_session.scalar(
+        select(ActiveEtfSourceObservation).where(
+            ActiveEtfSourceObservation.fund_code == "00985A",
+            ActiveEtfSourceObservation.data_date == current.data_date,
+            ActiveEtfSourceObservation.source_provider == "moneydj",
+        )
+    )
+    assert primary_observation is not None
+    assert primary_observation.payload_hash == refetched.payload_hash
+    assert response is not None
+    assert response.funds[0].status == "ready"
+    assert len(response.funds[0].sources) == 2
+    assert response.summary.increases == 1
+
+
+def test_failed_recheck_downgrades_snapshot_when_primary_content_changed(
+    etf_db_session: Session,
+) -> None:
+    original = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 120, "11")],
+    )
+    changed = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 121, "11")],
+    )
+    refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": original}),
+        verification_provider=FakeVerificationProvider(
+            {"00985A": _official_snapshot(original)}
+        ),
+        max_workers=1,
+    )
+
+    result = refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": changed}),
+        verification_provider=FakeVerificationProvider(
+            {"00985A": ActiveEtfProviderError("issuer_temporarily_unavailable")}
+        ),
+        max_workers=1,
+    )
+    persisted = etf_db_session.scalar(
+        select(ActiveEtfHoldingSnapshot).where(
+            ActiveEtfHoldingSnapshot.fund_code == "00985A",
+            ActiveEtfHoldingSnapshot.data_date == changed.data_date,
+        )
+    )
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert result.status == "partial"
+    assert result.snapshots_updated == 1
+    assert result.verified_snapshots == 0
+    assert result.single_source_snapshots == 1
+    assert persisted is not None
+    assert persisted.verification_status == "single_source"
+    assert etf_db_session.scalar(
+        select(func.count()).select_from(ActiveEtfSourceObservation)
+    ) == 2
+    assert response is not None
+    assert response.funds[0].status == "single_source"
     assert response.changes == []
 
 
