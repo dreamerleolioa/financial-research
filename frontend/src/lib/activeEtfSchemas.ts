@@ -56,8 +56,21 @@ const coverageFundSchema = z
     if (fund.source_count !== fund.sources.length) {
       context.addIssue({ code: "custom", message: "source_count must match sources", path: ["source_count"] });
     }
-    if (["ready", "no_baseline"].includes(fund.status) && fund.verification_status !== "verified") {
-      context.addIssue({ code: "custom", message: "comparable funds must be verified", path: ["verification_status"] });
+    if (fund.verification_status === "verified" && fund.source_count < 2) {
+      context.addIssue({ code: "custom", message: "verified funds require two sources", path: ["source_count"] });
+    }
+    if (fund.verification_status === "single_source" && fund.source_count !== 1) {
+      context.addIssue({ code: "custom", message: "single-source funds require one source", path: ["source_count"] });
+    }
+    if (
+      ["ready", "no_baseline"].includes(fund.status) &&
+      !["verified", "single_source"].includes(fund.verification_status ?? "")
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "covered funds must have a usable source",
+        path: ["verification_status"],
+      });
     }
     if (fund.status === "single_source" && fund.verification_status !== "single_source") {
       context.addIssue({ code: "custom", message: "single-source status mismatch", path: ["verification_status"] });
@@ -79,6 +92,8 @@ const changeSchema = z
     name: z.string(),
     source_provider: z.string(),
     source_url: publicHttpUrl,
+    verification_status: z.enum(["verified", "single_source"]).optional().default("verified"),
+    source_count: z.number().int().positive().optional().default(2),
     fetched_at: sourceTimestamp,
     data_date: dataDate,
     previous_date: dataDate,
@@ -92,7 +107,15 @@ const changeSchema = z
     relative_share_change_pct: nullableDecimalNumber,
     likely_fund_scale_change: z.boolean(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((change, context) => {
+    if (change.verification_status === "verified" && change.source_count < 2) {
+      context.addIssue({ code: "custom", message: "verified changes require two sources", path: ["source_count"] });
+    }
+    if (change.verification_status === "single_source" && change.source_count !== 1) {
+      context.addIssue({ code: "custom", message: "single-source changes require one source", path: ["source_count"] });
+    }
+  });
 
 const consensusSchema = z
   .object({
@@ -131,7 +154,11 @@ export const activeEtfDailyResponseSchema = z
   })
   .passthrough()
   .superRefine((response, context) => {
+    const coveredFunds = response.funds.filter((fund) =>
+      ["verified", "single_source"].includes(fund.verification_status ?? ""),
+    );
     const verifiedFunds = response.funds.filter((fund) => fund.verification_status === "verified");
+    const fundsByCode = new Map(response.funds.map((fund) => [fund.fund_code, fund]));
     const fundCodes = response.funds.map((fund) => fund.fund_code);
     const comparableFundCodes = new Set(
       response.funds.filter((fund) => fund.status === "ready").map((fund) => fund.fund_code),
@@ -139,8 +166,12 @@ export const activeEtfDailyResponseSchema = z
     if (response.expected_funds !== response.funds.length) {
       context.addIssue({ code: "custom", message: "expected_funds must match funds", path: ["expected_funds"] });
     }
-    if (response.covered_funds !== verifiedFunds.length) {
-      context.addIssue({ code: "custom", message: "covered_funds must count verified funds", path: ["covered_funds"] });
+    if (![verifiedFunds.length, coveredFunds.length].includes(response.covered_funds)) {
+      context.addIssue({
+        code: "custom",
+        message: "covered_funds must count verified or usable snapshots",
+        path: ["covered_funds"],
+      });
     }
     if (new Set(fundCodes).size !== fundCodes.length) {
       context.addIssue({ code: "custom", message: "fund codes must be unique", path: ["funds"] });
@@ -170,8 +201,23 @@ export const activeEtfDailyResponseSchema = z
       if (!comparableFundCodes.has(change.fund_code)) {
         context.addIssue({
           code: "custom",
-          message: "changes must only reference verified comparable funds",
+          message: "changes must only reference comparable funds",
           path: ["changes", index, "fund_code"],
+        });
+      }
+      const fund = fundsByCode.get(change.fund_code);
+      if (change.verification_status === "verified" && fund?.verification_status !== "verified") {
+        context.addIssue({
+          code: "custom",
+          message: "verified changes require a verified current fund snapshot",
+          path: ["changes", index, "verification_status"],
+        });
+      }
+      if (fund && change.source_count > fund.source_count) {
+        context.addIssue({
+          code: "custom",
+          message: "change source count cannot exceed current fund evidence",
+          path: ["changes", index, "source_count"],
         });
       }
     });

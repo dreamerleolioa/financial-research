@@ -37,6 +37,8 @@ export interface ActiveEtfChange {
   name: string;
   source_provider: string;
   source_url: string;
+  verification_status: Exclude<ActiveEtfVerificationStatus, "conflict">;
+  source_count: number;
   fetched_at: string;
   data_date: string;
   previous_date: string;
