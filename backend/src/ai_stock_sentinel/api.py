@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from ai_stock_sentinel.active_etf_holdings.router import router as active_etf_holdings_router
 from ai_stock_sentinel.analysis.router import router as analysis_router
 from ai_stock_sentinel.auth.router import router as auth_router
 from ai_stock_sentinel.calibration.router import router as calibration_router
@@ -85,6 +86,7 @@ app.include_router(daily_radar_router)
 app.include_router(calibration_router)
 app.include_router(watchlist_router)
 app.include_router(fundamental_router)
+app.include_router(active_etf_holdings_router)
 
 
 @app.get("/health")

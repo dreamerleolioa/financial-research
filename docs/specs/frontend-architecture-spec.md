@@ -1,6 +1,6 @@
 # 前端架構規格
 
-> 最近同步：2026-08-28。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
+> 最近同步：2026-08-31。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
 > 現行 Analyze 與 Portfolio 只呈現 deterministic 技術、籌碼、基本面與策略結果，不再提供站內 LLM 分析。本文後段若仍出現 `skip_ai` 或 AI 報告，視為退役歷史設計；對外延伸研究只保留「複製技術摘要」工作流。
 
 ## 技術棧
@@ -21,7 +21,7 @@
 2. `QueryClientProvider`：提供 TanStack Query cache、request state 與 invalidation 能力。
 3. `BrowserRouter`：以 `APP_BASE_URL` 作為 basename。
 4. `AuthProvider`：管理登入狀態與 token。
-5. `ProtectedRoute`：保護 `/analyze`、`/watchlist`、`/portfolio`、`/portfolio/closed`、`/daily-radar`。
+5. `ProtectedRoute`：保護 `/analyze`、`/watchlist`、`/portfolio`、`/portfolio/closed`、`/daily-radar`、`/active-etf`。
 
 這個順序的重點是：API page 和 feature hooks 都能讀到 auth context 與 query client，route 保護邏輯仍集中在入口，不分散到各 page。
 
@@ -29,9 +29,9 @@
 
 `frontend/src/App.tsx` 是登入後共用的 App Shell，只負責產品框架、導覽、使用者控制、主題切換與 route outlet，不承接任何 domain data flow。
 
-- `1024px` 以上使用 224px 左側欄，主要流程為個股分析、關注列表、持股管理與盤後觀察雷達。
+- `1024px` 以上使用 224px 左側欄，主要流程為個股分析、關注列表、持股管理、盤後觀察雷達與主動式 ETF 持股追蹤。
 - 桌面 App Shell 使用完整 viewport 寬度，側欄固定貼齊左側；主要內容從側欄後方開始，左對齊並限制最大寬度為 1440px，超寬螢幕的剩餘空間保留在右側。
-- `1024px` 以下使用 56px 頂部列與固定四項底部導覽，標籤為分析、關注、持股、雷達。
+- `1024px` 以下使用 56px 頂部列與固定五項底部導覽，標籤為分析、關注、持股、雷達、ETF。
 - `/portfolio` 與 `/portfolio/closed` 保留既有 URL，但在導覽上屬於同一個持股管理 family；桌面在側欄顯示持有中、已結案子項目，行動版在內容頂部顯示子檢視切換。
 - 共用導覽與 icon 定義集中在 `frontend/src/components/app-shell/AppNavigation.tsx`。Route page 不自行建立另一套全域導覽。
 - App Shell 提供 `跳至主要內容` 連結。每個登入後 route 由 App Shell 產生唯一的 page-level `h1`；頁面內可見區塊從 `h2` 開始，避免產品名稱與 route 標題互相競爭。
@@ -47,7 +47,7 @@
 - `AuthenticationShell` 只負責呈現。Google OAuth flow、redirect URI、token 保存、`/auth/me` 驗證與成功後導向仍由既有 auth store 和 route page 管理，不得為了視覺調整改寫登入契約。
 - Google OAuth redirect flow 必須在 `/login` 產生密碼學安全的一次性 `state`，點擊登入時寫入 `sessionStorage` 並送往 Google；`/login/callback` 在呼叫 `/auth/google/code` 前必須比對且立即消耗。缺少、不相符或已使用的 state 都只能顯示 recovery path，不得交換 authorization code。
 - 尚未有資料時使用 `frontend/src/components/app-shell/WorkspaceEmptyState.tsx`。空狀態必須說明目前狀態、可採取的下一步，並在適用時直接提供主要 action；不得只顯示「沒有資料」。
-- Analyze、Watchlist、Closed Portfolio 與 Daily Radar 的空狀態沿用各自 workflow 語義。空狀態文案不得把沒有候選、沒有持股或沒有結案紀錄解讀為投資結論。
+- Analyze、Watchlist、Closed Portfolio、Daily Radar 與 Active ETF 的空狀態沿用各自 workflow 語義。空狀態文案不得把沒有候選、沒有持股、沒有結案紀錄或沒有持股變化解讀為投資結論。
 - Modal 在窄螢幕使用底部 sheet，在桌面置中；drawer 固定從右側進入。兩者使用語意 surface、14px 圓角、低眩光遮罩與一致的 close control。
 - Dialog 必須提供 `role="dialog"` 或 `role="alertdialog"`、`aria-modal`、可讀 label，並支援 Escape 關閉。包含長表單或長內容時，scroll 應限制在 overlay 內並使用 `overscroll-contain`。
 - 非必要動效保持短促，只用於按壓回饋與資料更新提示。`prefers-reduced-motion` 啟用時必須移除 refresh highlight 與非必要 transition，不得讓動效成為理解狀態的唯一方式。
@@ -60,7 +60,7 @@
 - 測試以 browser context localStorage 與 route interception 提供固定 auth user、假 token 和 deterministic API fixtures，不依賴個人 Google session、production data 或真實 backend。
 - Google OAuth script 在 E2E 中明確阻擋；測試只驗證 login/callback UI、一次性 state 成功／拒絕路徑、protected route 與 recovery path，不嘗試自動化第三方 Google 登入頁。
 - 穩定 selector 優先使用 role、accessible name、label 與 route URL。只有語意 selector 無法唯一描述互動時才可增加 test id；不得以 Tailwind class、DOM 深度或像素位置作主要契約。
-- 核心保護範圍包括 App Shell 導覽、portfolio 子檢視、theme persistence、Analyze/Watchlist copy-to-AI、Portfolio destructive confirmation、Radar drawer keyboard focus，以及 1280px、375px、320px 的無水平溢出。
+- 核心保護範圍包括 App Shell 導覽、portfolio 子檢視、theme persistence、Analyze/Watchlist copy-to-AI、Portfolio destructive confirmation、Radar 與 Active ETF drawer keyboard focus，以及 1280px、1024px、375px、320px 的無水平溢出。
 - Pull request release gate 必須依序通過 dependency install、Playwright Chromium install、lint、E2E 與 build。
 
 ## 目錄責任
@@ -221,6 +221,17 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - Detail drawer：顯示觀察理由、隔日觀察點、失效條件、背景脈絡、`input_snapshot.phase1_avwap_context` 的試驗版 AVWAP 脈絡、可讀規則細節與資料日期。技術細節不得顯示分類分數、規則代碼或完整 raw input snapshot。
 - 試驗版 AVWAP trace：只在 detail drawer 顯示 anchors、距離、資料日期、dataset、adjustment mode 與 missing snapshot 狀態；不得寫入 watchlist/portfolio，也不得改 Daily Radar scoring/ranking/bucket/matched rules。
 
+## Active ETF Surface
+
+`ActiveEtfPage` 是各家主動式 ETF 每日公開持股差異的獨立觀察面，不是 Daily Radar 的候選來源，也不改動任何 deterministic scoring、ranking 或風險標籤。
+
+- Route 與資料：`/active-etf` 透過 `useActiveEtfDailyQuery(dataDate)` 呼叫 authenticated `GET /active-etf-holdings/daily`。Query key 必須包含資料日，切換日期不可覆蓋其他日期 cache。
+- Quality first：頁面先顯示選定資料日、預期基金數、雙來源確認數、等待第二來源數與來源衝突數，並明示只有 `verified` 且存在前次 verified 快照的基金才會發布變化與共識。缺少當日快照的基金標示為「當日未更新」，不得用最近日期混入當日比較。
+- Fund changes：桌面寬螢幕使用基金索引加密集比較表；1024px 以下使用基金 select 與卡片，避免在中等寬度壓縮欄位。搜尋與 action filter 只改 client view，不改 server response 或排序語意。
+- Consensus：只呈現同一標的至少兩檔基金發生變化的描述性彙總。方向分歧必須明示，不得把跨基金同向變化描述成推薦或預測。
+- Fund evidence：基金索引使用「已雙來源確認／等待第二來源／來源不一致／當日未更新」標示。選定基金後顯示 privacy-safe reconciliation reason，並逐來源列出 provider、資料日、短 hash 與原始公開頁連結。
+- Detail drawer：只會由已驗證的變化列開啟，顯示前後股數、權重、共同規模比例校正後的相對變化、資料日、擷取時間與兩個公開來源證據。`likely_fund_scale_change` 為真時明示可能包含基金申贖造成的等比例調整；drawer 支援焦點圈限、Escape 關閉與觸發按鈕焦點還原。
+
 ## API Boundary Validation
 
 TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runtime response 一定符合 contract。因此前端在高風險 API boundary 加 Zod：
@@ -231,6 +242,9 @@ TypeScript 只能保證前端程式碼的靜態型別，不能保證後端 runti
 - `frontend/src/lib/analysisSchemas.ts`
   - 驗證 `POST /analyze`
   - 目標：分析結果頂層 contract、analysis detail、news display、action plan、errors、`technical_profile`、Phase 1 `phase1_observation` trace、`chip_stability_context`
+- `frontend/src/lib/activeEtfSchemas.ts`
+  - 驗證 `GET /active-etf-holdings/daily`
+  - 目標：coverage、fund status／verification status 對齊、來源證據數、summary 計數、變化只能引用已驗證可比較基金，以及可安全開啟的 HTTP(S) 來源網址
 
 Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。這能攔下破壞性 contract drift，同時允許後端新增 metadata。
 

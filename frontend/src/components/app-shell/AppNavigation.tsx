@@ -77,6 +77,23 @@ function RadarIcon(props: IconProps) {
   );
 }
 
+function EtfIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M5 5h14v14H5z" strokeLinejoin="round" />
+      <path d="M8 15.5 11 12l2.5 2 3-5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8 8h3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 const navigationItems: NavigationItem[] = [
   {
     label: "個股分析",
@@ -105,6 +122,13 @@ const navigationItems: NavigationItem[] = [
     to: "/daily-radar",
     icon: RadarIcon,
     matches: (pathname) => pathname.startsWith("/daily-radar"),
+  },
+  {
+    label: "主動式 ETF",
+    mobileLabel: "ETF",
+    to: "/active-etf",
+    icon: EtfIcon,
+    matches: (pathname) => pathname.startsWith("/active-etf"),
   },
 ];
 
@@ -189,7 +213,7 @@ export function MobileBottomNavigation() {
       aria-label="行動版主要功能"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-shell/95 px-2 pt-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] shadow-[0_-12px_30px_oklch(0.12_0.01_165/0.12)] backdrop-blur-sm lg:hidden"
     >
-      <ul className="mx-auto grid max-w-md grid-cols-4 gap-1">
+      <ul className="mx-auto grid max-w-md grid-cols-5 gap-1">
         {navigationItems.map((item) => {
           const isCurrent = item.matches(pathname);
           const Icon = item.icon;

@@ -11,6 +11,7 @@ import { AuthProvider, useAuth } from "./stores/auth.tsx";
 import { APP_BASE_URL, GOOGLE_CLIENT_ID } from "./lib/config.ts";
 
 const AnalyzePage = lazy(() => import("./pages/AnalyzePage.tsx"));
+const ActiveEtfPage = lazy(() => import("./pages/ActiveEtfPage.tsx"));
 const ClosedPortfolioPage = lazy(() => import("./pages/ClosedPortfolioPage.tsx"));
 const DailyRadarPage = lazy(() => import("./pages/DailyRadarPage.tsx"));
 const PortfolioPage = lazy(() => import("./pages/PortfolioPage.tsx"));
@@ -100,6 +101,14 @@ createRoot(document.getElementById("root")!).render(
                   element={
                     <LazyRoute>
                       <DailyRadarPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="/active-etf"
+                  element={
+                    <LazyRoute>
+                      <ActiveEtfPage />
                     </LazyRoute>
                   }
                 />

@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { authenticate, installApiMocks } from "./fixtures";
+import { activeEtfDaily, authenticate, installApiMocks } from "./fixtures";
 
 test("desktop shell exposes primary routes and portfolio subviews", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await authenticate(page);
-  await installApiMocks(page);
+  await installApiMocks(page, { activeEtfDaily });
 
   await page.goto("/analyze");
   await expect(page.getByRole("navigation", { name: "主要功能", exact: true })).toBeVisible();
@@ -19,6 +19,10 @@ test("desktop shell exposes primary routes and portfolio subviews", async ({ pag
   await page.getByRole("link", { name: "已結案" }).first().click();
   await expect(page).toHaveURL(/\/portfolio\/closed$/);
   await expect(page.getByRole("heading", { name: "此期間沒有結案紀錄" })).toBeVisible();
+
+  await page.getByRole("link", { name: "主動式 ETF" }).click();
+  await expect(page).toHaveURL(/\/active-etf$/);
+  await expect(page.getByRole("heading", { name: "主動式 ETF 持股追蹤", level: 2 })).toBeVisible();
 });
 
 test("mobile shell uses bottom navigation and keeps the selected theme", async ({ page }) => {
@@ -46,9 +50,16 @@ for (const width of [1280, 1024, 375, 320]) {
   test(`core routes do not overflow horizontally at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await authenticate(page);
-    await installApiMocks(page);
+    await installApiMocks(page, { activeEtfDaily });
 
-    for (const pathname of ["/analyze", "/watchlist", "/portfolio", "/portfolio/closed", "/daily-radar"]) {
+    for (const pathname of [
+      "/analyze",
+      "/watchlist",
+      "/portfolio",
+      "/portfolio/closed",
+      "/daily-radar",
+      "/active-etf",
+    ]) {
       await page.goto(pathname);
       await expect(page.locator("main")).toBeVisible();
       const dimensions = await page.evaluate(() => ({

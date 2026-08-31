@@ -1,0 +1,74 @@
+name: Active ETF Holdings Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron uses UTC. Taiwan time = UTC+8.
+    # 台灣時間週一至週五 08:00 與 14:00，捕捉不同投信的公開持股發布時間。
+    - cron: "0 0 * * 1-5"
+    - cron: "0 6 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: active-etf-holdings-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh-active-etf-holdings:
+    name: Refresh active ETF holdings on Zeabur
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ETF_API_BASE_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+      ETF_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+
+    steps:
+      - name: Validate secrets
+        run: |
+          test -n "${ETF_API_BASE_URL}"
+          test -n "${ETF_INTERNAL_TOKEN}"
+
+      - name: Refresh all registered active equity ETFs
+        run: |
+          set -euo pipefail
+
+          response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
+
+          curl --fail-with-body --show-error --silent \
+            --connect-timeout 20 \
+            --max-time 900 \
+            --request POST \
+            --header "Authorization: Bearer ${ETF_INTERNAL_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{}' \
+            "${ETF_API_BASE_URL%/}/internal/active-etf-holdings/refresh" \
+            > "${response_file}"
+
+          jq '{
+                status,
+                expected_funds,
+                selected_funds,
+                snapshots_created,
+                snapshots_updated,
+                snapshots_reused,
+                verified_snapshots,
+                single_source_snapshots,
+                conflicted_snapshots,
+                errors
+              }' "${response_file}"
+
+          jq -e '
+            .status == "completed"
+            and ((.errors // []) | length == 0)
+            and ((.verified_snapshots // 0) > 0)
+            and ((.conflicted_snapshots // 0) == 0)
+            and (
+              ((.verified_snapshots // 0)
+              + (.single_source_snapshots // 0)
+              + (.conflicted_snapshots // 0))
+              == .selected_funds
+            )
+          ' "${response_file}" > /dev/null
