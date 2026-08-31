@@ -70,6 +70,7 @@ make run-api
 
 - 需既有 internal bearer token。
 - Request body：`{"fund_codes": ["00985A"]}`；`fund_codes` 可省略，代表更新官方登錄內全部股票型主動式 ETF。
+- 正式排程：`.github/workflows/active-etf-holdings.yml` 在台灣時間平日 08:00、14:00 呼叫全量 refresh，沿用 Zeabur backend URL 與 Daily Radar internal token secrets。回應為 `partial` 或含 `errors[]` 時 job 必須失敗以保留監控訊號；已完成的逐基金 transaction 不回滾。
 - Response：`status`、`expected_funds`、`selected_funds`、`snapshots_created`、`snapshots_updated`、`snapshots_reused` 與 privacy-safe `errors[{fund_code, code}]`。
 - 官方 registry 無法驗證或指定基金不在官方清單時回 `502`，不得停用既有基金或建立推測資料。
 
