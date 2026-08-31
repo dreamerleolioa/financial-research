@@ -1,11 +1,12 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-08-03
+> 更新日期：2026-08-31
 > 更新摘要：2026-08-28 起 `/analyze` 與 `/analyze/position` 完全移除 LLM 與 RSS 新聞執行路徑，改為 crawl → external data → judge → preprocess → score → strategy 的 deterministic contract。`persist_result` 控制是否讀寫完整分析快取；`skip_ai` 與 `news_text` 只保留 deprecated request 相容。舊 LLM/news response 欄位暫留但固定為空值，舊快取也不得重新送出歷史 AI 內容。本文後段若仍提及 LLM prompt 或 cleaner，視為歷史設計而非現行 runtime contract。
 > Cache 邊界：deterministic contract 的 `STRATEGY_VERSION` 為 `2.0.0`。`1.0.0` 與更舊的當日快取可能含新聞／LLM 派生的 confidence、strategy、action plan 或 position recommendation，必須視為版本失效並重跑，不得只清空顯示欄位後沿用派生決策。
 > Release Gate 仍包含 portfolio risk data-gap、Determinism Gate、Shared Context Gate 與 Copy Guard Gate；本次移除模型不得放寬既有投資紀律邊界。
 > Technical profile v4 保留純量化的 `ma20_slope_pct_5d`、`ma60_slope_pct_10d`、`macd_hist_slope_pct_3d`、`macd_hist_trend`、`atr_pct_percentile_60d`、`bollinger_bandwidth_percentile_60d` 與 profile 內的 `temporal_evidence`；移除跨指標綜合判斷 `volatility_regime`、`technical_conflicts`、`signal_conflicts`。新增時序欄位目前全為 evidence-only、`impact=0`，不得改變 `score_summary`；盤中若無日期可證明 completed bars，temporal evidence 必須 fail closed。
+> 2026-08-31 新增 authenticated 主動式 ETF 每日持股讀取 API 與 internal refresh API，保存逐基金 point-in-time 快照並揭露 mixed-date coverage，不進入 Daily Radar scoring。
 
 ## 1) 目的
 
@@ -56,6 +57,28 @@ make run-api
 - **計算契約**：日頻 AVWAP 使用 source traded amount / volume。TWSE 對應 `成交金額 / 成交股數`，FinMind fallback 對應 `Trading_money / Trading_Volume`；若 source row 缺 amount 才用 typical price × volume fallback，且對應 anchor / data quality 必須標記 `estimated = true`。最新 source row 的交易日必須等於 requested `data_date` 才能寫成 `fresh` snapshot；若 provider 只回到較早交易日，應寫 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不得把前一交易日資料標成當日 final。
 - **資料品質**：provider/quota/row 缺漏不得產生假中性 AVWAP；應寫入 `freshness = "missing"` 與 `missing_reason`，讓 1B/1C 以 caveat 顯示。
 - **公開 API 狀態**：不新增 public endpoint；只投影到既有 `/analyze`、Portfolio risk summary 與 Daily Radar response。
+
+### 主動式 ETF 每日持股追蹤
+
+- **產品邊界**：這是獨立的來源揭露觀察面，不參與 Daily Radar universe、prefilter、score、bucket、risk label 或 ranking。持股股數增減也不得直接命名為基金經理人買進／賣出，因為 ETF 申購贖回可能讓整體持股等比例改變。
+- **基金登錄**：每次 refresh 先讀 TWSE `/rwd/zh/ETF/activeList`，只納入六碼證券代號以 `A` 結尾的股票型主動式 ETF；`D` 結尾的債券型不在第一版範圍。基金移出官方清單時設為 disabled，歷史快照不得 cascade delete。若官方清單相較既有 enabled coverage 一次下降超過 20%，整次 registry sync fail closed，避免 partial response 大量誤停用。
+- **持股來源**：第一版以 MoneyDJ 公開「全部持股」頁為集中 adapter。Parser 只接受來源宣告日期、可辨識證券代號、非負整數股數與 0 到 100 的權重；期貨、外匯／現金類代號略過並計數。重複股票、未來資料日、空表、超過 2,000 列或欄位畸形時，該基金不得寫入快照。
+- **持久化**：同基金／同 `data_date` 只有一份 canonical snapshot。保存 source URL、fetch time、raw payload hash、normalized holdings hash 與 parser version；normalized 內容相同的重跑只更新觀察時間與 source trace。每檔基金獨立 transaction，部分來源失敗時保留其他成功基金並回傳 `status = partial`。
+- **比較語意**：每日差異由同基金目前快照與嚴格早於目前資料日的最近一份有效快照推導。新增、增加、減少、移除以持股股數判斷；權重變化只作同列證據。至少五檔連續持股時，以股數比率中位數估計共同基金規模倍率，`likely_fund_scale_change` 只表示原始增減接近共同倍率，不是交易結論。
+
+#### `POST /internal/active-etf-holdings/refresh`
+
+- 需既有 internal bearer token。
+- Request body：`{"fund_codes": ["00985A"]}`；`fund_codes` 可省略，代表更新官方登錄內全部股票型主動式 ETF。
+- Response：`status`、`expected_funds`、`selected_funds`、`snapshots_created`、`snapshots_updated`、`snapshots_reused` 與 privacy-safe `errors[{fund_code, code}]`。
+- 官方 registry 無法驗證或指定基金不在官方清單時回 `502`，不得停用既有基金或建立推測資料。
+
+#### `GET /active-etf-holdings/daily?data_date=YYYY-MM-DD`
+
+- 需要應用程式登入 JWT。
+- `data_date` 省略時使用目前資料庫最新來源宣告日。指定日期不存在或尚無任何快照時回 `404` 與 `active_etf_holdings_not_found`。
+- Response 包含 `available_dates`、expected/covered fund coverage、summary、逐基金日期／前次日期／狀態、股數變化列，以及至少兩檔基金出現同一股票變化時的 consensus。基金 coverage 與每筆變化都投影 `source_provider`、`source_url` 與適用的 `fetched_at`，前端不得自行猜測來源。
+- 某基金沒有該 `data_date` 快照時狀態為 `missing`，不得拿該基金較舊資料混入當日統計；有當日快照但沒有前次快照時為 `no_baseline`，不得捏造零基準變化。
 
 ### `POST /analyze`
 

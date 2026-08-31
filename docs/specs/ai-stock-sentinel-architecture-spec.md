@@ -1,10 +1,11 @@
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-06-18
+> 日期：2026-08-31
 > 狀態：Current v3.3
 > 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
 > 更新摘要：2026-08-28 起，Production 已移除 Anthropic/OpenAI/LangChain client、RSS 新聞清潔與 LLM prompt/analysis nodes；Analyze 與 Position 僅執行可回放的 Python 確定性分析。舊 `analysis*` / `cleaned_news*` response 欄位暫留為空值相容殼，歷史快取讀取時也必須清洗。本文後段若仍提及 LLM prompt、新聞 cleaner 或 `skip_ai`，只代表已退役的歷史設計，不再是現行 runtime contract。
 > Technical profile v2 新增 MA20/MA60 斜率、MACD 柱體斜率、ATR%/布林帶寬 60 日分位、波動 regime 與 signal conflicts。這些欄位先作可解釋 evidence，不進入 `score_summary`；盤中若無法用日期證明已完成 bar，temporal evidence 必須 fail closed。
+> 2026-08-31 新增主動式 ETF 每日持股 snapshot foundation 與獨立 backend read/refresh 邊界；此觀察面不改 Daily Radar deterministic chain。
 
 ## 0. 目前實作快照（2026-06-18）
 
@@ -37,6 +38,7 @@
 | `data_sources/` | yfinance、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
 | `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Portfolio/Daily Radar read-only projections |
+| `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ 公開持股 adapter、逐基金 refresh transaction、相鄰快照差異與跨基金聚合；來源失敗形成 coverage/missing 診斷，不阻斷或修改 Daily Radar |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
 | `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
