@@ -827,6 +827,97 @@ class Phase1AvwapSnapshot(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class ActiveEtfFund(Base):
+    __tablename__ = "active_etf_funds"
+    __table_args__ = (
+        CheckConstraint("market IN ('TW', 'TWO')", name="ck_active_etf_funds_market"),
+        Index("idx_active_etf_funds_enabled", "enabled"),
+    )
+
+    fund_code: Mapped[str] = mapped_column(String(10), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    issuer: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    market: Mapped[str] = mapped_column(String(20), nullable=False, default="TW", server_default="TW")
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    official_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    snapshots: Mapped[list["ActiveEtfHoldingSnapshot"]] = relationship(
+        back_populates="fund",
+        passive_deletes=True,
+    )
+
+
+class ActiveEtfHoldingSnapshot(Base):
+    __tablename__ = "active_etf_holding_snapshots"
+    __table_args__ = (
+        UniqueConstraint("fund_code", "data_date", name="uq_active_etf_snapshot_fund_date"),
+        CheckConstraint("holding_count >= 0", name="ck_active_etf_snapshot_holding_count"),
+        CheckConstraint(
+            "skipped_instrument_count >= 0",
+            name="ck_active_etf_snapshot_skipped_instrument_count",
+        ),
+        Index("idx_active_etf_snapshots_data_date", "data_date"),
+        Index("idx_active_etf_snapshots_fund_date", "fund_code", "data_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fund_code: Mapped[str] = mapped_column(
+        ForeignKey("active_etf_funds.fund_code", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    data_date: Mapped[date] = mapped_column(Date, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    holding_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_instrument_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    source_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    fund: Mapped["ActiveEtfFund"] = relationship(back_populates="snapshots")
+    holdings: Mapped[list["ActiveEtfHolding"]] = relationship(
+        back_populates="snapshot",
+        cascade="all, delete-orphan",
+        order_by="ActiveEtfHolding.position_order",
+    )
+
+
+class ActiveEtfHolding(Base):
+    __tablename__ = "active_etf_holdings"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "symbol", name="uq_active_etf_holding_snapshot_symbol"),
+        CheckConstraint("shares >= 0", name="ck_active_etf_holding_shares_nonnegative"),
+        CheckConstraint(
+            "weight_pct >= 0 AND weight_pct <= 100",
+            name="ck_active_etf_holding_weight_pct",
+        ),
+        CheckConstraint("position_order >= 0", name="ck_active_etf_holding_position_order"),
+        Index("idx_active_etf_holdings_symbol", "symbol"),
+        Index("idx_active_etf_holdings_snapshot_id", "snapshot_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("active_etf_holding_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    weight_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    position_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    snapshot: Mapped["ActiveEtfHoldingSnapshot"] = relationship(back_populates="holdings")
+
+
 class BacktestRun(Base):
     __tablename__ = "backtest_run"
 

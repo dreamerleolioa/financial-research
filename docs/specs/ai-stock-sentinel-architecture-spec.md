@@ -1,7 +1,7 @@
 # AI Stock Sentinel 技術架構需求文件
 
 > 日期：2026-06-18
-> 狀態：Current v3.2
+> 狀態：Current v3.3
 > 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
 > 更新摘要：2026-08-28 起，Production 已移除 Anthropic/OpenAI/LangChain client、RSS 新聞清潔與 LLM prompt/analysis nodes；Analyze 與 Position 僅執行可回放的 Python 確定性分析。舊 `analysis*` / `cleaned_news*` response 欄位暫留為空值相容殼，歷史快取讀取時也必須清洗。本文後段若仍提及 LLM prompt、新聞 cleaner 或 `skip_ai`，只代表已退役的歷史設計，不再是現行 runtime contract。
 > Technical profile v2 新增 MA20/MA60 斜率、MACD 柱體斜率、ATR%/布林帶寬 60 日分位、波動 regime 與 signal conflicts。這些欄位先作可解釋 evidence，不進入 `score_summary`；盤中若無法用日期證明已完成 bar，temporal evidence 必須 fail closed。
@@ -81,6 +81,9 @@
 | `shared_background_contexts` | weekly major holders、lending、full margin 等 market-only 背景資料 cache；以 `replay_key` upsert 並保留 point-in-time trace |
 | `phase1_avwap_snapshots` | Phase 1 日頻 AVWAP shared market snapshot cache；以 `symbol` / `data_date` / logical `dataset` / `adjustment_mode` upsert，保存 market bars、generic anchors、data quality、missing reason 與 source trace；不得保存使用者持股 entry date、avg cost 或 holding-specific entry anchor |
 | `taiwan_daily_bars` | TWSE/TPEX 官方未還原日線行情本地歸檔；供 Phase 1 AVWAP 與基本面季末價格 local-first 讀取。Daily Radar technical history 維持 adjusted 語意，不直接讀此 unadjusted archive |
+| `active_etf_funds` | 主動式股票 ETF 登錄與啟用狀態；基金名單由 refresh service 冪等同步，不由 migration 固定 seed；退出追蹤時設為 disabled，不得連動刪除歷史快照 |
+| `active_etf_holding_snapshots` | 每檔基金每個來源宣告日期的一份 canonical 股票持股快照，保存來源、抓取時間、payload hash、parser version 與非股票工具略過數 |
+| `active_etf_holdings` | 快照內正規化股票代號、名稱、股數、權重與來源排序；每日增減由同基金相鄰快照 read-time 推導，不重複持久化 diff |
 | `company_fundamental_periods` | 財報期間 append-only revision；市場級官方來源保存累計 EPS，讀取時依 point-in-time revision 推導單季 EPS；缺季時優先保存 MOPS 官方歷史單季 EPS，仍不足才保存 FinMind bootstrap 單季 EPS；另保存觀察時間、payload hash 與原始 payload |
 | `company_dividend_events` | 股利事件 append-only revision；保存所屬期間、決議/除息日期、現金股利分項、payload hash 與原始 payload |
 
