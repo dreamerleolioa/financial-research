@@ -363,7 +363,7 @@ class IssuerOfficialActiveEtfProvider:
                     "Type": 2,
                     "Keyword": fund.fund_code,
                     "FundNo": fund.fund_code,
-                    "Date": today_taipei().isoformat(),
+                    "Date": (expected_data_date or today_taipei()).isoformat(),
                 },
             )
             _raise_for_status(response)

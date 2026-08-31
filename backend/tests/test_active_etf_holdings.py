@@ -433,6 +433,7 @@ def test_issuer_provider_supports_only_complete_official_adapter() -> None:
     assert provider.supports("00982A") is False
     assert snapshot.data_date == date(2026, 8, 28)
     assert calls[0]["json"]["FundNo"] == "00985A"
+    assert calls[0]["json"]["Date"] == "2026-08-28"
 
 
 def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
