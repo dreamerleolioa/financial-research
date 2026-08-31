@@ -378,7 +378,10 @@ export default function ActiveEtfPage() {
   const actionCounts = useMemo(
     () =>
       scopedChanges.reduce(
-        (counts, change) => ({ ...counts, [change.action]: counts[change.action] + 1 }),
+        (counts, change) => {
+          counts[change.action] += 1;
+          return counts;
+        },
         { added: 0, increased: 0, decreased: 0, removed: 0 } as Record<ActiveEtfAction, number>,
       ),
     [scopedChanges],
@@ -551,6 +554,7 @@ export default function ActiveEtfPage() {
                   {data.funds.map((fund) => (
                     <option key={fund.fund_code} value={fund.fund_code}>
                       {fund.fund_code} {fund.name}
+                      {fund.status === "missing" ? "（未更新）" : fund.status === "no_baseline" ? "（初次快照）" : ""}
                     </option>
                   ))}
                 </select>
@@ -604,6 +608,9 @@ export default function ActiveEtfPage() {
                           <strong className="font-mono text-text-primary">{fund.fund_code}</strong>
                           <span>{fund.name}</span>
                           <StatusBadge status={fund.status} />
+                          {fund.status === "missing" && fund.latest_data_date && (
+                            <span className="tabular-nums text-text-faint">最近 {fund.latest_data_date}</span>
+                          )}
                         </span>
                       ))}
                   </div>

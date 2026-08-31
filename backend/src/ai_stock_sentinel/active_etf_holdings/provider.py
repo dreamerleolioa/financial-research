@@ -18,14 +18,14 @@ TWSE_ACTIVE_ETF_LIST_URL = "https://www.twse.com.tw/rwd/zh/ETF/activeList?respon
 MONEYDJ_HOLDINGS_URL_TEMPLATE = (
     "https://www.moneydj.com/ETF/X/Basic/Basic0007B.xdjhtm?etfid={fund_code}.TW&page=1"
 )
-MONEYDJ_PARSER_VERSION = "moneydj-active-etf-holdings-v1"
+MONEYDJ_PARSER_VERSION = "moneydj-active-etf-holdings-v2"
 _ACTIVE_EQUITY_FUND_CODE_RE = re.compile(r"^\d{5}A$")
 _DATA_DATE_RE = re.compile(r"資料日期\s*[:：]\s*(\d{4}/\d{2}/\d{2})")
 _SAFE_SECURITY_CODE_RE = re.compile(r"^[A-Za-z0-9._/\-]{1,20}$")
 _NON_EQUITY_SUFFIXES = frozenset({"CUR", "FX", "TF"})
 _MAX_HOLDING_TABLE_ROWS = 2_000
 _MAX_HTML_CHARACTERS = 5_000_000
-_MAX_BIGINT = 9_223_372_036_854_775_807
+_MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 _WEIGHT_QUANTUM = Decimal("0.0001")
 _REQUEST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/json",
@@ -183,9 +183,17 @@ def parse_moneydj_holdings_html(
 
     parser = _HoldingsTableParser()
     parser.feed(html)
-    table = next((_table for _table in parser.tables if _is_holdings_table(_table)), None)
-    if table is None:
+    table_with_columns = next(
+        (
+            (_table, columns)
+            for _table in parser.tables
+            if (columns := _holdings_column_indexes(_table)) is not None
+        ),
+        None,
+    )
+    if table_with_columns is None:
         raise ActiveEtfProviderError("active_etf_holdings_table_missing")
+    table, (name_index, weight_index, shares_index) = table_with_columns
     if len(table) - 1 > _MAX_HOLDING_TABLE_ROWS:
         raise ActiveEtfProviderError("active_etf_holdings_row_limit_exceeded")
 
@@ -193,9 +201,9 @@ def parse_moneydj_holdings_html(
     skipped_count = 0
     seen_symbols: set[str] = set()
     for row in table[1:]:
-        if len(row) < 3:
-            continue
-        label, href = row[0]
+        if len(row) <= max(name_index, weight_index, shares_index):
+            raise ActiveEtfProviderError("active_etf_holding_row_invalid")
+        label, href = row[name_index]
         symbol = _security_code_from_href(href)
         if symbol is None or not _is_equity_security_code(symbol):
             skipped_count += 1
@@ -204,8 +212,8 @@ def parse_moneydj_holdings_html(
             raise ActiveEtfProviderError("active_etf_duplicate_holding")
         seen_symbols.add(symbol)
         name = _holding_name(label, symbol)
-        shares = _parse_nonnegative_integer(row[2][0])
-        weight_pct = _parse_weight_pct(row[1][0])
+        shares = _parse_nonnegative_integer(row[shares_index][0])
+        weight_pct = _parse_weight_pct(row[weight_index][0])
         holdings.append(
             ActiveEtfHoldingRow(
                 symbol=symbol,
@@ -299,15 +307,27 @@ def _raise_for_status(response: Any) -> None:
         raise ActiveEtfProviderError("active_etf_provider_http_error")
 
 
-def _is_holdings_table(table: list[list[tuple[str, str | None]]]) -> bool:
+def _holdings_column_indexes(
+    table: list[list[tuple[str, str | None]]],
+) -> tuple[int, int, int] | None:
     if not table:
-        return False
+        return None
     headers = [cell[0] for cell in table[0]]
-    return (
-        any(header in {"個股名稱", "持股名稱"} for header in headers)
-        and any(header.startswith("投資比例") for header in headers)
-        and "持有股數" in headers
+    name_index = next(
+        (index for index, header in enumerate(headers) if header in {"個股名稱", "持股名稱"}),
+        None,
     )
+    weight_index = next(
+        (index for index, header in enumerate(headers) if header.startswith("投資比例")),
+        None,
+    )
+    shares_index = next(
+        (index for index, header in enumerate(headers) if header == "持有股數"),
+        None,
+    )
+    if name_index is None or weight_index is None or shares_index is None:
+        return None
+    return name_index, weight_index, shares_index
 
 
 def _security_code_from_href(href: str | None) -> str | None:
@@ -340,7 +360,7 @@ def _parse_nonnegative_integer(value: str) -> int:
     if not normalized.isdigit():
         raise ActiveEtfProviderError("active_etf_holding_shares_invalid")
     parsed = int(normalized)
-    if parsed < 0 or parsed > _MAX_BIGINT:
+    if parsed < 0 or parsed > _MAX_SAFE_JSON_INTEGER:
         raise ActiveEtfProviderError("active_etf_holding_shares_invalid")
     return parsed
 

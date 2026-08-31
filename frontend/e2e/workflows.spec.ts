@@ -77,6 +77,20 @@ test("Active ETF tracking reveals large change sets in bounded batches", async (
   await expect(page.getByRole("button", { name: "顯示更多" })).toHaveCount(0);
 });
 
+test("Active ETF tracking rejects malformed decimal fields at the API boundary", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    activeEtfDaily: {
+      ...activeEtfDaily,
+      changes: [{ ...activeEtfDaily.changes[0], current_weight_pct: "" }],
+    },
+  });
+
+  await page.goto("/active-etf");
+  await expect(page.getByRole("heading", { name: "持股變化暫時無法載入", level: 2 })).toBeVisible();
+  await expect(page.getByText("新增持股", { exact: true })).toHaveCount(0);
+});
+
 test("Analyze deterministic research supports copy and a keyboard-contained add-position dialog", async ({
   page,
   context,

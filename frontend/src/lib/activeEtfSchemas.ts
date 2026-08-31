@@ -1,11 +1,17 @@
 import { z } from "zod";
 import type { ActiveEtfDailyResponse } from "./activeEtfTypes";
 
-const decimalNumber = z
-  .union([z.number(), z.string()])
-  .transform((value) => Number(value))
-  .pipe(z.number().finite());
+const decimalNumber = z.union([
+  z.number().finite(),
+  z
+    .string()
+    .trim()
+    .regex(/^-?\d+(?:\.\d+)?$/)
+    .transform((value) => Number(value)),
+]);
 const nullableDecimalNumber = decimalNumber.nullable();
+const weightPct = decimalNumber.pipe(z.number().min(0).max(100));
+const weightDelta = decimalNumber.pipe(z.number().min(-100).max(100));
 const dataDate = z.iso.date();
 const sourceTimestamp = z.iso.datetime({ offset: true });
 const publicHttpUrl = z
@@ -45,13 +51,13 @@ const changeSchema = z
     fetched_at: sourceTimestamp,
     data_date: dataDate,
     previous_date: dataDate,
-    current_shares: z.number().int().nonnegative(),
-    previous_shares: z.number().int().nonnegative(),
-    share_delta: z.number().int(),
+    current_shares: z.number().int().safe().nonnegative(),
+    previous_shares: z.number().int().safe().nonnegative(),
+    share_delta: z.number().int().safe(),
     share_delta_pct: nullableDecimalNumber,
-    current_weight_pct: decimalNumber,
-    previous_weight_pct: decimalNumber,
-    weight_delta_pct_points: decimalNumber,
+    current_weight_pct: weightPct,
+    previous_weight_pct: weightPct,
+    weight_delta_pct_points: weightDelta,
     relative_share_change_pct: nullableDecimalNumber,
     likely_fund_scale_change: z.boolean(),
   })

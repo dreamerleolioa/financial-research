@@ -62,7 +62,7 @@ make run-api
 
 - **產品邊界**：這是獨立的來源揭露觀察面，不參與 Daily Radar universe、prefilter、score、bucket、risk label 或 ranking。持股股數增減也不得直接命名為基金經理人買進／賣出，因為 ETF 申購贖回可能讓整體持股等比例改變。
 - **基金登錄**：每次 refresh 先讀 TWSE `/rwd/zh/ETF/activeList`，只納入六碼證券代號以 `A` 結尾的股票型主動式 ETF；`D` 結尾的債券型不在第一版範圍。基金移出官方清單時設為 disabled，歷史快照不得 cascade delete。若官方清單相較既有 enabled coverage 一次下降超過 20%，整次 registry sync fail closed，避免 partial response 大量誤停用。
-- **持股來源**：第一版以 MoneyDJ 公開「全部持股」頁為集中 adapter。Parser 只接受來源宣告日期、可辨識證券代號、非負整數股數與 0 到 100 的權重；期貨、外匯／現金類代號略過並計數。重複股票、未來資料日、空表、超過 2,000 列或欄位畸形時，該基金不得寫入快照。
+- **持股來源**：第一版以 MoneyDJ 公開「全部持股」頁為集中 adapter。Parser 依可辨識表頭定位名稱、權重與股數欄，只接受來源宣告日期、可辨識證券代號、非負整數股數與 0 到 100 的權重；期貨、外匯／現金類代號略過並計數。重複股票、未來資料日、空表、缺欄資料列、超過 2,000 列或欄位畸形時，該基金不得寫入快照。
 - **持久化**：同基金／同 `data_date` 只有一份 canonical snapshot。保存 source URL、fetch time、raw payload hash、normalized holdings hash 與 parser version；normalized 內容相同的重跑只更新觀察時間與 source trace。每檔基金獨立 transaction，部分來源失敗時保留其他成功基金並回傳 `status = partial`。
 - **比較語意**：每日差異由同基金目前快照與嚴格早於目前資料日的最近一份有效快照推導。新增、增加、減少、移除以持股股數判斷；權重變化只作同列證據。至少五檔連續持股時，以股數比率中位數估計共同基金規模倍率，`likely_fund_scale_change` 只表示原始增減接近共同倍率，不是交易結論。
 

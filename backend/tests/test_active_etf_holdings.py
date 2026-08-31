@@ -211,6 +211,48 @@ def test_parse_moneydj_snapshot_rejects_wrong_fund_page() -> None:
         parse_moneydj_holdings_html(html, fund=_fund("00982A", "主動群益台灣強棒"))
 
 
+def test_parse_moneydj_snapshot_uses_header_positions_instead_of_fixed_columns() -> None:
+    html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text()
+    html = html.replace(
+        "<th>投資比例(%)</th><th>持有股數</th>",
+        "<th>持有股數</th><th>投資比例(%)</th>",
+    )
+    for weight, shares in [("13.51", "588,000"), ("5.07", "110"), ("4.82", "26,000")]:
+        html = html.replace(
+            f"<td>{weight}</td>\n          <td>{shares}</td>",
+            f"<td>{shares}</td>\n          <td>{weight}</td>",
+        )
+
+    snapshot = parse_moneydj_holdings_html(html, fund=_fund())
+
+    assert [(row.symbol, row.shares, row.weight_pct) for row in snapshot.holdings] == [
+        ("2330.TW", 588000, Decimal("13.51")),
+        ("2454.TW", 26000, Decimal("4.82")),
+    ]
+
+
+def test_parse_moneydj_snapshot_fails_closed_on_incomplete_holding_row() -> None:
+    html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text().replace(
+        "<td>588,000</td>",
+        "",
+        1,
+    )
+
+    with pytest.raises(ActiveEtfProviderError, match="active_etf_holding_row_invalid"):
+        parse_moneydj_holdings_html(html, fund=_fund())
+
+
+def test_parse_moneydj_snapshot_rejects_shares_above_json_safe_integer() -> None:
+    html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text().replace(
+        "588,000",
+        "9,007,199,254,740,992",
+        1,
+    )
+
+    with pytest.raises(ActiveEtfProviderError, match="active_etf_holding_shares_invalid"):
+        parse_moneydj_holdings_html(html, fund=_fund())
+
+
 def test_moneydj_provider_uses_twse_registry_and_public_holdings_page() -> None:
     calls: list[str] = []
     html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text()
