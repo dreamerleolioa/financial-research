@@ -635,7 +635,11 @@ export default function ActiveEtfPage() {
                 <input
                   className="ui-input"
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => {
+                    const nextSearch = event.target.value;
+                    setSearch(nextSearch);
+                    if (!nextSearch.trim()) setSelectedFund("all");
+                  }}
                   placeholder="代號、名稱或基金"
                   type="search"
                 />

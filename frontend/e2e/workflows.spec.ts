@@ -80,6 +80,25 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
 });
 
+test("Active ETF tracking resets the selected fund when search is cleared", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily });
+
+  await page.goto("/active-etf");
+  await page
+    .getByRole("button", { name: /00985A/ })
+    .first()
+    .click();
+
+  const search = page.getByRole("searchbox", { name: "搜尋標的或基金" });
+  await search.fill("2454");
+  await expect(page.getByText("已顯示 1 / 1 筆", { exact: true })).toBeVisible();
+
+  await search.fill("");
+  await expect(page.getByText("已顯示 5 / 5 筆", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "全部基金 5" })).toHaveAttribute("aria-pressed", "true");
+});
+
 test("Active ETF tracking keeps source labels readable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await authenticate(page);
