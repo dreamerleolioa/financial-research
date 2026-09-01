@@ -7,6 +7,7 @@ import pandas as pd
 
 from ai_stock_sentinel.daily_radar.market_context import (
     YFinanceMarketIndexContextProvider,
+    _trailing_history_gap_detected,
     build_market_context_from_technical_payload,
     market_context_refresh_error,
 )
@@ -192,6 +193,27 @@ def test_market_context_refresh_validation_rejects_future_volatility_date() -> N
         "freshness": "stale",
         "missing_reason": "market_index_volatility_date_invalid",
     }
+
+
+def test_trailing_history_gap_ignores_weekends_but_detects_missing_weekdays() -> None:
+    assert not _trailing_history_gap_detected(
+        {
+            "price_history": [
+                {"date": "2026-08-28", "close": 46_331.45},
+                {"date": "2026-08-31", "close": 46_128.47},
+            ]
+        },
+        run_date=date(2026, 8, 31),
+    )
+    assert _trailing_history_gap_detected(
+        {
+            "price_history": [
+                {"date": "2026-08-27", "close": 45_975.22},
+                {"date": "2026-08-31", "close": 46_128.47},
+            ]
+        },
+        run_date=date(2026, 8, 31),
+    )
 
 
 def test_yfinance_market_index_provider_fetches_single_configured_index_without_ticker_calls(
@@ -407,6 +429,98 @@ def test_yfinance_market_index_provider_uses_official_close_for_incomplete_lates
         "fetch_method": "official_close_with_yfinance_history",
         "history_provider": "yfinance",
         "history_fetch_method": "ticker_history",
+        "official_dates": ["2026-06-02"],
+        "fallback_triggered": True,
+    }
+
+
+def test_yfinance_market_index_provider_backfills_multiple_missing_official_sessions(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    dates = [*pd.bdate_range(end="2026-08-27", periods=60), pd.Timestamp("2026-08-31")]
+    closes = [
+        *[45_000.0 + index for index in range(59)],
+        45_975.21875,
+        46_128.46875,
+    ]
+    highs = [value + 80 for value in closes]
+    highs[-1] = closes[-1] + 20_000
+    lows = [value - 120 for value in closes]
+    lows[-1] = closes[-1] - 20_000
+
+    class FakeYFinance:
+        def download(self, symbol: str, **kwargs: Any) -> pd.DataFrame:
+            raise RuntimeError("simulated batch download outage")
+
+        def Ticker(self, symbol: str) -> object:
+            class StaleTicker:
+                def history(self, **kwargs: Any) -> pd.DataFrame:
+                    return pd.DataFrame(
+                        {
+                            "Open": [value - 20 for value in closes],
+                            "High": highs,
+                            "Low": lows,
+                            "Close": closes,
+                            "Volume": [1_000_000 + index for index in range(61)],
+                        },
+                        index=dates,
+                    )
+
+            return StaleTicker()
+
+    def official_request_getter(url: str, **kwargs: Any) -> dict[str, Any]:
+        query_date = kwargs["params"]["date"]
+        calls.append(query_date)
+        if query_date in {"20260829", "20260830"}:
+            return {"stat": "很抱歉，沒有符合條件的資料!", "type": "ALLBUT0999"}
+        rows = {
+            "20260828": [
+                "發行量加權股價指數",
+                "46,331.45",
+                "<p style='color:red'>+</p>",
+                "356.23",
+            ],
+            "20260831": [
+                "發行量加權股價指數",
+                "46,128.47",
+                "<p style='color:green'>-</p>",
+                "202.98",
+            ],
+        }
+        return {
+            "stat": "OK",
+            "date": query_date,
+            "tables": [
+                {
+                    "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數"],
+                    "data": [rows[query_date]],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.market_context.yf", FakeYFinance())
+
+    context = YFinanceMarketIndexContextProvider(
+        official_request_getter=official_request_getter
+    ).build(run_date=date(2026, 8, 31), market="TW")
+
+    assert calls == ["20260828", "20260829", "20260830", "20260831"]
+    assert market_context_refresh_error(context, run_date=date(2026, 8, 31)) is None
+    assert context["benchmark"]["price_history"][-2:] == [
+        {"date": "2026-08-28", "close": 46_331.45},
+        {"date": "2026-08-31", "close": 46_128.47},
+    ]
+    assert context["market"]["previous_close"] == 46_331.45
+    assert context["market"]["volatility_data_date"] == "2026-08-27"
+    assert context["market"]["volatility_state"] == "normal"
+    assert context["provider_trace"] == {
+        "provider": "twse",
+        "dataset": "MI_INDEX",
+        "fetch_method": "official_close_with_yfinance_history",
+        "history_provider": "yfinance",
+        "history_fetch_method": "ticker_history",
+        "official_dates": ["2026-08-28", "2026-08-31"],
         "fallback_triggered": True,
     }
 

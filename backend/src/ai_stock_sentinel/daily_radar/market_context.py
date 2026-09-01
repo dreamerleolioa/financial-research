@@ -8,7 +8,10 @@ from typing import Any, Protocol
 
 import yfinance as yf
 
-from ai_stock_sentinel.daily_radar.market_session import TWSE_MI_INDEX_URL
+from ai_stock_sentinel.daily_radar.market_session import (
+    TWSE_MI_INDEX_URL,
+    TWSE_NO_DATA_MARKERS,
+)
 from ai_stock_sentinel.daily_radar.raw_data import (
     _build_technical_payload,
     _frame_on_or_before_run_date,
@@ -89,17 +92,48 @@ class YFinanceMarketIndexContextProvider:
                 )
             except Exception:
                 continue
-            if payload is not None and (
+            history_gap_detected = (
+                market.upper() == "TW"
+                and payload is not None
+                and _trailing_history_gap_detected(payload, run_date=run_date)
+            )
+            fallback_payload = payload
+            if history_gap_detected:
+                historical_frame = _frame_on_or_before_run_date(
+                    frame,
+                    run_date=run_date - timedelta(days=1),
+                )
+                fallback_payload = _build_technical_payload(
+                    index_symbol,
+                    historical_frame,
+                    run_date=run_date,
+                )
+                context = _missing_context(
+                    run_date=run_date,
+                    index_symbol=index_symbol,
+                    yfinance_symbol=yfinance_symbol,
+                    freshness="stale",
+                    missing_reason="market_index_history_gap",
+                    data_date=(
+                        _market_index_data_date(fallback_payload)
+                        if fallback_payload is not None
+                        else None
+                    ),
+                )
+            if fallback_payload is not None and (
                 last_payload is None
-                or _payload_recency_rank(payload) > _payload_recency_rank(last_payload)
+                or _payload_recency_rank(fallback_payload)
+                > _payload_recency_rank(last_payload)
             ):
-                last_payload = payload
+                last_payload = fallback_payload
                 last_payload_fetch_method = fetch_method
             context["provider_trace"] = {
                 "provider": "yfinance",
                 "fetch_method": fetch_method,
                 "fallback_triggered": fallback_triggered,
             }
+            if history_gap_detected:
+                context["provider_trace"]["history_gap_detected"] = True
             if last_context is None or _context_freshness_rank(context) > _context_freshness_rank(
                 last_context
             ):
@@ -109,11 +143,14 @@ class YFinanceMarketIndexContextProvider:
 
         official_error: str | None = None
         if market.upper() == "TW" and last_payload is not None:
-            official_snapshot, official_error = self._official_index_snapshot(run_date=run_date)
-            if official_snapshot is not None:
-                official_payload, official_error = _payload_with_official_close(
+            official_snapshots, official_error = self._official_index_snapshots(
+                last_payload,
+                run_date=run_date,
+            )
+            if official_snapshots is not None:
+                official_payload, official_error = _payload_with_official_closes(
                     last_payload,
-                    official_snapshot=official_snapshot,
+                    official_snapshots=official_snapshots,
                     run_date=run_date,
                 )
                 if official_payload is not None:
@@ -129,6 +166,10 @@ class YFinanceMarketIndexContextProvider:
                         "fetch_method": "official_close_with_yfinance_history",
                         "history_provider": "yfinance",
                         "history_fetch_method": last_payload_fetch_method,
+                        "official_dates": [
+                            str(snapshot["data_date"])
+                            for snapshot in official_snapshots
+                        ],
                         "fallback_triggered": True,
                     }
                     if market_context_refresh_error(official_context, run_date=run_date) is None:
@@ -159,6 +200,36 @@ class YFinanceMarketIndexContextProvider:
             "fallback_triggered": True,
         }
         return context
+
+    def _official_index_snapshots(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        run_date: date,
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        history, history_error = _official_history(
+            payload,
+            run_date=run_date,
+        )
+        if history is None:
+            return None, history_error
+
+        snapshots: list[dict[str, Any]] = []
+        history_data_date = date.fromisoformat(history[-1]["date"])
+        query_date = history_data_date + timedelta(days=1)
+        while query_date <= run_date:
+            snapshot, snapshot_error = self._official_index_snapshot(run_date=query_date)
+            if snapshot_error == "twse_market_index_no_data":
+                query_date += timedelta(days=1)
+                continue
+            if snapshot is None:
+                return None, snapshot_error
+            snapshots.append(snapshot)
+            query_date += timedelta(days=1)
+
+        if not snapshots or snapshots[-1].get("data_date") != run_date.isoformat():
+            return None, "twse_market_index_run_date_missing"
+        return snapshots, None
 
     def _official_index_snapshot(
         self,
@@ -448,7 +519,12 @@ def _official_market_index_snapshot(
     *,
     run_date: date,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    if not isinstance(payload, Mapping) or payload.get("stat") != "OK":
+    if not isinstance(payload, Mapping):
+        return None, "twse_market_index_payload_invalid"
+    status = str(payload.get("stat") or "").strip()
+    if any(marker in status for marker in TWSE_NO_DATA_MARKERS):
+        return None, "twse_market_index_no_data"
+    if status != "OK":
         return None, "twse_market_index_payload_invalid"
     if str(payload.get("date") or "") != run_date.strftime("%Y%m%d"):
         return None, "twse_market_index_date_mismatch"
@@ -485,9 +561,9 @@ def _official_market_index_snapshot(
             if change == 0:
                 previous_close = close
             elif direction == "+":
-                previous_close = close - change
+                previous_close = round(close - change, 2)
             elif direction == "-":
-                previous_close = close + change
+                previous_close = round(close + change, 2)
             else:
                 return None, "twse_market_index_direction_invalid"
             if previous_close <= 0:
@@ -500,12 +576,11 @@ def _official_market_index_snapshot(
     return None, "twse_market_index_row_missing"
 
 
-def _payload_with_official_close(
+def _official_history(
     payload: Mapping[str, Any],
     *,
-    official_snapshot: Mapping[str, Any],
     run_date: date,
-) -> tuple[dict[str, Any] | None, str | None]:
+) -> tuple[list[dict[str, Any]] | None, str | None]:
     history: list[dict[str, Any]] = []
     for item in _price_history(payload):
         try:
@@ -522,16 +597,55 @@ def _payload_with_official_close(
     history_data_date = date.fromisoformat(history[-1]["date"])
     if (run_date - history_data_date).days > MAX_MARKET_VOLATILITY_LAG_DAYS:
         return None, "twse_market_index_history_stale"
-    history_previous_close = _float(history[-1].get("close"))
-    official_close = _float(official_snapshot.get("close"))
-    official_previous_close = _float(official_snapshot.get("previous_close"))
-    if history_previous_close is None or official_close is None or official_previous_close is None:
-        return None, "twse_market_index_value_invalid"
-    tolerance = max(0.1, abs(official_previous_close) * 0.000005)
-    if abs(history_previous_close - official_previous_close) > tolerance:
-        return None, "twse_market_index_previous_close_mismatch"
+    return history, None
 
-    closes = [float(item["close"]) for item in history] + [official_close]
+
+def _payload_with_official_closes(
+    payload: Mapping[str, Any],
+    *,
+    official_snapshots: Sequence[Mapping[str, Any]],
+    run_date: date,
+) -> tuple[dict[str, Any] | None, str | None]:
+    history, history_error = _official_history(
+        payload,
+        run_date=run_date,
+    )
+    if history is None:
+        return None, history_error
+
+    history_data_date = date.fromisoformat(history[-1]["date"])
+    previous_data_date = history_data_date
+    previous_close = _float(history[-1].get("close"))
+    for snapshot in official_snapshots:
+        try:
+            snapshot_date = date.fromisoformat(str(snapshot.get("data_date")))
+        except (TypeError, ValueError):
+            return None, "twse_market_index_date_mismatch"
+        official_close = _float(snapshot.get("close"))
+        official_previous_close = _float(snapshot.get("previous_close"))
+        if (
+            previous_close is None
+            or official_close is None
+            or official_previous_close is None
+        ):
+            return None, "twse_market_index_value_invalid"
+        if snapshot_date <= previous_data_date or snapshot_date > run_date:
+            return None, "twse_market_index_date_mismatch"
+        tolerance = max(0.1, abs(official_previous_close) * 0.000005)
+        if abs(previous_close - official_previous_close) > tolerance:
+            return None, "twse_market_index_previous_close_mismatch"
+        history.append({"date": snapshot_date.isoformat(), "close": official_close})
+        previous_data_date = snapshot_date
+        previous_close = official_close
+
+    if previous_data_date != run_date:
+        return None, "twse_market_index_run_date_missing"
+    official_close = _float(official_snapshots[-1].get("close"))
+    official_previous_close = _float(official_snapshots[-1].get("previous_close"))
+    if official_close is None or official_previous_close is None:
+        return None, "twse_market_index_value_invalid"
+
+    closes = [float(item["close"]) for item in history]
     indicators = dict(_mapping(payload.get("indicators")))
     atr14 = _float(indicators.get("atr14"))
     if atr14 is None:
@@ -545,7 +659,7 @@ def _payload_with_official_close(
     )
     return {
         **dict(payload),
-        "price_history": [*history, {"date": run_date.isoformat(), "close": official_close}],
+        "price_history": history,
         "ohlcv": {
             **dict(_mapping(payload.get("ohlcv"))),
             "close": official_close,
@@ -557,7 +671,7 @@ def _payload_with_official_close(
             "ohlcv": run_date.isoformat(),
             "technical_indicators": run_date.isoformat(),
             "market_index": run_date.isoformat(),
-            "market_volatility": history[-1]["date"],
+            "market_volatility": history_data_date.isoformat(),
         },
     }, None
 
@@ -568,6 +682,30 @@ def _payload_recency_rank(payload: Mapping[str, Any]) -> tuple[int, int]:
         data_date.toordinal() if data_date is not None else -1,
         len(_price_history(payload)),
     )
+
+
+def _trailing_history_gap_detected(
+    payload: Mapping[str, Any],
+    *,
+    run_date: date,
+) -> bool:
+    history_dates: list[date] = []
+    for item in _price_history(payload):
+        try:
+            item_date = date.fromisoformat(str(item.get("date")))
+        except (TypeError, ValueError):
+            continue
+        if item_date <= run_date and _float(item.get("close")) is not None:
+            history_dates.append(item_date)
+    history_dates = sorted(set(history_dates))
+    if len(history_dates) < 2 or history_dates[-1] != run_date:
+        return False
+    query_date = history_dates[-2] + timedelta(days=1)
+    while query_date < run_date:
+        if query_date.weekday() < 5:
+            return True
+        query_date += timedelta(days=1)
+    return False
 
 
 def _market_number(value: Any) -> float | None:
