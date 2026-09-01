@@ -10,6 +10,15 @@ export interface ActiveEtfSourceEvidence {
   payload_hash: string;
 }
 
+export interface ActiveEtfPeriodEvidence {
+  period: "current" | "previous";
+  data_date: string;
+  verification_status: ActiveEtfVerificationStatus;
+  source_count: number;
+  verification_reason: string | null;
+  sources: ActiveEtfSourceEvidence[];
+}
+
 export interface ActiveEtfCoverageFund {
   fund_code: string;
   name: string;
@@ -21,6 +30,7 @@ export interface ActiveEtfCoverageFund {
   source_count: number;
   verification_reason: string | null;
   sources: ActiveEtfSourceEvidence[];
+  evidence_periods: ActiveEtfPeriodEvidence[];
   data_date: string | null;
   previous_date: string | null;
   latest_data_date: string | null;
@@ -37,6 +47,8 @@ export interface ActiveEtfChange {
   name: string;
   source_provider: string;
   source_url: string;
+  verification_status: Exclude<ActiveEtfVerificationStatus, "conflict">;
+  source_count: number;
   fetched_at: string;
   data_date: string;
   previous_date: string;

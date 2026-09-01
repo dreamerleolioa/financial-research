@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from typing import Any
@@ -36,6 +36,7 @@ _SAFE_SECURITY_CODE_RE = re.compile(r"^[A-Za-z0-9._/\-]{1,20}$")
 _NON_EQUITY_SUFFIXES = frozenset({"CUR", "FX", "TF"})
 _MAX_HOLDING_TABLE_ROWS = 2_000
 _MAX_HTML_CHARACTERS = 5_000_000
+_NOMURA_MAX_PCF_LOOKAHEAD_DAYS = 14
 _MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 _WEIGHT_QUANTUM = Decimal("0.0001")
 _REQUEST_HEADERS = {
@@ -84,9 +85,11 @@ class _HoldingsTableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tables: list[list[list[tuple[str, str | None]]]] = []
+        self.has_explicit_no_data_row = False
         self._table_depth = 0
         self._table: list[list[tuple[str, str | None]]] | None = None
         self._row: list[tuple[str, str | None]] | None = None
+        self._row_is_explicit_empty = False
         self._cell_text: list[str] | None = None
         self._cell_href: str | None = None
 
@@ -100,6 +103,8 @@ class _HoldingsTableParser(HTMLParser):
             return
         if tag == "tr":
             self._row = []
+            row_classes = str(dict(attrs).get("class") or "").split()
+            self._row_is_explicit_empty = "emptyrow" in row_classes
         elif tag in {"td", "th"} and self._row is not None:
             self._cell_text = []
             self._cell_href = None
@@ -125,9 +130,16 @@ class _HoldingsTableParser(HTMLParser):
             self._cell_text = None
             self._cell_href = None
         elif tag == "tr" and self._row is not None and self._table is not None:
+            if (
+                self._row_is_explicit_empty
+                and _holdings_column_indexes(self._table) is not None
+                and any("查無資料" in text for text, _href in self._row)
+            ):
+                self.has_explicit_no_data_row = True
             if self._row:
                 self._table.append(self._row)
             self._row = None
+            self._row_is_explicit_empty = False
 
 
 def parse_twse_active_equity_funds(payload: object) -> list[ActiveEtfFundDescriptor]:
@@ -186,6 +198,10 @@ def parse_moneydj_holdings_html(
     expected_heading = f"({fund.fund_code}.TW)-全部持股"
     if expected_heading not in html:
         raise ActiveEtfProviderError("active_etf_fund_identity_mismatch")
+    parser = _HoldingsTableParser()
+    parser.feed(html)
+    if parser.has_explicit_no_data_row:
+        raise ActiveEtfProviderError("active_etf_holdings_not_published")
     date_match = _DATA_DATE_RE.search(html)
     if date_match is None:
         raise ActiveEtfProviderError("active_etf_data_date_missing")
@@ -197,8 +213,6 @@ def parse_moneydj_holdings_html(
     if data_date > today_taipei(observed_at):
         raise ActiveEtfProviderError("active_etf_data_date_in_future")
 
-    parser = _HoldingsTableParser()
-    parser.feed(html)
     table_with_columns = next(
         (
             (_table, columns)
@@ -333,6 +347,12 @@ def parse_nomura_holdings_payload(
     )
 
 
+def _nomura_payload_has_no_entries(payload: object) -> bool:
+    if not isinstance(payload, dict) or payload.get("StatusCode") != 0:
+        return False
+    return payload.get("Entries") in (None, [], {})
+
+
 class IssuerOfficialActiveEtfProvider:
     source_provider = "issuer_official"
 
@@ -354,36 +374,67 @@ class IssuerOfficialActiveEtfProvider:
         *,
         expected_data_date: date | None = None,
     ) -> ActiveEtfFundSnapshot:
-        if fund.fund_code in NOMURA_FUND_CODES:
-            response = self._request_post(
-                NOMURA_TRADE_INFO_URL,
-                timeout=self._timeout_seconds,
-                headers={**_REQUEST_HEADERS, "Content-Type": "application/json"},
-                json={
-                    "Type": 2,
-                    "Keyword": fund.fund_code,
-                    "FundNo": fund.fund_code,
-                    "Date": (expected_data_date or today_taipei()).isoformat(),
-                },
-            )
-            _raise_for_status(response)
-            response_content = getattr(response, "content", None)
-            if isinstance(response_content, bytes) and len(response_content) > _MAX_HTML_CHARACTERS:
-                raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
-            payload = response.json()
-            raw_payload = (
-                response_content
-                if isinstance(response_content, bytes) and response_content
-                else json.dumps(
-                    payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            )
+        if fund.fund_code not in NOMURA_FUND_CODES:
+            raise ActiveEtfProviderError("active_etf_official_source_unsupported")
+        if expected_data_date is None:
+            payload, raw_payload = self._fetch_nomura_payload(fund, today_taipei())
             return parse_nomura_holdings_payload(
                 payload,
                 fund=fund,
                 raw_payload=raw_payload,
             )
-        raise ActiveEtfProviderError("active_etf_official_source_unsupported")
+
+        request_date = expected_data_date + timedelta(days=1)
+        last_request_date = min(
+            expected_data_date + timedelta(days=_NOMURA_MAX_PCF_LOOKAHEAD_DAYS),
+            today_taipei() + timedelta(days=1),
+        )
+        while request_date <= last_request_date:
+            payload, raw_payload = self._fetch_nomura_payload(fund, request_date)
+            if _nomura_payload_has_no_entries(payload):
+                request_date += timedelta(days=1)
+                continue
+            snapshot = parse_nomura_holdings_payload(
+                payload,
+                fund=fund,
+                raw_payload=raw_payload,
+            )
+            if snapshot.data_date == expected_data_date:
+                return snapshot
+            if snapshot.data_date > expected_data_date:
+                break
+            request_date += timedelta(days=1)
+        raise ActiveEtfProviderError("active_etf_official_snapshot_date_unavailable")
+
+    def _fetch_nomura_payload(
+        self,
+        fund: ActiveEtfFundDescriptor,
+        request_date: date,
+    ) -> tuple[object, bytes]:
+        response = self._request_post(
+            NOMURA_TRADE_INFO_URL,
+            timeout=self._timeout_seconds,
+            headers={**_REQUEST_HEADERS, "Content-Type": "application/json"},
+            json={
+                "Type": 2,
+                "Keyword": fund.fund_code,
+                "FundNo": fund.fund_code,
+                "Date": request_date.isoformat(),
+            },
+        )
+        _raise_for_status(response)
+        response_content = getattr(response, "content", None)
+        if isinstance(response_content, bytes) and len(response_content) > _MAX_HTML_CHARACTERS:
+            raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
+        payload = response.json()
+        raw_payload = (
+            response_content
+            if isinstance(response_content, bytes) and response_content
+            else json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+        return payload, raw_payload
 
 
 class MoneyDjActiveEtfProvider:

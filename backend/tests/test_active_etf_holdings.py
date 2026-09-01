@@ -251,6 +251,40 @@ def test_parse_moneydj_snapshot_reads_equities_and_skips_futures() -> None:
     assert len(snapshot.normalized_hash) == 64
 
 
+def test_parse_moneydj_snapshot_reports_explicitly_unpublished_holdings() -> None:
+    html = """
+    <h1>(00409A.TW)-全部持股</h1>
+    <div class="sdate3"></div>
+    <table>
+      <tr><th>持股名稱</th><th>投資比例(%)</th><th>持有股數</th></tr>
+      <tr class="emptyrow"><td colspan="3">查無資料</td></tr>
+    </table>
+    """
+
+    with pytest.raises(
+        ActiveEtfProviderError,
+        match="active_etf_holdings_not_published",
+    ):
+        parse_moneydj_holdings_html(
+            html,
+            fund=_fund("00409A", "主動復華全球50"),
+        )
+
+
+def test_parse_moneydj_snapshot_ignores_unrelated_empty_table() -> None:
+    holdings_html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text()
+    html = """
+    <table>
+      <tr><th>其他資料</th></tr>
+      <tr class="emptyrow"><td>查無資料</td></tr>
+    </table>
+    """ + holdings_html
+
+    snapshot = parse_moneydj_holdings_html(html, fund=_fund())
+
+    assert snapshot.data_date == date(2026, 8, 28)
+
+
 def test_parse_moneydj_snapshot_fails_closed_on_duplicate_equity() -> None:
     html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text().replace(
         "FICDFN*1.TF&amp;back=00985A.TW\">台積電期貨(FICDFN*1.TF)",
@@ -404,7 +438,7 @@ def test_parse_nomura_official_snapshot_preserves_exact_share_inventory() -> Non
 
 def test_issuer_provider_supports_only_complete_official_adapter() -> None:
     calls: list[dict] = []
-    payload = {
+    matching_payload = {
         "StatusCode": 0,
         "Entries": {
             "CFundId": "00985A",
@@ -423,6 +457,12 @@ def test_issuer_provider_supports_only_complete_official_adapter() -> None:
 
     def fake_post(url: str, **kwargs):
         calls.append({"url": url, **kwargs})
+        request_date = kwargs["json"]["Date"]
+        payload = (
+            matching_payload
+            if request_date == "2026-08-31"
+            else {"StatusCode": 0, "Entries": None}
+        )
         response = FakeResponse(payload=payload)
         response.content = b'{"official":true}'
         return response
@@ -434,7 +474,45 @@ def test_issuer_provider_supports_only_complete_official_adapter() -> None:
     assert provider.supports("00982A") is False
     assert snapshot.data_date == date(2026, 8, 28)
     assert calls[0]["json"]["FundNo"] == "00985A"
-    assert calls[0]["json"]["Date"] == "2026-08-28"
+    assert [call["json"]["Date"] for call in calls] == [
+        "2026-08-29",
+        "2026-08-30",
+        "2026-08-31",
+    ]
+
+
+def test_issuer_provider_rejects_nonmatching_official_snapshot() -> None:
+    calls: list[dict] = []
+    payload = {
+        "StatusCode": 0,
+        "Entries": {
+            "CFundId": "00985A",
+            "CPcfdate": "2026-08-29T00:00:00",
+            "CNavDt": "2026-08-29T00:00:00",
+            "Stocks": [
+                {
+                    "CStockCode": "2330",
+                    "CStockName": "台灣積體電路製造",
+                    "CQuantity": 588000,
+                    "CWeightsPct": 13.51,
+                }
+            ],
+        },
+    }
+
+    def fake_post(url: str, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeResponse(payload=payload)
+
+    provider = IssuerOfficialActiveEtfProvider(request_post=fake_post)
+
+    with pytest.raises(
+        ActiveEtfProviderError,
+        match="active_etf_official_snapshot_date_unavailable",
+    ):
+        provider.fetch_snapshot(_fund(), expected_data_date=date(2026, 8, 28))
+
+    assert [call["json"]["Date"] for call in calls] == ["2026-08-29"]
 
 
 def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
@@ -515,6 +593,8 @@ def test_refresh_is_idempotent_and_daily_response_compares_per_fund_snapshots(
     assert next(change for change in response.changes if change.symbol == "3711.TW").action == "added"
     assert next(change for change in response.changes if change.symbol == "2454.TW").action == "removed"
     assert all(change.source_provider == "moneydj" for change in response.changes)
+    assert all(change.verification_status == "verified" for change in response.changes)
+    assert all(change.source_count == 2 for change in response.changes)
 
 
 def test_refresh_preserves_successes_and_reports_failed_funds(
@@ -544,7 +624,34 @@ def test_refresh_preserves_successes_and_reports_failed_funds(
     assert result.errors[0].code == "active_etf_snapshot_fetch_failed"
 
 
-def test_single_source_snapshot_is_retained_but_does_not_publish_changes(
+def test_refresh_preserves_explicitly_unpublished_error_code(
+    etf_db_session: Session,
+) -> None:
+    good_fund = _fund()
+    unpublished_fund = _fund("00409A", "主動復華全球50")
+
+    class PartiallyPublishedProvider(FakeProvider):
+        def fetch_snapshot(self, fund: ActiveEtfFundDescriptor) -> ActiveEtfFundSnapshot:
+            if fund.fund_code == "00409A":
+                raise ActiveEtfProviderError("active_etf_holdings_not_published")
+            return self.snapshots[fund.fund_code]
+
+    result = refresh_active_etf_holdings(
+        etf_db_session,
+        provider=PartiallyPublishedProvider(
+            {"00985A": _snapshot(date(2026, 8, 28), [("2330.TW", "台積電", 100, "10")])},
+            funds=[good_fund, unpublished_fund],
+        ),
+        max_workers=1,
+    )
+
+    assert result.status == "partial"
+    assert result.snapshots_created == 1
+    assert result.errors[0].fund_code == "00409A"
+    assert result.errors[0].code == "active_etf_holdings_not_published"
+
+
+def test_single_source_snapshot_is_retained_and_publishes_changes(
     etf_db_session: Session,
 ) -> None:
     first = _snapshot(
@@ -570,10 +677,64 @@ def test_single_source_snapshot_is_retained_but_does_not_publish_changes(
 
     assert result.single_source_snapshots == 1
     assert response is not None
-    assert response.covered_funds == 0
-    assert response.funds[0].status == "single_source"
+    assert response.covered_funds == 1
+    assert response.funds[0].status == "ready"
     assert response.funds[0].verification_reason == "official_source_unsupported"
-    assert response.changes == []
+    assert response.funds[0].previous_date == date(2026, 8, 27)
+    assert response.changes[0].action == "increased"
+    assert response.changes[0].verification_status == "single_source"
+    assert response.changes[0].source_count == 1
+    assert response.consensus[0].symbol == "2330.TW"
+    assert response.consensus[0].fund_count == 1
+
+
+def test_verified_current_snapshot_uses_single_source_baseline_without_claiming_dual_source(
+    etf_db_session: Session,
+) -> None:
+    first = _snapshot(
+        date(2026, 8, 27),
+        [("2330.TW", "台積電", 100, "10")],
+    )
+    second = _snapshot(
+        date(2026, 8, 28),
+        [("2330.TW", "台積電", 120, "11")],
+    )
+    refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": first}),
+        max_workers=1,
+    )
+    refresh_active_etf_holdings(
+        etf_db_session,
+        provider=FakeProvider({"00985A": second}),
+        verification_provider=FakeVerificationProvider(
+            {"00985A": _official_snapshot(second)}
+        ),
+        max_workers=1,
+    )
+
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert response is not None
+    assert response.funds[0].verification_status == "verified"
+    assert response.changes[0].verification_status == "single_source"
+    assert response.changes[0].source_count == 1
+    evidence_by_period = {
+        evidence.period: evidence for evidence in response.funds[0].evidence_periods
+    }
+    assert set(evidence_by_period) == {"current", "previous"}
+    assert evidence_by_period["current"].data_date == date(2026, 8, 28)
+    assert evidence_by_period["current"].verification_status == "verified"
+    assert evidence_by_period["current"].source_count == 2
+    assert {source.data_date for source in evidence_by_period["current"].sources} == {
+        date(2026, 8, 28)
+    }
+    assert evidence_by_period["previous"].data_date == date(2026, 8, 27)
+    assert evidence_by_period["previous"].verification_status == "single_source"
+    assert evidence_by_period["previous"].source_count == 1
+    assert {source.data_date for source in evidence_by_period["previous"].sources} == {
+        date(2026, 8, 27)
+    }
 
 
 def test_failed_recheck_preserves_verified_snapshot_when_primary_is_unchanged(
@@ -698,7 +859,9 @@ def test_failed_recheck_downgrades_snapshot_when_primary_content_changed(
         select(func.count()).select_from(ActiveEtfSourceObservation)
     ) == 2
     assert response is not None
-    assert response.funds[0].status == "single_source"
+    assert response.covered_funds == 1
+    assert response.funds[0].status == "no_baseline"
+    assert response.funds[0].verification_status == "single_source"
     assert response.changes == []
 
 
@@ -898,7 +1061,8 @@ def test_daily_response_excludes_stale_funds_from_date_and_builds_consensus(
 
     assert partial_response is not None
     assert partial_response.covered_funds == 1
-    assert not partial_response.consensus
+    assert partial_response.consensus[0].symbol == "2330.TW"
+    assert partial_response.consensus[0].fund_count == 1
     stale_fund = next(fund for fund in partial_response.funds if fund.fund_code == "00982A")
     assert stale_fund.status == "missing"
     assert stale_fund.latest_data_date == date(2026, 8, 27)

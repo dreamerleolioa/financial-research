@@ -61,14 +61,28 @@ jobs:
               }' "${response_file}"
 
           jq -e '
-            .status == "completed"
-            and ((.errors // []) | length == 0)
+            (
+              .status == "completed"
+              or (
+                .status == "partial"
+                and ((.errors // []) | length > 0)
+                and (
+                  (.errors // [])
+                  | all(.code == "active_etf_holdings_not_published")
+                )
+              )
+            )
             and ((.verified_snapshots // 0) > 0)
             and ((.conflicted_snapshots // 0) == 0)
             and (
               ((.verified_snapshots // 0)
               + (.single_source_snapshots // 0)
-              + (.conflicted_snapshots // 0))
+              + (.conflicted_snapshots // 0)
+              + (
+                (.errors // [])
+                | map(select(.code == "active_etf_holdings_not_published"))
+                | length
+              ))
               == .selected_funds
             )
           ' "${response_file}" > /dev/null

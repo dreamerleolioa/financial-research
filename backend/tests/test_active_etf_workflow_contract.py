@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github/workflows/active-etf-holdings.yml"
+
+
+def _workflow_gate_accepts(payload: dict) -> bool:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    gate = text.split("          jq -e '\n", maxsplit=1)[1].split(
+        "\n          ' \"${response_file}\"",
+        maxsplit=1,
+    )[0]
+    result = subprocess.run(
+        ["jq", "-e", gate],
+        input=json.dumps(payload),
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def test_active_etf_workflow_has_bounded_weekday_refresh_slots() -> None:
@@ -18,7 +36,7 @@ def test_active_etf_workflow_has_bounded_weekday_refresh_slots() -> None:
     assert "timeout-minutes: 20" in text
 
 
-def test_active_etf_workflow_uses_internal_auth_and_fails_on_partial_results() -> None:
+def test_active_etf_workflow_only_allows_explicitly_unpublished_partial_results() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
     assert "secrets.ZEABUR_BACKEND_URL" in text
@@ -31,10 +49,55 @@ def test_active_etf_workflow_uses_internal_auth_and_fails_on_partial_results() -
     assert "--max-time 900" in text
     assert "--data '{}'" in text
     assert '.status == "completed"' in text
-    assert '((.errors // []) | length == 0)' in text
+    assert '.status == "partial"' in text
+    assert 'all(.code == "active_etf_holdings_not_published")' in text
+    assert 'select(.code == "active_etf_holdings_not_published")' in text
     assert '((.verified_snapshots // 0) > 0)' in text
     assert '((.conflicted_snapshots // 0) == 0)' in text
     assert '(.single_source_snapshots // 0)' in text
     assert '== .selected_funds' in text
     assert "sk-" not in text
     assert "token=" not in text.lower()
+
+
+def test_active_etf_workflow_gate_rejects_operational_failures_and_conflicts() -> None:
+    unpublished_payload = {
+        "status": "partial",
+        "selected_funds": 30,
+        "verified_snapshots": 3,
+        "single_source_snapshots": 26,
+        "conflicted_snapshots": 0,
+        "errors": [
+            {
+                "fund_code": "00409A",
+                "code": "active_etf_holdings_not_published",
+            }
+        ],
+    }
+
+    assert _workflow_gate_accepts(unpublished_payload) is True
+    assert (
+        _workflow_gate_accepts(
+            {
+                **unpublished_payload,
+                "errors": [
+                    {
+                        "fund_code": "00409A",
+                        "code": "active_etf_snapshot_fetch_failed",
+                    }
+                ],
+            }
+        )
+        is False
+    )
+    assert (
+        _workflow_gate_accepts(
+            {
+                **unpublished_payload,
+                "verified_snapshots": 0,
+                "single_source_snapshots": 26,
+                "conflicted_snapshots": 3,
+            }
+        )
+        is False
+    )

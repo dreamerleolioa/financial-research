@@ -39,7 +39,7 @@
 | `data_sources/` | yfinance、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
 | `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Portfolio/Daily Radar read-only projections |
-| `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ primary adapter、發行投信官方 verification adapter、逐來源原始證據、逐基金對帳 transaction、已驗證相鄰快照差異與跨基金聚合；單一來源或衝突 fail closed，不阻斷或修改 Daily Radar |
+| `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ primary adapter、發行投信官方 verification adapter、逐來源原始證據、逐基金對帳 transaction、非衝突相鄰快照差異與個股聚合；單一來源照常發布並揭露，衝突資料 fail closed，不阻斷或修改 Daily Radar |
 | `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
 | `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
