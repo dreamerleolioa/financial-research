@@ -719,6 +719,22 @@ def test_verified_current_snapshot_uses_single_source_baseline_without_claiming_
     assert response.funds[0].verification_status == "verified"
     assert response.changes[0].verification_status == "single_source"
     assert response.changes[0].source_count == 1
+    evidence_by_period = {
+        evidence.period: evidence for evidence in response.funds[0].evidence_periods
+    }
+    assert set(evidence_by_period) == {"current", "previous"}
+    assert evidence_by_period["current"].data_date == date(2026, 8, 28)
+    assert evidence_by_period["current"].verification_status == "verified"
+    assert evidence_by_period["current"].source_count == 2
+    assert {source.data_date for source in evidence_by_period["current"].sources} == {
+        date(2026, 8, 28)
+    }
+    assert evidence_by_period["previous"].data_date == date(2026, 8, 27)
+    assert evidence_by_period["previous"].verification_status == "single_source"
+    assert evidence_by_period["previous"].source_count == 1
+    assert {source.data_date for source in evidence_by_period["previous"].sources} == {
+        date(2026, 8, 27)
+    }
 
 
 def test_failed_recheck_preserves_verified_snapshot_when_primary_is_unchanged(

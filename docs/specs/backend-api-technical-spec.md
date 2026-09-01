@@ -79,7 +79,7 @@ make run-api
 
 - 需要應用程式登入 JWT。
 - `data_date` 省略時使用目前資料庫最新來源宣告日。指定日期不存在或尚無任何快照時回 `404` 與 `active_etf_holdings_not_found`。
-- Response 包含 `available_dates`、expected/usable coverage、summary、逐基金日期／前次日期／品質狀態、股數變化列，以及每個有變化個股的彙整；彙整達兩檔以上且方向一致時才可標記多基金共識。逐基金與每筆變化都投影 `verification_status`、`source_count`；逐基金另提供 privacy-safe reason 與 `sources[]`（provider、URL、資料日、擷取時間、hash）。前端不得自行猜測來源或把 raw payload 暴露給 public API。
+- Response 包含 `available_dates`、expected/usable coverage、summary、逐基金日期／前次日期／品質狀態、股數變化列，以及每個有變化個股的彙整；彙整達兩檔以上且方向一致時才可標記多基金共識。逐基金與每筆變化都投影 `verification_status`、`source_count`；逐基金另提供 privacy-safe reason、目前快照相容欄位 `sources[]`，以及依 `current`／`previous` 分期的 `evidence_periods[]`。每期證據各自包含資料日、驗證狀態、來源數與 `sources[]`（provider、URL、資料日、擷取時間、hash），不得用目前期來源冒充整段比較證據。前端不得自行猜測來源或把 raw payload 暴露給 public API。
 - 某基金沒有該 `data_date` 快照時狀態為 `missing`；資料日、持股集合或股數不一致時為 `source_conflict`；`verified` 或 `single_source` 但沒有前次非衝突快照時為 `no_baseline`。`missing` 與 `source_conflict` 不得拿較舊資料混入當日統計，也不得捏造零基準變化。
 
 ### `POST /analyze`

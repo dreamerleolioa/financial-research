@@ -49,6 +49,15 @@ class ActiveEtfSourceEvidence(BaseModel):
     payload_hash: str
 
 
+class ActiveEtfPeriodEvidence(BaseModel):
+    period: Literal["current", "previous"]
+    data_date: date
+    verification_status: Literal["verified", "single_source", "conflict"]
+    source_count: int
+    verification_reason: str | None = None
+    sources: list[ActiveEtfSourceEvidence] = Field(default_factory=list)
+
+
 class ActiveEtfCoverageFund(BaseModel):
     fund_code: str
     name: str
@@ -66,6 +75,7 @@ class ActiveEtfCoverageFund(BaseModel):
     source_count: int = 0
     verification_reason: str | None = None
     sources: list[ActiveEtfSourceEvidence] = Field(default_factory=list)
+    evidence_periods: list[ActiveEtfPeriodEvidence] = Field(default_factory=list)
     data_date: date | None = None
     previous_date: date | None = None
     latest_data_date: date | None = None
