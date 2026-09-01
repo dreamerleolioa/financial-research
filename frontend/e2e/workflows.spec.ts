@@ -35,6 +35,7 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
     .getByRole("button", { name: /00985A/ })
     .first()
     .click();
+  await expect(page.getByText("本期來源 2026-08-28", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "查看 2330.TW 台積電 持股變化" })).toHaveCount(1);
   await expect(page.getByRole("table").getByText("2454.TW", { exact: true })).toBeVisible();
   await expect(page.getByText("2317.TW", { exact: true })).toHaveCount(0);

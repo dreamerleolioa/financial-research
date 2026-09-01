@@ -112,24 +112,27 @@ function FundEvidenceSummary({ fund }: { fund: ActiveEtfCoverageFund }) {
         <VerificationBadge fund={fund} />
       </div>
       {fund.sources.length > 0 && (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {fund.sources.map((source) => (
-            <a
-              key={`${source.source_provider}-${source.data_date}`}
-              href={source.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-[10px] border border-border-subtle bg-card px-3 py-2 text-xs text-text-muted transition-colors hover:bg-card-hover hover:text-text-primary"
-            >
-              <span className="flex items-center justify-between gap-2">
-                <strong className="font-medium text-text-primary">{formatSource(source.source_provider)}</strong>
-                <span aria-hidden="true">↗</span>
-              </span>
-              <span className="mt-1 block tabular-nums text-text-faint">
-                資料日 {source.data_date} · {source.payload_hash.slice(0, 8)}
-              </span>
-            </a>
-          ))}
+        <div className="mt-3">
+          <p className="text-xs font-medium tabular-nums text-text-faint">本期來源 {fund.data_date}</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {fund.sources.map((source) => (
+              <a
+                key={`${source.source_provider}-${source.data_date}`}
+                href={source.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-[10px] border border-border-subtle bg-card px-3 py-2 text-xs text-text-muted transition-colors hover:bg-card-hover hover:text-text-primary"
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <strong className="font-medium text-text-primary">{formatSource(source.source_provider)}</strong>
+                  <span aria-hidden="true">↗</span>
+                </span>
+                <span className="mt-1 block tabular-nums text-text-faint">
+                  資料日 {source.data_date} · {source.payload_hash.slice(0, 8)}
+                </span>
+              </a>
+            ))}
+          </div>
         </div>
       )}
     </section>
