@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ActiveEtfDailyResponse } from "./activeEtfTypes";
+import type { ActiveEtfCoverageFund, ActiveEtfDailyResponse } from "./activeEtfTypes";
 
 const decimalNumber = z.union([
   z.number().finite(),
@@ -326,5 +326,40 @@ export const activeEtfDailyResponseSchema = z
   });
 
 export function parseActiveEtfDailyResponse(value: unknown): ActiveEtfDailyResponse {
-  return activeEtfDailyResponseSchema.parse(value) as ActiveEtfDailyResponse;
+  const parsed = activeEtfDailyResponseSchema.parse(value) as ActiveEtfDailyResponse;
+  const funds = parsed.funds.map((fund) => {
+    const sources = fund.sources.filter((source) => source.source_provider.toLowerCase() === "moneydj");
+    const status: ActiveEtfCoverageFund["status"] =
+      fund.status === "missing" ? "missing" : fund.previous_date && fund.data_date ? "ready" : "no_baseline";
+    const verificationStatus: ActiveEtfCoverageFund["verification_status"] =
+      status === "missing" ? null : "single_source";
+    return {
+      ...fund,
+      status,
+      verification_status: verificationStatus,
+      source_count: sources.length,
+      verification_reason: status === "missing" ? null : "moneydj_only",
+      sources,
+      evidence_periods: fund.evidence_periods.map((evidence) => {
+        const periodSources = evidence.sources.filter((source) => source.source_provider.toLowerCase() === "moneydj");
+        return {
+          ...evidence,
+          verification_status: "single_source" as const,
+          source_count: periodSources.length,
+          verification_reason: "moneydj_only",
+          sources: periodSources,
+        };
+      }),
+    };
+  });
+  return {
+    ...parsed,
+    covered_funds: funds.filter((fund) => fund.status !== "missing").length,
+    funds,
+    changes: parsed.changes.map((change) => ({
+      ...change,
+      verification_status: "single_source",
+      source_count: 1,
+    })),
+  };
 }

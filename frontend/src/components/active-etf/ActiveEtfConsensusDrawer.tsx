@@ -50,9 +50,6 @@ export function ActiveEtfConsensusDrawer({
           </div>
           <span className={`ui-badge ${direction.badgeClassName}`}>{direction.label}</span>
         </div>
-        <p className="mt-3 border-t border-border-subtle pt-3 text-xs leading-relaxed text-text-faint">
-          前後兩期皆通過雙來源驗證者會個別標註；未標註者為單一來源比較。
-        </p>
       </section>
 
       <section aria-label="基金變化清單">
@@ -76,9 +73,6 @@ export function ActiveEtfConsensusDrawer({
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <span className={`ui-badge ${ACTION_CLASS[change.action]}`}>{ACTION_LABEL[change.action]}</span>
-                  {change.verification_status === "verified" && (
-                    <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>
-                  )}
                 </div>
               </div>
               <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border-subtle pt-3 sm:grid-cols-4">

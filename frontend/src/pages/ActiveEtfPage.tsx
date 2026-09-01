@@ -40,19 +40,13 @@ function formatTimestamp(value: string | null): string {
 
 function formatSource(provider: string): string {
   if (provider.toLowerCase() === "moneydj") return "MoneyDJ";
-  if (provider.toLowerCase() === "issuer_official") return "發行投信官方資料";
   return provider;
 }
 
-function verificationReason(fund: ActiveEtfCoverageFund): string {
-  const reason = fund.verification_reason;
-  if (reason === "official_source_unsupported") return "尚未接上完整的發行投信官方持股來源";
-  if (reason === "verification_source_unavailable") return "發行投信官方來源本次擷取失敗";
-  if (reason === "source_date_mismatch") return "兩個來源的資料日期不同";
-  if (reason === "holding_mismatch") return "兩個來源的持股代碼或股數不一致";
-  if (reason === "share_inventory_match") return "兩個來源的持股代碼與股數逐筆一致";
-  if (fund.status === "missing") return "當日尚未取得持股資料";
-  return "來源驗證狀態尚未完整回報";
+function fundStatusLabel(fund: ActiveEtfCoverageFund): string {
+  if (fund.status === "ready") return "可比較";
+  if (fund.status === "no_baseline") return "等待前期資料";
+  return "當日未更新";
 }
 
 function CoverageMetric({ label, value, helper }: { label: string; value: string; helper: string }) {
@@ -65,21 +59,10 @@ function CoverageMetric({ label, value, helper }: { label: string; value: string
   );
 }
 
-function VerificationBadge({ fund }: { fund: ActiveEtfCoverageFund }) {
-  const copy =
-    fund.verification_status === "verified"
-      ? { label: "已雙來源確認", className: "bg-positive/12 text-positive" }
-      : fund.verification_status === "conflict"
-        ? { label: "來源不一致", className: "bg-negative/12 text-negative" }
-        : fund.status === "missing"
-          ? { label: "當日未更新", className: "bg-badge-neutral-bg text-badge-neutral-text" }
-          : { label: "單一來源", className: "bg-badge-neutral-bg text-badge-neutral-text" };
-  return <span className={`ui-badge ${copy.className}`}>{copy.label}</span>;
-}
-
-function ChangeVerificationBadge({ change }: { change: ActiveEtfChange }) {
-  if (change.verification_status !== "verified") return null;
-  return <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>;
+function FundStatusBadge({ fund }: { fund: ActiveEtfCoverageFund }) {
+  const className =
+    fund.status === "ready" ? "bg-positive/12 text-positive" : "bg-badge-neutral-bg text-badge-neutral-text";
+  return <span className={`ui-badge ${className}`}>{fundStatusLabel(fund)}</span>;
 }
 
 function FundEvidenceSummary({ fund, onClear }: { fund: ActiveEtfCoverageFund; onClear: () => void }) {
@@ -88,8 +71,7 @@ function FundEvidenceSummary({ fund, onClear }: { fund: ActiveEtfCoverageFund; o
       ? `可比較 ${fund.previous_date} → ${fund.data_date}`
       : fund.status === "no_baseline"
         ? "已有可用快照，尚無前次資料可比較"
-        : verificationReason(fund);
-  const sourceNote = fund.verification_status === "single_source" ? verificationReason(fund) : null;
+        : "當日尚未取得 MoneyDJ 持股資料";
 
   return (
     <section className="mb-4 rounded-[12px] border border-border bg-surface-raised p-4 shadow-panel">
@@ -99,10 +81,9 @@ function FundEvidenceSummary({ fund, onClear }: { fund: ActiveEtfCoverageFund; o
             {fund.fund_code} <span className="font-sans font-medium">{fund.name}</span>
           </p>
           <p className="mt-1 text-xs leading-relaxed text-text-muted">{comparisonState}</p>
-          {sourceNote && <p className="mt-1 text-xs leading-relaxed text-text-faint">{sourceNote}</p>}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <VerificationBadge fund={fund} />
+          <FundStatusBadge fund={fund} />
           <button type="button" onClick={onClear} className="ui-button-secondary">
             查看全部基金
           </button>
@@ -181,7 +162,7 @@ function FundIndex({
               </span>
               <span className="mt-1 block truncate text-xs text-text-muted">{fund.name}</span>
               <span className="mt-1.5 block">
-                <VerificationBadge fund={fund} />
+                <FundStatusBadge fund={fund} />
               </span>
             </button>
           ))}
@@ -222,7 +203,7 @@ function ChangeTable({
                   基金
                 </th>
                 <th scope="col" className="px-3 py-3 font-medium">
-                  變化與來源
+                  變化
                 </th>
                 <th scope="col" className="px-3 py-3 text-right font-medium">
                   持股股數
@@ -255,7 +236,6 @@ function ChangeTable({
                   <td className="px-3 py-3">
                     <div className="flex flex-col items-start gap-1.5">
                       <span className={`ui-badge ${ACTION_CLASS[change.action]}`}>{ACTION_LABEL[change.action]}</span>
-                      <ChangeVerificationBadge change={change} />
                     </div>
                   </td>
                   <td className="px-3 py-3 text-right tabular-nums text-text-secondary">
@@ -302,7 +282,6 @@ function ChangeTable({
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
                 <span className={`ui-badge ${ACTION_CLASS[change.action]}`}>{ACTION_LABEL[change.action]}</span>
-                <ChangeVerificationBadge change={change} />
               </div>
             </div>
             <dl className="mt-4 grid grid-cols-3 gap-3 border-t border-border-subtle pt-3">
@@ -505,23 +484,19 @@ export default function ActiveEtfPage() {
     if (!fund.fetched_at) return latest;
     return latest == null || fund.fetched_at > latest ? fund.fetched_at : latest;
   }, null);
-  const qualityCounts = data.funds.reduce(
+  const coverageCounts = data.funds.reduce(
     (counts, fund) => {
-      if (fund.verification_status === "verified") counts.verified += 1;
-      else if (fund.verification_status === "conflict") counts.conflict += 1;
-      else if (fund.verification_status === "single_source") counts.singleSource += 1;
-      else if (fund.status === "missing") counts.missing += 1;
+      if (fund.status === "ready") counts.comparable += 1;
+      else if (fund.status === "no_baseline") counts.noBaseline += 1;
+      else counts.missing += 1;
       return counts;
     },
-    { verified: 0, singleSource: 0, conflict: 0, missing: 0 },
+    { comparable: 0, noBaseline: 0, missing: 0 },
   );
-  const allVerified = qualityCounts.verified === data.expected_funds;
-  const hasCoverageGap = qualityCounts.conflict > 0 || qualityCounts.missing > 0;
-  const coverageNoticeClass = allVerified
-    ? "border-positive/25 bg-positive/8 text-text-muted"
-    : hasCoverageGap
-      ? "border-signal/30 bg-signal/10 text-text-muted"
-      : "border-border bg-card text-text-muted";
+  const hasCoverageGap = coverageCounts.missing > 0;
+  const coverageNoticeClass = hasCoverageGap
+    ? "border-signal/30 bg-signal/10 text-text-muted"
+    : "border-positive/25 bg-positive/8 text-text-muted";
   const selectedFundRecord = data.funds.find((fund) => fund.fund_code === selectedFund) ?? null;
   const selectedChangeFund = selectedChange
     ? (data.funds.find((fund) => fund.fund_code === selectedChange.fund_code) ?? null)
@@ -540,7 +515,7 @@ export default function ActiveEtfPage() {
             主動式 ETF 持股追蹤
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-text-muted">
-            比較各基金連續公開資料日的持股股數與權重差異，並逐檔揭露來源驗證結果與資料缺口。
+            比較各基金連續公開資料日的持股股數與權重差異，並逐檔揭露 MoneyDJ 資料日與資料缺口。
           </p>
         </div>
         <label className="w-full sm:w-48">
@@ -572,27 +547,27 @@ export default function ActiveEtfPage() {
             </h3>
           </div>
           <span
-            className={`ui-badge self-start sm:self-auto ${allVerified ? "bg-positive/12 text-positive" : hasCoverageGap ? "bg-signal/15 text-signal" : "bg-badge-neutral-bg text-badge-neutral-text"}`}
+            className={`ui-badge self-start sm:self-auto ${hasCoverageGap ? "bg-signal/15 text-signal" : "bg-positive/12 text-positive"}`}
           >
-            {allVerified ? "全部通過雙來源" : hasCoverageGap ? "有來源缺口" : "含單一來源資料"}
+            {hasCoverageGap ? "有資料缺口" : "MoneyDJ 資料已齊"}
           </span>
         </div>
         <dl className="mt-5 grid grid-cols-2 gap-5 lg:grid-cols-4">
           <CoverageMetric label="追蹤基金" value={String(data.expected_funds)} helper="當日預期檢查總數" />
           <CoverageMetric
-            label="雙來源確認"
-            value={`${qualityCounts.verified} / ${data.expected_funds}`}
-            helper="代碼與股數逐筆一致"
+            label="已有資料"
+            value={`${data.covered_funds} / ${data.expected_funds}`}
+            helper="MoneyDJ 當日持股可用"
           />
-          <CoverageMetric label="單一來源" value={String(qualityCounts.singleSource)} helper="照常發布，雙來源另標註" />
-          <CoverageMetric label="來源不一致" value={String(qualityCounts.conflict)} helper="停止比較，等待查核" />
+          <CoverageMetric label="可比較" value={String(coverageCounts.comparable)} helper="已有前期快照可計算變化" />
+          <CoverageMetric label="當日未更新" value={String(coverageCounts.missing)} helper="尚未取得當日持股" />
         </dl>
         <div className={`mt-4 rounded-[10px] border px-3 py-2 text-xs leading-relaxed ${coverageNoticeClass}`}>
-          <p>單一來源且已有前次快照也會發布變化；前後兩期都經雙來源確認時，會另外標註。</p>
+          <p>MoneyDJ 有資料就顯示；累積前後兩個資料日後，即可計算持股變化。</p>
           <p className="mt-1 tabular-nums text-text-faint">
             本次發布 {data.summary.changed_funds} 檔基金、{data.summary.changed_rows} 筆變化 · 來源更新{" "}
             {formatTimestamp(latestFetchedAt)}
-            {qualityCounts.missing > 0 ? ` · 當日未更新 ${qualityCounts.missing} 檔` : ""}
+            {coverageCounts.missing > 0 ? ` · 當日未更新 ${coverageCounts.missing} 檔` : ""}
           </p>
         </div>
       </section>
@@ -635,13 +610,7 @@ export default function ActiveEtfPage() {
                   {data.funds.map((fund) => (
                     <option key={fund.fund_code} value={fund.fund_code}>
                       {fund.fund_code} {fund.name}
-                      {fund.verification_status === "verified"
-                        ? "（已確認）"
-                        : fund.verification_status === "conflict"
-                          ? "（來源不一致）"
-                          : fund.status === "missing"
-                            ? "（未更新）"
-                            : "（單一來源）"}
+                      {`（${fundStatusLabel(fund)}）`}
                     </option>
                   ))}
                 </select>

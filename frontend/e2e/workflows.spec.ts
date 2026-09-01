@@ -21,15 +21,15 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await installApiMocks(page, { activeEtfDaily });
 
   await page.goto("/active-etf");
-  await expect(page.getByText("2 / 5", { exact: true })).toBeVisible();
-  await expect(page.getByText("有來源缺口", { exact: true })).toBeVisible();
+  await expect(page.getByText("4 / 5", { exact: true })).toBeVisible();
+  await expect(page.getByText("有資料缺口", { exact: true })).toBeVisible();
   await expect(
-    page.getByText("單一來源且已有前次快照也會發布變化；前後兩期都經雙來源確認時，會另外標註。", {
+    page.getByText("MoneyDJ 有資料就顯示；累積前後兩個資料日後，即可計算持股變化。", {
       exact: true,
     }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "查看 2330.TW 台積電 持股變化" })).toHaveCount(2);
-  await expect(page.getByRole("table").getByText("雙來源確認", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
 
   await page
     .getByRole("button", { name: /00985A/ })
@@ -44,14 +44,12 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await openDrawerButton.click();
   const drawer = page.getByRole("dialog", { name: "2454.TW 聯發科" });
   await expect(drawer).toContainText("可能受基金規模變動影響");
-  await expect(drawer.getByText("比較含單一來源", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("比較與資料來源", { exact: true })).toBeVisible();
   const currentEvidence = drawer.getByRole("region", { name: "本期證據 2026-08-28" });
   const previousEvidence = drawer.getByRole("region", { name: "前期證據 2026-08-27" });
-  await expect(currentEvidence.getByText("雙來源確認", { exact: true })).toBeVisible();
-  await expect(currentEvidence.getByText("發行投信官方資料", { exact: true })).toBeVisible();
-  await expect(currentEvidence.getByText("MoneyDJ", { exact: true })).toBeVisible();
-  await expect(previousEvidence.getByText("單一來源", { exact: true })).toBeVisible();
-  await expect(previousEvidence.getByText("MoneyDJ", { exact: true })).toBeVisible();
+  await expect(currentEvidence).toContainText("MoneyDJ");
+  await expect(previousEvidence).toContainText("MoneyDJ");
+  await expect(currentEvidence.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
   await expect(previousEvidence.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "關閉持股變化明細" })).toBeFocused();
   await page.keyboard.press("Escape");
@@ -59,19 +57,18 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(openDrawerButton).toBeFocused();
 
   await page.getByRole("button", { name: /00982A/ }).click();
-  await expect(page.getByText("尚未接上完整的發行投信官方持股來源", { exact: true })).toBeVisible();
+  await expect(page.getByText("可比較 2026-08-27 → 2026-08-28", { exact: true })).toBeVisible();
   const openSingleSourceDrawerButton = page.getByRole("button", { name: "查看 2881.TW 富邦金 持股變化" });
   await expect(openSingleSourceDrawerButton).toBeVisible();
   await openSingleSourceDrawerButton.click();
   const singleSourceDrawer = page.getByRole("dialog", { name: "2881.TW 富邦金" });
-  await expect(singleSourceDrawer.getByText("比較含單一來源", { exact: true })).toBeVisible();
-  await expect(singleSourceDrawer.getByText("雙來源確認", { exact: true })).toHaveCount(0);
+  await expect(singleSourceDrawer.getByText("比較與資料來源", { exact: true })).toBeVisible();
   await expect(singleSourceDrawer.getByRole("region", { name: "本期證據 2026-08-28" })).toContainText("MoneyDJ");
   await expect(singleSourceDrawer.getByRole("region", { name: "前期證據 2026-08-27" })).toContainText("MoneyDJ");
   await expect(singleSourceDrawer.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /00983A/ }).click();
-  await expect(page.getByText("兩個來源的持股代碼或股數不一致", { exact: true })).toBeVisible();
+  await expect(page.getByText("已有可用快照，尚無前次資料可比較", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("共同增加", { exact: true })).toBeVisible();
@@ -97,7 +94,7 @@ test("Active ETF consensus opens contributing fund details and restores focus", 
   await expect(drawer.getByText("新增持股", { exact: true })).toHaveCount(2);
   await expect(drawer.getByText("+800,000", { exact: true })).toBeVisible();
   await expect(drawer.getByText("+320,000", { exact: true })).toBeVisible();
-  await expect(drawer.getByText("雙來源確認", { exact: true })).toHaveCount(1);
+  await expect(drawer.getByText("雙來源確認", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "關閉個股 ETF 變化明細" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
@@ -179,21 +176,17 @@ test("Active ETF tracking can clear an unavailable date from the error state", a
   await expect(page).toHaveURL(/\/active-etf$/);
 });
 
-test("Active ETF tracking keeps source labels readable on mobile", async ({ page }) => {
+test("Active ETF tracking keeps MoneyDJ status readable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await authenticate(page);
   await installApiMocks(page, { activeEtfDaily });
 
   await page.goto("/active-etf");
-  const verifiedCard = page.locator("article").filter({
-    has: page.getByRole("button", { name: "查看 2317.TW 鴻海 持股變化" }),
-  });
-  const singleSourceCard = page.locator("article").filter({
-    has: page.getByRole("button", { name: "查看 2881.TW 富邦金 持股變化" }),
-  });
-  await expect(verifiedCard.getByText("雙來源確認", { exact: true })).toBeVisible();
-  await expect(singleSourceCard.getByText("雙來源確認", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("單一來源", { exact: true }).locator("..").getByText("1", { exact: true })).toBeVisible();
+  await expect(page.getByText("4 / 5", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("MoneyDJ 有資料就顯示；累積前後兩個資料日後，即可計算持股變化。", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("雙來源確認", { exact: true })).toHaveCount(0);
 
   await page.getByRole("combobox", { name: "基金" }).selectOption("00985A");
   await expect(page.getByRole("button", { name: "查看全部基金" })).toBeVisible();
@@ -246,7 +239,7 @@ test("Active ETF consensus labels multi-fund direction conflicts without oversta
   await expect(page.getByText("2 檔共識", { exact: true })).toHaveCount(0);
 });
 
-test("Active ETF tracking accepts the previous verified-only API contract during deployment", async ({ page }) => {
+test("Active ETF tracking normalizes the previous verified-only API contract", async ({ page }) => {
   const legacyChanges = activeEtfDaily.changes
     .slice(0, 4)
     .map((change) =>
@@ -278,15 +271,16 @@ test("Active ETF tracking accepts the previous verified-only API contract during
   });
 
   await page.goto("/active-etf");
-  await expect(page.getByRole("table").getByText("雙來源確認", { exact: true })).toHaveCount(4);
+  await expect(page.getByText("雙來源確認", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "查看 2454.TW 聯發科 持股變化" }).click();
   const drawer = page.getByRole("dialog", { name: "2454.TW 聯發科" });
   await expect(
-    drawer.getByText("此 API 版本未提供分期來源明細；為避免混淆，不顯示目前期來源作為整段比較證據。", {
+    drawer.getByText("此 API 版本未提供前後期來源明細，無法顯示各期的原始資料連結。", {
       exact: true,
     }),
   ).toBeVisible();
-  await expect(drawer.getByText("MoneyDJ", { exact: true })).toHaveCount(0);
+  await expect(drawer.getByText("MoneyDJ", { exact: true })).toHaveCount(1);
   await expect(drawer.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
 });
 

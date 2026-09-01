@@ -17,7 +17,6 @@ function formatSigned(value: number, digits = 2): string {
 
 function formatSource(provider: string): string {
   if (provider.toLowerCase() === "moneydj") return "MoneyDJ";
-  if (provider.toLowerCase() === "issuer_official") return "發行投信官方資料";
   return provider;
 }
 
@@ -31,16 +30,6 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
   );
 }
 
-function EvidenceBadge({ evidence }: { evidence: ActiveEtfPeriodEvidence }) {
-  if (evidence.verification_status === "verified") {
-    return <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>;
-  }
-  if (evidence.verification_status === "conflict") {
-    return <span className="ui-badge bg-negative/12 text-negative">來源不一致</span>;
-  }
-  return <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">單一來源</span>;
-}
-
 function PeriodEvidence({ evidence }: { evidence: ActiveEtfPeriodEvidence }) {
   const periodLabel = evidence.period === "current" ? "本期" : "前期";
   return (
@@ -50,10 +39,10 @@ function PeriodEvidence({ evidence }: { evidence: ActiveEtfPeriodEvidence }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h4 className="text-sm font-medium text-text-primary">{periodLabel}證據</h4>
+          <h4 className="text-sm font-medium text-text-primary">{periodLabel}資料</h4>
           <p className="mt-0.5 font-mono text-xs tabular-nums text-text-faint">{evidence.data_date}</p>
         </div>
-        <EvidenceBadge evidence={evidence} />
+        <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">MoneyDJ</span>
       </div>
       <div className="mt-3 grid gap-2">
         {evidence.sources.map((source) => (
@@ -139,12 +128,8 @@ export function ActiveEtfChangeDrawer({
 
       <section className="rounded-[10px] border border-border bg-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-text-primary">比較與來源</h3>
-          {change.verification_status === "verified" ? (
-            <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>
-          ) : (
-            <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">比較含單一來源</span>
-          )}
+          <h3 className="text-sm font-semibold text-text-primary">比較與資料來源</h3>
+          <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">MoneyDJ</span>
         </div>
         <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
           <div>
@@ -170,7 +155,7 @@ export function ActiveEtfChangeDrawer({
           </div>
         ) : (
           <p className="mt-4 rounded-[10px] border border-border-subtle bg-surface-raised px-3 py-2 text-xs leading-relaxed text-text-muted">
-            此 API 版本未提供分期來源明細；為避免混淆，不顯示目前期來源作為整段比較證據。
+            此 API 版本未提供前後期來源明細，無法顯示各期的原始資料連結。
           </p>
         )}
       </section>
