@@ -5,38 +5,26 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ai_stock_sentinel.clock import today_taipei
-from ai_stock_sentinel.data_sources.official_http import (
-    official_request_get,
-    official_request_post,
-)
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 
 TWSE_ACTIVE_ETF_LIST_URL = "https://www.twse.com.tw/rwd/zh/ETF/activeList?response=json"
 MONEYDJ_HOLDINGS_URL_TEMPLATE = (
     "https://www.moneydj.com/ETF/X/Basic/Basic0007B.xdjhtm?etfid={fund_code}.TW&page=1"
 )
 MONEYDJ_PARSER_VERSION = "moneydj-active-etf-holdings-v2"
-NOMURA_PARSER_VERSION = "nomura-active-etf-holdings-v1"
-NOMURA_TRADE_INFO_URL = (
-    "https://www.nomurafunds.com.tw/API/ETFAPI/api/Fund/GetFundTradeInfo"
-)
-NOMURA_OFFICIAL_URL_TEMPLATE = (
-    "https://www.nomurafunds.com.tw/ETFWEB/product-description?fundNo={fund_code}"
-)
-NOMURA_FUND_CODES = frozenset({"00980A", "00985A", "00999A"})
 _ACTIVE_EQUITY_FUND_CODE_RE = re.compile(r"^\d{5}A$")
 _DATA_DATE_RE = re.compile(r"資料日期\s*[:：]\s*(\d{4}/\d{2}/\d{2})")
 _SAFE_SECURITY_CODE_RE = re.compile(r"^[A-Za-z0-9._/\-]{1,20}$")
 _NON_EQUITY_SUFFIXES = frozenset({"CUR", "FX", "TF"})
 _MAX_HOLDING_TABLE_ROWS = 2_000
 _MAX_HTML_CHARACTERS = 5_000_000
-_NOMURA_MAX_PCF_LOOKAHEAD_DAYS = 14
 _MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 _WEIGHT_QUANTUM = Decimal("0.0001")
 _REQUEST_HEADERS = {
@@ -287,156 +275,6 @@ def parse_moneydj_holdings_html(
     )
 
 
-def parse_nomura_holdings_payload(
-    payload: object,
-    *,
-    fund: ActiveEtfFundDescriptor,
-    raw_payload: bytes,
-    fetched_at: datetime | None = None,
-) -> ActiveEtfFundSnapshot:
-    if len(raw_payload) > _MAX_HTML_CHARACTERS:
-        raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
-    if not isinstance(payload, dict) or payload.get("StatusCode") != 0:
-        raise ActiveEtfProviderError("active_etf_official_payload_invalid")
-    entries = payload.get("Entries")
-    if not isinstance(entries, dict) or entries.get("CFundId") != fund.fund_code:
-        raise ActiveEtfProviderError("active_etf_fund_identity_mismatch")
-    raw_date = entries.get("CNavDt") or entries.get("CNavDtStr")
-    try:
-        data_date = datetime.fromisoformat(str(raw_date)).date()
-    except (TypeError, ValueError) as exc:
-        raise ActiveEtfProviderError("active_etf_data_date_invalid") from exc
-    observed_at = fetched_at or datetime.now(timezone.utc)
-    if data_date > today_taipei(observed_at):
-        raise ActiveEtfProviderError("active_etf_data_date_in_future")
-    raw_rows = entries.get("Stocks")
-    if not isinstance(raw_rows, list) or not raw_rows or len(raw_rows) > _MAX_HOLDING_TABLE_ROWS:
-        raise ActiveEtfProviderError("active_etf_holdings_empty")
-
-    holdings: list[ActiveEtfHoldingRow] = []
-    seen_symbols: set[str] = set()
-    for raw_row in raw_rows:
-        if not isinstance(raw_row, dict):
-            raise ActiveEtfProviderError("active_etf_holding_row_invalid")
-        symbol = str(raw_row.get("CStockCode", "")).strip().upper()
-        name = str(raw_row.get("CStockName", "")).strip()
-        if not symbol or not _SAFE_SECURITY_CODE_RE.fullmatch(symbol) or len(name) > 100 or not name:
-            raise ActiveEtfProviderError("active_etf_holding_row_invalid")
-        if symbol in seen_symbols:
-            raise ActiveEtfProviderError("active_etf_duplicate_holding")
-        seen_symbols.add(symbol)
-        shares = _parse_json_nonnegative_integer(raw_row.get("CQuantity"))
-        weight_pct = _parse_json_weight_pct(raw_row.get("CWeightsPct"))
-        holdings.append(
-            ActiveEtfHoldingRow(
-                symbol=symbol,
-                name=name,
-                shares=shares,
-                weight_pct=weight_pct,
-                position_order=len(holdings),
-            )
-        )
-    return _build_official_snapshot(
-        fund=fund,
-        data_date=data_date,
-        fetched_at=observed_at,
-        holdings=holdings,
-        raw_payload=raw_payload,
-        parser_version=NOMURA_PARSER_VERSION,
-        source_url=NOMURA_OFFICIAL_URL_TEMPLATE.format(fund_code=fund.fund_code),
-    )
-
-
-def _nomura_payload_has_no_entries(payload: object) -> bool:
-    if not isinstance(payload, dict) or payload.get("StatusCode") != 0:
-        return False
-    return payload.get("Entries") in (None, [], {})
-
-
-class IssuerOfficialActiveEtfProvider:
-    source_provider = "issuer_official"
-
-    def __init__(
-        self,
-        *,
-        request_post: Callable[..., Any] | None = None,
-        timeout_seconds: int = 15,
-    ) -> None:
-        self._request_post = request_post or official_request_post
-        self._timeout_seconds = max(1, timeout_seconds)
-
-    def supports(self, fund_code: str) -> bool:
-        return fund_code in NOMURA_FUND_CODES
-
-    def fetch_snapshot(
-        self,
-        fund: ActiveEtfFundDescriptor,
-        *,
-        expected_data_date: date | None = None,
-    ) -> ActiveEtfFundSnapshot:
-        if fund.fund_code not in NOMURA_FUND_CODES:
-            raise ActiveEtfProviderError("active_etf_official_source_unsupported")
-        if expected_data_date is None:
-            payload, raw_payload = self._fetch_nomura_payload(fund, today_taipei())
-            return parse_nomura_holdings_payload(
-                payload,
-                fund=fund,
-                raw_payload=raw_payload,
-            )
-
-        request_date = expected_data_date + timedelta(days=1)
-        last_request_date = min(
-            expected_data_date + timedelta(days=_NOMURA_MAX_PCF_LOOKAHEAD_DAYS),
-            today_taipei() + timedelta(days=1),
-        )
-        while request_date <= last_request_date:
-            payload, raw_payload = self._fetch_nomura_payload(fund, request_date)
-            if _nomura_payload_has_no_entries(payload):
-                request_date += timedelta(days=1)
-                continue
-            snapshot = parse_nomura_holdings_payload(
-                payload,
-                fund=fund,
-                raw_payload=raw_payload,
-            )
-            if snapshot.data_date == expected_data_date:
-                return snapshot
-            if snapshot.data_date > expected_data_date:
-                break
-            request_date += timedelta(days=1)
-        raise ActiveEtfProviderError("active_etf_official_snapshot_date_unavailable")
-
-    def _fetch_nomura_payload(
-        self,
-        fund: ActiveEtfFundDescriptor,
-        request_date: date,
-    ) -> tuple[object, bytes]:
-        response = self._request_post(
-            NOMURA_TRADE_INFO_URL,
-            timeout=self._timeout_seconds,
-            headers={**_REQUEST_HEADERS, "Content-Type": "application/json"},
-            json={
-                "Type": 2,
-                "Keyword": fund.fund_code,
-                "FundNo": fund.fund_code,
-                "Date": request_date.isoformat(),
-            },
-        )
-        _raise_for_status(response)
-        response_content = getattr(response, "content", None)
-        if isinstance(response_content, bytes) and len(response_content) > _MAX_HTML_CHARACTERS:
-            raise ActiveEtfProviderError("active_etf_holdings_response_too_large")
-        payload = response.json()
-        raw_payload = (
-            response_content
-            if isinstance(response_content, bytes) and response_content
-            else json.dumps(
-                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8")
-        )
-        return payload, raw_payload
-
-
 class MoneyDjActiveEtfProvider:
     source_provider = "moneydj"
 
@@ -568,68 +406,13 @@ def _parse_weight_pct(value: str) -> Decimal:
         raise ActiveEtfProviderError("active_etf_holding_weight_invalid") from exc
 
 
-def _parse_json_nonnegative_integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ActiveEtfProviderError("active_etf_holding_shares_invalid")
-    return _parse_nonnegative_integer(str(value))
-
-
-def _parse_json_weight_pct(value: object) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
-        raise ActiveEtfProviderError("active_etf_holding_weight_invalid")
-    return _parse_weight_pct(str(value))
-
-
-def _build_official_snapshot(
-    *,
-    fund: ActiveEtfFundDescriptor,
-    data_date: date,
-    fetched_at: datetime,
-    holdings: list[ActiveEtfHoldingRow],
-    raw_payload: bytes,
-    parser_version: str,
-    source_url: str,
-) -> ActiveEtfFundSnapshot:
-    normalized_payload = {
-        "data_date": data_date.isoformat(),
-        "fund_code": fund.fund_code,
-        "holdings": [
-            {
-                "symbol": row.symbol,
-                "name": row.name,
-                "shares": row.shares,
-                "weight_pct": str(row.weight_pct),
-                "position_order": row.position_order,
-            }
-            for row in holdings
-        ],
-    }
-    return ActiveEtfFundSnapshot(
-        fund=fund,
-        data_date=data_date,
-        fetched_at=fetched_at,
-        holdings=tuple(holdings),
-        skipped_instrument_count=0,
-        payload_hash=hashlib.sha256(raw_payload).hexdigest(),
-        normalized_hash=hashlib.sha256(
-            json.dumps(normalized_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest(),
-        parser_version=parser_version,
-        raw_payload=raw_payload,
-        source_provider="issuer_official",
-        source_url=source_url,
-    )
-
-
 __all__ = [
     "MONEYDJ_PARSER_VERSION",
     "ActiveEtfFundDescriptor",
     "ActiveEtfFundSnapshot",
     "ActiveEtfHoldingRow",
     "ActiveEtfProviderError",
-    "IssuerOfficialActiveEtfProvider",
     "MoneyDjActiveEtfProvider",
     "parse_moneydj_holdings_html",
-    "parse_nomura_holdings_payload",
     "parse_twse_active_equity_funds",
 ]

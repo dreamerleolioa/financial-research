@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session, selectinload
 from ai_stock_sentinel.active_etf_holdings.provider import (
     ActiveEtfFundDescriptor,
     ActiveEtfFundSnapshot,
-    ActiveEtfHoldingRow,
     ActiveEtfProviderError,
 )
 from ai_stock_sentinel.active_etf_holdings.schemas import (
@@ -52,24 +51,10 @@ class ActiveEtfHoldingsProvider(Protocol):
     def fetch_snapshot(self, fund: ActiveEtfFundDescriptor) -> ActiveEtfFundSnapshot: ...
 
 
-class ActiveEtfVerificationProvider(Protocol):
-    source_provider: str
-
-    def supports(self, fund_code: str) -> bool: ...
-
-    def fetch_snapshot(
-        self,
-        fund: ActiveEtfFundDescriptor,
-        *,
-        expected_data_date: date | None = None,
-    ) -> ActiveEtfFundSnapshot: ...
-
-
 def refresh_active_etf_holdings(
     db: Session,
     *,
     provider: ActiveEtfHoldingsProvider,
-    verification_provider: ActiveEtfVerificationProvider | None = None,
     fund_codes: list[str] | None = None,
     max_workers: int = 4,
 ) -> ActiveEtfRefreshResponse:
@@ -89,9 +74,7 @@ def refresh_active_etf_holdings(
     updated = 0
     reused = 0
     errors: list[ActiveEtfRefreshError] = []
-    snapshot_pairs: list[
-        tuple[ActiveEtfFundSnapshot, ActiveEtfFundSnapshot | None, bool, bool]
-    ] = []
+    snapshots: list[ActiveEtfFundSnapshot] = []
     worker_count = min(max(1, max_workers), 4, len(selected_codes))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
@@ -101,40 +84,7 @@ def refresh_active_etf_holdings(
         for future in as_completed(futures):
             fund_code = futures[future]
             try:
-                primary_snapshot = future.result()
-                verification_snapshot = None
-                verification_supported = (
-                    verification_provider is not None
-                    and verification_provider.supports(fund_code)
-                )
-                verification_fetch_failed = False
-                if verification_supported:
-                    try:
-                        assert verification_provider is not None
-                        verification_snapshot = verification_provider.fetch_snapshot(
-                            registry_by_code[fund_code],
-                            expected_data_date=primary_snapshot.data_date,
-                        )
-                    except Exception:
-                        verification_fetch_failed = True
-                        logger.exception(
-                            "Active ETF verification fetch failed fund_code=%s",
-                            fund_code,
-                        )
-                        errors.append(
-                            ActiveEtfRefreshError(
-                                fund_code=fund_code,
-                                code="active_etf_verification_fetch_failed",
-                            )
-                        )
-                snapshot_pairs.append(
-                    (
-                        primary_snapshot,
-                        verification_snapshot,
-                        verification_supported,
-                        verification_fetch_failed,
-                    )
-                )
+                snapshots.append(future.result())
             except ActiveEtfProviderError as exc:
                 error_code = str(exc)
                 if error_code == "active_etf_holdings_not_published":
@@ -163,47 +113,15 @@ def refresh_active_etf_holdings(
                     )
                 )
 
-    verified = 0
     single_source = 0
-    conflicted = 0
-    for (
-        snapshot,
-        verification_snapshot,
-        verification_supported,
-        verification_fetch_failed,
-    ) in sorted(
-        snapshot_pairs,
-        key=lambda item: item[0].fund.fund_code,
-    ):
+    for snapshot in sorted(snapshots, key=lambda item: item.fund.fund_code):
         try:
-            verification_status, verification_details = _reconcile_snapshots(
-                snapshot,
-                verification_snapshot,
-                verification_supported=verification_supported,
-            )
             _upsert_observation(db, snapshot, source_provider=provider.source_provider)
-            if verification_snapshot is not None:
-                assert verification_provider is not None
-                _upsert_observation(
-                    db,
-                    verification_snapshot,
-                    source_provider=verification_provider.source_provider,
-                )
-            if verification_fetch_failed and _has_matching_verified_snapshot(
+            outcome = _upsert_snapshot(
                 db,
                 snapshot,
                 source_provider=provider.source_provider,
-            ):
-                verification_status = "verified"
-                outcome = "reused"
-            else:
-                outcome = _upsert_snapshot(
-                    db,
-                    snapshot,
-                    source_provider=provider.source_provider,
-                    verification_status=verification_status,
-                    verification_details=verification_details,
-                )
+            )
             db.commit()
         except Exception:
             db.rollback()
@@ -225,12 +143,7 @@ def refresh_active_etf_holdings(
             updated += 1
         else:
             reused += 1
-        if verification_status == "verified":
-            verified += 1
-        elif verification_status == "conflict":
-            conflicted += 1
-        else:
-            single_source += 1
+        single_source += 1
 
     return ActiveEtfRefreshResponse(
         status="partial" if errors else "completed",
@@ -239,9 +152,9 @@ def refresh_active_etf_holdings(
         snapshots_created=created,
         snapshots_updated=updated,
         snapshots_reused=reused,
-        verified_snapshots=verified,
+        verified_snapshots=0,
         single_source_snapshots=single_source,
-        conflicted_snapshots=conflicted,
+        conflicted_snapshots=0,
         errors=sorted(errors, key=lambda error: error.fund_code),
     )
 
@@ -255,6 +168,7 @@ def get_active_etf_daily_response(
     available_dates = list(
         db.scalars(
             select(ActiveEtfHoldingSnapshot.data_date)
+            .where(ActiveEtfHoldingSnapshot.source_provider == "moneydj")
             .distinct()
             .order_by(ActiveEtfHoldingSnapshot.data_date.desc())
             .limit(available_date_limit)
@@ -282,6 +196,7 @@ def get_active_etf_daily_response(
             )
             .where(
                 ActiveEtfHoldingSnapshot.data_date == selected_date,
+                ActiveEtfHoldingSnapshot.source_provider == "moneydj",
                 ActiveEtfHoldingSnapshot.fund_code.in_([fund.fund_code for fund in funds]),
             )
         ).unique()
@@ -292,7 +207,9 @@ def get_active_etf_daily_response(
             select(
                 ActiveEtfHoldingSnapshot.fund_code,
                 func.max(ActiveEtfHoldingSnapshot.data_date),
-            ).group_by(ActiveEtfHoldingSnapshot.fund_code)
+            )
+            .where(ActiveEtfHoldingSnapshot.source_provider == "moneydj")
+            .group_by(ActiveEtfHoldingSnapshot.fund_code)
         ).all()
     )
 
@@ -313,42 +230,20 @@ def get_active_etf_daily_response(
             )
             continue
         sources = _source_evidence_for_snapshot(db, current)
-        verification_reason = _verification_reason(current)
+        verification_reason = "moneydj_only"
         current_evidence = _period_evidence_for_snapshot(
             db,
             current,
             period="current",
             sources=sources,
         )
-        if current.verification_status == "conflict":
-            coverage.append(
-                ActiveEtfCoverageFund(
-                    fund_code=fund.fund_code,
-                    name=fund.name,
-                    category=_snapshot_category(current),
-                    source_provider=current.source_provider,
-                    source_url=current.source_url,
-                    status="source_conflict",
-                    verification_status=current.verification_status,
-                    source_count=current.source_count,
-                    verification_reason=verification_reason,
-                    sources=sources,
-                    evidence_periods=[current_evidence],
-                    data_date=current.data_date,
-                    latest_data_date=latest_dates.get(fund.fund_code),
-                    fetched_at=current.fetched_at,
-                )
-            )
-            continue
         previous = db.scalar(
             select(ActiveEtfHoldingSnapshot)
             .options(selectinload(ActiveEtfHoldingSnapshot.holdings))
             .where(
                 ActiveEtfHoldingSnapshot.fund_code == fund.fund_code,
                 ActiveEtfHoldingSnapshot.data_date < selected_date,
-                ActiveEtfHoldingSnapshot.verification_status.in_(
-                    ("verified", "single_source")
-                ),
+                ActiveEtfHoldingSnapshot.source_provider == "moneydj",
             )
             .order_by(ActiveEtfHoldingSnapshot.data_date.desc())
             .limit(1)
@@ -362,8 +257,8 @@ def get_active_etf_daily_response(
                     source_provider=current.source_provider,
                     source_url=current.source_url,
                     status="no_baseline",
-                    verification_status=current.verification_status,
-                    source_count=current.source_count,
+                    verification_status="single_source",
+                    source_count=1,
                     verification_reason=verification_reason,
                     sources=sources,
                     evidence_periods=[current_evidence],
@@ -388,8 +283,8 @@ def get_active_etf_daily_response(
                 source_provider=current.source_provider,
                 source_url=current.source_url,
                 status="ready",
-                verification_status=current.verification_status,
-                source_count=current.source_count,
+                verification_status="single_source",
+                source_count=1,
                 verification_reason=verification_reason,
                 sources=sources,
                 evidence_periods=[current_evidence, previous_evidence],
@@ -424,10 +319,7 @@ def get_active_etf_daily_response(
         available_dates=available_dates,
         generated_at=generated_at,
         expected_funds=len(funds),
-        covered_funds=sum(
-            snapshot.verification_status in {"verified", "single_source"}
-            for snapshot in current_snapshots
-        ),
+        covered_funds=len(current_snapshots),
         summary=summary,
         funds=coverage,
         changes=changes,
@@ -476,8 +368,6 @@ def _upsert_snapshot(
     snapshot: ActiveEtfFundSnapshot,
     *,
     source_provider: str,
-    verification_status: str,
-    verification_details: dict,
 ) -> str:
     existing = db.scalar(
         select(ActiveEtfHoldingSnapshot).where(
@@ -490,13 +380,16 @@ def _upsert_snapshot(
         "category": snapshot.fund.category,
         "normalized_hash": normalized_hash,
     }
-    source_count = len(verification_details.get("sources", [])) or 1
+    verification_details = {
+        "reason": "moneydj_only",
+        "sources": [_snapshot_evidence_dict(snapshot, source_provider)],
+    }
     if existing is not None:
         existing_normalized_hash = (existing.source_metadata or {}).get("normalized_hash")
         if (
             existing_normalized_hash == normalized_hash
             and existing.parser_version == snapshot.parser_version
-            and existing.verification_status == verification_status
+            and existing.verification_status == "single_source"
             and existing.verification_details == verification_details
         ):
             existing.fetched_at = snapshot.fetched_at
@@ -506,7 +399,7 @@ def _upsert_snapshot(
             existing.holding_count = len(snapshot.holdings)
             existing.skipped_instrument_count = snapshot.skipped_instrument_count
             existing.source_metadata = metadata
-            existing.source_count = source_count
+            existing.source_count = 1
             return "reused"
         db.execute(
             delete(ActiveEtfHolding).where(ActiveEtfHolding.snapshot_id == existing.id)
@@ -526,8 +419,8 @@ def _upsert_snapshot(
             holding_count=len(snapshot.holdings),
             skipped_instrument_count=snapshot.skipped_instrument_count,
             source_metadata=metadata,
-            verification_status=verification_status,
-            source_count=source_count,
+            verification_status="single_source",
+            source_count=1,
             verification_details=verification_details,
         )
         db.add(row)
@@ -542,8 +435,8 @@ def _upsert_snapshot(
     row.holding_count = len(snapshot.holdings)
     row.skipped_instrument_count = snapshot.skipped_instrument_count
     row.source_metadata = metadata
-    row.verification_status = verification_status
-    row.source_count = source_count
+    row.verification_status = "single_source"
+    row.source_count = 1
     row.verification_details = verification_details
     db.add_all(
         [
@@ -559,25 +452,6 @@ def _upsert_snapshot(
         ]
     )
     return outcome
-
-
-def _has_matching_verified_snapshot(
-    db: Session,
-    snapshot: ActiveEtfFundSnapshot,
-    *,
-    source_provider: str,
-) -> bool:
-    existing = db.scalar(
-        select(ActiveEtfHoldingSnapshot).where(
-            ActiveEtfHoldingSnapshot.fund_code == snapshot.fund.fund_code,
-            ActiveEtfHoldingSnapshot.data_date == snapshot.data_date,
-            ActiveEtfHoldingSnapshot.source_provider == source_provider,
-            ActiveEtfHoldingSnapshot.verification_status == "verified",
-        )
-    )
-    if existing is None:
-        return False
-    return (existing.source_metadata or {}).get("normalized_hash") == snapshot.normalized_hash
 
 
 def _upsert_observation(
@@ -647,84 +521,6 @@ def _upsert_observation(
     )
 
 
-def _reconcile_snapshots(
-    primary: ActiveEtfFundSnapshot,
-    verification: ActiveEtfFundSnapshot | None,
-    *,
-    verification_supported: bool,
-) -> tuple[str, dict]:
-    sources = [_snapshot_evidence_dict(primary, "moneydj")]
-    if verification is None:
-        return (
-            "single_source",
-            {
-                "reason": (
-                    "verification_source_unavailable"
-                    if verification_supported
-                    else "official_source_unsupported"
-                ),
-                "sources": sources,
-            },
-        )
-    sources.append(_snapshot_evidence_dict(verification, "issuer_official"))
-    if primary.data_date != verification.data_date:
-        return (
-            "conflict",
-            {
-                "reason": "source_date_mismatch",
-                "sources": sources,
-                "primary_date": primary.data_date.isoformat(),
-                "verification_date": verification.data_date.isoformat(),
-            },
-        )
-    primary_rows = _rows_by_comparison_symbol(primary)
-    verification_rows = _rows_by_comparison_symbol(verification)
-    missing_from_official = sorted(primary_rows.keys() - verification_rows.keys())
-    missing_from_primary = sorted(verification_rows.keys() - primary_rows.keys())
-    share_mismatches = [
-        {
-            "symbol": symbol,
-            "primary_shares": primary_rows[symbol].shares,
-            "verification_shares": verification_rows[symbol].shares,
-        }
-        for symbol in sorted(primary_rows.keys() & verification_rows.keys())
-        if primary_rows[symbol].shares != verification_rows[symbol].shares
-    ]
-    if missing_from_official or missing_from_primary or share_mismatches:
-        return (
-            "conflict",
-            {
-                "reason": "holding_mismatch",
-                "sources": sources,
-                "missing_from_official": missing_from_official[:20],
-                "missing_from_primary": missing_from_primary[:20],
-                "share_mismatches": share_mismatches[:20],
-                "mismatch_count": (
-                    len(missing_from_official)
-                    + len(missing_from_primary)
-                    + len(share_mismatches)
-                ),
-            },
-        )
-    return "verified", {"reason": "share_inventory_match", "sources": sources}
-
-
-def _comparison_symbol(symbol: str) -> str:
-    return symbol.split(".", 1)[0].strip().upper()
-
-
-def _rows_by_comparison_symbol(
-    snapshot: ActiveEtfFundSnapshot,
-) -> dict[str, ActiveEtfHoldingRow]:
-    rows: dict[str, ActiveEtfHoldingRow] = {}
-    for row in snapshot.holdings:
-        symbol = _comparison_symbol(row.symbol)
-        if symbol in rows:
-            raise ActiveEtfProviderError("active_etf_comparison_symbol_collision")
-        rows[symbol] = row
-    return rows
-
-
 def _snapshot_evidence_dict(
     snapshot: ActiveEtfFundSnapshot,
     fallback_provider: str,
@@ -754,12 +550,6 @@ def _changes_for_snapshots(
     common_scale_ratio = (
         _quantize(common_scale_ratio_raw) if common_scale_ratio_raw is not None else None
     )
-    verification_status = (
-        "verified"
-        if current.verification_status == previous.verification_status == "verified"
-        else "single_source"
-    )
-    source_count = min(current.source_count, previous.source_count)
     changes: list[ActiveEtfChange] = []
     for symbol in sorted(current_by_symbol.keys() | previous_by_symbol.keys()):
         current_row = current_by_symbol.get(symbol)
@@ -811,8 +601,8 @@ def _changes_for_snapshots(
                 name=(current_row or previous_row).name,
                 source_provider=current.source_provider,
                 source_url=current.source_url,
-                verification_status=verification_status,
-                source_count=source_count,
+                verification_status="single_source",
+                source_count=1,
                 fetched_at=current.fetched_at,
                 data_date=current.data_date,
                 previous_date=previous.data_date,
@@ -867,26 +657,18 @@ def _snapshot_category(snapshot: ActiveEtfHoldingSnapshot) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _verification_reason(snapshot: ActiveEtfHoldingSnapshot) -> str | None:
-    value = (snapshot.verification_details or {}).get("reason")
-    return value if isinstance(value, str) and value else None
-
-
 def _source_evidence_for_snapshot(
     db: Session,
     snapshot: ActiveEtfHoldingSnapshot,
 ) -> list[ActiveEtfSourceEvidence]:
-    details_sources = (snapshot.verification_details or {}).get("sources", [])
-    expected_keys = {
-        (source.get("source_provider"), source.get("data_date"))
-        for source in details_sources
-        if isinstance(source, dict)
-    }
     observations = list(
         db.scalars(
             select(ActiveEtfSourceObservation)
-            .where(ActiveEtfSourceObservation.fund_code == snapshot.fund_code)
-            .order_by(ActiveEtfSourceObservation.source_provider)
+            .where(
+                ActiveEtfSourceObservation.fund_code == snapshot.fund_code,
+                ActiveEtfSourceObservation.data_date == snapshot.data_date,
+                ActiveEtfSourceObservation.source_provider == "moneydj",
+            )
         )
     )
     return [
@@ -898,7 +680,6 @@ def _source_evidence_for_snapshot(
             payload_hash=observation.payload_hash,
         )
         for observation in observations
-        if (observation.source_provider, observation.data_date.isoformat()) in expected_keys
     ]
 
 
@@ -912,9 +693,9 @@ def _period_evidence_for_snapshot(
     return ActiveEtfPeriodEvidence(
         period=period,
         data_date=snapshot.data_date,
-        verification_status=snapshot.verification_status,
-        source_count=snapshot.source_count,
-        verification_reason=_verification_reason(snapshot),
+        verification_status="single_source",
+        source_count=1,
+        verification_reason="moneydj_only",
         sources=(
             sources
             if sources is not None
@@ -939,7 +720,6 @@ def _quantize(value: Decimal) -> Decimal:
 
 __all__ = [
     "ActiveEtfHoldingsProvider",
-    "ActiveEtfVerificationProvider",
     "get_active_etf_daily_response",
     "refresh_active_etf_holdings",
 ]

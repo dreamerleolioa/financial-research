@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.active_etf_holdings.provider import (
     ActiveEtfProviderError,
-    IssuerOfficialActiveEtfProvider,
     MoneyDjActiveEtfProvider,
 )
 from ai_stock_sentinel.active_etf_holdings.schemas import (
@@ -17,7 +16,6 @@ from ai_stock_sentinel.active_etf_holdings.schemas import (
 )
 from ai_stock_sentinel.active_etf_holdings.service import (
     ActiveEtfHoldingsProvider,
-    ActiveEtfVerificationProvider,
     get_active_etf_daily_response,
     refresh_active_etf_holdings,
 )
@@ -34,10 +32,6 @@ def get_active_etf_holdings_provider() -> ActiveEtfHoldingsProvider:
     return MoneyDjActiveEtfProvider()
 
 
-def get_active_etf_verification_provider() -> ActiveEtfVerificationProvider:
-    return IssuerOfficialActiveEtfProvider()
-
-
 @router.post(
     "/internal/active-etf-holdings/refresh",
     response_model=ActiveEtfRefreshResponse,
@@ -47,15 +41,11 @@ def refresh_active_etf_holdings_endpoint(
     payload: ActiveEtfRefreshRequest,
     db: Session = Depends(get_db),
     provider: ActiveEtfHoldingsProvider = Depends(get_active_etf_holdings_provider),
-    verification_provider: ActiveEtfVerificationProvider = Depends(
-        get_active_etf_verification_provider
-    ),
 ) -> ActiveEtfRefreshResponse:
     try:
         return refresh_active_etf_holdings(
             db,
             provider=provider,
-            verification_provider=verification_provider,
             fund_codes=payload.fund_codes,
         )
     except ActiveEtfProviderError as exc:
@@ -86,6 +76,5 @@ def get_active_etf_holdings_daily_endpoint(
 
 __all__ = [
     "get_active_etf_holdings_provider",
-    "get_active_etf_verification_provider",
     "router",
 ]
