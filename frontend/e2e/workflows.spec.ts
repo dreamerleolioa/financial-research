@@ -99,6 +99,25 @@ test("Active ETF tracking resets the selected fund when search is cleared", asyn
   await expect(page.getByRole("button", { name: "全部基金 5" })).toHaveAttribute("aria-pressed", "true");
 });
 
+test("Active ETF tracking can clear the selected fund from its summary", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily });
+
+  await page.goto("/active-etf");
+  await page
+    .getByRole("button", { name: /00985A/ })
+    .first()
+    .click();
+  await expect(page.getByText("本期來源 2026-08-28", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "查看全部基金" }).click();
+
+  await expect(page.getByRole("button", { name: "全部基金 5" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "查看全部基金" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "查看 2330.TW 台積電 持股變化" })).toHaveCount(2);
+});
+
 test("Active ETF tracking can clear an unavailable date from the error state", async ({ page }) => {
   await authenticate(page);
   await installApiMocks(page, { activeEtfDaily: {} });
@@ -125,6 +144,10 @@ test("Active ETF tracking keeps source labels readable on mobile", async ({ page
   await expect(verifiedCard.getByText("雙來源確認", { exact: true })).toBeVisible();
   await expect(singleSourceCard.getByText("雙來源確認", { exact: true })).toHaveCount(0);
   await expect(page.getByText("單一來源", { exact: true }).locator("..").getByText("1", { exact: true })).toBeVisible();
+
+  await page.getByRole("combobox", { name: "基金" }).selectOption("00985A");
+  await expect(page.getByRole("button", { name: "查看全部基金" })).toBeVisible();
+  expect(await page.locator("body").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   await page.getByRole("button", { name: "查看 2454.TW 聯發科 持股變化" }).click();
   const mobileDrawer = page.getByRole("dialog", { name: "2454.TW 聯發科" });

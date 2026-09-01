@@ -90,7 +90,7 @@ function ChangeVerificationBadge({ change }: { change: ActiveEtfChange }) {
   return <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>;
 }
 
-function FundEvidenceSummary({ fund }: { fund: ActiveEtfCoverageFund }) {
+function FundEvidenceSummary({ fund, onClear }: { fund: ActiveEtfCoverageFund; onClear: () => void }) {
   const comparisonState =
     fund.status === "ready"
       ? `可比較 ${fund.previous_date} → ${fund.data_date}`
@@ -109,7 +109,12 @@ function FundEvidenceSummary({ fund }: { fund: ActiveEtfCoverageFund }) {
           <p className="mt-1 text-xs leading-relaxed text-text-muted">{comparisonState}</p>
           {sourceNote && <p className="mt-1 text-xs leading-relaxed text-text-faint">{sourceNote}</p>}
         </div>
-        <VerificationBadge fund={fund} />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <VerificationBadge fund={fund} />
+          <button type="button" onClick={onClear} className="ui-button-secondary">
+            查看全部基金
+          </button>
+        </div>
       </div>
       {fund.sources.length > 0 && (
         <div className="mt-3">
@@ -679,7 +684,9 @@ export default function ActiveEtfPage() {
             <div className="mt-4 grid gap-5 xl:grid-cols-[15rem_minmax(0,1fr)]">
               <FundIndex funds={data.funds} selectedFund={selectedFund} onSelect={setSelectedFund} />
               <div className="min-w-0">
-                {selectedFundRecord && <FundEvidenceSummary fund={selectedFundRecord} />}
+                {selectedFundRecord && (
+                  <FundEvidenceSummary fund={selectedFundRecord} onClear={() => setSelectedFund("all")} />
+                )}
                 <ChangeTable changes={visibleChanges} onSelect={setSelectedChange} />
                 {filteredChanges.length > 0 && (
                   <div className="mt-4 flex flex-col items-center gap-2 text-xs text-text-faint sm:flex-row sm:justify-between">
