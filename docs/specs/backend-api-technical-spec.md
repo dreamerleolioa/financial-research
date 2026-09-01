@@ -62,25 +62,25 @@ make run-api
 
 - **產品邊界**：這是獨立的來源揭露觀察面，不參與 Daily Radar universe、prefilter、score、bucket、risk label 或 ranking。持股股數增減也不得直接命名為基金經理人買進／賣出，因為 ETF 申購贖回可能讓整體持股等比例改變。
 - **基金登錄**：每次 refresh 先讀 TWSE `/rwd/zh/ETF/activeList`，只納入六碼證券代號以 `A` 結尾的股票型主動式 ETF；`D` 結尾的債券型不在第一版範圍。基金移出官方清單時設為 disabled，歷史快照不得 cascade delete。若官方清單相較既有 enabled coverage 一次下降超過 20%，整次 registry sync fail closed，避免 partial response 大量誤停用。
-- **持股來源與驗證覆蓋**：MoneyDJ 公開「全部持股」頁是統一的 primary adapter；發行投信官網是獨立 verification adapter。目前完整官方 adapter 支援野村 `00980A`、`00985A`、`00999A`，其餘基金明確標為 `official_source_unsupported`，不得用發行投信只揭露前十大持股的頁面冒充完整第二來源。Parser 只接受來源宣告日期、可辨識證券代號、非負整數股數與 0 到 100 的權重；重複股票、未來資料日、空表、缺欄資料列、超過 2,000 列、回應超過 5 MB 或欄位畸形時 fail closed。
-- **逐來源證據**：`active_etf_source_observations` 與 `active_etf_source_holdings` 分開保存 provider、資料日、來源 URL、擷取時間、parser version、SHA-256、最多 5 MB 的 gzip 原始 payload 與正規化持股。這些資料不能由 canonical snapshot 反推或互相覆蓋，可供事後重播與來源稽核。
-- **對帳與 canonical snapshot**：同基金／同 `data_date` 只有一份 canonical snapshot，但同時保存 `verification_status`、`source_count` 與 reconciliation details。兩來源須使用相同資料日，正規化股票代碼集合與每檔股數也須完全相同才是 `verified`；權重因估值時間與四捨五入可能不同，只作證據不作通過條件。`verified` 與 `single_source` 的目前快照都可和嚴格更早、最近一份非衝突快照推導新增、增加、減少、移除；只有前後兩期都為 `verified` 時，該筆變化才標記為雙來源確認。`conflict` 只保留證據，不發布變化或 consensus。
+- **持股來源**：MoneyDJ 公開「全部持股」頁是唯一持股 adapter，有資料即保存並供公開比較。Parser 只接受來源宣告日期、可辨識證券代號、非負整數股數與 0 到 100 的權重；重複股票、未來資料日、空表、缺欄資料列、超過 2,000 列、回應超過 5 MB 或欄位畸形時 fail closed。
+- **原始證據**：`active_etf_source_observations` 與 `active_etf_source_holdings` 保存 MoneyDJ 的 provider、資料日、來源 URL、擷取時間、parser version、SHA-256、最多 5 MB 的 gzip 原始 payload 與正規化持股，供事後重播與來源稽核。切換前已存在的官方觀測不做破壞性刪除，但 runtime 與 public read path 不再讀取或顯示。
+- **Canonical snapshot**：同基金／同 `data_date` 只有一份 MoneyDJ canonical snapshot。既有 `verification_status`、`source_count` 與 `verification_details` 欄位為滾動部署與歷史資料相容保留，新寫入固定為 `single_source`、`1` 與 `moneydj_only`。目前快照可和嚴格更早、最近一份 MoneyDJ 快照推導新增、增加、減少、移除；舊 `verified`／`conflict` 值在 public response 也正規化為 MoneyDJ 單一來源，不再封鎖變化或 consensus。
 - **比較語意**：權重變化只作同列證據。至少五檔連續持股時，以股數比率中位數估計共同基金規模倍率，`likely_fund_scale_change` 只表示原始增減接近共同倍率，不是交易結論。
 
 #### `POST /internal/active-etf-holdings/refresh`
 
 - 需既有 internal bearer token。
 - Request body：`{"fund_codes": ["00985A"]}`；`fund_codes` 可省略，代表更新官方登錄內全部股票型主動式 ETF。
-- 正式排程：`.github/workflows/active-etf-holdings.yml` 在台灣時間平日 08:00、14:00 呼叫全量 refresh，沿用 Zeabur backend URL 與 Daily Radar internal token secrets。沒有任何 verified snapshot、存在 conflict，或品質計數無法覆蓋本次 selected funds 時 job 必須失敗；只有來源頁明確表示該日尚未公布持股時，才允許 `partial` 且把該基金納入完整性計數。尚未有官方 adapter 的基金可維持 `single_source`，但不算 verified。已完成的逐基金 transaction 不回滾。
-- Response：`status`、`expected_funds`、`selected_funds`、`snapshots_created`、`snapshots_updated`、`snapshots_reused`、`verified_snapshots`、`single_source_snapshots`、`conflicted_snapshots` 與 privacy-safe `errors[{fund_code, code}]`。
+- 正式排程：`.github/workflows/active-etf-holdings.yml` 在台灣時間平日 08:00、14:00 呼叫全量 refresh，沿用 Zeabur backend URL 與 Daily Radar internal token secrets。成功建立／更新／重用的 MoneyDJ 快照數加上來源頁明確表示尚未公布的基金數，必須完整覆蓋 selected funds；其他 partial/error 或品質計數缺口讓 job 失敗。已完成的逐基金 transaction 不回滾。
+- Response：`status`、`expected_funds`、`selected_funds`、`snapshots_created`、`snapshots_updated`、`snapshots_reused`、`single_source_snapshots` 與 privacy-safe `errors[{fund_code, code}]`。`verified_snapshots` 與 `conflicted_snapshots` 暫為相容欄位，MoneyDJ-only runtime 固定回傳 `0`。
 - 官方 registry 無法驗證或指定基金不在官方清單時回 `502`，不得停用既有基金或建立推測資料。
 
 #### `GET /active-etf-holdings/daily?data_date=YYYY-MM-DD`
 
 - 需要應用程式登入 JWT。
 - `data_date` 省略時使用目前資料庫最新來源宣告日。指定日期不存在或尚無任何快照時回 `404` 與 `active_etf_holdings_not_found`。
-- Response 包含 `available_dates`、expected/usable coverage、summary、逐基金日期／前次日期／品質狀態、股數變化列，以及每個有變化個股的彙整；彙整達兩檔以上且方向一致時才可標記多基金共識。逐基金與每筆變化都投影 `verification_status`、`source_count`；逐基金另提供 privacy-safe reason、目前快照相容欄位 `sources[]`，以及依 `current`／`previous` 分期的 `evidence_periods[]`。每期證據各自包含資料日、驗證狀態、來源數與 `sources[]`（provider、URL、資料日、擷取時間、hash），不得用目前期來源冒充整段比較證據。前端不得自行猜測來源或把 raw payload 暴露給 public API。
-- 某基金沒有該 `data_date` 快照時狀態為 `missing`；資料日、持股集合或股數不一致時為 `source_conflict`；`verified` 或 `single_source` 但沒有前次非衝突快照時為 `no_baseline`。`missing` 與 `source_conflict` 不得拿較舊資料混入當日統計，也不得捏造零基準變化。
+- Response 包含 `available_dates`、expected/usable coverage、summary、逐基金日期／前次日期／資料狀態、股數變化列，以及每個有變化個股的彙整；彙整達兩檔以上且方向一致時才可標記多基金共識。逐基金提供本期 MoneyDJ `sources[]`，以及依 `current`／`previous` 分期的 `evidence_periods[]`；每期各自包含資料日與 MoneyDJ 的 provider、URL、擷取時間、hash，不得用目前期來源冒充整段比較證據。相容欄位 `verification_status`／`source_count`／reason 固定投影為 `single_source`／`1`／`moneydj_only`，前端不得暴露 raw payload。
+- 某基金沒有該 `data_date` MoneyDJ 快照時狀態為 `missing`；有目前快照但沒有嚴格更早快照時為 `no_baseline`，否則為 `ready`。`missing` 不得拿較舊資料混入當日統計，也不得捏造零基準變化。
 
 ### `POST /analyze`
 

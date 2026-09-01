@@ -52,20 +52,26 @@ def test_active_etf_workflow_only_allows_explicitly_unpublished_partial_results(
     assert '.status == "partial"' in text
     assert 'all(.code == "active_etf_holdings_not_published")' in text
     assert 'select(.code == "active_etf_holdings_not_published")' in text
-    assert '((.verified_snapshots // 0) > 0)' in text
+    assert '((.verified_snapshots // 0) == 0)' in text
     assert '((.conflicted_snapshots // 0) == 0)' in text
     assert '(.single_source_snapshots // 0)' in text
+    assert '(.snapshots_created // 0)' in text
+    assert '(.snapshots_updated // 0)' in text
+    assert '(.snapshots_reused // 0)' in text
     assert '== .selected_funds' in text
     assert "sk-" not in text
     assert "token=" not in text.lower()
 
 
-def test_active_etf_workflow_gate_rejects_operational_failures_and_conflicts() -> None:
+def test_active_etf_workflow_gate_rejects_operational_failures_and_count_mismatches() -> None:
     unpublished_payload = {
         "status": "partial",
         "selected_funds": 30,
-        "verified_snapshots": 3,
-        "single_source_snapshots": 26,
+        "snapshots_created": 29,
+        "snapshots_updated": 0,
+        "snapshots_reused": 0,
+        "verified_snapshots": 0,
+        "single_source_snapshots": 29,
         "conflicted_snapshots": 0,
         "errors": [
             {
@@ -94,9 +100,17 @@ def test_active_etf_workflow_gate_rejects_operational_failures_and_conflicts() -
         _workflow_gate_accepts(
             {
                 **unpublished_payload,
-                "verified_snapshots": 0,
                 "single_source_snapshots": 26,
                 "conflicted_snapshots": 3,
+            }
+        )
+        is False
+    )
+    assert (
+        _workflow_gate_accepts(
+            {
+                **unpublished_payload,
+                "snapshots_created": 28,
             }
         )
         is False

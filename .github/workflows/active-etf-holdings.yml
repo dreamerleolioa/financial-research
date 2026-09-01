@@ -54,9 +54,7 @@ jobs:
                 snapshots_created,
                 snapshots_updated,
                 snapshots_reused,
-                verified_snapshots,
                 single_source_snapshots,
-                conflicted_snapshots,
                 errors
               }' "${response_file}"
 
@@ -72,17 +70,21 @@ jobs:
                 )
               )
             )
-            and ((.verified_snapshots // 0) > 0)
+            and ((.verified_snapshots // 0) == 0)
             and ((.conflicted_snapshots // 0) == 0)
             and (
-              ((.verified_snapshots // 0)
-              + (.single_source_snapshots // 0)
-              + (.conflicted_snapshots // 0)
+              ((.single_source_snapshots // 0)
               + (
                 (.errors // [])
                 | map(select(.code == "active_etf_holdings_not_published"))
                 | length
               ))
               == .selected_funds
+            )
+            and (
+              ((.snapshots_created // 0)
+              + (.snapshots_updated // 0)
+              + (.snapshots_reused // 0))
+              == (.single_source_snapshots // 0)
             )
           ' "${response_file}" > /dev/null
