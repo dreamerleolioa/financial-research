@@ -1,12 +1,6 @@
 import type { ActiveEtfChange, ActiveEtfCoverageFund, ActiveEtfPeriodEvidence } from "../../lib/activeEtfTypes";
+import { ACTIVE_ETF_ACTION_LABEL as ACTION_LABEL } from "../../features/active-etf/presentation";
 import { DetailDrawer } from "../app-shell/DetailDrawer";
-
-const ACTION_LABEL: Record<ActiveEtfChange["action"], string> = {
-  added: "新增持股",
-  increased: "持股增加",
-  decreased: "持股減少",
-  removed: "不再持有",
-};
 
 function formatShares(value: number): string {
   return new Intl.NumberFormat("zh-TW").format(value);

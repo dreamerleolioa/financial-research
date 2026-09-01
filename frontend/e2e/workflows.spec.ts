@@ -80,6 +80,56 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
 });
 
+test("Active ETF consensus opens contributing fund details and restores focus", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily });
+
+  await page.goto("/active-etf");
+  await page.getByRole("button", { name: "個股共識" }).click();
+
+  const openDrawerButton = page.getByRole("button", { name: "查看 2330.TW 台積電 的 2 檔 ETF 變化" });
+  await openDrawerButton.click();
+
+  const drawer = page.getByRole("dialog", { name: "2330.TW 台積電" });
+  await expect(drawer.getByText("00985A", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("00980A", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("新增持股", { exact: true })).toHaveCount(2);
+  await expect(drawer.getByText("+800,000", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("+320,000", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("雙來源確認", { exact: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "關閉個股 ETF 變化明細" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+  await expect(openDrawerButton).toBeFocused();
+});
+
+test("Active ETF consensus preserves each fund comparison period", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, {
+    activeEtfDaily: {
+      ...activeEtfDaily,
+      funds: activeEtfDaily.funds.map((fund) =>
+        fund.fund_code === "00980A" ? { ...fund, previous_date: "2026-08-26" } : fund,
+      ),
+      changes: activeEtfDaily.changes.map((change) =>
+        change.fund_code === "00980A" && change.symbol === "2330.TW"
+          ? { ...change, previous_date: "2026-08-26" }
+          : change,
+      ),
+    },
+  });
+
+  await page.goto("/active-etf");
+  await page.getByRole("button", { name: "個股共識" }).click();
+  await page.getByRole("button", { name: "查看 2330.TW 台積電 的 2 檔 ETF 變化" }).click();
+
+  const drawer = page.getByRole("dialog", { name: "2330.TW 台積電" });
+  await expect(drawer.getByText("比較區間依基金而異 · 2 檔基金", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("2026-08-27 → 2026-08-28", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("2026-08-26 → 2026-08-28", { exact: true })).toBeVisible();
+});
+
 test("Active ETF tracking resets the selected fund when search is cleared", async ({ page }) => {
   await authenticate(page);
   await installApiMocks(page, { activeEtfDaily });
@@ -159,6 +209,17 @@ test("Active ETF tracking keeps source labels readable on mobile", async ({ page
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("2 檔共識", { exact: true })).toBeVisible();
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
+
+  const openConsensusDrawerButton = page.getByRole("button", { name: "查看 2330.TW 台積電 的 2 檔 ETF 變化" });
+  await openConsensusDrawerButton.click();
+  const consensusDrawer = page.getByRole("dialog", { name: "2330.TW 台積電" });
+  await expect(consensusDrawer.getByText("00985A", { exact: true })).toBeVisible();
+  await expect(consensusDrawer.getByText("00980A", { exact: true })).toBeVisible();
+  expect(await consensusDrawer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.setViewportSize({ width: 320, height: 700 });
+  expect(await consensusDrawer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(openConsensusDrawerButton).toBeFocused();
 });
 
 test("Active ETF consensus labels multi-fund direction conflicts without overstating consensus", async ({ page }) => {

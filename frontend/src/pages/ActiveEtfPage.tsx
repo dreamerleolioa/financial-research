@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ActiveEtfChangeDrawer } from "../components/active-etf/ActiveEtfChangeDrawer";
+import { ActiveEtfConsensusDrawer } from "../components/active-etf/ActiveEtfConsensusDrawer";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
+import {
+  ACTIVE_ETF_ACTION_CLASS as ACTION_CLASS,
+  ACTIVE_ETF_ACTION_LABEL as ACTION_LABEL,
+  getActiveEtfConsensusPresentation,
+} from "../features/active-etf/presentation";
 import { useActiveEtfDailyQuery } from "../features/active-etf/queries";
 import { ApiError } from "../lib/apiClient";
 import type {
@@ -10,20 +16,6 @@ import type {
   ActiveEtfConsensus,
   ActiveEtfCoverageFund,
 } from "../lib/activeEtfTypes";
-
-const ACTION_LABEL: Record<ActiveEtfAction, string> = {
-  added: "新增持股",
-  increased: "持股增加",
-  decreased: "持股減少",
-  removed: "不再持有",
-};
-
-const ACTION_CLASS: Record<ActiveEtfAction, string> = {
-  added: "bg-signal/15 text-signal",
-  increased: "bg-positive/12 text-positive",
-  decreased: "bg-negative/12 text-negative",
-  removed: "bg-badge-neutral-bg text-badge-neutral-text",
-};
 
 type View = "funds" | "consensus";
 type ActionFilter = "all" | ActiveEtfAction;
@@ -348,7 +340,13 @@ function ChangeTable({
   );
 }
 
-function ConsensusList({ consensus }: { consensus: ActiveEtfConsensus[] }) {
+function ConsensusList({
+  consensus,
+  onSelect,
+}: {
+  consensus: ActiveEtfConsensus[];
+  onSelect: (consensus: ActiveEtfConsensus) => void;
+}) {
   if (consensus.length === 0) {
     return (
       <WorkspaceEmptyState
@@ -361,28 +359,14 @@ function ConsensusList({ consensus }: { consensus: ActiveEtfConsensus[] }) {
   return (
     <div className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
       {consensus.map((item, index) => {
-        const hasMultipleFunds = item.fund_count >= 2;
-        const hasFundConsensus = hasMultipleFunds && item.direction !== "mixed";
-        const directionLabel =
-          item.direction === "increase"
-            ? hasFundConsensus
-              ? "共同增加"
-              : "單一基金增加"
-            : item.direction === "decrease"
-              ? hasFundConsensus
-                ? "共同減少"
-                : "單一基金減少"
-              : "方向分歧";
-        const directionClass =
-          item.direction === "increase"
-            ? "text-positive"
-            : item.direction === "decrease"
-              ? "text-negative"
-              : "text-signal";
+        const direction = getActiveEtfConsensusPresentation(item);
         return (
-          <article
+          <button
+            type="button"
             key={item.symbol}
-            className="ui-data-row grid gap-3 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:items-center"
+            onClick={() => onSelect(item)}
+            className="ui-data-row grid w-full gap-3 text-left transition-[background-color,transform] duration-150 [@media(hover:hover)]:hover:bg-card-hover/60 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:items-center"
+            aria-label={`查看 ${item.symbol} ${item.name} 的 ${item.fund_count} 檔 ETF 變化`}
           >
             <span className="font-mono text-sm tabular-nums text-text-faint">{String(index + 1).padStart(2, "0")}</span>
             <div className="min-w-0">
@@ -395,17 +379,20 @@ function ConsensusList({ consensus }: { consensus: ActiveEtfConsensus[] }) {
                 {item.removed_count}
               </p>
             </div>
-            <div className="flex items-center justify-between gap-4 sm:justify-end">
-              <span className={`text-sm font-medium ${directionClass}`}>{directionLabel}</span>
-              {hasFundConsensus ? (
+            <div className="flex items-center justify-between gap-3 sm:justify-end">
+              <span className={`text-sm font-medium ${direction.textClassName}`}>{direction.label}</span>
+              {direction.hasFundConsensus ? (
                 <span className="ui-badge bg-positive/12 text-positive">{item.fund_count} 檔共識</span>
-              ) : hasMultipleFunds ? (
+              ) : direction.hasMultipleFunds ? (
                 <span className="ui-badge bg-signal/15 text-signal">{item.fund_count} 檔方向分歧</span>
               ) : (
                 <span className="min-w-16 text-right font-mono text-sm tabular-nums text-text-muted">1 檔基金</span>
               )}
+              <span className="text-xs text-text-faint" aria-hidden="true">
+                查看 ›
+              </span>
             </div>
-          </article>
+          </button>
         );
       })}
     </div>
@@ -421,13 +408,22 @@ export default function ActiveEtfPage() {
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [search, setSearch] = useState("");
   const [selectedChange, setSelectedChange] = useState<ActiveEtfChange | null>(null);
+  const [selectedConsensusSymbol, setSelectedConsensusSymbol] = useState<string | null>(null);
   const [visibleChangeCount, setVisibleChangeCount] = useState(CHANGE_PAGE_SIZE);
   const closeChangeDrawer = useCallback(() => setSelectedChange(null), []);
+  const closeConsensusDrawer = useCallback(() => setSelectedConsensusSymbol(null), []);
 
   useEffect(() => {
     if (selectedFund === "all" || !query.data) return;
     if (!query.data.funds.some((fund) => fund.fund_code === selectedFund)) setSelectedFund("all");
   }, [query.data, selectedFund]);
+
+  useEffect(() => {
+    if (!selectedConsensusSymbol || !query.data) return;
+    if (!query.data.consensus.some((item) => item.symbol === selectedConsensusSymbol)) {
+      setSelectedConsensusSymbol(null);
+    }
+  }, [query.data, selectedConsensusSymbol]);
 
   useEffect(() => {
     setVisibleChangeCount(CHANGE_PAGE_SIZE);
@@ -530,6 +526,10 @@ export default function ActiveEtfPage() {
   const selectedChangeFund = selectedChange
     ? (data.funds.find((fund) => fund.fund_code === selectedChange.fund_code) ?? null)
     : null;
+  const selectedConsensus = data.consensus.find((item) => item.symbol === selectedConsensusSymbol) ?? null;
+  const selectedConsensusChanges = selectedConsensus
+    ? data.changes.filter((change) => change.symbol === selectedConsensus.symbol)
+    : [];
 
   return (
     <div className="space-y-6">
@@ -715,7 +715,7 @@ export default function ActiveEtfPage() {
                 單檔基金的變化也會列出；兩檔以上方向一致時，才加上多基金共識標記。
               </p>
             </div>
-            <ConsensusList consensus={data.consensus} />
+            <ConsensusList consensus={data.consensus} onSelect={(item) => setSelectedConsensusSymbol(item.symbol)} />
           </div>
         )}
       </section>
@@ -728,6 +728,13 @@ export default function ActiveEtfPage() {
 
       {selectedChange && selectedChangeFund && (
         <ActiveEtfChangeDrawer change={selectedChange} fund={selectedChangeFund} onClose={closeChangeDrawer} />
+      )}
+      {selectedConsensus && selectedConsensusChanges.length > 0 && (
+        <ActiveEtfConsensusDrawer
+          consensus={selectedConsensus}
+          changes={selectedConsensusChanges}
+          onClose={closeConsensusDrawer}
+        />
       )}
     </div>
   );
