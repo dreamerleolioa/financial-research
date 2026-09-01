@@ -480,9 +480,20 @@ export default function ActiveEtfPage() {
             : "請稍後再試；若持續發生，需確認每日擷取流程與來源狀態。"
         }
         actions={
-          <button type="button" onClick={() => void query.refetch()} className="ui-button-secondary">
-            重新讀取
-          </button>
+          <>
+            {requestedDate && (
+              <button
+                type="button"
+                onClick={() => setSearchParams({}, { replace: true })}
+                className="ui-button-primary"
+              >
+                查看最新資料
+              </button>
+            )}
+            <button type="button" onClick={() => void query.refetch()} className="ui-button-secondary">
+              重新讀取
+            </button>
+          </>
         }
       />
     );

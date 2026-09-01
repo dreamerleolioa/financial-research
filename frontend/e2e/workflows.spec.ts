@@ -99,6 +99,17 @@ test("Active ETF tracking resets the selected fund when search is cleared", asyn
   await expect(page.getByRole("button", { name: "全部基金 5" })).toHaveAttribute("aria-pressed", "true");
 });
 
+test("Active ETF tracking can clear an unavailable date from the error state", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily: {} });
+
+  await page.goto("/active-etf?date=2026-08-28");
+  await expect(page.getByRole("heading", { name: "持股變化暫時無法載入", level: 2 })).toBeVisible();
+  await page.getByRole("button", { name: "查看最新資料" }).click();
+
+  await expect(page).toHaveURL(/\/active-etf$/);
+});
+
 test("Active ETF tracking keeps source labels readable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await authenticate(page);
