@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef } from "react";
-import type { ActiveEtfChange, ActiveEtfCoverageFund } from "../../lib/activeEtfTypes";
+import type { ActiveEtfChange, ActiveEtfCoverageFund, ActiveEtfPeriodEvidence } from "../../lib/activeEtfTypes";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -60,6 +60,55 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
       <dd className="mt-1 font-semibold tabular-nums text-text-primary">{value}</dd>
       {helper && <p className="mt-1 text-xs leading-relaxed text-text-muted">{helper}</p>}
     </div>
+  );
+}
+
+function EvidenceBadge({ evidence }: { evidence: ActiveEtfPeriodEvidence }) {
+  if (evidence.verification_status === "verified") {
+    return <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>;
+  }
+  if (evidence.verification_status === "conflict") {
+    return <span className="ui-badge bg-negative/12 text-negative">來源不一致</span>;
+  }
+  return <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">單一來源</span>;
+}
+
+function PeriodEvidence({ evidence }: { evidence: ActiveEtfPeriodEvidence }) {
+  const periodLabel = evidence.period === "current" ? "本期" : "前期";
+  return (
+    <section
+      aria-label={`${periodLabel}證據 ${evidence.data_date}`}
+      className="rounded-[10px] border border-border-subtle bg-surface-raised p-3"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-medium text-text-primary">{periodLabel}證據</h4>
+          <p className="mt-0.5 font-mono text-xs tabular-nums text-text-faint">{evidence.data_date}</p>
+        </div>
+        <EvidenceBadge evidence={evidence} />
+      </div>
+      <div className="mt-3 grid gap-2">
+        {evidence.sources.map((source) => (
+          <a
+            key={`${source.source_provider}-${source.data_date}`}
+            href={source.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex min-h-11 items-center justify-between gap-3 rounded-[10px] border border-border-subtle bg-card px-3 py-2 text-sm text-text-muted transition-colors hover:bg-card-hover hover:text-text-primary"
+          >
+            <span>
+              <strong className="block font-medium text-text-primary">{formatSource(source.source_provider)}</strong>
+              <span className="mt-0.5 block text-xs tabular-nums text-text-faint">
+                資料日 {source.data_date} · 校驗碼 {source.payload_hash.slice(0, 8)}
+              </span>
+            </span>
+            <span className="shrink-0" aria-hidden="true">
+              ↗
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -206,7 +255,7 @@ export function ActiveEtfChangeDrawer({
               {change.verification_status === "verified" ? (
                 <span className="ui-badge bg-positive/12 text-positive">雙來源確認</span>
               ) : (
-                <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">單一來源</span>
+                <span className="ui-badge bg-badge-neutral-bg text-badge-neutral-text">比較含單一來源</span>
               )}
             </div>
             <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
@@ -217,7 +266,7 @@ export function ActiveEtfChangeDrawer({
                 </dd>
               </div>
               <div>
-                <dt className="text-text-faint">來源擷取時間</dt>
+                <dt className="text-text-faint">本期來源擷取時間</dt>
                 <dd className="mt-1 tabular-nums text-text-primary">
                   {new Intl.DateTimeFormat("zh-TW", { dateStyle: "medium", timeStyle: "short" }).format(
                     new Date(change.fetched_at),
@@ -225,29 +274,17 @@ export function ActiveEtfChangeDrawer({
                 </dd>
               </div>
             </dl>
-            <div className="mt-4 grid gap-2">
-              {fund.sources.map((source) => (
-                <a
-                  key={`${source.source_provider}-${source.data_date}`}
-                  href={source.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex min-h-11 items-center justify-between gap-3 rounded-[10px] border border-border-subtle bg-surface-raised px-3 py-2 text-sm text-text-muted transition-colors hover:bg-card-hover hover:text-text-primary"
-                >
-                  <span>
-                    <strong className="block font-medium text-text-primary">
-                      {formatSource(source.source_provider)}
-                    </strong>
-                    <span className="mt-0.5 block text-xs tabular-nums text-text-faint">
-                      資料日 {source.data_date} · 校驗碼 {source.payload_hash.slice(0, 8)}
-                    </span>
-                  </span>
-                  <span className="shrink-0" aria-hidden="true">
-                    ↗
-                  </span>
-                </a>
-              ))}
-            </div>
+            {fund.evidence_periods.length > 0 ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {fund.evidence_periods.map((evidence) => (
+                  <PeriodEvidence key={evidence.period} evidence={evidence} />
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 rounded-[10px] border border-border-subtle bg-surface-raised px-3 py-2 text-xs leading-relaxed text-text-muted">
+                此 API 版本未提供分期來源明細；為避免混淆，不顯示目前期來源作為整段比較證據。
+              </p>
+            )}
           </section>
 
           <p className="text-xs leading-relaxed text-text-faint">

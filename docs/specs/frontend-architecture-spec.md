@@ -230,7 +230,7 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 - Fund changes：桌面寬螢幕使用基金索引加密集比較表；1024px 以下使用基金 select 與卡片，避免在中等寬度壓縮欄位。搜尋與 action filter 只改 client view，不改 server response 或排序語意。
 - Consensus：每個有持股變化的標的都呈現描述性彙總；達兩檔以上且方向一致時才加上多基金共識標記。方向分歧必須明示，不得把跨基金同向變化描述成推薦或預測。
 - Fund evidence：基金索引使用「已雙來源確認／單一來源／來源不一致／當日未更新」標示。選定基金後顯示 privacy-safe reconciliation reason，並逐來源列出 provider、資料日、短 hash 與原始公開頁連結。
-- Detail drawer：由非衝突快照的變化列開啟，顯示前後股數、權重、共同規模比例校正後的相對變化、資料日、擷取時間與公開來源證據，並依變化本身的驗證狀態標示雙來源確認或單一來源。`likely_fund_scale_change` 為真時明示可能包含基金申贖造成的等比例調整；drawer 支援焦點圈限、Escape 關閉與觸發按鈕焦點還原。
+- Detail drawer：由非衝突快照的變化列開啟，顯示前後股數、權重、共同規模比例校正後的相對變化、資料日與擷取時間，並依變化本身的驗證狀態標示雙來源確認或單一來源。來源證據須依本期與前期分區，各區只顯示該資料日的來源與驗證狀態；若舊 API 尚未提供 `evidence_periods[]`，drawer 不得把目前期 `fund.sources` 冒充整段比較證據。`likely_fund_scale_change` 為真時明示可能包含基金申贖造成的等比例調整；drawer 支援焦點圈限、Escape 關閉與觸發按鈕焦點還原。
 
 ## API Boundary Validation
 
