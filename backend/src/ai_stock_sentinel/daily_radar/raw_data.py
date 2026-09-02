@@ -11,7 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
-from ai_stock_sentinel.daily_radar.data_quality import missing_daily_radar_candidate_technical_fields
+from ai_stock_sentinel.daily_radar.data_quality import (
+    missing_daily_radar_candidate_technical_fields,
+    technical_data_dates_match_record_date,
+)
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
@@ -160,7 +163,10 @@ def ensure_daily_radar_raw_rows(
 
     institutional_payloads = institutional_payloads_by_symbol or {}
     existing_final = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
-    reusable_final_symbols = {row.symbol for row in reusable_daily_radar_raw_rows(existing_final)}
+    reusable_final_symbols = {
+        row.symbol
+        for row in current_daily_radar_raw_rows(existing_final, run_date=run_date)
+    }
     missing_symbols = [symbol for symbol in ordered_symbols if symbol not in reusable_final_symbols]
     if missing_symbols:
         fetcher = technical_fetcher or YFinanceBatchTechnicalFetcher()
@@ -192,7 +198,7 @@ def ensure_daily_radar_raw_rows(
         session.flush()
 
     final_rows = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
-    return reusable_daily_radar_raw_rows(final_rows)
+    return current_daily_radar_raw_rows(final_rows, run_date=run_date)
 
 
 def reusable_daily_radar_raw_rows(rows: Iterable[StockRawData]) -> list[StockRawData]:
@@ -202,6 +208,21 @@ def reusable_daily_radar_raw_rows(rows: Iterable[StockRawData]) -> list[StockRaw
         if not missing_daily_radar_candidate_technical_fields(
             _mapping(row.technical),
             record_date=row.record_date,
+        )
+    ]
+
+
+def current_daily_radar_raw_rows(
+    rows: Iterable[StockRawData],
+    *,
+    run_date: date,
+) -> list[StockRawData]:
+    return [
+        row
+        for row in reusable_daily_radar_raw_rows(rows)
+        if technical_data_dates_match_record_date(
+            _mapping(row.technical),
+            record_date=run_date,
         )
     ]
 
@@ -319,7 +340,7 @@ def _store_missing_rows(
         payload = fetched_payloads.get(symbol)
         if payload is None:
             continue
-        technical = _normalize_technical_payload(symbol, payload, run_date=run_date)
+        technical = _normalize_technical_payload(symbol, payload)
         row = stored_by_symbol.get(symbol)
         if row is None:
             row = StockRawData(symbol=symbol, record_date=run_date)
@@ -330,7 +351,7 @@ def _store_missing_rows(
         row.raw_data_is_final = True
 
 
-def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any], *, run_date: date) -> dict[str, Any]:
+def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     technical = dict(payload)
     if "ohlcv" not in technical:
         technical["ohlcv"] = {}
@@ -343,12 +364,9 @@ def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any], *, run
     technical["indicators"] = dict(_mapping(technical.get("indicators")))
     technical["technical_profile"] = dict(_mapping(technical.get("technical_profile")))
     technical["data_dates"] = {
-        "ohlcv": run_date.isoformat(),
-        "technical_indicators": run_date.isoformat(),
-        **{key: str(value) for key, value in _mapping(technical.get("data_dates")).items()},
+        key: str(value)
+        for key, value in _mapping(technical.get("data_dates")).items()
     }
-    if technical["technical_profile"] and "technical_profile" not in technical["data_dates"]:
-        technical["data_dates"]["technical_profile"] = run_date.isoformat()
     return technical
 
 
@@ -699,6 +717,7 @@ __all__ = [
     "BatchTechnicalFetcher",
     "LocalFirstBatchTechnicalFetcher",
     "YFinanceBatchTechnicalFetcher",
+    "current_daily_radar_raw_rows",
     "ensure_daily_radar_raw_rows",
     "reusable_daily_radar_raw_rows",
 ]

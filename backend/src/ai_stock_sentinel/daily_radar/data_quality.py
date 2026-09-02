@@ -72,7 +72,11 @@ _TEXT_REQUIRED_SCORING_FIELDS = frozenset(
     }
 )
 _KNOWN_UNIVERSE_TRACKS = frozenset(TRACK_PRIORITY)
-_REQUIRED_TECHNICAL_DATA_DATES = ("ohlcv", "technical_indicators", "technical_profile")
+REQUIRED_TECHNICAL_DATA_DATE_FIELDS = (
+    "ohlcv",
+    "technical_indicators",
+    "technical_profile",
+)
 
 
 def missing_scoring_fields(
@@ -138,10 +142,22 @@ def missing_daily_radar_candidate_technical_fields(
         missing_fields.append("price_history")
 
     data_dates = _mapping(technical.get("data_dates"))
-    for field in _REQUIRED_TECHNICAL_DATA_DATES:
+    for field in REQUIRED_TECHNICAL_DATA_DATE_FIELDS:
         if not _valid_data_date(data_dates.get(field), record_date=record_date):
             missing_fields.append(f"data_dates.{field}")
     return missing_fields
+
+
+def technical_data_dates_match_record_date(
+    technical: Mapping[str, Any],
+    *,
+    record_date: date,
+) -> bool:
+    data_dates = _mapping(technical.get("data_dates"))
+    return all(
+        _parse_data_date(data_dates.get(field)) == record_date
+        for field in REQUIRED_TECHNICAL_DATA_DATE_FIELDS
+    )
 
 
 def missing_current_technical_contract_fields(
@@ -250,10 +266,16 @@ def _has_replayable_price_history(value: Any, *, record_date: date | None) -> bo
     return True
 
 
-def _valid_data_date(value: Any, *, record_date: date | None) -> bool:
+def _parse_data_date(value: Any) -> date | None:
     try:
-        parsed = date.fromisoformat(str(value or ""))
+        return date.fromisoformat(str(value or ""))
     except ValueError:
+        return None
+
+
+def _valid_data_date(value: Any, *, record_date: date | None) -> bool:
+    parsed = _parse_data_date(value)
+    if parsed is None:
         return False
     return record_date is None or parsed <= record_date
 
@@ -300,6 +322,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 __all__ = [
     "DAILY_RADAR_REPLAY_INPUT_VERSION",
+    "REQUIRED_TECHNICAL_DATA_DATE_FIELDS",
     "REQUIRED_SCORING_FIELDS",
     "margin_evidence_is_complete",
     "missing_scoring_fields",
@@ -307,4 +330,5 @@ __all__ = [
     "missing_current_technical_contract_fields",
     "missing_technical_scoring_fields",
     "required_institutional_scoring_fields",
+    "technical_data_dates_match_record_date",
 ]

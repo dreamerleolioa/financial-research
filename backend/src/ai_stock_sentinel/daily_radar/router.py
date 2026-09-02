@@ -72,6 +72,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     LocalFirstBatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
+    current_daily_radar_raw_rows,
     ensure_daily_radar_raw_rows,
     reusable_daily_radar_raw_rows,
 )
@@ -758,6 +759,24 @@ def refresh_daily_radar_ohlcv_endpoint(
     prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
     row_symbols = {row.symbol for row in rows}
     missing_symbols = [symbol for symbol in selected_symbols if symbol not in row_symbols]
+    structurally_reusable_symbols = {
+        row.symbol
+        for row in reusable_daily_radar_raw_rows(
+            get_final_raw_data_rows_for_symbols(
+                db,
+                run_date=run_date,
+                symbols=missing_symbols,
+            )
+        )
+    }
+    missing_symbol_reasons = {
+        symbol: (
+            "technical_data_dates_not_run_date"
+            if symbol in structurally_reusable_symbols
+            else "technical_record_missing_or_incomplete"
+        )
+        for symbol in missing_symbols
+    }
     status = "failed" if missing_symbols else "completed"
     update_daily_radar_prepared_step_status(
         db,
@@ -768,6 +787,7 @@ def refresh_daily_radar_ohlcv_endpoint(
             "symbol_count": len(selected_symbols),
             "records_written": len(rows),
             "missing_symbols": missing_symbols,
+            "missing_symbol_reasons": missing_symbol_reasons,
             "skipped_symbols": list(skipped_symbol_reasons),
             "skipped_symbol_reasons": skipped_symbol_reasons,
         },
@@ -781,6 +801,7 @@ def refresh_daily_radar_ohlcv_endpoint(
         symbol_count=len(selected_symbols),
         records_written=len(rows),
         missing_symbols=missing_symbols,
+        missing_symbol_reasons=missing_symbol_reasons,
         skipped_symbols=list(skipped_symbol_reasons),
         skipped_symbol_reasons=skipped_symbol_reasons,
     )
@@ -831,7 +852,7 @@ def refresh_daily_radar_managed_raw_data_endpoint(
         run_date=run_date,
         symbols=selection.symbols,
     )
-    reusable_before = reusable_daily_radar_raw_rows(existing_rows)
+    reusable_before = current_daily_radar_raw_rows(existing_rows, run_date=run_date)
     # Industry metadata is public network I/O. Release the read transaction
     # before resolving it, then apply the in-memory mapping to persisted rows.
     db.rollback()
@@ -928,7 +949,10 @@ def refresh_daily_radar_ai_evidence_endpoint(
         _prepared_universe_entries(prepared.universe),
         run_date=run_date,
     )
-    reusable_symbols = {row.symbol for row in reusable_daily_radar_raw_rows(pool_rows)}
+    reusable_symbols = {
+        row.symbol
+        for row in current_daily_radar_raw_rows(pool_rows, run_date=run_date)
+    }
     cached_institutional_rows = db.scalars(
         select(StockRawData).where(
             StockRawData.record_date >= run_date - timedelta(days=10),
@@ -2164,7 +2188,7 @@ def _require_complete_daily_radar_raw_rows(
                 "run_date": run_date.isoformat(),
             },
         )
-    reusable_rows = reusable_daily_radar_raw_rows(rows)
+    reusable_rows = current_daily_radar_raw_rows(rows, run_date=run_date)
     reusable_symbols = {row.symbol for row in reusable_rows}
     missing_symbols = [symbol for symbol in selected_symbol_list if symbol not in reusable_symbols]
     if missing_symbols:
