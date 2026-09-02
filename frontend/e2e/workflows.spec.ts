@@ -57,7 +57,9 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(openDrawerButton).toBeFocused();
 
   await page.getByRole("button", { name: /00982A/ }).click();
-  await expect(page.getByText("可比較 2026-08-27 → 2026-08-28", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("已取得 2026-08-28 MoneyDJ 持股，可比較 2026-08-27 → 2026-08-28", { exact: true }),
+  ).toBeVisible();
   const openSingleSourceDrawerButton = page.getByRole("button", { name: "查看 2881.TW 富邦金 持股變化" });
   await expect(openSingleSourceDrawerButton).toBeVisible();
   await openSingleSourceDrawerButton.click();
@@ -68,13 +70,56 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(singleSourceDrawer.getByText("發行投信官方資料", { exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /00983A/ }).click();
-  await expect(page.getByText("已有可用快照，尚無前次資料可比較", { exact: true })).toBeVisible();
+  await expect(page.getByText("已取得 2026-08-28 MoneyDJ 持股，尚無前期資料可比較", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("共同增加", { exact: true })).toBeVisible();
   await expect(page.getByText("2 檔共識", { exact: true })).toBeVisible();
   await expect(page.getByText("單一基金增加", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
+});
+
+test("Active ETF tracking distinguishes unchanged holdings from an unavailable source date", async ({ page }) => {
+  const unchangedFund = activeEtfDaily.funds.find((fund) => fund.fund_code === "00982A");
+  if (!unchangedFund) throw new Error("00982A fixture is required");
+  const unchangedDaily = {
+    ...activeEtfDaily,
+    expected_funds: 1,
+    covered_funds: 1,
+    summary: {
+      changed_funds: 0,
+      changed_stocks: 0,
+      changed_rows: 0,
+      additions: 0,
+      increases: 0,
+      decreases: 0,
+      removals: 0,
+    },
+    funds: [{ ...unchangedFund, change_count: 0 }],
+    changes: [],
+    consensus: [],
+  };
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily: unchangedDaily });
+
+  await page.goto("/active-etf");
+  await page.getByRole("button", { name: /00982A/ }).click();
+  await expect(page.getByText("已更新・無持股變化", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("00982A 已更新，沒有持股變化", { exact: true })).toBeVisible();
+  await expect(page.getByText("沒有差異也可能代表基金持股尚未更新", { exact: false })).toHaveCount(0);
+
+  await installApiMocks(page, { activeEtfDaily });
+  await page.reload();
+  await page.getByRole("button", { name: /00982A/ }).click();
+  await page.getByRole("button", { name: "新增持股 0" }).click();
+  await expect(page.getByRole("heading", { name: "目前篩選條件沒有持股變化" })).toBeVisible();
+  await expect(page.getByText("這不是零變化紀錄。", { exact: false })).toHaveCount(0);
+  await page.getByRole("button", { name: /00409A/ }).click();
+  await expect(page.getByText("來源尚未提供", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "MoneyDJ 尚未提供 2026-08-28 持股" })).toBeVisible();
+  await expect(page.getByText("00409A 最新資料日 2026-08-27；這不是零變化紀錄。", { exact: true })).toBeVisible();
 });
 
 test("Active ETF consensus opens contributing fund details and restores focus", async ({ page }) => {
@@ -198,6 +243,10 @@ test("Active ETF tracking keeps MoneyDJ status readable on mobile", async ({ pag
   await expect(mobileDrawer.getByRole("region", { name: "前期證據 2026-08-27" })).toBeAttached();
   expect(await mobileDrawer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   await page.keyboard.press("Escape");
+
+  await page.getByRole("combobox", { name: "基金" }).selectOption("00409A");
+  await expect(page.getByRole("heading", { name: "MoneyDJ 尚未提供 2026-08-28 持股" })).toBeVisible();
+  expect(await page.locator("body").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("2 檔共識", { exact: true })).toBeVisible();

@@ -44,9 +44,11 @@ function formatSource(provider: string): string {
 }
 
 function fundStatusLabel(fund: ActiveEtfCoverageFund): string {
-  if (fund.status === "ready") return "可比較";
-  if (fund.status === "no_baseline") return "等待前期資料";
-  return "當日未更新";
+  if (fund.status === "ready") {
+    return fund.change_count === 0 ? "已更新・無持股變化" : `已更新・${fund.change_count} 筆變化`;
+  }
+  if (fund.status === "no_baseline") return "已更新・等待前期資料";
+  return "來源尚未提供";
 }
 
 function CoverageMetric({ label, value, helper }: { label: string; value: string; helper: string }) {
@@ -65,13 +67,23 @@ function FundStatusBadge({ fund }: { fund: ActiveEtfCoverageFund }) {
   return <span className={`ui-badge ${className}`}>{fundStatusLabel(fund)}</span>;
 }
 
-function FundEvidenceSummary({ fund, onClear }: { fund: ActiveEtfCoverageFund; onClear: () => void }) {
+function FundEvidenceSummary({
+  fund,
+  selectedDate,
+  onClear,
+}: {
+  fund: ActiveEtfCoverageFund;
+  selectedDate: string;
+  onClear: () => void;
+}) {
   const comparisonState =
     fund.status === "ready"
-      ? `可比較 ${fund.previous_date} → ${fund.data_date}`
+      ? fund.change_count === 0
+        ? `已取得 ${fund.data_date} MoneyDJ 持股，與 ${fund.previous_date} 相比沒有持股股數變化`
+        : `已取得 ${fund.data_date} MoneyDJ 持股，可比較 ${fund.previous_date} → ${fund.data_date}`
       : fund.status === "no_baseline"
-        ? "已有可用快照，尚無前次資料可比較"
-        : "當日尚未取得 MoneyDJ 持股資料";
+        ? `已取得 ${fund.data_date} MoneyDJ 持股，尚無前期資料可比較`
+        : `MoneyDJ 尚未提供 ${selectedDate} 持股；最新資料日 ${fund.latest_data_date ?? "尚無"}`;
 
   return (
     <section className="mb-4 rounded-[12px] border border-border bg-surface-raised p-4 shadow-panel">
@@ -174,19 +186,34 @@ function FundIndex({
 
 function ChangeTable({
   changes,
+  fund,
+  selectedDate,
+  hasActiveFilters,
   onSelect,
 }: {
   changes: ActiveEtfChange[];
+  fund: ActiveEtfCoverageFund | null;
+  selectedDate: string;
+  hasActiveFilters: boolean;
   onSelect: (change: ActiveEtfChange) => void;
 }) {
   if (changes.length === 0) {
-    return (
-      <WorkspaceEmptyState
-        eyebrow="No changes"
-        title="目前篩選條件沒有持股變化"
-        description="可切換基金、變化類型或清除搜尋條件。沒有差異也可能代表基金持股尚未更新。"
-      />
-    );
+    let title = "目前沒有可列出的持股變化";
+    let description = "已有當日資料的基金沒有持股股數變化；來源尚未提供的基金會在基金索引中個別標示。";
+    if (fund?.status === "ready" && fund.change_count === 0) {
+      title = `${fund.fund_code} 已更新，沒有持股變化`;
+      description = `已取得 ${fund.data_date} MoneyDJ 持股，與 ${fund.previous_date} 相比沒有持股股數變化。`;
+    } else if (fund?.status === "no_baseline") {
+      title = `${fund.fund_code} 已更新，等待前期資料`;
+      description = `已取得 ${fund.data_date} MoneyDJ 持股，累積下一個資料日後即可比較。`;
+    } else if (fund && fund.status !== "ready") {
+      title = `MoneyDJ 尚未提供 ${selectedDate} 持股`;
+      description = `${fund.fund_code} 最新資料日 ${fund.latest_data_date ?? "尚無"}；這不是零變化紀錄。`;
+    } else if (hasActiveFilters) {
+      title = "目前篩選條件沒有持股變化";
+      description = "可切換基金、變化類型或清除搜尋條件。";
+    }
+    return <WorkspaceEmptyState eyebrow="No changes" title={title} description={description} />;
   }
 
   return (
@@ -560,14 +587,14 @@ export default function ActiveEtfPage() {
             helper="MoneyDJ 當日持股可用"
           />
           <CoverageMetric label="可比較" value={String(coverageCounts.comparable)} helper="已有前期快照可計算變化" />
-          <CoverageMetric label="當日未更新" value={String(coverageCounts.missing)} helper="尚未取得當日持股" />
+          <CoverageMetric label="來源未提供" value={String(coverageCounts.missing)} helper="MoneyDJ 尚未提供此資料日" />
         </dl>
         <div className={`mt-4 rounded-[10px] border px-3 py-2 text-xs leading-relaxed ${coverageNoticeClass}`}>
           <p>MoneyDJ 有資料就顯示；累積前後兩個資料日後，即可計算持股變化。</p>
           <p className="mt-1 tabular-nums text-text-faint">
             本次發布 {data.summary.changed_funds} 檔基金、{data.summary.changed_rows} 筆變化 · 來源更新{" "}
             {formatTimestamp(latestFetchedAt)}
-            {coverageCounts.missing > 0 ? ` · 當日未更新 ${coverageCounts.missing} 檔` : ""}
+            {coverageCounts.missing > 0 ? ` · 來源未提供 ${coverageCounts.missing} 檔` : ""}
           </p>
         </div>
       </section>
@@ -654,9 +681,19 @@ export default function ActiveEtfPage() {
               <FundIndex funds={data.funds} selectedFund={selectedFund} onSelect={setSelectedFund} />
               <div className="min-w-0">
                 {selectedFundRecord && (
-                  <FundEvidenceSummary fund={selectedFundRecord} onClear={() => setSelectedFund("all")} />
+                  <FundEvidenceSummary
+                    fund={selectedFundRecord}
+                    selectedDate={data.data_date}
+                    onClear={() => setSelectedFund("all")}
+                  />
                 )}
-                <ChangeTable changes={visibleChanges} onSelect={setSelectedChange} />
+                <ChangeTable
+                  changes={visibleChanges}
+                  fund={selectedFundRecord}
+                  selectedDate={data.data_date}
+                  hasActiveFilters={actionFilter !== "all" || Boolean(search.trim())}
+                  onSelect={setSelectedChange}
+                />
                 {filteredChanges.length > 0 && (
                   <div className="mt-4 flex flex-col items-center gap-2 text-xs text-text-faint sm:flex-row sm:justify-between">
                     <p className="tabular-nums">

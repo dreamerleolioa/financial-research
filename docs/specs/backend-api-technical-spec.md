@@ -65,7 +65,7 @@ make run-api
 - **持股來源**：MoneyDJ 公開「全部持股」頁是唯一持股 adapter，有資料即保存並供公開比較。Parser 只接受來源宣告日期、可辨識證券代號、非負整數股數與 0 到 100 的權重；重複股票、未來資料日、空表、缺欄資料列、超過 2,000 列、回應超過 5 MB 或欄位畸形時 fail closed。
 - **原始證據**：`active_etf_source_observations` 與 `active_etf_source_holdings` 保存 MoneyDJ 的 provider、資料日、來源 URL、擷取時間、parser version、SHA-256、最多 5 MB 的 gzip 原始 payload 與正規化持股，供事後重播與來源稽核。切換前已存在的官方觀測不做破壞性刪除，但 runtime 與 public read path 不再讀取或顯示。
 - **Canonical snapshot**：同基金／同 `data_date` 只有一份 MoneyDJ canonical snapshot。既有 `verification_status`、`source_count` 與 `verification_details` 欄位為滾動部署與歷史資料相容保留，新寫入固定為 `single_source`、`1` 與 `moneydj_only`。目前快照可和嚴格更早、最近一份 MoneyDJ 快照推導新增、增加、減少、移除；舊 `verified`／`conflict` 值在 public response 也正規化為 MoneyDJ 單一來源，不再封鎖變化或 consensus。
-- **比較語意**：權重變化只作同列證據。至少五檔連續持股時，以股數比率中位數估計共同基金規模倍率，`likely_fund_scale_change` 只表示原始增減接近共同倍率，不是交易結論。
+- **比較語意**：權重變化只作同列證據。相鄰資料日的持股股數完全相同時，基金仍為 `ready`、`change_count=0` 且 `changes=[]`，不得標成來源未更新。至少五檔連續持股時，以股數比率中位數估計共同基金規模倍率，`likely_fund_scale_change` 只表示原始增減接近共同倍率，不是交易結論。
 
 #### `POST /internal/active-etf-holdings/refresh`
 

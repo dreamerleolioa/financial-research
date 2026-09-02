@@ -512,6 +512,27 @@ def test_single_source_snapshot_is_retained_and_publishes_changes(
     assert response.consensus[0].fund_count == 1
 
 
+def test_unchanged_daily_snapshot_is_ready_with_zero_changes(
+    etf_db_session: Session,
+) -> None:
+    holdings = [("2330.TW", "台積電", 100, "10")]
+    for data_date in (date(2026, 8, 27), date(2026, 8, 28)):
+        refresh_active_etf_holdings(
+            etf_db_session,
+            provider=FakeProvider({"00985A": _snapshot(data_date, holdings)}),
+            max_workers=1,
+        )
+
+    response = get_active_etf_daily_response(etf_db_session)
+
+    assert response is not None
+    assert response.data_date == date(2026, 8, 28)
+    assert response.covered_funds == 1
+    assert response.funds[0].status == "ready"
+    assert response.funds[0].change_count == 0
+    assert response.changes == []
+
+
 def test_daily_response_normalizes_legacy_verification_to_moneydj_only(
     etf_db_session: Session,
 ) -> None:

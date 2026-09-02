@@ -226,10 +226,10 @@ Delete mutation 會移除 item-specific query cache，再 invalidation aggregate
 `ActiveEtfPage` 是各家主動式 ETF 每日公開持股差異的獨立觀察面，不是 Daily Radar 的候選來源，也不改動任何 deterministic scoring、ranking 或風險標籤。
 
 - Route 與資料：`/active-etf` 透過 `useActiveEtfDailyQuery(dataDate)` 呼叫 authenticated `GET /active-etf-holdings/daily`。Query key 必須包含資料日，切換日期不可覆蓋其他日期 cache。
-- Coverage first：頁面先顯示選定資料日、預期基金數、MoneyDJ 已有資料數、可比較數與當日未更新數。有目前與前期 MoneyDJ 快照就發布變化；缺少當日快照的基金標示為「當日未更新」，不得用最近日期混入當日比較。
+- Coverage first：頁面先顯示選定資料日、預期基金數、MoneyDJ 已有資料數、可比較數與來源未提供數。有目前與前期 MoneyDJ 快照就發布變化；缺少當日快照的基金標示為「來源尚未提供」並列出最新資料日，不得用最近日期混入當日比較。
 - Fund changes：桌面寬螢幕使用基金索引加密集比較表；1024px 以下使用基金 select 與卡片，避免在中等寬度壓縮欄位。搜尋與 action filter 只改 client view，不改 server response 或排序語意。
 - Consensus：每個有持股變化的標的都呈現描述性彙總；達兩檔以上且方向一致時才加上多基金共識標記。方向分歧必須明示，不得把跨基金同向變化描述成推薦或預測。
-- Fund evidence：基金索引使用「可比較／等待前期資料／當日未更新」標示。選定基金後把 `fund.sources` 明確標為本期 MoneyDJ 來源，列出資料日、短 hash 與原始公開頁連結；舊 API 的官方來源、驗證與衝突欄位在 boundary 正規化後不得顯示。
+- Fund evidence：基金索引分別標示「已更新・N 筆變化／已更新・無持股變化／已更新・等待前期資料／來源尚未提供」。`ready + change_count=0` 代表來源資料日已更新但股數沒有差異，不得呈現成來源未更新；缺少指定資料日快照時才顯示來源未提供與最新資料日。選定基金後把 `fund.sources` 明確標為本期 MoneyDJ 來源，列出資料日、短 hash 與原始公開頁連結；舊 API 的官方來源、驗證與衝突欄位在 boundary 正規化後不得顯示。
 - Detail drawer：由 MoneyDJ 快照的變化列開啟，顯示前後股數、權重、共同規模比例校正後的相對變化、資料日與擷取時間。來源證據須依本期與前期分區，各區只顯示該資料日的 MoneyDJ 來源；若舊 API 尚未提供 `evidence_periods[]`，drawer 不得把目前期 `fund.sources` 冒充整段比較證據。`likely_fund_scale_change` 為真時明示可能包含基金申贖造成的等比例調整；drawer 支援焦點圈限、Escape 關閉與觸發按鈕焦點還原。
 
 ## API Boundary Validation
