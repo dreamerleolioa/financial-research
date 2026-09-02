@@ -76,7 +76,7 @@ on:
     - cron: "50 15 * * 1-5"
     # 台灣時間週二至週六 00:30，對前一個台北交易日 run_date 做 scoring。
     - cron: "30 16 * * 1-5"
-    # 台灣時間週二至週六 07:00，補修前一個台股交易日 AVWAP，成功後重跑 scoring。
+    # 台灣時間週二至週六 07:00，補修前一個台股交易日 OHLCV 與 AVWAP，成功後重跑 scoring。
     - cron: "0 23 * * 1-5"
 
 permissions:
@@ -565,6 +565,8 @@ jobs:
             "run_date: \(.run_date // "n/a")",
             "symbol_count: \(.symbol_count // "n/a")",
             "records_written: \(.records_written // "n/a")",
+            "missing_symbols_count: \((.missing_symbols // []) | length)",
+            "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)",
             "detail: \(.detail // "n/a")"
           ' "$response_file"
           if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
@@ -807,12 +809,12 @@ jobs:
           jq -e '.status == "completed" and .retryable_skipped_count == 0' "$response_file" > /dev/null
 
   repair-avwap-and-rescore:
-    name: Repair Daily Radar AVWAP and rescore
+    name: Repair Daily Radar OHLCV/AVWAP and rescore
     runs-on: ubuntu-latest
     needs: resolve-run-context
     if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore'))
     steps:
-      - name: Repair AVWAP and rescore
+      - name: Repair OHLCV/AVWAP and rescore
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
@@ -821,6 +823,33 @@ jobs:
           set -euo pipefail
           run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
+
+          ohlcv_response_file="$(mktemp)"
+          ohlcv_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-ohlcv"
+          echo "Daily Radar repair refresh-ohlcv run_date: ${run_date}"
+          ohlcv_http_status="$(curl -sS -o "$ohlcv_response_file" -w "%{http_code}" \
+            -X POST "$ohlcv_endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")"
+          echo "OHLCV HTTP status: ${ohlcv_http_status}"
+          if [[ ! "$ohlcv_http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$ohlcv_response_file"
+            exit 1
+          fi
+          jq --raw-output '
+            "status: \(.status // "n/a")",
+            "step: \(.step // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "symbol_count: \(.symbol_count // "n/a")",
+            "records_written: \(.records_written // "n/a")",
+            "missing_symbols_count: \((.missing_symbols // []) | length)",
+            "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)"
+          ' "$ohlcv_response_file"
+          if ! jq -e '.status == "completed"' "$ohlcv_response_file" >/dev/null; then
+            echo "OHLCV repair did not reach the requested run_date; stop before rescore."
+            exit 1
+          fi
 
           refresh_response_file="$(mktemp)"
           refresh_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-avwap"

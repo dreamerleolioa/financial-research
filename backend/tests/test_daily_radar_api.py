@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
 
@@ -2233,6 +2234,142 @@ def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
     assert "price_volume" in prepared.universe[0]["tracks"]
     assert prepared.universe[0]["track_metrics"]["price_volume"]["matched"] is True
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
+
+
+def test_daily_radar_refresh_ohlcv_fails_when_provider_data_still_lags_run_date(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    stale_payload = _technical_payload("2330.TW", run_date - timedelta(days=1))
+    fetcher = FakeBatchTechnicalFetcher({"2330.TW": stale_payload})
+    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["missing_symbols"] == ["2330.TW"]
+    assert response.json()["missing_symbol_reasons"] == {
+        "2330.TW": "technical_data_dates_not_run_date"
+    }
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-ohlcv"]["status"] == "failed"
+
+
+def test_daily_radar_refresh_ohlcv_refetches_existing_final_row_with_stale_dates(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    stale_row = _persist_raw_data(
+        daily_radar_db_session,
+        record_date=run_date,
+        technical=_technical_payload("2330.TW", run_date - timedelta(days=1)),
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    fetcher = FakeBatchTechnicalFetcher()
+    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert fetcher.calls == [(["2330.TW"], run_date)]
+    daily_radar_db_session.refresh(stale_row)
+    assert stale_row.technical["data_dates"] == {
+        "ohlcv": run_date.isoformat(),
+        "technical_indicators": run_date.isoformat(),
+        "technical_profile": run_date.isoformat(),
+    }
+
+
+def test_daily_radar_refresh_ohlcv_does_not_infer_missing_provider_dates(
+    monkeypatch,
+    daily_radar_db_session: Session,
+) -> None:
+    run_date = date(2026, 6, 2)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date,
+        market="TW",
+        selected_symbols=["2330.TW"],
+        universe=[],
+        symbol_count=1,
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    undated_payload = _technical_payload("2330.TW", run_date)
+    undated_payload.pop("data_dates")
+    fetcher = FakeBatchTechnicalFetcher({"2330.TW": undated_payload})
+    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+
+    try:
+        response = client.post(
+            "/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        _clear_daily_radar_api_overrides()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["missing_symbol_reasons"] == {
+        "2330.TW": "technical_record_missing_or_incomplete"
+    }
+
+
+def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_and_scoring() -> None:
+    workflow = (
+        Path(__file__).parents[2] / ".github" / "workflows" / "daily-radar.yml"
+    ).read_text(encoding="utf-8")
+    refresh_ohlcv_job = workflow.split("  refresh-ohlcv:", 1)[1].split(
+        "  refresh-managed-raw-data:", 1
+    )[0]
+    repair_job = workflow.split("  repair-avwap-and-rescore:", 1)[1]
+
+    assert "missing_symbols_count" in refresh_ohlcv_job
+    assert "missing_symbol_reasons" in refresh_ohlcv_job
+    assert repair_job.index("/internal/daily-radar/refresh-ohlcv") < repair_job.index(
+        "/internal/daily-radar/refresh-avwap"
+    )
+    assert repair_job.index("/internal/daily-radar/refresh-avwap") < repair_job.index(
+        "/internal/daily-radar/run-scoring"
+    )
+    assert repair_job.index('if [[ ! "$ohlcv_http_status"') < repair_job.index(
+        "jq --raw-output '"
+    )
 
 
 def test_daily_radar_refresh_managed_raw_data_covers_holdings_without_exposing_symbols(
