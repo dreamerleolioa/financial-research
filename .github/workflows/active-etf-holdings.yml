@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
   schedule:
     # GitHub cron uses UTC. Taiwan time = UTC+8.
-    # 台灣時間週一至週五 08:00 與 14:00，捕捉不同投信的公開持股發布時間。
+    # 台灣時間週一至週五 08:00 與 19:00；晚間時段取得 MoneyDJ 較完整的當日持股。
     - cron: "0 0 * * 1-5"
-    - cron: "0 6 * * 1-5"
+    - cron: "0 11 * * 1-5"
 
 permissions:
   contents: read

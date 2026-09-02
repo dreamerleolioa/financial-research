@@ -71,7 +71,7 @@ make run-api
 
 - 需既有 internal bearer token。
 - Request body：`{"fund_codes": ["00985A"]}`；`fund_codes` 可省略，代表更新官方登錄內全部股票型主動式 ETF。
-- 正式排程：`.github/workflows/active-etf-holdings.yml` 在台灣時間平日 08:00、14:00 呼叫全量 refresh，沿用 Zeabur backend URL 與 Daily Radar internal token secrets。成功建立／更新／重用的 MoneyDJ 快照數加上來源頁明確表示尚未公布的基金數，必須完整覆蓋 selected funds；其他 partial/error 或品質計數缺口讓 job 失敗。已完成的逐基金 transaction 不回滾。
+- 正式排程：`.github/workflows/active-etf-holdings.yml` 在台灣時間平日 08:00、19:00 呼叫全量 refresh；19:00 是取得 MoneyDJ 較完整當日持股的主要時段，08:00 保留為補抓。排程沿用 Zeabur backend URL 與 Daily Radar internal token secrets。成功建立／更新／重用的 MoneyDJ 快照數加上來源頁明確表示尚未公布的基金數，必須完整覆蓋 selected funds；其他 partial/error 或品質計數缺口讓 job 失敗。已完成的逐基金 transaction 不回滾。
 - Response：`status`、`expected_funds`、`selected_funds`、`snapshots_created`、`snapshots_updated`、`snapshots_reused`、`single_source_snapshots` 與 privacy-safe `errors[{fund_code, code}]`。`verified_snapshots` 與 `conflicted_snapshots` 暫為相容欄位，MoneyDJ-only runtime 固定回傳 `0`。
 - 官方 registry 無法驗證或指定基金不在官方清單時回 `502`，不得停用既有基金或建立推測資料。
 

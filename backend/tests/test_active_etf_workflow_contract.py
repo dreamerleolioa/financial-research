@@ -29,8 +29,10 @@ def test_active_etf_workflow_has_bounded_weekday_refresh_slots() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
     assert "GitHub cron uses UTC. Taiwan time = UTC+8." in text
+    assert "08:00 與 19:00" in text
     assert 'cron: "0 0 * * 1-5"' in text
-    assert 'cron: "0 6 * * 1-5"' in text
+    assert 'cron: "0 11 * * 1-5"' in text
+    assert 'cron: "0 6 * * 1-5"' not in text
     assert "workflow_dispatch:" in text
     assert "cancel-in-progress: false" in text
     assert "timeout-minutes: 20" in text
