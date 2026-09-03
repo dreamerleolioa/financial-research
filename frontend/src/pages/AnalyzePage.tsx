@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type SubmitEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse } from "../lib/analysisTypes";
@@ -303,7 +303,7 @@ export default function AnalyzePage() {
     void fetchWatchlist();
   }, []);
 
-  async function handleAddPortfolio(e: React.FormEvent) {
+  async function handleAddPortfolio(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     setAddLoading(true);
     setAddError(null);
@@ -581,9 +581,7 @@ export default function AnalyzePage() {
           <div className="ui-refresh-highlight flex flex-col gap-3 border-t border-border-subtle bg-card-hover/35 px-4 py-3 sm:flex-row sm:items-center sm:justify-between md:px-6">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-text-primary">{analyzedDisplayName}</p>
-              <p className="mt-0.5 text-xs text-text-faint">
-                確定性分析已更新，可加入追蹤或複製資料進行外部研究。
-              </p>
+              <p className="mt-0.5 text-xs text-text-faint">確定性分析已更新，可加入追蹤或複製資料進行外部研究。</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
@@ -1042,7 +1040,6 @@ export default function AnalyzePage() {
           }
         />
       )}
-
     </div>
   );
 }

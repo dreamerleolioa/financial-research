@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ActiveEtfCoverageFund, ActiveEtfDailyResponse } from "./activeEtfTypes";
 
 const decimalNumber = z.union([
-  z.number().finite(),
+  z.number(),
   z
     .string()
     .trim()
@@ -14,13 +14,10 @@ const weightPct = decimalNumber.pipe(z.number().min(0).max(100));
 const weightDelta = decimalNumber.pipe(z.number().min(-100).max(100));
 const dataDate = z.iso.date();
 const sourceTimestamp = z.iso.datetime({ offset: true });
-const publicHttpUrl = z
-  .string()
-  .url()
-  .refine((value) => {
-    const protocol = new URL(value).protocol;
-    return protocol === "https:" || protocol === "http:";
-  }, "Expected an HTTP(S) URL");
+const publicHttpUrl = z.url().refine((value) => {
+  const protocol = new URL(value).protocol;
+  return protocol === "https:" || protocol === "http:";
+}, "Expected an HTTP(S) URL");
 
 const sourceEvidenceSchema = z
   .object({
@@ -30,7 +27,7 @@ const sourceEvidenceSchema = z
     fetched_at: sourceTimestamp,
     payload_hash: z.string().regex(/^[a-f\d]{64}$/i),
   })
-  .passthrough();
+  .loose();
 
 const periodEvidenceSchema = z
   .object({
@@ -41,7 +38,7 @@ const periodEvidenceSchema = z
     verification_reason: z.string().nullable().optional().default(null),
     sources: z.array(sourceEvidenceSchema),
   })
-  .passthrough()
+  .loose()
   .superRefine((evidence, context) => {
     if (evidence.source_count !== evidence.sources.length) {
       context.addIssue({ code: "custom", message: "source_count must match sources", path: ["source_count"] });
@@ -87,7 +84,7 @@ const coverageFundSchema = z
     change_count: z.number().int().nonnegative().default(0),
     common_scale_ratio: nullableDecimalNumber.optional().default(null),
   })
-  .passthrough()
+  .loose()
   .superRefine((fund, context) => {
     if (fund.source_count !== fund.sources.length) {
       context.addIssue({ code: "custom", message: "source_count must match sources", path: ["source_count"] });
@@ -167,9 +164,9 @@ const changeSchema = z
     fetched_at: sourceTimestamp,
     data_date: dataDate,
     previous_date: dataDate,
-    current_shares: z.number().int().safe().nonnegative(),
-    previous_shares: z.number().int().safe().nonnegative(),
-    share_delta: z.number().int().safe(),
+    current_shares: z.number().int().nonnegative(),
+    previous_shares: z.number().int().nonnegative(),
+    share_delta: z.number().int(),
     share_delta_pct: nullableDecimalNumber,
     current_weight_pct: weightPct,
     previous_weight_pct: weightPct,
@@ -177,7 +174,7 @@ const changeSchema = z
     relative_share_change_pct: nullableDecimalNumber,
     likely_fund_scale_change: z.boolean(),
   })
-  .passthrough()
+  .loose()
   .superRefine((change, context) => {
     if (change.verification_status === "verified" && change.source_count < 2) {
       context.addIssue({ code: "custom", message: "verified changes require two sources", path: ["source_count"] });
@@ -198,7 +195,7 @@ const consensusSchema = z
     decreased_count: z.number().int().nonnegative(),
     removed_count: z.number().int().nonnegative(),
   })
-  .passthrough();
+  .loose();
 
 export const activeEtfDailyResponseSchema = z
   .object({
@@ -217,12 +214,12 @@ export const activeEtfDailyResponseSchema = z
         decreases: z.number().int().nonnegative(),
         removals: z.number().int().nonnegative(),
       })
-      .passthrough(),
+      .loose(),
     funds: z.array(coverageFundSchema),
     changes: z.array(changeSchema),
     consensus: z.array(consensusSchema),
   })
-  .passthrough()
+  .loose()
   .superRefine((response, context) => {
     const coveredFunds = response.funds.filter((fund) =>
       ["verified", "single_source"].includes(fund.verification_status ?? ""),

@@ -19,14 +19,14 @@ const actionPlanSchema = z
     upgrade_triggers: z.array(z.string()).optional(),
     downgrade_triggers: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 
 const analysisErrorDetailSchema = z
   .object({
     code: z.string(),
     message: z.string(),
   })
-  .passthrough();
+  .loose();
 
 const fundamentalDataSchema = z
   .object({
@@ -37,14 +37,14 @@ const fundamentalDataSchema = z
     dividend_yield: nullableNumber.optional(),
     yield_signal: nullableString.optional(),
   })
-  .passthrough();
+  .loose();
 
 const riskControlReferenceSchema = z
   .object({
     reference: nullableString.optional(),
     reference_type: nullableString.optional(),
   })
-  .passthrough();
+  .loose();
 
 const phase1AnchorSchema = z
   .object({
@@ -61,7 +61,7 @@ const phase1AnchorSchema = z
     source_granularity: z.string().optional(),
     estimated: z.boolean().optional(),
   })
-  .passthrough();
+  .loose();
 
 const phase1ObservationSchema = z
   .object({
@@ -77,12 +77,12 @@ const phase1ObservationSchema = z
         dataset: z.string(),
         adjustment_mode: z.string(),
       })
-      .passthrough(),
+      .loose(),
     source_granularity: z.string(),
     anchors: z.record(z.string(), phase1AnchorSchema),
     data_quality: z.record(z.string(), z.unknown()),
   })
-  .passthrough();
+  .loose();
 
 const technicalProfileSignalSchema = z
   .object({
@@ -91,7 +91,7 @@ const technicalProfileSignalSchema = z
     reason: z.string(),
     value: z.union([z.number(), z.string()]).nullable().optional(),
   })
-  .passthrough();
+  .loose();
 
 const technicalProfileSchema = z
   .object({
@@ -109,13 +109,13 @@ const technicalProfileSchema = z
         capped_total: z.number(),
         technical_score: z.number(),
       })
-      .passthrough(),
+      .loose(),
     data_quality: recordSchema,
     formula_versions: recordSchema,
     companion_context_refs: recordSchema.optional(),
     caveats: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 
 const chipStabilityContextSchema = z
   .object({
@@ -133,7 +133,7 @@ const chipStabilityContextSchema = z
             thousand_lot_holder_ratio: nullableNumber.optional(),
             thousand_lot_holder_ratio_delta_pp: nullableNumber.optional(),
           })
-          .passthrough(),
+          .loose(),
       )
       .optional(),
     history: z
@@ -144,7 +144,7 @@ const chipStabilityContextSchema = z
             thousand_lot_holder_ratio: nullableNumber.optional(),
             thousand_lot_holder_ratio_delta_pp: nullableNumber.optional(),
           })
-          .passthrough(),
+          .loose(),
       )
       .optional(),
     state: z.string().optional(),
@@ -156,10 +156,10 @@ const chipStabilityContextSchema = z
           code: z.string(),
           message: z.string().optional(),
         })
-        .passthrough(),
+        .loose(),
     ),
   })
-  .passthrough();
+  .loose();
 
 export const analyzeResponseSchema = z
   .object({
@@ -192,7 +192,7 @@ export const analyzeResponseSchema = z
     chip_stability_context: chipStabilityContextSchema.nullable().optional(),
     phase1_observation: phase1ObservationSchema.nullable().optional(),
   })
-  .passthrough();
+  .loose();
 
 export function parseAnalyzeResponse(data: unknown): AnalyzeResponse {
   return analyzeResponseSchema.parse(data) as AnalyzeResponse;

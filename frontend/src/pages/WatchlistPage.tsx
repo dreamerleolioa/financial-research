@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type SubmitEvent } from "react";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
 import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
@@ -364,7 +364,7 @@ export default function WatchlistPage() {
     }
   }
 
-  async function handleAddItem(event: FormEvent<HTMLFormElement>) {
+  async function handleAddItem(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!symbol.trim()) return;
 

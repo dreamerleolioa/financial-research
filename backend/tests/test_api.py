@@ -120,9 +120,10 @@ def test_health_endpoint() -> None:
 
 
 def test_legacy_fetch_raw_data_endpoint_is_not_registered() -> None:
-    route_paths = {route.path for route in api.app.routes}
+    client = TestClient(api.app)
+    response = client.post("/internal/fetch-raw-data", json={"symbol": "2330.TW"})
 
-    assert "/internal/fetch-raw-data" not in route_paths
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

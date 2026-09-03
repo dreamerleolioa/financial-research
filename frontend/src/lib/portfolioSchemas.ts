@@ -7,14 +7,14 @@ const riskCaveatSchema = z
     message: z.string().optional(),
     count: z.number().optional(),
   })
-  .passthrough();
+  .loose();
 
 const dataQualitySchema = z
   .object({
     status: z.enum(["ok", "caution", "insufficient"]),
     caveats: z.array(riskCaveatSchema),
   })
-  .passthrough();
+  .loose();
 
 const portfolioPriceContextSchema = z
   .object({
@@ -25,7 +25,7 @@ const portfolioPriceContextSchema = z
     market_session: z.enum(["intraday", "closed", "unknown"]),
     is_final: z.boolean().nullable(),
   })
-  .passthrough();
+  .loose();
 
 const portfolioPriceRefreshSchema = z
   .object({
@@ -37,7 +37,7 @@ const portfolioPriceRefreshSchema = z
     failed_symbols: z.array(z.string()),
     refreshed_at: z.string(),
   })
-  .passthrough();
+  .loose();
 
 const phase1PositionStateSchema = z
   .object({
@@ -64,7 +64,7 @@ const phase1PositionStateSchema = z
         source_granularity: z.string().optional(),
         estimated: z.boolean().optional(),
       })
-      .passthrough()
+      .loose()
       .nullable(),
     matched_rules: z.array(z.string()),
     source: z
@@ -73,11 +73,11 @@ const phase1PositionStateSchema = z
         dataset: z.string(),
         adjustment_mode: z.string(),
       })
-      .passthrough(),
+      .loose(),
     source_granularity: z.string(),
     data_quality: z.record(z.string(), z.unknown()),
   })
-  .passthrough();
+  .loose();
 
 const chipStabilityContextSchema = z
   .object({
@@ -96,10 +96,10 @@ const chipStabilityContextSchema = z
           code: z.string(),
           message: z.string().optional(),
         })
-        .passthrough(),
+        .loose(),
     ),
   })
-  .passthrough();
+  .loose();
 
 const portfolioPositionRiskSchema = z
   .object({
@@ -117,14 +117,14 @@ const portfolioPositionRiskSchema = z
         price: z.number().nullable(),
         source: z.string().nullable(),
       })
-      .passthrough(),
+      .loose(),
     auto_defense_prices: z
       .object({
         break_20d_low: z.number().nullable().optional(),
         break_ma20: z.number().nullable().optional(),
         break_ma60: z.number().nullable().optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
     estimated_risk_amount: z.number().nullable(),
     estimated_risk_pct_of_portfolio: z.number().nullable(),
@@ -138,7 +138,7 @@ const portfolioPositionRiskSchema = z
     chip_stability_context: chipStabilityContextSchema.nullable().optional(),
     data_quality: dataQualitySchema,
   })
-  .passthrough();
+  .loose();
 
 const phase1ObservationItemSchema = z
   .object({
@@ -155,7 +155,7 @@ const phase1ObservationItemSchema = z
     current_day_observation: z.string(),
     data_quality: z.record(z.string(), z.unknown()),
   })
-  .passthrough();
+  .loose();
 
 const phase1CurrentDayListKeySchema = z.enum([
   "pullback_observation_candidates",
@@ -176,7 +176,7 @@ const phase1CurrentDayListsSchema = z
     holding_risk_alerts: z.array(phase1ObservationItemSchema),
     overheated_do_not_chase_candidates: z.array(phase1ObservationItemSchema),
   })
-  .passthrough();
+  .loose();
 
 export const portfolioRiskSummarySchema = z
   .object({
@@ -194,7 +194,7 @@ export const portfolioRiskSummarySchema = z
         invested_pct_of_account_equity: z.number().nullable(),
         risk_percentage_denominator: z.enum(["account_equity", "invested_market_value_fallback"]),
       })
-      .passthrough(),
+      .loose(),
     total_unrealized_pnl: z.number(),
     total_at_risk: z.number(),
     total_at_risk_pct: z.number().nullable(),
@@ -212,33 +212,37 @@ export const portfolioRiskSummarySchema = z
               pct_of_portfolio: z.number().nullable(),
               status: z.enum(["ok", "watch", "elevated"]),
             })
-            .passthrough(),
+            .loose(),
         ),
         by_industry: z.array(
-          z.object({
-            type: z.literal("industry"),
-            key: z.string(),
-            symbols: z.array(z.string()),
-            market_value: z.number(),
-            pct_of_invested: z.number().nullable(),
-            pct_of_capital_base: z.number().nullable(),
-            status: z.enum(["ok", "watch", "elevated", "partial"]),
-          }).passthrough(),
+          z
+            .object({
+              type: z.literal("industry"),
+              key: z.string(),
+              symbols: z.array(z.string()),
+              market_value: z.number(),
+              pct_of_invested: z.number().nullable(),
+              pct_of_capital_base: z.number().nullable(),
+              status: z.enum(["ok", "watch", "elevated", "partial"]),
+            })
+            .loose(),
         ),
-        industry_coverage: z.object({
-          status: z.enum(["available", "partial", "unavailable"]),
-          classified_market_value: z.number(),
-          pct_of_invested: z.number().nullable(),
-          eligible_position_count: z.number(),
-          valued_position_count: z.number(),
-          classified_position_count: z.number(),
-          unvalued_position_count: z.number(),
-          unclassified_valued_position_count: z.number(),
-        }).passthrough(),
+        industry_coverage: z
+          .object({
+            status: z.enum(["available", "partial", "unavailable"]),
+            classified_market_value: z.number(),
+            pct_of_invested: z.number().nullable(),
+            eligible_position_count: z.number(),
+            valued_position_count: z.number(),
+            classified_position_count: z.number(),
+            unvalued_position_count: z.number(),
+            unclassified_valued_position_count: z.number(),
+          })
+          .loose(),
         industry_watch_threshold_pct: z.number(),
         industry_elevated_threshold_pct: z.number(),
       })
-      .passthrough(),
+      .loose(),
     shared_exposures: z.array(
       z
         .object({
@@ -249,28 +253,34 @@ export const portfolioRiskSummarySchema = z
           market_value: z.number(),
           pct_of_portfolio: z.number().nullable(),
         })
-        .passthrough(),
+        .loose(),
     ),
-    correlation_risk: z.object({
-      status: z.enum(["available", "partial", "insufficient_data"]),
-      minimum_overlapping_return_count: z.number(),
-      eligible_position_count: z.number(),
-      valued_position_count: z.number(),
-      possible_pair_count: z.number(),
-      eligible_pair_count: z.number(),
-      pair_coverage_pct: z.number().nullable(),
-      weighted_average_correlation: z.number().nullable(),
-      watch_threshold: z.number(),
-      elevated_threshold: z.number(),
-      pairs: z.array(z.object({
-        symbols: z.tuple([z.string(), z.string()]),
-        correlation: z.number(),
-        overlapping_return_count: z.number(),
-        combined_invested_weight_pct: z.number(),
-        status: z.enum(["contained", "watch", "elevated"]),
-      }).passthrough()),
-      interpretation: z.string(),
-    }).passthrough(),
+    correlation_risk: z
+      .object({
+        status: z.enum(["available", "partial", "insufficient_data"]),
+        minimum_overlapping_return_count: z.number(),
+        eligible_position_count: z.number(),
+        valued_position_count: z.number(),
+        possible_pair_count: z.number(),
+        eligible_pair_count: z.number(),
+        pair_coverage_pct: z.number().nullable(),
+        weighted_average_correlation: z.number().nullable(),
+        watch_threshold: z.number(),
+        elevated_threshold: z.number(),
+        pairs: z.array(
+          z
+            .object({
+              symbols: z.tuple([z.string(), z.string()]),
+              correlation: z.number(),
+              overlapping_return_count: z.number(),
+              combined_invested_weight_pct: z.number(),
+              status: z.enum(["contained", "watch", "elevated"]),
+            })
+            .loose(),
+        ),
+        interpretation: z.string(),
+      })
+      .loose(),
     risk_budget_status: z
       .object({
         status: z.enum(["available", "watch", "constrained", "unknown"]),
@@ -279,14 +289,14 @@ export const portfolioRiskSummarySchema = z
         constrained_threshold_pct: z.number(),
         notes: z.array(z.string()),
       })
-      .passthrough(),
+      .loose(),
     data_quality: dataQualitySchema
       .extend({
         price_stale_after_days: z.number(),
       })
-      .passthrough(),
+      .loose(),
   })
-  .passthrough();
+  .loose();
 
 export function parsePortfolioRiskSummary(data: unknown): PortfolioRiskSummary {
   return portfolioRiskSummarySchema.parse(data) as PortfolioRiskSummary;
