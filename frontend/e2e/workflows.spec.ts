@@ -77,6 +77,16 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(page.getByText("2 檔共識", { exact: true })).toBeVisible();
   await expect(page.getByText("單一基金增加", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "增加 3" }).click();
+  await expect(page.getByRole("button", { name: "增加 3" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("2330.TW", { exact: true })).toBeVisible();
+  await expect(page.getByText("2317.TW", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "減少 1" }).click();
+  await expect(page.getByRole("button", { name: "減少 1" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("2317.TW", { exact: true })).toBeVisible();
+  await expect(page.getByText("2330.TW", { exact: true })).toHaveCount(0);
 });
 
 test("Active ETF tracking distinguishes unchanged holdings from an unavailable source date", async ({ page }) => {
@@ -251,6 +261,9 @@ test("Active ETF tracking keeps MoneyDJ status readable on mobile", async ({ pag
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("2 檔共識", { exact: true })).toBeVisible();
   await expect(page.getByText("1 檔基金", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "增加 3" }).click();
+  await expect(page.getByText("2317.TW", { exact: true })).toHaveCount(0);
+  expect(await page.locator("body").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   const openConsensusDrawerButton = page.getByRole("button", { name: "查看 2330.TW 台積電 的 2 檔 ETF 變化" });
   await openConsensusDrawerButton.click();
@@ -286,6 +299,14 @@ test("Active ETF consensus labels multi-fund direction conflicts without oversta
   await page.getByRole("button", { name: "個股共識" }).click();
   await expect(page.getByText("2 檔方向分歧", { exact: true })).toBeVisible();
   await expect(page.getByText("2 檔共識", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "增加 2" }).click();
+  await expect(page.getByText("2330.TW", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("2454.TW", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "減少 1" }).click();
+  await expect(page.getByText("2317.TW", { exact: true })).toBeVisible();
+  await expect(page.getByText("2330.TW", { exact: true })).toHaveCount(0);
 });
 
 test("Active ETF tracking normalizes the previous verified-only API contract", async ({ page }) => {

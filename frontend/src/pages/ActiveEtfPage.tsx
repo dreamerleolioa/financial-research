@@ -19,6 +19,7 @@ import type {
 
 type View = "funds" | "consensus";
 type ActionFilter = "all" | ActiveEtfAction;
+type ConsensusFilter = "all" | Exclude<ActiveEtfConsensus["direction"], "mixed">;
 const CHANGE_PAGE_SIZE = 100;
 
 function formatShares(value: number): string {
@@ -348,17 +349,24 @@ function ChangeTable({
 
 function ConsensusList({
   consensus,
+  filter,
   onSelect,
 }: {
   consensus: ActiveEtfConsensus[];
+  filter: ConsensusFilter;
   onSelect: (consensus: ActiveEtfConsensus) => void;
 }) {
   if (consensus.length === 0) {
+    const directionLabel = filter === "increase" ? "增加" : filter === "decrease" ? "減少" : null;
     return (
       <WorkspaceEmptyState
         eyebrow="Consensus"
-        title="目前沒有個股持股變化"
-        description="任一基金出現持股差異就會列入；多檔基金同時出現時會另外標註。"
+        title={directionLabel ? `目前沒有一致${directionLabel}的個股` : "目前沒有個股持股變化"}
+        description={
+          directionLabel
+            ? `只列出基金變化方向一致為${directionLabel}的個股，方向分歧不會納入。`
+            : "任一基金出現持股差異就會列入；多檔基金同時出現時會另外標註。"
+        }
       />
     );
   }
@@ -412,6 +420,7 @@ export default function ActiveEtfPage() {
   const [view, setView] = useState<View>("funds");
   const [selectedFund, setSelectedFund] = useState("all");
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
+  const [consensusFilter, setConsensusFilter] = useState<ConsensusFilter>("all");
   const [search, setSearch] = useState("");
   const [selectedChange, setSelectedChange] = useState<ActiveEtfChange | null>(null);
   const [selectedConsensusSymbol, setSelectedConsensusSymbol] = useState<string | null>(null);
@@ -462,6 +471,22 @@ export default function ActiveEtfPage() {
     [actionFilter, scopedChanges],
   );
   const visibleChanges = filteredChanges.slice(0, visibleChangeCount);
+  const consensusCounts = useMemo(
+    () =>
+      (query.data?.consensus ?? []).reduce(
+        (counts, item) => {
+          if (item.direction !== "mixed") counts[item.direction] += 1;
+          return counts;
+        },
+        { increase: 0, decrease: 0 },
+      ),
+    [query.data?.consensus],
+  );
+  const filteredConsensus = useMemo(
+    () =>
+      (query.data?.consensus ?? []).filter((item) => consensusFilter === "all" || item.direction === consensusFilter),
+    [consensusFilter, query.data?.consensus],
+  );
 
   if (query.isPending) {
     return (
@@ -715,13 +740,34 @@ export default function ActiveEtfPage() {
           </>
         ) : (
           <div className="mt-4">
-            <div className="mb-3">
-              <h3 className="text-sm font-semibold text-text-primary">個股變化彙整</h3>
-              <p className="mt-1 text-xs leading-relaxed text-text-muted">
-                單檔基金的變化也會列出；兩檔以上方向一致時，才加上多基金共識標記。
-              </p>
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">個股變化彙整</h3>
+                <p className="mt-1 text-xs leading-relaxed text-text-muted">
+                  單檔基金的變化也會列出；兩檔以上方向一致時，才加上多基金共識標記。
+                </p>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1" role="group" aria-label="個股變化方向">
+                {(["all", "increase", "decrease"] as const).map((direction) => (
+                  <button
+                    key={direction}
+                    type="button"
+                    onClick={() => setConsensusFilter(direction)}
+                    aria-pressed={consensusFilter === direction}
+                    className={`min-h-9 shrink-0 rounded-full border px-3 text-xs font-medium transition-colors ${consensusFilter === direction ? "border-accent bg-accent-soft text-accent" : "border-border bg-surface-raised text-text-muted hover:bg-card-hover"}`}
+                  >
+                    {direction === "all"
+                      ? `全部 ${data.consensus.length}`
+                      : `${direction === "increase" ? "增加" : "減少"} ${consensusCounts[direction]}`}
+                  </button>
+                ))}
+              </div>
             </div>
-            <ConsensusList consensus={data.consensus} onSelect={(item) => setSelectedConsensusSymbol(item.symbol)} />
+            <ConsensusList
+              consensus={filteredConsensus}
+              filter={consensusFilter}
+              onSelect={(item) => setSelectedConsensusSymbol(item.symbol)}
+            />
           </div>
         )}
       </section>
