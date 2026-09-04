@@ -201,6 +201,22 @@ def test_parse_moneydj_snapshot_reads_equities_and_skips_futures() -> None:
     assert len(snapshot.normalized_hash) == 64
 
 
+def test_parse_moneydj_snapshot_accepts_combined_shares_contracts_header() -> None:
+    html = (FIXTURE_ROOT / "moneydj_00985a.html").read_text().replace(
+        "<th>持有股數</th>",
+        "<th>持有股數 / 口數</th>",
+        1,
+    )
+
+    snapshot = parse_moneydj_holdings_html(html, fund=_fund())
+
+    assert [(row.symbol, row.shares) for row in snapshot.holdings] == [
+        ("2330.TW", 588000),
+        ("2454.TW", 26000),
+    ]
+    assert snapshot.skipped_instrument_count == 1
+
+
 def test_parse_moneydj_snapshot_reports_explicitly_unpublished_holdings() -> None:
     html = """
     <h1>(00409A.TW)-全部持股</h1>

@@ -353,7 +353,11 @@ def _holdings_column_indexes(
         None,
     )
     shares_index = next(
-        (index for index, header in enumerate(headers) if header == "持有股數"),
+        (
+            index
+            for index, header in enumerate(headers)
+            if header in {"持有股數", "持有股數 / 口數"}
+        ),
         None,
     )
     if name_index is None or weight_index is None or shares_index is None:
