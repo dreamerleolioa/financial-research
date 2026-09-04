@@ -508,7 +508,7 @@ React 前端新增 Daily Radar 頁，定位為每日觀察清單。
 4. 開市時 Action 才以分段 schedule 呼叫 Zeabur 後端 internal endpoints，且所有 step 都明確傳入同一個 `run_date`。排程為 17:30 `refresh-institutional-flows`、18:00 `prepare-universe`、18:30 `refresh-market-bars`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`、22:30 `refresh-ohlcv`、23:00 `refresh-ai-evidence`、23:30 `refresh-market-context`、隔日 00:30 `run-scoring`。
 5. 核心 refresh step 都讀同一筆 `daily_radar_prepared_runs` 的 selected symbols；不得重選 universe。`refresh-avwap` 另會合併 active holdings 與 watchlist symbols 刷新 shared market snapshot，但只支援 `.TW` / `.TWO`，其他 symbol 以 skipped reason 記錄；不得把使用者 entry date、avg cost 或 holding-specific anchor 寫入 cache。
 6. `run-scoring` 只讀 DB cache/snapshot；若 institutional-flow archive、lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
-7. 台灣時間週二至週六 07:00 會補跑前一個 intended trading date 的 `refresh-avwap`；成功後重跑同日 `run-scoring`，讓 public read 透過同日期最新完成 run 看到補齊後版本。
+7. 台灣時間週二至週六 07:00 會對前一個 intended trading date 依序重跑 `refresh-ohlcv`、`refresh-avwap` 與 `run-scoring`，再補齊 `refresh-managed-raw-data`。Managed raw data 仍不阻塞 scoring，但補修後仍不完整會讓 repair monitor 失敗；public read 透過同日期最新完成 run 看到補齊後版本。
 8. 前端 `GET /daily-radar/latest` 顯示最新完成版本。
 9. `.github/workflows/daily-radar.yml` 於 OHLCV 與 market context 後、台灣時間平日 23:50 執行 5 / 10 / 20 交易日 due validation。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
 10. 同一市場與 `run_date` 有多次公開 run 時，forward validation 與月報只採最新 run，避免 rerun 被誤當獨立樣本。

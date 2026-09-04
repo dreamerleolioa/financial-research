@@ -2350,7 +2350,7 @@ def test_daily_radar_refresh_ohlcv_does_not_infer_missing_provider_dates(
     }
 
 
-def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_and_scoring() -> None:
+def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_scoring_and_managed_data() -> None:
     workflow = (
         Path(__file__).parents[2] / ".github" / "workflows" / "daily-radar.yml"
     ).read_text(encoding="utf-8")
@@ -2358,6 +2358,7 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_and_scoring() 
         "  refresh-managed-raw-data:", 1
     )[0]
     repair_job = workflow.split("  repair-avwap-and-rescore:", 1)[1]
+    managed_repair_block = repair_job.split('managed_response_file="$(mktemp)"', 1)[1]
 
     assert "missing_symbols_count" in refresh_ohlcv_job
     assert "missing_symbol_reasons" in refresh_ohlcv_job
@@ -2367,6 +2368,17 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_and_scoring() 
     assert repair_job.index("/internal/daily-radar/refresh-avwap") < repair_job.index(
         "/internal/daily-radar/run-scoring"
     )
+    assert repair_job.index("/internal/daily-radar/run-scoring") < repair_job.index(
+        "/internal/daily-radar/refresh-managed-raw-data"
+    )
+    assert "managed_repair_completed=true" in repair_job
+    assert 'if [[ "$managed_repair_completed" != "true" ]]' in repair_job
+    assert "target_symbol_count" in repair_job
+    assert "missing_record_count" in repair_job
+    assert '.status == "completed" and .missing_record_count == 0' in repair_job
+    assert "missing_symbols" not in managed_repair_block
+    assert "selected_symbols" not in managed_repair_block
+    assert ".symbol" not in managed_repair_block
     assert repair_job.index('if [[ ! "$ohlcv_http_status"') < repair_job.index(
         "jq --raw-output '"
     )
