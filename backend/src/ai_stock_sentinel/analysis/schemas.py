@@ -54,6 +54,15 @@ class PositionAnalysis(BaseModel):
 
 
 class TechnicalIndicators(BaseModel):
+    indicator_data_date: str | None = None
+    indicator_previous_date: str | None = None
+    macd_trend_data_date: str | None = None
+    macd_hist_previous: float | None = None
+    macd_hist_change_1d: float | None = None
+    obv_previous: float | None = None
+    obv_change_1d: float | None = None
+    obv_start_date: str | None = None
+
     ma5: float | None = None
     ma20: float | None = None
     ma60: float | None = None

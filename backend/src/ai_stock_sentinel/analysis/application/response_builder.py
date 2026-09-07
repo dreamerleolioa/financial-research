@@ -12,7 +12,6 @@ from ai_stock_sentinel.analysis.metrics import (
     ma as _ma,
     macd as _macd,
     mfi as _mfi,
-    obv as _obv,
     stochastic_kd as _stochastic_kd,
 )
 from ai_stock_sentinel.analysis.position_scorer import build_position_risk_language
@@ -25,6 +24,7 @@ from ai_stock_sentinel.analysis.schemas import (
     TechnicalIndicators,
 )
 from ai_stock_sentinel.technical.profile import (
+    INDICATOR_COMPARISON_FIELDS,
     TECHNICAL_LAYER_VERSION,
     build_technical_profile_from_snapshot,
     project_technical_profile_without_composite_judgments,
@@ -71,12 +71,12 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
     atr_data = _atr(closes, highs, lows) if aligned_hilo else None
     mfi_data = _mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
     donchian_data = _donchian_channel(closes, highs, lows) if aligned_hilo else None
-    obv_data = _obv(closes, volumes) if aligned_volume else None
     bollinger_position = compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
     high_source = highs if aligned_hilo else closes
     low_source = lows if aligned_hilo else closes
 
     indicators = {
+        **{field: canonical_indicators.get(field) for field in INDICATOR_COMPARISON_FIELDS},
         "ma5": _ma(closes, 5),
         "ma20": _ma(closes, 20),
         "ma60": _ma(closes, 60),
@@ -112,11 +112,11 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
         "adx": adx_data["adx"] if adx_data else None,
         "adx_trend_strength": adx_data["trend_strength"] if adx_data else None,
         "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
-        "obv": obv_data["obv"] if obv_data else None,
-        "obv_signal": obv_data["obv_signal"] if obv_data else None,
-        "obv_trend_20d": obv_data["obv_trend_20d"] if obv_data else None,
-        "obv_trend_mid_long": obv_data["obv_trend_mid_long"] if obv_data else None,
-        "obv_trend_mid_long_window": obv_data["obv_trend_mid_long_window"] if obv_data else None,
+        "obv": canonical_indicators.get("obv"),
+        "obv_signal": canonical_indicators.get("obv_signal"),
+        "obv_trend_20d": canonical_indicators.get("obv_trend_20d"),
+        "obv_trend_mid_long": canonical_indicators.get("obv_trend_mid_long"),
+        "obv_trend_mid_long_window": canonical_indicators.get("obv_trend_mid_long_window"),
         "atr": atr_data["atr"] if atr_data else None,
         "atr_pct": atr_data["atr_pct"] if atr_data else None,
         "volatility_level": atr_data["volatility_level"] if atr_data else None,
@@ -231,6 +231,14 @@ def _hydrate_cached_technical_payload(
         if response.technical_indicators is None or cached_profile_version != TECHNICAL_LAYER_VERSION:
             response.technical_indicators = computed_indicators
         else:
+            # 快取的現值也一起更新，避免新前值與舊累積起點混用。
+            for field in (
+                *INDICATOR_COMPARISON_FIELDS,
+                "macd_line", "macd_signal", "macd_hist", "macd_hist_pct", "macd_bias",
+                "macd_hist_slope_pct_3d", "macd_hist_trend",
+                "obv", "obv_signal", "obv_trend_20d", "obv_trend_mid_long", "obv_trend_mid_long_window",
+            ):
+                setattr(response.technical_indicators, field, getattr(computed_indicators, field))
             response.technical_indicators.avg_volume_20 = computed_indicators.avg_volume_20
             response.technical_indicators.avg_volume_60 = computed_indicators.avg_volume_60
         computed_profile = payload.get("technical_profile")

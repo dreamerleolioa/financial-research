@@ -478,6 +478,18 @@ test("Analyze deterministic research supports copy and a keyboard-contained add-
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("現價：3120（TWSE MIS 即時）（漲停）");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("MA20 5日斜率：+1.234%");
+  await expect(page.getByText("MACD 柱體單日增減", { exact: true })).toBeVisible();
+  await expect(page.getByText("+0.167", { exact: true })).toBeVisible();
+  await expect(page.getByText("+13,535,774", { exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("indicator-comparisons.png"), fullPage: true });
+  const indicatorCopy = await page.evaluate(() => navigator.clipboard.readText());
+  expect(indicatorCopy).toContain("MACD 柱體 3日淨變化／股價：-0.0456%");
+  expect(indicatorCopy).toContain("MACD 柱體單日增減：+0.167");
+  expect(indicatorCopy).toContain("MACD 三日分類資料日：2026-07-15");
+  expect(indicatorCopy).toContain("OBV 起算日（首筆歸零）：2025-07-17");
+  expect(indicatorCopy).toContain("OBV 單日增減（同序列）：+13,535,774");
+  expect(indicatorCopy).toContain("勿跨摘要相減");
+  expect(indicatorCopy).not.toContain("3日斜率");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toContain("波動狀態");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toContain("訊號衝突");
 
@@ -2256,4 +2268,25 @@ test("Daily Radar localizes background data gaps without exposing internal reaso
   const drawer = page.getByRole("dialog", { name: "台積電 · 2330.TW" });
   await expect(drawer).toContainText("缺資料原因：尚無背景資料快照");
   await expect(drawer).not.toContainText(internalReason);
+});
+
+test("Legacy indicator summaries leave unavailable comparisons unknown", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, {
+    analyzeResult: {
+      ...quickAnalyzeResult,
+      technical_indicators: { ma5: 3080, ma20: 3010, ma60: 2860, macd_hist: 2.293, obv: 597572897 },
+    },
+  });
+  await page.goto("/analyze");
+  await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
+  await page.getByRole("button", { name: "開始分析" }).click();
+  await page.getByRole("button", { name: "複製技術指標摘要" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("OBV 單日增減（同序列）：資料不足");
+  const copy = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copy).toContain("MACD 柱體單日增減：資料不足");
+  expect(copy).toContain("OBV 起算日（首筆歸零）：資料不足");
+  expect(copy).toContain("指標資料日／前一交易日：資料不足 / 資料不足");
 });

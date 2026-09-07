@@ -29,6 +29,16 @@ from ai_stock_sentinel.technical.metrics import (
 
 TECHNICAL_METRICS_VERSION = "technical-metrics-v4"
 TECHNICAL_LAYER_VERSION = "technical-layer-v4"
+INDICATOR_COMPARISON_FIELDS = (
+    "indicator_data_date",
+    "indicator_previous_date",
+    "macd_trend_data_date",
+    "macd_hist_previous",
+    "macd_hist_change_1d",
+    "obv_previous",
+    "obv_change_1d",
+    "obv_start_date",
+)
 REQUIRED_LOOKBACK_DAYS = 60
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -184,7 +194,36 @@ def build_technical_profile_payload(
         else _empty_temporal_metrics()
     )
 
+    previous_macd = macd(close_values[:-1])
+    previous_hist = previous_macd["macd_hist"] if previous_macd else None
+    current_hist = macd_data["macd_hist"] if macd_data else None
+    # 前值與現值共用此次序列的起點，不能拿另一份摘要的累積值相減。
+    obv_change = None
+    if (
+        obv_data and volume_values is not None
+        and _series_dates_align(close_dates, volume_dates, len(close_values))
+    ):
+        direction = (close_values[-1] > close_values[-2]) - (close_values[-1] < close_values[-2])
+        obv_change = direction * volume_values[-1]
+    dates = list(close_dates or [])
+    dates_available = len(dates) == len(close_values)
+
     raw_indicators = {
+        "indicator_data_date": _iso_date_or_none(dates[-1]) if dates_available else None,
+        "indicator_previous_date": (
+            _iso_date_or_none(dates[-2]) if dates_available and len(dates) > 1 else None
+        ),
+        "macd_trend_data_date": temporal_inputs[3] if temporal_inputs else None,
+        "macd_hist_previous": previous_hist,
+        "macd_hist_change_1d": (
+            current_hist - previous_hist
+            if current_hist is not None and previous_hist is not None else None
+        ),
+        "obv_previous": obv_data["obv"] - obv_change if obv_change is not None else None,
+        "obv_change_1d": obv_change,
+        "obv_start_date": (
+            _iso_date_or_none(dates[0]) if dates_available and obv_change is not None else None
+        ),
         "ma5": ma5,
         "ma20": ma20,
         "ma60": ma60,

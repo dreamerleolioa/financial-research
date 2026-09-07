@@ -6,6 +6,15 @@ export interface AnalysisErrorDetail {
 }
 
 export interface TechnicalIndicators {
+  indicator_data_date?: string | null;
+  indicator_previous_date?: string | null;
+  macd_trend_data_date?: string | null;
+  macd_hist_previous?: number | null;
+  macd_hist_change_1d?: number | null;
+  obv_previous?: number | null;
+  obv_change_1d?: number | null;
+  obv_start_date?: string | null;
+
   ma5: number | null;
   ma20: number | null;
   ma60: number | null;

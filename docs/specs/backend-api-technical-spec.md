@@ -350,6 +350,8 @@ make run-api
 > - `final_verdict`：三維整合仲裁段落；允許跨維度推論
 >   以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
 
+> **MACD / OBV 跨日比較（2026-09-07）**：`macd_hist_previous`、`macd_hist_change_1d`、`obv_previous`、`obv_change_1d` 使用同一次輸入序列，前值由該序列移除最後一根日線後計算；不得從不同摘要相減。`indicator_data_date` / `indicator_previous_date` 標示這兩根日線日期，`obv_start_date` 標示首筆歸零日期。日期缺失時保留 null；價格與成交量日期不一致時 OBV 比較欄位不輸出。`macd_hist_slope_pct_3d` 保留相容欄位名稱，實際是三個交易日的柱體淨變化除以該分類資料日收盤價乘 100，UI / copy 標為「3日淨變化／股價」。`macd_trend_data_date` 為三日分類使用的已完成日線日期，盤中可能早於 `indicator_data_date`。單日改善可與三日轉弱並存；OBV 累積值受移動起點與重算影響，不能跨摘要解讀為資金進出。舊快取若有原始序列，重新計算整組 MACD / OBV 現值與比較值；沒有原始序列時不推算缺失欄位。
+
 > **`technical_indicators` 顯性輸出**（2026-05-25）：
 >
 > - 此欄位為 API 與前端技術指標卡片的正式資料來源。

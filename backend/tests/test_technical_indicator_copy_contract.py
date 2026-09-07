@@ -59,6 +59,7 @@ REQUIRED_NEUTRAL_COPY_TOKENS = [
 FORBIDDEN_COMPOSITE_COPY_TOKENS = ["波動狀態", "訊號衝突"]
 
 ALLOWED_COPY_FUNCTION_CALLS = {
+    "buildIndicatorComparisonRows",
     "buildChipStabilityCopyRows",
     "buildPhase1AvwapCopyRows",
     "formatAverageVolumes",

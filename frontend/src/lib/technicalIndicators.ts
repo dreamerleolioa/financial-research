@@ -133,6 +133,24 @@ export function formatSignedPercent(value: number | null | undefined, digits = 2
   return `${value > 0 ? "+" : ""}${value.toFixed(digits)}%`;
 }
 
+export function buildIndicatorComparisonRows(indicators: TechnicalIndicators): Array<[string, string]> {
+  const signed = (value: number | null | undefined, digits: number) =>
+    value == null || !Number.isFinite(value)
+      ? "資料不足"
+      : `${value > 0 ? "+" : ""}${value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  return [
+    ["指標資料日／前一交易日", `${indicators.indicator_data_date ?? "資料不足"} / ${indicators.indicator_previous_date ?? "資料不足"}`],
+    ["MACD 前一交易日柱體（同序列）", formatIndicatorNumber(indicators.macd_hist_previous, 3)],
+    ["MACD 柱體單日增減", signed(indicators.macd_hist_change_1d, 3)],
+    ["MACD 三日分類資料日", indicators.macd_trend_data_date ?? "資料不足"],
+    ["MACD 比較說明", "三日分類不代表每天同向變化；盤中單日增減尚未定案。"],
+    ["OBV 起算日（首筆歸零）", indicators.obv_start_date ?? "資料不足"],
+    ["OBV 前一交易日累積值（同序列）", signed(indicators.obv_previous, 0)],
+    ["OBV 單日增減（同序列）", signed(indicators.obv_change_1d, 0)],
+    ["OBV 比較說明", "累積值隨歷史起點與重算而變，請使用同序列增減，勿跨摘要相減。"],
+  ];
+}
+
 export function formatPercentile(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "資料不足";
   return `${value.toFixed(1)} 百分位`;
@@ -323,8 +341,8 @@ export function buildTechnicalIndicatorsCopyText(
     ["MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
     ["MA20 5日斜率", formatSignedPercent(indicators.ma20_slope_pct_5d, 3)],
     ["MA60 10日斜率", formatSignedPercent(indicators.ma60_slope_pct_10d, 3)],
-    ["MACD 柱體 3日斜率", formatSignedPercent(indicators.macd_hist_slope_pct_3d, 4)],
-    ["MACD 動能變化", getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)],
+    ["MACD 柱體 3日淨變化／股價", formatSignedPercent(indicators.macd_hist_slope_pct_3d, 4)],
+    ["MACD 動能變化（3日）", getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)],
     ["ATR% 60日分位", formatPercentile(indicators.atr_pct_percentile_60d)],
     ["布林帶寬 60日分位", formatPercentile(indicators.bollinger_bandwidth_percentile_60d)],
     ["KD 交叉", getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)],
@@ -350,6 +368,7 @@ export function buildTechnicalIndicatorsCopyText(
     ["KD K/D", indicatorPair(indicators.kd_k, 1, indicators.kd_d)],
     ["ADX", formatIndicatorNumber(indicators.adx, 1)],
     ["OBV 累積值參考", formatVolume(indicators.obv)],
+    ...buildIndicatorComparisonRows(indicators),
     ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
     ["MFI", formatIndicatorNumber(indicators.mfi, 1)],
     ["唐奇安通道上/下緣", indicatorPair(indicators.donchian_upper, 2, indicators.donchian_lower)],

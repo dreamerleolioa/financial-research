@@ -7,6 +7,7 @@ import type {
 } from "../lib/analysisTypes";
 import { formatPrice, formatVolume } from "../lib/formatters";
 import {
+  buildIndicatorComparisonRows,
   formatAverageVolumes,
   formatDailyOhlc,
   formatIndicatorNumber,
@@ -44,7 +45,7 @@ const SECONDARY_LABELS: Record<string, string> = {
 const TEMPORAL_LABELS: Record<string, string> = {
   ma20_slope: "MA20 斜率",
   ma60_slope: "MA60 斜率",
-  macd_hist_trend: "MACD 動能變化",
+  macd_hist_trend: "MACD 動能變化（3日）",
 };
 
 const MISSING_FIELD_LABELS: Record<string, string> = {
@@ -298,8 +299,8 @@ function rawIndicatorRows(
     ["macd_bias", "MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
     [
       "macd_hist_trend",
-      "MACD 動能變化",
-      `${getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)}（3日斜率 ${formatSignedPercent(indicators.macd_hist_slope_pct_3d, 4)}）`,
+      "MACD 動能變化（3日）",
+      `${getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)}（3日淨變化／股價 ${formatSignedPercent(indicators.macd_hist_slope_pct_3d, 4)}）`,
     ],
     ["atr_percentile", "ATR% 60日分位", formatPercentile(indicators.atr_pct_percentile_60d)],
     [
@@ -349,6 +350,7 @@ function rawIndicatorRows(
       `${formatIndicatorNumber(indicators.macd_line, 3)} / ${formatIndicatorNumber(indicators.macd_signal, 3)} / ${formatIndicatorNumber(indicators.macd_hist, 3)}`,
     ],
     ["macd_hist_pct", "MACD 柱體/股價", formatSignedPercent(indicators.macd_hist_pct, 4)],
+    ...buildIndicatorComparisonRows(indicators).map(([label, value]): [string, string, string] => [label, label, value]),
   ];
 }
 
