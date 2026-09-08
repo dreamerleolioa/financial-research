@@ -2251,3 +2251,11 @@ Alembic migration `f7a8b9c0d1e2_backfill_tdcc_weekly_holders_v2_payload.py` 是 
 - 覆蓋項目（LLM input contract）：
   - `analyze_node` 傳入 `signal_summary`，且摘要包含 KD / ADX / OBV 與 rule-based labels
   - analyzer prompt 將 `signal_summary` 放在優先閱讀區，並保留 `position_context` / `prev_context` 可選參數
+
+### 技術指標比較證據
+
+行情狀態與指標模式分開顯示，快照擷取時間不推定為行情交易日。MACD 單日增減是否收盤確認依指標末根日K判定；三日比較使用完整日K，提供 `macd_trend_hist`、`macd_hist_3d_previous`、`macd_hist_change_3d`、比較日期與分母 `macd_trend_price`，不與盤中末柱混用。
+
+MA20 5日斜率為 `(MA20[t] / MA20[t-5] - 1) × 100%`；MA60 10日斜率為 `(MA60[t] / MA60[t-10] - 1) × 100%`，t 均為完整日K末日，非線性回歸。OBV 訊號提供實際比較窗、起日價格與累積值、末日價格及價格百分比與 OBV 淨變化，所有累積值共用此次序列起點。
+
+唐奇安價格位置以原始精度分為低於、觸及下緣、通道內、觸及上緣、高於；突破事件另列。行情交易日未知或未晚於突破基準日期時，事件不可確認。單一越界快照不證明本次新發生交叉。

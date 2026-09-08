@@ -34,6 +34,17 @@ export interface TechnicalIndicators {
   indicator_data_date?: string | null;
   indicator_previous_date?: string | null;
   macd_trend_data_date?: string | null;
+  macd_trend_hist?: number | null;
+  macd_hist_3d_previous?: number | null;
+  macd_hist_change_3d?: number | null;
+  macd_trend_price?: number | null;
+  obv_window_previous?: number | null;
+  obv_window_change?: number | null;
+  obv_window_previous_close?: number | null;
+  obv_window_close?: number | null;
+  obv_window_price_change_pct?: number | null;
+  macd_trend_previous_date?: string | null;
+  obv_window_previous_date?: string | null;
   macd_hist_previous?: number | null;
   macd_hist_change_1d?: number | null;
   obv_previous?: number | null;

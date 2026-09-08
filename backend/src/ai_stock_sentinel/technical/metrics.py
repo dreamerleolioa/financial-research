@@ -304,6 +304,11 @@ def obv(
     return {
         "obv": values[-1],
         "obv_delta": obv_delta,
+        "obv_window_previous": values[compare_idx],
+        "obv_window_change": obv_delta,
+        "obv_window_previous_close": closes[compare_idx],
+        "obv_window_close": closes[-1],
+        "obv_window_price_change_pct": price_delta / closes[compare_idx] * 100 if closes[compare_idx] else None,
         "price_delta": price_delta,
         "obv_signal": signal,
         "obv_trend_20d": trend_20d,

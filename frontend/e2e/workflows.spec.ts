@@ -2325,5 +2325,43 @@ test("Indicator provenance keeps historical dates and full calculation precision
   expect(copy).toContain("2405.12 / 2403.25 / 2300.77");
   expect(copy).toContain("2450.00 / 距離 +0.41%");
   expect(copy).toContain("布林通道位階：高於上軌");
-  expect(copy).toContain("暫時越過唐奇安上緣，尚未收盤確認");
+  expect(copy).toContain("高於唐奇安上緣");
+  expect(copy).toContain("已收盤確認");
+  expect(copy).not.toContain("盤中單日增減尚未定案");
+  expect(copy).toContain("行情狀態：盤中快照");
+  expect(copy).toContain("指標狀態：完整日線收盤");
 });
+
+for (const [price, position] of [[2500, "高於唐奇安上緣"], [2460, "觸及唐奇安上緣，尚未突破"], [2400, "現價位於唐奇安通道內"], [2300, "觸及唐奇安下緣，尚未跌破"], [2200, "低於唐奇安下緣"]] as const) {
+  test(`Undated quote ${price} separates Donchian position from event`, async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await authenticate(page);
+    await installApiMocks(page, { analyzeResult: {
+      ...quickAnalyzeResult, is_final: false,
+      snapshot: { ...quickAnalyzeResult.snapshot, market_current_price: price, market_quote_time: null, market_trade_date: null },
+      technical_indicators: { ...quickAnalyzeResult.technical_indicators,
+        indicator_data_date: "2026-09-07", macd_hist_change_1d: 3.223,
+        donchian_upper: 2460, donchian_lower: 2300,
+        macd_trend_hist: 3.247, macd_hist_3d_previous: 1.5, macd_hist_change_3d: 1.747,
+        macd_trend_price: 2440, macd_trend_previous_date: "2026-09-02",
+        obv_window_previous_date: "2026-08-31", obv_window_previous_close: 2400,
+        obv_window_close: 2440, obv_window_previous: 1000, obv_window_change: 500,
+        obv_window_price_change_pct: 1.6666667,
+        input_context: { indicator_mode: "completed_daily", indicator_close_confirmed: true,
+          breakout_baseline_through: "2026-09-07", obv_lookback: 5 } },
+    } });
+    await page.goto("/analyze");
+    await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
+    await page.getByRole("button", { name: "開始分析" }).click();
+    await page.getByRole("button", { name: "複製技術指標摘要" }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain(`唐奇安通道位階：${position}`);
+    const copy = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copy).toContain("突破事件：無法確認（行情交易日未知）");
+    expect(copy).toContain("單日增減 +3.223 已收盤確認");
+    expect(copy).toContain("MACD 三交易日前柱體（同序列）：1.500");
+    expect(copy).toContain("MACD 三日淨變化：+1.747");
+    expect(copy).toContain("OBV 比較起日收盤價：2400.00");
+    expect(copy).toContain("OBV 比較窗淨變化：+500");
+    expect(copy).toContain("(MA20[t] / MA20[t-5] - 1) × 100%");
+  });
+}

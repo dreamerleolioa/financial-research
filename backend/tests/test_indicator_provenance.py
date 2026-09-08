@@ -104,3 +104,27 @@ def test_storage_does_not_mix_new_quote_with_previous_daily_bar():
     assert result['close'] == 2406.4
     assert result['open'] is None
     assert result['high'] is None
+
+
+@pytest.mark.parametrize('intraday', [False, True])
+def test_comparison_evidence_uses_each_indicators_actual_sequence(intraday):
+    from ai_stock_sentinel.technical.metrics import macd
+    s = source()
+    if intraday:
+        s['fetched_at'] = '2026-08-04T02:00:00+00:00'
+    raw = build_technical_profile_from_snapshot(s, is_final=False)['technical_indicators']
+    completed = s['recent_closes'][:-1] if intraday else s['recent_closes']
+    hist = macd(completed)['macd_hist']
+    previous = macd(completed[:-3])['macd_hist']
+    assert raw['macd_trend_hist'] == hist
+    assert raw['macd_hist_3d_previous'] == previous
+    assert raw['macd_hist_change_3d'] == pytest.approx(hist - previous)
+    assert raw['macd_hist_slope_pct_3d'] == round((hist - previous) / completed[-1] * 100, 4)
+    assert raw['macd_trend_price'] == completed[-1]
+    assert raw['macd_trend_previous_date'] == s['recent_close_dates'][len(completed) - 4]
+    assert raw['obv_window_previous_date'] == s['recent_close_dates'][-6]
+    assert raw['obv_window_previous_close'] == s['recent_closes'][-6]
+    assert raw['obv_window_close'] == s['recent_closes'][-1]
+    assert raw['obv_window_change'] == 5000
+    assert raw['obv'] - raw['obv_window_previous'] == raw['obv_window_change']
+    assert raw['obv_window_price_change_pct'] == pytest.approx((s['recent_closes'][-1] / s['recent_closes'][-6] - 1) * 100)

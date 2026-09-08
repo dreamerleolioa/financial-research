@@ -342,7 +342,7 @@ function rawIndicatorRows(
     [
       "donchian",
       "唐奇安通道",
-      `${formatDonchianState(indicators, getMarketCurrentPrice(snapshot), snapshot.market_current_price_source === "twse_mis")}（${formatIndicatorNumber(indicators.donchian_upper, 2)} / ${formatIndicatorNumber(indicators.donchian_lower, 2)}）`,
+      `${formatDonchianState(indicators, getMarketCurrentPrice(snapshot))}（${formatIndicatorNumber(indicators.donchian_upper, 2)} / ${formatIndicatorNumber(indicators.donchian_lower, 2)}）`,
     ],
     [
       "bollinger_values",
@@ -472,7 +472,7 @@ export function TechnicalIndicatorsPanel({
 }) {
   const indicators = result.technical_indicators ?? null;
   const profile = result.technical_profile ?? null;
-  const sessionLabel = result.is_final === false ? "盤中資料" : "收盤資料";
+  const sessionLabel = result.is_final === false ? "行情狀態：盤中快照" : result.is_final === true ? "行情狀態：收盤快照" : "行情狀態：未確認";
 
   return (
     <article className={className}>
