@@ -62,6 +62,17 @@ class TechnicalIndicators(BaseModel):
     indicator_data_date: str | None = None
     indicator_previous_date: str | None = None
     macd_trend_data_date: str | None = None
+    macd_trend_hist: float | None = None
+    macd_hist_3d_previous: float | None = None
+    macd_hist_change_3d: float | None = None
+    macd_trend_price: float | None = None
+    obv_window_previous: float | None = None
+    obv_window_change: float | None = None
+    obv_window_previous_close: float | None = None
+    obv_window_close: float | None = None
+    obv_window_price_change_pct: float | None = None
+    macd_trend_previous_date: str | None = None
+    obv_window_previous_date: str | None = None
     macd_hist_previous: float | None = None
     macd_hist_change_1d: float | None = None
     obv_previous: float | None = None

@@ -11,6 +11,7 @@ import uuid
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.daily_radar.universe import is_daily_radar_supported_symbol
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
 from ai_stock_sentinel.data_sources.fundamental.mops_provider import MopsHistoricalEpsProvider
@@ -153,6 +154,7 @@ def backfill_fundamentals(
             symbol.strip().upper()
             for symbol in symbols
             if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", symbol.strip().upper())
+            and is_daily_radar_supported_symbol(symbol)
         }
     )
     if after_symbol:
@@ -345,6 +347,7 @@ def resolve_managed_fundamental_symbols(
         symbol.strip().upper()
         for symbol in symbols
         if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
+        and is_daily_radar_supported_symbol(symbol)
     )
 
 
@@ -359,6 +362,7 @@ def resolve_pending_fundamental_backfill_symbols(
             str(symbol).strip().upper()
             for symbol in symbols
             if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
+            and is_daily_radar_supported_symbol(symbol)
         }
     )
     periods_by_symbol = load_latest_fundamental_periods_for_symbols(

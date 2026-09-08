@@ -1378,6 +1378,7 @@ def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
                     entry_date=date(2026, 8, 1),
                 ),
                 UserWatchlist(user_id=user.id, symbol="2454.TW"),
+                UserWatchlist(user_id=user.id, symbol="9105.TW"),
                 DailyRadarPreparedRun(
                     run_date=date(2026, 8, 17),
                     market="TW",
@@ -1486,6 +1487,40 @@ def test_finmind_backfill_limits_symbols_and_returns_cursor() -> None:
         assert provider.statement_calls == ["2330.TW"]
         assert provider.dividend_calls == ["2330.TW"]
         assert result.records_written == 9
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_backfill_excludes_9105_from_pending_and_existing_job_pages() -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    historical = MagicMock()
+    try:
+        assert resolve_pending_fundamental_backfill_symbols(
+            session, symbols=[" 9105.tw ", "9906.TW"],
+        ) == ["9906.TW"]
+        result = backfill_fundamentals(
+            session, symbols=["9105.TW", "9906.TW"], after_symbol="8926.TW",
+            limit=1, provider=provider, historical_provider=historical,
+        )
+        assert result.symbols_processed == ["9906.TW"]
+        assert result.next_after_symbol is None
+        assert provider.statement_calls == ["9906.TW"]
+        assert provider.dividend_calls == ["9906.TW"]
+        historical.fetch_periods.assert_called_once_with("9906.TW")
+
+        empty = backfill_fundamentals(
+            session, symbols=["9105.TW"], provider=provider,
+            historical_provider=historical,
+        )
+        assert empty.status == "ok"
+        assert empty.symbols_processed == []
+        assert empty.next_after_symbol is None
+        assert empty.records_written == 0
+        assert empty.provider_attempts == {
+            "mops_historical": 0, "finmind_statement": 0, "finmind_dividend": 0,
+        }
     finally:
         session.close()
         engine.dispose()

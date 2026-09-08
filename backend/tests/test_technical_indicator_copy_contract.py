@@ -43,7 +43,7 @@ PORTFOLIO_FORBIDDEN_INTERNAL_TOKENS = [
 REQUIRED_NEUTRAL_COPY_TOKENS = [
     "股票名稱",
     "股票代碼",
-    "資料狀態",
+    "行情狀態",
     "現價",
     "行情開／高／低",
     "成交量",

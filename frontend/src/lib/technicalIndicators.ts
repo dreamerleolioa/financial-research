@@ -143,10 +143,25 @@ export function buildIndicatorComparisonRows(indicators: TechnicalIndicators): A
     ["MACD 前一交易日柱體（同序列）", formatIndicatorNumber(indicators.macd_hist_previous, 3)],
     ["MACD 柱體單日增減", signed(indicators.macd_hist_change_1d, 3)],
     ["MACD 三日分類資料日", indicators.macd_trend_data_date ?? "資料不足"],
-    ["MACD 比較說明", "三日分類不代表每天同向變化；盤中單日增減尚未定案。"],
+    ["MACD 三交易日前資料日", indicators.macd_trend_previous_date ?? "資料不足"],
+    ["MACD 三日比較末柱（完整日K）", formatIndicatorNumber(indicators.macd_trend_hist, 3)],
+    ["MACD 三交易日前柱體（同序列）", formatIndicatorNumber(indicators.macd_hist_3d_previous, 3)],
+    ["MACD 三日淨變化", signed(indicators.macd_hist_change_3d, 3)],
+    ["MACD 三日正規化分母（比較末日收盤價）", formatIndicatorNumber(indicators.macd_trend_price, 2)],
+    ["MACD 比較說明", `三日分類不代表每天同向變化；${indicators.input_context?.indicator_mode === "completed_daily" && indicators.input_context.indicator_close_confirmed === true
+      ? `MACD 僅使用截至 ${indicators.indicator_data_date ?? "未確認日期"} 的完整日K，${indicators.macd_hist_change_1d != null ? `單日增減 ${signed(indicators.macd_hist_change_1d, 3)} 已收盤確認。` : "單日增減資料不足。"}`
+      : indicators.input_context?.indicator_mode === "intraday_estimate"
+        ? "單日增減為盤中暫估，尚未收盤確認；三日分類另使用完整日K。"
+        : "單日增減收盤狀態未確認。"} 另外取得的即時行情未納入 MACD 重算。`],
     ["OBV 起算日（首筆歸零）", indicators.obv_start_date ?? "資料不足"],
     ["OBV 前一交易日累積值（同序列）", signed(indicators.obv_previous, 0)],
     ["OBV 單日增減（同序列）", signed(indicators.obv_change_1d, 0)],
+    ["OBV 訊號比較起日", indicators.obv_window_previous_date ?? "資料不足"],
+    ["OBV 比較起日收盤價", formatIndicatorNumber(indicators.obv_window_previous_close, 2)],
+    ["OBV 比較末日收盤／盤中價", formatIndicatorNumber(indicators.obv_window_close, 2)],
+    ["OBV 比較窗價格淨變化", formatSignedPercent(indicators.obv_window_price_change_pct)],
+    ["OBV 比較起日累積值（同序列）", signed(indicators.obv_window_previous, 0)],
+    ["OBV 比較窗淨變化", signed(indicators.obv_window_change, 0)],
     ["OBV 比較說明", "累積值隨歷史起點與重算而變，請使用同序列增減，勿跨摘要相減。"],
   ];
 }
@@ -296,7 +311,7 @@ export function buildTechnicalIndicatorsCopyText(
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
   const displaySymbol = snapshotSymbol ?? "—";
   const symbolName = getAnalyzeSymbolName(result, snapshot);
-  const marketSessionLabel = result.is_final === false ? "盤中" : result.is_final === true ? "收盤" : "未確認";
+  const marketSessionLabel = result.is_final === false ? "盤中快照" : result.is_final === true ? "收盤快照" : "未確認";
   const currentPrice = getMarketCurrentPrice(snapshot);
   const currentPriceSource = snapshot.market_current_price_source === "twse_mis" ? "（TWSE MIS 即時）" : "";
   const priceLimitLabel = getPriceLimitLabel(snapshot);
@@ -320,7 +335,7 @@ export function buildTechnicalIndicatorsCopyText(
       "技術指標摘要",
       `股票名稱：${symbolName ?? "—"}`,
       `股票代碼：${displaySymbol}`,
-      `資料狀態：${marketSessionLabel}`,
+      `行情狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
       ...buildPhase1AvwapCopyRows(result.phase1_observation, currentPrice).map(
         ([label, value]) => `${label}：${value}`,
@@ -332,7 +347,7 @@ export function buildTechnicalIndicatorsCopyText(
   const rows: Array<[string, string]> = [
     ["股票名稱", symbolName ?? "—"],
     ["股票代碼", displaySymbol],
-    ["資料狀態", marketSessionLabel],
+    ["行情狀態", marketSessionLabel],
     ["現價", `${price(currentPrice)}${currentPriceSource}${priceLimitLabel ? `（${priceLimitLabel}）` : ""}`],
     ["行情開／高／低", formatDailyOhlc(snapshot, snapshotSymbol)],
     ...buildIndicatorSourceRows(indicators, snapshot),
@@ -362,7 +377,7 @@ export function buildTechnicalIndicatorsCopyText(
     ],
     ["ATR 波動", getTechnicalIndicatorLabel("volatility_level", indicators.volatility_level)],
     ["MFI 資金流量訊號", getTechnicalIndicatorLabel("mfi_signal", indicators.mfi_signal)],
-    ["唐奇安通道位階", formatDonchianState(indicators, currentPrice, snapshot.market_current_price_source === "twse_mis")],
+    ["唐奇安通道位階", formatDonchianState(indicators, currentPrice)],
     ["布林上軌", formatIndicatorNumber(indicators.bollinger_upper, 2)],
     ["布林中軌", formatIndicatorNumber(indicators.bollinger_mid, 2)],
     ["布林下軌", formatIndicatorNumber(indicators.bollinger_lower, 2)],
@@ -413,20 +428,25 @@ export function formatKdEvent(indicators: TechnicalIndicators): string {
   return indicators.input_context?.indicator_mode === "intraday_estimate" ? `盤中${label}（尚未收盤確認）` : label;
 }
 
-export function formatDonchianState(indicators: TechnicalIndicators, displayPrice?: number | null, quoteIsLive = false): string {
-  if (displayPrice != null && indicators.donchian_upper != null && indicators.donchian_lower != null) {
-    const confirmed = !quoteIsLive && indicators.input_context?.breakout_close_confirmed === true
-      && displayPrice === indicators.input_context.breakout_reference_price;
-    if (displayPrice > indicators.donchian_upper) return confirmed ? "突破上緣（收盤確認）" : "暫時越過唐奇安上緣，尚未收盤確認";
-    if (displayPrice < indicators.donchian_lower) return confirmed ? "跌破下緣（收盤確認）" : "暫時跌破唐奇安下緣，尚未收盤確認";
-    return "現價位於唐奇安通道內";
-  }
-  const label = getTechnicalIndicatorLabel("donchian_position", indicators.donchian_position, "無法更新");
-  if (indicators.input_context?.breakout_close_confirmed !== true) {
-    if (indicators.donchian_position === "breakout_up") return "暫時越過唐奇安上緣，尚未收盤確認";
-    if (indicators.donchian_position === "breakdown_down") return "暫時跌破唐奇安下緣，尚未收盤確認";
-  }
-  return label;
+export function formatDonchianState(indicators: TechnicalIndicators, displayPrice?: number | null): string {
+  const upper = indicators.donchian_upper;
+  const lower = indicators.donchian_lower;
+  if (displayPrice == null || upper == null || lower == null) return "資料不足，無法比較";
+  if (displayPrice > upper) return "高於唐奇安上緣";
+  if (displayPrice < lower) return "低於唐奇安下緣";
+  if (displayPrice === upper) return "觸及唐奇安上緣，尚未突破";
+  if (displayPrice === lower) return "觸及唐奇安下緣，尚未跌破";
+  return "現價位於唐奇安通道內";
+}
+
+function donchianEvent(indicators: TechnicalIndicators, price: number | null, quoteDate: string | null): string {
+  const context = indicators.input_context;
+  if (!quoteDate) return "無法確認（行情交易日未知）；僅可計算價格位置";
+  if (!context?.breakout_baseline_through || quoteDate <= context.breakout_baseline_through) return "無法確認（行情未晚於突破基準日期）";
+  if (price == null || indicators.donchian_upper == null || indicators.donchian_lower == null) return "無法確認（價格或通道資料不足）";
+  if (price <= indicators.donchian_upper && price >= indicators.donchian_lower) return "快照價未越界，未形成突破";
+  if (context.breakout_close_confirmed === true && quoteDate === indicators.indicator_data_date && price === context.indicator_close) return "收盤價已越界；新交叉事件仍需前次價格確認";
+  return "快照價已越界，尚未收盤確認；新突破事件仍需前次價格確認";
 }
 
 export function formatBollingerState(indicators: TechnicalIndicators, displayPrice?: number | null): string {
@@ -481,12 +501,15 @@ export function buildIndicatorSourceRows(
     ["原始快照擷取時間（非成交時間）", fetchedTime ?? "未提供"],
     ["歷史完整日K截至", context?.history_completed_through ?? "未確認"],
     ["指標所屬交易日", indicators.indicator_data_date ?? "未確認"],
+    ["指標狀態", mode === "completed_daily" ? "完整日線收盤" : mode === "intraday_estimate" ? "日線盤中暫估" : "未確認"],
+    ["即時價是否納入指標重算", "否（另外取得的行情價未併入原始日K）"],
     ["指標模式", mode === "intraday_estimate" ? "當日日線盤中暫估" : mode === "completed_daily" ? "僅使用已完成日線" : "未確認"],
     ["指標日K收盤確認", context?.indicator_close_confirmed === true ? "是" : context?.indicator_close_confirmed === false ? "否" : "未確認"],
     ["原始快照參考價", formatIndicatorNumber(context?.breakout_reference_price, 2)],
     ["指標末根日K收盤／盤中價", formatIndicatorNumber(context?.indicator_close, 2)],
     ["指標輸入", "使用原始日K序列；未把另外取得的即時現價塞入序列重算。"],
     ["日線高低收輸入", context?.hlc_status === "complete" ? "齊全（以指標資料日為準）" : context?.hlc_status === "unavailable" ? "不完整，依賴高低價的指標無法更新" : "未提供，無法確認"],
+    ["突破事件", donchianEvent(indicators, getMarketCurrentPrice(snapshot), quoteDate)],
     ["突破比較說明", "以所列現價比較完整日K基準；即時越界不代表收盤突破。"],
     ["突破基準截至", context?.breakout_baseline_through ?? "未確認"],
     ["KD 排列", kdOrder],
@@ -498,7 +521,8 @@ export function buildIndicatorSourceRows(
     ["20日均量口徑", context && mode !== "unknown" ? `完整日均量；${context.volume_average_excludes_signal_bar ? "排除當日未完成日K" : "包含最新完整日K"}` : "未確認"],
     ["快照成交量／20日完整日均量", volume != null && average != null && average > 0 ? `${(volume / average).toFixed(2)} 倍（不是同時段量比）` : "資料不足"],
     ["日線來源／價格還原", `${context?.history_source ?? "未提供"} / ${context?.price_adjustment ?? "未提供"}`],
-    ["指標設定版本", context?.formula_version ?? "未提供"],
+    ["MA20 5日斜率公式", "(MA20[t] / MA20[t-5] - 1) × 100%；t 為完整日K末日"],
+    ["MA60 10日斜率公式", "(MA60[t] / MA60[t-10] - 1) × 100%；t 為完整日K末日"],
     ["一致性檢查", context?.consistency_issues ? context.consistency_issues.length ? context.consistency_issues.join("；") : "可檢查項目通過；缺資料項目不視為通過" : "未執行"],
   ];
 }

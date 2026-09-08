@@ -32,6 +32,17 @@ TECHNICAL_METRICS_VERSION = "technical-metrics-v5"
 TECHNICAL_LAYER_VERSION = "technical-layer-v5"
 INDICATOR_COMPARISON_FIELDS = (
     "input_context",
+    "macd_trend_hist",
+    "macd_hist_3d_previous",
+    "macd_hist_change_3d",
+    "macd_trend_price",
+    "obv_window_previous",
+    "obv_window_change",
+    "obv_window_previous_close",
+    "obv_window_close",
+    "obv_window_price_change_pct",
+    "macd_trend_previous_date",
+    "obv_window_previous_date",
     "kd_previous_k", "kd_previous_d", "dmi_plus", "dmi_minus",
     "indicator_data_date",
     "indicator_previous_date",
@@ -273,6 +284,19 @@ def build_technical_profile_payload(
             _iso_date_or_none(dates[-2]) if dates_available and len(dates) > 1 else None
         ),
         "macd_trend_data_date": temporal_inputs[3] if temporal_inputs else None,
+        "macd_trend_previous_date": (
+            _iso_date_or_none(dates[len(temporal_inputs[0]) - 4])
+            if dates_available and temporal_inputs and len(temporal_inputs[0]) >= 38 else None
+        ),
+        "obv_window_previous_date": (
+            _iso_date_or_none(dates[max(0, len(dates) - 6)])
+            if dates_available and obv_change is not None else None
+        ),
+        **{
+            field: obv_data.get(field) if obv_data and obv_change is not None else None
+            for field in ("obv_window_previous", "obv_window_change", "obv_window_previous_close",
+                          "obv_window_close", "obv_window_price_change_pct")
+        },
         "macd_hist_previous": previous_hist,
         "macd_hist_change_1d": (
             current_hist - previous_hist
@@ -519,11 +543,17 @@ def _temporal_metrics(
     ma20_slope = _moving_average_slope_pct(close_values, window=20, lookback=5)
     ma60_slope = _moving_average_slope_pct(close_values, window=60, lookback=10)
     macd_slope = _macd_hist_slope_pct(close_values, lookback=3)
+    previous_macd = macd(close_values[:-3]) if len(close_values) >= 38 else None
+    previous_hist = previous_macd["macd_hist"] if previous_macd else None
     macd_current = macd(close_values)
     macd_hist = _number_or_none(macd_current.get("macd_hist")) if macd_current else None
     atr_percentile = _atr_pct_percentile(close_values, high_values, low_values)
     bandwidth_percentile = _bollinger_bandwidth_percentile(close_values)
     return {
+        "macd_trend_hist": macd_hist,
+        "macd_hist_3d_previous": previous_hist,
+        "macd_hist_change_3d": macd_hist - previous_hist if macd_hist is not None and previous_hist is not None else None,
+        "macd_trend_price": close_values[-1] if close_values else None,
         "ma20_slope_pct_5d": ma20_slope,
         "ma60_slope_pct_10d": ma60_slope,
         "macd_hist_slope_pct_3d": macd_slope,
