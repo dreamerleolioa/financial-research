@@ -773,6 +773,16 @@ def test_daily_radar_supported_symbol_excludes_tw_etfs() -> None:
     assert is_daily_radar_supported_symbol("00983A.TW") is False
 
 
+def test_daily_radar_excludes_9105_without_excluding_other_9xxx_stocks() -> None:
+    assert is_daily_radar_supported_symbol(" 9105.tw ") is False
+    provider = _provider(same_day_rows=[
+        InstitutionalLeaderRow(symbol="9105.TW", rank=1),
+        InstitutionalLeaderRow(symbol="9906.TW", rank=2),
+    ])
+    entries = select_dual_track_universe(provider, run_date=date(2026, 9, 8))
+    assert [(entry.symbol, entry.rank) for entry in entries] == [("9906.TW", 1)]
+
+
 def test_twse_institutional_leaders_skip_etf_and_warrant_like_ids() -> None:
     def fake_get(url: str, *, params: dict[str, str], timeout: int) -> _FakeTwseResponse:
         report_id = url.rsplit("/", maxsplit=1)[-1]
@@ -783,6 +793,7 @@ def test_twse_institutional_leaders_skip_etf_and_warrant_like_ids() -> None:
                         _twse_foreign_row(stock_id="07652U", buy="10,000", sell="0", net="10,000"),
                         _twse_foreign_row(stock_id="00983A", buy="1,000", sell="0", net="1,000"),
                         _twse_foreign_row(stock_id="0050", buy="800", sell="0", net="800"),
+                        _twse_foreign_row(stock_id="9105", buy="700", sell="0", net="700"),
                         _twse_foreign_row(stock_id="2330", buy="500", sell="0", net="500"),
                     ]
                 )

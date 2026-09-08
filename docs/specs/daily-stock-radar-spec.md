@@ -96,6 +96,8 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 這代表 live run 的 universe 來自四條分法人軌道加上本地日頻技術 trigger tracks，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的，但目前 live default 是 multi-track 候選 universe，不是完整上市櫃全市場逐檔掃描。
 
+`9105.TW`（泰金寶-DR）在現有 MOPS 歷史 EPS 與 FinMind 財報來源均無可用資料，因此從 Daily Radar 候選池及基本面回補排除。排除規則同時套用到新回補佇列與既有 job 的執行入口，避免舊股票清單反覆查詢；保留歷史資料，不刪除使用者持股或追蹤清單。恢復納入前須驗證來源可提供足夠 EPS 歷史。
+
 ### 4.2 兩階段掃描
 
 為控制外部請求量，Daily Radar 採兩階段流程。

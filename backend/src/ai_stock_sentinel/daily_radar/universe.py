@@ -57,6 +57,9 @@ TECHNICAL_TRIGGER_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
 )
 TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *TECHNICAL_TRIGGER_TRACKS)
 
+# 9105 泰金寶-DR 的 MOPS 歷史 EPS 與 FinMind 財報皆無資料；來源支援前不納入雷達及回補。
+EXCLUDED_TW_STOCK_IDS = frozenset({"9105"})
+
 
 def is_daily_radar_supported_symbol(symbol: str) -> bool:
     normalized = str(symbol).strip().upper()
@@ -68,7 +71,12 @@ def is_daily_radar_supported_symbol(symbol: str) -> bool:
 
 def is_daily_radar_supported_tw_stock_id(stock_id: str) -> bool:
     normalized = str(stock_id).strip().upper()
-    return len(normalized) == 4 and normalized.isdigit() and not normalized.startswith("00")
+    return (
+        len(normalized) == 4
+        and normalized.isdigit()
+        and not normalized.startswith("00")
+        and normalized not in EXCLUDED_TW_STOCK_IDS
+    )
 
 
 @dataclass(frozen=True, slots=True)
