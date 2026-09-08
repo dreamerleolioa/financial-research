@@ -1,3 +1,4 @@
+import { formatCalculatedPrice } from "../lib/formatters";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
@@ -1531,7 +1532,7 @@ function LifecycleEventTimeline({
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                    <TimelineMetric label="MA20" value={formatPrice(snapshot.ma20, symbol)} />
+                    <TimelineMetric label="MA20" value={formatCalculatedPrice(snapshot.ma20)} />
                     <TimelineMetric label="MA60" value={formatPrice(snapshot.ma60, symbol)} />
                     <TimelineMetric label="相對 MA20" value={getSignedPercentText(snapshot.event_price_vs_ma20_pct)} />
                     <TimelineMetric label="量比" value={formatPlainValue(snapshot.volume_ratio)} />

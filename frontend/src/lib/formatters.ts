@@ -38,3 +38,7 @@ export function formatVolume(value: unknown): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat("zh-TW").format(value);
 }
+
+export function formatCalculatedPrice(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(2);
+}

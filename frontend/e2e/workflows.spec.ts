@@ -459,7 +459,7 @@ test("Analyze deterministic research supports copy and a keyboard-contained add-
   await expect(page.getByText("世芯-KY 3661.TW", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("漲停", { exact: true })).toBeVisible();
   await expect(page.getByText("3120（TWSE MIS 即時）", { exact: true })).toBeVisible();
-  await expect(page.getByText("今日開／高／低", { exact: true })).toBeVisible();
+  await expect(page.getByText("行情開／高／低", { exact: true })).toBeVisible();
   await expect(page.getByText("3075 / 3155 / 3050", { exact: true })).toBeVisible();
   await expect(page.getByText("20／60 日均成交量", { exact: true })).toBeVisible();
   await expect(page.getByText("2,100 / 1,800", { exact: true })).toBeVisible();
@@ -470,7 +470,7 @@ test("Analyze deterministic research supports copy and a keyboard-contained add-
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("3661.TW");
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("今日開／高／低：3075 / 3155 / 3050");
+    .toContain("行情開／高／低：3075 / 3155 / 3050");
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("20／60 日均成交量：2,100 / 1,800");
@@ -583,7 +583,7 @@ test("Watchlist quick lookup preserves the copy-to-AI workflow", async ({ page, 
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("3661.TW");
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("今日開／高／低：3075 / 3155 / 3050");
+    .toContain("行情開／高／低：3075 / 3155 / 3050");
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("20／60 日均成交量：2,100 / 1,800");
@@ -2289,4 +2289,41 @@ test("Legacy indicator summaries leave unavailable comparisons unknown", async (
   expect(copy).toContain("MACD 柱體單日增減：資料不足");
   expect(copy).toContain("OBV 起算日（首筆歸零）：資料不足");
   expect(copy).toContain("指標資料日／前一交易日：資料不足 / 資料不足");
+});
+
+test("Indicator provenance keeps historical dates and full calculation precision", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await authenticate(page);
+  await installApiMocks(page, { analyzeResult: {
+    ...quickAnalyzeResult,
+    is_final: false,
+    snapshot: { ...quickAnalyzeResult.snapshot, market_current_price: 2460,
+      market_quote_time: "2026-09-07T10:15:23+08:00", market_day_open: null,
+      market_day_high: null, market_day_low: null },
+    technical_indicators: { ...quickAnalyzeResult.technical_indicators,
+      ma5: 2405.12, ma20: 2403.25, ma60: 2300.77, bollinger_mid: 2403.25, bollinger_upper: 2452.06,
+      indicator_data_date: "2026-09-04", donchian_position: "upper_half", donchian_upper: 2445, donchian_lower: 2300,
+      input_context: { indicator_mode: "completed_daily", indicator_close_confirmed: true,
+        breakout_close_confirmed: false, history_completed_through: "2026-09-04",
+        breakout_reference_price: 2440, indicator_close: 2440, hlc_status: "complete" } },
+    phase1_observation: { data_date: "2026-09-04", symbol: "3661.TW", dataset: "daily",
+      adjustment_mode: "adjusted", freshness: "fresh", missing_reason: null,
+      source: { provider: "test", dataset: "daily", adjustment_mode: "adjusted" },
+      source_granularity: "daily", data_quality: {}, anchors: {
+      swing_low_60d: { available: true, avwap: 2450, current_distance_to_avwap_pct: 0.50 },
+    } },
+  } });
+  await page.goto("/analyze");
+  await page.getByRole("textbox", { name: "股票代碼" }).fill("3661.TW");
+  await page.getByRole("button", { name: "開始分析" }).click();
+  await page.getByRole("button", { name: "複製技術指標摘要" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("行情時間：2026-09-07 10:15:23 +08:00");
+  const copy = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copy).toContain("行情開／高／低：—");
+  expect(copy).toContain("指標所屬交易日：2026-09-04");
+  expect(copy).toContain("不同交易日；日線指標未以所列現價重算");
+  expect(copy).toContain("2405.12 / 2403.25 / 2300.77");
+  expect(copy).toContain("2450.00 / 距離 +0.41%");
+  expect(copy).toContain("布林通道位階：高於上軌");
+  expect(copy).toContain("暫時越過唐奇安上緣，尚未收盤確認");
 });

@@ -1,9 +1,9 @@
+import { formatCalculatedPrice } from "../lib/formatters";
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type SubmitEvent } from "react";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse, Phase1Observation } from "../lib/analysisTypes";
 import { TechnicalIndicatorsPanel, TechnicalProfileDisclosure } from "../components/TechnicalIndicatorsPanel";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
-import { formatPrice } from "../lib/formatters";
 import { formatDataMissingReason, formatPriceAdjustmentMode } from "../lib/presentationLabels";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -110,7 +110,7 @@ function getPhase1DisplayAnchors(observation: Phase1Observation): Array<{
     }));
 }
 
-function WatchlistPhase1Observation({ observation, symbol }: { observation: Phase1Observation; symbol: string }) {
+function WatchlistPhase1Observation({ observation }: { observation: Phase1Observation; symbol: string }) {
   const anchors = getPhase1DisplayAnchors(observation);
   const isMissing = observation.freshness === "missing" || Boolean(observation.missing_reason);
 
@@ -140,7 +140,7 @@ function WatchlistPhase1Observation({ observation, symbol }: { observation: Phas
             <div key={anchor.key}>
               <p className="mb-1 text-xs text-text-muted">{anchor.label}</p>
               <p className="font-mono text-sm font-medium text-text-primary">
-                {formatPrice(anchor.avwap, symbol)}
+                {formatCalculatedPrice(anchor.avwap)}
                 <span
                   className={`ml-2 ${
                     anchor.distance == null

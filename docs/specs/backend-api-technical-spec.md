@@ -160,7 +160,7 @@ make run-api
     "obv_signal": "price_volume_confirm"
   },
   "technical_profile": {
-    "version": "technical-layer-v4",
+    "version": "technical-layer-v5",
     "primary_score_inputs": {
       "ma_structure": {
         "state": "bullish_alignment",
@@ -213,8 +213,8 @@ make run-api
       "missing_fields": []
     },
     "formula_versions": {
-      "metrics": "technical-metrics-v4",
-      "layering": "technical-layer-v4"
+      "metrics": "technical-metrics-v5",
+      "layering": "technical-layer-v5"
     },
     "companion_context_refs": {
       "chip_stability_context": "tdcc_weekly_major_holders"
@@ -338,7 +338,7 @@ make run-api
 
 > **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver、portfolio risk score 或 action/verdict/classification 覆寫。
 
-> **Canonical technical profile（2026-08-28）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v4`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 與 Daily Radar compatibility scoring 都必須使用當前 bar 之前的 20 根已完成 bar；`technical_indicators.prior_high_20d` / `prior_low_20d` 是可回放的判斷基準，`high_20d` / `low_20d` 則保留包含當前 bar 的純顯示值。`macd_hist_pct = macd_hist / close * 100` 是跨股價尺度比較與門檻判斷的 canonical 值，禁止用 MACD 原始絕對值套用跨股票固定門檻。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v4 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
+> **Canonical technical profile（2026-08-28）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v5`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 與 Daily Radar compatibility scoring 都必須使用當前 bar 之前的 20 根已完成 bar；`technical_indicators.prior_high_20d` / `prior_low_20d` 是可回放的判斷基準，`high_20d` / `low_20d` 則保留包含當前 bar 的純顯示值。`macd_hist_pct = macd_hist / close * 100` 是跨股價尺度比較與門檻判斷的 canonical 值，禁止用 MACD 原始絕對值套用跨股票固定門檻。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v5 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
 
 > **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / Watchlist / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
@@ -349,6 +349,10 @@ make run-api
 > - `news_insight`：消息面獨立分析段落；禁止提及具體技術指標數值
 > - `final_verdict`：三維整合仲裁段落；允許跨維度推論
 >   以上四欄位若 LLM 未回傳或回傳空字串，均 fallback 為 `null`，不崩潰。
+
+> **指標輸入與一致性（2026-09-08）**：`technical-metrics-v5` / `technical-layer-v5` 統一前20個完整交易日與唐奇安突破基準；v4 快取必須重算整組 profile 與原始指標。`technical_indicators.input_context` 保存歷史完整日K截至、指標模式／收盤確認、日線末根價格、HLC/量序列完整性、突破基準日、量來源／日期／盤中累計或全日狀態與一致性檢查。模式依快照自己的日期與 finality 判定，不使用輸出時的系統日期。獨立取得的 TWSE MIS 現價不插入日線序列；其 `market_quote_time` 及 `market_day_open/high/low` 與原始快照分開，來源時間缺失不能以 fetched_at 代替。即時現價可與已完成日線基準比較位置，但不能宣稱收盤突破。缺失 OHLC 不以收盤價填充；指標依賴的 HLC 缺失或日期錯位時輸出 null。均線與 AVWAP 顯示至少兩位小數，不使用交易跳動單位格式器；AVWAP 摘要距離以所列現價與未取整 AVWAP 重算。MACD 0.001 的顯示差異不能取代原精度驗證。
+>
+> 計算參數集中在 `technical/metrics.py` 的函式預設值，版本由 `technical/profile.py` 管理：MA / 布林中軌為 20 日 SMA，布林標準差 2 倍；MACD 為 12/26 EMA 與 9 EMA 訊號線；KD 為 9 日 RSV、K/D 各以 1/3 平滑（初值 50）；ADX/DMI 為 14 日 Wilder 平滑；OBV 短期比較末根與 5 個交易日前（6 根端點），唐奇安突破基準使用前20個完整交易日。日線來源與還原方式由 provider 寫入 `history_source/history_adjustment`（Yahoo 明確 auto_adjust=True），舊快取缺少來源時標未知。變更參數／平滑／基準時同步升級版本；輸出只列版本與來源，完整方法保留本文件。
 
 > **MACD / OBV 跨日比較（2026-09-07）**：`macd_hist_previous`、`macd_hist_change_1d`、`obv_previous`、`obv_change_1d` 使用同一次輸入序列，前值由該序列移除最後一根日線後計算；不得從不同摘要相減。`indicator_data_date` / `indicator_previous_date` 標示這兩根日線日期，`obv_start_date` 標示首筆歸零日期。日期缺失時保留 null；價格與成交量日期不一致時 OBV 比較欄位不輸出。`macd_hist_slope_pct_3d` 保留相容欄位名稱，實際是三個交易日的柱體淨變化除以該分類資料日收盤價乘 100，UI / copy 標為「3日淨變化／股價」。`macd_trend_data_date` 為三日分類使用的已完成日線日期，盤中可能早於 `indicator_data_date`。單日改善可與三日轉弱並存；OBV 累積值受移動起點與重算影響，不能跨摘要解讀為資金進出。舊快取若有原始序列，重新計算整組 MACD / OBV 現值與比較值；沒有原始序列時不推算缺失欄位。
 

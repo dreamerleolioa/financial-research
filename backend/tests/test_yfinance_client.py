@@ -68,6 +68,7 @@ def test_fetch_basic_snapshot_prefers_fast_info_last_volume() -> None:
     assert snapshot.volume_source == "realtime"
     mock_ticker.history.assert_called_once_with(
         period="1y",
+        auto_adjust=True,
         interval="1d",
         timeout=10.0,
     )

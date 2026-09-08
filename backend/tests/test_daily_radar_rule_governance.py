@@ -1625,10 +1625,10 @@ def _replay_record(symbol: str, *, positive_days: int) -> dict[str, Any]:
             "resistance_level": 102.0,
         },
         "technical_profile": {
-            "version": "technical-layer-v4",
+            "version": "technical-layer-v5",
             "formula_versions": {
-                "metrics": "technical-metrics-v4",
-                "layering": "technical-layer-v4",
+                "metrics": "technical-metrics-v5",
+                "layering": "technical-layer-v5",
             },
             "data_quality": {
                 "ohlcv_aligned": True,

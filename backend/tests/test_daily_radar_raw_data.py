@@ -82,10 +82,10 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv_trend": "rising",
         },
         "technical_profile": {
-            "version": "technical-layer-v4",
+            "version": "technical-layer-v5",
             "formula_versions": {
-                "metrics": "technical-metrics-v4",
-                "layering": "technical-layer-v4",
+                "metrics": "technical-metrics-v5",
+                "layering": "technical-layer-v5",
             },
             "data_quality": {
                 "ohlcv_aligned": True,
@@ -246,7 +246,7 @@ def test_ensure_daily_radar_raw_rows_refetches_outdated_technical_profile(
 
     assert fetcher.calls == [(["2330.TW"], run_date)]
     assert [row.id for row in rows] == [existing_row.id]
-    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v4"
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v5"
     assert "signal_conflicts" not in rows[0].technical["technical_profile"]
 
 
@@ -316,7 +316,7 @@ def test_ensure_daily_radar_raw_rows_refetches_incomplete_v4_semantic_contract(
 
     assert fetcher.calls == [(["2330.TW"], run_date)]
     assert [row.id for row in rows] == [existing_row.id]
-    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v4"
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v5"
 
 
 @pytest.mark.parametrize(
@@ -378,7 +378,7 @@ def test_ensure_daily_radar_raw_rows_refetches_final_row_without_replay_evidence
     )
 
     assert fetcher.calls == [(["2330.TW"], run_date)]
-    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v4"
+    assert rows[0].technical["technical_profile"]["version"] == "technical-layer-v5"
     assert rows[0].technical["price_history"] == [{"date": run_date.isoformat(), "close": 106.0}]
 
 
@@ -723,10 +723,10 @@ def test_default_yfinance_batch_fetcher_uses_one_grouped_download_without_ticker
     assert payloads["2330.TW"]["ohlcv"]["close"] == 159.0
     assert payloads["2330.TW"]["name"] == "台積電"
     assert payloads["2454.TW"]["indicators"]["missing_trading_days_60"] == 0
-    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v4"
+    assert payloads["2330.TW"]["technical_profile"]["version"] == "technical-layer-v5"
     assert payloads["2330.TW"]["technical_profile"]["formula_versions"] == {
-        "metrics": "technical-metrics-v4",
-        "layering": "technical-layer-v4",
+        "metrics": "technical-metrics-v5",
+        "layering": "technical-layer-v5",
     }
     assert payloads["2330.TW"]["technical_profile"]["data_quality"]["data_date"] == "2026-06-02"
     assert payloads["2330.TW"]["data_dates"]["technical_profile"] == "2026-06-02"

@@ -8,6 +8,10 @@ import type {
 import { formatPrice, formatVolume } from "../lib/formatters";
 import {
   buildIndicatorComparisonRows,
+  buildIndicatorSourceRows,
+  formatKdEvent,
+  formatDonchianState,
+  formatBollingerState,
   formatAverageVolumes,
   formatDailyOhlc,
   formatIndicatorNumber,
@@ -286,16 +290,17 @@ function rawIndicatorRows(
         snapshot.market_current_price_source === "twse_mis" ? "（TWSE MIS 即時）" : ""
       }`,
     ],
-    ["day_ohlc", "今日開／高／低", formatDailyOhlc(snapshot, symbol)],
+    ["day_ohlc", "行情開／高／低", formatDailyOhlc(snapshot, symbol)],
+    ...buildIndicatorSourceRows(indicators, snapshot).map(([label, value]): [string, string, string] => [label, label, value]),
     ["volume", "成交量", formatVolume(snapshot.volume)],
     ["average_volume", "20／60 日均成交量", formatAverageVolumes(indicators)],
     ["moving_averages", "均線 MA5/20/60", formatMovingAverages(indicators, symbol)],
     ["ma20_slope", "MA20 5日斜率", formatSignedPercent(indicators.ma20_slope_pct_5d, 3)],
     ["ma60_slope", "MA60 10日斜率", formatSignedPercent(indicators.ma60_slope_pct_10d, 3)],
-    ["range_20d", "20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
-    ["prior_range_20d", "前 20 日壓力/支撐", pricePair(indicators.prior_high_20d, indicators.prior_low_20d)],
+    ["range_20d", "近20根指標日K最高/最低（含末根）", pricePair(indicators.high_20d, indicators.low_20d)],
+    ["prior_range_20d", "前20個完整交易日最高/最低（突破基準）", pricePair(indicators.prior_high_20d, indicators.prior_low_20d)],
     ["range_60d", "60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
-    ["bollinger_position", "布林通道", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
+    ["bollinger_position", "布林通道", formatBollingerState(indicators, getMarketCurrentPrice(snapshot))],
     ["macd_bias", "MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
     [
       "macd_hist_trend",
@@ -311,7 +316,7 @@ function rawIndicatorRows(
     [
       "kd",
       "KD",
-      `${getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)} / ${getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)}（K/D ${formatIndicatorNumber(indicators.kd_k, 1)} / ${formatIndicatorNumber(indicators.kd_d, 1)}）`,
+      `${getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)} / ${formatKdEvent(indicators)}（K/D ${formatIndicatorNumber(indicators.kd_k, 1)} / ${formatIndicatorNumber(indicators.kd_d, 1)}）`,
     ],
     [
       "adx",
@@ -337,7 +342,7 @@ function rawIndicatorRows(
     [
       "donchian",
       "唐奇安通道",
-      `${getTechnicalIndicatorLabel("donchian_position", indicators.donchian_position)}（${formatIndicatorNumber(indicators.donchian_upper, 2)} / ${formatIndicatorNumber(indicators.donchian_lower, 2)}）`,
+      `${formatDonchianState(indicators, getMarketCurrentPrice(snapshot), snapshot.market_current_price_source === "twse_mis")}（${formatIndicatorNumber(indicators.donchian_upper, 2)} / ${formatIndicatorNumber(indicators.donchian_lower, 2)}）`,
     ],
     [
       "bollinger_values",
@@ -349,7 +354,7 @@ function rawIndicatorRows(
       "MACD 線/訊號/柱",
       `${formatIndicatorNumber(indicators.macd_line, 3)} / ${formatIndicatorNumber(indicators.macd_signal, 3)} / ${formatIndicatorNumber(indicators.macd_hist, 3)}`,
     ],
-    ["macd_hist_pct", "MACD 柱體/股價", formatSignedPercent(indicators.macd_hist_pct, 4)],
+    ["macd_hist_pct", "MACD 柱體／原始快照價", formatSignedPercent(indicators.macd_hist_pct, 4)],
     ...buildIndicatorComparisonRows(indicators).map(([label, value]): [string, string, string] => [label, label, value]),
   ];
 }

@@ -462,6 +462,11 @@ def _with_price_limit_context(response: AnalyzeResponse, *, symbol: str) -> Anal
     response.snapshot = {
         **snapshot,
         "market_current_price": price_limits.current_price,
+        "market_quote_time": price_limits.quote_time,
+        "market_trade_date": price_limits.trade_date,
+        "market_day_open": price_limits.day_open,
+        "market_day_high": price_limits.day_high,
+        "market_day_low": price_limits.day_low,
         "market_current_price_source": (
             "twse_mis"
             if price_limits.current_price is not None

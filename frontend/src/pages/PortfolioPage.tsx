@@ -1,3 +1,4 @@
+import { formatCalculatedPrice } from "../lib/formatters";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1880,7 +1881,7 @@ function PortfolioPhase1ObservationRow({ item }: { item: PortfolioPhase1Observat
         <div className="min-w-0">
           <p className="text-text-faint">AVWAP 觀察線</p>
           <p className="mt-0.5 truncate font-mono font-semibold text-text-primary">
-            {formatPrice(anchor?.avwap, item.symbol)}
+            {formatCalculatedPrice(anchor?.avwap)}
           </p>
         </div>
         <div className="min-w-0">

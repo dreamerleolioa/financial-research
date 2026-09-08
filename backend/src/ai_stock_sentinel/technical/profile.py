@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ai_stock_sentinel.technical.consistency import indicator_consistency_issues
 from ai_stock_sentinel.technical.metrics import (
     adx,
     atr,
@@ -27,9 +28,11 @@ from ai_stock_sentinel.technical.metrics import (
     stochastic_kd,
 )
 
-TECHNICAL_METRICS_VERSION = "technical-metrics-v4"
-TECHNICAL_LAYER_VERSION = "technical-layer-v4"
+TECHNICAL_METRICS_VERSION = "technical-metrics-v5"
+TECHNICAL_LAYER_VERSION = "technical-layer-v5"
 INDICATOR_COMPARISON_FIELDS = (
+    "input_context",
+    "kd_previous_k", "kd_previous_d", "dmi_plus", "dmi_minus",
     "indicator_data_date",
     "indicator_previous_date",
     "macd_trend_data_date",
@@ -71,7 +74,7 @@ def build_technical_profile_from_snapshot(
     snapshot_data_date = data_date or _snapshot_ohlcv_date(snapshot)
     snapshot_observation_date = _date_string_or_none(snapshot.get("fetched_at"))
     current_price = _number_or_none(snapshot.get("current_price"))
-    return build_technical_profile_payload(
+    payload = build_technical_profile_payload(
         closes=closes,
         highs=_numbers(snapshot.get("recent_highs")),
         lows=_numbers(snapshot.get("recent_lows")),
@@ -85,6 +88,24 @@ def build_technical_profile_from_snapshot(
         observation_date=snapshot_observation_date,
         is_final=is_final,
     )
+    if payload:
+        context = payload["technical_indicators"]["input_context"]
+        context["history_source"] = snapshot.get("history_source")
+        context["price_adjustment"] = snapshot.get("history_adjustment")
+        context["volume_source"] = snapshot.get("volume_source")
+        volume_dates = _strings(snapshot.get("recent_volume_dates"))
+        volume_date = (
+            volume_dates[-1] if snapshot.get("volume_source") == "history_fallback" and volume_dates
+            else _date_string_or_none(snapshot.get("quote_time"))
+        )
+        context["volume_data_date"] = volume_date
+        context["volume_state"] = (
+            "full_day" if volume_date and snapshot_observation_date and volume_date < snapshot_observation_date
+            else "full_day" if volume_date and volume_date == snapshot_observation_date and is_final
+            else "intraday_cumulative" if volume_date and volume_date == snapshot_observation_date and not is_final
+            else "unknown"
+        )
+    return payload
 
 
 def build_technical_profile_payload(
@@ -129,7 +150,6 @@ def build_technical_profile_payload(
     adx_data = adx(close_values, high_values, low_values) if aligned_hilo else None
     atr_data = atr(close_values, high_values, low_values) if aligned_hilo else None
     mfi_data = mfi(close_values, high_values, low_values, volume_values) if aligned_hilo and aligned_volume else None
-    donchian_data = donchian_channel(close_values, high_values, low_values) if aligned_hilo else None
     obv_data = obv(close_values, volume_values) if aligned_volume else None
     ma5 = ma(close_values, 5)
     ma20 = ma(close_values, 20)
@@ -172,6 +192,14 @@ def build_technical_profile_payload(
         if completed_lows and len(completed_lows) >= 20
         else None
     )
+    donchian_data = (
+        donchian_channel(
+            close_values, high_values, low_values,
+            baseline_highs=completed_highs, baseline_lows=completed_lows,
+            reference_price=close,
+        )
+        if price_level_inputs and aligned_hilo else None
+    )
     volume_ratio = _volume_ratio(volume_values)
     bias20 = calc_bias(close, ma20) if ma20 is not None else None
     rsi14 = calc_rsi(close_values, period=14)
@@ -208,7 +236,38 @@ def build_technical_profile_payload(
     dates = list(close_dates or [])
     dates_available = len(dates) == len(close_values)
 
+    bar_date = _iso_date_or_none(dates[-1]) if dates_available else None
+    observed_date = _iso_date_or_none(observation_date)
+    confirmed = (
+        bar_date is not None and observed_date is not None
+        and (bar_date < observed_date or (is_final and bar_date == observed_date))
+    )
+    mode = (
+        "completed_daily" if confirmed else
+        "intraday_estimate" if bar_date is not None and bar_date == observed_date and not is_final else
+        "unknown"
+    )
     raw_indicators = {
+        "input_context": {
+            "version": "technical-input-v1",
+            "formula_version": TECHNICAL_METRICS_VERSION,
+            "indicator_mode": mode,
+            "indicator_close_confirmed": confirmed if mode != "unknown" else None,
+            "history_completed_through": temporal_inputs[3] if temporal_inputs else None,
+            "indicator_close": close_values[-1],
+            "breakout_reference_price": close,
+            "breakout_close_confirmed": bool(is_final and confirmed and close == close_values[-1]),
+            "breakout_baseline_through": price_level_inputs[2] if price_level_inputs else None,
+            "hlc_status": "complete" if aligned_hilo else "unavailable",
+            "volume_status": "aligned" if aligned_volume and _series_dates_align(close_dates, volume_dates, len(close_values)) else "unavailable",
+            "volume_average_basis": "completed_daily_bars",
+            "volume_average_excludes_signal_bar": mode == "intraday_estimate",
+            "obv_lookback": min(5, len(close_values) - 1),
+        },
+        "kd_previous_k": kd_data["prev_k"] if kd_data else None,
+        "kd_previous_d": kd_data["prev_d"] if kd_data else None,
+        "dmi_plus": adx_data["plus_di"] if adx_data else None,
+        "dmi_minus": adx_data["minus_di"] if adx_data else None,
         "indicator_data_date": _iso_date_or_none(dates[-1]) if dates_available else None,
         "indicator_previous_date": (
             _iso_date_or_none(dates[-2]) if dates_available and len(dates) > 1 else None
@@ -282,6 +341,13 @@ def build_technical_profile_payload(
         aligned_volume=aligned_volume,
         indicators=raw_indicators,
     )
+    raw_indicators["input_context"]["consistency_issues"] = indicator_consistency_issues(
+        raw_indicators,
+        previous_close=close_values[-2] if len(close_values) > 1 else None,
+        latest_close=close_values[-1],
+        latest_volume=volume_values[-1] if aligned_volume else None,
+    )
+
     primary = {
         "ma_structure": _ma_structure(close=close, ma5=ma5, ma20=ma20, ma60=ma60),
         "support_resistance": _support_resistance(

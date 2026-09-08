@@ -14,6 +14,9 @@ class StockSnapshot:
     volume: int
     recent_closes: List[float]
     fetched_at: str
+    quote_time: str | None = None
+    history_source: str | None = None
+    history_adjustment: str | None = None
     volume_source: str = "realtime"
     name: str | None = None
     recent_close_dates: List[str] = field(default_factory=list)

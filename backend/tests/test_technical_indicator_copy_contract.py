@@ -45,7 +45,7 @@ REQUIRED_NEUTRAL_COPY_TOKENS = [
     "股票代碼",
     "資料狀態",
     "現價",
-    "今日開／高／低",
+    "行情開／高／低",
     "成交量",
     "20／60 日均成交量",
     "均線 MA5/20/60",
@@ -60,6 +60,10 @@ FORBIDDEN_COMPOSITE_COPY_TOKENS = ["波動狀態", "訊號衝突"]
 
 ALLOWED_COPY_FUNCTION_CALLS = {
     "buildIndicatorComparisonRows",
+    "buildIndicatorSourceRows",
+    "formatKdEvent",
+    "formatDonchianState",
+    "formatBollingerState",
     "buildChipStabilityCopyRows",
     "buildPhase1AvwapCopyRows",
     "formatAverageVolumes",

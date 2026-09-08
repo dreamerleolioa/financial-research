@@ -54,6 +54,11 @@ class PositionAnalysis(BaseModel):
 
 
 class TechnicalIndicators(BaseModel):
+    input_context: dict[str, Any] | None = None
+    kd_previous_k: float | None = None
+    kd_previous_d: float | None = None
+    dmi_plus: float | None = None
+    dmi_minus: float | None = None
     indicator_data_date: str | None = None
     indicator_previous_date: str | None = None
     macd_trend_data_date: str | None = None

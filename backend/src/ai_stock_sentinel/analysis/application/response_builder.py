@@ -5,14 +5,9 @@ from dataclasses import asdict as _asdict, is_dataclass
 from typing import Any
 
 from ai_stock_sentinel.analysis.metrics import (
-    adx as _adx,
-    atr as _atr,
     bollinger_bands as _bollinger_bands,
-    donchian_channel as _donchian_channel,
     ma as _ma,
     macd as _macd,
-    mfi as _mfi,
-    stochastic_kd as _stochastic_kd,
 )
 from ai_stock_sentinel.analysis.position_scorer import build_position_risk_language
 from ai_stock_sentinel.config import STRATEGY_VERSION
@@ -56,7 +51,6 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
     closes = [float(v) for v in recent_closes if v is not None]
     highs = [float(v) for v in (snapshot.get("recent_highs") or []) if v is not None]
     lows = [float(v) for v in (snapshot.get("recent_lows") or []) if v is not None]
-    volumes = [float(v) for v in (snapshot.get("recent_volumes") or []) if v is not None]
     technical_payload = build_technical_profile_from_snapshot(
         snapshot,
         is_final=is_final,
@@ -65,12 +59,6 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
     bb = _bollinger_bands(closes) if closes else None
     macd_data = _macd(closes) if closes else None
     aligned_hilo = len(highs) == len(closes) and len(lows) == len(closes)
-    aligned_volume = len(volumes) == len(closes)
-    kd_data = _stochastic_kd(closes, highs, lows) if aligned_hilo else None
-    adx_data = _adx(closes, highs, lows) if aligned_hilo else None
-    atr_data = _atr(closes, highs, lows) if aligned_hilo else None
-    mfi_data = _mfi(closes, highs, lows, volumes) if aligned_hilo and aligned_volume else None
-    donchian_data = _donchian_channel(closes, highs, lows) if aligned_hilo else None
     bollinger_position = compute_bollinger_position(bb, snapshot.get("current_price")) if bb else None
     high_source = highs if aligned_hilo else closes
     low_source = lows if aligned_hilo else closes
@@ -105,28 +93,28 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
         "macd_hist": macd_data["macd_hist"] if macd_data else None,
         "macd_hist_pct": canonical_indicators.get("macd_hist_pct"),
         "macd_bias": macd_data["macd_bias"] if macd_data else None,
-        "kd_k": kd_data["k"] if kd_data else None,
-        "kd_d": kd_data["d"] if kd_data else None,
-        "kd_signal": kd_data["kd_signal"] if kd_data else None,
-        "kd_zone": kd_data["kd_zone"] if kd_data else None,
-        "adx": adx_data["adx"] if adx_data else None,
-        "adx_trend_strength": adx_data["trend_strength"] if adx_data else None,
-        "adx_trend_direction": adx_data["trend_direction"] if adx_data else None,
+        "kd_k": canonical_indicators.get("kd_k"),
+        "kd_d": canonical_indicators.get("kd_d"),
+        "kd_signal": canonical_indicators.get("kd_signal"),
+        "kd_zone": canonical_indicators.get("kd_zone"),
+        "adx": canonical_indicators.get("adx"),
+        "adx_trend_strength": canonical_indicators.get("adx_trend_strength"),
+        "adx_trend_direction": canonical_indicators.get("adx_trend_direction"),
         "obv": canonical_indicators.get("obv"),
         "obv_signal": canonical_indicators.get("obv_signal"),
         "obv_trend_20d": canonical_indicators.get("obv_trend_20d"),
         "obv_trend_mid_long": canonical_indicators.get("obv_trend_mid_long"),
         "obv_trend_mid_long_window": canonical_indicators.get("obv_trend_mid_long_window"),
-        "atr": atr_data["atr"] if atr_data else None,
-        "atr_pct": atr_data["atr_pct"] if atr_data else None,
-        "volatility_level": atr_data["volatility_level"] if atr_data else None,
-        "mfi": mfi_data["mfi"] if mfi_data else None,
-        "mfi_signal": mfi_data["mfi_signal"] if mfi_data else None,
-        "donchian_upper": donchian_data["donchian_upper"] if donchian_data else None,
-        "donchian_lower": donchian_data["donchian_lower"] if donchian_data else None,
-        "donchian_mid": donchian_data["donchian_mid"] if donchian_data else None,
-        "donchian_width_pct": donchian_data["donchian_width_pct"] if donchian_data else None,
-        "donchian_position": donchian_data["donchian_position"] if donchian_data else None,
+        "atr": canonical_indicators.get("atr"),
+        "atr_pct": canonical_indicators.get("atr_pct"),
+        "volatility_level": canonical_indicators.get("volatility_level"),
+        "mfi": canonical_indicators.get("mfi"),
+        "mfi_signal": canonical_indicators.get("mfi_signal"),
+        "donchian_upper": canonical_indicators.get("donchian_upper"),
+        "donchian_lower": canonical_indicators.get("donchian_lower"),
+        "donchian_mid": canonical_indicators.get("donchian_mid"),
+        "donchian_width_pct": canonical_indicators.get("donchian_width_pct"),
+        "donchian_position": canonical_indicators.get("donchian_position"),
         "ma20_slope_pct_5d": canonical_indicators.get("ma20_slope_pct_5d"),
         "ma60_slope_pct_10d": canonical_indicators.get("ma60_slope_pct_10d"),
         "macd_hist_slope_pct_3d": canonical_indicators.get("macd_hist_slope_pct_3d"),
@@ -234,6 +222,8 @@ def _hydrate_cached_technical_payload(
             # 快取的現值也一起更新，避免新前值與舊累積起點混用。
             for field in (
                 *INDICATOR_COMPARISON_FIELDS,
+                "donchian_upper", "donchian_lower", "donchian_mid", "donchian_width_pct", "donchian_position",
+                "prior_high_20d", "prior_low_20d",
                 "macd_line", "macd_signal", "macd_hist", "macd_hist_pct", "macd_bias",
                 "macd_hist_slope_pct_3d", "macd_hist_trend",
                 "obv", "obv_signal", "obv_trend_20d", "obv_trend_mid_long", "obv_trend_mid_long_window",

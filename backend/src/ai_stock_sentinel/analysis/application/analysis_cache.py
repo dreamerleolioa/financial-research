@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import date, datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -197,22 +198,41 @@ def normalize_raw_technical_for_storage(technical: dict | None) -> dict:
     if not normalized or isinstance(normalized.get("ohlcv"), dict):
         return normalized
 
-    close = number_or_none(normalized.get("current_price"))
+    close = latest_number(normalized.get("recent_closes"))
     if close is None:
-        close = latest_number(normalized.get("recent_closes"))
+        close = number_or_none(normalized.get("current_price"))
     if close is None:
         return normalized
 
-    high = latest_number(normalized.get("recent_highs"))
-    low = latest_number(normalized.get("recent_lows"))
-    volume = latest_number(normalized.get("recent_volumes"))
-    if volume is None:
+    close_values = normalized.get("recent_closes") or []
+    close_dates = normalized.get("recent_close_dates") or []
+
+    def aligned_last(field: str, date_field: str) -> float | None:
+        values = normalized.get(field) or []
+        dates = normalized.get(date_field) or []
+        if len(values) != len(close_values) or (close_dates and dates and dates != close_dates):
+            return None
+        return number_or_none(values[-1]) if values else None
+
+    high = aligned_last("recent_highs", "recent_high_dates")
+    low = aligned_last("recent_lows", "recent_low_dates")
+    volume = aligned_last("recent_volumes", "recent_volume_dates")
+    open_price = number_or_none(normalized.get("day_open"))
+    try:
+        observed = datetime.fromisoformat(str(normalized.get("fetched_at")))
+        observed_date = observed.astimezone(ZoneInfo("Asia/Taipei")).date().isoformat() if observed.tzinfo else None
+    except ValueError:
+        observed_date = None
+    mismatched_quote_day = bool(close_dates and observed_date and close_dates[-1] != observed_date)
+    if mismatched_quote_day:
+        open_price = None
+    if volume is None and not mismatched_quote_day:
         volume = number_or_none(normalized.get("volume"))
 
     normalized["ohlcv"] = {
-        "open": number_or_none(normalized.get("day_open")) or close,
-        "high": high if high is not None else close,
-        "low": low if low is not None else close,
+        "open": open_price,
+        "high": high,
+        "low": low,
         "close": close,
         "volume": volume,
     }

@@ -80,6 +80,7 @@ class YFinanceCrawler:
                 volume = int(getattr(info, "last_volume", 0) or 0)
                 history = ticker.history(
                     period="1y",
+                    auto_adjust=True,
                     interval="1d",
                     timeout=provider_timeout,
                 )
@@ -153,6 +154,8 @@ class YFinanceCrawler:
             volume=volume,
             recent_closes=recent_closes,
             fetched_at=quote_observed_at,
+            history_source="yfinance",
+            history_adjustment="auto_adjust",
             volume_source=volume_source,
             recent_close_dates=recent_close_dates,
             recent_highs=recent_highs,

@@ -6,6 +6,31 @@ export interface AnalysisErrorDetail {
 }
 
 export interface TechnicalIndicators {
+  input_context?: {
+    version?: string;
+    formula_version?: string;
+    indicator_mode?: string;
+    indicator_close_confirmed?: boolean | null;
+    history_completed_through?: string | null;
+    indicator_close?: number | null;
+    breakout_reference_price?: number | null;
+    breakout_close_confirmed?: boolean;
+    breakout_baseline_through?: string | null;
+    hlc_status?: string;
+    volume_status?: string;
+    volume_source?: string | null;
+    volume_data_date?: string | null;
+    volume_state?: string;
+    volume_average_excludes_signal_bar?: boolean;
+    obv_lookback?: number;
+    history_source?: string | null;
+    price_adjustment?: string | null;
+    consistency_issues?: string[];
+  } | null;
+  kd_previous_k?: number | null;
+  kd_previous_d?: number | null;
+  dmi_plus?: number | null;
+  dmi_minus?: number | null;
   indicator_data_date?: string | null;
   indicator_previous_date?: string | null;
   macd_trend_data_date?: string | null;

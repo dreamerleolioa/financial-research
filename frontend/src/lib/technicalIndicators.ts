@@ -174,14 +174,16 @@ export function getAnalyzeSymbolName(
   return null;
 }
 
-export function formatMovingAverages(indicators: TechnicalIndicators, snapshotSymbol?: string): string {
+export function formatMovingAverages(indicators: TechnicalIndicators, _snapshotSymbol?: string): string {
   return indicators.ma5 != null || indicators.ma20 != null || indicators.ma60 != null
-    ? `${formatPrice(indicators.ma5, snapshotSymbol)} / ${formatPrice(indicators.ma20, snapshotSymbol)} / ${formatPrice(indicators.ma60, snapshotSymbol)}`
+    ? `${formatIndicatorNumber(indicators.ma5, 2)} / ${formatIndicatorNumber(indicators.ma20, 2)} / ${formatIndicatorNumber(indicators.ma60, 2)}`
     : "—";
 }
 
 export function formatDailyOhlc(snapshot: Record<string, unknown>, snapshotSymbol?: string): string {
-  const prices = ["day_open", "day_high", "day_low"].map((key) => {
+  const prefix = snapshot.market_current_price_source === "twse_mis" ? "market_" : "";
+  const prices = ["day_open", "day_high", "day_low"].map((field) => {
+    const key = prefix + field;
     const value = snapshot[key];
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
   });
@@ -225,7 +227,7 @@ function formatPhase1MissingReason(reason: string | null | undefined): string {
 
 function buildPhase1AvwapCopyRows(
   observation: Phase1Observation | null | undefined,
-  snapshotSymbol?: string,
+  referencePrice?: number | null,
 ): Array<[string, string]> {
   if (!observation) return [];
 
@@ -234,8 +236,10 @@ function buildPhase1AvwapCopyRows(
   const anchorRows: Array<[string, string]> = entries
     .sort(([left], [right]) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99) || left.localeCompare(right))
     .map(([key, anchor]) => {
-      const distance = anchor.current_distance_to_avwap_pct ?? anchor.distance_to_avwap_pct;
-      const parts = [formatPrice(anchor.avwap, snapshotSymbol), `距離 ${formatPhase1Distance(distance)}`];
+      const distance = referencePrice != null && anchor.avwap != null && anchor.avwap > 0
+        ? (referencePrice - anchor.avwap) / anchor.avwap * 100
+        : null;
+      const parts = [formatIndicatorNumber(anchor.avwap, 2), `距離 ${formatPhase1Distance(distance)}`];
       if (anchor.anchor_date) parts.push(`錨點日 ${anchor.anchor_date}`);
       if (anchor.estimated) parts.push("日資料估算");
       return [PHASE1_ANCHOR_LABEL[key] ?? "其他 AVWAP 觀察線", parts.join(" / ")];
@@ -292,7 +296,7 @@ export function buildTechnicalIndicatorsCopyText(
   const snapshotSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : undefined;
   const displaySymbol = snapshotSymbol ?? "—";
   const symbolName = getAnalyzeSymbolName(result, snapshot);
-  const marketSessionLabel = result.is_final === false ? "盤中" : "收盤";
+  const marketSessionLabel = result.is_final === false ? "盤中" : result.is_final === true ? "收盤" : "未確認";
   const currentPrice = getMarketCurrentPrice(snapshot);
   const currentPriceSource = snapshot.market_current_price_source === "twse_mis" ? "（TWSE MIS 即時）" : "";
   const priceLimitLabel = getPriceLimitLabel(snapshot);
@@ -318,7 +322,7 @@ export function buildTechnicalIndicatorsCopyText(
       `股票代碼：${displaySymbol}`,
       `資料狀態：${marketSessionLabel}`,
       "技術指標：資料不足",
-      ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol).map(
+      ...buildPhase1AvwapCopyRows(result.phase1_observation, currentPrice).map(
         ([label, value]) => `${label}：${value}`,
       ),
       ...buildChipStabilityCopyRows(result.chip_stability_context).map(([label, value]) => `${label}：${value}`),
@@ -330,14 +334,15 @@ export function buildTechnicalIndicatorsCopyText(
     ["股票代碼", displaySymbol],
     ["資料狀態", marketSessionLabel],
     ["現價", `${price(currentPrice)}${currentPriceSource}${priceLimitLabel ? `（${priceLimitLabel}）` : ""}`],
-    ["今日開／高／低", formatDailyOhlc(snapshot, snapshotSymbol)],
+    ["行情開／高／低", formatDailyOhlc(snapshot, snapshotSymbol)],
+    ...buildIndicatorSourceRows(indicators, snapshot),
     ["成交量", formatVolume(snapshot.volume)],
     ["20／60 日均成交量", formatAverageVolumes(indicators)],
     ["均線 MA5/20/60", formatMovingAverages(indicators, snapshotSymbol)],
-    ["20 日最高/最低", pricePair(indicators.high_20d, indicators.low_20d)],
-    ["前 20 日壓力/支撐", pricePair(indicators.prior_high_20d, indicators.prior_low_20d)],
+    ["近20根指標日K最高/最低（含末根）", pricePair(indicators.high_20d, indicators.low_20d)],
+    ["前20個完整交易日最高/最低（突破基準）", pricePair(indicators.prior_high_20d, indicators.prior_low_20d)],
     ["60 日最高/最低", pricePair(indicators.high_60d, indicators.low_60d, "資料不足")],
-    ["布林通道位階", getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position)],
+    ["布林通道位階", formatBollingerState(indicators, currentPrice)],
     ["MACD 方向", getTechnicalIndicatorLabel("macd_bias", indicators.macd_bias)],
     ["MA20 5日斜率", formatSignedPercent(indicators.ma20_slope_pct_5d, 3)],
     ["MA60 10日斜率", formatSignedPercent(indicators.ma60_slope_pct_10d, 3)],
@@ -345,10 +350,10 @@ export function buildTechnicalIndicatorsCopyText(
     ["MACD 動能變化（3日）", getTechnicalIndicatorLabel("macd_hist_trend", indicators.macd_hist_trend)],
     ["ATR% 60日分位", formatPercentile(indicators.atr_pct_percentile_60d)],
     ["布林帶寬 60日分位", formatPercentile(indicators.bollinger_bandwidth_percentile_60d)],
-    ["KD 交叉", getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal)],
+    ["KD 本次交叉", formatKdEvent(indicators)],
     ["KD 區間", getTechnicalIndicatorLabel("kd_zone", indicators.kd_zone)],
     ["ADX 趨勢強度", getTechnicalIndicatorLabel("adx_trend_strength", indicators.adx_trend_strength)],
-    ["ADX 趨勢方向", getTechnicalIndicatorLabel("adx_trend_direction", indicators.adx_trend_direction)],
+    ["DMI 方向", getTechnicalIndicatorLabel("adx_trend_direction", indicators.adx_trend_direction)],
     ["OBV 訊號", getTechnicalIndicatorLabel("obv_signal", indicators.obv_signal)],
     ["OBV 20 日趨勢", getTechnicalIndicatorLabel("obv_trend", indicators.obv_trend_20d)],
     [
@@ -357,14 +362,14 @@ export function buildTechnicalIndicatorsCopyText(
     ],
     ["ATR 波動", getTechnicalIndicatorLabel("volatility_level", indicators.volatility_level)],
     ["MFI 資金流量訊號", getTechnicalIndicatorLabel("mfi_signal", indicators.mfi_signal)],
-    ["唐奇安通道位階", getTechnicalIndicatorLabel("donchian_position", indicators.donchian_position)],
+    ["唐奇安通道位階", formatDonchianState(indicators, currentPrice, snapshot.market_current_price_source === "twse_mis")],
     ["布林上軌", formatIndicatorNumber(indicators.bollinger_upper, 2)],
     ["布林中軌", formatIndicatorNumber(indicators.bollinger_mid, 2)],
     ["布林下軌", formatIndicatorNumber(indicators.bollinger_lower, 2)],
     ["MACD 線", formatIndicatorNumber(indicators.macd_line, 3)],
     ["MACD 訊號線", formatIndicatorNumber(indicators.macd_signal, 3)],
     ["MACD 動能柱狀體", formatIndicatorNumber(indicators.macd_hist, 3)],
-    ["MACD 柱體/股價", formatSignedPercent(indicators.macd_hist_pct, 4)],
+    ["MACD 柱體／原始快照價", formatSignedPercent(indicators.macd_hist_pct, 4)],
     ["KD K/D", indicatorPair(indicators.kd_k, 1, indicators.kd_d)],
     ["ADX", formatIndicatorNumber(indicators.adx, 1)],
     ["OBV 累積值參考", formatVolume(indicators.obv)],
@@ -372,7 +377,7 @@ export function buildTechnicalIndicatorsCopyText(
     ["ATR / ATR%", indicatorPair(indicators.atr, 2, indicators.atr_pct, 2, "%")],
     ["MFI", formatIndicatorNumber(indicators.mfi, 1)],
     ["唐奇安通道上/下緣", indicatorPair(indicators.donchian_upper, 2, indicators.donchian_lower)],
-    ...buildPhase1AvwapCopyRows(result.phase1_observation, snapshotSymbol),
+    ...buildPhase1AvwapCopyRows(result.phase1_observation, currentPrice),
     ...buildChipStabilityCopyRows(result.chip_stability_context),
   ];
 
@@ -400,4 +405,100 @@ export async function writeClipboardText(text: string): Promise<void> {
   } finally {
     document.body.removeChild(textarea);
   }
+}
+
+export function formatKdEvent(indicators: TechnicalIndicators): string {
+  if (indicators.kd_signal === "neutral") return "無新交叉";
+  const label = getTechnicalIndicatorLabel("kd_signal", indicators.kd_signal, "無法更新");
+  return indicators.input_context?.indicator_mode === "intraday_estimate" ? `盤中${label}（尚未收盤確認）` : label;
+}
+
+export function formatDonchianState(indicators: TechnicalIndicators, displayPrice?: number | null, quoteIsLive = false): string {
+  if (displayPrice != null && indicators.donchian_upper != null && indicators.donchian_lower != null) {
+    const confirmed = !quoteIsLive && indicators.input_context?.breakout_close_confirmed === true
+      && displayPrice === indicators.input_context.breakout_reference_price;
+    if (displayPrice > indicators.donchian_upper) return confirmed ? "突破上緣（收盤確認）" : "暫時越過唐奇安上緣，尚未收盤確認";
+    if (displayPrice < indicators.donchian_lower) return confirmed ? "跌破下緣（收盤確認）" : "暫時跌破唐奇安下緣，尚未收盤確認";
+    return "現價位於唐奇安通道內";
+  }
+  const label = getTechnicalIndicatorLabel("donchian_position", indicators.donchian_position, "無法更新");
+  if (indicators.input_context?.breakout_close_confirmed !== true) {
+    if (indicators.donchian_position === "breakout_up") return "暫時越過唐奇安上緣，尚未收盤確認";
+    if (indicators.donchian_position === "breakdown_down") return "暫時跌破唐奇安下緣，尚未收盤確認";
+  }
+  return label;
+}
+
+export function formatBollingerState(indicators: TechnicalIndicators, displayPrice?: number | null): string {
+  const close = displayPrice ?? indicators.input_context?.breakout_reference_price;
+  const upper = indicators.bollinger_upper;
+  const lower = indicators.bollinger_lower;
+  if (close != null && upper != null && lower != null) {
+    if (close > upper) return "高於上軌";
+    if (close < lower) return "低於下軌";
+    if (upper <= lower) return "區間平坦";
+    if (close >= upper * 0.99) return "接近上軌";
+    if (close <= lower * 1.01) return "接近下軌";
+    return close >= (upper + lower) / 2 ? "中軌上方" : "中軌下方";
+  }
+  if (close != null && upper != null && close > upper) return "高於上軌";
+  if (close != null && lower != null && close < lower) return "低於下軌";
+  return getTechnicalIndicatorLabel("bollinger_position", indicators.bollinger_position);
+}
+
+function taipeiTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || !/(Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return `${new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).format(date)} +08:00`;
+}
+
+export function buildIndicatorSourceRows(
+  indicators: TechnicalIndicators,
+  snapshot: Record<string, unknown>,
+): Array<[string, string]> {
+  const context = indicators.input_context;
+  const isMis = snapshot.market_current_price_source === "twse_mis";
+  const quoteTime = taipeiTimestamp(isMis ? snapshot.market_quote_time : snapshot.quote_time);
+  const fetchedTime = taipeiTimestamp(snapshot.fetched_at);
+  const quoteDate = quoteTime?.slice(0, 10)
+    ?? (isMis && typeof snapshot.market_trade_date === "string" ? snapshot.market_trade_date : null);
+  const mode = context?.indicator_mode;
+  const volume = typeof snapshot.volume === "number" ? snapshot.volume : null;
+  const average = indicators.avg_volume_20;
+  const kdOrder = indicators.kd_k != null && indicators.kd_d != null
+    ? indicators.kd_k > indicators.kd_d ? "K > D" : indicators.kd_k < indicators.kd_d ? "K < D" : "K = D"
+    : "資料不足";
+  return [
+    ["行情交易日", quoteDate ?? "未提供"],
+    ["行情／指標日期核對", quoteDate && indicators.indicator_data_date
+      ? quoteDate === indicators.indicator_data_date ? "同一交易日" : "不同交易日；日線指標未以所列現價重算"
+      : "資料不足，無法核對"],
+    ["行情時間", quoteTime ?? "未提供"],
+    ["原始快照擷取時間（非成交時間）", fetchedTime ?? "未提供"],
+    ["歷史完整日K截至", context?.history_completed_through ?? "未確認"],
+    ["指標所屬交易日", indicators.indicator_data_date ?? "未確認"],
+    ["指標模式", mode === "intraday_estimate" ? "當日日線盤中暫估" : mode === "completed_daily" ? "僅使用已完成日線" : "未確認"],
+    ["指標日K收盤確認", context?.indicator_close_confirmed === true ? "是" : context?.indicator_close_confirmed === false ? "否" : "未確認"],
+    ["原始快照參考價", formatIndicatorNumber(context?.breakout_reference_price, 2)],
+    ["指標末根日K收盤／盤中價", formatIndicatorNumber(context?.indicator_close, 2)],
+    ["指標輸入", "使用原始日K序列；未把另外取得的即時現價塞入序列重算。"],
+    ["日線高低收輸入", context?.hlc_status === "complete" ? "齊全（以指標資料日為準）" : context?.hlc_status === "unavailable" ? "不完整，依賴高低價的指標無法更新" : "未提供，無法確認"],
+    ["突破比較說明", "以所列現價比較完整日K基準；即時越界不代表收盤突破。"],
+    ["突破基準截至", context?.breakout_baseline_through ?? "未確認"],
+    ["KD 排列", kdOrder],
+    ["前一交易日 K／D", `${formatIndicatorNumber(indicators.kd_previous_k, 2)} / ${formatIndicatorNumber(indicators.kd_previous_d, 2)}`],
+    ["＋DI／−DI", `${formatIndicatorNumber(indicators.dmi_plus, 2)} / ${formatIndicatorNumber(indicators.dmi_minus, 2)}`],
+    ["OBV 訊號判定期間", context?.obv_lookback != null ? `比較末根與 ${context.obv_lookback} 個交易日前的價格與 OBV 淨變化，非獨立資金流入證據。` : "未提供"],
+    ["成交量單位／來源", `股／${context?.volume_source === "history_fallback" ? "沿用歷史日線量" : context?.volume_source === "realtime" ? "原始行情快照" : "來源未確認"}`],
+    ["成交量資料日／狀態", `${context?.volume_data_date ?? "未提供"} / ${context?.volume_state === "full_day" ? "全日" : context?.volume_state === "intraday_cumulative" ? "盤中累計" : "未確認"}`],
+    ["20日均量口徑", context && mode !== "unknown" ? `完整日均量；${context.volume_average_excludes_signal_bar ? "排除當日未完成日K" : "包含最新完整日K"}` : "未確認"],
+    ["快照成交量／20日完整日均量", volume != null && average != null && average > 0 ? `${(volume / average).toFixed(2)} 倍（不是同時段量比）` : "資料不足"],
+    ["日線來源／價格還原", `${context?.history_source ?? "未提供"} / ${context?.price_adjustment ?? "未提供"}`],
+    ["指標設定版本", context?.formula_version ?? "未提供"],
+    ["一致性檢查", context?.consistency_issues ? context.consistency_issues.length ? context.consistency_issues.join("；") : "可檢查項目通過；缺資料項目不視為通過" : "未執行"],
+  ];
 }

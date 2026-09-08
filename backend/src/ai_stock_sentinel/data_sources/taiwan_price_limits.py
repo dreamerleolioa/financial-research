@@ -6,6 +6,8 @@ import math
 import re
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from threading import BoundedSemaphore
 from time import monotonic
 from typing import Callable, Literal
@@ -36,6 +38,11 @@ class TaiwanPriceLimitSnapshot:
     current_price: float | None = None
     limit_up_price: float | None = None
     limit_down_price: float | None = None
+    quote_time: str | None = None
+    trade_date: str | None = None
+    day_open: float | None = None
+    day_high: float | None = None
+    day_low: float | None = None
 
     @classmethod
     def unknown(cls) -> TaiwanPriceLimitSnapshot:
@@ -81,6 +88,11 @@ def fetch_taiwan_price_limits(
             limit_up_price=limit_up_price,
             limit_down_price=limit_down_price,
         ),
+        quote_time=_quote_time(quote),
+        trade_date=_quote_date(quote),
+        day_open=_positive_float(quote.get("o")),
+        day_high=_positive_float(quote.get("h")),
+        day_low=_positive_float(quote.get("l")),
         current_price=current_price,
         limit_up_price=limit_up_price,
         limit_down_price=limit_down_price,
@@ -257,3 +269,21 @@ def _classify_price_limit_status(
     if limit_up_price is not None and limit_down_price is not None:
         return "normal"
     return "unknown"
+
+
+def _quote_time(quote: dict) -> str | None:
+    try:
+        value = datetime.strptime(f"{quote.get('d')} {quote.get('t')}", "%Y%m%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return value.replace(tzinfo=ZoneInfo("Asia/Taipei")).isoformat()
+
+
+def _quote_date(quote: dict) -> str | None:
+    value = str(quote.get("d", ""))
+    if not re.fullmatch(r"\d{8}", value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y%m%d").date().isoformat()
+    except ValueError:
+        return None

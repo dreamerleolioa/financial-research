@@ -433,22 +433,30 @@ def donchian_channel(
     highs: list[float],
     lows: list[float],
     period: int = 20,
+    *,
+    baseline_highs: list[float] | None = None,
+    baseline_lows: list[float] | None = None,
+    reference_price: float | None = None,
 ) -> dict[str, float | str | None] | None:
     """Donchian Channel，用近 N 日高低區間判斷突破與跌破。"""
     if len(closes) < period or len(highs) != len(closes) or len(lows) != len(closes):
         return None
 
-    if len(closes) > period:
+    if baseline_highs is not None and baseline_lows is not None:
+        if len(baseline_highs) < period or len(baseline_lows) < period:
+            return None
+        high_window = baseline_highs[-period:]
+        low_window = baseline_lows[-period:]
+    elif len(closes) > period:
         high_window = highs[-period - 1:-1]
         low_window = lows[-period - 1:-1]
     else:
-        high_window = highs[-period:]
-        low_window = lows[-period:]
+        return None
 
     upper = max(high_window)
     lower = min(low_window)
     mid = (upper + lower) / 2
-    close = closes[-1]
+    close = reference_price if reference_price is not None else closes[-1]
     width = upper - lower
     width_pct = width / mid * 100 if mid else None
 

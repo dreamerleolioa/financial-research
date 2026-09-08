@@ -214,3 +214,16 @@ def test_price_limit_deadline_does_not_wait_for_slow_optional_provider() -> None
         release_provider.set()
 
     assert result == TaiwanPriceLimitSnapshot.unknown()
+
+
+def test_quote_time_and_ohlc_are_preserved_without_inventing_missing_values():
+    def opener(_request, *, timeout):
+        return _FakeResponse({'rtcode': '0000', 'msgArray': [{
+            'c': '2330', 'z': '2460', 'd': '20260907', 't': '10:15:23',
+            'o': '2440', 'h': '2465', 'l': '-',
+        }]})
+    result = fetch_taiwan_price_limits('2330.TW', opener=opener)
+    assert result.quote_time == '2026-09-07T10:15:23+08:00'
+    assert result.day_open == 2440
+    assert result.day_high == 2465
+    assert result.day_low is None

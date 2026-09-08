@@ -693,10 +693,10 @@ def _technical_payload(symbol: str, run_date: date) -> dict[str, Any]:
             "obv_trend": "rising",
         },
         "technical_profile": {
-            "version": "technical-layer-v4",
+            "version": "technical-layer-v5",
             "formula_versions": {
-                "metrics": "technical-metrics-v4",
-                "layering": "technical-layer-v4",
+                "metrics": "technical-metrics-v5",
+                "layering": "technical-layer-v5",
             },
             "data_quality": {
                 "ohlcv_aligned": True,
