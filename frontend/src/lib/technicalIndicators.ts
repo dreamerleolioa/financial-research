@@ -523,7 +523,6 @@ export function buildIndicatorSourceRows(
     ["日線來源／價格還原", `${context?.history_source ?? "未提供"} / ${context?.price_adjustment ?? "未提供"}`],
     ["MA20 5日斜率公式", "(MA20[t] / MA20[t-5] - 1) × 100%；t 為完整日K末日"],
     ["MA60 10日斜率公式", "(MA60[t] / MA60[t-10] - 1) × 100%；t 為完整日K末日"],
-    ["指標設定版本", context?.formula_version ?? "未提供"],
     ["一致性檢查", context?.consistency_issues ? context.consistency_issues.length ? context.consistency_issues.join("；") : "可檢查項目通過；缺資料項目不視為通過" : "未執行"],
   ];
 }
