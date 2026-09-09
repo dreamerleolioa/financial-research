@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActiveEtfRangeQuery } from "../../features/active-etf/queries";
 import { ACTIVE_ETF_ACTION_LABEL } from "../../features/active-etf/presentation";
 import type { ActiveEtfRangeResponse } from "../../lib/activeEtfSchemas";
+import { DetailDrawer } from "../app-shell/DetailDrawer";
 import { WorkspaceEmptyState } from "../app-shell/WorkspaceEmptyState";
 
 const number = (value: number | null, signed = false) =>
@@ -57,10 +58,13 @@ export function ActiveEtfRangeView() {
     ),
   );
   const selectedStock = stocks.find((stock) => stock.symbol === selected);
-  const detailSection = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (selectedStock) detailSection.current?.focus();
-  }, [selectedStock?.symbol]);
+  const closeDetail = useCallback(() => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("stock");
+      return next;
+    });
+  }, [setParams]);
   const detail = useActiveEtfRangeQuery(data?.start_date, data?.end_date, selected, Boolean(selectedStock));
   const invalidRange =
     !draftStart ||
@@ -268,20 +272,13 @@ export function ActiveEtfRangeView() {
               </section>
             )}
             {selectedStock && (
-              <section
-                className="ui-panel min-w-0 space-y-4 p-4 sm:p-5"
-                aria-label={`${selectedStock.symbol} 區間明細`}
-                ref={detailSection}
-                tabIndex={-1}
+              <DetailDrawer
+                eyebrow="區間持股明細"
+                title={`${selectedStock.symbol} ${selectedStock.name}`}
+                description={`${data.start_date} → ${data.end_date}`}
+                closeLabel="關閉區間持股明細"
+                onClose={closeDetail}
               >
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="font-semibold">
-                    {selectedStock.symbol} {selectedStock.name}
-                  </h3>
-                  <button type="button" className="ui-button-secondary" onClick={() => update({ stock: null })}>
-                    收合明細
-                  </button>
-                </div>
                 <div className="grid gap-3">
                   {selectedStock.funds.map((fund) => (
                     <article className="rounded-xl border border-border p-3" key={fund.fund_code}>
@@ -296,7 +293,7 @@ export function ActiveEtfRangeView() {
                           此基金有資料日缺口；增減天數僅計有快照的比較日，無法還原缺口內的每日操作。
                         </p>
                       ) : null}
-                      <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                      <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
                         <div>
                           <dt className="text-xs text-text-muted">期初 → 期末股數</dt>
                           <dd className="mt-1 tabular-nums">
@@ -344,7 +341,7 @@ export function ActiveEtfRangeView() {
                 ) : (
                   detail.data && <RangeTimeline data={detail.data} onDaily={openDaily} />
                 )}
-              </section>
+              </DetailDrawer>
             )}
           </>
         )
