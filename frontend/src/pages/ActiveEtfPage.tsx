@@ -350,10 +350,12 @@ function ChangeTable({
 function ConsensusList({
   consensus,
   filter,
+  hasSearch,
   onSelect,
 }: {
   consensus: ActiveEtfConsensus[];
   filter: ConsensusFilter;
+  hasSearch: boolean;
   onSelect: (consensus: ActiveEtfConsensus) => void;
 }) {
   if (consensus.length === 0) {
@@ -361,11 +363,19 @@ function ConsensusList({
     return (
       <WorkspaceEmptyState
         eyebrow="Consensus"
-        title={directionLabel ? `目前沒有一致${directionLabel}的個股` : "目前沒有個股持股變化"}
+        title={
+          hasSearch
+            ? "找不到符合篩選條件的個股"
+            : directionLabel
+              ? `目前沒有一致${directionLabel}的個股`
+              : "目前沒有個股持股變化"
+        }
         description={
-          directionLabel
-            ? `只列出基金變化方向一致為${directionLabel}的個股，方向分歧不會納入。`
-            : "任一基金出現持股差異就會列入；多檔基金同時出現時會另外標註。"
+          hasSearch
+            ? "請調整股號、名稱或變化方向；切換資料日會保留搜尋內容。"
+            : directionLabel
+              ? `只列出基金變化方向一致為${directionLabel}的個股，方向分歧不會納入。`
+              : "任一基金出現持股差異就會列入；多檔基金同時出現時會另外標註。"
         }
       />
     );
@@ -422,6 +432,7 @@ export default function ActiveEtfPage() {
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [consensusFilter, setConsensusFilter] = useState<ConsensusFilter>("all");
   const [search, setSearch] = useState("");
+  const [consensusSearch, setConsensusSearch] = useState("");
   const [selectedChange, setSelectedChange] = useState<ActiveEtfChange | null>(null);
   const [selectedConsensusSymbol, setSelectedConsensusSymbol] = useState<string | null>(null);
   const [visibleChangeCount, setVisibleChangeCount] = useState(CHANGE_PAGE_SIZE);
@@ -471,21 +482,26 @@ export default function ActiveEtfPage() {
     [actionFilter, scopedChanges],
   );
   const visibleChanges = filteredChanges.slice(0, visibleChangeCount);
+  const scopedConsensus = useMemo(() => {
+    const normalizedSearch = consensusSearch.trim().toLocaleLowerCase("zh-TW");
+    return (query.data?.consensus ?? []).filter((item) =>
+      [item.symbol, item.name].some((value) => value.toLocaleLowerCase("zh-TW").includes(normalizedSearch)),
+    );
+  }, [consensusSearch, query.data?.consensus]);
   const consensusCounts = useMemo(
     () =>
-      (query.data?.consensus ?? []).reduce(
+      scopedConsensus.reduce(
         (counts, item) => {
           if (item.direction !== "mixed") counts[item.direction] += 1;
           return counts;
         },
         { increase: 0, decrease: 0 },
       ),
-    [query.data?.consensus],
+    [scopedConsensus],
   );
   const filteredConsensus = useMemo(
-    () =>
-      (query.data?.consensus ?? []).filter((item) => consensusFilter === "all" || item.direction === consensusFilter),
-    [consensusFilter, query.data?.consensus],
+    () => scopedConsensus.filter((item) => consensusFilter === "all" || item.direction === consensusFilter),
+    [consensusFilter, scopedConsensus],
   );
 
   if (query.isPending) {
@@ -757,15 +773,26 @@ export default function ActiveEtfPage() {
                     className={`min-h-9 shrink-0 rounded-full border px-3 text-xs font-medium transition-colors ${consensusFilter === direction ? "border-accent bg-accent-soft text-accent" : "border-border bg-surface-raised text-text-muted hover:bg-card-hover"}`}
                   >
                     {direction === "all"
-                      ? `全部 ${data.consensus.length}`
+                      ? `全部 ${scopedConsensus.length}`
                       : `${direction === "increase" ? "增加" : "減少"} ${consensusCounts[direction]}`}
                   </button>
                 ))}
               </div>
             </div>
+            <label className="mb-3 block sm:max-w-xs">
+              <span className="mb-1.5 block text-xs font-medium text-text-muted">搜尋個股</span>
+              <input
+                className="ui-input"
+                value={consensusSearch}
+                onChange={(event) => setConsensusSearch(event.target.value)}
+                placeholder="輸入股號或名稱"
+                type="search"
+              />
+            </label>
             <ConsensusList
               consensus={filteredConsensus}
               filter={consensusFilter}
+              hasSearch={Boolean(consensusSearch.trim())}
               onSelect={(item) => setSelectedConsensusSymbol(item.symbol)}
             />
           </div>
