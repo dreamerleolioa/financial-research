@@ -178,7 +178,13 @@ def get_active_etf_daily_response(
         return None
     selected_date = data_date or available_dates[0]
     if selected_date not in available_dates:
-        return None
+        exists = db.scalar(select(ActiveEtfHoldingSnapshot.id).where(
+            ActiveEtfHoldingSnapshot.data_date == selected_date,
+            ActiveEtfHoldingSnapshot.source_provider == "moneydj",
+        ).limit(1))
+        if exists is None:
+            return None
+        available_dates = sorted([*available_dates, selected_date], reverse=True)
 
     funds = list(
         db.scalars(

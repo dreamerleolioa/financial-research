@@ -360,3 +360,54 @@ export function parseActiveEtfDailyResponse(value: unknown): ActiveEtfDailyRespo
     })),
   };
 }
+
+const rangePositionSchema = z.object({
+  fund_code: z.string(),
+  fund_name: z.string(),
+  first_date: dataDate,
+  last_date: dataDate,
+  first_shares: z.number().int().nonnegative(),
+  last_shares: z.number().int().nonnegative(),
+  net_share_delta: z.number().int().nullable(),
+  first_weight_pct: weightPct,
+  last_weight_pct: weightPct,
+  weight_delta_pct_points: weightDelta.nullable(),
+  increase_days: z.number().int().nonnegative(),
+  decrease_days: z.number().int().nonnegative(),
+  added_days: z.number().int().nonnegative(),
+  removed_days: z.number().int().nonnegative(),
+  scale_change_days: z.number().int().nonnegative(),
+});
+
+export const activeEtfRangeResponseSchema = z.object({
+  start_date: dataDate,
+  end_date: dataDate,
+  available_dates: z.array(dataDate),
+  observed_dates: z.array(dataDate),
+  funds: z.array(
+    z.object({
+      fund_code: z.string(),
+      fund_name: z.string(),
+      first_date: dataDate.nullable(),
+      last_date: dataDate.nullable(),
+      snapshot_count: z.number().int().nonnegative(),
+      missing_dates: z.array(dataDate),
+    }),
+  ),
+  stocks: z.array(z.object({ symbol: z.string(), name: z.string(), funds: z.array(rangePositionSchema) })),
+  timeline: z.array(
+    z.object({
+      fund_code: z.string(),
+      data_date: dataDate,
+      previous_date: dataDate.nullable(),
+      shares: z.number().int().nonnegative(),
+      weight_pct: weightPct,
+      share_delta: z.number().int().nullable(),
+      action: z.enum(["added", "increased", "decreased", "removed"]).nullable(),
+      likely_fund_scale_change: z.boolean(),
+      source_url: publicHttpUrl,
+      fetched_at: sourceTimestamp,
+    }),
+  ),
+});
+export type ActiveEtfRangeResponse = z.infer<typeof activeEtfRangeResponseSchema>;

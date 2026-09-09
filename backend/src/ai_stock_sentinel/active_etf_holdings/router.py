@@ -11,6 +11,7 @@ from ai_stock_sentinel.active_etf_holdings.provider import (
 )
 from ai_stock_sentinel.active_etf_holdings.schemas import (
     ActiveEtfDailyResponse,
+    ActiveEtfRangeResponse,
     ActiveEtfRefreshRequest,
     ActiveEtfRefreshResponse,
 )
@@ -78,3 +79,25 @@ __all__ = [
     "get_active_etf_holdings_provider",
     "router",
 ]
+
+
+@router.get("/active-etf-holdings/range", response_model=ActiveEtfRangeResponse)
+def get_active_etf_holdings_range_endpoint(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    symbol: str | None = Query(default=None, min_length=1, max_length=20, pattern=r"^[A-Za-z0-9.^-]+$"),
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+) -> ActiveEtfRangeResponse:
+    from .range_service import get_active_etf_range_response
+
+    try:
+        response = get_active_etf_range_response(
+            db, start_date=start_date, end_date=end_date,
+            symbol=symbol.upper() if symbol else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": str(exc)}) from exc
+    if response is None:
+        raise HTTPException(status_code=404, detail={"code": "active_etf_holdings_not_found"})
+    return response

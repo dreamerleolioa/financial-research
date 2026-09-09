@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActiveEtfRangeView } from "../components/active-etf/ActiveEtfRangeView";
 import { useSearchParams } from "react-router-dom";
 import { ActiveEtfChangeDrawer } from "../components/active-etf/ActiveEtfChangeDrawer";
 import { ActiveEtfConsensusDrawer } from "../components/active-etf/ActiveEtfConsensusDrawer";
@@ -424,15 +425,68 @@ function ConsensusList({
 }
 
 export default function ActiveEtfPage() {
+  const [params, setParams] = useSearchParams();
+  const mode = params.get("mode") === "range" ? "range" : "daily";
+  const switchMode = (nextMode: "daily" | "range") => {
+    const next = new URLSearchParams(params);
+    next.set("mode", nextMode);
+    if (nextMode === "daily" && next.get("q")) next.set("view", "consensus");
+    if (nextMode === "range" && next.get("from") === "range") {
+      const previousSearch = next.get("range_q");
+      if (previousSearch !== null) {
+        if (previousSearch) next.set("q", previousSearch);
+        else next.delete("q");
+      }
+      next.delete("from");
+      next.delete("range_q");
+    }
+    setParams(next);
+  };
+  return (
+    <div className="space-y-5">
+      <nav className="flex gap-2 border-b border-border pb-4" aria-label="ETF 觀察模式">
+        {(["daily", "range"] as const).map((item) => (
+          <button
+            key={item}
+            type="button"
+            aria-pressed={mode === item}
+            className={mode === item ? "ui-button-primary" : "ui-button-secondary"}
+            onClick={() => switchMode(item)}
+          >
+            {item === "daily" ? "單日觀察" : "區間觀察"}
+          </button>
+        ))}
+      </nav>
+      {mode === "daily" && params.get("from") === "range" && (
+        <button type="button" className="ui-button-secondary" onClick={() => switchMode("range")}>
+          返回區間觀察
+        </button>
+      )}
+      {mode === "range" ? <ActiveEtfRangeView /> : <ActiveEtfDailyView />}
+    </div>
+  );
+}
+
+function ActiveEtfDailyView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedDate = searchParams.get("date") ?? undefined;
   const query = useActiveEtfDailyQuery(requestedDate);
-  const [view, setView] = useState<View>("funds");
+  const view: View = searchParams.get("view") === "consensus" ? "consensus" : "funds";
+  const updateParams = (values: Record<string, string | null>, replace = false) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null) next.delete(key);
+      else next.set(key, value);
+    }
+    setSearchParams(next, { replace });
+  };
+  const setView = (value: View) => updateParams({ view: value });
   const [selectedFund, setSelectedFund] = useState("all");
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const [consensusFilter, setConsensusFilter] = useState<ConsensusFilter>("all");
   const [search, setSearch] = useState("");
-  const [consensusSearch, setConsensusSearch] = useState("");
+  const consensusSearch = searchParams.get("q") ?? "";
+  const setConsensusSearch = (value: string) => updateParams({ q: value || null }, true);
   const [selectedChange, setSelectedChange] = useState<ActiveEtfChange | null>(null);
   const [selectedConsensusSymbol, setSelectedConsensusSymbol] = useState<string | null>(null);
   const [visibleChangeCount, setVisibleChangeCount] = useState(CHANGE_PAGE_SIZE);
@@ -530,11 +584,7 @@ export default function ActiveEtfPage() {
         actions={
           <>
             {requestedDate && (
-              <button
-                type="button"
-                onClick={() => setSearchParams({}, { replace: true })}
-                className="ui-button-primary"
-              >
+              <button type="button" onClick={() => updateParams({ date: null }, true)} className="ui-button-primary">
                 查看最新資料
               </button>
             )}
@@ -591,7 +641,7 @@ export default function ActiveEtfPage() {
           <select
             className="ui-input"
             value={data.data_date}
-            onChange={(event) => setSearchParams({ date: event.target.value })}
+            onChange={(event) => updateParams({ date: event.target.value })}
             aria-label="選擇 ETF 持股資料日"
           >
             {data.available_dates.map((date) => (
