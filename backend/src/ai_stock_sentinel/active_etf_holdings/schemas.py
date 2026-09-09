@@ -139,3 +139,59 @@ class ActiveEtfDailyResponse(BaseModel):
     funds: list[ActiveEtfCoverageFund]
     changes: list[ActiveEtfChange]
     consensus: list[ActiveEtfConsensus]
+
+
+class ActiveEtfRangeFund(BaseModel):
+    fund_code: str
+    fund_name: str
+    first_date: date | None
+    last_date: date | None
+    snapshot_count: int
+    missing_dates: list[date]
+
+
+class ActiveEtfRangePosition(BaseModel):
+    fund_code: str
+    fund_name: str
+    first_date: date
+    last_date: date
+    first_shares: int
+    last_shares: int
+    net_share_delta: int | None
+    first_weight_pct: Decimal
+    last_weight_pct: Decimal
+    weight_delta_pct_points: Decimal | None
+    increase_days: int
+    decrease_days: int
+    added_days: int
+    removed_days: int
+    scale_change_days: int
+
+
+class ActiveEtfRangeStock(BaseModel):
+    symbol: str
+    name: str
+    funds: list[ActiveEtfRangePosition]
+
+
+class ActiveEtfRangePoint(BaseModel):
+    fund_code: str
+    data_date: date
+    previous_date: date | None
+    shares: int
+    weight_pct: Decimal
+    share_delta: int | None
+    action: Literal["added", "increased", "decreased", "removed"] | None
+    likely_fund_scale_change: bool
+    source_url: str
+    fetched_at: datetime
+
+
+class ActiveEtfRangeResponse(BaseModel):
+    start_date: date
+    end_date: date
+    available_dates: list[date]
+    observed_dates: list[date]
+    funds: list[ActiveEtfRangeFund]
+    stocks: list[ActiveEtfRangeStock]
+    timeline: list[ActiveEtfRangePoint]

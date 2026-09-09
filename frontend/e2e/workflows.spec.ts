@@ -89,6 +89,49 @@ test("Active ETF tracking filters funds, shows consensus, and restores drawer fo
   await expect(page.getByText("2330.TW", { exact: true })).toHaveCount(0);
 });
 
+test("Active ETF consensus search persists across dates and combines with direction", async ({ page }, testInfo) => {
+  await authenticate(page);
+  await installApiMocks(page, { activeEtfDaily });
+  await page.route("**/active-etf-holdings/daily?*", async (route) => {
+    const date = new URL(route.request().url()).searchParams.get("data_date");
+    await route.fulfill({
+      json: {
+        ...activeEtfDaily,
+        data_date: date,
+        consensus: date === "2026-08-27" ? [] : activeEtfDaily.consensus,
+      },
+    });
+  });
+  await page.goto("/active-etf");
+  await page.getByRole("button", { name: "個股共識" }).click();
+  const search = page.getByRole("searchbox", { name: "搜尋個股" });
+  await search.fill(" 2330.tw ");
+  await expect(page.getByRole("button", { name: "全部 1", exact: true })).toBeVisible();
+  await expect(page.getByText("2330.TW", { exact: true })).toBeVisible();
+  await expect(page.getByText("2317.TW", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "減少 0", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "找不到符合篩選條件的個股" })).toBeVisible();
+  await page.getByRole("button", { name: "全部 1", exact: true }).click();
+  await page.getByRole("combobox", { name: "選擇 ETF 持股資料日" }).selectOption("2026-08-27");
+  await expect(search).toHaveValue(" 2330.tw ");
+  await expect(page.getByRole("button", { name: "全部 0", exact: true })).toBeVisible();
+  await page.getByRole("combobox", { name: "選擇 ETF 持股資料日" }).selectOption("2026-08-28");
+  await expect(search).toHaveValue(" 2330.tw ");
+  await expect(page.getByText("2330.TW", { exact: true })).toBeVisible();
+  await search.fill("聯發科");
+  await expect(page.getByText("2454.TW", { exact: true })).toBeVisible();
+  await search.fill("");
+  await expect(
+    page.getByRole("button", { name: `全部 ${activeEtfDaily.consensus.length}`, exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(search).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("active-etf-search-mobile.png"), fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath("active-etf-search-desktop.png"), fullPage: true });
+});
+
 test("Active ETF tracking distinguishes unchanged holdings from an unavailable source date", async ({ page }) => {
   const unchangedFund = activeEtfDaily.funds.find((fund) => fund.fund_code === "00982A");
   if (!unchangedFund) throw new Error("00982A fixture is required");

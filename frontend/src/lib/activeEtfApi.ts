@@ -1,5 +1,5 @@
 import { requestJson } from "./apiClient";
-import { parseActiveEtfDailyResponse } from "./activeEtfSchemas";
+import { activeEtfRangeResponseSchema, parseActiveEtfDailyResponse } from "./activeEtfSchemas";
 import type { ActiveEtfDailyResponse } from "./activeEtfTypes";
 
 export async function fetchActiveEtfDaily(dataDate?: string): Promise<ActiveEtfDailyResponse> {
@@ -7,4 +7,11 @@ export async function fetchActiveEtfDaily(dataDate?: string): Promise<ActiveEtfD
     query: { data_date: dataDate },
   });
   return parseActiveEtfDailyResponse(response);
+}
+
+export async function fetchActiveEtfRange(startDate?: string, endDate?: string, symbol?: string) {
+  const response = await requestJson<unknown>("/active-etf-holdings/range", {
+    query: { start_date: startDate, end_date: endDate, symbol },
+  });
+  return activeEtfRangeResponseSchema.parse(response);
 }
