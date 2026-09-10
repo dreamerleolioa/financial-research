@@ -520,6 +520,7 @@ jobs:
             "run_date: \(.run_date // "n/a")",
             "symbol_count: \(.symbol_count // "n/a")",
             "records_written: \(.records_written // "n/a")",
+            "not_applicable_symbols: \((.not_applicable_symbols // []) | @json)",
             "missing_symbols_count: \((.missing_symbols // []) | length)",
             "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)",
             "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",

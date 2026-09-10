@@ -9,6 +9,7 @@ from typing import Any, Protocol
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR,
     BACKGROUND_CONTEXT_TYPES,
@@ -104,6 +105,8 @@ def same_day_background_context_is_reusable(row: Any, *, run_date: date) -> bool
         return True
 
     payload = _mapping(row.payload)
+    if margin_is_not_applicable(payload, run_date=run_date, symbol=row.symbol):
+        return True
     return _is_finite_number(payload.get("margin_balance_delta_pct")) or (
         payload.get("margin_balance_delta_pct_unavailable_reason") == "baseline_zero"
     )
@@ -150,6 +153,7 @@ def update_background_chip_context_cache(
         }
 
     records_written = 0
+    not_applicable_symbols: set[str] = set()
     reused_pairs: set[tuple[str, str]] = set()
     errors: list[dict[str, Any]] = list(source_errors)
     returned_pairs: set[tuple[str, str]] = set()
@@ -171,6 +175,11 @@ def update_background_chip_context_cache(
             for row in fresh_rows
             if same_day_background_context_is_reusable(row, run_date=run_date)
         }
+        not_applicable_symbols.update(
+            row.symbol for row in fresh_rows
+            if row.context_type == "full_margin" and (row.symbol, row.context_type) in reused_pairs
+            and margin_is_not_applicable(_mapping(row.payload), run_date=run_date, symbol=row.symbol)
+        )
         fetch_symbols_by_context_type = {
             context_type: [
                 symbol
@@ -206,6 +215,12 @@ def update_background_chip_context_cache(
                     )
                     continue
                 returned_pairs.add(pair)
+                if (
+                    payload.context_type == "full_margin"
+                    and same_day_background_context_is_reusable(payload, run_date=run_date)
+                    and margin_is_not_applicable(payload.payload, run_date=run_date, symbol=payload.symbol)
+                ):
+                    not_applicable_symbols.add(payload.symbol)
                 if require_same_day_fresh and not same_day_background_context_is_reusable(
                     payload,
                     run_date=run_date,
@@ -265,6 +280,7 @@ def update_background_chip_context_cache(
         "records_written": records_written,
         "reused_symbols": sorted({symbol for symbol, _context_type in reused_pairs}),
         "missing_symbols": sorted(missing_symbol_reasons),
+        "not_applicable_symbols": sorted(not_applicable_symbols),
         "missing_symbol_reasons": missing_symbol_reasons,
         "errors": errors,
     }
@@ -349,6 +365,8 @@ def build_background_context_labels(
             if is_missing
             else BACKGROUND_CONTEXT_LABELS.get(context_type)
         ) or f"背景脈絡：{context_type}"
+        if context_type == "full_margin" and margin_is_not_applicable(_mapping(context.get("payload"))):
+            label = "融資融券不適用（第一上市未滿六個月）"
         labels.append(
             {
                 "context_type": context_type,

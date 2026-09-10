@@ -701,6 +701,8 @@ def _risk_penalties(
         indicators=indicators,
         institutional_flow=flow,
         margin=margin,
+        record_date=_parse_date(str(record.get("record_date"))),
+        symbol=str(record.get("symbol") or ""),
     )
 
     if "overextended" in risk_flags or _is_overextended(indicators):

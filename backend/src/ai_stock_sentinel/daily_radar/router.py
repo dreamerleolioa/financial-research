@@ -1404,6 +1404,7 @@ def _refresh_daily_radar_context_step(
             "records_written": int(result["records_written"]),
             "reused_symbols": list(result.get("reused_symbols") or []),
             "missing_symbols": list(result.get("missing_symbols") or []),
+            "not_applicable_symbols": list(result.get("not_applicable_symbols") or []),
             "missing_symbol_reasons": dict(result.get("missing_symbol_reasons") or {}),
             "errors": list(result["errors"]),
         },
@@ -1418,6 +1419,7 @@ def _refresh_daily_radar_context_step(
         records_written=int(result["records_written"]),
         reused_symbols=list(result.get("reused_symbols") or []),
         missing_symbols=list(result.get("missing_symbols") or []),
+        not_applicable_symbols=list(result.get("not_applicable_symbols") or []),
         missing_symbol_reasons=dict(result.get("missing_symbol_reasons") or {}),
         errors=list(result["errors"]),
     )
@@ -2084,7 +2086,7 @@ def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
             institutional_date = _mapping(flow.get("data_dates")).get("institutional_flow")
             if str(institutional_date or "") != row.record_date.isoformat():
                 missing["institutional"].append(row.symbol)
-        if not margin_evidence_is_complete(margin):
+        if not margin_evidence_is_complete(margin, record_date=row.record_date, symbol=row.symbol):
             missing["margin"].append(row.symbol)
         if (
             not _finite_number(fundamental.get("ttm_eps"))

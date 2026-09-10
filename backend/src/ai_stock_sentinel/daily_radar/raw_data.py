@@ -15,6 +15,7 @@ from ai_stock_sentinel.daily_radar.data_quality import (
     missing_daily_radar_candidate_technical_fields,
     technical_data_dates_match_record_date,
 )
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
@@ -271,6 +272,12 @@ def _apply_margin_contexts(
     ).all()
     for row in rows:
         context = _mapping(margin_contexts_by_symbol.get(row.symbol))
+        payload = _mapping(context.get("payload"))
+        if payload.get("applicability") == "not_applicable" and (
+            str(context.get("as_of_date")) != run_date.isoformat()
+            or not margin_is_not_applicable(payload, run_date=run_date, symbol=row.symbol)
+        ):
+            continue
         fundamental = dict(_mapping(row.fundamental))
         data_dates = dict(_mapping(fundamental.get("data_dates")))
         fundamental["margin"] = _project_margin_context(context, technical=_mapping(row.technical))
@@ -297,6 +304,12 @@ def _project_margin_context(
         return {}
 
     payload = _mapping(context.get("payload"))
+    if margin_is_not_applicable(payload):
+        return {
+            "applicability": "not_applicable",
+            "eligibility": dict(payload["eligibility"]),
+            "risk_flags": [],
+        }
     margin_balance = _to_float(payload.get("latest_margin_balance"))
     volume = _to_float(_mapping(technical.get("ohlcv")).get("volume"))
     margin_to_volume = (

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
+
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
@@ -165,6 +167,8 @@ def _input_evidence(input_snapshot: Mapping[str, Any]) -> list[str]:
     if flow_days is not None and net_flow is not None:
         evidence.append(f"籌碼資料：法人淨流入連續 {flow_days:g} 日，合計 {net_flow:g} 張。")
 
+    if margin_is_not_applicable(margin):
+        evidence.append("融資融券不適用：第一上市未滿六個月，未計入融資相關加分。")
     margin_delta_pct = _number(margin.get("margin_delta_pct"))
     margin_to_volume = _number(margin.get("margin_to_volume"))
     if margin_delta_pct is not None and margin_to_volume is not None:

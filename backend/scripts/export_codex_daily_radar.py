@@ -6,12 +6,17 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -92,6 +97,8 @@ BACKGROUND_PAYLOAD_FIELDS = {
         "unit",
     ),
     "full_margin": (
+        "applicability",
+        "eligibility",
         "data_dates",
         "latest_margin_balance",
         "latest_short_balance",
@@ -583,7 +590,10 @@ def _analytical_completeness(raw_universe: list[dict[str, Any]]) -> dict[str, An
             _mapping(_mapping(row.get("data_dates")).get("institutional")).get("institutional_flow") or ""
         ) != str(row.get("record_date") or ""):
             missing_by_lane["institutional"].append(symbol)
-        if not all(
+        if not (
+            margin_is_not_applicable(margin, symbol=symbol)
+            and _mapping(margin.get("eligibility")).get("evaluated_for") == str(row.get("record_date"))
+        ) and not all(
             _finite_number(margin.get(field))
             for field in ("margin_delta_pct", "margin_to_volume")
         ):

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
 from ai_stock_sentinel.daily_radar.universe import TRACK_PRIORITY
 from ai_stock_sentinel.technical.profile import (
     TECHNICAL_LAYER_VERSION,
@@ -85,7 +86,13 @@ def missing_scoring_fields(
     indicators: Mapping[str, Any],
     institutional_flow: Mapping[str, Any],
     margin: Mapping[str, Any],
+    record_date: date | None = None,
+    symbol: str | None = None,
 ) -> list[str]:
+    if margin.get("applicability") == "not_applicable" and not margin_is_not_applicable(
+        margin, run_date=record_date, symbol=symbol,
+    ):
+        margin = {}
     sections = {
         "ohlcv": ohlcv,
         "indicators": indicators,
@@ -293,7 +300,10 @@ def _is_positive_finite_number(value: Any) -> bool:
     return _is_finite_number(value) and float(value) > 0
 
 
-def margin_evidence_is_complete(margin: Mapping[str, Any]) -> bool:
+def margin_evidence_is_complete(margin: Mapping[str, Any], *, record_date: date | None = None,
+                                symbol: str | None = None) -> bool:
+    if margin_is_not_applicable(margin, run_date=record_date, symbol=symbol):
+        return True
     delta_pct_available = _is_finite_number(margin.get("margin_delta_pct")) or (
         margin.get("margin_delta_pct_unavailable_reason") == "baseline_zero"
     )
@@ -305,6 +315,8 @@ def _missing_required_scoring_value(
     field: str,
     payload: Mapping[str, Any],
 ) -> bool:
+    if section == "margin" and margin_is_not_applicable(payload):
+        return False
     value = payload.get(field)
     if section == "margin" and field == "margin_delta_pct":
         return not (

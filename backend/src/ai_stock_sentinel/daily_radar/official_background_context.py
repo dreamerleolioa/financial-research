@@ -7,6 +7,9 @@ import re
 from typing import Any
 
 from ai_stock_sentinel.data_sources.official_http import official_request_get
+from ai_stock_sentinel.daily_radar.margin_applicability import (
+    TWSE_NEW_LISTING_URL, initial_listing_inapplicability,
+)
 from ai_stock_sentinel.daily_radar.background_context import (
     BACKGROUND_CONTEXT_ALL_CONSUMERS,
     BackgroundContextPayload,
@@ -178,7 +181,33 @@ class OfficialBackgroundChipContextProvider:
                     dataset=_margin_dataset(market_code),
                 )
 
+        inapplicable = {}
+        missing_tw_symbols = [symbol for symbol in by_market["TW"] if not observations.get(symbol)]
+        # 全市場當日報表成功後才判斷個股資格，避免用資格資料掩蓋來源故障。
+        if missing_tw_symbols and run_date in market_dates["TW"]:
+            try:
+                listing_report = _request_json(
+                    request_get, TWSE_NEW_LISTING_URL, params={"response": "json"},
+                    timeout=self._timeout, dataset="TWSE_newlisting",
+                )
+                inapplicable = initial_listing_inapplicability(
+                    listing_report, symbols=missing_tw_symbols, run_date=run_date,
+                )
+            except OfficialBackgroundContextError:
+                # 資格查不到時保留原本的缺資料判定，不推定為不適用。
+                pass
+
         for symbol in symbols:
+            if symbol in inapplicable:
+                yield BackgroundContextPayload(
+                    symbol=symbol, context_type="full_margin",
+                    applicable_consumers=OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS,
+                    source=self._source(market="TW", dataset="TWSE_newlisting"),
+                    as_of_date=run_date, freshness="fresh", payload=inapplicable[symbol],
+                    missing_reason=None,
+                    replay_key=f"background_context:{symbol}:full_margin:{run_date}:not_applicable",
+                )
+                continue
             rows = sorted(observations.get(symbol, []), key=lambda item: item[0])
             if not rows:
                 yield self._missing_payload(

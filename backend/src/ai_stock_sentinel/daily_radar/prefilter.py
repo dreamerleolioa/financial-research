@@ -77,6 +77,8 @@ def prefilter_record(
         indicators=indicators,
         institutional_flow=institutional_flow,
         margin=margin,
+        record_date=record_date,
+        symbol=str(record.get("symbol") or ""),
     )
     if missing_fields:
         reasons.append(_reason("data_gap", missing_fields=missing_fields))
@@ -303,7 +305,9 @@ def _build_debug(
             "margin_delta_pct_unavailable_reason": margin.get(
                 "margin_delta_pct_unavailable_reason"
             ),
-            "margin_to_volume": _float(margin.get("margin_to_volume")),
+            "margin_to_volume": _finite_float_or_none(margin.get("margin_to_volume")),
+            "applicability": margin.get("applicability"),
+            "eligibility": dict(_mapping(margin.get("eligibility"))),
         },
     }
 
