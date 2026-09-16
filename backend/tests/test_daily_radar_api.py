@@ -2273,6 +2273,57 @@ def test_daily_radar_refresh_ohlcv_fails_when_provider_data_still_lags_run_date(
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "failed"
 
 
+def test_current_short_history_reaches_prefilter_without_blocking_healthy_symbols(
+    monkeypatch, daily_radar_db_session: Session,
+) -> None:
+    from ai_stock_sentinel.daily_radar import router as radar_router
+    from ai_stock_sentinel.daily_radar.raw_data import _build_technical_payload
+    from ai_stock_sentinel.daily_radar.service import run_daily_radar
+    from tests.test_daily_radar_raw_data import _recovery_frame
+
+    run_date = date(2026, 9, 15)
+    prepared = DailyRadarPreparedRun(
+        run_date=run_date, market='TW', selected_symbols=['2330.TW', '3718.TWO'],
+        universe=[], symbol_count=2, market_context={'regime': 'bullish'},
+        step_statuses={step: {'status': 'completed'}
+                       for step in radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS},
+    )
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    short = _build_technical_payload('3718.TWO', _recovery_frame(periods=9), run_date=run_date)
+    client = _api_client(monkeypatch, daily_radar_db_session,
+                        technical_fetcher=FakeBatchTechnicalFetcher({'3718.TWO': short}))
+    monkeypatch.setattr(radar_router, 'run_daily_radar', run_daily_radar)
+    try:
+        response = client.post('/internal/daily-radar/refresh-ohlcv',
+            json={'run_date': run_date.isoformat()}, headers={'Authorization': 'Bearer test-token'})
+        assert response.status_code == 200
+        assert response.json()['status'] == 'completed'
+        assert response.json()['missing_symbols'] == []
+        assert response.json()['skipped_symbol_reasons'] == {'3718.TWO': 'insufficient_technical_history'}
+        healthy = daily_radar_db_session.scalar(select(StockRawData).where(
+            StockRawData.symbol == '2330.TW', StockRawData.record_date == run_date))
+        healthy.institutional = {'institutional_flow': {
+            'three_party_net_shares': 1_000_000, 'consecutive_positive_days': 3,
+            'flow_state': 'buying', 'net_flow_to_avg_volume': 0.5,
+        }, 'data_dates': {'institutional_flow': run_date.isoformat()}}
+        healthy.fundamental = {'margin': {'margin_delta_pct': 1.0, 'margin_to_volume': 0.1},
+                               'data_dates': {'margin': run_date.isoformat()}}
+        daily_radar_db_session.commit()
+        scoring = client.post('/internal/daily-radar/run-scoring',
+            json={'run_date': run_date.isoformat()}, headers={'Authorization': 'Bearer test-token'})
+        assert scoring.status_code == 200
+        assert not daily_radar_db_session.scalars(select(DailyRadarCandidate).where(
+            DailyRadarCandidate.symbol == '3718.TWO')).all()
+        run = daily_radar_db_session.get(DailyRadarRun, scoring.json()['run_id'])
+        assert daily_radar_db_session.scalars(select(DailyRadarCandidate).where(
+            DailyRadarCandidate.run_id == run.id, DailyRadarCandidate.symbol == '2330.TW')).all()
+        assert any(error.get('symbol') == '3718.TWO' for error in run.errors)
+        assert prepared.selected_symbols == ['2330.TW', '3718.TWO']
+    finally:
+        _clear_daily_radar_api_overrides()
+
+
 def test_daily_radar_refresh_ohlcv_refetches_existing_final_row_with_stale_dates(
     monkeypatch,
     daily_radar_db_session: Session,
@@ -2382,6 +2433,60 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_scoring_and_ma
     assert repair_job.index('if [[ ! "$ohlcv_http_status"') < repair_job.index(
         "jq --raw-output '"
     )
+
+
+@pytest.mark.parametrize('failed_step,failure_kind', [
+    ('', ''), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
+    ('refresh-avwap', 'http'), ('run-scoring', 'http'),
+    ('refresh-ohlcv', 'transport'), ('refresh-managed-raw-data', 'payload'),
+])
+def test_repair_shell_recovers_independent_steps_and_preserves_failure(
+    tmp_path, failed_step, failure_kind,
+):
+    import os
+    import subprocess
+    import textwrap
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).parents[2] / '.github/workflows/daily-radar.yml').read_text())
+    script = workflow['jobs']['repair-avwap-and-rescore']['steps'][0]['run']
+    # 執行真正的 workflow shell；所有 HTTP 都在本機替換，無憑證與網路存取。
+    mock_curl = r'''
+curl() {
+    local endpoint="" output="" step="" status=completed http=200
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o) output="$2"; shift 2 ;;
+            -X) endpoint="$3"; shift 3 ;;
+            *) shift ;;
+        esac
+    done
+    step="${endpoint##*/}"
+    printf '%s\n' "$step" >> "$CALL_LOG"
+    if [[ "$step" == "$FAILED_STEP" ]]; then
+        case "$FAILURE_KIND" in
+            payload) status=failed ;;
+            http) http=503 ;;
+            transport) return 7 ;;
+        esac
+    fi
+    printf '{"status":"%s","missing_record_count":0}' "$status" > "$output"
+    printf '%s' "$http"
+}
+'''
+    env = {**os.environ, 'ZEABUR_BACKEND_URL': 'https://backend.invalid',
+           'DAILY_RADAR_INTERNAL_TOKEN': 'test-only', 'DAILY_RADAR_RUN_DATE': '2026-09-15',
+           'CALL_LOG': str(tmp_path / 'calls'), 'FAILED_STEP': failed_step,
+           'FAILURE_KIND': failure_kind, 'TMPDIR': str(tmp_path)}
+    result = subprocess.run(['bash', '-c', textwrap.dedent(mock_curl) + script],
+                            env=env, capture_output=True, text=True, timeout=10)
+    calls = (tmp_path / 'calls').read_text().splitlines()
+    expected = ['refresh-full-margin', 'refresh-ohlcv', 'refresh-avwap']
+    if failed_step not in {'refresh-full-margin', 'refresh-ohlcv'}:
+        expected.append('run-scoring')
+    expected.append('refresh-managed-raw-data')
+    assert calls == expected, result.stdout + result.stderr
+    assert result.returncode == (1 if failed_step else 0), result.stdout + result.stderr
 
 
 def test_daily_radar_refresh_managed_raw_data_covers_holdings_without_exposing_symbols(

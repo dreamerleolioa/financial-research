@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.daily_radar.data_quality import (
     missing_daily_radar_candidate_technical_fields,
+    missing_technical_scoring_fields,
     technical_data_dates_match_record_date,
 )
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
@@ -51,13 +52,39 @@ class YFinanceBatchTechnicalFetcher:
             threads=True,
             progress=False,
         )
+        frames = {
+            symbol: _trim_trailing_incomplete_ohlcv_rows(
+                _frame_on_or_before_run_date(
+                    _symbol_frame(history, symbol), run_date=run_date, start_date=start_date,
+                )
+            ) for symbol in ordered_symbols
+        }
+        stale_symbols = [symbol for symbol, frame in frames.items()
+                         if _last_index_date(frame) != run_date.isoformat()]
+        if stale_symbols:
+            # 固定 end 的歷史查詢可能命中 yfinance 程序內快取；只補抓落後標的一次。
+            # 省略 end 讓 SDK 發出截至目前的請求，計算前仍截到原 run_date。
+            try:
+                fresh_history = yf.download(
+                    stale_symbols, group_by="ticker", start=start_date,
+                    interval="1d", auto_adjust=True, threads=True, progress=False,
+                )
+                for symbol in stale_symbols:
+                    frame = _trim_trailing_incomplete_ohlcv_rows(
+                        _frame_on_or_before_run_date(
+                            _symbol_frame(fresh_history, symbol), run_date=run_date, start_date=start_date,
+                        )
+                    )
+                    if (_last_index_date(frame) or "") > (_last_index_date(frames[symbol]) or ""):
+                        frames[symbol] = frame
+            except Exception:
+                # 保留首次回應的日期證據，讓完整性檢查維持失敗，不偽造當日資料。
+                pass
         payloads: dict[str, Mapping[str, Any]] = {}
         for symbol in ordered_symbols:
-            frame = _frame_on_or_before_run_date(_symbol_frame(history, symbol), run_date=run_date)
-            frame = _trim_trailing_incomplete_ohlcv_rows(frame)
             payload = _build_technical_payload(
                 symbol,
-                frame,
+                frames[symbol],
                 run_date=run_date,
                 name=self._safe_resolve_name(symbol),
             )
@@ -228,6 +255,52 @@ def current_daily_radar_raw_rows(
     ]
 
 
+def insufficient_history_daily_radar_raw_rows(
+    rows: Iterable[StockRawData], *, run_date: date,
+) -> list[StockRawData]:
+    """Current bars with proven short history may reach prefilter, never scoring."""
+    result = []
+    for row in rows:
+        technical = _mapping(row.technical)
+        quality = _mapping(_mapping(technical.get("technical_profile")).get("data_quality"))
+        count = quality.get("lookback_days_available")
+        history = technical.get("price_history")
+        if (row.record_date != run_date
+                or not technical_data_dates_match_record_date(technical, record_date=run_date)
+                or type(count) is not int or not 0 < count < 60
+                or not isinstance(history, list) or len(history) != count
+                or quality.get("ohlcv_aligned") is not True
+                or quality.get("volume_aligned") is not True
+                or quality.get("data_date") != run_date.isoformat()
+                or quality.get("is_final") is not True
+                or _mapping(technical.get("indicators")).get("missing_trading_days_60") != 60 - count):
+            continue
+        missing = missing_daily_radar_candidate_technical_fields(technical, record_date=run_date)
+        indicators = _mapping(technical.get("indicators"))
+        expected_missing_indicators = {
+            "ma5", "ma20", "ma60", "rsi14", "bias20", "macd_histogram", "macd_hist_pct",
+            "kd_k", "kd_d", "atr14", "volume_ratio", "support_level", "resistance_level",
+        }
+        if (any(field.startswith("ohlcv.") for field in missing_technical_scoring_fields(technical))
+                or quality.get("price_level_missing_reason") not in (None, "insufficient_completed_bars")
+                or not any(field in missing for field in ("indicators.ma60", "indicators.ma20"))
+                or any(field != "technical_profile.data_quality.price_level_missing_reason"
+                       and (not field.startswith("indicators.")
+                            or field.removeprefix("indicators.") not in expected_missing_indicators
+                            or indicators.get(field.removeprefix("indicators.")) is not None)
+                       for field in missing)):
+            continue
+        history_dates = [str(bar["date"]) for bar in history]
+        closes = [_to_float(bar["close"]) for bar in history]
+        if (any(close is None or close <= 0 for close in closes)
+                or history_dates != sorted(set(history_dates))
+                or history_dates[-1] != run_date.isoformat()
+                or closes[-1] != _to_float(_mapping(technical.get("ohlcv")).get("close"))):
+            continue
+        result.append(row)
+    return result
+
+
 def _apply_institutional_payloads(
     session: Session,
     *,
@@ -351,17 +424,21 @@ def _store_missing_rows(
 
     for symbol in symbols:
         payload = fetched_payloads.get(symbol)
+        row = stored_by_symbol.get(symbol)
         if payload is None:
+            if row is not None and not technical_data_dates_match_record_date(
+                _mapping(row.technical), record_date=run_date,
+            ):
+                row.raw_data_is_final = False
             continue
         technical = _normalize_technical_payload(symbol, payload)
-        row = stored_by_symbol.get(symbol)
         if row is None:
             row = StockRawData(symbol=symbol, record_date=run_date)
             row.institutional = dict(institutional_payloads_by_symbol.get(symbol) or {})
             row.fundamental = {"margin": {}, "data_dates": {"margin": run_date.isoformat()}}
             session.add(row)
         row.technical = technical
-        row.raw_data_is_final = True
+        row.raw_data_is_final = technical_data_dates_match_record_date(technical, record_date=run_date)
 
 
 def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -566,11 +643,12 @@ def _symbol_frame(history: Any, symbol: str) -> Any:
     return history
 
 
-def _frame_on_or_before_run_date(frame: Any, *, run_date: date) -> Any:
+def _frame_on_or_before_run_date(frame: Any, *, run_date: date, start_date: date | None = None) -> Any:
     index = getattr(frame, "index", None)
     if index is None or len(index) == 0:
         return frame
-    mask = [_index_value_date(value) <= run_date for value in index]
+    mask = [(start_date is None or start_date <= _index_value_date(value))
+            and _index_value_date(value) <= run_date for value in index]
     if hasattr(frame, "loc"):
         return frame.loc[mask]
     return frame

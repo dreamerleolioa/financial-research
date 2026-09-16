@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 TWSE_NEW_LISTING_URL = "https://www.twse.com.tw/rwd/zh/company/newlisting"
+TWSE_PUBLIC_OFFERING_URL = "https://www.twse.com.tw/announcement/publicForm"
 # 僅接受官方明確標示的第一上市；轉上市及其他註記不能用此規則推定資格。
 _INITIAL_LISTING_REMARKS = {"第一上市", "創新板第一上市"}
 
@@ -20,9 +21,17 @@ def margin_is_not_applicable(
     evidence = payload.get("eligibility")
     if payload.get("applicability") != "not_applicable" or not isinstance(evidence, Mapping):
         return False
-    if (evidence.get("source_url") != TWSE_NEW_LISTING_URL
-            or evidence.get("reason") != "initial_listing_under_six_months"
-            or str(evidence.get("listing_type")) not in _INITIAL_LISTING_REMARKS):
+    source = evidence.get("source_url")
+    if source == TWSE_NEW_LISTING_URL:
+        allowed_types, suffix = _INITIAL_LISTING_REMARKS, ".TW"
+    elif source == TWSE_PUBLIC_OFFERING_URL:
+        allowed_types, suffix = {"初上櫃"}, ".TWO"
+    else:
+        return False
+    if (evidence.get("reason") != "initial_listing_under_six_months"
+            or not isinstance(evidence.get("listing_type"), str)
+            or evidence["listing_type"] not in allowed_types
+            or not str(evidence.get("symbol", "")).endswith(suffix)):
         return False
     if symbol is not None and evidence.get("symbol") != symbol:
         return False
@@ -40,13 +49,22 @@ def margin_is_not_applicable(
 
 def initial_listing_inapplicability(
     report: Mapping[str, Any], *, symbols: list[str], run_date: date,
+    market_code: str = "TW",
 ) -> dict[str, dict[str, Any]]:
     if report.get("stat") != "OK":
         return {}
     fields, rows = report.get("fields"), report.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
         return {}
-    required = ("公司代號", "股票上市買賣日期", "備註")
+    if market_code == "TW":
+        required = ("公司代號", "股票上市買賣日期", "備註")
+        source_url = TWSE_NEW_LISTING_URL
+    elif market_code == "TWO":
+        required = ("證券代號", "撥券日期(上市、上櫃日期)", "發行市場", "取消公開抽籤")
+        source_url = TWSE_PUBLIC_OFFERING_URL
+    else:
+        return {}
+    fields = [str(field).strip() for field in fields]
     if any(fields.count(field) != 1 for field in required):
         return {}
     indexes = [fields.index(field) for field in required]
@@ -55,24 +73,28 @@ def initial_listing_inapplicability(
     for row in rows:
         if not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) <= max(indexes):
             continue
-        stock_id, raw_date, remark = (str(row[index]).strip() for index in indexes)
-        symbol = f"{stock_id}.TW"
+        stock_id, raw_date, remark, *cancelled = (str(row[index]).strip() for index in indexes)
+        symbol = f"{stock_id}.{market_code}"
         if symbol not in symbols:
             continue
         if symbol in seen:
             result.pop(symbol, None)
             continue
         seen.add(symbol)
+        if cancelled and cancelled[0]:
+            continue
         try:
             year, month, day = (int(part) for part in raw_date.replace("/", ".").split("."))
             listed = date(year + 1911, month, day)
         except ValueError:
             continue
+        if market_code == "TWO" and str(report.get("date")) != str(listed.year):
+            continue
         payload = {
             "applicability": "not_applicable",
             "eligibility": {
                 "symbol": symbol,
-                "source_url": TWSE_NEW_LISTING_URL,
+                "source_url": source_url,
                 "reason": "initial_listing_under_six_months",
                 "listing_type": remark,
                 "listing_date": listed.isoformat(),

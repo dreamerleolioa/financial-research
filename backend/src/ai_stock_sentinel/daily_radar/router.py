@@ -74,6 +74,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     YFinanceBatchTechnicalFetcher,
     current_daily_radar_raw_rows,
     ensure_daily_radar_raw_rows,
+    insufficient_history_daily_radar_raw_rows,
     reusable_daily_radar_raw_rows,
 )
 from ai_stock_sentinel.daily_radar.market_bar_provider import OfficialTaiwanMarketBarProvider
@@ -758,16 +759,22 @@ def refresh_daily_radar_ohlcv_endpoint(
     refreshed_universe = refresh_daily_radar_universe_technical_tracks(universe, rows)
     prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
     row_symbols = {row.symbol for row in rows}
-    missing_symbols = [symbol for symbol in selected_symbols if symbol not in row_symbols]
+    # 最新日線存在但歷史不足屬於候選資格問題，保留原 universe 交給 prefilter 排除。
+    stored_rows = db.scalars(select(StockRawData).where(
+        StockRawData.record_date == run_date,
+        StockRawData.symbol.in_(selected_symbols),
+    )).all()
+    short_history_symbols = {
+        row.symbol for row in insufficient_history_daily_radar_raw_rows(stored_rows, run_date=run_date)
+        if row.raw_data_is_final
+    }
+    skipped_symbol_reasons.update({symbol: "insufficient_technical_history"
+                                   for symbol in selected_symbols if symbol in short_history_symbols})
+    missing_symbols = [symbol for symbol in selected_symbols
+                       if symbol not in row_symbols and symbol not in short_history_symbols]
     structurally_reusable_symbols = {
         row.symbol
-        for row in reusable_daily_radar_raw_rows(
-            get_final_raw_data_rows_for_symbols(
-                db,
-                run_date=run_date,
-                symbols=missing_symbols,
-            )
-        )
+        for row in reusable_daily_radar_raw_rows(stored_rows)
     }
     missing_symbol_reasons = {
         symbol: (
@@ -1301,7 +1308,7 @@ def run_daily_radar_endpoint(
             margin_contexts_by_symbol=margin_contexts_by_symbol,
         )
         cache_rows = _require_complete_daily_radar_raw_rows(
-            cache_rows,
+            get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols),
             selected_symbols=selected_symbols,
             run_date=run_date,
         )
@@ -2190,7 +2197,10 @@ def _require_complete_daily_radar_raw_rows(
                 "run_date": run_date.isoformat(),
             },
         )
+    rows = list(rows)
     reusable_rows = current_daily_radar_raw_rows(rows, run_date=run_date)
+    # 短歷史資料只能進入 prefilter 的 data_gap 排除路徑，不能補值取得評分資格。
+    reusable_rows += insufficient_history_daily_radar_raw_rows(rows, run_date=run_date)
     reusable_symbols = {row.symbol for row in reusable_rows}
     missing_symbols = [symbol for symbol in selected_symbol_list if symbol not in reusable_symbols]
     if missing_symbols:

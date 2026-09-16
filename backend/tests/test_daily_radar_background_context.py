@@ -1181,7 +1181,8 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert ".errors[]?" in refresh_market_context_job
 
     repair_job = text.split("  repair-avwap-and-rescore:", 1)[1]
-    assert repair_job.index('if [[ ! "$refresh_http_status"') < repair_job.index("jq -r '")
+    avwap_repair = repair_job.split('refresh_response_file="$(mktemp)"', 1)[1]
+    assert avwap_repair.index('if [[ ! "$refresh_http_status"') < avwap_repair.index("jq -r '")
 
 
 def test_daily_radar_workflow_schedules_independent_full_ai_evidence_refresh() -> None:

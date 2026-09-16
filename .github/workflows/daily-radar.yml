@@ -76,7 +76,7 @@ on:
     - cron: "50 15 * * 1-5"
     # 台灣時間週二至週六 00:30，對前一個台北交易日 run_date 做 scoring。
     - cron: "30 16 * * 1-5"
-    # 台灣時間週二至週六 07:00，補修前一個台股交易日 OHLCV、AVWAP 與 managed raw data，並重跑 scoring。
+    # 台灣時間週二至週六 07:00，補修前一個交易日 full margin、OHLCV、AVWAP 與 managed raw data，並重跑 scoring。
     - cron: "0 23 * * 1-5"
 
 permissions:
@@ -810,12 +810,12 @@ jobs:
           jq -e '.status == "completed" and .retryable_skipped_count == 0' "$response_file" > /dev/null
 
   repair-avwap-and-rescore:
-    name: Repair Daily Radar OHLCV/AVWAP/managed raw data and rescore
+    name: Repair Daily Radar margin/OHLCV/AVWAP/managed raw data and rescore
     runs-on: ubuntu-latest
     needs: resolve-run-context
     if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore'))
     steps:
-      - name: Repair OHLCV/AVWAP/managed raw data and rescore
+      - name: Repair margin/OHLCV/AVWAP/managed raw data and rescore
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
@@ -825,31 +825,53 @@ jobs:
           run_date="${DAILY_RADAR_RUN_DATE}"
           daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
 
+          margin_response_file="$(mktemp)"
+          margin_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-full-margin"
+          margin_repair_completed=true
+          echo "Daily Radar repair refresh-full-margin run_date: ${run_date}"
+          margin_http_status="$(curl -sS -o "$margin_response_file" -w "%{http_code}" \
+            -X POST "$margin_endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${daily_radar_payload}")" || margin_http_status=000
+          echo "Full margin HTTP status: ${margin_http_status}"
+          if [[ ! "$margin_http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$margin_response_file"
+            margin_repair_completed=false
+          else
+            jq -r '{status, step, run_date, symbol_count, records_written, missing_symbols, missing_symbol_reasons, not_applicable_symbols}' "$margin_response_file" || margin_repair_completed=false
+            if ! jq -e '.status == "completed"' "$margin_response_file" >/dev/null; then
+              margin_repair_completed=false
+            fi
+          fi
+
           ohlcv_response_file="$(mktemp)"
           ohlcv_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-ohlcv"
+          ohlcv_repair_completed=true
           echo "Daily Radar repair refresh-ohlcv run_date: ${run_date}"
           ohlcv_http_status="$(curl -sS -o "$ohlcv_response_file" -w "%{http_code}" \
             -X POST "$ohlcv_endpoint" \
             -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data "${daily_radar_payload}")"
+            --data "${daily_radar_payload}")" || ohlcv_http_status=000
           echo "OHLCV HTTP status: ${ohlcv_http_status}"
           if [[ ! "$ohlcv_http_status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$ohlcv_response_file"
-            exit 1
-          fi
-          jq --raw-output '
-            "status: \(.status // "n/a")",
-            "step: \(.step // "n/a")",
-            "run_date: \(.run_date // "n/a")",
-            "symbol_count: \(.symbol_count // "n/a")",
-            "records_written: \(.records_written // "n/a")",
-            "missing_symbols_count: \((.missing_symbols // []) | length)",
-            "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)"
-          ' "$ohlcv_response_file"
-          if ! jq -e '.status == "completed"' "$ohlcv_response_file" >/dev/null; then
-            echo "OHLCV repair did not reach the requested run_date; stop before rescore."
-            exit 1
+            ohlcv_repair_completed=false
+          else
+            jq --raw-output '
+              "status: \(.status // "n/a")",
+              "step: \(.step // "n/a")",
+              "run_date: \(.run_date // "n/a")",
+              "symbol_count: \(.symbol_count // "n/a")",
+              "records_written: \(.records_written // "n/a")",
+              "missing_symbols_count: \((.missing_symbols // []) | length)",
+              "missing_symbol_reasons: \((.missing_symbol_reasons // {}) | @json)",
+              "skipped_symbol_reasons: \((.skipped_symbol_reasons // {}) | @json)"
+            ' "$ohlcv_response_file" || ohlcv_repair_completed=false
+            if ! jq -e '.status == "completed"' "$ohlcv_response_file" >/dev/null; then
+              ohlcv_repair_completed=false
+            fi
           fi
 
           refresh_response_file="$(mktemp)"
@@ -860,54 +882,60 @@ jobs:
             -X POST "$refresh_endpoint" \
             -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data "${daily_radar_payload}")"
+            --data "${daily_radar_payload}")" || refresh_http_status=000
           echo "Refresh HTTP status: ${refresh_http_status}"
           if [[ ! "$refresh_http_status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$refresh_response_file"
-            exit 1
-          fi
-          jq -r '
-            "status: \(.status // "n/a")",
-            "step: \(.step // "n/a")",
-            "run_date: \(.run_date // "n/a")",
-            "symbol_count: \(.symbol_count // "n/a")",
-            "records_written: \(.records_written // "n/a")",
-            "missing_symbols_count: \(if (.missing_symbols | type) == "array" then (.missing_symbols | length) else "n/a" end)",
-            "missing_symbol_reasons: \(.missing_symbol_reasons // {})",
-            "skipped_symbols_count: \(if (.skipped_symbols | type) == "array" then (.skipped_symbols | length) else "n/a" end)",
-            "skipped_symbol_reasons: \(.skipped_symbol_reasons // {})",
-            "detail: \(.detail // "n/a")"
-          ' "$refresh_response_file"
-          if ! jq -e '.status == "completed"' "$refresh_response_file" >/dev/null; then
-            echo "AVWAP repair did not complete; continue to rescore so optional evidence does not mask scoring readiness."
             avwap_repair_completed=false
+          else
+            jq -r '
+              "status: \(.status // "n/a")",
+              "step: \(.step // "n/a")",
+              "run_date: \(.run_date // "n/a")",
+              "symbol_count: \(.symbol_count // "n/a")",
+              "records_written: \(.records_written // "n/a")",
+              "missing_symbols_count: \(if (.missing_symbols | type) == "array" then (.missing_symbols | length) else "n/a" end)",
+              "missing_symbol_reasons: \(.missing_symbol_reasons // {})",
+              "skipped_symbols_count: \(if (.skipped_symbols | type) == "array" then (.skipped_symbols | length) else "n/a" end)",
+              "skipped_symbol_reasons: \(.skipped_symbol_reasons // {})",
+              "detail: \(.detail // "n/a")"
+            ' "$refresh_response_file" || avwap_repair_completed=false
+            if ! jq -e '.status == "completed"' "$refresh_response_file" >/dev/null; then
+              echo "AVWAP repair did not complete; continue to rescore so optional evidence does not mask scoring readiness."
+              avwap_repair_completed=false
+            fi
           fi
 
-          scoring_response_file="$(mktemp)"
-          scoring_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/run-scoring"
-          echo "Daily Radar repair run-scoring run_date: ${run_date}"
-          scoring_http_status="$(curl -sS -o "$scoring_response_file" -w "%{http_code}" \
-            -X POST "$scoring_endpoint" \
-            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "${daily_radar_payload}")"
-          echo "Scoring HTTP status: ${scoring_http_status}"
-          if [[ ! "$scoring_http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$scoring_response_file"
-            exit 1
-          fi
-          jq -r '
-            "run_id: \(.run_id // "n/a")",
-            "status: \(.status // "n/a")",
-            "run_date: \(.run_date // "n/a")",
-            "universe_count: \(.universe_count // "n/a")",
-            "prefilter_count: \(.prefilter_count // "n/a")",
-            "candidate_count: \(.candidate_count // "n/a")",
-            "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
-            "detail: \(.detail // "n/a")"
-          ' "$scoring_response_file"
-          if ! jq -e '.status == "completed" or .status == "stale_data"' "$scoring_response_file" >/dev/null; then
-            exit 1
+          scoring_repair_completed=false
+          if [[ "$margin_repair_completed" == "true" && "$ohlcv_repair_completed" == "true" ]]; then
+            scoring_response_file="$(mktemp)"
+            scoring_endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/run-scoring"
+            echo "Daily Radar repair run-scoring run_date: ${run_date}"
+            scoring_http_status="$(curl -sS -o "$scoring_response_file" -w "%{http_code}" \
+              -X POST "$scoring_endpoint" \
+              -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "${daily_radar_payload}")" || scoring_http_status=000
+            echo "Scoring HTTP status: ${scoring_http_status}"
+            if [[ ! "$scoring_http_status" =~ ^2[0-9][0-9]$ ]]; then
+              cat "$scoring_response_file"
+            else
+              jq -r '
+                "run_id: \(.run_id // "n/a")",
+                "status: \(.status // "n/a")",
+                "run_date: \(.run_date // "n/a")",
+                "universe_count: \(.universe_count // "n/a")",
+                "prefilter_count: \(.prefilter_count // "n/a")",
+                "candidate_count: \(.candidate_count // "n/a")",
+                "errors_count: \(if (.errors | type) == "array" then (.errors | length) else "n/a" end)",
+                "detail: \(.detail // "n/a")"
+              ' "$scoring_response_file" || true
+              if jq -e '.status == "completed" or .status == "stale_data"' "$scoring_response_file" >/dev/null; then
+                scoring_repair_completed=true
+              fi
+            fi
+          else
+            echo "Required margin/OHLCV repair incomplete; skip scoring and continue managed raw-data repair."
           fi
 
           managed_response_file="$(mktemp)"
@@ -918,7 +946,7 @@ jobs:
             -X POST "$managed_endpoint" \
             -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data "${daily_radar_payload}")"
+            --data "${daily_radar_payload}")" || managed_http_status=000
           echo "Managed raw data HTTP status: ${managed_http_status}"
           if [[ ! "$managed_http_status" =~ ^2[0-9][0-9]$ ]]; then
             cat "$managed_response_file"
@@ -937,11 +965,15 @@ jobs:
               "missing_record_count: \(.missing_record_count // 0)",
               "deferred_recent_symbol_count: \(.deferred_recent_symbol_count // 0)",
               "error_codes: \((.error_codes // []) | join(","))"
-            ' "$managed_response_file"
+            ' "$managed_response_file" || managed_repair_completed=false
             if ! jq -e '.status == "completed" and .missing_record_count == 0' "$managed_response_file" >/dev/null; then
               echo "Managed raw-data repair still incomplete after rescore; fail repair monitor."
               managed_repair_completed=false
             fi
+          fi
+          if [[ "$scoring_repair_completed" != "true" ]]; then
+            echo "Required refresh or scoring repair incomplete; fail repair monitor."
+            exit 1
           fi
           if [[ "$avwap_repair_completed" != "true" ]]; then
             echo "AVWAP repair still incomplete after rescore attempt; fail repair monitor."

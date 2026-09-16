@@ -228,3 +228,91 @@ def test_refresh_endpoint_retains_not_applicable_in_response_and_step_status(mon
     assert result.status == 'completed'
     assert result.model_dump()['not_applicable_symbols'] == ['7827.TW']
     assert statuses[0]['details']['not_applicable_symbols'] == ['7827.TW']
+
+
+OTC_LISTING_URL = 'https://www.twse.com.tw/announcement/publicForm'
+
+
+def _otc_provider(*, listing_type='初上櫃', listed='115/04/22', cancelled='',
+                  include_margin=False, listing_error=False, calls=None):
+    from tests.test_official_background_context import _tpex_margin_payload
+
+    def get(url, *, params, **kwargs):
+        if calls is not None:
+            calls.append((url, params))
+        if url == OTC_LISTING_URL:
+            if listing_error:
+                raise RuntimeError('listing unavailable')
+            return _FakeResponse({'stat': 'OK', 'date': int(params['yy']),
+                'fields': ['證券代號', '發行市場', '撥券日期(上市、上櫃日期)', '取消公開抽籤 '],
+                'data': [['7828', listing_type, listed, cancelled]]})
+        return _FakeResponse(_tpex_margin_payload(params['date'].replace('/', ''), [[
+            '7828' if include_margin else '6488', '測試',
+            '900', '0', '0', '0', '1000', '0', '0', '0',
+            '40', '0', '0', '0', '50', '0', '0', '0', '0',
+        ]]))
+    return OfficialBackgroundChipContextProvider(request_get=get,
+        lookback_trading_days=1, max_lookback_calendar_days=1)
+
+
+def test_otc_initial_listing_exempts_margin_with_official_evidence():
+    result = list(_otc_provider().fetch(symbols=['7828.TWO'],
+        context_types=['full_margin'], run_date=date(2026, 9, 15), market='TW'))[0]
+    assert result.freshness == 'fresh'
+    assert result.payload['applicability'] == 'not_applicable'
+    assert result.payload['eligibility']['listing_date'] == '2026-04-22'
+    assert result.payload['eligibility']['source_url'] == OTC_LISTING_URL
+    assert result.source['market'] == 'TWO'
+    assert same_day_background_context_is_reusable(result, run_date=date(2026, 9, 15))
+    projected = _project_margin_context(vars(result), technical={})
+    assert margin_evidence_is_complete(projected, record_date=date(2026, 9, 15), symbol='7828.TWO')
+    assert 'margin_balance' not in projected
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'listing_type': '上市轉上櫃'}, {'listing_type': '上櫃增資'},
+    {'listed': '115/03/15'}, {'listed': '115/09/16'}, {'listed': 'bad'},
+    {'cancelled': '取消'}, {'listing_error': True},
+])
+def test_otc_unproven_listing_remains_missing(kwargs):
+    result = list(_otc_provider(**kwargs).fetch(symbols=['7828.TWO'],
+        context_types=['full_margin'], run_date=date(2026, 9, 15), market='TW'))[0]
+    assert result.missing_reason == 'official_no_data'
+
+
+def test_otc_actual_margin_precedes_listing_evidence():
+    calls = []
+    result = list(_otc_provider(include_margin=True, calls=calls).fetch(
+        symbols=['7828.TWO'], context_types=['full_margin'],
+        run_date=date(2026, 9, 15), market='TW'))[0]
+    assert result.payload['latest_margin_balance'] == 1000
+    assert not any(url == OTC_LISTING_URL for url, _ in calls)
+
+
+@pytest.mark.parametrize('evaluated,expected', [
+    (date(2026, 10, 21), True), (date(2026, 10, 22), False),
+])
+def test_otc_six_month_boundary(evaluated, expected):
+    result = list(_otc_provider().fetch(symbols=['7828.TWO'], context_types=['full_margin'],
+        run_date=evaluated, market='TW'))[0]
+    assert (result.payload.get('applicability') == 'not_applicable') is expected
+
+
+def test_otc_early_year_checks_prior_year_and_reuses_verified_context():
+    calls = []
+    evaluated = date(2026, 3, 15)
+    engine = create_engine('sqlite://')
+    SharedBackgroundContext.__table__.create(engine)
+    with Session(engine) as session:
+        for attempt in range(2):
+            result = update_background_chip_context_cache(
+                session, run_date=evaluated, market='TW',
+                provider=_otc_provider(listed='114/12/22', calls=calls),
+                symbols=['7828.TWO'], context_types=['full_margin'],
+                require_same_day_fresh=True, reuse_same_day_fresh=True,
+            )
+            session.flush()
+            assert result['status'] == 'completed'
+            assert result['not_applicable_symbols'] == ['7828.TWO']
+            assert result['records_written'] == (1 if attempt == 0 else 0)
+    assert [params['yy'] for url, params in calls if url == OTC_LISTING_URL] == ['2026', '2025']

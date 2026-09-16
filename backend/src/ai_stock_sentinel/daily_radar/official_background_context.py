@@ -8,7 +8,7 @@ from typing import Any
 
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.daily_radar.margin_applicability import (
-    TWSE_NEW_LISTING_URL, initial_listing_inapplicability,
+    TWSE_NEW_LISTING_URL, TWSE_PUBLIC_OFFERING_URL, initial_listing_inapplicability,
 )
 from ai_stock_sentinel.daily_radar.background_context import (
     BACKGROUND_CONTEXT_ALL_CONSUMERS,
@@ -197,12 +197,36 @@ class OfficialBackgroundChipContextProvider:
                 # 資格查不到時保留原本的缺資料判定，不推定為不適用。
                 pass
 
+        missing_otc_symbols = [symbol for symbol in by_market["TWO"] if not observations.get(symbol)]
+        if missing_otc_symbols and run_date in market_dates["TWO"]:
+            # 承銷公告明列「初上櫃」，可排除轉板、股份轉換與增資；年初須查前一年。
+            years = [run_date.year]
+            if run_date.month <= 6:
+                years.append(run_date.year - 1)
+            for year in years:
+                try:
+                    listing_report = _request_json(
+                        request_get, TWSE_PUBLIC_OFFERING_URL,
+                        params={"response": "json", "yy": str(year)},
+                        timeout=self._timeout, dataset="TWSE_publicForm",
+                    )
+                    if str(listing_report.get("date")) == str(year):
+                        inapplicable.update(initial_listing_inapplicability(
+                            listing_report, symbols=missing_otc_symbols,
+                            run_date=run_date, market_code="TWO",
+                        ))
+                except OfficialBackgroundContextError:
+                    pass
+
         for symbol in symbols:
             if symbol in inapplicable:
                 yield BackgroundContextPayload(
                     symbol=symbol, context_type="full_margin",
                     applicable_consumers=OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS,
-                    source=self._source(market="TW", dataset="TWSE_newlisting"),
+                    source=self._source(
+                        market=_symbol_market(symbol),
+                        dataset="TWSE_publicForm" if symbol.endswith(".TWO") else "TWSE_newlisting",
+                    ),
                     as_of_date=run_date, freshness="fresh", payload=inapplicable[symbol],
                     missing_reason=None,
                     replay_key=f"background_context:{symbol}:full_margin:{run_date}:not_applicable",

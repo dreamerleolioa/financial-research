@@ -20,6 +20,132 @@ from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.db.session import Base
 
 
+def _recovery_frame(end='2026-09-15', periods=80):
+    dates = pd.bdate_range(end=end, periods=periods)
+    return pd.DataFrame({
+        'Open': [100.0 + i for i in range(periods)],
+        'High': [102.0 + i for i in range(periods)],
+        'Low': [99.0 + i for i in range(periods)],
+        'Close': [101.0 + i for i in range(periods)],
+        'Volume': [1_000_000 + i * 100 for i in range(periods)],
+    }, index=dates)
+
+
+def test_stale_batch_retries_only_stale_symbols_and_clips_future_bars(monkeypatch):
+    calls = []
+    def download(symbols, **kwargs):
+        calls.append((symbols, kwargs))
+        if len(calls) == 1:
+            return pd.concat({'2330.TW': _recovery_frame(),
+                              '7828.TWO': _recovery_frame('2026-09-14')}, axis=1, sort=True)
+        assert symbols == ['7828.TWO']
+        assert 'end' not in kwargs
+        assert kwargs['auto_adjust'] is True
+        return pd.concat({'7828.TWO': _recovery_frame('2026-09-16')}, axis=1)
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download', download)
+    result = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None).fetch(
+        ['2330.TW', '7828.TWO'], run_date=date(2026, 9, 15))
+    assert len(calls) == 2
+    assert all(p['data_dates']['ohlcv'] == '2026-09-15' for p in result.values())
+    assert result['7828.TWO']['price_history'][-1]['date'] == '2026-09-15'
+    assert all(bar['date'] <= '2026-09-15' for bar in result['7828.TWO']['price_history'])
+
+
+def test_still_stale_response_has_bounded_retry_and_is_not_final(monkeypatch, db_session):
+    calls = []
+    def download(symbols, **kwargs):
+        calls.append(kwargs)
+        return pd.concat({'2330.TW': _recovery_frame('2026-09-14')}, axis=1)
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download', download)
+    rows = ensure_daily_radar_raw_rows(db_session, date(2026, 9, 15), ['2330.TW'],
+        technical_fetcher=YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None))
+    assert rows == []
+    assert len(calls) == 2
+    row = db_session.query(StockRawData).one()
+    assert row.raw_data_is_final is False
+    assert row.technical['data_dates']['ohlcv'] == '2026-09-14'
+
+
+def test_retry_failure_preserves_initial_evidence_without_finalizing(monkeypatch):
+    calls = []
+    def download(symbols, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            raise RuntimeError('source unavailable')
+        return pd.concat({'2330.TW': _recovery_frame('2026-09-14')}, axis=1)
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download', download)
+    result = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None).fetch(
+        ['2330.TW'], run_date=date(2026, 9, 15))
+    assert len(calls) == 2
+    assert result['2330.TW']['data_dates']['ohlcv'] == '2026-09-14'
+
+
+def test_refresh_escapes_yfinance_fixed_window_response_cache(monkeypatch):
+    from yfinance.data import YfData
+    from uuid import uuid4
+
+    data = YfData()
+    url = f'https://example.invalid/offline-cache-probe/{uuid4()}'
+    upstream = [_recovery_frame('2026-09-14')]
+    requests = []
+    def get(url, params=None, timeout=30):
+        requests.append(params)
+        return pd.concat({'2330.TW': upstream[0]}, axis=1)
+    monkeypatch.setattr(data, 'get', get)
+    params = {'period1': '2026-05-18', 'period2': '2026-09-16'}
+    data.cache_get(url, params=params)
+    upstream[0] = _recovery_frame()
+    def download(symbols, **kwargs):
+        return (data.cache_get(url, params=params) if 'end' in kwargs
+                else data.get(url, params={'period1': '2026-05-18'}))
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download', download)
+    result = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None).fetch(
+        ['2330.TW'], run_date=date(2026, 9, 15))
+    assert result['2330.TW']['data_dates']['ohlcv'] == '2026-09-15'
+    assert len(requests) == 2
+
+
+def test_short_history_is_explicitly_ineligible_not_a_batch_failure():
+    from ai_stock_sentinel.daily_radar import raw_data
+    from types import SimpleNamespace
+    from copy import deepcopy
+
+    run_date = date(2026, 9, 15)
+    payload = raw_data._build_technical_payload('3718.TWO', _recovery_frame(periods=9), run_date=run_date)
+    row = SimpleNamespace(symbol='3718.TWO', record_date=run_date, technical=payload)
+    assert raw_data.current_daily_radar_raw_rows([row], run_date=run_date) == []
+    assert raw_data.insufficient_history_daily_radar_raw_rows([row], run_date=run_date) == [row]
+    for bad in ('stale', 'unaligned', 'unknown_history', 'invalid_ohlcv', 'bad_version', 'nan_indicator'):
+        technical = deepcopy(payload)
+        if bad == 'stale':
+            technical['data_dates']['ohlcv'] = '2026-09-14'
+        elif bad == 'unaligned':
+            technical['technical_profile']['data_quality']['ohlcv_aligned'] = False
+        elif bad == 'unknown_history':
+            technical['technical_profile']['data_quality'].pop('lookback_days_available')
+        elif bad == 'invalid_ohlcv':
+            technical['ohlcv']['open'] = None
+        elif bad == 'nan_indicator':
+            technical['indicators']['ma20'] = float('nan')
+        else:
+            technical['technical_profile']['version'] = 'old'
+        broken = SimpleNamespace(symbol='3718.TWO', record_date=run_date, technical=technical)
+        assert raw_data.insufficient_history_daily_radar_raw_rows([broken], run_date=run_date) == []
+
+
+def test_empty_retry_demotes_existing_stale_final_row(db_session):
+    from types import SimpleNamespace
+    stale = StockRawData(symbol='2330.TW', record_date=date(2026, 9, 15),
+                         technical=_technical_payload('2330.TW', date(2026, 9, 14)),
+                         raw_data_is_final=True)
+    db_session.add(stale)
+    db_session.flush()
+    rows = ensure_daily_radar_raw_rows(db_session, date(2026, 9, 15), ['2330.TW'],
+        technical_fetcher=SimpleNamespace(fetch=lambda *args, **kwargs: {}))
+    assert rows == []
+    assert stale.raw_data_is_final is False
+
+
 @compiles(JSONB, "sqlite")
 def _compile_jsonb_for_sqlite(type_, compiler, **kw):
     return "JSON"
