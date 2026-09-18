@@ -139,6 +139,24 @@ def test_mops_historical_eps_normalizer_rejects_symbol_mismatch() -> None:
         )
 
 
+def test_mops_provider_accepts_valid_empty_eps_history() -> None:
+    response = _Response({
+        "xaxisList": [],
+        "graphData": [{"label": "中光電投控", "data": []}],
+        "showNameList": ["3718 中光電投控 (上櫃光電業)"],
+    })
+    provider = MopsHistoricalEpsProvider(request_post=lambda *args, **kwargs: response)
+    assert provider.fetch_periods("3718.TWO") == []
+
+
+def test_mops_provider_still_rejects_malformed_empty_history() -> None:
+    provider = MopsHistoricalEpsProvider(
+        request_post=lambda *args, **kwargs: _Response({"message": "upstream error"})
+    )
+    with pytest.raises(ValueError, match="invalid graph contract"):
+        provider.fetch_periods("3718.TWO")
+
+
 def test_mops_historical_eps_normalizer_rejects_non_finite_values() -> None:
     payload = _payload(
         stock_id="2801",

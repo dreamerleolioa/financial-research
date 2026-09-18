@@ -26,6 +26,12 @@ class FundamentalRefreshResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class FundamentalDataGap(BaseModel):
+    symbol: str
+    reason: Literal["no_eps_history", "insufficient_eps_history"]
+    period_count: int = Field(ge=0)
+
+
 class FundamentalBackfillResponse(BaseModel):
     status: Literal["ok", "partial"]
     symbols_processed: list[str] = Field(default_factory=list)
@@ -36,6 +42,7 @@ class FundamentalBackfillResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
     provider_attempts: dict[str, int] = Field(default_factory=dict)
     fallback_symbols: list[str] = Field(default_factory=list)
+    data_gaps: list[FundamentalDataGap] = Field(default_factory=list)
 
 
 __all__ = [

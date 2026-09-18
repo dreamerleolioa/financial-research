@@ -58,8 +58,8 @@ class MopsHistoricalEpsProvider:
             payload,
             symbol=normalized_symbol,
         )
-        if not periods:
-            raise ValueError("MOPS historical EPS response contains no EPS periods")
+        # A validated response can legitimately have no history for a new code.
+        # Transport, identity and schema failures still raise above.
         return periods
 
 

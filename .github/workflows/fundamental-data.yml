@@ -80,9 +80,11 @@ jobs:
           job_id="${BACKFILL_JOB_ID}"
           raw_pool_date="${BACKFILL_RAW_POOL_DATE}"
           resume_running_job=false
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+          if [ -z "$job_id" ] && [ -z "$after_symbol" ] && [ -z "$raw_pool_date" ]; then
             resume_running_job=true
           fi
+          had_errors=false
+          gap_count=0
           for batch in 1 2 3 4 5 6; do
             payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" --arg raw_pool_date "$raw_pool_date" --argjson resume "$resume_running_job" \
               '{scope:"managed", limit:10}
@@ -117,18 +119,24 @@ jobs:
             fi
             job_id="$response_job_id"
             after_symbol=$(jq -r '.next_after_symbol // ""' "$response_file")
-            if ! jq -e '.status == "ok"' "$response_file" >/dev/null; then
-              echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
-              echo "BACKFILL_JOB_ID=$job_id"
-              if [ -n "$after_symbol" ]; then
-                printf 'Backfill partially failed. Successful symbols were committed; resume job `%s` from `%s` to avoid starving later symbols.\n' \
-                  "$job_id" "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
-              else
-                printf 'Backfill partially failed on its final page. The failed symbols remain pending and will enter a new job on the next schedule.\n' \
-                  >> "$GITHUB_STEP_SUMMARY"
-              fi
+            if ! jq -e '
+              (.status == "ok" or .status == "partial")
+              and (.errors | type == "array")
+              and ((.data_gaps // []) | type == "array")
+              and (.status != "partial" or ((.errors | length) + ((.data_gaps // []) | length) > 0))
+            ' "$response_file" >/dev/null; then
+              echo "Invalid backfill outcome; refusing to treat it as successful" >&2
               exit 1
             fi
+            page_gaps=$(jq '(.data_gaps // []) | length' "$response_file")
+            gap_count=$((gap_count + page_gaps))
+            jq -r '(.data_gaps // [])[] | "- Data gap: \(.symbol) — \(.reason) (\(.period_count) EPS periods); pending scheduled retry."' \
+              "$response_file" >> "$GITHUB_STEP_SUMMARY"
+            if jq -e '.errors | length > 0' "$response_file" >/dev/null; then
+              had_errors=true
+              jq -r '.errors[] | "- Backfill error: \(.)"' "$response_file" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            rm -f "$response_file"
             if [ -z "$after_symbol" ]; then
               break
             fi
@@ -136,14 +144,15 @@ jobs:
           if [ -n "$after_symbol" ]; then
             echo "BACKFILL_NEXT_AFTER_SYMBOL=$after_symbol"
             echo "BACKFILL_JOB_ID=$job_id"
-            if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
-              printf 'Scheduled backfill request budget reached. Running job `%s` will resume automatically from `%s` on the next schedule.\n' \
-                "$job_id" "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            printf 'Backfill request budget reached. Resume with `backfill_after_symbol=%s` and `backfill_job_id=%s`.\n' \
-              "$after_symbol" "$job_id" >> "$GITHUB_STEP_SUMMARY"
-            exit 2
+            printf 'Backfill request budget reached. Running job `%s` will resume automatically from `%s` on the next schedule.\n' \
+              "$job_id" "$after_symbol" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Backfill job `%s` completed. Data gaps observed in this run: %s; incomplete symbols remain pending for the next scheduled job.\n' \
+              "$job_id" "$gap_count" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$had_errors" = true ]; then
+            echo "Backfill made progress but encountered errors; see the summary. The next schedule retries pending work." >&2
+            exit 1
           fi
 
       - name: Report official refresh failure after scheduled backfill

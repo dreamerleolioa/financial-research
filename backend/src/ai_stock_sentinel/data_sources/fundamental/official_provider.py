@@ -173,7 +173,8 @@ class OfficialCachedFundamentalProvider:
                         self._session,
                         symbol=symbol,
                     )
-                    warnings.append("歷史 EPS 由 MOPS 一次性 bootstrap 補入本地版本庫")
+                    if historical_periods:
+                        warnings.append("歷史 EPS 由 MOPS 一次性 bootstrap 補入本地版本庫")
 
         if not fundamental_period_history_is_sufficient(periods):
             try:

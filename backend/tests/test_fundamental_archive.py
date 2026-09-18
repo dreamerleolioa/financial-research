@@ -1019,6 +1019,24 @@ def test_official_cache_first_falls_back_when_mops_fails() -> None:
         engine.dispose()
 
 
+def test_official_cache_empty_mops_falls_back_without_claiming_mops_import() -> None:
+    session, engine = _db_session()
+    fallback = _BootstrapProvider()
+    historical = MagicMock()
+    historical.fetch_periods.return_value = []
+    try:
+        result = OfficialCachedFundamentalProvider(
+            session, fallback_provider=fallback, historical_provider=historical,
+            provider_mode="official_cache_first",
+        ).fetch("2330.TW", 140)
+        assert result.ttm_eps == 14
+        assert fallback.statement_calls == 1
+        assert not any("MOPS" in warning for warning in result.warnings)
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_official_cache_first_bootstraps_once_and_marks_history_unknown() -> None:
     session, engine = _db_session()
     fallback = _BootstrapProvider()
@@ -1605,9 +1623,9 @@ def test_backfill_reports_partial_when_all_statement_sources_have_no_eps() -> No
         )
 
         assert result.status == "partial"
-        assert result.errors == [
-            "2801.TW: statement backfill incomplete: "
-            "MOPS and FinMind returned no sufficient EPS history"
+        assert result.errors == []
+        assert result.data_gaps == [
+            {"symbol": "2801.TW", "reason": "no_eps_history", "period_count": 0}
         ]
         assert result.fallback_symbols == ["2801.TW"]
     finally:
@@ -1634,6 +1652,69 @@ def test_finmind_backfill_defers_partial_failure_without_starving_later_symbols(
             "FinMind returned no sufficient EPS history; "
             "FinMind failed: temporary outage"
         ]
+        assert result.data_gaps == []
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("mops_failure", [None, ValueError("invalid EPS token"), TimeoutError("timeout")])
+def test_backfill_distinguishes_short_history_from_provider_failure(mops_failure) -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    rows = [
+        {"date": period, "type": "EPS", "value": "1"}
+        for period in (
+            "2024-12-31", "2025-06-30", "2025-09-30",
+            "2025-12-31", "2026-03-31", "2026-06-30",
+        )
+    ]
+    provider.fetch_statement_rows = MagicMock(return_value=rows)
+    historical = _HistoricalEpsProvider(periods=[])
+    if mops_failure:
+        historical.fetch_periods = MagicMock(side_effect=mops_failure)
+    try:
+        result = backfill_fundamentals(
+            session, symbols=["7828.TWO", "8070.TW"], limit=1,
+            provider=provider, historical_provider=historical,
+        )
+        assert result.status == "partial"
+        assert result.next_after_symbol == "7828.TWO"
+        assert len(load_latest_fundamental_periods(session, symbol="7828.TWO")) == 6
+        assert "7828.TWO" in resolve_pending_fundamental_backfill_symbols(
+            session, symbols=["7828.TWO"],
+        )
+        if mops_failure:
+            assert result.data_gaps == []
+            assert len(result.errors) == 1
+            assert str(mops_failure) in result.errors[0]
+        else:
+            assert result.errors == []
+            assert result.data_gaps == [{
+                "symbol": "7828.TWO", "reason": "insufficient_eps_history", "period_count": 6,
+            }]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("row", [
+    {"date": "invalid-date", "type": "EPS", "value": "1"},
+    {"date": "2026-02-28", "type": "EPS", "value": "1"},
+    {"date": "2026-06-30", "type": "EPS", "value": "N/A"},
+    {"date": "2026-06-30", "type": "EPS", "value": "Infinity"},
+])
+def test_backfill_does_not_classify_malformed_finmind_eps_as_data_gap(row) -> None:
+    session, engine = _db_session()
+    provider = _BackfillProvider()
+    provider.fetch_statement_rows = MagicMock(return_value=[row])
+    try:
+        result = backfill_fundamentals(session, symbols=["7828.TWO"], provider=provider)
+        assert result.status == "partial"
+        assert result.data_gaps == []
+        assert len(result.errors) == 1
+        assert "invalid EPS" in result.errors[0]
+        assert load_latest_fundamental_periods(session, symbol="7828.TWO") == []
     finally:
         session.close()
         engine.dispose()
@@ -1771,10 +1852,10 @@ def test_fundamental_workflow_has_daily_refresh_and_scheduled_bounded_backfill()
     assert "{raw_pool_date:$raw_pool_date}" in text
     assert "BACKFILL_NEXT_AFTER_SYMBOL" in text
     assert "BACKFILL_JOB_ID" in text
-    assert "Backfill partially failed" in text
+    assert "data_gaps" in text
     assert "will resume automatically" in text
     assert 'if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then' in text
-    assert "exit 2" in text
+    assert "exit 2" not in text
     assert "limit:10" in text
     assert "X-Internal-Token" in text
 
@@ -1794,7 +1875,10 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
         skipped_datasets=[],
         errors=[],
     )
-    backfill_result = FundamentalBackfillResult("ok", ["2330.TW"], 2, None, [])
+    gap = {"symbol": "2330.TW", "reason": "insufficient_eps_history", "period_count": 6}
+    backfill_result = FundamentalBackfillResult(
+        "partial", ["2330.TW"], 2, None, [], data_gaps=[gap],
+    )
     created_job = SimpleNamespace(
         id="00000000-0000-0000-0000-000000000001",
         raw_pool_date=date(2026, 8, 17),
@@ -1902,6 +1986,9 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
         assert backfilled.json()["symbols_processed"] == ["2330.TW"]
         assert backfilled.json()["provider_attempts"] == {}
         assert backfilled.json()["fallback_symbols"] == []
+        assert backfilled.json()["status"] == "partial"
+        assert backfilled.json()["data_gaps"] == [gap]
+        assert created_job.status == "completed"
         assert backfilled.json()["job_id"]
         assert backfilled.json()["raw_pool_date"] == "2026-08-17"
         assert incomplete_pool.status_code == 409

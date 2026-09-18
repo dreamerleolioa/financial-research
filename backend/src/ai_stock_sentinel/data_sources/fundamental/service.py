@@ -73,6 +73,7 @@ class FundamentalBackfillResult:
     errors: list[str]
     provider_attempts: dict[str, int] = field(default_factory=dict)
     fallback_symbols: list[str] = field(default_factory=list)
+    data_gaps: list[dict[str, Any]] = field(default_factory=list)
 
 
 def refresh_official_fundamentals(
@@ -173,6 +174,7 @@ def backfill_fundamentals(
         "finmind_dividend": 0,
     }
     fallback_symbols: list[str] = []
+    data_gaps: list[dict[str, Any]] = []
     records_written = 0
     for symbol in selected:
         periods = load_latest_fundamental_periods(session, symbol=symbol)
@@ -205,6 +207,12 @@ def backfill_fundamentals(
                         statement_rows,
                         symbol=symbol,
                     )
+                    eps_row_count = sum(row.get("type") == "EPS" for row in statement_rows)
+                    if len(normalized_periods) != eps_row_count or any(
+                        period.quarter_eps is None or not period.quarter_eps.is_finite()
+                        for period in normalized_periods
+                    ):
+                        raise ValueError("FinMind statement response contains invalid EPS rows")
                     with session.begin_nested():
                         dataset_records = store_fundamental_periods(
                             session,
@@ -220,7 +228,13 @@ def backfill_fundamentals(
                 detail = f"{source_label} returned no sufficient EPS history"
                 if statement_failures:
                     detail = f"{detail}; {'; '.join(statement_failures)}"
-                errors.append(f"{symbol}: statement backfill incomplete: {detail}")
+                    errors.append(f"{symbol}: statement backfill incomplete: {detail}")
+                else:
+                    data_gaps.append({
+                        "symbol": symbol,
+                        "reason": "insufficient_eps_history" if periods else "no_eps_history",
+                        "period_count": len(periods),
+                    })
         dividends = load_latest_dividend_events(session, symbol=symbol)
         if not dividend_history_is_sufficient(dividends):
             provider_attempts["finmind_dividend"] += 1
@@ -237,13 +251,14 @@ def backfill_fundamentals(
 
     has_more = len(normalized_symbols) > len(selected)
     return FundamentalBackfillResult(
-        status="ok" if not errors else "partial",
+        status="partial" if errors or data_gaps else "ok",
         symbols_processed=selected,
         records_written=records_written,
         next_after_symbol=selected[-1] if selected and has_more else None,
         errors=errors,
         provider_attempts=provider_attempts,
         fallback_symbols=fallback_symbols,
+        data_gaps=data_gaps,
     )
 
 
