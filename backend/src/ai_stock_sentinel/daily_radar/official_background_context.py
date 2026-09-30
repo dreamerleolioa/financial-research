@@ -197,9 +197,15 @@ class OfficialBackgroundChipContextProvider:
                 # 資格查不到時保留原本的缺資料判定，不推定為不適用。
                 pass
 
-        missing_otc_symbols = [symbol for symbol in by_market["TWO"] if not observations.get(symbol)]
-        if missing_otc_symbols and run_date in market_dates["TWO"]:
-            # 承銷公告明列「初上櫃」，可排除轉板、股份轉換與增資；年初須查前一年。
+        offering_symbols = {
+            market_code: [symbol for symbol in market_symbols
+                          if not observations.get(symbol) and symbol not in inapplicable]
+            for market_code, market_symbols in by_market.items()
+            if run_date in market_dates[market_code]
+        }
+        if any(offering_symbols.values()):
+            # 新上市表可能僅標「科技事業」；改以申購公告明列的初上市／初上櫃驗證。
+            # 仍排除轉板與增資，且年初須查前一年。
             years = [run_date.year]
             if run_date.month <= 6:
                 years.append(run_date.year - 1)
@@ -211,10 +217,12 @@ class OfficialBackgroundChipContextProvider:
                         timeout=self._timeout, dataset="TWSE_publicForm",
                     )
                     if str(listing_report.get("date")) == str(year):
-                        inapplicable.update(initial_listing_inapplicability(
-                            listing_report, symbols=missing_otc_symbols,
-                            run_date=run_date, market_code="TWO",
-                        ))
+                        for market_code, missing_symbols in offering_symbols.items():
+                            inapplicable.update(initial_listing_inapplicability(
+                                listing_report, symbols=missing_symbols,
+                                run_date=run_date, market_code=market_code,
+                                source_url=TWSE_PUBLIC_OFFERING_URL,
+                            ))
                 except OfficialBackgroundContextError:
                     pass
 
@@ -225,7 +233,8 @@ class OfficialBackgroundChipContextProvider:
                     applicable_consumers=OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS,
                     source=self._source(
                         market=_symbol_market(symbol),
-                        dataset="TWSE_publicForm" if symbol.endswith(".TWO") else "TWSE_newlisting",
+                        dataset=("TWSE_publicForm" if inapplicable[symbol]["eligibility"]["source_url"]
+                                 == TWSE_PUBLIC_OFFERING_URL else "TWSE_newlisting"),
                     ),
                     as_of_date=run_date, freshness="fresh", payload=inapplicable[symbol],
                     missing_reason=None,

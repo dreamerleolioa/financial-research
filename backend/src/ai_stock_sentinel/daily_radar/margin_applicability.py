@@ -25,7 +25,8 @@ def margin_is_not_applicable(
     if source == TWSE_NEW_LISTING_URL:
         allowed_types, suffix = _INITIAL_LISTING_REMARKS, ".TW"
     elif source == TWSE_PUBLIC_OFFERING_URL:
-        allowed_types, suffix = {"初上櫃"}, ".TWO"
+        allowed_types = {"初上市", "初上櫃"}
+        suffix = ".TW" if evidence.get("listing_type") == "初上市" else ".TWO"
     else:
         return False
     if (evidence.get("reason") != "initial_listing_under_six_months"
@@ -50,18 +51,21 @@ def margin_is_not_applicable(
 def initial_listing_inapplicability(
     report: Mapping[str, Any], *, symbols: list[str], run_date: date,
     market_code: str = "TW",
+    source_url: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     if report.get("stat") != "OK":
         return {}
     fields, rows = report.get("fields"), report.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
         return {}
-    if market_code == "TW":
+    if market_code not in {"TW", "TWO"}:
+        return {}
+    source_url = source_url or (TWSE_NEW_LISTING_URL if market_code == "TW"
+                                else TWSE_PUBLIC_OFFERING_URL)
+    if source_url == TWSE_NEW_LISTING_URL and market_code == "TW":
         required = ("公司代號", "股票上市買賣日期", "備註")
-        source_url = TWSE_NEW_LISTING_URL
-    elif market_code == "TWO":
+    elif source_url == TWSE_PUBLIC_OFFERING_URL:
         required = ("證券代號", "撥券日期(上市、上櫃日期)", "發行市場", "取消公開抽籤")
-        source_url = TWSE_PUBLIC_OFFERING_URL
     else:
         return {}
     fields = [str(field).strip() for field in fields]
@@ -88,7 +92,7 @@ def initial_listing_inapplicability(
             listed = date(year + 1911, month, day)
         except ValueError:
             continue
-        if market_code == "TWO" and str(report.get("date")) != str(listed.year):
+        if source_url == TWSE_PUBLIC_OFFERING_URL and str(report.get("date")) != str(listed.year):
             continue
         payload = {
             "applicability": "not_applicable",

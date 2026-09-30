@@ -233,6 +233,87 @@ def test_refresh_endpoint_retains_not_applicable_in_response_and_step_status(mon
 OTC_LISTING_URL = 'https://www.twse.com.tw/announcement/publicForm'
 
 
+def _tw_public_offering_provider(*, listing_type='初上市', listed='115/03/30',
+                                cancelled='', report_year=2026, listing_error=False,
+                                include_margin=False, calls=None):
+    def get(url, *, params, **kwargs):
+        if calls is not None:
+            calls.append(url)
+        if url == LISTING_URL:
+            return _FakeResponse({'stat': 'OK',
+                'fields': ['公司代號', '股票上市買賣日期', '備註'],
+                'data': [['7822', '115.03.30', '科技事業']]})
+        if url == OTC_LISTING_URL:
+            if listing_error:
+                raise RuntimeError('listing unavailable')
+            return _FakeResponse({'stat': 'OK', 'date': report_year,
+                'fields': ['證券代號', '發行市場', '撥券日期(上市、上櫃日期)', '取消公開抽籤 '],
+                'data': [['7822', listing_type, listed, cancelled]]})
+        return _FakeResponse(_twse_margin_payload(params['date'], [[
+            '7822' if include_margin else '2330', '測試',
+            '0', '0', '0', '900', '1000', '0', '0', '0', '0', '40', '50', '0', '0', '',
+        ]]))
+    return OfficialBackgroundChipContextProvider(request_get=get,
+        lookback_trading_days=1, max_lookback_calendar_days=1)
+
+
+def test_tw_technology_listing_uses_explicit_initial_public_offering_evidence():
+    evaluated = date(2026, 9, 29)
+    engine = create_engine('sqlite://')
+    SharedBackgroundContext.__table__.create(engine)
+    calls = []
+    with Session(engine) as session:
+        for attempt in range(2):
+            result = update_background_chip_context_cache(
+                session, run_date=evaluated, market='TW',
+                provider=_tw_public_offering_provider(calls=calls),
+                symbols=['7822.TW'], context_types=['full_margin'],
+                require_same_day_fresh=True, reuse_same_day_fresh=True,
+            )
+            session.flush()
+            assert result['status'] == 'completed'
+            assert result['not_applicable_symbols'] == ['7822.TW']
+            assert result['missing_symbols'] == []
+            assert result['records_written'] == (1 if attempt == 0 else 0)
+    assert calls.count(OTC_LISTING_URL) == 1
+    payload = list(_tw_public_offering_provider().fetch(symbols=['7822.TW'],
+        context_types=['full_margin'], run_date=evaluated, market='TW'))[0]
+    assert payload.source['dataset'] == 'TWSE_publicForm'
+    assert payload.payload['eligibility']['listing_type'] == '初上市'
+    assert payload.payload['eligibility']['source_url'] == OTC_LISTING_URL
+    projected = _project_margin_context(vars(payload), technical={})
+    assert margin_evidence_is_complete(projected, record_date=evaluated, symbol='7822.TW')
+    assert not margin_evidence_is_complete(projected, record_date=evaluated, symbol='7822.TWO')
+    assert 'margin_balance' not in projected
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'listing_type': '初上櫃'}, {'listing_type': '上市增資'}, {'listing_type': '櫃轉市'},
+    {'listed': '115/03/29'}, {'listed': '115/09/30'}, {'listed': 'bad'},
+    {'cancelled': '取消'}, {'report_year': 2025}, {'listing_error': True},
+])
+def test_tw_public_offering_requires_matching_market_date_and_valid_evidence(kwargs):
+    result = list(_tw_public_offering_provider(**kwargs).fetch(symbols=['7822.TW'],
+        context_types=['full_margin'], run_date=date(2026, 9, 29), market='TW'))[0]
+    assert result.missing_reason == 'official_no_data'
+
+
+def test_tw_public_offering_exemption_expires_on_six_month_anniversary():
+    result = list(_tw_public_offering_provider().fetch(symbols=['7822.TW'],
+        context_types=['full_margin'], run_date=date(2026, 9, 30), market='TW'))[0]
+    assert result.missing_reason == 'official_no_data'
+
+
+def test_tw_actual_margin_precedes_public_offering_evidence():
+    calls = []
+    result = list(_tw_public_offering_provider(include_margin=True, calls=calls).fetch(
+        symbols=['7822.TW'], context_types=['full_margin'],
+        run_date=date(2026, 9, 29), market='TW'))[0]
+    assert result.payload['latest_margin_balance'] == 1000
+    assert LISTING_URL not in calls
+    assert OTC_LISTING_URL not in calls
+
+
 def _otc_provider(*, listing_type='初上櫃', listed='115/04/22', cancelled='',
                   include_margin=False, listing_error=False, calls=None):
     from tests.test_official_background_context import _tpex_margin_payload
