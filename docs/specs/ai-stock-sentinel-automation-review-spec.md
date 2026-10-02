@@ -942,7 +942,7 @@ correlation_matrix = {
 
 | 任務           | 說明                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
-| 個股歷史趨勢元件 | 保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart`，後續嵌入 Analyze / Portfolio，而非獨立主入口 |
+| 個股歷史趨勢元件 | 2026-10-02 已移除未使用的 endpoint、API client 與 chart；分析流程使用的歷史 context 與資料仍保留 |
 | 編輯持股       | `PUT /portfolio/{id}`：修改成本價、股數、日期、備註；儲存後提示重新觸發分析              |
 | 刪除持股       | `DELETE /portfolio/{id}`：硬刪 `user_portfolio` + `daily_analysis_log`，需使用者確認彈窗 |
 

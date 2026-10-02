@@ -7,7 +7,6 @@ from datetime import date, datetime, time as _time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.analysis.adapters.graph_runner import build_graph_singleton, invoke_graph
@@ -44,7 +43,6 @@ from ai_stock_sentinel.analysis.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     CachedAnalyzeResponse,
-    HistoryEntry,
     TechnicalIndicators,
 )
 from ai_stock_sentinel.auth.dependencies import get_current_user
@@ -371,19 +369,6 @@ def _check_symbol_exists(symbol: str) -> None:
         raise HTTPException(status_code=404, detail=f"查詢目標不存在：{symbol}")
 
 
-def fetch_symbol_history(db: Session, symbol: str, days: int = 30):
-    from datetime import date, timedelta
-
-    since = date.today() - timedelta(days=days)
-    result = db.execute(
-        select(StockAnalysisCache)
-        .where(
-            StockAnalysisCache.symbol == symbol,
-            StockAnalysisCache.record_date >= since,
-        )
-        .order_by(StockAnalysisCache.record_date)
-    )
-    return list(result.scalars().all())
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -510,26 +495,3 @@ def analyze(
         user_id=current_user.id,
         symbol=payload.symbol,
     )
-
-
-@router.get("/history/{symbol}", response_model=list[HistoryEntry])
-def get_symbol_history(
-    symbol: str,
-    days: int = 30,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-) -> list[HistoryEntry]:
-    logs = fetch_symbol_history(db=db, symbol=symbol, days=days)
-    return [
-        HistoryEntry(
-            record_date=str(log.record_date),
-            signal_confidence=float(log.signal_confidence) if log.signal_confidence else None,
-            action_tag=log.action_tag,
-            prev_action_tag=log.prev_action_tag,
-            prev_confidence=float(log.prev_confidence) if log.prev_confidence else None,
-            analysis_is_final=bool(log.analysis_is_final),
-            indicators=log.indicators,
-            final_verdict=log.final_verdict,
-        )
-        for log in logs
-    ]

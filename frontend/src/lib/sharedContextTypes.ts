@@ -30,7 +30,7 @@ export interface SharedContextDataQuality {
 export interface SharedContextReadPayload {
   version: string;
   symbol: string;
-  consumer: "analyze" | "position_analysis" | string;
+  consumer: string;
   reference_date: string | null;
   point_in_time: boolean;
   contexts: SharedContextTrace[];

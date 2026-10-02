@@ -331,7 +331,6 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 __all__ = [
-    "classify_phase1_position_distance",
     "read_phase1_avwap_contexts_for_daily_radar",
     "read_phase1_observation_for_analyze",
 ]

@@ -16,3 +16,5 @@ router.include_router(evidence_router.router)
 router.include_router(maintenance_router.router)
 router.include_router(run_router.router)
 router.include_router(read_router.router)
+
+__all__ = ["router"]

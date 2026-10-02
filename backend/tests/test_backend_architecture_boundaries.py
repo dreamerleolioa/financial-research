@@ -23,6 +23,7 @@ REFACTORED_HTTP_BOUNDARIES = (
     SRC_ROOT / "api.py",
     SRC_ROOT / "analysis" / "router.py",
     SRC_ROOT / "daily_radar" / "router.py",
+    *sorted((SRC_ROOT / "daily_radar").glob("*_router.py")),
 )
 
 PURE_DOMAIN_BANNED_IMPORTS = (

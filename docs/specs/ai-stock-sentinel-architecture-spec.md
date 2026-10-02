@@ -2,22 +2,20 @@
 
 # AI Stock Sentinel 技術架構需求文件
 
-> 日期：2026-08-31
-> 狀態：Current v3.3
-> 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與 portfolio/lifecycle spec 的上層架構事實。
-> 更新摘要：2026-08-28 起，Production 已移除 Anthropic/OpenAI/LangChain client、RSS 新聞清潔與 LLM prompt/analysis nodes；Analyze 與 Position 僅執行可回放的 Python 確定性分析。舊 `analysis*` / `cleaned_news*` response 欄位暫留為空值相容殼，歷史快取讀取時也必須清洗。本文後段若仍提及 LLM prompt、新聞 cleaner 或 `skip_ai`，只代表已退役的歷史設計，不再是現行 runtime contract。
+> 日期：2026-10-02
+> 狀態：Current v3.4
+> 目的：記錄目前已落地的工程架構、模組邊界與長期資料流，作為 README、API spec、Daily Radar spec 與前端架構規格 的上層架構事實。
+> 更新摘要：2026-08-28 起，Production 已移除 Anthropic/OpenAI/LangChain client、RSS 新聞清潔與 LLM prompt/analysis nodes；Analyze 僅執行可回放的 Python 確定性分析。舊 `analysis*` / `cleaned_news*` response 欄位暫留為空值相容殼，歷史快取讀取時也必須清洗。本文後段若仍提及 LLM prompt、新聞 cleaner 或 `skip_ai`，只代表已退役的歷史設計，不再是現行 runtime contract。
 > Technical profile v2 新增 MA20/MA60 斜率、MACD 柱體斜率、ATR%/布林帶寬 60 日分位、波動 regime 與 signal conflicts。這些欄位先作可解釋 evidence，不進入 `score_summary`；盤中若無法用日期證明已完成 bar，temporal evidence 必須 fail closed。
 > 2026-08-31 新增主動式 ETF 每日持股 snapshot foundation 與獨立 backend read/refresh 邊界；此觀察面不改 Daily Radar deterministic chain。
 
-## 0. 目前實作快照（2026-06-18）
+## 0. 目前實作快照（2026-10-02）
 
-本專案目前不是單一股票分析 demo，而是由五個產品表面共用資料層與研究紀律的系統：
+本專案目前不是單一股票分析 demo，而是由三個產品表面共用資料層與研究紀律的系統：
 
 | 表面 | 主要入口 | 核心責任 | 長期邊界 |
 | ---- | -------- | -------- | -------- |
 | 新倉分析 | `POST /analyze`, frontend `/analyze` | 對單一股票做技術、籌碼、基本面研究、risk-language setup、資料品質與 action trace | 全程 deterministic；用於「是否值得觀察與建立新倉研究」，不是持股續抱/出場端點 |
-| 持股診斷 | `POST /analyze/position`, frontend `/portfolio` | 以既有成本、持有天數、技術防守線與風險語言檢查續抱/減碼/出場 | 所有判定與文案由版本化 Python 規則產生 |
-| 持股紀律與復盤 | `/portfolio/*` | 持股 CRUD、加碼事件、結案、entry record、lifecycle plan、trade review、group lifecycle review | 以 `position_group_id` 串起同一交易生命週期；可回放事件與決策脈絡 |
 | Daily Radar | `/internal/daily-radar/*`, `GET /daily-radar/*`, frontend `/daily-radar` | 收盤後產生隔日觀察清單、保存 deterministic scoring trace、forward validation 與 rule governance | 不是 LLM 選股；`observation_score` 供排序/校準/trace，不是勝率或交易建議 |
 | 主動式 ETF 持股追蹤 | `POST /internal/active-etf-holdings/refresh`, `GET /active-etf-holdings/daily`, frontend `/active-etf` | 保存各基金每日公開持股快照，顯示連續資料日的股數、權重差異與跨基金共同變化 | 獨立觀察面；不寫入 Daily Radar universe，不改 scoring/ranking，基金申贖造成的共同規模變化須保留 caveat |
 
@@ -37,13 +35,11 @@
 | ---- | ---- |
 | `api.py` | FastAPI app setup、middleware、router include、health check |
 | `graph/` | LangGraph state、nodes、builder；負責 crawl、external data fetch、judge、preprocess、score、strategy flow |
-| `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、confidence/risk scoring、technical metrics、position lifecycle、single trade review |
+| `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、confidence/risk scoring、technical metrics |
 | `data_sources/` | yfinance、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
-| `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Portfolio/Daily Radar read-only projections |
+| `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Daily Radar read-only projections |
 | `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ-only 持股 adapter、原始 payload 封存、逐基金 transaction、相鄰快照差異與個股聚合；有資料即發布，不阻斷或修改 Daily Radar |
-| `portfolio/` | schemas、repository、application use cases、portfolio CRUD、entry record contract、event ledger、lifecycle plan、fees、risk summary、history router |
-| `watchlist/` | schemas、repository、application use cases、watchlist CRUD/reorder router；維持觀察清單邊界，不承接完整 analysis workflow |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
 | `db/models.py` | SQLAlchemy models，包含 portfolio、events、reviews、analysis cache、raw data、Daily Radar、forward validation、shared background context |
 
@@ -53,33 +49,31 @@
 
 - **Clean Architecture**：HTTP/router、application use case、domain calculation、repository/adapter 的責任逐步分離；依賴方向以「router/app orchestration 依賴內層規則」為主。
 - **Hexagonal Architecture**：只有在邊界能降低測試成本或外部系統耦合時才引入 adapter/port，例如 LangGraph runner、provider clients、raw data/background context providers；不為簡單 DB transaction 強行包抽象。
-- **DDD-lite**：使用專案語言命名 use case 和 deterministic rules，例如 `add_position`、`close_position`、`get_risk_summary`、`position_lifecycle`、`daily_radar`、`shared_context`；不引入 heavy aggregate/event-sourcing/CQRS ceremony。
-- **TDD guardrails**：行為移動前後以 characterization/contract/router tests 保護 API shape、cache isolation、Daily Radar scoring/shared-context semantics、Portfolio event ledger 與 deterministic financial math。
+- **DDD-lite**：使用專案語言命名 use case 和 deterministic rules，例如 `daily_radar`、`shared_context`；不引入 heavy aggregate/event-sourcing/CQRS ceremony。
+- **TDD guardrails**：行為移動前後以 characterization/contract/router tests 保護 API shape、cache isolation、Daily Radar scoring/shared-context semantics 與 deterministic financial math。
 
 目前已落地的後端重構邊界：
 
 | 區域 | 目前邊界 |
 | ---- | -------- |
-| Analysis | `analysis/router.py` 承接 `/analyze`、`/analyze/position`、`/history/{symbol}` HTTP boundary 與 shared context attachment；`analysis/schemas.py` 保存 request/response models；`analysis/application/analyze_stock.py` 與 `analyze_position.py` 建立 Graph initial state；`analysis/application/analysis_cache.py` 管理 analysis/raw-data cache helper；`analysis/application/response_builder.py` 負責 response assembly 與 technical indicator extraction；`analysis/adapters/graph_runner.py` 包裝 Graph construction/invocation。`api.py` 只負責 app setup 與 include routers。 |
-| Portfolio | `portfolio/schemas.py` 保存 request/response models；`portfolio/repository.py` 收斂共享 ownership/query helper；`portfolio/application/*` 承接 create/update/add-entry/close/risk-summary 與 request-scoped price refresh use cases；`refresh_prices.py` 使用 process-wide bounded executor（全服務最多 4 路行情請求）取得 active holding quotes、保留 per-symbol partial failure，並把 quote override 交給純 deterministic `risk_summary.py` 重算，不寫入正式 raw data 或進入 AI graph。Risk summary v2 可讀取 user-scoped `portfolio_account_settings`，以持股市值加現金形成帳戶權益分母，並在來源與樣本覆蓋足夠時提供產業集中與歷史日報酬相關性；缺少現金、產業或重疊報酬時必須明示 fallback／coverage，不得捏造完整曝險。Router 仍保留 HTTP dependency、provider wiring、response serialization、lifecycle/review endpoints 與部分 transaction orchestration。 |
-| Daily Radar | `daily_radar/schemas.py` 保存 internal/public request/response models；`daily_radar/presenter.py` 負責 public run/candidate/history 與 run-trigger response serialization；`daily_radar/constants.py` 保存共享常數；`daily_radar/service.py` 是 Daily Radar run application service；`daily_radar/repository.py` 管理 persistence queries；`daily_radar/router.py` 保留 internal workflow trigger、dependency wiring 與 institutional universe payload shaping。 |
-| Phase 1 AVWAP | `phase1_avwap/universe.py` 從 active holdings、watchlist 與 latest Daily Radar candidates 合併 managed universe，Daily Radar refresh 只讓 `.TW` / `.TWO` 進 provider，其他 symbol 記為 skipped；`provider.py` 預設 `.TW` 走 TWSE `STOCK_DAY` monthly single-symbol query，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback，並維持 `adjustment_mode=unadjusted`；`calculator.py` 以日頻 traded amount / volume deterministic 計算 AVWAP anchors；`service.py` 先 reuse fresh `phase1_avwap_snapshots`，缺漏時才逐檔 fetch 並回報 per-symbol missing reason；Daily Radar `refresh-avwap` 會在 selected universe 確定後合併 selected symbols、active holdings 與 watchlist symbols 刷新 shared market snapshot；`phase1_avwap_snapshots` 是全域市場 cache，不保存使用者持股 entry date / avg cost / holding-specific entry anchor；`projection.py` 只讀 snapshot，供 `/analyze`、Portfolio risk summary、Daily Radar detail trace 使用，其中 Portfolio holding state 在 read projection 時套用目前使用者的 portfolio rows 計算，且可使用 requested date 當日或以前 7 個 calendar days 內的最新 fresh snapshot，過期回 `phase1_snapshot_stale`，不觸發 backfill、不改 Daily Radar scoring。 |
-| Watchlist | `watchlist/schemas.py` 保存 request models；`watchlist/repository.py` 收斂 query helper；`watchlist/application/items.py` 承接 normalize、idempotent create、reorder completeness、update/delete ownership rules；`watchlist/router.py` 保留 FastAPI dependency、HTTP error mapping 與 response serialization。 |
+| Analysis | `analysis/router.py` 承接 `/analyze` 與 context attachment；schemas 保存契約，application 拆出 initial state、cache/raw-data helper 與 response assembly，adapters 包裝 Graph runner。昨日 context 仍使用 `services/history_loader.py`。 |
+| Daily Radar | `router.py` 只組裝子路由；`refresh_router.py`、`evidence_router.py`、`maintenance_router.py`、`run_router.py`、`read_router.py` 分別處理刷新、研究證據、維護、評分與讀取。`dependencies.py` 管 provider factories，`pipeline_support.py` 管 prepared-run 驗證與資料彙整，`institutional_payloads.py` 管純資料轉換；既有 service / repository / presenter 邊界保留。 |
+| Phase 1 AVWAP | `universe.py` 的 managed universe 只讀 latest Daily Radar candidates；refresh symbol set 只使用本次明確指定的 seed symbols；provider 保留 TWSE/FinMind 及 local-first archive，snapshot 只存市場資料。`projection.py` 供 Analyze 與 Daily Radar 唯讀使用；Analyze 仍以七天窗口判定過期，缺漏不觸發回填或改變評分。 |
 | Architecture guard | `backend/tests/test_backend_architecture_boundaries.py` 以 AST 檢查純計算 modules 不引入 FastAPI/SQLAlchemy/external provider/DB；已重構 HTTP boundaries 不重新定義 Pydantic schema；Daily Radar router 不重新吸收 public response presenter helpers。Auth router 尚未納入此 guard，因為它尚未經過同一輪重構。 |
 
 ### 0.3 主要資料表
 
 | 資料表 | 用途 |
 | ------ | ---- |
-| `user_portfolio` | 目前/已結案持股、成本、數量、出場、已實現損益與 `position_group_id` |
-| `portfolio_account_settings` | 使用者層級可用現金餘額；與 active holdings 市值合併為 risk-summary 帳戶權益分母 |
-| `position_event` | 初始進場、加碼、部分出場、全部出場、手動修正等事件 ledger |
-| `position_lifecycle_plan` | 原始 thesis、setup、預期持有期、防守規則、加碼條件與風險計畫 |
-| `trade_review` | 單筆已結案交易 review result、evidence payload 與 LLM summary |
-| `position_lifecycle_review` | group-level lifecycle review，按 `position_group_id` 聚合整個交易生命週期 |
+| `user_portfolio` | 目前/已結案持股、成本、數量、出場、已實現損益與 `position_group_id`（僅歷史保留，現行產品不再讀寫） |
+| `portfolio_account_settings` | 使用者層級可用現金餘額；與 active holdings 市值合併為 risk-summary 帳戶權益分母（僅歷史保留，現行產品不再讀寫） |
+| `position_event` | 初始進場、加碼、部分出場、全部出場、手動修正等事件 ledger（僅歷史保留，現行產品不再讀寫） |
+| `position_lifecycle_plan` | 原始 thesis、setup、預期持有期、防守規則、加碼條件與風險計畫（僅歷史保留，現行產品不再讀寫） |
+| `trade_review` | 單筆已結案交易 review result、evidence payload 與 LLM summary（僅歷史保留，現行產品不再讀寫） |
+| `position_lifecycle_review` | group-level lifecycle review，按 `position_group_id` 聚合整個交易生命週期（僅歷史保留，現行產品不再讀寫） |
 | `stock_raw_data` | 以日期保存技術、籌碼、基本面 raw payload；Daily Radar 與 analysis 共用 |
-| `stock_analysis_cache` | `/analyze` 與 `/analyze/position` 的 full result cache，透過 `analysis_type` 隔離情境 |
-| `daily_analysis_log` | 每日分析歷史紀錄與 strategy trace |
+| `stock_analysis_cache` | 現行 `/analyze` 的 full result cache；歷史 position 列保留，但不參與 managed refresh |
+| `daily_analysis_log` | 歷史紀錄保留供既有回測外鍵引用；現行一般分析不再新增 portfolio 專用紀錄 |
 | `analysis_calibration_samples` / `analysis_forward_validation_results` | `.TW` / `.TWO` final `/analyze` 的去識別化 append-only replay sample 與 5 / 10 / 20 日 outcome；其他市場不進入 TW / TAIEX calibration cohort |
 | `daily_radar_runs` / `daily_radar_candidates` | Daily Radar run log、候選清單、score breakdown、input snapshot、matched rules |
 | `daily_radar_forward_validation_results` | 成熟候選的 forward validation 結果，供 monthly rule governance 使用 |
@@ -97,14 +91,14 @@
 
 | Workflow | 責任 |
 | -------- | ---- |
-| `deploy.yml` | PR/main backend test；main push 時 frontend build 並部署到 GitHub Pages |
+| `deploy.yml` | PR/main 執行 backend tests 與 frontend lint/E2E/build；main push 的 GitHub Pages deploy 必須等待兩個驗證 job 成功 |
 | `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時 scheduled pipeline 與一般手動 step skip，provider 異常時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是明確歷史日期的 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`；各 backfill 仍受 endpoint 日期範圍與未來日期驗證約束。開市後 17:30 先呼叫 `refresh-institutional-flows` 歸檔 TWSE/TPEX 市場級法人日報，18:00 `prepare-universe` 只從完整 archive 建立四條分法人軌道，再分段執行 `refresh-market-bars`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context`、`run-scoring`；每段共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期。23:00 的 AI evidence step 補同日完整 final 台股 raw pool 並留下 lane 缺漏，但不改 prepared universe 或 scoring required steps；scoring 只讀已落庫 cache/snapshot，對 institutional-flow archive/lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT repair-and-rescore 補修排程，依序補修 full margin、OHLCV 與 AVWAP，full margin 與 OHLCV 完成後才重跑 scoring；無論前段是否成功都繼續補齊 managed raw data，任何補修未完成均讓 repair monitor 失敗，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `active-etf-holdings.yml` | 台灣時間平日 08:00、19:00 呼叫 MoneyDJ-only internal refresh；19:00 取得較完整的當日持股，08:00 保留補抓。逐基金成功快照會保留，只有明確尚未公布可作允許的 partial，其餘 error 或快照／基金計數缺口都讓 workflow fail |
 | `fundamental-data.yml` | 07:15 TWT 先以官方 OpenAPI 更新財報/股利版本庫，再以六批 × 十檔上限執行 MOPS 歷史季 EPS 優先、FinMind fallback 的 bounded 回填；未完成 job 由後續排程接續，手動模式亦可建立或續跑指定 job |
 | `daily-radar.yml` / `analysis-forward-validation.yml` | 分別每日累積 Daily Radar 與一般分析已成熟 5 / 10 / 20 日驗證結果 |
 | `monthly-analysis-calibration.yml` | 每月產生雙軌 JSON + Markdown + manifest AES-256 加密 artifact |
-| `investment-discipline-release-gate.yml` | 對投資紀律相關 release gate 執行自動檢查 |
+| `investment-discipline-release-gate.yml` | 手動 release gate；PR 自動驗證統一由 deploy.yml 執行 |
 
 Feature-neutral calibration core 位於 `ai_stock_sentinel.calibration.forward_validation`：它不依賴 Daily Radar scoring、rule registry、candidate ORM 或一般分析 confidence scorer，統一 due-window policy、price-series normalization、benchmark completeness 與 forward outcome evaluation；Daily Radar 與一般分析各自注入 snapshot、entry price、defense reference、freshness adapter。`ai_stock_sentinel.calibration.repository` 是兩軌共用的 price-source integration。月報 watermark 先以 SQL aggregation 計算，cohort 確定後才對最近六個成熟月份執行 optimizer bounded detail load；Daily Radar 當月 diagnostics 另使用單月 bounded query，不再掃描完整 validation history。一般分析 replay coverage 僅以 optimizer scope 策略為分母，active cohort 同時鎖定目前 strategy/config version；`general-analysis-confidence-review-v7` 另要求 replay input 的型別、值域與 baseline config 完整符合 current contract，在 baseline replay 前以 300,000 scoring calls／40,000,000 次 before／after bootstrap row-iterations 為整批 workload 上限，超限即 fail closed。容量允許時按 sample 單次重播 current baseline 後與 production `signal_confidence` 等價比較，mismatch 必須排除、重算 coverage 且阻止全部 candidate eligibility。正常 capture 的同日重跑沿用第一筆 point-in-time sample，歷史 migration 若已有重複 identity，則先固定 validated/evaluated outcome 證據最完整的 canonical sample，且只保留該 sample 原生 outcomes。Final cache 另保存精簡 replay payload，供 calibration capture 失敗後的 cache-hit 冪等重試使用。
 
@@ -119,8 +113,11 @@ Monthly governance 以每個窗口的 distinct candidate / sample 作 `min_sampl
 - Daily Radar 主流程會先針對 selected symbols、active holdings 與 watchlist symbols 刷新試驗版 Daily AVWAP snapshot，並針對 selected symbols 刷新日頻 lending/full margin cache，再批次讀 cache；AVWAP 與背景 labels/detail trace 不改 bucket、ranking、risk labels 或 `observation_score`。
 - 週頻 TDCC `weekly_major_holders` updater 在未指定 symbols 時可合併 active holdings、watchlist symbols 與 latest Daily Radar candidates 提高覆蓋；日頻 lending/full margin updater 仍維持 latest Daily Radar candidates 範圍，避免消耗 FinMind quota。Holdings/watchlist 只作 selector，不得寫入 `shared_background_contexts.payload`，shared cache 不保存 user id、quantity、avg cost、holding ownership 或 watchlist ownership。
 - `/analyze` 與 `/analyze/position` 只把 shared context 附加到 response 作為 evidence/caveat/data quality trace，不放入 LangGraph initial state，也不觸發 weekly major holders、lending、full margin 的即時逐檔查詢。`chip_stability_context` 是由 TDCC `weekly_major_holders` 派生的 response-only companion，只提供 state/trend/summary/caveats；千張大戶增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定，下降代表籌碼穩定性轉弱或集中度下降但不能單獨判定看空。
-- Portfolio diagnosis 與 lifecycle review 以 read/reference 方式使用；lifecycle review 需用事件日期做 point-in-time filter，不能用未來資料改寫過去判斷。
-- missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。Shared context 與 `chip_stability_context` 不提供直接分數，不改 technical score、Daily Radar ranking、portfolio risk score、action、verdict 或 lifecycle classification。
+- missing/stale/not-applicable 必須以 caveat 呈現，且 `data_quality.blocking=false`，不得讓背景資料缺漏阻斷主要 deterministic workflow。Shared context 與 `chip_stability_context` 不提供直接分數，不改 technical score、Daily Radar ranking、action、verdict。
+
+## 歷史設計附錄
+
+以下第 1–8 節保留原始設計脈絡，**不是現行 runtime contract**。其中持股、watchlist、LLM 與未接入頁面的歷史趨勢功能均已退役；不得據此恢復端點或刷新使用者歷史資料。現行模組、入口與部署方式以上方第 0 節、README、backend API spec 和 frontend architecture spec 為準。
 
 ## 1. 目標與方向
 

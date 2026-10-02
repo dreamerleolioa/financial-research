@@ -108,18 +108,6 @@ def refresh_daily_radar_managed_raw_data_endpoint(
         selection,
         prepared.selected_symbols if prepared is not None else (),
     )
-    if selection.active_symbols_over_budget:
-        return _finish_managed_raw_data_refresh(
-            db,
-            prepared=prepared,
-            request=request,
-            run_date=run_date,
-            selection=selection,
-            selected_overlap_count=selected_overlap_count,
-            status="failed",
-            error_codes=["active_symbol_budget_exceeded"],
-        )
-
     existing_rows = get_final_raw_data_rows_for_symbols(
         db,
         run_date=run_date,

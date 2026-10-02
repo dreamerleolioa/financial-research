@@ -575,16 +575,11 @@ def _finish_managed_raw_data_refresh(
     error_codes: list[str] | None = None,
 ) -> DailyRadarManagedRawDataRefreshResponse:
     safe_error_codes = list(error_codes or [])
-    target_symbol_count = (
-        selection.active_symbol_count
-        if selection.active_symbols_over_budget
-        else len(selection.symbols)
-    )
     response_details = {
-        "target_symbol_count": target_symbol_count,
-        "active_symbol_count": selection.active_symbol_count,
+        "target_symbol_count": len(selection.symbols),
+        "active_symbol_count": 0,  # Retained internal response contract; personal holdings are retired.
         "recent_analysis_symbol_count": selection.recent_analysis_symbol_count,
-        "overlap_symbol_count": selection.overlap_symbol_count,
+        "overlap_symbol_count": 0,
         "selected_overlap_count": selected_overlap_count,
         "reused_record_count": reused_record_count,
         "records_written": records_written,

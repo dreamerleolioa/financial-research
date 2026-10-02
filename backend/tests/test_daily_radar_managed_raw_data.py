@@ -54,18 +54,14 @@ def test_managed_raw_data_selection_ignores_retired_positions_and_has_no_lookahe
         max_symbols=3,
     )
 
-    assert selection.active_symbols == ()
     assert selection.recent_analysis_symbols == (
         "2330.TW",
         "2454.TW",
         "3008.TW",
     )
     assert selection.symbols == ("2330.TW", "2454.TW", "3008.TW")
-    assert selection.active_symbol_count == 0
     assert selection.recent_analysis_symbol_count == 3
-    assert selection.overlap_symbol_count == 0
     assert selection.deferred_recent_symbol_count == 0
-    assert selection.active_symbols_over_budget is False
 
 
 def test_managed_raw_data_selection_ignores_retired_positions_above_budget(
@@ -86,8 +82,6 @@ def test_managed_raw_data_selection_ignores_retired_positions_above_budget(
     )
 
     assert selection.symbols == ()
-    assert selection.active_symbol_count == 0
-    assert selection.active_symbols_over_budget is False
 
 
 def _portfolio(symbol: str, *, entry_date: date) -> UserPortfolio:
