@@ -1435,7 +1435,7 @@ def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
 
         symbols = resolve_managed_fundamental_symbols(session)
 
-        assert symbols == ["1304.TW", "2330.TW", "2454.TW", "3008.TW"]
+        assert symbols == ["1304.TW", "3008.TW"]
 
         session.add(
             StockRawData(
@@ -1449,14 +1449,12 @@ def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
 
         assert resolve_managed_fundamental_symbols(session) == [
             "1304.TW",
-            "2330.TW",
-            "2454.TW",
             "3008.TW",
         ]
         assert resolve_managed_fundamental_symbols(
             session,
             raw_pool_date=date(2026, 8, 17),
-        ) == ["1304.TW", "2330.TW", "2454.TW", "3008.TW"]
+        ) == ["1304.TW", "3008.TW"]
         assert fundamental_raw_pool_date_is_completed(
             session,
             record_date=date(2026, 8, 17),
@@ -1480,8 +1478,6 @@ def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
 
         assert resolve_managed_fundamental_symbols(session) == [
             "1504.TW",
-            "2330.TW",
-            "2454.TW",
             "3008.TW",
         ]
     finally:

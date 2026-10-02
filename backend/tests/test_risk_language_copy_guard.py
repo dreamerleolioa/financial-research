@@ -7,9 +7,6 @@ ROOT = Path(__file__).resolve().parents[2]
 PRIMARY_SURFACE_FILES = [
     ROOT / "frontend/src/pages/DailyRadarPage.tsx",
     ROOT / "frontend/src/pages/AnalyzePage.tsx",
-    ROOT / "frontend/src/pages/PortfolioPage.tsx",
-    ROOT / "frontend/src/pages/WatchlistPage.tsx",
-    ROOT / "frontend/src/pages/ClosedPortfolioPage.tsx",
 ]
 RAW_CODE_GUARD_FILES = [
     *PRIMARY_SURFACE_FILES,
@@ -174,22 +171,6 @@ def test_primary_surfaces_do_not_render_internal_codes_as_fallback_copy() -> Non
     assert [snippet for snippet in forbidden_snippets if snippet in combined] == []
     for readable_fallback in ["其他狀態", "其他技術訊號", "其他 AVWAP 觀察線"]:
         assert readable_fallback in combined
-
-
-def test_lifecycle_generator_does_not_emit_legacy_english_diagnostics() -> None:
-    source = (
-        ROOT / "backend/src/ai_stock_sentinel/analysis/position_lifecycle.py"
-    ).read_text(encoding="utf-8")
-    forbidden_diagnostics = [
-        "No PositionEvent rows",
-        "Insufficient point-in-time rows",
-        "No PositionLifecyclePlan row",
-        "manual_adjustment rows were included",
-        "shared context 的資料日期",
-        "資料品質 caveat",
-    ]
-
-    assert [diagnostic for diagnostic in forbidden_diagnostics if diagnostic in source] == []
 
 
 def _is_allowlisted(relative_path: str, term: str, line: str) -> bool:

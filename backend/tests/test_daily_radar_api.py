@@ -1895,7 +1895,7 @@ def test_daily_radar_refresh_avwap_endpoint_uses_prepared_symbols(
     assert provider.calls == [("2330.TW", date(2026, 2, 1), date(2026, 6, 1))]
 
 
-def test_daily_radar_refresh_avwap_endpoint_includes_active_holdings_and_watchlist(
+def test_daily_radar_refresh_avwap_endpoint_ignores_retired_holdings_and_watchlist(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
@@ -1945,18 +1945,14 @@ def test_daily_radar_refresh_avwap_endpoint_includes_active_holdings_and_watchli
 
     assert response.status_code == 200
     body = response.json()
-    assert body["symbol_count"] == 3
-    assert body["skipped_symbols"] == ["AAPL"]
-    assert body["skipped_symbol_reasons"] == {"AAPL": "unsupported_phase1_avwap_market"}
+    assert body["symbol_count"] == 1
+    assert body["skipped_symbols"] == []
+    assert body["skipped_symbol_reasons"] == {}
     daily_radar_db_session.refresh(prepared)
-    assert prepared.step_statuses["refresh-avwap"]["skipped_symbol_reasons"] == {
-        "AAPL": "unsupported_phase1_avwap_market"
-    }
+    assert prepared.step_statuses["refresh-avwap"]["skipped_symbol_reasons"] == {}
     provider = client.fake_phase1_avwap_provider  # type: ignore[attr-defined]
     assert provider.calls == [
         ("2330.TW", date(2026, 2, 1), date(2026, 6, 1)),
-        ("2449.TW", date(2026, 2, 1), date(2026, 6, 1)),
-        ("3035.TW", date(2026, 2, 1), date(2026, 6, 1)),
     ]
 
 
@@ -2489,7 +2485,7 @@ curl() {
     assert result.returncode == (1 if failed_step else 0), result.stdout + result.stderr
 
 
-def test_daily_radar_refresh_managed_raw_data_covers_holdings_without_exposing_symbols(
+def test_daily_radar_refresh_managed_raw_data_covers_recent_analysis_without_exposing_symbols(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
@@ -2542,26 +2538,26 @@ def test_daily_radar_refresh_managed_raw_data_covers_holdings_without_exposing_s
         "step": "refresh-managed-raw-data",
         "run_date": run_date.isoformat(),
         "market": "TW",
-        "target_symbol_count": 2,
-        "active_symbol_count": 1,
+        "target_symbol_count": 1,
+        "active_symbol_count": 0,
         "recent_analysis_symbol_count": 1,
         "overlap_symbol_count": 0,
-        "selected_overlap_count": 1,
+        "selected_overlap_count": 0,
         "reused_record_count": 0,
-        "records_written": 2,
+        "records_written": 1,
         "missing_record_count": 0,
         "deferred_recent_symbol_count": 0,
         "error_codes": [],
     }
     assert "2330" not in response.text
     assert "2454" not in response.text
-    assert repeated.json()["reused_record_count"] == 2
+    assert repeated.json()["reused_record_count"] == 1
     assert repeated.json()["records_written"] == 0
     assert len(client.fake_technical_fetcher.calls) == 1  # type: ignore[attr-defined]
     rows = daily_radar_db_session.scalars(
         select(StockRawData).where(StockRawData.record_date == run_date)
     ).all()
-    assert {row.symbol for row in rows} == {"2330.TW", "2454.TW"}
+    assert {row.symbol for row in rows} == {"2454.TW"}
     assert all(row.raw_data_is_final for row in rows)
     assert all(row.fundamental["industry"] == "半導體業" for row in rows)
     daily_radar_db_session.refresh(prepared)
@@ -2590,13 +2586,7 @@ def test_daily_radar_refresh_managed_raw_data_failure_is_privacy_safe_and_option
     daily_radar_db_session.add_all(
         [
             prepared,
-            UserPortfolio(
-                symbol="2454.TW",
-                entry_price=100,
-                quantity=1,
-                entry_date=date(2026, 5, 1),
-                is_active=True,
-            ),
+            StockAnalysisCache(symbol="2454.TW", record_date=run_date, analysis_type="general", analysis_is_final=True),
         ]
     )
     daily_radar_db_session.commit()
@@ -3392,7 +3382,7 @@ def test_daily_radar_chip_context_update_endpoint_writes_cache_records(
     }
 
 
-def test_daily_radar_weekly_chip_context_update_uses_holdings_watchlist_and_latest_candidates_when_symbols_omitted(
+def test_daily_radar_weekly_chip_context_update_uses_latest_candidates_only_when_symbols_omitted(
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
@@ -3460,21 +3450,21 @@ def test_daily_radar_weekly_chip_context_update_uses_holdings_watchlist_and_late
         "status": "completed",
         "run_date": "2026-06-02",
         "market": "TW",
-        "symbol_count": 4,
+        "symbol_count": 2,
         "context_types": ["weekly_major_holders"],
-        "records_written": 4,
+        "records_written": 2,
         "errors": [],
     }
     assert provider.calls == [
         {
-            "symbols": ["2303.TW", "2330.TW", "2454.TW", "2317.TW"],
+            "symbols": ["2317.TW", "2330.TW"],
             "context_types": ["weekly_major_holders"],
             "run_date": date(2026, 6, 2),
             "market": "TW",
         }
     ]
     rows = daily_radar_db_session.query(SharedBackgroundContext).all()
-    assert {row.symbol for row in rows} == {"2303.TW", "2330.TW", "2454.TW", "2317.TW"}
+    assert {row.symbol for row in rows} == {"2317.TW", "2330.TW"}
     for row in rows:
         assert row.context_type == "weekly_major_holders"
         assert row.payload == {"label": "weekly_major_holders_fixture"}
@@ -3532,31 +3522,22 @@ def test_daily_radar_chip_context_update_keeps_daily_contexts_on_latest_candidat
         "status": "completed",
         "run_date": "2026-06-02",
         "market": "TW",
-        "symbol_count": 3,
+        "symbol_count": 2,
         "context_types": ["weekly_major_holders", "lending", "full_margin"],
-        "records_written": 7,
+        "records_written": 6,
         "errors": [],
     }
-    assert provider.calls == [
-        {
-            "symbols": ["2330.TW", "2454.TW", "2317.TW"],
-            "context_types": ["weekly_major_holders"],
-            "run_date": date(2026, 6, 2),
-            "market": "TW",
-        },
-        {
-            "symbols": ["2317.TW", "2330.TW"],
-            "context_types": ["lending", "full_margin"],
-            "run_date": date(2026, 6, 2),
-            "market": "TW",
-        },
-    ]
+    assert provider.calls == [{
+        "symbols": ["2317.TW", "2330.TW"],
+        "context_types": ["weekly_major_holders", "lending", "full_margin"],
+        "run_date": date(2026, 6, 2), "market": "TW",
+    }]
     rows = daily_radar_db_session.query(SharedBackgroundContext).all()
     assert {
         row.symbol
         for row in rows
         if row.context_type == "weekly_major_holders"
-    } == {"2330.TW", "2454.TW", "2317.TW"}
+    } == {"2330.TW", "2317.TW"}
     assert {
         row.symbol
         for row in rows
@@ -3574,16 +3555,9 @@ def test_daily_radar_weekly_chip_context_update_reports_symbol_source_failures(
 
     provider = FakeBackgroundChipContextProvider()
 
-    def raise_active_holdings(_session: Session) -> list[str]:
-        raise RuntimeError("active holdings unavailable")
-
-    monkeypatch.setattr(background_context_module, "_active_portfolio_symbols", raise_active_holdings)
-    monkeypatch.setattr(background_context_module, "_watchlist_symbols", lambda _session: ["2454.TW"])
-    monkeypatch.setattr(
-        background_context_module,
-        "_latest_daily_radar_symbols",
-        lambda _session, *, market: ["2330.TW"],
-    )
+    def raise_candidates(_session: Session, *, market: str) -> list[str]:
+        raise RuntimeError("radar candidates unavailable")
+    monkeypatch.setattr(background_context_module, "_latest_daily_radar_symbols", raise_candidates)
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
     api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
 
@@ -3603,24 +3577,18 @@ def test_daily_radar_weekly_chip_context_update_reports_symbol_source_failures(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failed"
-    assert body["symbol_count"] == 2
-    assert body["records_written"] == 2
-    assert body["errors"] == [
+    assert body["symbol_count"] == 0
+    assert body["records_written"] == 0
+    assert sorted(body["errors"], key=lambda error: error["code"], reverse=True) == [
+        {"code": "no_selected_symbols", "message": "No selected symbols were available for context update."},
         {
             "code": "background_context_symbol_source_failed",
-            "source": "active_portfolio_holdings",
-            "message": "active holdings unavailable",
+            "source": "latest_daily_radar_candidates",
+            "message": "radar candidates unavailable",
             "error_type": "RuntimeError",
         }
     ]
-    assert provider.calls == [
-        {
-            "symbols": ["2454.TW", "2330.TW"],
-            "context_types": ["weekly_major_holders"],
-            "run_date": date(2026, 6, 2),
-            "market": "TW",
-        }
-    ]
+    assert provider.calls == []
 
 
 def test_daily_radar_chip_context_update_endpoint_records_provider_failure(

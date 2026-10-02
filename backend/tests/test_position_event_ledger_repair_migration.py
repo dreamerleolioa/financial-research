@@ -12,7 +12,12 @@ from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel.db.models import PositionEvent, UserPortfolio
 from ai_stock_sentinel.db.session import Base
-from ai_stock_sentinel.portfolio.application.events import ledger_open_quantity
+def ledger_open_quantity(events):
+    return sum(
+        int(event.quantity) * (1 if event.event_type in {"initial_entry", "add_entry"} else -1)
+        for event in events
+        if event.event_type in {"initial_entry", "add_entry", "partial_exit", "full_exit"}
+    )
 from ai_stock_sentinel.user_models.user import User
 
 

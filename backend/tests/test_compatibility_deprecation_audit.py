@@ -34,7 +34,6 @@ def test_compatibility_deprecation_audit_covers_frontend_reports_clients_and_cac
         "PositionScorer",
         "position_context",
         "stock_analysis_cache",
-        "portfolio history",
         "daily_analysis_log",
         "前端",
         "Portfolio",
@@ -52,9 +51,6 @@ def test_compatibility_deprecation_audit_lists_removal_closure_steps() -> None:
         "discipline_triggers",
         "observation_conditions",
         "risk_control_reference",
-        "compatibility_source",
-        "legacy_recommended_action",
         "primary UI",
-        "primary display",
     ]:
         assert closure_step in text

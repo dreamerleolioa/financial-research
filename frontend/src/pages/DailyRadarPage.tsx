@@ -7,7 +7,6 @@ import {
   toDailyRadarDisplayError,
   type DailyRadarDisplayError,
 } from "../lib/dailyRadarApi";
-import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
 import {
   formatDataMissingReason,
   formatMarketDataset,
@@ -92,7 +91,6 @@ const RUN_STATUS_HELPER: Record<DailyRadarRunStatus, string> = {
   stale_data: "部分資料日期落後掃描日",
 };
 
-type WatchlistAddStatus = "idle" | "saving" | "success" | "error";
 
 function sortDailyRadarCandidates(candidates: DailyRadarCandidate[]): DailyRadarCandidate[] {
   return [...candidates].sort((a, b) => {
@@ -548,9 +546,6 @@ function getCandidateDisplayTitle(candidate: DailyRadarCandidate): string {
   return displayName ? `${displayName} · ${candidate.symbol}` : candidate.symbol;
 }
 
-function normalizeSymbol(symbol: string): string {
-  return symbol.trim().toUpperCase();
-}
 
 function formatMatchedRuleDetailKey(value: string): string {
   return (
@@ -1089,15 +1084,9 @@ function TechnicalTraceDetails({
 function DailyRadarCandidateList({
   candidates,
   onSelectCandidate,
-  watchlistSymbols,
-  watchlistStatusBySymbol,
-  onAddWatchlist,
 }: {
   candidates: DailyRadarCandidate[];
   onSelectCandidate: (candidate: DailyRadarCandidate) => void;
-  watchlistSymbols: Set<string>;
-  watchlistStatusBySymbol: Record<string, WatchlistAddStatus>;
-  onAddWatchlist: (candidate: DailyRadarCandidate) => void;
 }) {
   if (candidates.length === 0) {
     return (
@@ -1128,18 +1117,6 @@ function DailyRadarCandidateList({
       <div className="grid gap-3 bg-canvas/45 p-3 md:block md:divide-y md:divide-border-subtle md:bg-transparent md:p-0">
         {candidates.map((candidate) => {
           const displayName = getCandidateDisplayName(candidate);
-          const normalizedSymbol = normalizeSymbol(candidate.symbol);
-          const watchlistStatus = watchlistStatusBySymbol[normalizedSymbol] ?? "idle";
-          const isWatchlisted = watchlistSymbols.has(normalizedSymbol);
-          const watchlistButtonLabel =
-            watchlistStatus === "saving"
-              ? "儲存中..."
-              : isWatchlisted || watchlistStatus === "success"
-                ? "已關注"
-                : watchlistStatus === "error"
-                  ? "重試加入"
-                  : "加入關注";
-
           return (
             <article
               key={candidate.symbol}
@@ -1206,17 +1183,6 @@ function DailyRadarCandidateList({
                   className="ui-button-primary min-h-10 px-3 text-xs"
                 >
                   查看細節
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onAddWatchlist(candidate)}
-                  disabled={watchlistStatus === "saving" || isWatchlisted}
-                  className={`ui-button-secondary min-h-10 px-3 text-xs ${
-                    watchlistStatus === "error" ? "border-negative/35 text-negative" : ""
-                  }`}
-                  title={isWatchlisted ? "已在關注列表" : "加入關注列表"}
-                >
-                  {watchlistButtonLabel}
                 </button>
               </div>
             </article>
@@ -1441,8 +1407,6 @@ function WholeRunEmptyState({ onRefresh }: { onRefresh?: () => void }) {
 function RunSummary({ run }: { run: DailyRadarRunResponse }) {
   const [selectedBucket, setSelectedBucket] = useState<DailyRadarBucket | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<DailyRadarCandidate | null>(null);
-  const [watchlistSymbols, setWatchlistSymbols] = useState<Set<string>>(new Set());
-  const [watchlistStatusBySymbol, setWatchlistStatusBySymbol] = useState<Record<string, WatchlistAddStatus>>({});
   const dataDateEntries = Object.entries(run.data_dates);
   const freshnessSummary = getFreshnessSummary(run.run_date, run.data_dates);
   const shouldShowStaleNotice = run.status === "stale_data" || hasLaggingRunData(run.run_date, run.data_dates);
@@ -1451,41 +1415,6 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
   const visibleCandidates = selectedBucket
     ? sortedCandidates.filter((candidate) => candidate.primary_bucket === selectedBucket)
     : sortedCandidates;
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadWatchlist() {
-      try {
-        const items = await fetchWatchlistItems();
-        if (!cancelled) {
-          setWatchlistSymbols(new Set(items.map((item) => normalizeSymbol(item.symbol))));
-        }
-      } catch {
-        if (!cancelled) setWatchlistSymbols(new Set());
-      }
-    }
-
-    void loadWatchlist();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleAddWatchlist(candidate: DailyRadarCandidate) {
-    const normalizedSymbol = normalizeSymbol(candidate.symbol);
-    setWatchlistStatusBySymbol((current) => ({ ...current, [normalizedSymbol]: "saving" }));
-
-    try {
-      const item = await createWatchlistItem({ symbol: candidate.symbol });
-      const savedSymbol = normalizeSymbol(item.symbol);
-      setWatchlistSymbols((current) => new Set(current).add(savedSymbol));
-      setWatchlistStatusBySymbol((current) => ({ ...current, [savedSymbol]: "success" }));
-    } catch {
-      setWatchlistStatusBySymbol((current) => ({ ...current, [normalizedSymbol]: "error" }));
-    }
-  }
 
   return (
     <>
@@ -1551,10 +1480,7 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
 
           <DailyRadarCandidateList
             candidates={visibleCandidates}
-            watchlistSymbols={watchlistSymbols}
-            watchlistStatusBySymbol={watchlistStatusBySymbol}
             onSelectCandidate={setSelectedCandidate}
-            onAddWatchlist={(candidate) => void handleAddWatchlist(candidate)}
           />
         </>
       )}

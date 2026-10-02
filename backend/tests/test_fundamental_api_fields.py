@@ -74,8 +74,6 @@ def test_analyze_response_includes_fundamental_data(monkeypatch):
     import ai_stock_sentinel.analysis.router as api_module
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "_check_symbol_exists", lambda *a, **kw: None)
     client = _client_with_graph(_make_graph(_mock_graph_result()))

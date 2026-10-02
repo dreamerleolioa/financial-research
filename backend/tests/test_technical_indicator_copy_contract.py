@@ -128,37 +128,6 @@ def test_technical_indicator_copy_excludes_composite_judgments() -> None:
     assert hits == []
 
 
-def test_portfolio_technical_export_keeps_neutral_position_context() -> None:
-    source = PORTFOLIO_TECHNICAL_EXPORT_SOURCE.read_text(encoding="utf-8")
-
-    forbidden_hits = [token for token in PORTFOLIO_FORBIDDEN_INTERNAL_TOKENS if token in source]
-    required_position_tokens = [
-        "持股成本",
-        "進場日期",
-        "持有股數",
-        'join("\\n\\n---\\n\\n")',
-        "buildTechnicalIndicatorsCopyText",
-    ]
-    removed_wrapper_tokens = [
-        "全部持股技術資料",
-        "產生時間",
-        "資料範圍",
-        "整理結果",
-        "持股權重",
-        "目前損益率",
-        "防守參考",
-        "技術資料日",
-        "失敗標的",
-        "formatPrice(",
-    ]
-    missing = [token for token in required_position_tokens if token not in source]
-    wrapper_hits = [token for token in removed_wrapper_tokens if token in source]
-
-    assert forbidden_hits == []
-    assert missing == []
-    assert wrapper_hits == []
-
-
 def _extract_function_body(source: str, function_name: str) -> str:
     signature = f"function {function_name}"
     signature_index = source.index(signature)

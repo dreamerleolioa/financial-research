@@ -39,8 +39,6 @@ from ai_stock_sentinel.db.models import (
     DailyRadarPreparedRun,
     FundamentalBackfillJob,
     StockRawData,
-    UserPortfolio,
-    UserWatchlist,
 )
 
 
@@ -332,12 +330,7 @@ def resolve_managed_fundamental_symbols(
     *,
     raw_pool_date: date | None = None,
 ) -> list[str]:
-    symbols = set(
-        session.scalars(
-            select(UserPortfolio.symbol).where(UserPortfolio.is_active.is_(True))
-        ).all()
-    )
-    symbols.update(session.scalars(select(UserWatchlist.symbol)).all())
+    symbols: set[str] = set()
     prepared = session.scalars(
         select(DailyRadarPreparedRun).order_by(
             DailyRadarPreparedRun.run_date.desc(),

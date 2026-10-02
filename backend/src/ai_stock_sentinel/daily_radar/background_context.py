@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol
 
-import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
@@ -17,7 +16,6 @@ from ai_stock_sentinel.daily_radar.repository import (
     get_latest_daily_radar_run,
     upsert_shared_background_context,
 )
-from ai_stock_sentinel.db.models import UserPortfolio, UserWatchlist
 
 
 BACKGROUND_CONTEXT_LABELS: dict[str, str] = {
@@ -35,9 +33,6 @@ BACKGROUND_CONTEXT_MISSING_LABELS: dict[str, str] = {
 BACKGROUND_CONTEXT_ALL_CONSUMERS = (
     "daily_radar",
     "analyze",
-    "position_analysis",
-    "portfolio_diagnosis",
-    "lifecycle_review",
 )
 
 
@@ -337,15 +332,6 @@ def _default_refresh_symbols_by_context_type(
         context_type: _ordered_unique(latest_symbols)
         for context_type in context_types
     }
-    if "weekly_major_holders" in context_types:
-        weekly_symbols: list[str] = []
-        for source, getter in (
-            ("active_portfolio_holdings", lambda: _active_portfolio_symbols(session)),
-            ("watchlist", lambda: _watchlist_symbols(session)),
-        ):
-            weekly_symbols.extend(_collect_symbols(errors, source=source, getter=getter))
-        weekly_symbols.extend(latest_symbols)
-        symbols_by_context_type["weekly_major_holders"] = _ordered_unique(weekly_symbols)
     return symbols_by_context_type
 
 
@@ -411,25 +397,6 @@ def _collect_symbols(
             }
         )
         return []
-
-
-def _active_portfolio_symbols(session: Session) -> list[str]:
-    return list(
-        session.scalars(
-            sa.select(UserPortfolio.symbol)
-            .where(UserPortfolio.is_active.is_(True))
-            .order_by(UserPortfolio.symbol.asc())
-        ).all()
-    )
-
-
-def _watchlist_symbols(session: Session) -> list[str]:
-    return list(
-        session.scalars(
-            sa.select(UserWatchlist.symbol)
-            .order_by(UserWatchlist.symbol.asc())
-        ).all()
-    )
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:

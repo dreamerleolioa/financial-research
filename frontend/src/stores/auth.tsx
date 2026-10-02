@@ -1,7 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { markPortfolioMutationStarted } from "../features/portfolio/mutationCoordinator";
-import { clearPriceRefreshOverlay } from "../features/portfolio/priceRefreshOverlay";
 import { requestJson } from "../lib/apiClient";
 import { AUTH_TOKEN_STORAGE_KEY, clearToken, getToken, setToken } from "../lib/auth";
 
@@ -36,8 +34,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
 
   const clearUserScopedCache = useCallback(() => {
-    markPortfolioMutationStarted();
-    clearPriceRefreshOverlay(queryClient);
     void queryClient.cancelQueries();
     queryClient.clear();
   }, [queryClient]);

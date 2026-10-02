@@ -2,7 +2,6 @@ import { Outlet, useLocation } from "react-router-dom";
 import {
   DesktopNavigation,
   MobileBottomNavigation,
-  PortfolioSubNavigation,
 } from "./components/app-shell/AppNavigation";
 import { useAuth } from "./stores/auth";
 import { useDarkMode } from "./stores/theme";
@@ -10,8 +9,6 @@ import { ProductBrand } from "./components/brand/ProductBrand";
 
 const routeTitles = [
   { matches: (pathname: string) => pathname.startsWith("/active-etf"), title: "主動式 ETF 持股追蹤" },
-  { matches: (pathname: string) => pathname.startsWith("/watchlist"), title: "關注列表" },
-  { matches: (pathname: string) => pathname.startsWith("/portfolio"), title: "持股管理" },
   { matches: (pathname: string) => pathname.startsWith("/daily-radar"), title: "每日盤後觀察雷達" },
   { matches: () => true, title: "個股分析" },
 ];
@@ -92,7 +89,6 @@ export default function App() {
   const { theme, toggle } = useDarkMode();
   const { pathname } = useLocation();
   const routeTitle = routeTitles.find((route) => route.matches(pathname))?.title ?? "個股分析";
-  const isPortfolioRoute = pathname.startsWith("/portfolio");
   const themeLabel = theme === "dark" ? "切換為亮色模式" : "切換為暗色模式";
 
   return (
@@ -163,7 +159,6 @@ export default function App() {
           >
             <div className="w-full max-w-[1440px]">
               <h1 className="sr-only">{routeTitle}</h1>
-              {isPortfolioRoute && <PortfolioSubNavigation />}
               <Outlet />
             </div>
           </main>
