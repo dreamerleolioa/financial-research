@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ai_stock_sentinel import api
+from ai_stock_sentinel.daily_radar import dependencies, pipeline_support, run_router
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
 from ai_stock_sentinel.daily_radar.institutional_evidence import (
@@ -192,12 +193,10 @@ def test_fetch_fundamental_data_adds_official_industry_to_serialized_contract(
 
 
 def test_daily_radar_industry_failure_log_does_not_expose_symbol(caplog) -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     def raise_provider_error(_symbol: str) -> str | None:
         raise RuntimeError("provider unavailable")
 
-    assert daily_radar_router._safe_resolve_industry(
+    assert pipeline_support._safe_resolve_industry(
         "2330.TW",
         resolver=raise_provider_error,
     ) is None
@@ -535,19 +534,17 @@ class RaisingMarketSessionProvider(FakeMarketSessionProvider):
 
 
 def _clear_daily_radar_api_overrides() -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     for dependency in (
         get_db,
-        daily_radar_router.get_daily_radar_universe_provider,
-        daily_radar_router.get_daily_radar_technical_fetcher,
-        daily_radar_router.get_daily_radar_market_context_provider,
-        daily_radar_router.get_daily_radar_market_session_provider,
-        daily_radar_router.get_daily_radar_background_chip_context_provider,
-        daily_radar_router.get_daily_radar_institutional_evidence_provider,
-        daily_radar_router.get_taiwan_institutional_report_provider,
-        daily_radar_router.get_daily_radar_fundamental_provider,
-        daily_radar_router.get_phase1_avwap_daily_price_provider,
+        dependencies.get_daily_radar_universe_provider,
+        dependencies.get_daily_radar_technical_fetcher,
+        dependencies.get_daily_radar_market_context_provider,
+        dependencies.get_daily_radar_market_session_provider,
+        dependencies.get_daily_radar_background_chip_context_provider,
+        dependencies.get_daily_radar_institutional_evidence_provider,
+        dependencies.get_taiwan_institutional_report_provider,
+        dependencies.get_daily_radar_fundamental_provider,
+        dependencies.get_phase1_avwap_daily_price_provider,
         get_daily_radar_symbol_name_resolver,
     ):
         api.app.dependency_overrides.pop(dependency, None)
@@ -581,7 +578,6 @@ def _api_client(
     run_error: Exception | None = None,
 ) -> TestClient:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     captured: dict[str, Any] = {}
     provider = universe_provider or FakeUniverseProvider()
@@ -602,29 +598,29 @@ def _api_client(
             raise run_error
         return run or _daily_radar_run(run_date=run_date, market=market)
 
-    monkeypatch.setattr(daily_radar_router, "run_daily_radar", fake_run_daily_radar)
-    monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 1))
+    monkeypatch.setattr(run_router, "run_daily_radar", fake_run_daily_radar)
+    monkeypatch.setattr(dependencies, "_backend_today", lambda: date(2026, 6, 1))
     monkeypatch.setattr(
-        daily_radar_router,
+        pipeline_support,
         "resolve_symbol_industry",
         lambda symbol: "半導體業" if symbol in {"2330.TW", "2454.TW"} else None,
     )
     api.app.dependency_overrides[get_db] = lambda: db_session
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_universe_provider] = lambda: provider
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_technical_fetcher] = lambda: fetcher
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_context_provider] = lambda: context_provider
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_market_session_provider] = lambda: session_provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_universe_provider] = lambda: provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_technical_fetcher] = lambda: fetcher
+    api.app.dependency_overrides[dependencies.get_daily_radar_market_context_provider] = lambda: context_provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_market_session_provider] = lambda: session_provider
     api.app.dependency_overrides[
-        daily_radar_router.get_daily_radar_background_chip_context_provider
+        dependencies.get_daily_radar_background_chip_context_provider
     ] = lambda: chip_context_provider
     api.app.dependency_overrides[
-        daily_radar_router.get_daily_radar_institutional_evidence_provider
+        dependencies.get_daily_radar_institutional_evidence_provider
     ] = lambda: institutional_provider
     api.app.dependency_overrides[
-        daily_radar_router.get_taiwan_institutional_report_provider
+        dependencies.get_taiwan_institutional_report_provider
     ] = lambda: institutional_archive_provider
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_fundamental_provider] = lambda: business_provider
-    api.app.dependency_overrides[daily_radar_router.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_fundamental_provider] = lambda: business_provider
+    api.app.dependency_overrides[dependencies.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
     client.fake_universe_provider = provider  # type: ignore[attr-defined]
@@ -1536,8 +1532,6 @@ def test_daily_radar_prepare_universe_endpoint_persists_capped_selected_symbols(
 
 
 def test_daily_radar_universe_cap_remains_250_after_track_expansion() -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     universe = [
         DailyRadarUniverseEntry(
             symbol=f"{1000 + index}.TW",
@@ -1548,9 +1542,9 @@ def test_daily_radar_universe_cap_remains_250_after_track_expansion() -> None:
         for index in range(300)
     ]
 
-    capped = daily_radar_router._capped_daily_radar_universe(
+    capped = pipeline_support._capped_daily_radar_universe(
         universe,
-        max_symbols=daily_radar_router.DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
+        max_symbols=dependencies.DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
     )
 
     assert len(capped) == 250
@@ -2272,7 +2266,6 @@ def test_daily_radar_refresh_ohlcv_fails_when_provider_data_still_lags_run_date(
 def test_current_short_history_reaches_prefilter_without_blocking_healthy_symbols(
     monkeypatch, daily_radar_db_session: Session,
 ) -> None:
-    from ai_stock_sentinel.daily_radar import router as radar_router
     from ai_stock_sentinel.daily_radar.raw_data import _build_technical_payload
     from ai_stock_sentinel.daily_radar.service import run_daily_radar
     from tests.test_daily_radar_raw_data import _recovery_frame
@@ -2282,14 +2275,14 @@ def test_current_short_history_reaches_prefilter_without_blocking_healthy_symbol
         run_date=run_date, market='TW', selected_symbols=['2330.TW', '3718.TWO'],
         universe=[], symbol_count=2, market_context={'regime': 'bullish'},
         step_statuses={step: {'status': 'completed'}
-                       for step in radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS},
+                       for step in dependencies.DAILY_RADAR_REQUIRED_REFRESH_STEPS},
     )
     daily_radar_db_session.add(prepared)
     daily_radar_db_session.commit()
     short = _build_technical_payload('3718.TWO', _recovery_frame(periods=9), run_date=run_date)
     client = _api_client(monkeypatch, daily_radar_db_session,
                         technical_fetcher=FakeBatchTechnicalFetcher({'3718.TWO': short}))
-    monkeypatch.setattr(radar_router, 'run_daily_radar', run_daily_radar)
+    monkeypatch.setattr(run_router, 'run_daily_radar', run_daily_radar)
     try:
         response = client.post('/internal/daily-radar/refresh-ohlcv',
             json={'run_date': run_date.isoformat()}, headers={'Authorization': 'Bearer test-token'})
@@ -2573,8 +2566,6 @@ def test_daily_radar_refresh_managed_raw_data_failure_is_privacy_safe_and_option
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     run_date = date(2026, 6, 1)
     prepared = DailyRadarPreparedRun(
         run_date=run_date,
@@ -2620,7 +2611,7 @@ def test_daily_radar_refresh_managed_raw_data_failure_is_privacy_safe_and_option
     assert prepared.step_statuses["refresh-managed-raw-data"]["status"] == "failed"
     assert (
         "refresh-managed-raw-data"
-        not in daily_radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS
+        not in dependencies.DAILY_RADAR_REQUIRED_REFRESH_STEPS
     )
 
 
@@ -2736,8 +2727,6 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
     monkeypatch,
     daily_radar_db_session: Session,
 ) -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     run_date = date(2026, 6, 1)
     prepared = DailyRadarPreparedRun(
         run_date=run_date,
@@ -2845,7 +2834,7 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
     assert rows["2330.TW"].institutional["source_provider"] == "daily_radar_universe"
     daily_radar_db_session.refresh(prepared)
     assert prepared.selected_symbols == ["2330.TW"]
-    assert "refresh-ai-evidence" not in daily_radar_router.DAILY_RADAR_REQUIRED_REFRESH_STEPS
+    assert "refresh-ai-evidence" not in dependencies.DAILY_RADAR_REQUIRED_REFRESH_STEPS
 
 
 def test_daily_radar_refresh_ai_evidence_reuses_official_raw_history(
@@ -2959,10 +2948,8 @@ def test_daily_radar_refresh_ai_evidence_reuses_official_raw_history(
 def test_daily_radar_default_institutional_provider_enables_bounded_finmind_fallback(
     monkeypatch,
 ) -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     monkeypatch.delenv("FINMIND_API_TOKEN", raising=False)
-    provider = daily_radar_router.get_daily_radar_institutional_evidence_provider()
+    provider = dependencies.get_daily_radar_institutional_evidence_provider()
 
     assert isinstance(provider, OfficialInstitutionalEvidenceProvider)
     assert provider._finmind_client is not None
@@ -3020,8 +3007,6 @@ def test_daily_radar_refresh_ai_evidence_records_unexpected_institutional_provid
 
 
 def test_ai_fundamental_materialization_clears_future_values_for_historical_as_of() -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
-
     row = SimpleNamespace(
         symbol="2454.TW",
         technical={"ohlcv": {"close": 100.0}},
@@ -3033,7 +3018,7 @@ def test_ai_fundamental_materialization_clears_future_values_for_historical_as_o
         },
     )
 
-    errors = daily_radar_router._materialize_ai_business_fundamentals(
+    errors = pipeline_support._materialize_ai_business_fundamentals(
         [row],
         provider=MissingPointInTimeFundamentalProvider(),
         as_of_date=date(2026, 6, 1),
@@ -3334,12 +3319,11 @@ def test_daily_radar_chip_context_update_endpoint_writes_cache_records(
     daily_radar_db_session: Session,
 ) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     provider = FakeBackgroundChipContextProvider()
-    monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 2))
+    monkeypatch.setattr(dependencies, "_backend_today", lambda: date(2026, 6, 2))
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_background_chip_context_provider] = lambda: provider
 
     try:
         response = TestClient(api.app).post(
@@ -3387,7 +3371,6 @@ def test_daily_radar_weekly_chip_context_update_uses_latest_candidates_only_when
     daily_radar_db_session: Session,
 ) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     provider = FakeBackgroundChipContextProvider()
     user = User(google_sub="user-1", email="user@example.com", name="User")
@@ -3430,7 +3413,7 @@ def test_daily_radar_weekly_chip_context_update_uses_latest_candidates_only_when
     daily_radar_db_session.commit()
 
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_background_chip_context_provider] = lambda: provider
 
     try:
         response = TestClient(api.app).post(
@@ -3478,7 +3461,6 @@ def test_daily_radar_chip_context_update_keeps_daily_contexts_on_latest_candidat
     daily_radar_db_session: Session,
 ) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     provider = FakeBackgroundChipContextProvider()
     user = User(google_sub="user-1", email="user@example.com", name="User")
@@ -3503,7 +3485,7 @@ def test_daily_radar_chip_context_update_keeps_daily_contexts_on_latest_candidat
     daily_radar_db_session.commit()
 
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_background_chip_context_provider] = lambda: provider
 
     try:
         response = TestClient(api.app).post(
@@ -3551,7 +3533,6 @@ def test_daily_radar_weekly_chip_context_update_reports_symbol_source_failures(
 ) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
     from ai_stock_sentinel.daily_radar import background_context as background_context_module
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     provider = FakeBackgroundChipContextProvider()
 
@@ -3559,7 +3540,7 @@ def test_daily_radar_weekly_chip_context_update_reports_symbol_source_failures(
         raise RuntimeError("radar candidates unavailable")
     monkeypatch.setattr(background_context_module, "_latest_daily_radar_symbols", raise_candidates)
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = lambda: provider
+    api.app.dependency_overrides[dependencies.get_daily_radar_background_chip_context_provider] = lambda: provider
 
     try:
         response = TestClient(api.app).post(
@@ -3596,10 +3577,9 @@ def test_daily_radar_chip_context_update_endpoint_records_provider_failure(
     daily_radar_db_session: Session,
 ) -> None:
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
-    api.app.dependency_overrides[daily_radar_router.get_daily_radar_background_chip_context_provider] = (
+    api.app.dependency_overrides[dependencies.get_daily_radar_background_chip_context_provider] = (
         lambda: RaisingBackgroundChipContextProvider()
     )
 
@@ -3655,9 +3635,8 @@ def daily_radar_db_session() -> Session:
 @pytest.fixture()
 def public_daily_radar_client(daily_radar_db_session: Session, monkeypatch) -> TestClient:
     monkeypatch.delenv("DAILY_RADAR_INTERNAL_TOKEN", raising=False)
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
 
-    monkeypatch.setattr(daily_radar_router, "_backend_today", lambda: date(2026, 6, 3))
+    monkeypatch.setattr(dependencies, "_backend_today", lambda: date(2026, 6, 3))
     api.app.dependency_overrides[get_db] = lambda: daily_radar_db_session
     try:
         yield TestClient(api.app)
@@ -4276,10 +4255,9 @@ def test_public_daily_radar_keeps_cached_symbol_name_offline(
     daily_radar_db_session: Session,
     monkeypatch,
 ) -> None:
-    from ai_stock_sentinel.daily_radar import router as daily_radar_router
+    from ai_stock_sentinel.data_sources import symbol_metadata
 
-    if hasattr(daily_radar_router, "resolve_symbol_name"):
-        monkeypatch.setattr(daily_radar_router, "resolve_symbol_name", lambda _symbol: pytest.fail("public read must stay offline"))
+    monkeypatch.setattr(symbol_metadata, "resolve_symbol_name", lambda _symbol: pytest.fail("public read must stay offline"))
     run = _persist_daily_radar_run(daily_radar_db_session, run_date=date(2026, 6, 2))
     _persist_daily_radar_candidate(
         daily_radar_db_session,
