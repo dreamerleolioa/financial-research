@@ -1,6 +1,6 @@
 # financial-research
 
-AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 Python / FastAPI / LangGraph / SQLAlchemy 建立可回放的確定性資料與分析流程，前端以 React / Vite / Tailwind 呈現新倉分析、持股管理、結案復盤與 Daily Radar 盤後觀察清單。線上產品不呼叫外部 LLM；需要延伸判讀時，可由使用者複製結構化摘要到自己選擇的對話工具。
+AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 Python / FastAPI / LangGraph / SQLAlchemy 建立可回放的確定性資料與分析流程，前端以 React / Vite / Tailwind 呈現個股分析、Daily Radar 與主動式 ETF 盤後觀察清單。線上產品不呼叫外部 LLM；需要延伸判讀時，可由使用者複製結構化摘要到自己選擇的對話工具。
 
 ## 核心分析維度 (Core Analysis Dimensions)
 
@@ -31,6 +31,9 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - 後端自學導覽：`docs/backend-self-study-guide.md`
 
 ## 目前架構摘要
+
+> 2026-10-02 功能範圍：產品保留個股分析、Daily Radar 與主動式 ETF。關注列表、個人持股、持股診斷與復盤已下線；舊路由導向 `/analyze`，舊 API 回傳 404。歷史資料模型、資料與 Alembic migration 保留，未執行資料刪除。AVWAP／籌碼背景採雷達標的，基本面保留 prepared universe／final raw pool，managed raw data 僅更新近期 general 分析標的。
+
 
 - `/analyze`：單股新倉研究流程，使用 LangGraph 串接 yfinance、法人籌碼與基本面 provider，由 Python rule-based code 產生技術指標、風險語言、行動 trace 與信心分數，不呼叫外部模型。
 - `/analyze/position`：持股診斷流程，重用單股資料抓取與分析基礎，但語意是續抱、減碼、出場風險檢查，不是新倉建議。
@@ -134,8 +137,6 @@ frontend/
 		App.tsx
 		pages/
 			AnalyzePage.tsx
-			PortfolioPage.tsx
-			ClosedPortfolioPage.tsx
 			DashboardPage.tsx
 			DailyRadarPage.tsx
 			LoginPage.tsx
@@ -147,7 +148,6 @@ frontend/
 			auth.ts
 			formatters.ts
 			historyApi.ts
-			portfolioTypes.ts
 			dailyRadarApi.ts
 			dailyRadarTypes.ts
 		stores/
@@ -184,7 +184,7 @@ Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場�
 
 基本面另由 `.github/workflows/fundamental-data.yml` 於台灣時間週一至週五 07:15 刷新官方快照，並以 bounded backfill 接續未完成的 managed/latest AI-pool symbols。TWSE/TPEX 財報與股利以 payload hash 版本化保存；歷史 EPS 缺漏時每批最多 10 檔，先查 MOPS 官方歷史季 EPS，失敗或歷史仍不足才降級 FinMind 財報，股利歷史仍由 FinMind 回補。新 backfill job 可用 `backfill_raw_pool_date` 鎖定已完成 `refresh-ai-evidence` 的指定日期；跨 workflow 續跑只帶回 server-owned `backfill_after_symbol` 與 `backfill_job_id`。
 
-Daily Radar 的 live 資料載入有 request budget：法人 universe 只讀已歸檔的 TWSE `T86` / TPEX `3itrade_hedge` 市場級報表，分成外資／投信當日與近期累積四條軌道，不做逐檔法人 request；舊 `TWT38U` / `TWT44U` 只保留相容用途。Phase 1 AVWAP 上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，正式 `refresh-avwap` 會合併 selected symbols、active holdings 與 watchlist symbols 後刷新，非 `.TW/.TWO` 會以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄而不呼叫 provider，但 snapshot 仍只保存 market data，不保存使用者持股成本或進場日；FinMind `TaiwanStockSecuritiesLending`、`TaiwanStockMarginPurchaseShortSale` 分成不同小時刷新，每段都讀同一批 selected symbols，其中 lending / full-margin 會先重用同日 fresh `shared_background_contexts`；yfinance 對 selected universe 中缺少 final raw row，或 final row 缺少必要且為有限數值的 OHLCV / compatibility indicators、canonical `technical_profile`、`price_history`、資料日期的 symbols 做 batch download；若實際日期落後，僅對落後標的補抓一次不指定固定 end 的 adjusted 日線，計算前仍裁切至原日期窗口。只有通過 candidate/replay 完整度與同日日期檢查的既有 `StockRawData` 才會重用，並在 refresh 後回寫 prepared universe 的技術面 tracks；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Portfolio AVWAP read path 可使用 requested date 當日或以前最新 fresh snapshot，但最多回看 7 個 calendar days，超過時回 `phase1_snapshot_stale`。`run-scoring` 不打外部資料源，只讀 `daily_radar_prepared_runs`、`phase1_avwap_snapshots`、`shared_background_contexts`、`stock_raw_data` 與 prepared market context，並在評分前拒絕空 selected universe、再次確認每個 selected symbol 都有完整 raw row，或有同日且可驗證的歷史不足證據可交由 prefilter 排除；未知缺資料仍阻擋評分；`weekly_major_holders` 維持週頻 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 更新 cache。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze`、`/analyze/position`、portfolio diagnosis 與 lifecycle review 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action、verdict、classification 或 lifecycle replay。
+Daily Radar 的 live 資料載入有 request budget：法人 universe 只讀已歸檔的 TWSE `T86` / TPEX `3itrade_hedge` 市場級報表，分成外資／投信當日與近期累積四條軌道，不做逐檔法人 request；舊 `TWT38U` / `TWT44U` 只保留相容用途。Phase 1 AVWAP 上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，正式 `refresh-avwap` 會合併 selected symbols、active holdings 與 watchlist symbols 後刷新，非 `.TW/.TWO` 會以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄而不呼叫 provider，但 snapshot 仍只保存 market data，不保存使用者持股成本或進場日；FinMind `TaiwanStockSecuritiesLending`、`TaiwanStockMarginPurchaseShortSale` 分成不同小時刷新，每段都讀同一批 selected symbols，其中 lending / full-margin 會先重用同日 fresh `shared_background_contexts`；yfinance 對 selected universe 中缺少 final raw row，或 final row 缺少必要且為有限數值的 OHLCV / compatibility indicators、canonical `technical_profile`、`price_history`、資料日期的 symbols 做 batch download；若實際日期落後，僅對落後標的補抓一次不指定固定 end 的 adjusted 日線，計算前仍裁切至原日期窗口。只有通過 candidate/replay 完整度與同日日期檢查的既有 `StockRawData` 才會重用，並在 refresh 後回寫 prepared universe 的技術面 tracks；market index 只抓固定 benchmark（TW: `TAIEX` / `^TWII`，US: `SPX` / `^GSPC`）。Analyze AVWAP read path 可使用 requested date 當日或以前最新 fresh snapshot，但最多回看 7 個 calendar days，超過時回 `phase1_snapshot_stale`。`run-scoring` 不打外部資料源，只讀 `daily_radar_prepared_runs`、`phase1_avwap_snapshots`、`shared_background_contexts`、`stock_raw_data` 與 prepared market context，並在評分前拒絕空 selected universe、再次確認每個 selected symbol 都有完整 raw row，或有同日且可驗證的歷史不足證據可交由 prefilter 排除；未知缺資料仍阻擋評分；`weekly_major_holders` 維持週頻 GitHub Actions workflow 呼叫 `/internal/daily-radar/chip-context/update` 更新 cache。Phase 2B 起，Daily Radar detail 可顯示 shared background context labels，但 labels 不參與分數或排序。Phase 2C/2D 起，`/analyze` 以 read/reference 方式讀取 shared context；它只作 evidence、caveat 與資料品質 trace，不覆寫 deterministic action 或 Daily Radar ranking。
 
 CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-architecture-spec.md` 的 workflow 地圖為準。
 
@@ -297,43 +297,14 @@ pnpm dev
 - 快照資訊（symbol / current_price / volume）
 - 技術面、籌碼面與基本面資料卡，以及 rule-based 綜合判讀
 - 戰術行動 Action Plan（策略方向 / 入場區間 / 停損 / 持股期間；含 `action_plan_tag` 燈號 badge：🟢 機會 / 🔴 過熱 / 🔵 中性）
-- 分析結果可加入關注列表，作為後續觀察標的，不寫入持股紀錄
 - 錯誤 banner + loading 狀態
 - 底層保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart.tsx`，供後續嵌入個股歷史分析趨勢
-
-**關注列表（`/watchlist`）**
-
-- 保存目前登入使用者有興趣但尚未進入持股的股票
-- 支援新增 / 移除股票、編輯單筆觀察備註，以及拖拉調整列表順序
-- 支援在列表內展開 raw 技術指標快查，透過 `POST /analyze` 搭配 `persist_result: false` 取得 deterministic 指標且不寫入分析紀錄；可單筆查詢，也可一鍵批次補查尚未載入的關注標的
-- 技術快查面板可複製完整指標摘要，方便帶到其他 AI agent 做深度分析
-- Analyze 結果與 Daily Radar 候選標的都可加入關注列表
-- 與 `/portfolio` 分離，不代表進場、部位、加碼或交易紀錄
-
-**持股管理頁（`/portfolio`）**
-
-- 現有持股列表與持股診斷入口
-- 倉位狀態卡（獲利安全區 / 成本邊緣 / 套牢防守；顯示成本價 / 現價 / 損益%）
-- 操作建議卡（續抱 / 減碼 / 出場；顯示動態防守位）
-- 出場警示 banner（`exit_reason` 非 null 時紅色顯示）
-- 出場 / 結案流程：輸入出場日期、價格、股數、手續費與交易稅，後端計算已實現損益、報酬率與持有天數
-- 四維分析卡（技術面防守 / 主力動向 / 消息面風險 / 基本面）+ 綜合研判
-
-**已結案持股頁（`/portfolio/closed`）**
-
-- 獨立頁面保留結案紀錄與歷史診斷，不再把出場等同刪除追蹤
-- 期間篩選：1天 / 1週 / 1月 / 1季 / 1年，並顯示篩選後的 `已實現損益` 總計
-- 完整交易復盤顯示在固定視窗中，標題、交易識別與上一筆／下一筆控制不隨內容捲動；只有復盤內容區捲動，關閉後焦點回到目前交易的觸發按鈕
-- Trade Review 可建立 request-scoped provider snapshot；Lifecycle Review 不另行抓取 provider，而是唯讀使用 Daily Radar 每日盤後保存的 final `StockRawData`。事件日前指標先使用 completed `recent_*`，不足時回退到有日期的 `technical.price_history`，仍不足才使用資料日早於事件日的 persisted `technical.indicators`
-- Trade Review 與 Lifecycle Review 的持久化 market evidence 會依交易日 compact；所有 dated trailing series 先於 outer bars 合併，同日重疊歷史以較新非空值更新並保留缺少欄位，partial outer bar 只能補缺。`price_history` 與可作 fallback 的 MA20、MA60、RSI14、量比也納入 evidence 與 source fingerprint，避免畫面可用來源和保存來源不一致
-- 市場行情缺口只讓受影響的進場、部位管理或風險出場面向顯示證據不足，不得把已記錄的操作原因誤判為紀錄品質不足；資料品質欄位會顯示事件類型、事件日期與缺少的指標
 
 **Daily Radar（`/daily-radar`）**
 
 - 每日觀察候選清單
 - bucket、觀察等級、風險標籤與規則命中原因；`observation_score` 只作內部排序、校準與 advanced trace，不代表勝率或交易建議
 - candidate trace 包含 market regime、relative strength 或缺資料原因、scoring/rule version、score breakdown、data dates、replayable evidence、shared background context cache trace 與 background context labels
-- 候選標的可加入關注列表；此動作只保存觀察標的，不影響 Daily Radar scoring、ranking 或 forward validation
 
 **登入（`/login`）**
 
@@ -383,12 +354,6 @@ Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次
 - `GET /daily-radar/symbol/{symbol}`：讀取指定標的 Daily Radar 歷史
 - `GET /history/{symbol}` — 查詢歷史分析記錄
 - `GET/POST /auth/*` — Google OAuth 登入流程
-- `GET /watchlist` — 列出目前登入使用者的關注股票清單
-- `POST /watchlist` — 新增關注股票；同一使用者同一 symbol 具冪等語義，已存在時回傳既有項目
-- `PUT /watchlist/{item_id}` — 更新關注項目的觀察備註
-- `PUT /watchlist/reorder` — 以完整 item id 清單調整目前登入使用者的關注列表順序
-- `DELETE /watchlist/{item_id}` — 移除關注項目
-- `GET/POST /portfolio/*` — 持股管理、持股診斷歷史、出場結案與已結案紀錄
 
 範例：
 
@@ -441,19 +406,3 @@ make test
 | `data_sources`             | 實際成功抓取的資料來源列表（如 `["google-news-rss", "yfinance", "twse-openapi"]`）                                                                                                                 |
 | `position_analysis`        | 持股診斷結果（`/analyze/position` 才有值；含 `profit_loss_pct` / `position_status` / `trailing_stop` / `recommended_action` / `exit_reason`）                                                      |
 | `errors`                   | 錯誤陣列（每項含 `code`、`message`，正常為空陣列）                                                                                                                                                 |
-
-### POST `/analyze/position`
-
-額外必填欄位：`entry_price`（float）。回傳同上，`position_analysis` 欄位為：
-
-| 欄位                   | 說明                                          |
-| ---------------------- | --------------------------------------------- |
-| `entry_price`          | 購入成本價                                    |
-| `profit_loss_pct`      | 損益百分比（Python 計算，非 LLM）             |
-| `position_status`      | `profitable_safe` / `at_risk` / `under_water` |
-| `trailing_stop`        | 動態防守位（依獲利區間規則計算）              |
-| `trailing_stop_reason` | 防守位計算邏輯說明                            |
-| `recommended_action`   | `Hold` / `Trim` / `Exit`（4 規則 rule-based） |
-| `exit_reason`          | 出場理由（僅 `Exit` 時非 null）               |
-
----

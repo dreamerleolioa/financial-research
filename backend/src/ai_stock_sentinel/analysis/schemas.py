@@ -23,36 +23,6 @@ class AnalyzeRequest(BaseModel):
         return not bool(self.__dict__.get("skip_ai"))
 
 
-class PositionAnalyzeRequest(BaseModel):
-    symbol: str = Field(min_length=1, max_length=20)
-    entry_price: float = Field(gt=0)
-    entry_date: str | None = None
-    quantity: int | None = None
-
-    _validate_symbol = field_validator("symbol", mode="before")(validate_taiwan_symbol)
-
-
-class PositionAnalysis(BaseModel):
-    entry_price: float
-    profit_loss_pct: float | None = None
-    position_status: str | None = None
-    position_narrative: str | None = None
-    risk_state: str | None = None
-    risk_state_label: str | None = None
-    discipline_triggers: list[str] = Field(default_factory=list)
-    observation_conditions: list[str] = Field(default_factory=list)
-    risk_control_reference: dict[str, Any] | None = None
-    command_language_deprecated: dict[str, Any] = Field(default_factory=dict)
-    recommended_action: str | None = None
-    trailing_stop: float | None = None
-    trailing_stop_reason: str | None = None
-    exit_reason: str | None = None
-    distance_to_trailing_stop_pct: float | None = None
-    distance_to_support_pct: float | None = None
-    unrealized_pnl: float | None = None
-    holding_days: int | None = None
-
-
 class TechnicalIndicators(BaseModel):
     input_context: dict[str, Any] | None = None
     kd_previous_k: float | None = None
@@ -159,7 +129,6 @@ class AnalyzeResponse(BaseModel):
     command_language_deprecated: dict[str, Any] = Field(default_factory=dict)
     data_sources: list[str] = Field(default_factory=list)
     fundamental_data: dict[str, Any] | None = None
-    position_analysis: PositionAnalysis | None = None
     shared_context: dict[str, Any] | None = None
     chip_stability_context: dict[str, Any] | None = None
     phase1_observation: dict[str, Any] | None = None

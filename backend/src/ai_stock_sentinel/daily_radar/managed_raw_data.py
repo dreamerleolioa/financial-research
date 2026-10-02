@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.db.models import StockAnalysisCache, UserPortfolio
+from ai_stock_sentinel.db.models import StockAnalysisCache
 from ai_stock_sentinel.taiwan_symbols import (
     is_supported_taiwan_symbol,
     normalize_taiwan_symbol,
@@ -38,24 +38,14 @@ def select_managed_raw_data_symbols(
 ) -> ManagedRawDataSelection:
     """Select non-radar symbols that still need daily final raw-data coverage.
 
-    Active positions have priority over recently analyzed symbols. All source
-    rows are bounded by ``run_date`` so a historical maintenance run cannot use
-    portfolio entries or analysis cache rows from the future.
+    Only recent general research participates. Retained position caches do not
+    schedule work, and historical maintenance cannot read future analysis rows.
     """
 
     if max_symbols < 1:
         raise ValueError("max_symbols must be positive")
 
-    active_rows = session.scalars(
-        select(UserPortfolio.symbol)
-        .where(
-            UserPortfolio.is_active.is_(True),
-            UserPortfolio.entry_date <= run_date,
-        )
-        .order_by(UserPortfolio.symbol.asc())
-    ).all()
-    active_symbols = _ordered_supported_symbols(active_rows)
-
+    active_symbols: list[str] = []
     recent_start_date = run_date - timedelta(
         days=MANAGED_RAW_DATA_ANALYSIS_LOOKBACK_DAYS
     )
@@ -65,6 +55,7 @@ def select_managed_raw_data_symbols(
     recent_rows = session.execute(
         select(StockAnalysisCache.symbol, latest_analysis_date)
         .where(
+            StockAnalysisCache.analysis_type == "general",
             StockAnalysisCache.record_date >= recent_start_date,
             StockAnalysisCache.record_date <= run_date,
         )

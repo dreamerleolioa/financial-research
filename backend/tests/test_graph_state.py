@@ -41,7 +41,7 @@ def test_graph_state_has_technical_profile_field() -> None:
     assert "technical_profile" in hints
 
 
-def test_graph_state_has_position_fields():
+def test_graph_state_excludes_retired_position_fields():
     """GraphState must include all PositionState optional fields."""
     import typing
 
@@ -55,7 +55,7 @@ def test_graph_state_has_position_fields():
         "distance_to_trailing_stop_pct", "distance_to_support_pct",
         "unrealized_pnl", "holding_days",
     ]:
-        assert field in hints, f"GraphState missing field: {field}"
+        assert field not in hints, f"GraphState retained retired field: {field}"
 
 
 def test_prev_context_field_exists():

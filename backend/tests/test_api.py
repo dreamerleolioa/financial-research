@@ -15,7 +15,6 @@ from ai_stock_sentinel.analysis.application.analysis_cache import (
     fetch_and_store_raw_data,
     upsert_analysis_cache,
 )
-from ai_stock_sentinel.analysis.application.response_builder import indicators_with_position_risk_from_full_result
 from ai_stock_sentinel.auth.dependencies import get_current_user
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.data_sources.taiwan_price_limits import TaiwanPriceLimitSnapshot
@@ -426,7 +425,7 @@ def test_analyze_response_includes_chip_stability_context_without_passing_it_to_
         "caveats": [
             {
                 "code": "weekly_chip_stability_companion_only",
-                "message": "TDCC 週頻籌碼穩定性補充，不納入 technical score、Daily Radar ranking 或 portfolio risk 分數。",
+                "message": "TDCC 週頻籌碼穩定性補充，不納入 technical score 或 Daily Radar ranking。",
             }
         ],
     }
@@ -671,9 +670,7 @@ def test_analyze_persists_intraday_average_volumes_with_actual_finality(monkeypa
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.max)
     monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: True)
     monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda db, data: captured.setdefault("cache", data))
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda db, data: captured.setdefault("log", data))
 
     response = _client_with_graph(graph).post("/analyze", json={"symbol": "2330.TW"})
 
@@ -681,8 +678,6 @@ def test_analyze_persists_intraday_average_volumes_with_actual_finality(monkeypa
     expected_average = pytest.approx(sum(volumes[:-1]) / 20)
     assert captured["cache"]["is_final"] is False
     assert captured["cache"]["indicators"]["avg_volume_20"] == expected_average
-    assert captured["log"]["is_final"] is False
-    assert captured["log"]["indicators"]["avg_volume_20"] == expected_average
 
 
 # ---------------------------------------------------------------------------
@@ -1084,283 +1079,6 @@ _DISTRIBUTION_POSITION_FINAL_STATE = {
 }
 
 
-def test_analyze_position_returns_position_analysis_block() -> None:
-    """The /analyze/position endpoint must return a position_analysis object."""
-    graph = _make_graph(_POSITION_FINAL_STATE)
-    client = _client_with_graph(graph)
-
-    response = client.post("/analyze/position", json={
-        "symbol": "2330.TW",
-        "entry_price": 980.0,
-    })
-    assert response.status_code == 200
-    body = response.json()
-    assert "position_analysis" in body
-    pa = body["position_analysis"]
-    assert "entry_price" in pa
-    assert "profit_loss_pct" in pa
-    assert "position_status" in pa
-    assert "trailing_stop" in pa
-    assert "recommended_action" in pa
-    assert pa["recommended_action"] in ("Hold", "Trim", "Exit")
-    assert pa["risk_state"] == "stable"
-    assert pa["risk_state_label"] == "風險狀態穩定"
-    assert pa["risk_control_reference"]["reference_type"] == "dynamic_defense_reference"
-    assert "recommended_action" in pa["command_language_deprecated"]
-    assert "skip_ai" not in graph.invoke.call_args.args[0]
-
-
-def test_analyze_position_persists_intraday_average_volumes_with_actual_finality(monkeypatch) -> None:
-    """Position cache must exclude the unfinished current-day volume during market hours."""
-    import ai_stock_sentinel.analysis.router as api_module
-
-    closes = [100.0 + idx for idx in range(21)]
-    volumes = [1_000.0 + idx * 10 for idx in range(20)] + [9_999.0]
-    snapshot = {
-        **asdict(_POSITION_SNAPSHOT),
-        "recent_closes": closes,
-        "recent_highs": [price + 1.0 for price in closes],
-        "recent_lows": [price - 1.0 for price in closes],
-        "recent_volumes": volumes,
-        "recent_volume_dates": ["2026-07-29"] * 20 + ["2026-07-30"],
-        "fetched_at": "2026-07-30T05:00:00+00:00",
-    }
-    graph = _make_graph({**_POSITION_FINAL_STATE, "snapshot": snapshot})
-    captured: dict[str, dict] = {}
-
-    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.max)
-    monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda db, data: captured.setdefault("cache", data))
-    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
-
-    response = _client_with_graph(graph).post(
-        "/analyze/position",
-        json={"symbol": "2330.TW", "entry_price": 980.0},
-    )
-
-    assert response.status_code == 200
-    assert captured["cache"]["is_final"] is False
-    assert captured["cache"]["indicators"]["avg_volume_20"] == pytest.approx(sum(volumes[:-1]) / 20)
-
-
-def test_position_cache_full_result_can_seed_history_risk_language_snapshot() -> None:
-    indicators = indicators_with_position_risk_from_full_result(
-        {"close_price": 1100.0},
-        {
-            "position_analysis": {
-                "risk_state": "elevated",
-                "risk_state_label": "風險狀態升高",
-                "discipline_triggers": ["收盤跌破風險控制參考價"],
-                "observation_conditions": ["量價仍需觀察"],
-                "risk_control_reference": {"reference_price": 980.0},
-            },
-        },
-    )
-
-    assert indicators["close_price"] == 1100.0
-    assert indicators["position_risk_language"] == {
-        "risk_state": "elevated",
-        "risk_state_label": "風險狀態升高",
-        "discipline_triggers": ["收盤跌破風險控制參考價"],
-        "observation_conditions": ["量價仍需觀察"],
-        "risk_control_reference": {"reference_price": 980.0},
-    }
-
-
-def test_analyze_position_entry_price_required() -> None:
-    """entry_price is required for /analyze/position."""
-    client = TestClient(api.app)
-    response = client.post("/analyze/position", json={"symbol": "2330.TW"})
-    assert response.status_code == 422
-
-
-def test_analyze_position_optional_fields_accepted() -> None:
-    """entry_date and quantity are accepted but optional."""
-    graph = _make_graph(_POSITION_FINAL_STATE)
-    client = _client_with_graph(graph)
-
-    response = client.post("/analyze/position", json={
-        "symbol": "2330.TW",
-        "entry_price": 980.0,
-        "entry_date": "2026-01-15",
-        "quantity": 1000,
-    })
-    assert response.status_code == 200
-
-
-def test_analyze_position_exit_reason_not_null_when_distribution_profit() -> None:
-    """Spec §7: exit_reason must not be null when flow=distribution and profit>0."""
-    graph = _make_graph(_DISTRIBUTION_POSITION_FINAL_STATE)
-    client = _client_with_graph(graph)
-
-    response = client.post("/analyze/position", json={
-        "symbol": "2330.TW",
-        "entry_price": 800.0,
-    })
-    assert response.status_code == 200
-    body = response.json()
-    pa = body["position_analysis"]
-    if pa["recommended_action"] in ("Trim", "Exit"):
-        assert pa["exit_reason"] is not None
-        assert pa["risk_state"] in {"elevated", "critical"}
-        assert pa["discipline_triggers"]
-        assert "exit_reason" in pa["command_language_deprecated"]
-
-
-def test_analyze_position_shared_context_does_not_override_rule_based_fields(monkeypatch) -> None:
-    """Shared context can surface caveats but must not change deterministic position fields."""
-    import ai_stock_sentinel.analysis.router as api_module
-
-    monkeypatch.setattr(
-        api_module,
-        "_read_shared_context_for_symbol",
-        lambda db, *, symbol, consumer: {
-            "version": "shared-context-read-v1",
-            "symbol": symbol,
-            "consumer": consumer,
-            "contexts": [
-                {
-                    "context_type": "lending",
-                    "source": {"domain": "background_context", "provider": "fixture"},
-                    "as_of_date": "2026-06-07",
-                    "freshness": "fresh",
-                    "missing_reason": None,
-                    "replay_key": "background_context:2330.TW:lending:2026-06-07",
-                    "applicable_consumers": ["position_analysis"],
-                    "payload": {"short_pressure": "elevated"},
-                }
-            ],
-            "caveats": [
-                {
-                    "context_type": "lending",
-                    "label": "借券空方壓力背景",
-                    "source": {"domain": "background_context", "provider": "fixture"},
-                    "as_of_date": "2026-06-07",
-                    "freshness": "fresh",
-                    "missing_reason": None,
-                    "replay_key": "background_context:2330.TW:lending:2026-06-07",
-                    "applicable_consumers": ["position_analysis"],
-                }
-            ],
-            "data_quality": {
-                "status": "fresh",
-                "freshness_counts": {"fresh": 1, "stale": 0, "missing": 0, "unknown": 0},
-                "missing_reasons": [],
-                "blocking": False,
-            },
-        },
-    )
-    graph = _make_graph(_POSITION_FINAL_STATE)
-    client = _client_with_graph(graph)
-
-    response = client.post("/analyze/position", json={
-        "symbol": "2330.TW",
-        "entry_price": 980.0,
-    })
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["shared_context"]["consumer"] == "position_analysis"
-    assert body["shared_context"]["caveats"][0]["context_type"] == "lending"
-    pa = body["position_analysis"]
-    assert pa["recommended_action"] == _POSITION_FINAL_STATE["recommended_action"]
-    assert pa["trailing_stop"] == _POSITION_FINAL_STATE["trailing_stop"]
-    assert pa["exit_reason"] == _POSITION_FINAL_STATE["exit_reason"]
-    graph_input = graph.invoke.call_args.args[0]
-    assert "shared_context" not in graph_input
-    assert "background_context" not in graph_input
-
-
-def test_analyze_position_cache_hit_requires_same_entry_price(monkeypatch) -> None:
-    """Position cache must not reuse a previous result with a different cost basis."""
-    import ai_stock_sentinel.analysis.router as api_module
-    from ai_stock_sentinel.config import STRATEGY_VERSION
-
-    cache = MagicMock()
-    cache.symbol = "2330.TW"
-    cache.analysis_is_final = True
-    cache.strategy_version = STRATEGY_VERSION
-    cache.action_tag = "opportunity"
-    cache.signal_confidence = 70
-    cache.recommended_action = "Hold"
-    cache.final_verdict = "舊持股診斷"
-    cache.full_result = {
-        **_POSITION_FINAL_STATE,
-        "position_analysis": {
-            "entry_price": 980.0,
-            "recommended_action": "Hold",
-        },
-        "is_final": True,
-        "errors": [],
-    }
-
-    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: cache)
-    monkeypatch.setattr(api_module, "_check_symbol_exists", lambda symbol: None)
-    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
-
-    graph = _make_graph({**_POSITION_FINAL_STATE, "entry_price": 900.0})
-    client = _client_with_graph(graph)
-    response = client.post("/analyze/position", json={"symbol": "2330.TW", "entry_price": 900.0})
-
-    assert response.status_code == 200
-    assert graph.invoke.called
-    assert response.json()["position_analysis"]["entry_price"] == 900.0
-
-
-def test_analyze_position_cache_hit_reuses_same_position_request(monkeypatch) -> None:
-    """A position cache hit is valid only when entry price/date/quantity match."""
-    import ai_stock_sentinel.analysis.router as api_module
-    from ai_stock_sentinel.config import STRATEGY_VERSION
-
-    full_result = {
-        **_POSITION_FINAL_STATE,
-        "position_analysis": {
-            "entry_price": 980.0,
-            "recommended_action": "Hold",
-        },
-        "_position_request": {
-            "entry_price": 980.0,
-            "entry_date": "2026-01-15",
-            "quantity": 1000,
-        },
-        "is_final": True,
-        "errors": [],
-    }
-    cache = MagicMock()
-    cache.symbol = "2330.TW"
-    cache.analysis_is_final = True
-    cache.strategy_version = STRATEGY_VERSION
-    cache.action_tag = "opportunity"
-    cache.signal_confidence = 70
-    cache.recommended_action = "Hold"
-    cache.final_verdict = "持股診斷"
-    cache.full_result = full_result
-
-    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: cache)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
-
-    graph = _make_graph({})
-    client = _client_with_graph(graph)
-    response = client.post("/analyze/position", json={
-        "symbol": "2330.TW",
-        "entry_price": 980.0,
-        "entry_date": "2026-01-15",
-        "quantity": 1000,
-    })
-
-    assert response.status_code == 200
-    assert not graph.invoke.called
-    assert response.json()["position_analysis"]["entry_price"] == 980.0
-
-
 def test_shared_context_read_reports_missing_and_stale_without_blocking(monkeypatch) -> None:
     import ai_stock_sentinel.shared_context as shared_context_module
 
@@ -1582,8 +1300,6 @@ def test_cache_hit_returns_deterministic_fields_and_scrubs_retired_llm_payload(m
 
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda db, symbol, analysis_type="general": cache)
     monkeypatch.setattr(api_module, "capture_general_analysis_calibration_sample", fake_capture)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "resolve_symbol_name", lambda symbol: "台積電" if symbol == "2330.TW" else None)
 
     fake_db = MagicMock()
@@ -1866,8 +1582,6 @@ def test_analyze_cache_is_called_with_full_result(monkeypatch) -> None:
         captured["data"] = data
 
     monkeypatch.setattr(api_module, "upsert_analysis_cache", fake_upsert)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "MARKET_CLOSE", api_module._time.min)
     monkeypatch.setattr(
@@ -1906,8 +1620,6 @@ def test_analyze_general_endpoint_reads_only_general_cache(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "load_yesterday_context", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
     monkeypatch.setattr(api_module, "fetch_and_store_raw_data", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "_read_shared_context_for_symbol", lambda *a, **kw: None)
 
     graph = _make_graph(
@@ -2003,8 +1715,6 @@ def test_analyze_calls_backfill_yesterday_indicators(monkeypatch) -> None:
 
     monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
     monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
 
     graph = _make_graph({
@@ -2042,8 +1752,6 @@ def test_analyze_injects_prev_context(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
     monkeypatch.setattr(api_module, "load_yesterday_context", fake_load_yesterday_context)
     monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
     monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
 
     graph = MagicMock()
@@ -2056,40 +1764,5 @@ def test_analyze_injects_prev_context(monkeypatch) -> None:
     )
     client = _client_with_graph(graph)
     client.post("/analyze", json={"symbol": "2330.TW"})
-
-    assert captured_state.get("prev_context") == prev_ctx
-
-
-def test_analyze_position_injects_prev_context(monkeypatch) -> None:
-    """POST /analyze/position 應在 graph.invoke 前讀取昨日上下文並注入 prev_context。"""
-    import ai_stock_sentinel.analysis.router as api_module
-
-    prev_ctx = {
-        "prev_action_tag": "Hold",
-        "prev_confidence": 61.5,
-        "prev_rsi": 65.2,
-        "prev_ma_alignment": "bullish",
-    }
-    captured_state = {}
-
-    def fake_backfill(db, symbol):
-        pass
-
-    def fake_load_yesterday_context(symbol, db):
-        return prev_ctx
-
-    monkeypatch.setattr(api_module, "backfill_yesterday_indicators", fake_backfill)
-    monkeypatch.setattr(api_module, "load_yesterday_context", fake_load_yesterday_context)
-    monkeypatch.setattr(api_module, "upsert_analysis_cache", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "upsert_analysis_log", lambda *a, **kw: None)
-    monkeypatch.setattr(api_module, "has_active_portfolio", lambda *a, **kw: False)
-    monkeypatch.setattr(api_module, "get_analysis_cache", lambda *a, **kw: None)
-
-    graph = MagicMock()
-    graph.invoke.side_effect = lambda state: (
-        captured_state.update(state) or {**_POSITION_FINAL_STATE}
-    )
-    client = _client_with_graph(graph)
-    client.post("/analyze/position", json={"symbol": "2330.TW", "entry_price": 950.0})
 
     assert captured_state.get("prev_context") == prev_ctx

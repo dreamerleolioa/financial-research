@@ -130,7 +130,7 @@ def chip_stability_context_from_weekly_major_holders(
     caveats = [
         {
             "code": "weekly_chip_stability_companion_only",
-            "message": "TDCC 週頻籌碼穩定性補充，不納入 technical score、Daily Radar ranking 或 portfolio risk 分數。",
+            "message": "TDCC 週頻籌碼穩定性補充，不納入 technical score 或 Daily Radar ranking。",
         }
     ]
 

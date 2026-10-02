@@ -25,10 +25,8 @@ def test_release_gate_checklist_covers_required_boundaries() -> None:
         "Shared Context Gate",
         "Copy Guard Gate",
         "Release Gate",
-        "portfolio risk data-gap",
         "production DB / cloud internal API path",
         "不是勝率或交易建議",
-        "不得轉成 portfolio action",
         "context_only",
         "deprecated",
         "STRATEGY_VERSION",
@@ -43,9 +41,6 @@ def test_release_gate_commands_cover_automated_checks() -> None:
         "tests/test_daily_radar_rule_governance.py",
         "tests/test_daily_radar_forward_validation.py",
         "tests/test_risk_language_copy_guard.py",
-        "tests/test_portfolio_risk_summary.py",
-        "tests/test_portfolio_router.py",
-        "tests/test_portfolio_history.py",
         "tests/test_investment_discipline_release_gate.py",
         "tests/test_compatibility_deprecation_audit.py",
         "pnpm build",
@@ -64,9 +59,6 @@ def test_release_gate_workflow_runs_backend_and_frontend_gates() -> None:
     assert "tests/test_daily_radar_rule_governance.py" in workflow
     assert "tests/test_daily_radar_forward_validation.py" in workflow
     assert "tests/test_risk_language_copy_guard.py" in workflow
-    assert "tests/test_portfolio_risk_summary.py" in workflow
-    assert "tests/test_portfolio_router.py" in workflow
-    assert "tests/test_portfolio_history.py" in workflow
     assert "tests/test_investment_discipline_release_gate.py" in workflow
     assert "tests/test_compatibility_deprecation_audit.py" in workflow
     assert "pnpm build" in workflow
@@ -94,5 +86,5 @@ def test_release_gate_tracks_compatibility_deprecation_audit() -> None:
     assert "legacy/internal compatibility" in audit_text
     assert "不可刪除" in audit_text
     assert "Historical cache" not in gate_text
-    assert "portfolio history" in audit_text.lower()
+    assert "歷史資料模型" in audit_text
     assert "primary UI" in audit_text or "primary display" in audit_text
