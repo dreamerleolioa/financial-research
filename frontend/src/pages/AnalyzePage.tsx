@@ -1,12 +1,9 @@
-import { useEffect, useId, useRef, useState, type ReactNode, type SubmitEvent } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { analyzeSymbol } from "../lib/analyzeApi";
 import type { AnalyzeResponse } from "../lib/analysisTypes";
 import { TechnicalIndicatorsPanel } from "../components/TechnicalIndicatorsPanel";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
-import { useCreatePortfolioItemMutation } from "../features/portfolio/mutations";
-import { fetchPortfolioItems, type CreatePortfolioRequest } from "../lib/portfolioApi";
-import { createWatchlistItem, fetchWatchlistItems } from "../lib/watchlistApi";
 import { formatAnalysisError } from "../lib/presentationLabels";
 import {
   buildTechnicalIndicatorsCopyText,
@@ -15,32 +12,6 @@ import {
   type CopyStatus,
   writeClipboardText,
 } from "../lib/technicalIndicators";
-import {
-  type AddEntryCondition,
-  type DefaultStopRule,
-  type EntryRecordContext,
-  type EntryRecordReason,
-  type PlannedHoldingPeriod,
-} from "../lib/portfolioTypes";
-import {
-  ADD_ENTRY_CONDITION_OPTIONS,
-  DEFAULT_STOP_RULE_OPTIONS,
-  ENTRY_RECORD_REASON_OPTIONS,
-  PLANNED_HOLDING_PERIOD_OPTIONS,
-} from "../lib/portfolioLabels";
-
-interface AddPortfolioForm {
-  entry_price: string;
-  quantity: string;
-  entry_date: string;
-  entry_reason: EntryRecordReason | "";
-  planned_holding_period: PlannedHoldingPeriod | "";
-  default_stop_rule: DefaultStopRule | "";
-  planned_stop_price: string;
-  add_entry_condition: AddEntryCondition | "";
-  notes: string;
-}
-
 const ACTION_TAG_MAP: Record<string, { emoji: string; label: string; color: string }> = {
   opportunity: { emoji: "🟢", label: "機會", color: "text-green-600" },
   overheated: { emoji: "🔴", label: "過熱", color: "text-red-600" },
@@ -122,70 +93,7 @@ function TriggersSection({
   );
 }
 
-function createInitialAddPortfolioForm(): AddPortfolioForm {
-  return {
-    entry_price: "",
-    quantity: "",
-    entry_date: new Date().toISOString().slice(0, 10),
-    entry_reason: "",
-    planned_holding_period: "",
-    default_stop_rule: "",
-    planned_stop_price: "",
-    add_entry_condition: "",
-    notes: "",
-  };
-}
-
-function parseOptionalNumberInput(value: string): number | null | undefined {
-  const trimmedValue = value.trim();
-  if (trimmedValue === "") return undefined;
-  const parsedValue = Number(trimmedValue);
-  return Number.isFinite(parsedValue) ? parsedValue : null;
-}
-
-function formatPriceForInput(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "";
-  return String(Number(value.toFixed(2)));
-}
-
-function derivePlannedStopPrice(
-  rule: AddPortfolioForm["default_stop_rule"],
-  indicators: AnalyzeResponse["technical_indicators"],
-): number | null {
-  if (!indicators) return null;
-
-  const value =
-    rule === "break_20d_low"
-      ? indicators.low_20d
-      : rule === "break_ma20"
-        ? indicators.ma20
-        : rule === "break_ma60"
-          ? indicators.ma60
-          : null;
-
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function buildEntryRecord(
-  addForm: AddPortfolioForm,
-  plannedStopPrice: number | undefined,
-): EntryRecordContext | undefined {
-  const entryRecord: EntryRecordContext = {};
-  const note = addForm.notes.trim();
-
-  if (addForm.entry_reason) entryRecord.entry_reason = addForm.entry_reason;
-  if (addForm.planned_holding_period) entryRecord.planned_holding_period = addForm.planned_holding_period;
-  if (addForm.default_stop_rule) entryRecord.default_stop_rule = addForm.default_stop_rule;
-  if (plannedStopPrice !== undefined) entryRecord.planned_stop_price = plannedStopPrice;
-  if (addForm.add_entry_condition) entryRecord.add_entry_condition = addForm.add_entry_condition;
-  if (note) entryRecord.note = note;
-
-  return Object.keys(entryRecord).length > 0 ? entryRecord : undefined;
-}
-
 export default function AnalyzePage() {
-  const createPortfolioItemMutation = useCreatePortfolioItemMutation();
-  const addPortfolioTitleId = useId();
   const [searchParams] = useSearchParams();
   const querySymbol = searchParams.get("symbol") ?? "2330.TW";
   const [symbol, setSymbol] = useState(querySymbol);
@@ -199,17 +107,6 @@ export default function AnalyzePage() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const [portfolioSymbols, setPortfolioSymbols] = useState<Set<string>>(new Set());
-  const [watchlistSymbols, setWatchlistSymbols] = useState<Set<string>>(new Set());
-  const [watchlistLoading, setWatchlistLoading] = useState(false);
-  const [watchlistStatus, setWatchlistStatus] = useState<"idle" | "success" | "error">("idle");
-  const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const addPortfolioDialogRef = useRef<HTMLDivElement>(null);
-  const addPortfolioCloseButtonRef = useRef<HTMLButtonElement>(null);
-  const [addForm, setAddForm] = useState<AddPortfolioForm>(() => createInitialAddPortfolioForm());
-  const [addLoading, setAddLoading] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
   const [technicalCopyStatus, setTechnicalCopyStatus] = useState<CopyStatus>("idle");
   const technicalCopyResetTimerRef = useRef<number | null>(null);
 
@@ -220,51 +117,6 @@ export default function AnalyzePage() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!showAddModal) return;
-
-    const previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    addPortfolioCloseButtonRef.current?.focus();
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setShowAddModal(false);
-        return;
-      }
-
-      if (event.key !== "Tab") return;
-
-      const dialog = addPortfolioDialogRef.current;
-      if (!dialog) return;
-
-      const focusableElements = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((element) => element.getAttribute("aria-hidden") !== "true");
-      if (focusableElements.length === 0) return;
-
-      const firstFocusableElement = focusableElements[0];
-      const lastFocusableElement = focusableElements[focusableElements.length - 1];
-      const activeElement = document.activeElement;
-
-      if (event.shiftKey && activeElement === firstFocusableElement) {
-        event.preventDefault();
-        lastFocusableElement.focus();
-      } else if (!event.shiftKey && activeElement === lastFocusableElement) {
-        event.preventDefault();
-        firstFocusableElement.focus();
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      previouslyFocusedElement?.focus();
-    };
-  }, [showAddModal]);
 
   function updateTechnicalCopyStatus(status: CopyStatus) {
     if (technicalCopyResetTimerRef.current != null) {
@@ -278,90 +130,6 @@ export default function AnalyzePage() {
         setTechnicalCopyStatus("idle");
         technicalCopyResetTimerRef.current = null;
       }, COPY_STATUS_RESET_MS);
-    }
-  }
-
-  async function fetchPortfolio() {
-    try {
-      const data = await fetchPortfolioItems();
-      setPortfolioSymbols(new Set(data.map((r) => r.symbol.trim().toUpperCase())));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function fetchWatchlist() {
-    try {
-      const data = await fetchWatchlistItems();
-      setWatchlistSymbols(new Set(data.map((item) => item.symbol.trim().toUpperCase())));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  useEffect(() => {
-    void fetchWatchlist();
-  }, []);
-
-  async function handleAddPortfolio(e: SubmitEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setAddLoading(true);
-    setAddError(null);
-    try {
-      const parsedStopPrice = parseOptionalNumberInput(addForm.planned_stop_price);
-      if (parsedStopPrice === null) {
-        setAddError("防守價必須是有效數字。");
-        return;
-      }
-      if (parsedStopPrice != null && parsedStopPrice <= 0) {
-        setAddError("防守價必須大於 0。");
-        return;
-      }
-      if (addForm.default_stop_rule === "fixed_price" && parsedStopPrice == null) {
-        setAddError("選擇固定防守價時，請填寫防守價。");
-        return;
-      }
-
-      const entryRecord = buildEntryRecord(addForm, parsedStopPrice);
-      const notes = addForm.notes.trim();
-      const payload: CreatePortfolioRequest = {
-        symbol,
-        entry_price: parseFloat(addForm.entry_price),
-        quantity: addForm.quantity ? parseInt(addForm.quantity) : 0,
-        entry_date: addForm.entry_date,
-        notes: notes || null,
-      };
-
-      if (entryRecord) payload.entry_record = entryRecord;
-
-      await createPortfolioItemMutation.mutateAsync(payload);
-      await fetchPortfolio();
-      setShowAddModal(false);
-      setAddForm(createInitialAddPortfolioForm());
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : "新增失敗");
-    } finally {
-      setAddLoading(false);
-    }
-  }
-
-  async function handleAddWatchlist() {
-    const targetSymbol = typeof result?.snapshot.symbol === "string" ? result.snapshot.symbol : symbol;
-    if (!targetSymbol.trim()) return;
-
-    setWatchlistLoading(true);
-    setWatchlistStatus("idle");
-    setWatchlistMessage(null);
-    try {
-      const item = await createWatchlistItem({ symbol: targetSymbol.trim() });
-      setWatchlistSymbols((current) => new Set(current).add(item.symbol.trim().toUpperCase()));
-      setWatchlistStatus("success");
-      setWatchlistMessage("已加入關注列表");
-    } catch (err) {
-      setWatchlistStatus("error");
-      setWatchlistMessage(err instanceof Error ? err.message : "加入關注列表失敗");
-    } finally {
-      setWatchlistLoading(false);
     }
   }
 
@@ -379,8 +147,6 @@ export default function AnalyzePage() {
   async function handleAnalyze() {
     if (!symbol.trim()) return;
     updateTechnicalCopyStatus("idle");
-    setWatchlistStatus("idle");
-    setWatchlistMessage(null);
 
     // 取消上一個尚未完成的請求
     abortControllerRef.current?.abort();
@@ -392,7 +158,6 @@ export default function AnalyzePage() {
     try {
       const data = await analyzeSymbol({ symbol: symbol.trim() }, controller.signal);
       setResult(data);
-      await Promise.all([fetchPortfolio(), fetchWatchlist()]);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return; // 使用者已送出新請求，忽略
       setResult({
@@ -429,12 +194,8 @@ export default function AnalyzePage() {
   const firstError = result?.errors?.[0];
   const snapshot = result?.snapshot ?? {};
   const analyzedSymbol = typeof snapshot.symbol === "string" ? snapshot.symbol : symbol;
-  const normalizedAnalyzedSymbol = analyzedSymbol.trim().toUpperCase();
-  const isTracked = portfolioSymbols.has(normalizedAnalyzedSymbol);
-  const isWatchlisted = watchlistSymbols.has(normalizedAnalyzedSymbol);
   const analyzedSymbolName = getAnalyzeSymbolName(result, snapshot);
   const analyzedDisplayName = analyzedSymbolName ? `${analyzedSymbolName} ${analyzedSymbol}` : analyzedSymbol;
-  const autoPlannedStopPrice = derivePlannedStopPrice(addForm.default_stop_rule, result?.technical_indicators ?? null);
   const riskStateLabel = typeof result?.risk_state_label === "string" ? result.risk_state_label : "狀態未明";
   const observationConditions: string[] = Array.isArray(result?.observation_conditions)
     ? result.observation_conditions.filter((item): item is string => typeof item === "string")
@@ -475,14 +236,6 @@ export default function AnalyzePage() {
     </div>
   ));
 
-  function handleDefaultStopRuleChange(value: AddPortfolioForm["default_stop_rule"]) {
-    const derivedStopPrice = derivePlannedStopPrice(value, result?.technical_indicators ?? null);
-    setAddForm((form) => ({
-      ...form,
-      default_stop_rule: value,
-      planned_stop_price: derivedStopPrice != null ? formatPriceForInput(derivedStopPrice) : "",
-    }));
-  }
   const observationContent: ReactNode =
     observationConditions.length > 0 ? (
       <div>
@@ -581,42 +334,9 @@ export default function AnalyzePage() {
           <div className="ui-refresh-highlight flex flex-col gap-3 border-t border-border-subtle bg-card-hover/35 px-4 py-3 sm:flex-row sm:items-center sm:justify-between md:px-6">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-text-primary">{analyzedDisplayName}</p>
-              <p className="mt-0.5 text-xs text-text-faint">確定性分析已更新，可加入追蹤或複製資料進行外部研究。</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void handleAddWatchlist()}
-                disabled={isWatchlisted || watchlistLoading}
-                title={isWatchlisted ? "已在關注列表" : "加入關注列表"}
-                className="ui-button-secondary min-h-10 px-3 text-xs"
-              >
-                {watchlistLoading ? "儲存中..." : isWatchlisted ? "已關注" : "加入關注"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAddError(null);
-                  setAddForm(createInitialAddPortfolioForm());
-                  setShowAddModal(true);
-                }}
-                disabled={isTracked}
-                title={isTracked ? "已追蹤" : "加入我的持股"}
-                className="ui-button-secondary min-h-10 px-3 text-xs"
-              >
-                {isTracked ? "已追蹤" : "加入持股"}
-              </button>
+              <p className="mt-0.5 text-xs text-text-faint">確定性分析已更新，可複製資料進行外部研究。</p>
             </div>
           </div>
-        )}
-        {watchlistMessage && (
-          <p
-            className={`border-t border-border-subtle px-4 py-2 text-xs md:px-6 ${
-              watchlistStatus === "error" ? "text-red-600 dark:text-red-400" : "text-emerald-700 dark:text-emerald-300"
-            }`}
-          >
-            {watchlistMessage}
-          </p>
         )}
       </section>
 
@@ -761,261 +481,6 @@ export default function AnalyzePage() {
             )
           ) : null}
         </section>
-      )}
-
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4">
-          <div
-            ref={addPortfolioDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={addPortfolioTitleId}
-            className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[14px] border border-border bg-surface-raised shadow-panel sm:max-h-[calc(100dvh-2rem)] sm:rounded-[14px]"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
-              <div className="min-w-0">
-                <h3 id={addPortfolioTitleId} className="text-base font-semibold text-text-primary">
-                  加入我的持股
-                </h3>
-                <p className="mt-1 text-xs text-text-faint">
-                  {analyzedDisplayName}，只儲存你在表單中確認的持股與進場紀錄。
-                </p>
-              </div>
-              <button
-                type="button"
-                ref={addPortfolioCloseButtonRef}
-                onClick={() => setShowAddModal(false)}
-                className="ui-icon-button shrink-0 border border-border"
-                aria-label="關閉加入持股視窗"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </button>
-            </div>
-
-            <form onSubmit={handleAddPortfolio} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overscroll-contain overflow-y-auto px-5 py-4">
-                <div className="space-y-5">
-                  <section className="space-y-3">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">股票代碼</span>
-                        <input
-                          value={symbol}
-                          readOnly
-                          className="ui-input bg-card-hover font-medium text-text-secondary"
-                        />
-                      </label>
-                      {analyzedSymbolName && (
-                        <label className="space-y-1">
-                          <span className="text-xs font-medium text-text-muted">股票名稱</span>
-                          <input
-                            value={analyzedSymbolName}
-                            readOnly
-                            className="ui-input bg-card-hover font-medium text-text-secondary"
-                          />
-                        </label>
-                      )}
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">成本價 *</span>
-                        <input
-                          type="number"
-                          value={addForm.entry_price}
-                          onChange={(e) => setAddForm((f) => ({ ...f, entry_price: e.target.value }))}
-                          required
-                          min="0.01"
-                          step="0.01"
-                          placeholder="980"
-                          className="ui-input"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">持有股數 *</span>
-                        <input
-                          type="number"
-                          value={addForm.quantity}
-                          onChange={(e) => setAddForm((f) => ({ ...f, quantity: e.target.value }))}
-                          required
-                          min="1"
-                          placeholder="1000"
-                          className="ui-input"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">購入日期</span>
-                        <input
-                          type="date"
-                          value={addForm.entry_date}
-                          onChange={(e) => setAddForm((f) => ({ ...f, entry_date: e.target.value }))}
-                          className="ui-input"
-                        />
-                      </label>
-                    </div>
-                  </section>
-
-                  <section className="border-t border-border-subtle pt-4">
-                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <p className="text-xs font-semibold text-text-primary">進場紀錄</p>
-                        <p className="mt-1 text-xs leading-relaxed text-text-faint">
-                          選填，用來保存你當下確認過的進場脈絡。
-                        </p>
-                      </div>
-                      <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                        不會自動引用外部分析結論
-                      </span>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">進場理由</span>
-                        <select
-                          value={addForm.entry_reason}
-                          onChange={(e) =>
-                            setAddForm((f) => ({
-                              ...f,
-                              entry_reason: e.target.value as AddPortfolioForm["entry_reason"],
-                            }))
-                          }
-                          className="ui-input"
-                        >
-                          <option value="">未選擇（不送出）</option>
-                          {ENTRY_RECORD_REASON_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">預計持有期間</span>
-                        <select
-                          value={addForm.planned_holding_period}
-                          onChange={(e) =>
-                            setAddForm((f) => ({
-                              ...f,
-                              planned_holding_period: e.target.value as AddPortfolioForm["planned_holding_period"],
-                            }))
-                          }
-                          className="ui-input"
-                        >
-                          <option value="">未選擇（不送出）</option>
-                          {PLANNED_HOLDING_PERIOD_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">預設防守規則</span>
-                        <select
-                          value={addForm.default_stop_rule}
-                          onChange={(e) =>
-                            handleDefaultStopRuleChange(e.target.value as AddPortfolioForm["default_stop_rule"])
-                          }
-                          className="ui-input"
-                        >
-                          <option value="">未選擇（不送出）</option>
-                          {DEFAULT_STOP_RULE_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-xs font-medium text-text-muted">防守價</span>
-                        <input
-                          type="number"
-                          value={addForm.planned_stop_price}
-                          onChange={(e) => setAddForm((f) => ({ ...f, planned_stop_price: e.target.value }))}
-                          min="0.01"
-                          step="0.01"
-                          placeholder={
-                            addForm.default_stop_rule === "fixed_price"
-                              ? "請輸入固定防守價"
-                              : autoPlannedStopPrice != null
-                                ? formatPriceForInput(autoPlannedStopPrice)
-                                : "未選擇則不送出"
-                          }
-                          className="ui-input"
-                        />
-                        <span className="block text-xs leading-relaxed text-text-faint">
-                          MA20、MA60、20 日低點可從本次分析帶入；固定價格請手動確認。
-                        </span>
-                      </label>
-                      <label className="space-y-1 sm:col-span-2">
-                        <span className="text-xs font-medium text-text-muted">新增批次條件</span>
-                        <select
-                          value={addForm.add_entry_condition}
-                          onChange={(e) =>
-                            setAddForm((f) => ({
-                              ...f,
-                              add_entry_condition: e.target.value as AddPortfolioForm["add_entry_condition"],
-                            }))
-                          }
-                          className="ui-input"
-                        >
-                          <option value="">未選擇（不送出）</option>
-                          {ADD_ENTRY_CONDITION_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <label className="mt-3 block space-y-1">
-                      <span className="text-xs font-medium text-text-muted">備註（選填）</span>
-                      <textarea
-                        value={addForm.notes}
-                        onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
-                        rows={3}
-                        placeholder="補充你已確認的進場脈絡"
-                        className="ui-input resize-none py-2"
-                      />
-                    </label>
-                  </section>
-                </div>
-              </div>
-
-              <div className="border-t border-border-subtle bg-surface-raised px-5 py-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))]">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  {addError ? (
-                    <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-                      {addError}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-text-faint">必填欄位完成後即可加入持股。</p>
-                  )}
-                  <div className="flex justify-end gap-2">
-                    <button type="button" onClick={() => setShowAddModal(false)} className="ui-button-secondary">
-                      取消
-                    </button>
-                    <button type="submit" disabled={addLoading} className="ui-button-primary">
-                      {addLoading ? "新增中..." : "確認新增"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
       )}
 
       {(result?.technical_profile || result?.technical_indicators) && (

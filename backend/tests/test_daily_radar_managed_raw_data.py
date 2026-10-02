@@ -28,7 +28,7 @@ def db_session() -> Session:
         yield session
 
 
-def test_managed_raw_data_selection_prioritizes_active_and_has_no_lookahead(
+def test_managed_raw_data_selection_ignores_retired_positions_and_has_no_lookahead(
     db_session: Session,
 ) -> None:
     run_date = date(2026, 6, 1)
@@ -54,21 +54,17 @@ def test_managed_raw_data_selection_prioritizes_active_and_has_no_lookahead(
         max_symbols=3,
     )
 
-    assert selection.active_symbols == ("006208.TW", "2330.TW")
     assert selection.recent_analysis_symbols == (
         "2330.TW",
         "2454.TW",
         "3008.TW",
     )
-    assert selection.symbols == ("006208.TW", "2330.TW", "2454.TW")
-    assert selection.active_symbol_count == 2
+    assert selection.symbols == ("2330.TW", "2454.TW", "3008.TW")
     assert selection.recent_analysis_symbol_count == 3
-    assert selection.overlap_symbol_count == 1
-    assert selection.deferred_recent_symbol_count == 1
-    assert selection.active_symbols_over_budget is False
+    assert selection.deferred_recent_symbol_count == 0
 
 
-def test_managed_raw_data_selection_fails_closed_when_active_positions_exceed_budget(
+def test_managed_raw_data_selection_ignores_retired_positions_above_budget(
     db_session: Session,
 ) -> None:
     db_session.add_all(
@@ -86,8 +82,6 @@ def test_managed_raw_data_selection_fails_closed_when_active_positions_exceed_bu
     )
 
     assert selection.symbols == ()
-    assert selection.active_symbol_count == 2
-    assert selection.active_symbols_over_budget is True
 
 
 def _portfolio(symbol: str, *, entry_date: date) -> UserPortfolio:

@@ -1,3 +1,5 @@
+> 2026-10-02 功能範圍：產品保留個股分析、Daily Radar 與主動式 ETF。關注列表、個人持股、持股診斷與復盤已下線；舊路由導向 `/analyze`，舊 API 回傳 404。歷史資料模型、資料與 Alembic migration 保留，未執行資料刪除。AVWAP／籌碼背景採雷達標的，基本面保留 prepared universe／final raw pool，managed raw data 僅更新近期 general 分析標的。
+
 # AI Stock Sentinel 開發執行手冊（Execution Playbook）
 
 > 版本：v3.0
@@ -100,8 +102,6 @@ uv run pytest -q
 ```bash
 cd backend
 uv run pytest -q tests/test_daily_radar_service.py tests/test_daily_radar_api.py
-uv run pytest -q tests/test_portfolio_router.py tests/test_portfolio_history.py
-uv run pytest -q tests/test_position_lifecycle_analysis.py tests/test_trade_review.py
 ```
 
 ### 5.2 前端
@@ -121,6 +121,8 @@ pnpm dev
 
 ### 5.3 Release Gate
 
+`deploy.yml` 在 PR 與 main push 執行完整後端測試、前端 lint、E2E 與 build；GitHub Pages 部署必須等待 `test-backend` 及 `test-frontend` 成功。`investment-discipline-release-gate.yml` 保留手動精簡檢查，避免 PR 重複執行。
+
 投資紀律、Daily Radar、portfolio lifecycle 或風險語言相關變更，至少跑 release gate 覆蓋面：
 
 ```bash
@@ -129,9 +131,6 @@ uv run pytest -q \
   tests/test_daily_radar_rule_governance.py \
   tests/test_daily_radar_forward_validation.py \
   tests/test_risk_language_copy_guard.py \
-  tests/test_portfolio_risk_summary.py \
-  tests/test_portfolio_router.py \
-  tests/test_portfolio_history.py \
   tests/test_investment_discipline_release_gate.py \
   tests/test_compatibility_deprecation_audit.py
 ```

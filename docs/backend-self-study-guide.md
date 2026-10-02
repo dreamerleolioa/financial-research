@@ -1,3 +1,5 @@
+> 2026-10-02 功能範圍：產品保留個股分析、Daily Radar 與主動式 ETF。關注列表、個人持股、持股診斷與復盤已下線；舊路由導向 `/analyze`，舊 API 回傳 404。歷史資料模型、資料與 Alembic migration 保留，未執行資料刪除。AVWAP／籌碼背景採雷達標的，基本面保留 prepared universe／final raw pool，managed raw data 僅更新近期 general 分析標的。
+
 # AI Stock Sentinel 後端自學導覽
 
 > 更新日期：2026-06-12

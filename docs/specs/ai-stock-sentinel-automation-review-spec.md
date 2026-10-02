@@ -1,3 +1,5 @@
+> 歷史規格：其中關注列表、個人持股、持股診斷與復盤段落已於 2026-10-02 退役，僅保留作為歷史資料與 migration 的解讀依據，不再作為現行 API／UI 或未來功能承諾。現行範圍以 README 與 API／前端規格為準。
+
 # AI Stock Sentinel 自動化復盤與數據循環系統技術規格
 
 > 類型：Phase 7 系統擴展文件
@@ -940,7 +942,7 @@ correlation_matrix = {
 
 | 任務           | 說明                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
-| 個股歷史趨勢元件 | 保留 `GET /history/{symbol}`、`historyApi.ts` 與 `ConfidenceChart`，後續嵌入 Analyze / Portfolio，而非獨立主入口 |
+| 個股歷史趨勢元件 | 2026-10-02 已移除未使用的 endpoint、API client 與 chart；分析流程使用的歷史 context 與資料仍保留 |
 | 編輯持股       | `PUT /portfolio/{id}`：修改成本價、股數、日期、備註；儲存後提示重新觸發分析              |
 | 刪除持股       | `DELETE /portfolio/{id}`：硬刪 `user_portfolio` + `daily_analysis_log`，需使用者確認彈窗 |
 

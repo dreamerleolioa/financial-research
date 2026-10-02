@@ -9,13 +9,10 @@ from ai_stock_sentinel.analysis.metrics import (
     ma as _ma,
     macd as _macd,
 )
-from ai_stock_sentinel.analysis.position_scorer import build_position_risk_language
 from ai_stock_sentinel.config import STRATEGY_VERSION
 from ai_stock_sentinel.analysis.schemas import (
     AnalyzeResponse,
     CachedAnalyzeResponse,
-    PositionAnalysis,
-    PositionAnalyzeRequest,
     TechnicalIndicators,
 )
 from ai_stock_sentinel.technical.profile import (
@@ -144,8 +141,6 @@ def extract_indicators(result: dict, *, is_final: bool) -> dict:
             "retail_holder_ratio_delta_pct": inst.get("retail_holder_ratio_delta_pct"),
         } if not inst.get("error") else None,
     }
-    if result.get("entry_price") is not None:
-        indicators["position_risk_language"] = position_risk_language_snapshot_from_result(result)
     return indicators
 
 
@@ -348,40 +343,6 @@ def build_response(
     if fundamental_data and not fundamental_data.get("error"):
         data_sources.extend(_fundamental_data_sources(fundamental_data))
 
-    position_analysis: PositionAnalysis | None = None
-    if result.get("entry_price") is not None:
-        position_risk_language = build_position_risk_language(
-            recommended_action=result.get("recommended_action"),
-            trailing_stop=result.get("trailing_stop"),
-            trailing_stop_reason=result.get("trailing_stop_reason"),
-            exit_reason=result.get("exit_reason"),
-            position_status=result.get("position_status"),
-            position_narrative=result.get("position_narrative"),
-            profit_loss_pct=result.get("profit_loss_pct"),
-            distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
-            distance_to_support_pct=result.get("distance_to_support_pct"),
-        )
-        position_analysis = PositionAnalysis(
-            entry_price=result["entry_price"],
-            profit_loss_pct=result.get("profit_loss_pct"),
-            position_status=result.get("position_status"),
-            position_narrative=result.get("position_narrative"),
-            risk_state=position_risk_language["risk_state"],
-            risk_state_label=position_risk_language["risk_state_label"],
-            discipline_triggers=position_risk_language["discipline_triggers"],
-            observation_conditions=position_risk_language["observation_conditions"],
-            risk_control_reference=position_risk_language["risk_control_reference"],
-            command_language_deprecated=position_risk_language["command_language_deprecated"],
-            recommended_action=result.get("recommended_action"),
-            trailing_stop=result.get("trailing_stop"),
-            trailing_stop_reason=result.get("trailing_stop_reason"),
-            exit_reason=result.get("exit_reason"),
-            distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
-            distance_to_support_pct=result.get("distance_to_support_pct"),
-            unrealized_pnl=result.get("unrealized_pnl"),
-            holding_days=result.get("holding_days"),
-        )
-
     technical_payload = build_technical_profile_from_snapshot(
         snapshot if isinstance(snapshot, dict) else {},
         is_final=bool(result.get("is_final", True)),
@@ -427,7 +388,6 @@ def build_response(
         command_language_deprecated=analyze_risk_language["command_language_deprecated"],
         data_sources=data_sources,
         fundamental_data=result.get("fundamental_data"),
-        position_analysis=position_analysis,
         technical_indicators=technical_indicators,
         technical_profile=technical_profile,
         errors=response_errors,
@@ -446,31 +406,6 @@ def _fundamental_data_sources(fundamental_data: dict[str, Any]) -> list[str]:
     return ["fundamental"]
 
 
-def position_cache_matches(full_result: dict[str, Any], payload: PositionAnalyzeRequest) -> bool:
-    def same_price(value: Any) -> bool:
-        try:
-            return abs(float(value) - float(payload.entry_price)) < 0.0001
-        except (TypeError, ValueError):
-            return False
-
-    position_analysis = full_result.get("position_analysis")
-    if not isinstance(position_analysis, dict):
-        return False
-
-    cached_request = full_result.get("_position_request")
-    if isinstance(cached_request, dict):
-        return (
-            same_price(cached_request.get("entry_price"))
-            and cached_request.get("entry_date") == payload.entry_date
-            and cached_request.get("quantity") == payload.quantity
-        )
-
-    if payload.entry_date is not None or payload.quantity is not None:
-        return False
-
-    return same_price(position_analysis.get("entry_price"))
-
-
 def compute_bollinger_position(bb: dict, close_price: float | None) -> str | None:
     upper = bb["bollinger_upper"]
     lower = bb["bollinger_lower"]
@@ -486,44 +421,6 @@ def compute_bollinger_position(bb: dict, close_price: float | None) -> str | Non
     if close_price >= (lower + band_range * 0.5):
         return "above_mid"
     return "below_mid"
-
-
-def position_risk_language_snapshot_from_result(result: dict[str, Any]) -> dict[str, Any]:
-    risk_language = build_position_risk_language(
-        recommended_action=result.get("recommended_action"),
-        trailing_stop=result.get("trailing_stop"),
-        trailing_stop_reason=result.get("trailing_stop_reason"),
-        exit_reason=result.get("exit_reason"),
-        position_status=result.get("position_status"),
-        position_narrative=result.get("position_narrative"),
-        profit_loss_pct=result.get("profit_loss_pct"),
-        distance_to_trailing_stop_pct=result.get("distance_to_trailing_stop_pct"),
-        distance_to_support_pct=result.get("distance_to_support_pct"),
-    )
-    return position_risk_language_snapshot(risk_language)
-
-
-def position_risk_language_snapshot(position_analysis: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "risk_state": position_analysis.get("risk_state"),
-        "risk_state_label": position_analysis.get("risk_state_label"),
-        "discipline_triggers": list(position_analysis.get("discipline_triggers") or []),
-        "observation_conditions": list(position_analysis.get("observation_conditions") or []),
-        "risk_control_reference": position_analysis.get("risk_control_reference"),
-    }
-
-
-def indicators_with_position_risk_from_full_result(
-    indicators: dict[str, Any] | None,
-    full_result: dict[str, Any] | None,
-) -> dict[str, Any]:
-    next_indicators = dict(indicators or {})
-    if next_indicators.get("position_risk_language"):
-        return next_indicators
-    position_analysis = (full_result or {}).get("position_analysis")
-    if isinstance(position_analysis, dict):
-        next_indicators["position_risk_language"] = position_risk_language_snapshot(position_analysis)
-    return next_indicators
 
 
 def build_analyze_risk_language(result: dict[str, Any]) -> dict[str, Any]:
