@@ -129,6 +129,8 @@ TanStack Query 管理 server state：
 
 ## Daily Radar Surface
 
+最新結果由 `features/daily-radar/queries.ts` 的 TanStack Query hook 管理，快取 60 秒。切頁返回先呈現快取，過期時背景更新；手動更新失敗保留上次結果並明示錯誤。沒有公開結果的 404 視為空結果。讀取支援 AbortSignal，登入身分切換仍取消並清除全部 query cache。
+
 `DailyRadarPage` 是每日觀察清單，不是交易指令頁。列表使用後端已排序的 candidates；前端不得因試驗版 AVWAP trace 重新排序、重新分類或調整風險標籤。
 
 - Run status：掃描日、執行狀態、候選數與資料新鮮度使用同一個狀態區呈現。各資料源日期預設收合，只有使用者展開時才顯示完整清單；資料落後時仍須顯示明確警示。

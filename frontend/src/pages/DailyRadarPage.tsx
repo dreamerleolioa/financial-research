@@ -1,9 +1,8 @@
+import { useLatestDailyRadarQuery } from "../features/daily-radar/queries";
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { WorkspaceEmptyState } from "../components/app-shell/WorkspaceEmptyState";
 import {
-  fetchLatestDailyRadarRun,
-  isNoPublicDailyRadarRunUnavailableError,
   toDailyRadarDisplayError,
   type DailyRadarDisplayError,
 } from "../lib/dailyRadarApi";
@@ -1493,45 +1492,9 @@ function RunSummary({ run }: { run: DailyRadarRunResponse }) {
 }
 
 export default function DailyRadarPage() {
-  const [run, setRun] = useState<DailyRadarRunResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<DailyRadarDisplayError | null>(null);
-  const [latestRunUnavailable, setLatestRunUnavailable] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadLatestRun() {
-      setLoading(true);
-      setError(null);
-      setLatestRunUnavailable(false);
-      try {
-        const data = await fetchLatestDailyRadarRun();
-        if (!cancelled) {
-          setRun(data);
-          setLatestRunUnavailable(false);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          if (isNoPublicDailyRadarRunUnavailableError(err)) {
-            setRun(null);
-            setLatestRunUnavailable(true);
-            return;
-          }
-          setError(toDailyRadarDisplayError(err));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    loadLatestRun();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadKey]);
+  const { data: run, isPending: loading, isFetching, error: queryError, refetch } = useLatestDailyRadarQuery();
+  const error = queryError ? toDailyRadarDisplayError(queryError) : null;
+  const refresh = () => { void refetch(); };
 
   return (
     <div className="space-y-5">
@@ -1546,23 +1509,27 @@ export default function DailyRadarPage() {
           </div>
           <button
             type="button"
-            onClick={() => setReloadKey((key) => key + 1)}
-            disabled={loading}
+            onClick={refresh}
+            disabled={isFetching}
             className="ui-button-secondary self-start md:self-auto"
           >
-            {loading ? "讀取中…" : "重新整理"}
+            {isFetching ? "讀取中…" : "重新整理"}
           </button>
         </div>
       </header>
 
+      {error && (
+        <div role="alert" className="space-y-2">
+          <ErrorState error={error} onRetry={refresh} />
+          {run && <p className="text-sm text-text-muted">更新失敗，以下保留上次成功讀取的資料。</p>}
+        </div>
+      )}
       {loading ? (
         <LoadingState />
-      ) : error ? (
-        <ErrorState error={error} onRetry={() => setReloadKey((key) => key + 1)} />
       ) : run ? (
         <RunSummary run={run} />
-      ) : latestRunUnavailable ? (
-        <WholeRunEmptyState onRefresh={() => setReloadKey((key) => key + 1)} />
+      ) : !error ? (
+        <WholeRunEmptyState onRefresh={refresh} />
       ) : null}
     </div>
   );

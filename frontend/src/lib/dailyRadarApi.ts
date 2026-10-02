@@ -50,8 +50,8 @@ export function isNoPublicDailyRadarRunUnavailableError(error: unknown): boolean
   );
 }
 
-export async function fetchLatestDailyRadarRun(query: DailyRadarRunQuery = {}): Promise<DailyRadarRunResponse> {
-  return requestDailyRadar<DailyRadarRunResponse>(buildDailyRadarUrl("/daily-radar/latest", query));
+export async function fetchLatestDailyRadarRun(query: DailyRadarRunQuery = {}, signal?: AbortSignal): Promise<DailyRadarRunResponse> {
+  return requestDailyRadar<DailyRadarRunResponse>(buildDailyRadarUrl("/daily-radar/latest", query), signal);
 }
 
 export async function fetchDailyRadarRunByDate(
@@ -76,8 +76,8 @@ function buildDailyRadarUrl(pathname: string, query: DailyRadarQuery): string {
   return apiUrl(pathname, query as Record<string, string | number | boolean | null | undefined>);
 }
 
-async function requestDailyRadar<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function requestDailyRadar<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw await dailyRadarErrorFromResponse(response);
   }
