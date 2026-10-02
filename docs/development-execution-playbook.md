@@ -121,6 +121,8 @@ pnpm dev
 
 ### 5.3 Release Gate
 
+`deploy.yml` 在 PR 與 main push 執行完整後端測試、前端 lint、E2E 與 build；GitHub Pages 部署必須等待 `test-backend` 及 `test-frontend` 成功。`investment-discipline-release-gate.yml` 保留手動精簡檢查，避免 PR 重複執行。
+
 投資紀律、Daily Radar、portfolio lifecycle 或風險語言相關變更，至少跑 release gate 覆蓋面：
 
 ```bash

@@ -52,7 +52,7 @@ def test_release_gate_workflow_runs_backend_and_frontend_gates() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "Investment Discipline Release Gate" in workflow
-    assert "pull_request:" in workflow
+    assert "pull_request:" not in workflow
     assert "workflow_dispatch:" in workflow
     assert "push:" not in workflow
     assert "uv run pytest -q" in workflow
