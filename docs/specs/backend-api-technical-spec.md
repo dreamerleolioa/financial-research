@@ -3,12 +3,12 @@
 # AI Stock Sentinel 後端 API 技術規格（v5）
 
 > 類型：技術文件（Technical Doc）
-> 更新日期：2026-08-31
-> 更新摘要：2026-08-28 起 `/analyze` 與 `/analyze/position` 完全移除 LLM 與 RSS 新聞執行路徑，改為 crawl → external data → judge → preprocess → score → strategy 的 deterministic contract。`persist_result` 控制是否讀寫完整分析快取；`skip_ai` 與 `news_text` 只保留 deprecated request 相容。舊 LLM/news response 欄位暫留但固定為空值，舊快取也不得重新送出歷史 AI 內容。本文後段若仍提及 LLM prompt 或 cleaner，視為歷史設計而非現行 runtime contract。
-> Cache 邊界：deterministic contract 的 `STRATEGY_VERSION` 為 `2.0.0`。`1.0.0` 與更舊的當日快取可能含新聞／LLM 派生的 confidence、strategy、action plan 或 position recommendation，必須視為版本失效並重跑，不得只清空顯示欄位後沿用派生決策。
-> Release Gate 仍包含 portfolio risk data-gap、Determinism Gate、Shared Context Gate 與 Copy Guard Gate；本次移除模型不得放寬既有投資紀律邊界。
+> 更新日期：2026-10-02
+> 更新摘要：2026-10-02 起只保留個股分析、Daily Radar 與主動式 ETF；持股、watchlist 與預留歷史趨勢端點已退役。`/analyze` 已移除 LLM 與 RSS 新聞執行路徑，改為 crawl → external data → judge → preprocess → score → strategy 的 deterministic contract。`persist_result` 控制是否讀寫完整分析快取；`skip_ai` 與 `news_text` 只保留 deprecated request 相容。舊 LLM/news response 欄位暫留但固定為空值，舊快取也不得重新送出歷史 AI 內容。本文後段若仍提及 LLM prompt 或 cleaner，視為歷史設計而非現行 runtime contract。
+> Cache 邊界：deterministic contract 的 `STRATEGY_VERSION` 為 `2.0.0`。`1.0.0` 與更舊的當日快取可能含新聞／LLM 派生的 confidence、strategy 或 action plan，必須視為版本失效並重跑，不得只清空顯示欄位後沿用派生決策。
+> 現行驗證保留 Determinism Gate、Shared Context Gate 與 Copy Guard Gate，以及退役端點回傳 404、歷史持股資料不參與研究刷新等回歸檢查。
 > Technical profile v4 保留純量化的 `ma20_slope_pct_5d`、`ma60_slope_pct_10d`、`macd_hist_slope_pct_3d`、`macd_hist_trend`、`atr_pct_percentile_60d`、`bollinger_bandwidth_percentile_60d` 與 profile 內的 `temporal_evidence`；移除跨指標綜合判斷 `volatility_regime`、`technical_conflicts`、`signal_conflicts`。新增時序欄位目前全為 evidence-only、`impact=0`，不得改變 `score_summary`；盤中若無日期可證明 completed bars，temporal evidence 必須 fail closed。
-> 2026-08-31 新增 authenticated 主動式 ETF 每日持股讀取 API 與 internal refresh API；每個來源各自保存 point-in-time 原始證據，只有集中來源與發行投信官方來源逐筆一致的基金才發布變化，不進入 Daily Radar scoring。
+> 主動式 ETF 保留 authenticated 每日持股讀取 API 與 internal refresh API；現行持股 adapter 為 MoneyDJ-only，保存 point-in-time 原始證據，有可用快照即發布比較，不進入 Daily Radar scoring。
 
 ## 功能退役與相容欄位邊界
 
@@ -57,14 +57,14 @@ make run-api
 
 ### Phase 1 Daily AVWAP backend foundation（internal service，無公開 endpoint）
 
-- **用途**：建立 Phase 1 日頻 AVWAP snapshot cache，供後續 `/analyze`、Portfolio risk summary 與 Daily Radar response projection 讀取。
-- **Managed universe**：只合併目前登入使用者的 active holdings、watchlist symbols，以及 latest public Daily Radar selected candidates；任意 Analyze symbol 不會在 Phase 1A 觸發 historical backfill。
+- **用途**：建立 Phase 1 日頻 AVWAP snapshot cache，供 `/analyze` 與 Daily Radar response projection 讀取。
+- **Managed universe（Analyze 讀取範圍）**：只使用指定 market 的 latest public Daily Radar selected candidates（`selection_status = "selected"`），不依登入使用者的歷史持股或關注資料擴張。任意 Analyze symbol 不會觸發 historical backfill；不在此範圍時回傳 `not_in_phase1_universe`。
 - **資料來源**：TWSE 上市 `.TW` 預設使用 `STOCK_DAY` single-symbol monthly query，逐月補齊 requested lookback window；上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback。`adjustment_mode = "unadjusted"`，不使用 `TaiwanStockPriceAdj` 作為預設。
 - **快取表**：`phase1_avwap_snapshots`，以 `symbol` / `data_date` / logical `dataset = "phase1_daily_ohlcv_amount"` / `adjustment_mode` 唯一 upsert。此表是全域市場 cache，只保存 market bars、generic anchors、data quality 與 source trace，不保存任何使用者持股 `entry_date`、`avg_cost` 或 holding-specific entry anchor。fresh snapshot 會先被重用，缺漏或 stale 才逐檔 fetch。
-- **更新路徑**：Daily Radar `refresh-avwap` step 會讀 `daily_radar_prepared_runs.selected_symbols`，再合併 active holdings 與 watchlist symbols 刷新當日 AVWAP snapshot；只會送 `.TW` / `.TWO` 進 provider，其他 symbol 以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄，不算 missing。Analyze、Portfolio、public Daily Radar read path 與 `run-scoring` 只讀 snapshot，不觸發 refresh。
+- **更新路徑（refresh 範圍）**：Daily Radar `refresh-avwap` step 只以本次 `daily_radar_prepared_runs.selected_symbols` 作為 seed symbols 刷新當日 AVWAP snapshot，不合併歷史持股、關注資料或另一個公開批次的 candidates。底層 refresh service 只使用呼叫端明確提供的 seed symbols；只有 `.TW` / `.TWO` 會進 provider，其他 symbol 以 `skipped_symbol_reasons.unsupported_phase1_avwap_market` 記錄，不算 missing。Analyze、public Daily Radar read path 與 `run-scoring` 只讀 snapshot，不觸發 refresh。
 - **計算契約**：日頻 AVWAP 使用 source traded amount / volume。TWSE 對應 `成交金額 / 成交股數`，FinMind fallback 對應 `Trading_money / Trading_Volume`；若 source row 缺 amount 才用 typical price × volume fallback，且對應 anchor / data quality 必須標記 `estimated = true`。最新 source row 的交易日必須等於 requested `data_date` 才能寫成 `fresh` snapshot；若 provider 只回到較早交易日，應寫 `freshness = "missing"` 與 `missing_reason = "daily_price_row_missing_for_data_date"`，不得把前一交易日資料標成當日 final。
 - **資料品質**：provider/quota/row 缺漏不得產生假中性 AVWAP；應寫入 `freshness = "missing"` 與 `missing_reason`，讓 1B/1C 以 caveat 顯示。
-- **公開 API 狀態**：不新增 public endpoint；只投影到既有 `/analyze`、Portfolio risk summary 與 Daily Radar response。
+- **公開 API 狀態**：不新增 public endpoint；只投影到 `/analyze` 與 Daily Radar response。Portfolio risk summary 已退役，沒有對應 projection 或 consumer。
 
 ### 主動式 ETF 每日持股追蹤
 
@@ -107,7 +107,7 @@ make run-api
 
 - **欄位說明**
   - `symbol`：股票代碼，必填；目前只接受台灣上市 `.TW` 與上櫃 `.TWO`，輸入會去除前後空白並轉大寫，其他市場回 422。
-  - `persist_result`：是否讀寫完整分析快取與歷史紀錄，選填，預設為 `true`。Watchlist/Portfolio 快查使用 `false`。
+  - `persist_result`：是否讀寫完整分析快取並在 final 分析時保存一般分析校準樣本，選填，預設為 `true`。設為 `false` 時跳過 full-result cache 與 calibration capture；仍可讀寫共用 raw-data cache，不會新增使用者持股歷史紀錄。
   - `news_text`、`skip_ai`：deprecated 相容欄位；不進入 graph。未提供 `persist_result` 時，舊 `skip_ai: true` 仍映射為不持久化。
 
 - **Response 200（成功/可降級成功）**
@@ -301,7 +301,7 @@ make run-api
 }
 ```
 
-`price_limit_status` 為 `limit_up`、`limit_down`、`normal` 或 `unknown`。Analyze／Watchlist 個股查詢會在 response projection 統一補上漲跌停 context，因此新抓 snapshot、10 分鐘 raw cache 與完整分析 cache 命中都使用相同契約：後端必須使用同一筆 TWSE MIS 回傳的成交價 `z` 與官方上下限 `u`／`w` 判斷，並以獨立的 `market_current_price`、`market_current_price_source = "twse_mis"` 與 `price_limit_quote_price` 揭露即時市場報價。Canonical `snapshot.current_price` 不覆寫，因 technical indicators 與 technical profile 仍以該次 yfinance/raw snapshot 計算；前端需把 MIS 價明示為即時顯示值，不得暗示既有技術指標已隨之重算。不得以前一交易日收盤價直接乘上 110%／90% 推算。此 optional provider 使用 bounded worker，response 最多等待 500ms；provider socket／total reader deadline 同為 500ms，reader 使用 available-byte `read1`（fallback 單 byte read）定期重查 wall clock，response body 上限 64 KiB，避免單次填滿 buffer 的 blocking read 讓慢速串流長期占滿 worker。官方端未提供即時成交價／上下限、容量已滿或查詢失敗時回傳 `unknown`，且保留原 snapshot 現價，不得中斷個股分析主流程。Provider/display-only 欄位不進 graph、technical scoring、Portfolio 純價格刷新或內部 raw-data 持久化。
+`price_limit_status` 為 `limit_up`、`limit_down`、`normal` 或 `unknown`。Analyze 個股查詢會在 response projection 統一補上漲跌停 context，因此新抓 snapshot、10 分鐘 raw cache 與完整分析 cache 命中都使用相同契約：後端必須使用同一筆 TWSE MIS 回傳的成交價 `z` 與官方上下限 `u`／`w` 判斷，並以獨立的 `market_current_price`、`market_current_price_source = "twse_mis"` 與 `price_limit_quote_price` 揭露即時市場報價。Canonical `snapshot.current_price` 不覆寫，因 technical indicators 與 technical profile 仍以該次 yfinance/raw snapshot 計算；前端需把 MIS 價明示為即時顯示值，不得暗示既有技術指標已隨之重算。不得以前一交易日收盤價直接乘上 110%／90% 推算。此 optional provider 使用 bounded worker，response 最多等待 500ms；provider socket／total reader deadline 同為 500ms，reader 使用 available-byte `read1`（fallback 單 byte read）定期重查 wall clock，response body 上限 64 KiB，避免單次填滿 buffer 的 blocking read 讓慢速串流長期占滿 worker。官方端未提供即時成交價／上下限、容量已滿或查詢失敗時回傳 `unknown`，且保留原 snapshot 現價，不得中斷個股分析主流程。Provider/display-only 欄位不進 graph、technical scoring 或內部 raw-data 持久化。
 
 - **欄位說明**
 
@@ -344,11 +344,11 @@ make run-api
 
 > **Shared context read contract（Phase 2C）**：`shared_context` 由 `shared_background_contexts` cache 以 selected symbol 批次/單檔讀取產生，欄位包含 `version`（目前 `shared-context-read-v1`）、`symbol`、`consumer`、`contexts[]`、`caveats[]` 與 `data_quality`。`contexts[]`/`caveats[]` 使用 consumer-neutral 欄位：`context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers`；read path 會尊重 `applicable_consumers`，若 cache row 不適用目標 consumer，會回傳 non-blocking `context_not_applicable_to_consumer` caveat。資料缺漏或 stale 時以 caveat 呈現且 `data_quality.blocking=false`。此 payload 在 response 組裝階段附加，不進入 LangGraph initial state，不觸發 weekly major holders、lending、full margin 的即時逐檔昂貴查詢。
 
-> **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver、portfolio risk score 或 action/verdict/classification 覆寫。
+> **Chip stability context（2026-06-23）**：`chip_stability_context` 是從 `weekly_major_holders` shared context 派生的 response-only companion。它讀取 TDCC 千張大戶持股比例與前期差異，增加代表籌碼穩定性提升，連續增加代表籌碼愈加穩定；下降代表籌碼穩定性轉弱或集中度下降，但必須帶 caveat，不能單獨判定看空。此欄位不進入 LangGraph initial state、LLM prompt、`technical_indicators` 分數、Daily Radar ranking driver 或 action/verdict 覆寫。
 
-> **Canonical technical profile（2026-08-28）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze、`persist_result: false` Watchlist quick lookup、`/analyze/position` 與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v5`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 與 Daily Radar compatibility scoring 都必須使用當前 bar 之前的 20 根已完成 bar；`technical_indicators.prior_high_20d` / `prior_low_20d` 是可回放的判斷基準，`high_20d` / `low_20d` 則保留包含當前 bar 的純顯示值。`macd_hist_pct = macd_hist / close * 100` 是跨股價尺度比較與門檻判斷的 canonical 值，禁止用 MACD 原始絕對值套用跨股票固定門檻。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v5 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
+> **Canonical technical profile（2026-08-28）**：`technical_profile` 由 `backend/src/ai_stock_sentinel/technical/` 的 canonical metrics/profile builder 產生，Analyze（含 `persist_result: false` 的即時研究查詢）與 Daily Radar 共用同一套公式。`technical_profile.version` 目前為 `technical-layer-v5`；`score_summary.technical_score = round(50 + capped_total * (17 / 5))`，cap 或映射公式變更時必須升級版本並更新測試 fixture。`primary_score_inputs` 只放方向與可操作性核心證據，例如均線結構、支撐壓力、量能參與、MACD、OBV 與 ATR 支撐距離；`risk_overheat_filters` 只放過熱或高波動懲罰，例如 RSI、BIAS、Bollinger 與 ATR 高波動；`secondary_evidence` 只作輔助，不主導 primary score；`display_only` 保存 raw/display values，不影響 `score_summary`。支撐壓力 primary scoring 與 Daily Radar compatibility scoring 都必須使用當前 bar 之前的 20 根已完成 bar；`technical_indicators.prior_high_20d` / `prior_low_20d` 是可回放的判斷基準，`high_20d` / `low_20d` 則保留包含當前 bar 的純顯示值。`macd_hist_pct = macd_hist / close * 100` 是跨股價尺度比較與門檻判斷的 canonical 值，禁止用 MACD 原始絕對值套用跨股票固定門檻。`atr_risk` 與 `atr_state` 必須分離，前者只回答支撐/停損距離是否可控，後者才處理高波動懲罰，避免 ATR 重複計票。`data_quality` 必須含 `data_date`、`is_final`、lookback coverage、OHLCV/volume 對齊狀態、`price_level_basis` 與 `missing_fields`；OHLC high/low 不完整時，支撐壓力 primary signal 應以 missing/caveat 呈現，不計主要分。`required_lookback_days` 是 profile v5 的最低完整判斷門檻，較長週期訊號需在各 signal state/reason/caveats 或 `missing_fields` 中標示不足，不得只用全域 lookback 判定所有欄位完整。`chip_stability_context` 只能透過 `companion_context_refs` 關聯，不得進入任何 technical bucket 或 `score_summary`。
 
-> **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、登入使用者 managed universe 與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / Watchlist / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
+> **Phase 1 AVWAP Analyze projection（Phase 1B）**：`phase1_observation` 由 `phase1_avwap_snapshots` 以目前台北日期、指定 market 的 latest public Daily Radar selected candidates 範圍與 symbol 讀取。Analyze read path 可使用 requested date 當日或以前最新 fresh snapshot，最多回看 7 個 calendar days，避免台北日期已跨日但正式 snapshot 停在上一個交易日時誤判缺資料；response 會同時保留 snapshot `data_date` 與 `requested_data_date`。此欄位只作 evidence/data-quality trace，不進入 LangGraph initial state，不觸發 provider 即時查詢，也不擴張 managed universe。Snapshot 命中時回傳 AVWAP anchors、`freshness`、`missing_reason`、`source` 與 `data_quality`；每個 anchor 的 `distance_to_avwap_pct` 代表 `snapshot_close` 相對 AVWAP 的資料日距離，並以 `distance_basis = "snapshot_close"` 標示。Analyze read projection 會額外以當次 `snapshot.current_price` 產生 `current_distance_to_avwap_pct`、`current_price` 與 `current_distance_basis = "analyze_current_price"`，供 Analyze / copy-to-AI 顯示目前價格相對 AVWAP 的距離；這些 current 欄位只存在 response projection，不寫回 shared `phase1_avwap_snapshots` payload。未命中、過期或讀取失敗時用 non-blocking missing payload 表示，且不得讓 `/analyze` 主流程失敗。
 
 > **`analysis_detail` 分維度欄位**（Session 8，2026-03-09）：
 >
@@ -456,7 +456,7 @@ Daily Radar run status：
 
 - TWSE/TPEX 官方市場 HTTP request 共用 `data_sources.official_http` 的 libcurl transport，維持 CA 與 hostname 驗證；不得為相容 Python 3.14 `VERIFY_X509_STRICT` 而使用 `verify=false`。Provider 仍保留 injectable `request_get` 供 deterministic tests 使用。
 - `POST /internal/fundamentals/refresh`：固定最多 4 路並行取得 TWSE/TPEX 六類產業財報（共 12 datasets）、TWSE 股利決議與 TPEX 除息事件。每個 dataset 最多三次 request attempt；成功資料以 payload hash append revision，只有報表日期非空的已知官方占位列回報 `datasets_skipped` / `skipped_datasets` 並保留 cache，真正的空 payload、schema drift 或單一 dataset 失敗回 `status = partial` 並保留其他成功資料。
-- `POST /internal/fundamentals/backfill`：對 request `symbols` 或 managed universe 做 bounded 歷史 bootstrap；EPS 缺漏先查 MOPS 官方歷史季資料，MOPS 失敗或寫入後歷史仍不足才查 FinMind 財報，股利歷史仍由 FinMind 補齊。managed universe 合併 active holdings、watchlist、最新 prepared universe 與最近一次完成的 AI raw pool。第一頁排除已完整 symbols，並把 immutable snapshot、`raw_pool_date`、server-owned cursor 保存到 `fundamental_backfill_jobs`；後續頁帶 `job_id`/cursor 並以 row lock 驗證。所有未帶 `job_id`、可能建立新 job 的入口都先取得同一 PostgreSQL transaction advisory lock 並檢查 running job；已存在時一般 create 回 `409 fundamental_backfill_job_running`，scheduled `resume_running_job=true` 則接續該 job，封住跨 caller 的 no-row create race。日期未完成、job 不存在、cursor 未帶 job、job completed 或 cursor 不一致一律 fail closed。每頁最多 10 檔；MOPS 單檔使用 5 秒 timeout、一次 attempt，失敗立即降級；FinMind client 使用 10 秒 timeout、零 transport retry、停用 token-expired 自動重試。六批最壞 logical upstream bound 為 60 次 MOPS + 120 次 FinMind（財報與股利）共 180 次。回應以 `provider_attempts` 計數各來源呼叫，並在 `fallback_symbols` 列出 MOPS 後仍需 FinMind 財報的股票。任一 lane 失敗時回 `partial`，成功寫入仍保留，cursor 前移過本頁已嘗試 symbols 以免永久錯誤餓死後續佇列；失敗 symbols 保持 cache incomplete，於 current job 結束後進入新 job。有效回應但 EPS 歷史為空或不足時，維持 `partial` 並在新增的 `data_gaps` 列出 `symbol`、`reason`（`no_eps_history` 或 `insufficient_eps_history`）、`period_count`；未被 fallback 修復的來源／格式／寫入異常保留於 `errors`。舊 response 欄位保留，完整性門檻不變。Workflow 收到 partial 仍接續 cursor/job，至最後一頁或六批上限；跨頁缺口與錯誤寫入 Actions summary，僅有 data gaps 不使 backfill 失敗，有 errors 則在處理完本次可執行頁面後非零結束。手動與 scheduled run 額度用完皆正常保存進度並由下一個平日 07:15 排程接續；未指定 job/cursor/raw-pool date 的手動啟動也會帶 `resume_running_job=true`。舊後端未提供 data_gaps 時，原有 errors 仍保守視為失敗。HTTP／回應契約錯誤仍立即失敗，不猜測續跑游標；官方 refresh 的 failure 回報不變。
+- `POST /internal/fundamentals/backfill`：對 request `symbols` 或 managed universe 做 bounded 歷史 bootstrap；EPS 缺漏先查 MOPS 官方歷史季資料，MOPS 失敗或寫入後歷史仍不足才查 FinMind 財報，股利歷史仍由 FinMind 補齊。managed universe 只合併最新 prepared universe 與指定 `raw_pool_date`（未指定時為最近一次完成）的 final 台股 raw pool；歷史持股與關注資料不參與選取。第一頁排除已完整 symbols，並把 immutable snapshot、`raw_pool_date`、server-owned cursor 保存到 `fundamental_backfill_jobs`；後續頁帶 `job_id`/cursor 並以 row lock 驗證。所有未帶 `job_id`、可能建立新 job 的入口都先取得同一 PostgreSQL transaction advisory lock 並檢查 running job；已存在時一般 create 回 `409 fundamental_backfill_job_running`，scheduled `resume_running_job=true` 則接續該 job，封住跨 caller 的 no-row create race。日期未完成、job 不存在、cursor 未帶 job、job completed 或 cursor 不一致一律 fail closed。每頁最多 10 檔；MOPS 單檔使用 5 秒 timeout、一次 attempt，失敗立即降級；FinMind client 使用 10 秒 timeout、零 transport retry、停用 token-expired 自動重試。六批最壞 logical upstream bound 為 60 次 MOPS + 120 次 FinMind（財報與股利）共 180 次。回應以 `provider_attempts` 計數各來源呼叫，並在 `fallback_symbols` 列出 MOPS 後仍需 FinMind 財報的股票。任一 lane 失敗時回 `partial`，成功寫入仍保留，cursor 前移過本頁已嘗試 symbols 以免永久錯誤餓死後續佇列；失敗 symbols 保持 cache incomplete，於 current job 結束後進入新 job。有效回應但 EPS 歷史為空或不足時，維持 `partial` 並在新增的 `data_gaps` 列出 `symbol`、`reason`（`no_eps_history` 或 `insufficient_eps_history`）、`period_count`；未被 fallback 修復的來源／格式／寫入異常保留於 `errors`。舊 response 欄位保留，完整性門檻不變。Workflow 收到 partial 仍接續 cursor/job，至最後一頁或六批上限；跨頁缺口與錯誤寫入 Actions summary，僅有 data gaps 不使 backfill 失敗，有 errors 則在處理完本次可執行頁面後非零結束。手動與 scheduled run 額度用完皆正常保存進度並由下一個平日 07:15 排程接續；未指定 job/cursor/raw-pool date 的手動啟動也會帶 `resume_running_job=true`。舊後端未提供 data_gaps 時，原有 errors 仍保守視為失敗。HTTP／回應契約錯誤仍立即失敗，不猜測續跑游標；官方 refresh 的 failure 回報不變。
 - 兩者皆使用 `DAILY_RADAR_INTERNAL_TOKEN`。正式 `.github/workflows/fundamental-data.yml` 每個工作日 07:15 先做官方 refresh，再以最多六批、每批十檔的上限補齊 managed/latest raw-pool 基本面歷史；達上限時保留 running job 供下一個排程續跑。手動 backfill/resume 入口維持可用。
 - `FUNDAMENTAL_PROVIDER_MODE` 預設 `finmind_only` 以維持部署相容；切為 `official_cache_first` 後分析先讀 `company_fundamental_periods` / `company_dividend_events`，只有歷史不足才 bootstrap；`official_cache_only` 完全不呼叫 FinMind/yfinance。官方股利事件若無法證明完整涵蓋一整年，`annual_cash_dividend` 必須維持 `null`，不可把部分年度事件冒充年股利。
 
@@ -472,7 +472,7 @@ Daily Radar run status：
 - **公開 schema**：後端資料流改為分段 pipeline 後，public Daily Radar read endpoints 與 candidate response schema 不變。
 - **資料源 request budget**：
   - TWSE/TPEX institutional archive universe：live provider 從已完成的 `T86` / `3itrade_hedge` archive 建立外資當日、投信當日、外資近期連續累積、投信近期連續累積四條獨立軌道，合併上市 `.TW` 與上櫃 `.TWO`。近期軌道最多讀最近 5 個 TW/TWO 同時完整的市場日，要求截至 `run_date` 的 trailing buy streak 至少 2 日且窗口累計淨買超為正；streak 不得跨越缺少 completed archive 的平日，週末則可自然銜接。舊 `TWT38U` / `TWT44U` provider 只保留 legacy prepared-run 相容。
-  - TWSE-first Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時合併 selected universe、active holdings 與 watchlist symbols 後做 refresh；上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，其他 symbol 只記錄 `skipped_symbol_reasons.unsupported_phase1_avwap_market`。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，step status 會標記 failed 並輸出 per-symbol `missing_symbol_reasons`，其中 TWSE 延遲、request failure 與 parser error 需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`；但 `run-scoring` 仍可放行，候選 detail 以 `phase1_avwap_context.freshness = missing` / `missing_reason` 呈現。
+  - TWSE-first Phase 1 Daily AVWAP：正式排程只在 `refresh-avwap` 小時以本次 prepared selected universe 做 refresh；上市 `.TW` 使用 TWSE `STOCK_DAY` 逐月 single-symbol query 補齊 lookback window，上櫃 `.TWO` 保留 FinMind `TaiwanStockPrice` fallback，其他 symbol 只記錄 `skipped_symbol_reasons.unsupported_phase1_avwap_market`。同一 `data_date` 已有 fresh snapshot 時直接重用。若 provider 尚未提供 requested `run_date` row，step status 會標記 failed 並輸出 per-symbol `missing_symbol_reasons`，其中 TWSE 延遲、request failure 與 parser error 需分別保留 `daily_price_row_missing_for_data_date`、`twse_stock_day_request_failed`、`twse_stock_day_parser_error`；但 `run-scoring` 仍可放行，候選 detail 以 `phase1_avwap_context.freshness = missing` / `missing_reason` 呈現。
   - AVWAP repair：台灣時間週二至週六 07:00 的 GitHub Actions 補修排程會對前一個 intended trading date 重跑 `refresh-avwap`；若 business status completed，立即重跑同日 `run-scoring`。Public read 以同日期最新完成 run 呈現補齊後版本，不直接改 candidate JSON。
   - FinMind lending / full margin：正式排程分別在 `refresh-lending` / `refresh-full-margin` 小時對 selected universe symbols refresh；同一 `run_date` 已有 fresh shared context 時直接重用，不再呼叫 provider。其餘 selected symbols 使用固定上限 8 路的 ordered sliding window，只維持最多 8 個 queued / in-flight futures，遇到前方致命錯誤時取消尚未開始的工作，不得先排入完整 symbol batch。所有 `FinMindClient` instance 另共用單一 process-wide HTTP capacity，並在第一個 client 建立時讀取 `FINMIND_MAX_CONCURRENT_REQUESTS`，預設上限 8；一般分析請求維持 non-blocking fail-fast，required Daily Radar refresh 則在整次 `fetch_data` 共用的 30 秒 admission deadline 內取得容量，HTTP retry 只可使用剩餘等待額度。逾時均回傳 `capacity_exhausted` 且不扣 hourly quota。上述路徑維持 per-symbol timeout、retry、quota ledger 與 deterministic response order，避免逐檔同步等待超過反向代理的單一 request 連線時間，也避免重疊 refresh 乘倍放大實際 upstream concurrency。
   - yfinance selected-symbol OHLCV：正式排程只在 `refresh-ohlcv` 小時對 selected universe 中缺少 final raw row，或 final row 缺少必要且為有限數值的 OHLCV / compatibility indicators、canonical `technical_profile`、非空且不晚於 `run_date` 的 `price_history`、必要資料日期的 symbols 做一次 batch download，區間 bounded by `run_date`。`raw_data_is_final = true` 只表示持久化狀態；只有同時通過 candidate/replay 完整度的既有 `StockRawData` 才可重用。補抓既有 row 只更新 technical payload，不得清空既有 institutional / fundamental payload；有明確 refresh payload 或 fresh full-margin context 時，再由對應 projection 覆寫。同一步驟會把技術面 tracks 回寫到 prepared universe，並以 `run_date` 做 point-in-time 查詢，將 fresh `full_margin` shared context 投影至新建或既有 final raw row 的 `fundamental.margin`：`margin_balance_delta_pct` 對應 `margin_delta_pct`，`latest_margin_balance × 1000 / ohlcv.volume` 對應 `margin_to_volume`，並以 context `as_of_date` 寫入 `data_dates.margin`；若比較起點融資餘額為 0，百分比在數學上不可定義，必須保留 `margin_delta_pct_unavailable_reason = baseline_zero`，完整度檢查接受這個明確理由，但 scoring 不得虛構 `0%`、無限大或套用需要該百分比的規則。任何入口的 context refresh 若降級或只回 missing/stale trace，不得清空 raw row 原本可用的 margin。`run-scoring` 與一鍵相容入口都必須在評分前拒絕空 selected universe，並重新確認每個 selected symbol 具備完整 raw row；不得在補抓失敗後退回未過完整度檢查的 final rows。
@@ -601,7 +601,7 @@ Daily Radar run status：
 - **Trace contract**
   - `input_snapshot.market_context` 至少可表示固定 benchmark 的 `regime`、`freshness`、`data_date`、均線位置、波動狀態與 risk flags。
   - `input_snapshot.background_context[]` 可表示 Phase 2A shared background context cache trace，包含 `context_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `payload`。Missing/stale context 不改 `observation_score`、bucket、risk labels 或排序。
-  - `background_context_labels[]` 由 background context trace 派生，包含 `context_type`、`label`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `applicable_consumers`。目前 labels 包含 weekly major holders 背景持股集中脈絡、lending 借券空方壓力背景、full margin 完整融資融券背景。這些 labels 是 context/detail surface，不是交易 action、portfolio recommendation 或 score driver。
+  - `background_context_labels[]` 由 background context trace 派生，包含 `context_type`、`label`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key` 與 `applicable_consumers`。目前 labels 包含 weekly major holders 背景持股集中脈絡、lending 借券空方壓力背景、full margin 完整融資融券背景。這些 labels 是 context/detail surface，不是交易 action、交易推薦或 score driver。
   - `score_breakdown.relative_strength` 表示 benchmark symbol、lookback window、candidate return、benchmark return、relative value、score impact、freshness、data dates、aligned dates 與 missing reason。資料不足時 `relative_value` 為 `null`，不可補 0 假裝中性。
   - `input_snapshot.technical_profile` 與 `score_breakdown.technical_profile` 由 canonical technical profile builder 產生，用於 replay trace、data-quality 與後續 scoring 遷移依據。現行 Daily Radar bucket/cross scoring 仍讀 compatibility `indicators`；`technical_profile` trace 必須能回放 layer impact、bucket cap 前後分數、`technical_profile.version`、`formula_versions` 與 `data_quality`，但不得和 compatibility scoring 重複計票。後續若要讓排名改由 `technical_profile` 主導，必須先用 production-like replay 證明新 layer trace 足以替代既有 KD/MFI/MACD/ATR 排查用途，再更新 scoring version、tests 與本規格。
   - `input_snapshot.evidence[]` 使用 consumer-neutral replayable evidence shape，包含 `evidence_type`、`source`、`as_of_date`、`freshness`、`missing_reason`、`replay_key`、`applicable_consumers` 與 `details`。Phase 1 僅 `daily_radar` consumer 使用。
@@ -622,7 +622,7 @@ Daily Radar run status：
 - `POST /internal/analysis-calibration/monthly`：輸出一般分析 confidence baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - 四個端點均沿用 `DAILY_RADAR_INTERNAL_TOKEN`。月報只透過 AES-256 加密的 GitHub Actions artifact 下載，密碼來自 `CALIBRATION_REPORT_PASSPHRASE`，不寫入 public issue 或 main branch。一般分析第一版只保存 `.TW` / `.TWO` final `/analyze` 樣本，固定分區為 TW / TAIEX；其他市場不寫入這個 calibration cohort。
 - 兩軌 forward validation 透過 feature adapter 共用 `ai_stock_sentinel.calibration.forward_validation`；月報以 SQL monthly aggregation 選 cohort，再以明確月份條件載入六個成熟月份的 replay / validation detail。
-- 一般分析校準只收 `/analyze`，不含 `/analyze/position`；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。Final cache 內另保存同一份精簡 payload，capture 暫時失敗時由後續 final cache hit 冪等重試；舊 cache 無正式 payload 時不得反推。
+- 一般分析校準只收 `/analyze` 的 final 一般分析結果；replay payload 不保存 user id、使用者筆記、新聞全文或 LLM 分析全文。Final cache 內另保存同一份精簡 payload，capture 暫時失敗時由後續 final cache hit 冪等重試；舊 cache 無正式 payload 時不得反推。
 - 一般分析校準的 active cohort 固定為目前 `strategy_version` + `confidence_config_version`；資料庫唯一鍵包含 `analysis_type / market / symbol / record_date / strategy_version / confidence_config_version`，日內重跑不得因 input hash 改變而增加獨立樣本。Validation outcome 的 `signal_date`／`benchmark_symbol` 必須和所屬 sample 一致；寫入不一致時拒絕，既有異常 row 不得計入 evaluated／validated watermark，並在 watermark 保留逐窗口 mismatch 計數。Due mode 判斷既有 terminal row 時也必須重新核對 sample identity；日期或 benchmark 錯配的舊 row 視為尚未完成並重新排入 evaluation，讓系統可用正確結果自癒。升級 migration 會以 exclusive table lock 阻止 writer 競態，lock 等待上限固定為 10 秒，整個 statement 執行上限為 5 分鐘，逾時必須 fail closed 並由 operator 排除阻塞 transaction 或重新評估資料規模後重試；同一 identity 先一次性固定具有最多 `validated` outcomes 的 canonical sample，再以 evaluated outcome 數與最早 ID 決定 tie-break。只保留 canonical sample 原生 outcomes，絕不把其他 input hash 的 outcome 改掛過來；缺少的窗口由後續 due validation 重算。此 canonicalization 刻意不可 downgrade，部署前必須備份、盤點 table row/duplicate 規模、停止所有舊版 backend 與 calibration workflows，並設定一次性 `CALIBRATION_MIGRATION_BACKUP_CONFIRMED=2c3d4e5f6a7b`，否則 upgrade fail closed。
 - 一般分析與 Daily Radar 的月份 maturity 都必須以 5／10／20 日三個窗口共同判斷；只完成 20 日窗口的月份不得進入最近六個月 cohort。
 - 一般分析與 Daily Radar 的 candidate config 都必須逐一通過 5 / 10 / 20 日 holdout gate，不得用跨 horizon 聚合改善掩蓋單一窗口退化。
@@ -686,7 +686,7 @@ Daily Radar monthly request：
 }
 ```
 
-`symbols` 選填；明確提供時，所有 requested `context_types` 都使用同一批 symbols。未提供時，backend 依 context type 決定更新範圍：`weekly_major_holders` 使用目前 active portfolio holdings、watchlist symbols 與指定 market 最新可公開 Daily Radar candidates 的去重集合；`lending` 與 `full_margin` 仍只使用最新可公開 Daily Radar candidates。若 request 未指定 `context_types` 而採預設全量，weekly 與 daily context 會各自使用上述範圍，避免把日頻 FinMind refresh 擴張到 holdings/watchlist。active holdings 與 watchlist 只作 symbol selector，不寫入 `shared_background_contexts.payload`；shared cache 仍是 market-only evidence cache，不保存 user id、quantity、avg cost、holding ownership 或 watchlist ownership。
+`symbols` 選填；明確提供時，所有 requested `context_types` 都使用同一批 symbols。未提供時，`weekly_major_holders`、`lending` 與 `full_margin` 一律使用指定 market 最新可公開 Daily Radar selected candidates 的去重集合，不再查詢歷史持股或關注資料。現行 shared context consumer 為 `daily_radar` 與 `analyze`，`applicable_consumers` 依 provider payload 標記適用的 consumer 子集合；shared cache 仍是 market-only evidence cache，不保存 user id、quantity、avg cost 或使用者 ownership。
 
 - **Response 200**
 
@@ -736,8 +736,6 @@ Alembic migration `f7a8b9c0d1e2_backfill_tdcc_weekly_holders_v2_payload.py` 是 
 - `TECHNICAL_CALC_ERROR`：`fetch_technical_node` 計算技術指標失敗（yfinance / Pandas 例外）
 - `INSTITUTIONAL_FETCH_ERROR`：`fetch_institutional_node` 抓取法人籌碼資料失敗（API 不可用或網路例外）
 - `CROSS_VALIDATION_ERROR`：`analyze_node` 執行多維交叉驗證失敗
-- `INVALID_ENTRY_PRICE`：`entry_price` 為負數或零（`/analyze/position` 專屬）
-- `POSITION_SCORE_ERROR`：`PositionScorer` 計算倉位位階或移動停利失敗（`/analyze/position` 專屬）
 
 ---
 
@@ -749,40 +747,13 @@ Alembic migration `f7a8b9c0d1e2_backfill_tdcc_weekly_holders_v2_payload.py` 是 
 
 ## 6) 測試對應
 
-- 測試檔：`backend/tests/test_api.py`
-- 覆蓋項目：
-  - 健康檢查
-  - 分析成功路徑（snapshot + analysis）
-  - `technical_indicators` 對外欄位，包含布林通道、MACD、KD、ADX、OBV
-  - 有 `cleaned_news` 的成功路徑
-  - `raw_news_items` 不對外暴露
-  - 請求驗證錯誤（422）
-  - graph 執行期例外 → `ANALYZE_RUNTIME_ERROR`
-  - graph 最終 state 缺 snapshot/analysis → `MISSING_SNAPSHOT` / `MISSING_ANALYSIS`
-  - graph 執行期累積的 errors 傳遞到 response
-- 測試檔（持股 API）：`backend/tests/test_api.py`
-- 覆蓋項目（持股 API）：
-  - 持股診斷成功路徑（`position_analysis` 物件完整性）
-  - position L1 快取需比對 `entry_price` / `entry_date` / `quantity`，不同成本基準不可命中舊診斷
-  - `entry_price` 為負數 → `422` + `INVALID_ENTRY_PRICE`
-  - `flow_label = distribution` 且獲利中 → `recommended_action = Trim`、`exit_reason` 非 null
-  - `position_status = under_water` 且 `profit_loss_pct < -10%` → `recommended_action = Exit`
-  - `PositionScorer` 計算失敗 → `POSITION_SCORE_ERROR`（流程繼續，`position_analysis` 降級為 null）
-- 測試檔（持股規則）：`backend/tests/test_position_scorer.py`
-- 覆蓋項目（持股規則）：
-  - KD / ADX / OBV / MACD / 布林位置會參與持股 `Trim` / `Exit` 判斷
-  - 獲利狀態不再因成本價低於支撐位而誤判為 `under_water`
-  - 獲利分層與量價轉弱會調整 `trailing_stop`
-- 測試檔（個人持股）：`backend/tests/test_portfolio_router.py`
-- 覆蓋項目（個人持股）：
-  - `POST /portfolio` 在 active 持股數已達 8 筆時仍可新增
-  - `POST /portfolio` 不再回傳舊的 8 筆上限 `422`
-  - `PUT /portfolio/{id}` 僅允許持股擁有者更新
-  - `DELETE /portfolio/{id}` 僅允許持股擁有者刪除
-- 測試檔（LLM input contract）：`backend/tests/test_graph_nodes.py`、`backend/tests/test_langchain_analyzer.py`
-- 覆蓋項目（LLM input contract）：
-  - `analyze_node` 傳入 `signal_summary`，且摘要包含 KD / ADX / OBV 與 rule-based labels
-  - analyzer prompt 將 `signal_summary` 放在優先閱讀區，並保留 `position_context` / `prev_context` 可選參數
+- `backend/tests/test_api.py`：health、一般分析成功與降級回應、request validation、快取與 context attachment。
+- `backend/tests/test_graph_nodes.py`：deterministic graph 與技術／籌碼 evidence。
+- `backend/tests/test_phase1_avwap.py`：只讀 Radar managed universe、seed-symbol refresh、snapshot freshness 與 Analyze / Daily Radar projection。
+- `backend/tests/test_daily_radar_api.py`、`test_daily_radar_background_context.py`：internal/public Radar、prepared refresh/scoring 與 shared context 範圍。
+- `backend/tests/test_daily_radar_managed_raw_data.py`：近期 general 分析標的選取與 request budget。
+- `backend/tests/test_retired_workspace_features.py`：退役端點回傳 404，歷史持股、關注與 position cache 不驅動研究刷新，保留資料不被刪除。
+- `backend/tests/test_risk_language_copy_guard.py`：現行 primary copy 與 legacy/internal compatibility 欄位邊界。
 
 ### 技術指標比較證據
 
