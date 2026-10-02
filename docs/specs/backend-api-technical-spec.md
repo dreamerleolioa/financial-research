@@ -791,3 +791,17 @@ Alembic migration `f7a8b9c0d1e2_backfill_tdcc_weekly_holders_v2_payload.py` 是 
 MA20 5日斜率為 `(MA20[t] / MA20[t-5] - 1) × 100%`；MA60 10日斜率為 `(MA60[t] / MA60[t-10] - 1) × 100%`，t 均為完整日K末日，非線性回歸。OBV 訊號提供實際比較窗、起日價格與累積值、末日價格及價格百分比與 OBV 淨變化，所有累積值共用此次序列起點。
 
 唐奇安價格位置以原始精度分為低於、觸及下緣、通道內、觸及上緣、高於；突破事件另列。行情交易日未知或未晚於突破基準日期時，事件不可確認。單一越界快照不證明本次新發生交叉。
+
+## Daily Radar 後端模組邊界
+
+`daily_radar/router.py` 僅組裝 HTTP 子路由；拆分不改變 URL、驗證、回應 schema 或 public/internal 邊界。
+
+- `dependencies.py`：provider factories、共用政策常數與日期來源。
+- `refresh_router.py`：prepared universe 與必要資料刷新。
+- `evidence_router.py`：managed raw data 與 AI 研究證據刷新。
+- `maintenance_router.py`：回補、交易日判定、forward validation 與 rule review。
+- `run_router.py`：完整執行與 prepared scoring。
+- `read_router.py`：唯讀公開查詢。
+- `pipeline_support.py`：prepared-run 驗證與資料彙整；`institutional_payloads.py`：法人資料轉換。
+
+測試透過 `dependencies.py` 的同一個 dependency object 覆寫 provider；公開查詢依然只讀已保存的資料。

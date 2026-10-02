@@ -3,7 +3,7 @@
 # 前端架構規格
 
 > 最近同步：2026-08-31。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
-> 現行 Analyze 與 Portfolio 只呈現 deterministic 技術、籌碼、基本面與策略結果，不再提供站內 LLM 分析。本文後段若仍出現 `skip_ai` 或 AI 報告，視為退役歷史設計；對外延伸研究只保留「複製技術摘要」工作流。
+> 現行 Analyze 只呈現 deterministic 技術、籌碼、基本面與策略結果，不再提供站內 LLM 分析。本文後段若仍出現 `skip_ai` 或 AI 報告，視為退役歷史設計；對外延伸研究只保留「複製技術摘要」工作流。
 
 ## 技術棧
 
@@ -218,3 +218,12 @@ cd frontend
 pnpm run build
 pnpm run lint
 ```
+
+## Daily Radar 模組邊界
+
+- `pages/DailyRadarPage.tsx`：查詢狀態與頁面組合。
+- `features/daily-radar/queries.ts`：TanStack Query key、快取與取消請求。
+- `features/daily-radar/presentation.ts`：顯示標籤、格式與排序。
+- `components/daily-radar/RunSummary.tsx`：批次摘要及候選篩選。
+- `components/daily-radar/CandidateList.tsx`、`CandidateDetailDrawer.tsx`：清單、研究資訊、明細及焦點管理。
+- `components/daily-radar/QueryStates.tsx`：載入、錯誤與空資料狀態。

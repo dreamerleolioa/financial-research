@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PRIMARY_SURFACE_FILES = [
     ROOT / "frontend/src/pages/DailyRadarPage.tsx",
     ROOT / "frontend/src/pages/AnalyzePage.tsx",
+    *sorted((ROOT / "frontend/src/components/daily-radar").glob("*.tsx")),
+    ROOT / "frontend/src/features/daily-radar/presentation.ts",
 ]
 RAW_CODE_GUARD_FILES = [
     *PRIMARY_SURFACE_FILES,
@@ -31,30 +33,11 @@ COMMAND_LANGUAGE_TERMS = [
 ]
 
 ALLOWLISTED_PRIMARY_COPY: dict[str, dict[str, list[str]]] = {
-    "frontend/src/pages/DailyRadarPage.tsx": {
+    "frontend/src/components/daily-radar/CandidateList.tsx": {
         "勝率": ['<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'],
         "交易建議": ['<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'],
     },
-    "frontend/src/pages/PortfolioPage.tsx": {
-        "投資建議": ["本診斷結果僅供研究與紀律檢查，不構成投資建議。"],
-        "加碼": [
-            "加碼",
-            '加碼: "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300",',
-            'add_watch: "加碼觀察",',
-            'description: "追蹤續抱、加碼觀察或獲利保護狀態。",',
-        ],
-        "出場": ["出場"],
-    },
-    "frontend/src/pages/ClosedPortfolioPage.tsx": {
-        "出場": [
-            "exit_indicators: \"出場技術指標\",",
-            "exit_date: \"出場日期資料\",",
-            "exit_ma20: \"出場 MA20\",",
-            "exit_ma60: \"出場 MA60\",",
-            "exit_rsi14: \"出場 RSI14\",",
-            "exit_volume_ratio: \"出場量比\",",
-        ],
-    },
+
 }
 
 FORBIDDEN_EXACT_PRIMARY_COPY = [
@@ -100,30 +83,16 @@ def test_primary_frontend_surfaces_use_risk_language_with_allowlist() -> None:
 
 
 def test_copy_guard_allowlist_documents_intent() -> None:
-    assert "frontend/src/pages/PortfolioPage.tsx" in ALLOWLISTED_PRIMARY_COPY
-    assert "加碼" in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
-    assert (
-        'description: "追蹤續抱、加碼觀察或獲利保護狀態。",'
-        in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
-    )
-    assert 'add_watch: "加碼觀察",' in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["加碼"]
-    assert ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/PortfolioPage.tsx"]["出場"] == ["出場"]
-    assert (
-        '<p className="mt-1 text-xs text-text-muted">依系統內部排序排列；排序不代表勝率或交易建議。</p>'
-        in ALLOWLISTED_PRIMARY_COPY["frontend/src/pages/DailyRadarPage.tsx"]["勝率"]
-    )
+    for relative_path, terms in ALLOWLISTED_PRIMARY_COPY.items():
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        for allowed_lines in terms.values():
+            assert all(line in text for line in allowed_lines)
 
 
 def test_copy_guard_allowlist_does_not_allow_broad_command_phrases() -> None:
-    assert _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "加碼", "加碼")
-    assert _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "出場", "出場")
-    assert _is_allowlisted(
-        "frontend/src/pages/PortfolioPage.tsx",
-        "投資建議",
-        '<p className="text-center text-xs text-text-faint">本診斷結果僅供研究與紀律檢查，不構成投資建議。</p>',
-    )
-    assert not _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "加碼", "系統建議加碼")
-    assert not _is_allowlisted("frontend/src/pages/PortfolioPage.tsx", "出場", "風險升高建議出場")
+    path = "frontend/src/components/daily-radar/CandidateList.tsx"
+    assert not _is_allowlisted(path, "勝率", "系統保證勝率")
+    assert not _is_allowlisted(path, "交易建議", "交易建議：立即買進")
 
 
 def test_deprecated_compatibility_fields_are_marked_secondary_in_specs() -> None:
