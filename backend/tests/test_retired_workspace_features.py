@@ -26,6 +26,7 @@ def _jsonb_sqlite(*args, **kwargs):
     ("GET", "/portfolio"), ("POST", "/portfolio"),
     ("GET", "/portfolio/closed"), ("GET", "/portfolio/risk-summary"),
     ("GET", "/portfolio/latest-history"), ("POST", "/analyze/position"),
+    ("GET", "/history/2330.TW"),
 ])
 def test_retired_endpoints_are_unavailable(method, path):
     response = TestClient(app).request(method, path, json={})

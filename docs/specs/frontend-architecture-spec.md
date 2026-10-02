@@ -2,7 +2,7 @@
 
 # 前端架構規格
 
-> 最近同步：2026-08-31。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
+> 最近同步：2026-10-02。本文記錄目前已落地的前端架構事實；短期執行討論不放在這裡。
 > 現行 Analyze 只呈現 deterministic 技術、籌碼、基本面與策略結果，不再提供站內 LLM 分析。本文後段若仍出現 `skip_ai` 或 AI 報告，視為退役歷史設計；對外延伸研究只保留「複製技術摘要」工作流。
 
 ## 技術棧
@@ -100,7 +100,7 @@ TanStack Query 管理 server state：
 - 批次分析進度。
 - 即時分析 modal 的 loading/error/result。
 
-避免把 API response 複製進 page state 後再手動同步，因為這會造成 list、risk summary、latest history 和 decision context 之間出現 stale UI。
+避免把 API response 複製進 page state 後再手動同步，因為這會造成 列表、摘要和明細 之間出現 stale UI。
 
 ## Analyze Technical Indicator Surface
 
@@ -174,7 +174,7 @@ Schema 採用「核心欄位必須符合、額外欄位 passthrough」策略。�
 
 ## API Client Layer
 
-`frontend/src/lib/apiClient.ts` 是唯一應該直接組 HTTP request 的位置。Domain API client 應透過 `requestJson`：
+`frontend/src/lib/apiClient.ts` 集中 URL、token 與一般 JSON request。一般 domain API client 應透過 `requestJson`；公開 Daily Radar client 以 `apiUrl` 組 URL 並保留專屬錯誤分類與 AbortSignal：
 
 - 自動加上 auth token。
 - 統一處理 query string。
@@ -205,11 +205,9 @@ Page 不應做：
 - 自己拼 API base URL 或 token。
 - 在 component 內分散定義後端 contract。
 
-## 已知後續改善
+## 功能退役邊界
 
-- `PortfolioPage` 仍可再拆成更小的 component，例如 risk panel、position card、modal group。
-- Portfolio history 展開目前仍是 local async state；若歷史列表會被更多流程共用，可改成 `usePortfolioHistoryQuery(id, enabled)`。
-- 完整介面視覺驗收後，補上登入狀態、App Shell、核心 route 與 1280px、375px、320px viewport 的 E2E regression coverage。
+關注列表、個人持股與未接入頁面的歷史趨勢元件已刪除。個股分析、Daily Radar 與主動式 ETF 是現行入口；歷史資料表與後端分析所需的昨日 context 保留。API 客戶端不再保留 `historyApi.ts`，前端也不再保留 `ConfidenceChart` 或持股專用 async-map helpers。
 
 ## 驗證命令
 

@@ -154,14 +154,3 @@ class CachedAnalyzeResponse(BaseModel):
     is_final: bool
     intraday_disclaimer: Optional[str] = None
     strategy_version: str | None = None
-
-
-class HistoryEntry(BaseModel):
-    record_date: str
-    signal_confidence: float | None
-    action_tag: str | None
-    prev_action_tag: str | None
-    prev_confidence: float | None
-    analysis_is_final: bool
-    indicators: dict[str, Any] | None
-    final_verdict: str | None

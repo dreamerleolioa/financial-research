@@ -124,6 +124,3 @@ def get_phase1_avwap_daily_price_provider(
 
 def _backend_today() -> date:
     return today_taipei()
-
-
-__all__ = ["router"]

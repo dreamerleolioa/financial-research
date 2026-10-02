@@ -805,3 +805,5 @@ MA20 5日斜率為 `(MA20[t] / MA20[t-5] - 1) × 100%`；MA60 10日斜率為 `(M
 - `pipeline_support.py`：prepared-run 驗證與資料彙整；`institutional_payloads.py`：法人資料轉換。
 
 測試透過 `dependencies.py` 的同一個 dependency object 覆寫 provider；公開查詢依然只讀已保存的資料。
+
+`GET /history/{symbol}` 的預留趨勢端點已退役並回傳 404。這不影響 `GET /daily-radar/symbol/{symbol}`，也不刪除 `StockAnalysisCache`、分析昨日 context 或 calibration / backtest 資料。

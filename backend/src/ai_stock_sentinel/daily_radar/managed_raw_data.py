@@ -21,13 +21,9 @@ MANAGED_RAW_DATA_ANALYSIS_LOOKBACK_DAYS = 30
 @dataclass(frozen=True)
 class ManagedRawDataSelection:
     symbols: tuple[str, ...]
-    active_symbols: tuple[str, ...]
     recent_analysis_symbols: tuple[str, ...]
-    active_symbol_count: int
     recent_analysis_symbol_count: int
-    overlap_symbol_count: int
     deferred_recent_symbol_count: int
-    active_symbols_over_budget: bool
 
 
 def select_managed_raw_data_symbols(
@@ -45,7 +41,6 @@ def select_managed_raw_data_symbols(
     if max_symbols < 1:
         raise ValueError("max_symbols must be positive")
 
-    active_symbols: list[str] = []
     recent_start_date = run_date - timedelta(
         days=MANAGED_RAW_DATA_ANALYSIS_LOOKBACK_DAYS
     )
@@ -66,37 +61,14 @@ def select_managed_raw_data_symbols(
         row.symbol for row in recent_rows
     )
 
-    active_symbol_set = set(active_symbols)
-    overlap_symbol_count = sum(
-        symbol in active_symbol_set for symbol in recent_analysis_symbols
-    )
-    recent_only_symbols = [
-        symbol
-        for symbol in recent_analysis_symbols
-        if symbol not in active_symbol_set
-    ]
-
-    active_symbols_over_budget = len(active_symbols) > max_symbols
-    if active_symbols_over_budget:
-        selected_symbols: list[str] = []
-        deferred_recent_symbol_count = len(recent_only_symbols)
-    else:
-        recent_capacity = max_symbols - len(active_symbols)
-        selected_recent_symbols = recent_only_symbols[:recent_capacity]
-        selected_symbols = [*active_symbols, *selected_recent_symbols]
-        deferred_recent_symbol_count = len(recent_only_symbols) - len(
-            selected_recent_symbols
-        )
+    selected_symbols = recent_analysis_symbols[:max_symbols]
+    deferred_recent_symbol_count = len(recent_analysis_symbols) - len(selected_symbols)
 
     return ManagedRawDataSelection(
         symbols=tuple(selected_symbols),
-        active_symbols=tuple(active_symbols),
         recent_analysis_symbols=tuple(recent_analysis_symbols),
-        active_symbol_count=len(active_symbols),
         recent_analysis_symbol_count=len(recent_analysis_symbols),
-        overlap_symbol_count=overlap_symbol_count,
         deferred_recent_symbol_count=deferred_recent_symbol_count,
-        active_symbols_over_budget=active_symbols_over_budget,
     )
 
 
