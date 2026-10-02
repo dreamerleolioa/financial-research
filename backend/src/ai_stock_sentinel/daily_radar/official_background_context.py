@@ -8,7 +8,8 @@ from typing import Any
 
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.daily_radar.margin_applicability import (
-    TWSE_NEW_LISTING_URL, TWSE_PUBLIC_OFFERING_URL, initial_listing_inapplicability,
+    TWSE_NEW_LISTING_URL, TWSE_PUBLIC_OFFERING_URL, TWSE_CREDIT_STATUS_URL,
+    initial_listing_inapplicability, credit_trading_inapplicability,
 )
 from ai_stock_sentinel.daily_radar.background_context import (
     BACKGROUND_CONTEXT_ALL_CONSUMERS,
@@ -226,6 +227,20 @@ class OfficialBackgroundChipContextProvider:
                 except OfficialBackgroundContextError:
                     pass
 
+        missing_credit_symbols = [symbol for symbol in missing_tw_symbols if symbol not in inapplicable]
+        if missing_credit_symbols and run_date in market_dates["TW"]:
+            try:
+                credit_report = _request_json(
+                    request_get, TWSE_CREDIT_STATUS_URL,
+                    params={"response": "json", "date": run_date.strftime("%Y%m%d")},
+                    timeout=self._timeout, dataset="TWSE_TWT93U",
+                )
+                inapplicable.update(credit_trading_inapplicability(
+                    credit_report, symbols=missing_credit_symbols, run_date=run_date,
+                ))
+            except OfficialBackgroundContextError:
+                pass
+
         for symbol in symbols:
             if symbol in inapplicable:
                 yield BackgroundContextPayload(
@@ -233,8 +248,11 @@ class OfficialBackgroundChipContextProvider:
                     applicable_consumers=OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS,
                     source=self._source(
                         market=_symbol_market(symbol),
-                        dataset=("TWSE_publicForm" if inapplicable[symbol]["eligibility"]["source_url"]
-                                 == TWSE_PUBLIC_OFFERING_URL else "TWSE_newlisting"),
+                        dataset={
+                            TWSE_PUBLIC_OFFERING_URL: "TWSE_publicForm",
+                            TWSE_NEW_LISTING_URL: "TWSE_newlisting",
+                            TWSE_CREDIT_STATUS_URL: "TWSE_TWT93U",
+                        }[inapplicable[symbol]["eligibility"]["source_url"]],
                     ),
                     as_of_date=run_date, freshness="fresh", payload=inapplicable[symbol],
                     missing_reason=None,

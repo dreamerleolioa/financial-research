@@ -132,7 +132,8 @@ def test_refresh_persists_and_reuses_not_applicable_separately_from_missing():
         assert calls.count(LISTING_URL) == 1
 
 
-def test_not_applicable_scoring_has_no_margin_bonus_and_keeps_replay_evidence():
+@pytest.mark.parametrize('evidence_kind', ['initial_listing', 'credit_status'])
+def test_not_applicable_scoring_has_no_margin_bonus_and_keeps_replay_evidence(evidence_kind):
     from tests.test_daily_radar_scoring import _joined_records_by_symbol, _market_context
     from ai_stock_sentinel.daily_radar.prefilter import prefilter_record
     from ai_stock_sentinel.daily_radar.scoring import score_daily_radar_record
@@ -140,10 +141,21 @@ def test_not_applicable_scoring_has_no_margin_bonus_and_keeps_replay_evidence():
 
     for symbol in ('2330.TW', '2454.TW', '3034.TW', '2303.TW'):
         record = deepcopy(_joined_records_by_symbol()[symbol])
-        record['margin'] = dict(_fetch(_provider()).payload)
-        record['margin']['eligibility'].update(
-            symbol=symbol, listing_date='2026-04-01', evaluated_for=record['record_date'],
-        )
+        if evidence_kind == 'initial_listing':
+            record['margin'] = dict(_fetch(_provider()).payload)
+            record['margin']['eligibility'].update(
+                symbol=symbol, listing_date='2026-04-01', evaluated_for=record['record_date'],
+            )
+        else:
+            from ai_stock_sentinel.daily_radar.margin_applicability import credit_trading_inapplicability
+            evaluated = date.fromisoformat(record['record_date'])
+            report = _credit_status_report() | {
+                'date': evaluated.strftime('%Y%m%d'),
+                'data': [[symbol.removesuffix('.TW'), '測試', 'Y ']],
+            }
+            record['margin'] = credit_trading_inapplicability(
+                report, symbols=[symbol], run_date=evaluated,
+            )[symbol]
         filtered = prefilter_record(record)
         assert 'data_gap' not in {item['code'] for item in filtered['prefilter_reasons']}
         result = score_daily_radar_record(record, market_context=_market_context(), prefilter_result=filtered)
@@ -302,6 +314,119 @@ def test_tw_public_offering_exemption_expires_on_six_month_anniversary():
     result = list(_tw_public_offering_provider().fetch(symbols=['7822.TW'],
         context_types=['full_margin'], run_date=date(2026, 9, 30), market='TW'))[0]
     assert result.missing_reason == 'official_no_data'
+
+
+CREDIT_STATUS_URL = 'https://www.twse.com.tw/exchangeReport/TWT93U'
+
+
+def _credit_status_report():
+    return {'stat': 'OK', 'date': '20261001', 'fields': ['代號', '名稱', '備註'],
+            'notes': ['符號說明<ul><li>Y-未取得信用交易資格</li></ul>'],
+            'data': [['7822', '倍利科', 'Y ']]}
+
+
+def _credit_status_provider(report=None, *, include_margin=False, calls=None,
+                            margin_date=None):
+    base = _tw_public_offering_provider(include_margin=include_margin)
+    def get(url, *, params, **kwargs):
+        if calls is not None:
+            calls.append((url, params))
+        if url == CREDIT_STATUS_URL:
+            if isinstance(report, Exception):
+                raise report
+            return _FakeResponse(_credit_status_report() if report is None else report)
+        response = base._request_get(url, params=params, **kwargs)
+        if margin_date and url not in {LISTING_URL, OTC_LISTING_URL}:
+            response = _FakeResponse(_twse_margin_payload(margin_date, [[
+                '2330', '測試', '0', '0', '0', '900', '1000', '0',
+                '0', '0', '0', '40', '50', '0', '0', '',
+            ]]))
+        return response
+    return OfficialBackgroundChipContextProvider(request_get=get,
+        lookback_trading_days=1, max_lookback_calendar_days=1)
+
+
+def test_expired_initial_listing_uses_same_day_explicit_credit_ineligibility():
+    evaluated = date(2026, 10, 1)
+    engine = create_engine('sqlite://')
+    SharedBackgroundContext.__table__.create(engine)
+    calls = []
+    with Session(engine) as session:
+        for attempt in range(2):
+            result = update_background_chip_context_cache(
+                session, run_date=evaluated, market='TW',
+                provider=_credit_status_provider(calls=calls),
+                symbols=['7822.TW'], context_types=['full_margin'],
+                require_same_day_fresh=True, reuse_same_day_fresh=True,
+            )
+            session.flush()
+            assert result['status'] == 'completed'
+            assert result['not_applicable_symbols'] == ['7822.TW']
+            assert result['missing_symbols'] == []
+            assert result['records_written'] == (1 if attempt == 0 else 0)
+    assert [params for url, params in calls if url == CREDIT_STATUS_URL] == [
+        {'response': 'json', 'date': '20261001'}]
+    payload = list(_credit_status_provider().fetch(symbols=['7822.TW'],
+        context_types=['full_margin'], run_date=evaluated, market='TW'))[0]
+    assert payload.source['dataset'] == 'TWSE_TWT93U'
+    assert payload.payload['eligibility']['reason'] == 'official_credit_trading_ineligible'
+    assert payload.payload['eligibility']['credit_status'] == 'Y'
+    assert payload.payload['eligibility']['report_date'] == evaluated.isoformat()
+    assert payload.freshness == 'fresh'
+    assert payload.missing_reason is None
+    projected = _project_margin_context(vars(payload), technical={})
+    assert margin_evidence_is_complete(projected, record_date=evaluated, symbol='7822.TW')
+    assert not margin_evidence_is_complete(projected, record_date=date(2026, 10, 2))
+    assert not margin_evidence_is_complete(projected, symbol='7822.TWO')
+    assert 'margin_balance' not in projected
+    assert 'margin_delta_pct' not in projected
+    assert 'margin_to_volume' not in projected
+    invalid = deepcopy(projected)
+    invalid['eligibility']['report_date'] = '2026-09-30'
+    assert not margin_evidence_is_complete(invalid)
+    invalid = deepcopy(projected)
+    invalid['eligibility']['credit_status'] = 'X'
+    assert not margin_evidence_is_complete(invalid)
+
+
+@pytest.mark.parametrize('change', [
+    {'stat': 'error'}, {'date': '20260930'}, {'date': '20261002'}, {'date': None},
+    {'fields': ['代號', '備註', '備註']}, {'data': []}, {'data': [['7823', '其他', 'Y']]},
+    {'data': [['7822', '倍利科', 'X']]}, {'data': [['7822', '倍利科', '']]},
+    {'data': [['7822', '倍利科', 'UNKNOWN Y']]}, {'data': [['7822']]},
+    {'data': [['7822', '倍利科', 'Y'], ['7822', '倍利科', '']]}, {'notes': []},
+])
+def test_credit_ineligibility_requires_exact_date_symbol_schema_and_status(change):
+    report = _credit_status_report() | change
+    result = list(_credit_status_provider(report).fetch(symbols=['7822.TW'],
+        context_types=['full_margin'], run_date=date(2026, 10, 1), market='TW'))[0]
+    assert result.missing_reason == 'official_no_data'
+
+
+def test_credit_status_source_failure_does_not_grant_ineligibility():
+    result = list(_credit_status_provider(RuntimeError('unavailable')).fetch(
+        symbols=['7822.TW'], context_types=['full_margin'],
+        run_date=date(2026, 10, 1), market='TW'))[0]
+    assert result.missing_reason == 'official_no_data'
+
+
+def test_credit_status_cannot_mask_missing_same_day_margin_market_report():
+    calls = []
+    result = list(_credit_status_provider(calls=calls, margin_date='20260930').fetch(
+        symbols=['7822.TW'], context_types=['full_margin'],
+        run_date=date(2026, 10, 1), market='TW'))[0]
+    assert result.missing_reason == 'official_no_data'
+    assert not any(url == CREDIT_STATUS_URL for url, _ in calls)
+
+
+def test_actual_margin_precedes_credit_ineligibility():
+    calls = []
+    result = list(_credit_status_provider(include_margin=True, calls=calls).fetch(
+        symbols=['7822.TW'], context_types=['full_margin'],
+        run_date=date(2026, 10, 1), market='TW'))[0]
+    assert result.payload['latest_margin_balance'] == 1000
+    assert 'applicability' not in result.payload
+    assert not any(url == CREDIT_STATUS_URL for url, _ in calls)
 
 
 def test_tw_actual_margin_precedes_public_offering_evidence():

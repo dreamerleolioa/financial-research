@@ -8,6 +8,7 @@ from typing import Any
 
 TWSE_NEW_LISTING_URL = "https://www.twse.com.tw/rwd/zh/company/newlisting"
 TWSE_PUBLIC_OFFERING_URL = "https://www.twse.com.tw/announcement/publicForm"
+TWSE_CREDIT_STATUS_URL = "https://www.twse.com.tw/exchangeReport/TWT93U"
 # 僅接受官方明確標示的第一上市；轉上市及其他註記不能用此規則推定資格。
 _INITIAL_LISTING_REMARKS = {"第一上市", "創新板第一上市"}
 
@@ -22,6 +23,20 @@ def margin_is_not_applicable(
     if payload.get("applicability") != "not_applicable" or not isinstance(evidence, Mapping):
         return False
     source = evidence.get("source_url")
+    if source == TWSE_CREDIT_STATUS_URL:
+        try:
+            reported = date.fromisoformat(str(evidence.get("report_date")))
+            evaluated = date.fromisoformat(str(evidence.get("evaluated_for")))
+        except ValueError:
+            return False
+        return (
+            evidence.get("reason") == "official_credit_trading_ineligible"
+            and evidence.get("credit_status") == "Y"
+            and str(evidence.get("symbol", "")).endswith(".TW")
+            and (symbol is None or evidence.get("symbol") == symbol)
+            and reported == evaluated
+            and (run_date is None or evaluated == run_date)
+        )
     if source == TWSE_NEW_LISTING_URL:
         allowed_types, suffix = _INITIAL_LISTING_REMARKS, ".TW"
     elif source == TWSE_PUBLIC_OFFERING_URL:
@@ -46,6 +61,49 @@ def margin_is_not_applicable(
     except ValueError:
         return False
     return (run_date is None or evaluated == run_date) and listed <= evaluated < anniversary
+
+
+def credit_trading_inapplicability(
+    report: Mapping[str, Any], *, symbols: list[str], run_date: date,
+) -> dict[str, dict[str, Any]]:
+    """Accept only dated, explicit TWSE Y status; missing rows prove nothing."""
+    if report.get("stat") != "OK" or report.get("date") != run_date.strftime("%Y%m%d"):
+        return {}
+    fields, rows, notes = report.get("fields"), report.get("data"), report.get("notes")
+    if not isinstance(fields, list) or not isinstance(rows, list) or not isinstance(notes, list):
+        return {}
+    if not any(isinstance(note, str) and "Y-未取得信用交易資格" in note for note in notes):
+        return {}
+    fields = [str(field).strip() for field in fields]
+    if any(fields.count(field) != 1 for field in ("代號", "備註")):
+        return {}
+    id_index, status_index = fields.index("代號"), fields.index("備註")
+    result: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) <= id_index:
+            continue
+        symbol = f"{str(row[id_index]).strip()}.TW"
+        if symbol not in symbols:
+            continue
+        if symbol in seen:
+            result.pop(symbol, None)
+            continue
+        seen.add(symbol)
+        if len(row) <= status_index or str(row[status_index]).strip() != "Y":
+            continue
+        result[symbol] = {
+            "applicability": "not_applicable",
+            "eligibility": {
+                "symbol": symbol,
+                "source_url": TWSE_CREDIT_STATUS_URL,
+                "reason": "official_credit_trading_ineligible",
+                "credit_status": "Y",
+                "report_date": run_date.isoformat(),
+                "evaluated_for": run_date.isoformat(),
+            },
+        }
+    return result
 
 
 def initial_listing_inapplicability(
