@@ -705,3 +705,11 @@ export function formatPhase1AvwapDistanceLine(anchor: { distance?: number | null
   if (distance < 0) return `資料日價格低於 ${anchor.referenceLabel}`;
   return `資料日價格貼近 ${anchor.referenceLabel}`;
 }
+export function formatMediumTermObservation(candidate: DailyRadarCandidate): string | null {
+  const context = candidate.input_snapshot.medium_term_context as { trend_status?: string } | undefined;
+  if (!context) return null;
+  const trend = context.trend_status === "constructive" ? "中期趨勢符合"
+    : context.trend_status === "weak" ? "中期趨勢條件未齊" : "中期趨勢資料不足";
+  return candidate.input_snapshot.timing_status === "wait_for_consolidation"
+    ? `${trend} · 短期等待整理` : trend;
+}

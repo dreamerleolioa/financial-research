@@ -132,7 +132,7 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 ## 5. 嚴格前置濾網
 
-所有標的必須通過前置濾網才可進入排名。濾網是 hard gate，不用分數補償。
+所有標的必須通過資料、流動性、價格、弱勢結構與融資等前置資格才可進入排名。完整評分後依 `observation_score`（同分依 symbol）分配最多 100 個公開名額，資格通過但超出名額者保留為 comparable shadow，不再於評分前按成交量截斷；`prefilter_count` 表示所有通過資格的標的數。
 
 | 濾網 | MVP 規則方向 | 淘汰原因 |
 | ---- | ------------ | -------- |
@@ -145,6 +145,10 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 | 資料時效 | 最新資料日期落後最近交易日超過容忍值 | 避免 stale data 進入雷達 |
 
 前置濾網需回傳 `prefilter_status` 與 `prefilter_reasons`，方便除錯與前端顯示「未入選原因」。
+
+中期觀察使用 `medium-term-v1`：同日 adjusted candidate history 必須完整覆蓋 benchmark 最近 65 個已知交易日期，收盤 ≥ MA20 ≥ MA60、MA60 五日斜率為正且 60 日相對大盤報酬為正，才標記 `constructive`。65 根不足、缺交易日或 benchmark 不在當日均為 `unknown`，數值保持 null。20/60 日相對強度只補充 trace；既有 deterministic scoring 權重與 signal-family caps 保留。僅 constructive 的同日證據允許把 `overextended` 從硬排除改為 `observation_caveats`，保留風險標籤及原有扣分，畫面顯示「中期趨勢符合 · 短期等待整理」；資料、價格、流動性與融資資格不因此放寬。`input_snapshot.selection_version = quality-selection-v1` 區分新名額策略，既有 5/10/20 日 forward validation 的排程與結果定義維持原樣。
+
+`refresh-ohlcv` 同時將官方 final 行情最近 20 個交易日期的實際 amount 平均值與 source dates 存入 `ohlcv.avg_turnover_value_million` / `turnover_context`。有完整實際值時 prefilter 優先使用；明確提供的非法值不能改用估值。舊資料或官方 amount 窗口不足時沿用原 close × avg_volume_20 的估計資格，debug 明列 `close_times_avg_volume_estimate` 與不足原因，不能宣稱它是實際成交金額；全市場探索本身仍要求完整實際 amount 才能發現標的。
 
 ---
 

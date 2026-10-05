@@ -33,6 +33,21 @@ def _compile_jsonb_for_sqlite(type_, compiler, **kw):
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "daily_radar"
 
 
+def test_candidate_limit_is_applied_after_quality_scoring(db_session: Session) -> None:
+    records = load_daily_radar_fixture_records(FIXTURE_DIR)
+    run = run_daily_radar(date(2026, 5, 29), "TW", session=db_session,
+                          records=records, fixture_dir=FIXTURE_DIR, candidate_limit=1)
+    candidates = db_session.scalars(select(DailyRadarCandidate).where(DailyRadarCandidate.run_id == run.id)).all()
+    selected = [row for row in candidates if row.selection_status == "selected"]
+    accepted = [row for row in candidates if row.prefilter_status == "accepted"]
+    assert len(selected) == 1
+    assert selected[0].symbol == "3034.TW"
+    assert selected[0].observation_score == max(row.observation_score for row in accepted)
+    assert run.prefilter_count == 4
+    assert len(accepted) == 4
+    assert all(row.shadow_cohort == "comparable" for row in accepted if row.selection_status == "shadow")
+
+
 @pytest.fixture()
 def db_session() -> Session:
     engine = create_engine("sqlite+pysqlite:///:memory:")

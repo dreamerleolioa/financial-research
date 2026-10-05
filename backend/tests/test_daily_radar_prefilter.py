@@ -37,6 +37,32 @@ def _reason_codes(result: dict[str, Any]) -> set[str]:
     return {reason["code"] for reason in result["prefilter_reasons"]}
 
 
+def test_constructive_medium_trend_keeps_heat_as_caveat_without_relaxing_data_or_margin() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["indicators"]["rsi14"] = 99
+    record["medium_term_context"] = {"version": "medium-term-v1", "trend_status": "constructive",
+        "as_of_date": record["record_date"], "relative_strength_60d": .1}
+    result = prefilter_record(record)
+    assert result["prefilter_status"] == "accepted"
+    assert "overextended" in result["risk_labels"]
+    assert result["observation_caveats"][0]["code"] == "overextended"
+    record["medium_term_context"]["as_of_date"] = "2020-01-01"
+    assert "overextended" in _reason_codes(prefilter_record(record))
+    record["medium_term_context"]["as_of_date"] = record["record_date"]
+    record["margin"]["margin_delta_pct"] = 99
+    assert "margin_crowding" in _reason_codes(prefilter_record(record))
+    del record["ohlcv"]["close"]
+    assert "data_gap" in _reason_codes(prefilter_record(record))
+
+
+def test_actual_turnover_overrides_price_volume_estimate_and_invalid_actual_fails_closed() -> None:
+    record = copy.deepcopy(_records_by_symbol()["2330.TW"])
+    record["ohlcv"]["avg_turnover_value_million"] = 200
+    assert "low_liquidity" in _reason_codes(prefilter_record(record))
+    record["ohlcv"]["avg_turnover_value_million"] = None
+    assert "data_gap" in _reason_codes(prefilter_record(record))
+
+
 def test_prefilter_shadow_pool_keeps_overflow_and_valid_rejections_but_excludes_bad_data() -> None:
     records = list(_records_by_symbol().values())
 

@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from types import SimpleNamespace
 
-from ai_stock_sentinel.daily_radar.market_exploration import build_market_exploration
+from ai_stock_sentinel.daily_radar.market_exploration import build_market_exploration, build_turnover_contexts
 from ai_stock_sentinel.daily_radar.pipeline_support import _capped_daily_radar_universe
 from ai_stock_sentinel.daily_radar.universe import DailyRadarUniverseEntry
 
@@ -68,3 +68,14 @@ def test_exploration_fails_closed_when_actual_turnover_is_missing():
     entries, audit = build_market_exploration(bars, run_date=bars[-1].trade_date)
     assert entries == []
     assert audit["excluded_symbol_reasons"]["1234.TW"] == "turnover_missing"
+
+
+def test_turnover_uses_actual_amount_and_does_not_estimate_across_missing_sessions():
+    bars = _bars()
+    contexts = build_turnover_contexts(bars, run_date=bars[-1].trade_date)
+    assert contexts["1234.TW"]["avg_turnover_value_million"] == 1000
+    broken = _bars("5678.TW")
+    broken.pop(-3)
+    contexts = build_turnover_contexts(bars + broken, run_date=bars[-1].trade_date)
+    assert contexts["5678.TW"]["missing_reason"] == "turnover_history_gap"
+    assert "avg_turnover_value_million" not in contexts["5678.TW"]

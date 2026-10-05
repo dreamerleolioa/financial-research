@@ -1,6 +1,16 @@
 import { expect, test } from "@playwright/test";
 import { authenticate, installApiMocks, radarRun } from "./fixtures";
 
+test("Radar distinguishes a constructive medium trend from waiting for consolidation", async ({ page }) => {
+  await authenticate(page);
+  const run = structuredClone(radarRun);
+  run.candidates[0].input_snapshot.medium_term_context = { trend_status: "constructive" };
+  run.candidates[0].input_snapshot.timing_status = "wait_for_consolidation";
+  await installApiMocks(page, { dailyRadar: run });
+  await page.goto("/daily-radar");
+  await expect(page.getByText("中期趨勢符合 · 短期等待整理", { exact: true }).first()).toBeVisible();
+});
+
 test("Radar separates returning membership from signal strength and shows prior dates", async ({ page }) => {
   await authenticate(page);
   const returningRun = structuredClone(radarRun);

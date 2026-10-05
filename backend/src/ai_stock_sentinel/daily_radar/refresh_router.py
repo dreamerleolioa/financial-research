@@ -62,7 +62,7 @@ from ai_stock_sentinel.daily_radar.repository import (
     update_daily_radar_prepared_step_status,
     upsert_daily_radar_prepared_run,
 )
-from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration, MarketExplorationReadinessError
+from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration, MarketExplorationReadinessError, attach_official_turnover
 from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarInstitutionalFlowsRefreshRequest,
@@ -432,6 +432,7 @@ def refresh_daily_radar_ohlcv_endpoint(
             run_date=run_date,
         ),
     )
+    attach_official_turnover(db, rows, run_date=run_date)
     refreshed_universe = refresh_daily_radar_universe_technical_tracks(universe, rows)
     prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
     row_symbols = {row.symbol for row in rows}

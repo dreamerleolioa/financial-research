@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration
+from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration, attach_official_turnover
 from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
 
 from contextlib import suppress
@@ -208,6 +208,8 @@ def run_daily_radar_endpoint(
             selected_symbols=selected_symbols,
             run_date=run_date,
         )
+        if market == "TW":
+            attach_official_turnover(db, cache_rows, run_date=run_date)
         failure_stage = "market_context"
         market_context = dict(market_context_provider.build(run_date=run_date, market=market))
         failure_stage = "daily_radar_service"

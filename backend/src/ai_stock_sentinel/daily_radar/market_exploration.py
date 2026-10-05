@@ -142,3 +142,58 @@ def _number(value: Any) -> float | None:
         return result if isfinite(result) else None
     except (ValueError, TypeError):
         return None
+
+
+def build_turnover_contexts(bars: Iterable[Any], *, run_date: date) -> dict[str, dict[str, Any]]:
+    by_symbol: dict[str, dict[date, Any]] = defaultdict(dict)
+    market_dates: dict[str, set[date]] = defaultdict(set)
+    for bar in bars:
+        if bar.trade_date <= run_date and bar.is_final and bar.adjustment_mode == "unadjusted":
+            by_symbol[bar.symbol][bar.trade_date] = bar
+            market_dates[bar.market].add(bar.trade_date)
+    result = {}
+    for symbol, rows in by_symbol.items():
+        market = rows[max(rows)].market
+        days = sorted(market_dates[market])[-20:]
+        trace = {"source": "taiwan_market_daily_ohlcv", "as_of_date": run_date.isoformat(),
+                 "source_dates": [day.isoformat() for day in days], "missing_reason": None}
+        if len(days) < 20 or days[-1] != run_date or any(day not in rows for day in days):
+            result[symbol] = trace | {"missing_reason": "turnover_history_gap"}
+            continue
+        amounts = [_number(rows[day].amount) for day in days]
+        if any(value is None or value <= 0 for value in amounts):
+            result[symbol] = trace | {"missing_reason": "turnover_amount_missing"}
+            continue
+        result[symbol] = trace | {"avg_turnover_value_million": round(sum(amounts) / 20 / 1_000_000, 3)}
+    return result
+
+
+def attach_official_turnover(session: Any, rows: Iterable[Any], *, run_date: date) -> None:
+    from sqlalchemy import select
+    from ai_stock_sentinel.db.models import TaiwanDailyBar
+    from ai_stock_sentinel.daily_radar.market_bar_repository import DEFAULT_MARKET_BAR_DATASET
+    raw_rows = list(rows)
+    if not raw_rows:
+        return
+    recent_dates = select(TaiwanDailyBar.trade_date).where(
+        TaiwanDailyBar.trade_date >= run_date - timedelta(days=90), TaiwanDailyBar.trade_date <= run_date,
+        TaiwanDailyBar.dataset == DEFAULT_MARKET_BAR_DATASET,
+        TaiwanDailyBar.adjustment_mode == "unadjusted", TaiwanDailyBar.is_final.is_(True),
+    ).distinct().order_by(TaiwanDailyBar.trade_date.desc()).limit(20)
+    # Keep all market rows in this narrow query so a candidate's own gaps cannot shorten its calendar.
+    bars = session.execute(select(TaiwanDailyBar.symbol, TaiwanDailyBar.market, TaiwanDailyBar.trade_date,
+                                  TaiwanDailyBar.amount, TaiwanDailyBar.is_final, TaiwanDailyBar.adjustment_mode).where(
+        TaiwanDailyBar.trade_date.in_(recent_dates), TaiwanDailyBar.dataset == DEFAULT_MARKET_BAR_DATASET,
+        TaiwanDailyBar.adjustment_mode == "unadjusted", TaiwanDailyBar.is_final.is_(True),
+    )).all()
+    contexts = build_turnover_contexts(bars, run_date=run_date)
+    for row in raw_rows:
+        technical = dict(row.technical or {})
+        ohlcv = dict(technical.get("ohlcv") or {})
+        context = contexts.get(row.symbol, {"source": DEFAULT_MARKET_BAR_DATASET,
+                                           "as_of_date": run_date.isoformat(), "missing_reason": "turnover_history_gap"})
+        ohlcv.pop("avg_turnover_value_million", None)
+        if "avg_turnover_value_million" in context:
+            ohlcv["avg_turnover_value_million"] = context["avg_turnover_value_million"]
+        ohlcv["turnover_context"] = context
+        row.technical = technical | {"ohlcv": ohlcv}

@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_RISK_LABELS
 from ai_stock_sentinel.daily_radar.data_quality import missing_scoring_fields
 from ai_stock_sentinel.daily_radar.types import DailyRadarRiskLabel
+from ai_stock_sentinel.daily_radar.medium_term import MEDIUM_TERM_VERSION
 
 
 PrefilterStatus = Literal["accepted", "rejected", "stale_data"]
@@ -56,6 +57,10 @@ def prefilter_record(
     close = _float(ohlcv.get("close"))
     avg_volume_20 = _float(ohlcv.get("avg_volume_20"))
     avg_turnover_value_million = close * avg_volume_20 / 1_000_000
+    actual_turnover = _finite_float_or_none(ohlcv.get("avg_turnover_value_million"))
+    has_actual_turnover = "avg_turnover_value_million" in ohlcv
+    if has_actual_turnover and actual_turnover is not None:
+        avg_turnover_value_million = actual_turnover
     missing_trading_days_60 = _int(indicators.get("missing_trading_days_60"))
     record_date = _parse_date(str(record.get("record_date")))
 
@@ -72,6 +77,11 @@ def prefilter_record(
     )
 
     reasons: list[dict[str, Any]] = []
+    caveats: list[dict[str, Any]] = []
+    debug["liquidity"]["basis"] = "official_amount_20d" if has_actual_turnover else "close_times_avg_volume_estimate"
+    debug["liquidity"]["turnover_context"] = dict(_mapping(ohlcv.get("turnover_context")))
+    if has_actual_turnover and (actual_turnover is None or actual_turnover <= 0):
+        reasons.append(_reason("data_gap", missing_fields=["avg_turnover_value_million"]))
     missing_fields = missing_scoring_fields(
         ohlcv=ohlcv,
         indicators=indicators,
@@ -120,7 +130,13 @@ def prefilter_record(
 
     overextended_metrics = _overextended_metrics(indicators, active_config)
     if overextended_metrics or _has_risk_flag(institutional_flow, margin, flag="overextended"):
-        reasons.append(_reason("overextended", metrics=overextended_metrics))
+        trend = _mapping(record.get("medium_term_context"))
+        strong_current_trend = (
+            trend.get("version") == MEDIUM_TERM_VERSION and trend.get("trend_status") == "constructive"
+            and trend.get("as_of_date") == record.get("record_date")
+            and (_finite_float_or_none(trend.get("relative_strength_60d")) or 0) > 0
+        )
+        (caveats if strong_current_trend else reasons).append(_reason("overextended", metrics=overextended_metrics))
 
     weak_structure = _weak_structure(close, indicators)
     if (
@@ -146,7 +162,8 @@ def prefilter_record(
         "expected_bucket_seed": record.get("expected_bucket_seed"),
         "prefilter_status": status,
         "prefilter_reasons": reasons,
-        "risk_labels": _risk_labels_from_reasons(reasons),
+        "risk_labels": _risk_labels_from_reasons(reasons + caveats),
+        "observation_caveats": caveats,
         "data_dates": data_dates,
         "debug": debug,
         "source_record": {

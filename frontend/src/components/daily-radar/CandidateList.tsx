@@ -5,6 +5,7 @@ import {
   formatMembershipLabel,
   formatObservationHistory,
   formatSignalStatus,
+  formatMediumTermObservation,
   getRepeatStatusClass,
   getBucketResearchThesis,
   getBucketInvalidationHint,
@@ -31,6 +32,7 @@ export function CandidateResearchCard({ candidate }: { candidate: DailyRadarCand
         </span>
       </div>
       {formatObservationHistory(candidate) && <p className="mt-2 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
+      {formatMediumTermObservation(candidate) && <p className="mt-2 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
       <h3 className="mt-3 text-base font-semibold text-text-primary">
         {formatBucketLabel(candidate.primary_bucket)}候選，僅供觀察追蹤
       </h3>
@@ -147,6 +149,7 @@ export function DailyRadarCandidateList({
                 </span>
                 {formatObservationHistory(candidate) && <p className="mt-1 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
                 {formatSignalStatus(candidate) && <p className="mt-1 text-xs text-text-secondary">{formatSignalStatus(candidate)}</p>}
+                {formatMediumTermObservation(candidate) && <p className="mt-1 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
               </div>
 
               <div className="min-w-0">
