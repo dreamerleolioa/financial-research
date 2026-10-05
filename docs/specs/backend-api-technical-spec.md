@@ -564,6 +564,11 @@ Daily Radar 候選探索（2026-10-05）：18:00 prepare 必須具同日 TW/TWO 
 公開讀取 API 不需要 `DAILY_RADAR_INTERNAL_TOKEN`。
 
 - `GET /daily-radar/latest?market=TW&bucket=&limit=`：讀取指定市場最新可公開 run 的候選標的。
+- `GET /daily-radar/validation?market=TW&lookback_days=90`：唯讀突破前觀察統計；`lookback_days` 為日曆天數，範圍 1–365，預設 90。
+  - 先選同日最新公開 run，再載入完整 selected 名單及已保存的目前 forward-validation-v2 結果，按 scoring／rule／config／selection version 分組，逐 5／10／20 交易日回傳全部、前 3／5 檔與其餘候選。
+  - 回應包含 `diagnostic_version`、`as_of_date`、`sample_start_date`／`sample_end_date`、`lookback_days`、`last_evaluated_date`、`calendar_through_date`、`default_cohort_id` 與 `cohorts`；各 cohort 含 `id`、`strategy`、`signal_start_date`／`signal_end_date`、`windows`。`default_cohort_id` 對應最新已公開入選訊號的策略，不依成效選版本。
+  - Stats 僅暴露樣本數、狀態／缺資料原因計數、比率及限定於有效樣本的平均值，不回傳 candidate ID、原始 snapshot、shadow 身分或完整 outcome。查無候選仍回 `200` 與空 `cohorts`；缺資料的比率為 null。
+  - 交易日資料不完整或與已保存成熟窗口不一致時，`calendar_through_date` 為 null，缺結果維持 missing 而非推定等待滿期。此 GET 不呼叫行情 provider、不重新評估、不 upsert 或 commit，也不補算缺診斷的舊結果。
 - `GET /daily-radar/{run_date}?market=TW&bucket=&limit=`：讀取指定日期與市場的候選標的。
 - `GET /daily-radar/symbol/{symbol}?market=TW&bucket=&limit=&lookback_days=`：讀取指定標的的 Daily Radar 歷史。
 

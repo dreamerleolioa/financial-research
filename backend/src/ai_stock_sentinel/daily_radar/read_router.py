@@ -20,7 +20,8 @@ from ai_stock_sentinel.daily_radar.repository import (
     get_latest_daily_radar_run,
     get_symbol_candidate_history,
 )
-from ai_stock_sentinel.daily_radar.schemas import DailyRadarRunResponse
+from ai_stock_sentinel.daily_radar.schemas import DailyRadarRunResponse, DailyRadarValidationResponse
+from ai_stock_sentinel.daily_radar.validation_read import read_observation_validation
 from ai_stock_sentinel.db.session import get_db
 
 
@@ -69,6 +70,17 @@ def get_daily_radar_symbol_history_endpoint(
         projected = apply_cooldown_status([item], summary, run_date=item["record_date"], trading_dates=radar_trading_dates(context))[0]
         filtered.append(history_response(projected))
     return filtered[:limit]
+
+
+@router.get("/daily-radar/validation", response_model=DailyRadarValidationResponse)
+def get_daily_radar_validation_endpoint(
+    market: str = Query(default="TW", min_length=1, max_length=20),
+    lookback_days: int = Query(default=90, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> DailyRadarValidationResponse:
+    with db.no_autoflush:
+        return read_observation_validation(db, market=market, as_of_date=dependencies._backend_today(),
+                                           lookback_days=lookback_days)
 
 
 @router.get("/daily-radar/{run_date}", response_model=DailyRadarRunResponse, response_model_exclude_none=True)
