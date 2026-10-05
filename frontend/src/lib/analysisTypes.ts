@@ -265,31 +265,3 @@ export interface AnalyzeResponse {
   chip_stability_context?: ChipStabilityContext | null;
   phase1_observation?: Phase1Observation | null;
 }
-
-export interface PositionAnalysis {
-  entry_price: number;
-  profit_loss_pct: number | null;
-  position_status: "profitable_safe" | "at_risk" | "under_water" | null;
-  position_narrative: string | null;
-  risk_state?: "stable" | "watch" | "elevated" | "critical" | null;
-  risk_state_label?: string | null;
-  discipline_triggers?: string[];
-  observation_conditions?: string[];
-  risk_control_reference?: {
-    reference_price?: number | null;
-    reference_type?: string | null;
-    reason?: string | null;
-  } | null;
-  command_language_deprecated?: Record<string, unknown>;
-  recommended_action: "Hold" | "Trim" | "Exit" | null;
-  trailing_stop: number | null;
-  trailing_stop_reason: string | null;
-  exit_reason: string | null;
-}
-
-export interface PositionResult {
-  snapshot: { current_price?: number; [key: string]: unknown };
-  position_analysis: PositionAnalysis | null;
-  confidence_score: number | null;
-  shared_context?: SharedContextReadPayload | null;
-}

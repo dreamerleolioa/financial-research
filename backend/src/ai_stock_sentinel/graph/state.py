@@ -34,25 +34,6 @@ class _AnalysisStateFields(TypedDict, total=False):
     action_plan: dict[str, Any] | None
 
 
-class _PositionStateFields(TypedDict, total=False):
-    """持倉診斷欄位（POST /analyze/position 使用）"""
-    entry_price: float | None
-    entry_date: str | None
-    quantity: int | None
-    profit_loss_pct: float | None
-    cost_buffer_to_support: float | None
-    position_status: str | None
-    position_narrative: str | None
-    trailing_stop: float | None
-    trailing_stop_reason: str | None
-    recommended_action: str | None
-    exit_reason: str | None
-    distance_to_trailing_stop_pct: float | None
-    distance_to_support_pct: float | None
-    unrealized_pnl: float | None
-    holding_days: int | None
-
-
 # ── 實際 LangGraph 使用的狀態（平鋪，維持向後相容） ─────────────────────
 
 class GraphState(TypedDict):
@@ -91,23 +72,6 @@ class GraphState(TypedDict):
     holding_period: str | None
     action_plan_tag: str | None
     action_plan: dict[str, Any] | None
-
-    # 持倉診斷（參見 _PositionStateFields）
-    entry_price: float | None
-    entry_date: str | None
-    quantity: int | None
-    profit_loss_pct: float | None
-    cost_buffer_to_support: float | None
-    position_status: str | None
-    position_narrative: str | None
-    trailing_stop: float | None
-    trailing_stop_reason: str | None
-    recommended_action: str | None
-    exit_reason: str | None
-    distance_to_trailing_stop_pct: float | None
-    distance_to_support_pct: float | None
-    unrealized_pnl: float | None
-    holding_days: int | None
 
     # --- History Context (from stock_analysis_cache) ---
     prev_context: dict[str, Any] | None   # load_yesterday_context() 的回傳值

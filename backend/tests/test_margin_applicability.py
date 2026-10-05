@@ -222,7 +222,7 @@ def test_export_script_still_starts_directly_without_pythonpath():
 
 def test_refresh_endpoint_retains_not_applicable_in_response_and_step_status(monkeypatch):
     from types import SimpleNamespace
-    from ai_stock_sentinel.daily_radar import router
+    from ai_stock_sentinel.daily_radar import pipeline_support as router
     from ai_stock_sentinel.daily_radar.schemas import DailyRadarRefreshStepRequest
 
     engine = create_engine('sqlite://')

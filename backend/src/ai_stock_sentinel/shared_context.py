@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 
 SHARED_CONTEXT_READ_VERSION = "shared-context-read-v1"
 SHARED_CONTEXT_CONSUMER_ANALYZE = "analyze"
-SHARED_CONTEXT_CONSUMER_POSITION = "position_analysis"
-SHARED_CONTEXT_CONSUMER_PORTFOLIO = "portfolio_diagnosis"
-SHARED_CONTEXT_CONSUMER_LIFECYCLE = "lifecycle_review"
 
 
 def read_shared_context_for_symbol(
@@ -247,9 +244,6 @@ def _parse_date(value: Any) -> date | None:
 
 __all__ = [
     "SHARED_CONTEXT_CONSUMER_ANALYZE",
-    "SHARED_CONTEXT_CONSUMER_LIFECYCLE",
-    "SHARED_CONTEXT_CONSUMER_PORTFOLIO",
-    "SHARED_CONTEXT_CONSUMER_POSITION",
     "SHARED_CONTEXT_READ_VERSION",
     "aggregate_shared_context_quality",
     "read_shared_context_for_symbol",

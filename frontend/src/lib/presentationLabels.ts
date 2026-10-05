@@ -6,7 +6,6 @@ const DATA_MISSING_REASON_LABEL: Record<string, string> = {
   phase1_snapshot_bars_missing: "缺少計算 AVWAP 所需的價格資料",
   phase1_distance_to_avwap_missing: "暫時無法計算與 AVWAP 的距離",
   phase1_anchor_avwap_missing: "AVWAP 觀察線資料不完整",
-  portfolio_current_price_missing: "缺少可用的最新價格",
   daily_price_history_unavailable: "缺少日價格歷史",
   daily_price_row_missing_for_data_date: "資料日缺少對應價格",
   twse_stock_day_request_failed: "交易所日價格讀取失敗",

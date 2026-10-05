@@ -16,7 +16,6 @@ from ai_stock_sentinel.models import StockSnapshot
 
 logger = logging.getLogger(__name__)
 DEFAULT_YFINANCE_TIMEOUT_SECONDS = 10.0
-PORTFOLIO_YFINANCE_TIMEOUT_SECONDS = 4.0
 
 
 class _DeadlineSession(curl_requests.Session):
@@ -177,13 +176,6 @@ class YFinanceCrawler:
             "is_fallback": False,
         }))
         return snapshot
-
-    def fetch_portfolio_snapshot(self, symbol: str = "2330.TW") -> StockSnapshot:
-        return self.fetch_basic_snapshot(
-            symbol,
-            provider_timeout=PORTFOLIO_YFINANCE_TIMEOUT_SECONDS,
-            resolve_name=False,
-        )
 
 
 def _history_metadata(ticker: yf.Ticker, *, symbol: str) -> dict:

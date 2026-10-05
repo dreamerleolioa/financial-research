@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from ai_stock_sentinel.data_sources.yfinance_client import (
-    PORTFOLIO_YFINANCE_TIMEOUT_SECONDS,
     YFinanceCrawler,
     _DeadlineSession,
     curl_requests,
@@ -205,31 +204,6 @@ def test_deadline_session_rejects_requests_after_deadline() -> None:
     with session.deadline(0):
         with pytest.raises(TimeoutError, match="provider deadline"):
             session.request("GET", "https://query.example.test")
-
-
-def test_fetch_portfolio_snapshot_uses_bounded_provider_and_skips_name_lookup() -> None:
-    crawler = YFinanceCrawler()
-    snapshot = StockSnapshot(
-        symbol="2330.TW",
-        currency="TWD",
-        current_price=100,
-        previous_close=99,
-        day_open=99,
-        day_high=101,
-        day_low=98,
-        volume=100,
-        recent_closes=[99, 100],
-        fetched_at="2026-07-31T02:00:00+00:00",
-    )
-
-    with patch.object(crawler, "fetch_basic_snapshot", return_value=snapshot) as fetch:
-        assert crawler.fetch_portfolio_snapshot("2330.TW") is snapshot
-
-    fetch.assert_called_once_with(
-        "2330.TW",
-        provider_timeout=PORTFOLIO_YFINANCE_TIMEOUT_SECONDS,
-        resolve_name=False,
-    )
 
 
 def test_fetch_basic_snapshot_includes_recent_high_low_volume_series() -> None:

@@ -18,9 +18,6 @@ from ai_stock_sentinel.calibration.router import router as calibration_router
 from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.daily_radar.router import router as daily_radar_router
 from ai_stock_sentinel.data_sources.fundamental.router import router as fundamental_router
-from ai_stock_sentinel.portfolio.history_router import router as history_router
-from ai_stock_sentinel.portfolio.router import router as portfolio_router
-from ai_stock_sentinel.watchlist.router import router as watchlist_router
 
 configure_logging()
 
@@ -80,11 +77,8 @@ app.add_middleware(
 
 app.include_router(analysis_router)
 app.include_router(auth_router)
-app.include_router(portfolio_router)
-app.include_router(history_router)
 app.include_router(daily_radar_router)
 app.include_router(calibration_router)
-app.include_router(watchlist_router)
 app.include_router(fundamental_router)
 app.include_router(active_etf_holdings_router)
 

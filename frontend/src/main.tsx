@@ -12,10 +12,7 @@ import { APP_BASE_URL, GOOGLE_CLIENT_ID } from "./lib/config.ts";
 
 const AnalyzePage = lazy(() => import("./pages/AnalyzePage.tsx"));
 const ActiveEtfPage = lazy(() => import("./pages/ActiveEtfPage.tsx"));
-const ClosedPortfolioPage = lazy(() => import("./pages/ClosedPortfolioPage.tsx"));
 const DailyRadarPage = lazy(() => import("./pages/DailyRadarPage.tsx"));
-const PortfolioPage = lazy(() => import("./pages/PortfolioPage.tsx"));
-const WatchlistPage = lazy(() => import("./pages/WatchlistPage.tsx"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -69,30 +66,6 @@ createRoot(document.getElementById("root")!).render(
                   element={
                     <LazyRoute>
                       <AnalyzePage />
-                    </LazyRoute>
-                  }
-                />
-                <Route
-                  path="/watchlist"
-                  element={
-                    <LazyRoute>
-                      <WatchlistPage />
-                    </LazyRoute>
-                  }
-                />
-                <Route
-                  path="/portfolio"
-                  element={
-                    <LazyRoute>
-                      <PortfolioPage onNavigateAnalyze={() => {}} />
-                    </LazyRoute>
-                  }
-                />
-                <Route
-                  path="/portfolio/closed"
-                  element={
-                    <LazyRoute>
-                      <ClosedPortfolioPage />
                     </LazyRoute>
                   }
                 />

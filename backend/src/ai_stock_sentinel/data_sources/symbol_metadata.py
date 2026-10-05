@@ -18,7 +18,7 @@ DEFAULT_SYMBOL_METADATA_CACHE_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_SYMBOL_METADATA_FAILURE_CACHE_TTL_SECONDS = 60 * 5
 
 # TWSE/TPEx official security industry codes. The shared labels intentionally
-# normalize equivalent listed/OTC categories so portfolio concentration groups
+# normalize equivalent listed/OTC categories so research industry groups
 # them together. Code 91 identifies Taiwan Depositary Receipts rather than an
 # industry and is intentionally left unclassified.
 OFFICIAL_INDUSTRY_NAMES = {

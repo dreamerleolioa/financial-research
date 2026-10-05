@@ -246,8 +246,6 @@ def test_strategy_node_action_plan_position_size_zero_for_defensive_wait() -> No
 
 # -- Position Diagnosis node tests --
 
-from ai_stock_sentinel.analysis.position_scorer import compute_position_metrics  # noqa: E402
-
 
 def _base_position_state():
     """Minimal GraphState with position fields for testing."""
@@ -278,60 +276,6 @@ def _base_position_state():
         "errors": [],
         "is_final": True,
     }
-
-
-def test_preprocess_node_computes_position_metrics_when_entry_price_set():
-    from ai_stock_sentinel.graph.nodes import preprocess_node
-
-    state = _base_position_state()
-    result = preprocess_node(state)
-
-    assert "profit_loss_pct" in result
-    assert "position_status" in result
-    assert "position_narrative" in result
-    assert result["position_status"] in ("profitable_safe", "at_risk", "under_water")
-
-
-def test_preprocess_node_skips_position_metrics_when_no_entry_price():
-    from ai_stock_sentinel.graph.nodes import preprocess_node
-
-    state = _base_position_state()
-    state["entry_price"] = None
-    result = preprocess_node(state)
-
-    assert result.get("profit_loss_pct") is None
-    assert result.get("position_status") is None
-
-
-def test_strategy_node_computes_trailing_stop_when_position_mode():
-    from ai_stock_sentinel.graph.nodes import strategy_node
-
-    state = _base_position_state()
-    # Add required preprocess outputs
-    state.update({
-        "profit_loss_pct": 7.14,
-        "position_status": "profitable_safe",
-        "position_narrative": "獲利安全區",
-        "technical_context": "",
-        "rsi14": 55.0,
-        "support_20d": 960.0,
-        "resistance_20d": 1060.0,
-        "high_20d": 1060.0,
-        "low_20d": 960.0,
-        "technical_signal": "bullish",
-        "confidence_score": 70,
-    })
-    result = strategy_node(state)
-
-    assert "trailing_stop" in result
-    assert result["trailing_stop"] is not None
-    assert "trailing_stop_reason" in result
-    assert "recommended_action" in result
-    assert result["recommended_action"] in ("Hold", "Trim", "Exit")
-    assert result["distance_to_trailing_stop_pct"] is not None
-    assert result["distance_to_support_pct"] is not None
-    assert "unrealized_pnl" in result
-    assert "holding_days" in result
 
 
 # ── fetch_external_data_node concurrency ──────────────────────────────────────

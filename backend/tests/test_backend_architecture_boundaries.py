@@ -12,23 +12,18 @@ PURE_DOMAIN_MODULES = (
     SRC_ROOT / "technical" / "profile.py",
     SRC_ROOT / "analysis" / "metrics.py",
     SRC_ROOT / "analysis" / "confidence_scorer.py",
-    SRC_ROOT / "analysis" / "position_scorer.py",
     SRC_ROOT / "daily_radar" / "cooldown.py",
     SRC_ROOT / "daily_radar" / "explanations.py",
     SRC_ROOT / "daily_radar" / "prefilter.py",
     SRC_ROOT / "daily_radar" / "relative_strength.py",
     SRC_ROOT / "daily_radar" / "scoring.py",
-    SRC_ROOT / "portfolio" / "fees.py",
-    SRC_ROOT / "portfolio" / "risk_summary.py",
 )
 
 REFACTORED_HTTP_BOUNDARIES = (
     SRC_ROOT / "api.py",
     SRC_ROOT / "analysis" / "router.py",
     SRC_ROOT / "daily_radar" / "router.py",
-    SRC_ROOT / "portfolio" / "history_router.py",
-    SRC_ROOT / "portfolio" / "router.py",
-    SRC_ROOT / "watchlist" / "router.py",
+    *sorted((SRC_ROOT / "daily_radar").glob("*_router.py")),
 )
 
 PURE_DOMAIN_BANNED_IMPORTS = (

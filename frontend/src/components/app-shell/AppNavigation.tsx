@@ -27,39 +27,6 @@ function AnalysisIcon(props: IconProps) {
   );
 }
 
-function WatchlistIcon(props: IconProps) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      aria-hidden="true"
-      {...props}
-    >
-      <path d="M7 4h10a2 2 0 0 1 2 2v14l-7-4-7 4V6a2 2 0 0 1 2-2Z" strokeLinejoin="round" />
-      <path d="M9 9h6M9 12h4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function PortfolioIcon(props: IconProps) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      aria-hidden="true"
-      {...props}
-    >
-      <path d="M4 8h16v11H4z" strokeLinejoin="round" />
-      <path d="M8 8V5h8v3M4 12h16" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M10 12v2h4v-2" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 function RadarIcon(props: IconProps) {
   return (
     <svg
@@ -101,20 +68,6 @@ const navigationItems: NavigationItem[] = [
     to: "/analyze",
     icon: AnalysisIcon,
     matches: (pathname) => pathname.startsWith("/analyze"),
-  },
-  {
-    label: "關注列表",
-    mobileLabel: "關注",
-    to: "/watchlist",
-    icon: WatchlistIcon,
-    matches: (pathname) => pathname.startsWith("/watchlist"),
-  },
-  {
-    label: "持股管理",
-    mobileLabel: "持股",
-    to: "/portfolio",
-    icon: PortfolioIcon,
-    matches: (pathname) => pathname.startsWith("/portfolio"),
   },
   {
     label: "盤後觀察雷達",
@@ -168,35 +121,6 @@ export function DesktopNavigation() {
                 <span>{item.label}</span>
               </NavLink>
 
-              {item.to === "/portfolio" && isCurrent && (
-                <div className="mt-1 ml-11 grid grid-cols-2 gap-1" aria-label="持股檢視">
-                  <NavLink
-                    to="/portfolio"
-                    end
-                    className={({ isActive }) =>
-                      `rounded-md px-2 py-1.5 text-center text-xs transition-colors duration-150 ${
-                        isActive
-                          ? "bg-surface-raised font-medium text-accent"
-                          : "text-text-faint hover:text-text-muted"
-                      }`
-                    }
-                  >
-                    持有中
-                  </NavLink>
-                  <NavLink
-                    to="/portfolio/closed"
-                    className={({ isActive }) =>
-                      `rounded-md px-2 py-1.5 text-center text-xs transition-colors duration-150 ${
-                        isActive
-                          ? "bg-surface-raised font-medium text-accent"
-                          : "text-text-faint hover:text-text-muted"
-                      }`
-                    }
-                  >
-                    已結案
-                  </NavLink>
-                </div>
-              )}
             </li>
           );
         })}
@@ -213,7 +137,7 @@ export function MobileBottomNavigation() {
       aria-label="行動版主要功能"
       className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-shell/95 px-2 pt-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] shadow-[0_-12px_30px_oklch(0.12_0.01_165/0.12)] backdrop-blur-sm lg:hidden"
     >
-      <ul className="mx-auto grid max-w-md grid-cols-5 gap-1">
+      <ul className="mx-auto grid max-w-md grid-cols-3 gap-1">
         {navigationItems.map((item) => {
           const isCurrent = item.matches(pathname);
           const Icon = item.icon;
@@ -242,41 +166,6 @@ export function MobileBottomNavigation() {
           );
         })}
       </ul>
-    </nav>
-  );
-}
-
-export function PortfolioSubNavigation() {
-  return (
-    <nav
-      aria-label="持股檢視"
-      className="mb-5 inline-flex rounded-[10px] border border-border bg-shell p-1 lg:hidden"
-    >
-      <NavLink
-        to="/portfolio"
-        end
-        className={({ isActive }) =>
-          `flex min-h-10 items-center rounded-md px-4 text-sm font-medium transition-colors duration-150 ${
-            isActive
-              ? "bg-surface-raised text-accent shadow-panel"
-              : "text-text-muted hover:text-text-primary"
-          }`
-        }
-      >
-        持有中
-      </NavLink>
-      <NavLink
-        to="/portfolio/closed"
-        className={({ isActive }) =>
-          `flex min-h-10 items-center rounded-md px-4 text-sm font-medium transition-colors duration-150 ${
-            isActive
-              ? "bg-surface-raised text-accent shadow-panel"
-              : "text-text-muted hover:text-text-primary"
-          }`
-        }
-      >
-        已結案
-      </NavLink>
     </nav>
   );
 }

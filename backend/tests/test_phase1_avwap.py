@@ -39,9 +39,7 @@ from ai_stock_sentinel.phase1_avwap.provider import (
 )
 from ai_stock_sentinel.phase1_avwap.projection import (
     read_phase1_avwap_contexts_for_daily_radar,
-    read_phase1_current_day_observations_for_managed_universe,
     read_phase1_observation_for_analyze,
-    read_phase1_position_states_for_portfolio,
 )
 from ai_stock_sentinel.phase1_avwap.repository import get_latest_phase1_avwap_snapshots_on_or_before, upsert_phase1_avwap_snapshot
 from ai_stock_sentinel.phase1_avwap.service import (
@@ -277,19 +275,16 @@ def test_build_phase1_avwap_payload_computes_daily_anchors_from_amount_over_volu
     assert payload["anchors"]["high_volume_60d"]["anchor_date"] == "2026-06-03"
 
 
-def test_resolve_phase1_managed_universe_merges_holdings_watchlist_and_latest_daily_radar(
+def test_resolve_phase1_managed_universe_uses_latest_daily_radar_only(
     db_session: Session,
 ) -> None:
     _seed_user_universe(db_session)
 
     universe = resolve_phase1_managed_universe(db_session, user_id=1, market="TW")
 
-    assert [item.symbol for item in universe] == ["2330.TW", "2454.TW", "2317.TW"]
+    assert [item.symbol for item in universe] == ["2330.TW", "2317.TW"]
     by_symbol = {item.symbol: item for item in universe}
-    assert by_symbol["2330.TW"].sources == ["active_holding", "daily_radar_candidate"]
-    assert by_symbol["2330.TW"].holding_entry_date == date(2026, 1, 15)
-    assert by_symbol["2330.TW"].holding_avg_cost == 900.0
-    assert by_symbol["2454.TW"].sources == ["watchlist"]
+    assert by_symbol["2330.TW"].sources == ["daily_radar_candidate"]
     assert by_symbol["2317.TW"].sources == ["daily_radar_candidate"]
 
 
@@ -300,9 +295,9 @@ def test_refresh_phase1_avwap_snapshots_reuses_fresh_rows_before_fetching(
     data_date = date(2026, 6, 5)
     upsert_phase1_avwap_snapshot(
         db_session,
-        symbol="2454.TW",
+        symbol="2330.TW",
         data_date=data_date,
-        payload={"symbol": "2454.TW", "data_quality": {"estimated": False}},
+        payload={"symbol": "2330.TW", "data_quality": {"estimated": False}},
         freshness="fresh",
     )
     provider = FakeDailyPriceProvider()
@@ -315,15 +310,14 @@ def test_refresh_phase1_avwap_snapshots_reuses_fresh_rows_before_fetching(
         provider=provider,
     )
 
-    assert result.reused_symbols == ["2454.TW"]
-    assert result.fetched_symbols == ["2330.TW", "2317.TW"]
+    assert result.reused_symbols == ["2330.TW"]
+    assert result.fetched_symbols == ["2317.TW"]
     assert result.missing_symbols == []
     assert provider.calls == [
-        ("2330.TW", data_date - timedelta(days=30), data_date),
         ("2317.TW", data_date - timedelta(days=30), data_date),
     ]
     rows = db_session.scalars(select(Phase1AvwapSnapshot).order_by(Phase1AvwapSnapshot.symbol)).all()
-    assert [row.symbol for row in rows] == ["2317.TW", "2330.TW", "2454.TW"]
+    assert [row.symbol for row in rows] == ["2317.TW", "2330.TW"]
     assert rows[0].dataset == DEFAULT_PHASE1_DATASET
     assert rows[0].adjustment_mode == "unadjusted"
     assert rows[0].source_provider == "test"
@@ -331,13 +325,13 @@ def test_refresh_phase1_avwap_snapshots_reuses_fresh_rows_before_fetching(
     assert rows[0].payload["source"]["dataset"] == "test_daily_price"
     assert rows[0].payload["anchors"]["swing_low_60d"]["avwap"] == pytest.approx(14.6667)
     assert "holding" not in rows[1].payload
-    assert "entry" not in rows[1].payload["anchors"]
+    assert "entry" not in rows[0].payload["anchors"]
 
 
 def test_refresh_phase1_avwap_snapshots_marks_missing_when_requested_date_row_is_absent(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
     data_date = date(2026, 6, 5)
     provider = FakeDailyPriceProvider({"2330.TW": _bars_until(date(2026, 6, 4))})
 
@@ -362,7 +356,7 @@ def test_refresh_phase1_avwap_snapshots_marks_missing_when_requested_date_row_is
 def test_refresh_phase1_avwap_snapshots_persists_routed_source_metadata(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
     data_date = date(2026, 6, 5)
 
     class RoutedProvider:
@@ -445,7 +439,7 @@ def test_refresh_phase1_avwap_snapshots_marks_tpex_login_failure_missing(
 def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_managed_symbol(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
     data_date = date(2026, 6, 5)
     upsert_phase1_avwap_snapshot(
         db_session,
@@ -513,7 +507,7 @@ def test_read_phase1_observation_for_analyze_returns_snapshot_payload_for_manage
 def test_read_phase1_observation_for_analyze_reports_snapshot_missing_for_managed_symbol(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
 
     observation = read_phase1_observation_for_analyze(
         db_session,
@@ -530,7 +524,7 @@ def test_read_phase1_observation_for_analyze_reports_snapshot_missing_for_manage
 def test_read_phase1_observation_for_analyze_uses_latest_fresh_snapshot_before_requested_date(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
     snapshot_date = date(2026, 6, 22)
     requested_date = date(2026, 6, 23)
     upsert_phase1_avwap_snapshot(
@@ -570,7 +564,7 @@ def test_read_phase1_observation_for_analyze_uses_latest_fresh_snapshot_before_r
 def test_read_phase1_observation_for_analyze_marks_old_snapshot_stale(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
     snapshot_date = date(2026, 6, 1)
     requested_date = date(2026, 6, 23)
     upsert_phase1_avwap_snapshot(
@@ -611,7 +605,7 @@ def test_read_phase1_observation_for_analyze_marks_old_snapshot_stale(
 def test_read_phase1_observation_for_analyze_reports_out_of_universe_without_fetching(
     db_session: Session,
 ) -> None:
-    _seed_user_with_active_holding(db_session)
+    _seed_radar_symbol(db_session)
 
     observation = read_phase1_observation_for_analyze(
         db_session,
@@ -646,402 +640,6 @@ def test_read_phase1_observation_for_analyze_reports_read_failure_as_nonblocking
     assert observation["freshness"] == "missing"
     assert observation["missing_reason"] == "phase1_snapshot_read_failed"
     assert observation["data_quality"]["blocking"] is False
-
-
-def test_read_phase1_position_states_for_portfolio_projects_snapshot_state(
-    db_session: Session,
-) -> None:
-    data_date = date(2026, 6, 5)
-    portfolio = UserPortfolio(
-        user_id=1,
-        position_group_id="group-entry-anchor",
-        symbol="2330.TW",
-        entry_price=900,
-        quantity=100,
-        entry_date=date(2026, 1, 15),
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2330.TW",
-        data_date=data_date,
-        payload={
-            "symbol": "2330.TW",
-            "data_date": data_date.isoformat(),
-            "ohlcv": {"close": 935},
-            "bars": [
-                {
-                    "date": "2026-01-15",
-                    "open": 900,
-                    "high": 905,
-                    "low": 895,
-                    "close": 900,
-                    "volume": 100,
-                    "amount": 90000,
-                    "estimated_amount": False,
-                },
-                {
-                    "date": "2026-06-05",
-                    "open": 935,
-                    "high": 940,
-                    "low": 930,
-                    "close": 935,
-                    "volume": 100,
-                    "amount": 90000,
-                    "estimated_amount": False,
-                },
-            ],
-            "anchors": {
-                "breakout_20d": {
-                    "available": True,
-                    "anchor_date": "2026-06-05",
-                    "anchor_reason": "breakout_20d_high",
-                    "avwap": 910.0,
-                    "distance_to_avwap_pct": 2.4,
-                },
-            },
-            "data_quality": {"estimated": False, "rows_used": 80},
-        },
-        freshness="fresh",
-    )
-
-    states = read_phase1_position_states_for_portfolio(
-        db_session,
-        positions=[portfolio],
-        data_date=data_date,
-    )
-
-    state = states["group-entry-anchor"]
-    assert state["state"] == "hold"
-    assert state["label"] == "續抱"
-    assert state["display_anchor"]["type"] == "entry"
-    assert state["display_anchor"]["distance_to_avwap_pct"] == pytest.approx(3.8889)
-    assert state["holding_avg_cost"] == 900.0
-    assert state["matched_rules"] == ["phase1_display_anchor_supported"]
-    assert state["data_quality"]["blocking"] is False
-
-
-def test_read_phase1_position_states_for_portfolio_uses_latest_fresh_snapshot_before_requested_date(
-    db_session: Session,
-) -> None:
-    snapshot_date = date(2026, 6, 22)
-    requested_date = date(2026, 6, 23)
-    portfolio = UserPortfolio(
-        user_id=1,
-        position_group_id="group-latest-snapshot",
-        symbol="2449.TW",
-        entry_price=330,
-        quantity=50,
-        entry_date=date(2026, 6, 20),
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2449.TW",
-        data_date=snapshot_date,
-        payload={
-            "symbol": "2449.TW",
-            "data_date": snapshot_date.isoformat(),
-            "ohlcv": {"close": 350},
-            "bars": [
-                {
-                    "date": "2026-06-20",
-                    "open": 330,
-                    "high": 335,
-                    "low": 328,
-                    "close": 330,
-                    "volume": 100,
-                    "amount": 33000,
-                    "estimated_amount": False,
-                },
-                {
-                    "date": "2026-06-22",
-                    "open": 345,
-                    "high": 352,
-                    "low": 342,
-                    "close": 350,
-                    "volume": 100,
-                    "amount": 35000,
-                    "estimated_amount": False,
-                },
-            ],
-            "anchors": {
-                "swing_low_60d": {
-                    "available": True,
-                    "anchor_date": "2026-06-20",
-                    "anchor_reason": "swing_low_60d",
-                    "avwap": 340,
-                    "distance_to_avwap_pct": 2.9412,
-                },
-            },
-            "data_quality": {"estimated": False, "rows_used": 2},
-        },
-        freshness="fresh",
-    )
-
-    states = read_phase1_position_states_for_portfolio(
-        db_session,
-        positions=[portfolio],
-        data_date=requested_date,
-    )
-
-    state = states["group-latest-snapshot"]
-    assert state["freshness"] == "fresh"
-    assert state["data_date"] == snapshot_date.isoformat()
-    assert state["requested_data_date"] == requested_date.isoformat()
-    assert state["display_anchor"]["type"] == "entry"
-
-
-def test_read_phase1_position_states_for_portfolio_marks_old_snapshot_stale(
-    db_session: Session,
-) -> None:
-    snapshot_date = date(2026, 6, 1)
-    requested_date = date(2026, 6, 23)
-    portfolio = UserPortfolio(
-        user_id=1,
-        position_group_id="group-stale-snapshot",
-        symbol="2449.TW",
-        entry_price=330,
-        quantity=50,
-        entry_date=date(2026, 5, 30),
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2449.TW",
-        data_date=snapshot_date,
-        payload={
-            "symbol": "2449.TW",
-            "data_date": snapshot_date.isoformat(),
-            "ohlcv": {"close": 350},
-            "bars": [
-                {
-                    "date": "2026-06-01",
-                    "open": 345,
-                    "high": 352,
-                    "low": 342,
-                    "close": 350,
-                    "volume": 100,
-                    "amount": 35000,
-                    "estimated_amount": False,
-                },
-            ],
-            "anchors": {},
-            "data_quality": {"estimated": False, "rows_used": 1},
-        },
-        freshness="fresh",
-    )
-
-    states = read_phase1_position_states_for_portfolio(
-        db_session,
-        positions=[portfolio],
-        data_date=requested_date,
-    )
-
-    state = states["group-stale-snapshot"]
-    assert state["freshness"] == "missing"
-    assert state["missing_reason"] == "phase1_snapshot_stale"
-    assert state["data_date"] == snapshot_date.isoformat()
-    assert state["requested_data_date"] == requested_date.isoformat()
-
-
-def test_read_phase1_position_states_for_portfolio_reports_missing_distance_reason(
-    db_session: Session,
-) -> None:
-    data_date = date(2026, 6, 5)
-    portfolio = UserPortfolio(
-        user_id=1,
-        position_group_id="group-missing-bars",
-        symbol="2330.TW",
-        entry_price=900,
-        quantity=100,
-        entry_date=date(2026, 1, 15),
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2330.TW",
-        data_date=data_date,
-        payload={
-            "symbol": "2330.TW",
-            "data_date": data_date.isoformat(),
-            "anchors": {},
-            "data_quality": {"estimated": False, "rows_used": 80},
-        },
-        freshness="fresh",
-    )
-
-    states = read_phase1_position_states_for_portfolio(
-        db_session,
-        positions=[portfolio],
-        data_date=data_date,
-    )
-
-    state = states["group-missing-bars"]
-    assert state["state"] == "data_unavailable"
-    assert state["missing_reason"] == "phase1_snapshot_bars_missing"
-    assert state["data_quality"]["missing_reason"] == "phase1_snapshot_bars_missing"
-    assert state["data_quality"]["blocking"] is False
-
-
-def test_read_phase1_position_states_for_portfolio_ignores_legacy_private_snapshot_anchor(
-    db_session: Session,
-) -> None:
-    data_date = date(2026, 6, 5)
-    portfolio = UserPortfolio(
-        user_id=1,
-        position_group_id="group-legacy-private-anchor",
-        symbol="2330.TW",
-        entry_price=900,
-        quantity=100,
-        entry_date=date(2026, 1, 15),
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2330.TW",
-        data_date=data_date,
-        payload={
-            "symbol": "2330.TW",
-            "data_date": data_date.isoformat(),
-            "holding": {"entry_date": "2026-01-15", "avg_cost": 900},
-            "anchors": {
-                "entry": {
-                    "available": True,
-                    "anchor_date": "2026-01-15",
-                    "anchor_reason": "holding_entry_date",
-                    "avwap": 900,
-                    "distance_to_avwap_pct": 5,
-                },
-            },
-            "data_quality": {"estimated": False, "rows_used": 80},
-        },
-        freshness="fresh",
-    )
-
-    states = read_phase1_position_states_for_portfolio(
-        db_session,
-        positions=[portfolio],
-        data_date=data_date,
-    )
-
-    state = states["group-legacy-private-anchor"]
-    assert state["state"] == "data_unavailable"
-    assert state["missing_reason"] == "phase1_snapshot_bars_missing"
-
-
-def test_read_phase1_position_states_for_portfolio_reports_read_failure_as_nonblocking(
-    db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import ai_stock_sentinel.phase1_avwap.projection as projection_module
-
-    def _raise(*args, **kwargs):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(projection_module, "get_latest_phase1_avwap_snapshots_on_or_before", _raise)
-
-    states = projection_module.read_phase1_position_states_for_portfolio(
-        db_session,
-        symbols=["2330.TW"],
-        data_date=date(2026, 6, 5),
-    )
-
-    state = states["2330.TW"]
-    assert state["state"] == "data_unavailable"
-    assert state["missing_reason"] == "phase1_snapshot_read_failed"
-    assert state["data_quality"]["blocking"] is False
-
-
-def test_read_phase1_current_day_observations_classifies_non_holding_managed_symbols(
-    db_session: Session,
-) -> None:
-    _seed_user_universe(db_session)
-    data_date = date(2026, 6, 5)
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2330.TW",
-        data_date=data_date,
-        payload=_phase1_snapshot_payload(symbol="2330.TW", close=930, swing_distance=4, breakout_distance=2),
-        freshness="fresh",
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2454.TW",
-        data_date=data_date,
-        payload=_phase1_snapshot_payload(symbol="2454.TW", close=100, swing_distance=3, breakout_distance=8),
-        freshness="fresh",
-    )
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2317.TW",
-        data_date=data_date,
-        payload=_phase1_snapshot_payload(symbol="2317.TW", close=100, swing_distance=7, breakout_distance=2),
-        freshness="fresh",
-    )
-
-    observations = read_phase1_current_day_observations_for_managed_universe(
-        db_session,
-        user_id=1,
-        data_date=data_date,
-    )
-
-    assert sorted(observations) == ["2317.TW", "2454.TW"]
-    assert observations["2454.TW"]["state"] == "pullback_watch"
-    assert observations["2454.TW"]["label"] == "建倉"
-    assert observations["2454.TW"]["display_anchor"]["type"] == "swing_low_60d"
-    assert observations["2317.TW"]["state"] == "strong_breakout"
-    assert observations["2317.TW"]["matched_rules"] == ["phase1_breakout_anchor_supported_within_5pct"]
-    assert observations["2317.TW"]["data_quality"]["blocking"] is False
-
-
-def test_read_phase1_current_day_observations_marks_old_snapshot_stale(
-    db_session: Session,
-) -> None:
-    _seed_user_universe(db_session)
-    snapshot_date = date(2026, 6, 1)
-    requested_date = date(2026, 6, 23)
-    upsert_phase1_avwap_snapshot(
-        db_session,
-        symbol="2454.TW",
-        data_date=snapshot_date,
-        payload=_phase1_snapshot_payload(symbol="2454.TW", close=100, swing_distance=3, breakout_distance=8),
-        freshness="fresh",
-    )
-
-    observations = read_phase1_current_day_observations_for_managed_universe(
-        db_session,
-        user_id=1,
-        data_date=requested_date,
-    )
-
-    watchlist_observation = observations["2454.TW"]
-    assert watchlist_observation["freshness"] == "missing"
-    assert watchlist_observation["missing_reason"] == "phase1_snapshot_stale"
-    assert watchlist_observation["data_date"] == snapshot_date.isoformat()
-    assert watchlist_observation["requested_data_date"] == requested_date.isoformat()
-
-
-def test_read_phase1_current_day_observations_reports_read_failure_as_nonblocking(
-    db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import ai_stock_sentinel.phase1_avwap.projection as projection_module
-
-    _seed_user_universe(db_session)
-
-    def _raise(*args, **kwargs):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(projection_module, "get_latest_phase1_avwap_snapshots_on_or_before", _raise)
-
-    observations = projection_module.read_phase1_current_day_observations_for_managed_universe(
-        db_session,
-        user_id=1,
-        data_date=date(2026, 6, 5),
-    )
-
-    assert sorted(observations) == ["2317.TW", "2454.TW"]
-    watchlist_observation = observations["2454.TW"]
-    assert watchlist_observation["freshness"] == "missing"
-    assert watchlist_observation["missing_reason"] == "phase1_snapshot_read_failed"
-    assert watchlist_observation["matched_rules"] == ["phase1_current_day_observation_unavailable"]
-    assert watchlist_observation["data_quality"]["blocking"] is False
 
 
 def test_read_phase1_avwap_contexts_for_daily_radar_reports_read_failure_as_nonblocking(
@@ -1139,7 +737,7 @@ def test_phase1_avwap_twse_default_migration_rekeys_existing_finmind_rows() -> N
 
 
 def _seed_user_universe(session: Session) -> None:
-    _seed_user_with_active_holding(session)
+    _seed_radar_symbol(session)
     session.add(UserWatchlist(user_id=1, symbol="2454.TW", sort_order=0))
     run = DailyRadarRun(
         run_date=date(2026, 6, 5),
@@ -1158,19 +756,12 @@ def _seed_user_universe(session: Session) -> None:
     session.flush()
 
 
-def _seed_user_with_active_holding(session: Session) -> None:
+def _seed_radar_symbol(session: Session) -> None:
     session.add(User(id=1, google_sub="user-1", email="user@example.com"))
+    run = DailyRadarRun(run_date=date(2026, 1, 15), market="TW", status="completed", universe_count=1, prefilter_count=1, candidate_count=1, errors=[])
+    session.add(run)
     session.flush()
-    session.add(
-        UserPortfolio(
-            user_id=1,
-            symbol="2330.TW",
-            entry_price=900,
-            quantity=1000,
-            entry_date=date(2026, 1, 15),
-            is_active=True,
-        )
-    )
+    _add_candidate(session, run, symbol="2330.TW", score=95)
     session.flush()
 
 
