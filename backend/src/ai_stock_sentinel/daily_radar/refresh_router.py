@@ -117,6 +117,7 @@ def prepare_daily_radar_universe_endpoint(
         raise HTTPException(status_code=409, detail={
             "code": "market_exploration_archive_incomplete", "run_date": run_date.isoformat(),
             "missing_markets": exc.missing_markets,
+            "missing_market_dates": exc.missing_market_dates, "archive_dates": exc.archive_dates,
         }) from exc
     try:
         universe = select_daily_radar_universe(

@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Any, Iterable
 
-from ai_stock_sentinel.daily_radar.market_exploration import build_turnover_contexts, _number
+from ai_stock_sentinel.daily_radar.market_exploration import build_turnover_contexts, market_archive_window, _number
 from ai_stock_sentinel.daily_radar.universe import DailyRadarUniverseEntry, merge_discovery_universe, is_daily_radar_supported_symbol
 
 SCALED_ACCUMULATION_VERSION = "scaled-accumulation-v1"
@@ -12,15 +12,20 @@ SCALED_TRACKS = {"foreign_scaled_accumulation": "foreign_net_shares",
 
 
 def build_scaled_accumulation(bars: Iterable[Any], flows: Iterable[Any], *, run_date: date,
-                              track_limit: int = 50) -> tuple[list[DailyRadarUniverseEntry], dict[str, Any]]:
-    bars = [bar for bar in bars if bar.trade_date <= run_date and bar.is_final and bar.adjustment_mode == "unadjusted"]
-    turnover = build_turnover_contexts(bars, run_date=run_date)
-    days = sorted({bar.trade_date for bar in bars})[-60:]
+                              track_limit: int = 50, archive_dates: Iterable[date] | None = None
+                              ) -> tuple[list[DailyRadarUniverseEntry], dict[str, Any]]:
+    bars = [bar for bar in bars if bar.trade_date <= run_date and bar.adjustment_mode == "unadjusted"]
+    flows = [flow for flow in flows if flow.trade_date <= run_date]
+    dates = set(archive_dates or []) | {flow.trade_date for flow in flows}
+    days, missing = market_archive_window(bars, run_date=run_date, window_size=60, archive_dates=dates)
     audit = {"version": SCALED_ACCUMULATION_VERSION, "as_of_date": run_date.isoformat(),
              "status": "insufficient_history", "excluded_symbol_reasons": {}, "track_counts": {}}
+    if missing:
+        return [], audit | {"status": "market_archive_incomplete", "missing_market_dates": missing,
+                           "archive_dates": [day.isoformat() for day in days]}
     if len(days) < 60 or days[-1] != run_date:
         return [], audit
-    flows = [flow for flow in flows if flow.trade_date <= run_date]
+    turnover = build_turnover_contexts(bars, run_date=run_date, archive_dates=days)
     covered_days = {flow.trade_date for flow in flows}
     missing_days = [day.isoformat() for day in days if day not in covered_days]
     audit.update({"required_session_count": 60, "complete_session_count": 60 - len(missing_days),
@@ -29,7 +34,7 @@ def build_scaled_accumulation(bars: Iterable[Any], flows: Iterable[Any], *, run_
         return [], audit | {"status": "insufficient_institutional_history"}
     prices, buying = defaultdict(dict), defaultdict(dict)
     for bar in bars:
-        if is_daily_radar_supported_symbol(bar.symbol):
+        if bar.is_final and is_daily_radar_supported_symbol(bar.symbol):
             prices[bar.symbol][bar.trade_date] = bar
     for flow in flows:
         if flow.trade_date <= run_date:

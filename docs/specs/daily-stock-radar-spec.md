@@ -92,7 +92,7 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 1. Same-day institutional leaders：分開讀取當日外資與投信正買超名單，形成 `foreign_same_day` 與 `trust_same_day` 兩條獨立 top-50 軌道；不先把法人角色合併，以免強勢投信訊號被外資排名稀釋。
 2. Recent accumulation leaders：分開計算最近最多 5 個完整市場日的外資與投信 trailing buy streak，形成 `foreign_recent_accumulation` 與 `trust_recent_accumulation` 兩條獨立 top-50 軌道；必須截至 `run_date` 仍連買至少 2 日且窗口累計淨買超為正。
 3. Daily trigger technical tracks：從當日已存在的 final `StockRawData` OHLCV/canonical `technical_profile` 與 compatibility `indicators` 建立 `price_volume`、`reversal`、`support_retake` 等日頻 trigger tracks，不對全市場逐檔呼叫外部 API。`technical_profile` 提供 canonical layer trace、data quality 與後續遷移依據；現行 bucket/cross scoring 仍讀 compatibility `indicators`。
-4. Market archive exploration：先讀同日 TW/TWO final 官方行情，掃描最近最多 65 個已歸檔交易日期（240 日曆日界限），從全市場建立 `market_trend` 與 `market_price_volume` 各 top-50；不依賴既有個股 raw data 或法人榜。使用實際 20 日平均成交金額與既有 3 億元／20 元資格門檻；量價軌道要求站上 MA20、收盤上升且量比至少 1.25，趨勢軌道要求至少 65 根完整日線、MA20 ≥ MA60、MA60 五日斜率為正、60 日報酬為正。未還原資料僅作 discovery，序列缺漏、缺成交金額或相鄰收盤變動達 25% 時排除並保留原因，避免把疑似公司行動當成訊號；詳細評分仍讀合格 adjusted history。
+4. Market archive exploration：先讀同日 TW/TWO final 官方行情，掃描最近最多 65 個已知交易日期（240 日曆日界限，取已觀測行情與 completed 官方法人歸檔的日期聯集，僅 final 行情能滿足 coverage），從全市場建立 `market_trend` 與 `market_price_volume` 各 top-50；不依賴既有個股 raw data 或法人榜。使用實際 20 日平均成交金額與既有 3 億元／20 元資格門檻；量價軌道要求站上 MA20、收盤上升且量比至少 1.25，趨勢軌道要求至少 65 根完整日線、MA20 ≥ MA60、MA60 五日斜率為正、60 日報酬為正。未還原資料僅作 discovery，序列缺漏、缺成交金額或相鄰收盤變動達 25% 時排除並保留原因，避免把疑似公司行動當成訊號；詳細評分仍讀合格 adjusted history。
 5. Final selected universe：合併所有來源並去重，保留 `primary_track`、全部 `tracks` 與 `track_metrics`。未超過 250 檔時保留原順序；超過時按各軌輪流取下一個未入選 symbol，避免後列技術軌道被法人名單占滿。
 
 5. Scaled institutional accumulation：從已通過完整報表 integrity 驗證的官方 archive 與同期 final market bars 建立 `foreign_scaled_accumulation` / `trust_scaled_accumulation` 各 top-50。要求完整 60 個市場交易日、20/60 日累積淨買超均為正、最近 20 日至少 11 日正買超，依 20 日淨買超股數 ÷ 同期成交股數排序（同分比較 60 日比例，再比較 symbol），減少絕對張數對大型股的偏重。仍要求實際 20 日平均成交金額／最低價格資格、有效 volume 與無疑似未還原價格跳動；缺法人日、缺價格日與非法數值不能補零。歷史 archive integrity 失敗或不足時該新增來源不可用並保留原因；`insufficient_institutional_history` 明列 required／complete session count 與 missing session dates，不把實際窗口縮短後冒稱 60 日。原四條法人來源仍受原 readiness guard；新增 trace 只作 discovery，不新增 scoring bonus。
@@ -101,7 +101,7 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 ```mermaid
 flowchart TD
-    A[歸檔同日完整法人與官方行情] --> B{同日必要 archive 可用？}
+    A[歸檔同日完整法人與官方行情] --> B{同日與所需歷史 archive 可用？}
     B -->|否| C[阻擋 prepare 並保留缺檔原因]
     B -->|是| D[原法人榜、全市場行情與中期法人比例探索]
     D --> E[跨來源去重並按軌道輪流分配最多 250 檔]
@@ -148,6 +148,8 @@ flowchart TD
 ---
 
 ## 5. 嚴格前置濾網
+
+Market archive 窗口必須先固定交易日期，再逐日驗證 TW 與 TWO 都有同 dataset 的 final、unadjusted 行情；不可用缺檔市場剩餘的 rows 重建更短日曆。探索使用最近最多 65 日，官方成交金額使用最近 20 日，中期法人探索使用最近 60 日。已觀測行情日期聯集（non-final 只能證明日期，不能滿足 coverage）與已完成的官方法人歸檔可證明所需交易日，因此一個市場、或兩市場同日完全缺行情，都保留在 required dates 中；不以平日推造休市日。`prepare-universe` 對所需窗口的缺口回傳 `market_exploration_archive_incomplete`，附上 `archive_dates`、`missing_market_dates`（date → missing markets）與聚合 `missing_markets`。相容單次 run 遇到缺口時不使用新探索來源。成交金額遇到已知市場歸檔缺口時，`turnover_context.missing_reason = market_archive_history_gap` 且 `avg_turnover_value_million = null`，讓 prefilter 以 `data_gap` 排除，不得改用 close × avg_volume_20 估值掩蓋；只有完全沒有可觀測 archive calendar 的舊資料，或市場歸檔齊全但個股 amount 窗口不足，才維持原本明示不足原因的 legacy estimate 契約。
 
 所有標的必須通過資料、流動性、價格、弱勢結構與融資等前置資格才可進入排名。完整評分後依 `observation_score`（同分依 symbol）分配最多 100 個公開名額，資格通過但超出名額者保留為 comparable shadow，不再於評分前按成交量截斷；`prefilter_count` 表示所有通過資格的標的數。
 

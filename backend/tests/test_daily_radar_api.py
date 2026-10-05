@@ -807,6 +807,7 @@ def test_prepare_explores_market_archive_outside_institutional_leaders(monkeypat
         day -= timedelta(days=1)
     for index, day in enumerate(reversed(days)):
         _persist_exploration_bar(daily_radar_db_session, "1234.TW", day, index)
+        _persist_exploration_bar(daily_radar_db_session, "6488.TWO", day)
     daily_radar_db_session.commit()
     client = _api_client(monkeypatch, daily_radar_db_session, universe_provider=FakeUniverseProvider(same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0)]))
     try:
@@ -828,6 +829,88 @@ def test_prepare_requires_current_archive_for_both_markets(monkeypatch, daily_ra
         _clear_daily_radar_api_overrides()
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "market_exploration_archive_incomplete"
+
+
+@pytest.mark.parametrize("missing_market", ["TW", "TWO", "both"])
+def test_prepare_rejects_missing_historical_market_archive(monkeypatch, daily_radar_db_session, missing_market):
+    from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration
+    run_date, missing_day = date(2026, 6, 1), date(2026, 5, 29)
+    _persist_required_institutional_archive(daily_radar_db_session, run_date=run_date)
+    # This independently observed trading date must survive even when both bar archives are absent.
+    _persist_required_institutional_archive(daily_radar_db_session, run_date=missing_day, include_market_bars=False)
+    if missing_market != "TW" and missing_market != "both":
+        _persist_exploration_bar(daily_radar_db_session, "2330.TW", missing_day)
+    if missing_market != "TWO" and missing_market != "both":
+        _persist_exploration_bar(daily_radar_db_session, "6488.TWO", missing_day)
+    daily_radar_db_session.commit()
+    expected = ["TW", "TWO"] if missing_market == "both" else [missing_market]
+    client = _api_client(monkeypatch, daily_radar_db_session, universe_provider=FakeUniverseProvider(same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0)]))
+    try:
+        response = client.post("/internal/daily-radar/prepare-universe", json={"run_date": run_date.isoformat()}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 409
+    assert response.json()["detail"]["missing_market_dates"] == {missing_day.isoformat(): expected}
+    assert daily_radar_db_session.query(DailyRadarPreparedRun).count() == 0
+    entries, audit = load_market_exploration(daily_radar_db_session, run_date=run_date, required=False)
+    assert entries == []
+    assert audit["status"] == "unavailable"
+    assert audit["missing_market_dates"] == {missing_day.isoformat(): expected}
+
+
+def test_official_turnover_historical_archive_gap_cannot_fall_back_to_estimated_eligibility(daily_radar_db_session):
+    from ai_stock_sentinel.daily_radar.market_exploration import attach_official_turnover
+    from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_fixture_records
+    from ai_stock_sentinel.daily_radar.prefilter import prefilter_record
+    fixture = next(row for row in load_daily_radar_fixture_records(Path(__file__).parent / "fixtures" / "daily_radar") if row["symbol"] == "2330.TW")
+    run_date = date.fromisoformat(fixture["record_date"])
+    _persist_required_institutional_archive(daily_radar_db_session, run_date=run_date)
+    days, day = [], run_date
+    while len(days) < 21:
+        if day.weekday() < 5:
+            days.append(day)
+        day -= timedelta(days=1)
+    for day in days:
+        _persist_exploration_bar(daily_radar_db_session, "2330.TW", day)
+        if day != days[3]:
+            _persist_exploration_bar(daily_radar_db_session, "6488.TWO", day)
+    row = _persist_raw_data(daily_radar_db_session, record_date=run_date, technical={"ohlcv": fixture["ohlcv"]})
+    assert prefilter_record(fixture)["prefilter_status"] == "accepted"
+    attach_official_turnover(daily_radar_db_session, [row], run_date=run_date)
+    context = row.technical["ohlcv"]["turnover_context"]
+    assert context["missing_market_dates"] == {days[3].isoformat(): ["TWO"]}
+    assert row.technical["ohlcv"]["avg_turnover_value_million"] is None
+    result = prefilter_record(fixture | {"ohlcv": row.technical["ohlcv"]})
+    assert result["prefilter_status"] == "rejected"
+    assert "data_gap" in {reason["code"] for reason in result["prefilter_reasons"]}
+
+
+def test_missing_raw_symbol_turnover_keeps_missing_current_session_in_provenance(daily_radar_db_session):
+    from ai_stock_sentinel.daily_radar.market_exploration import attach_official_turnover
+    run_date, prior_day = date(2026, 6, 1), date(2026, 5, 29)
+    _persist_exploration_bar(daily_radar_db_session, "2330.TW", prior_day)
+    _persist_exploration_bar(daily_radar_db_session, "6488.TWO", prior_day)
+    row = _persist_raw_data(daily_radar_db_session, symbol="1234.TW", record_date=run_date)
+    attach_official_turnover(daily_radar_db_session, [row], run_date=run_date)
+    context = row.technical["ohlcv"]["turnover_context"]
+    assert context["missing_market_dates"] == {run_date.isoformat(): ["TW", "TWO"]}
+    assert context["source_dates"] == [prior_day.isoformat(), run_date.isoformat()]
+    assert row.technical["ohlcv"]["avg_turnover_value_million"] is None
+
+
+def test_nonfinal_market_rows_keep_date_without_institutional_calendar_anchor(daily_radar_db_session):
+    from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration
+    run_date, prior_day = date(2026, 6, 1), date(2026, 5, 29)
+    _persist_required_institutional_archive(daily_radar_db_session, run_date=run_date)
+    for symbol in ("2330.TW", "6488.TWO"):
+        _persist_exploration_bar(daily_radar_db_session, symbol, prior_day)
+    daily_radar_db_session.flush()
+    for row in daily_radar_db_session.scalars(select(TaiwanDailyBar).where(TaiwanDailyBar.trade_date == prior_day)):
+        row.is_final = False
+    daily_radar_db_session.commit()
+    entries, audit = load_market_exploration(daily_radar_db_session, run_date=run_date, required=False)
+    assert entries == []
+    assert audit["missing_market_dates"] == {prior_day.isoformat(): ["TW", "TWO"]}
 
 
 @pytest.mark.parametrize("status", ["open", "closed"])
