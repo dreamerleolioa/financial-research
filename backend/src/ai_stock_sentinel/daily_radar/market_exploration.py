@@ -44,7 +44,26 @@ def load_market_exploration(session: Any, *, run_date: date, required: bool = Tr
         if required:
             raise MarketExplorationReadinessError(missing)
         return [], {"run_date": run_date.isoformat(), "missing_markets": missing, "status": "unavailable"}
-    return build_market_exploration(bars, run_date=run_date)
+    entries, audit = build_market_exploration(bars, run_date=run_date)
+    from ai_stock_sentinel.daily_radar.scaled_accumulation import build_scaled_accumulation
+    from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
+        get_complete_institutional_archive_window, InstitutionalArchiveIntegrityError,
+    )
+    from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
+    days = sorted({bar.trade_date for bar in bars})[-60:]
+    if len(days) < 60:
+        audit["scaled_accumulation"] = {"status": "insufficient_history"}
+        return entries, audit
+    try:
+        archived = get_complete_institutional_archive_window(session, start_date=days[0], end_date=run_date)
+        scaled_entries, scaled_audit = build_scaled_accumulation(
+            bars, [flow for daily in archived.values() for flow in daily], run_date=run_date,
+        )
+    except InstitutionalArchiveIntegrityError as exc:
+        scaled_entries, scaled_audit = [], {"status": "archive_invalid", "code": exc.code,
+            "market": exc.market, "trade_date": exc.trade_date.isoformat()}
+    audit["scaled_accumulation"] = scaled_audit
+    return merge_discovery_universe(entries, scaled_entries), audit
 
 
 def build_market_exploration(

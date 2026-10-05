@@ -20,6 +20,8 @@ DailyRadarUniverseTrack: TypeAlias = Literal[
     "support_retake",
     "market_trend",
     "market_price_volume",
+    "foreign_scaled_accumulation",
+    "trust_scaled_accumulation",
 ]
 
 SegmentedInstitutionalUniverseTrack: TypeAlias = Literal[
@@ -57,7 +59,8 @@ TECHNICAL_TRIGGER_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
     "reversal",
     "support_retake",
 )
-TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *TECHNICAL_TRIGGER_TRACKS, "market_trend", "market_price_volume")
+TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *TECHNICAL_TRIGGER_TRACKS,
+    "market_trend", "market_price_volume", "foreign_scaled_accumulation", "trust_scaled_accumulation")
 
 
 def merge_discovery_universe(

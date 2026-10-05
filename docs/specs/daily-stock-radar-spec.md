@@ -95,7 +95,24 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 4. Market archive exploration：先讀同日 TW/TWO final 官方行情，掃描最近最多 65 個已歸檔交易日期（240 日曆日界限），從全市場建立 `market_trend` 與 `market_price_volume` 各 top-50；不依賴既有個股 raw data 或法人榜。使用實際 20 日平均成交金額與既有 3 億元／20 元資格門檻；量價軌道要求站上 MA20、收盤上升且量比至少 1.25，趨勢軌道要求至少 65 根完整日線、MA20 ≥ MA60、MA60 五日斜率為正、60 日報酬為正。未還原資料僅作 discovery，序列缺漏、缺成交金額或相鄰收盤變動達 25% 時排除並保留原因，避免把疑似公司行動當成訊號；詳細評分仍讀合格 adjusted history。
 5. Final selected universe：合併所有來源並去重，保留 `primary_track`、全部 `tracks` 與 `track_metrics`。未超過 250 檔時保留原順序；超過時按各軌輪流取下一個未入選 symbol，避免後列技術軌道被法人名單占滿。
 
-這代表 live run 的 universe 來自四條分法人軌道、本地日頻技術 trigger tracks 與全市場行情探索軌道，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的，但目前 live default 是 multi-track 候選 universe，不是完整上市櫃全市場逐檔掃描。
+5. Scaled institutional accumulation：從已通過完整報表 integrity 驗證的官方 archive 與同期 final market bars 建立 `foreign_scaled_accumulation` / `trust_scaled_accumulation` 各 top-50。要求完整 60 個市場交易日、20/60 日累積淨買超均為正、最近 20 日至少 11 日正買超，依 20 日淨買超股數 ÷ 同期成交股數排序（同分比較 60 日比例，再比較 symbol），減少絕對張數對大型股的偏重。仍要求實際 20 日平均成交金額／最低價格資格、有效 volume 與無疑似未還原價格跳動；缺法人日、缺價格日與非法數值不能補零。歷史 archive integrity 失敗或不足時該新增來源不可用並保留原因，原四條法人來源仍受原 readiness guard；新增 trace 只作 discovery，不新增 scoring bonus。
+
+這代表 live run 的 universe 來自四條原分法人軌道、本地日頻技術 trigger tracks、全市場行情與兩條中期法人比例探索軌道，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的；全市場廉價探索後仍只為有界 selected universe 取得詳細 adjusted history。
+
+```mermaid
+flowchart TD
+    A[歸檔同日完整法人與官方行情] --> B{同日必要 archive 可用？}
+    B -->|否| C[阻擋 prepare 並保留缺檔原因]
+    B -->|是| D[原法人榜、全市場行情與中期法人比例探索]
+    D --> E[跨來源去重並按軌道輪流分配最多 250 檔]
+    E --> F[刷新 selected symbols 詳細 adjusted history 與必要核心資料]
+    F --> G{資料與候選資格通過？}
+    G -->|否| H[完整資料的業務排除保留影子樣本；缺資料不評分]
+    G -->|是| I[計算既有評分並保留中期趨勢與短期時機 trace]
+    I --> J[依評分分配最多 100 檔；超額保留 comparable shadow]
+    J --> K[顯示入選歷史、觀察強度與短期等待整理狀態]
+    K --> L[維持 5／10／20 日結果累積]
+```
 
 `9105.TW`（泰金寶-DR）在現有 MOPS 歷史 EPS 與 FinMind 財報來源均無可用資料，因此從 Daily Radar 候選池及基本面回補排除。排除規則同時套用到新回補佇列與既有 job 的執行入口，避免舊股票清單反覆查詢；保留歷史資料，不刪除使用者持股或追蹤清單。恢復納入前須驗證來源可提供足夠 EPS 歷史。
 
