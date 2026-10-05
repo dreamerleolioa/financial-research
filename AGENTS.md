@@ -1,22 +1,31 @@
-# 子代理等待與紀錄檢查
+# Financial Research 專案指引
 
-## 等待方式
+## 開工與完成
 
-- 派出子代理後，父代理先完成可獨立進行的工作；只有下一步確實依賴子代理結果時才等待。
-- 優先處理子代理主動送達的消息。不要固定每 30～60 秒呼叫 `wait_agent`、`list_agents` 或重讀任務紀錄來確認相同狀態。
-- 必須等待時，明確設定目前環境與較高優先級指示允許的較長 timeout；不要以 10 秒等短 timeout 反覆輪詢。較高優先級若限制單次等待，不得繞過限制。
-- 無消息的 timeout 不是重新盤點專案、重讀完整 context 或輸出「仍在等待」的理由。不得用其他狀態工具或 sleep 迴圈取代同樣的空輪詢。
-- 子代理在完成、阻塞、需要決策或出現影響父代理工作的實質發現時回報；不要發送無新資訊的心跳消息。
-- 不為觀察輪詢問題而新增子代理、定時任務或背景監控。
+- 先做必要唯讀調查；第一次修改前，說明設計方案、目前控制／資料流、修改理由與順序、驗證方式。小修正簡述即可。
+- 已授權實作時，說明後即可開工；明確要求先批准方案或存在阻塞決策時才等待。新證據造成實質方向或範圍變更時先說明調整。
+- 保留 WIP。行為變更先建立相關回歸保護，修正後檢查完整 diff 與受影響路徑，完成一次乾淨 review。不要為純文案或指令文件新增措辭鏡像測試。
+- 命令與版本以目前 manifest、CI、測試設定為準；收尾區分已驗證、推論與未驗證。必要檢查通過後不無故重跑。
+- 預設只建立包含本次變更的本機 commit；推送、部署、發布、合併及對外發訊需明確授權。
+- 子代理只承接有用的獨立範圍並遵守目前環境的委派限制；不空輪詢、不為狀態重述喚醒 reviewer。僅遇到等待異常或明確稽核需求時查本回合必要事件，不固定解析 session。
 
-## 每次使用子代理後的檢查
+## 架構與資料完整性
 
-- 在該次工作收尾時檢查一次父代理本回合的等待／狀態查詢事件。若完整的當回合工具紀錄已知沒有這些呼叫，簡短記錄即可，不再讀取 session 檔；無法判定時只擷取該回合必要事件，不掃描整份長期 session，也不納入無關任務。
-- 有等待／狀態查詢時，統計 `wait_agent` 呼叫次數、設定 timeout、實際等待時間、返回原因及相鄰呼叫間隔；一併留意重複 `list_agents`。優先使用工具已回傳的事件摘要，不為每個切片重寫紀錄解析器。
-- 若出現連續兩次無實質新消息的返回後再次等待，或固定短間隔反覆查詢相同狀態，檢查其間是否真的有可交付工作；確認是空輪詢時，停止該輪詢方式並在當次回覆主動告知使用者。
-- 回報包含時間範圍、次數／間隔、返回內容摘要、已採取的調整與仍需執行層支援之處。若沒有足夠紀錄，明確說無法判定，不宣稱已改善。
-- 不把 `timed_out: false` 單獨當成收到實質消息的證據；需核對附近的消息／結果。不把累計 input tokens 等同未快取 token 或實際費用；有可歸屬的 usage／cached tokens 才量化。
-- 未發現問題時，在工作驗證摘要簡短記錄檢查結果即可；不要額外發送通知。
-- 「主動回報」指在當次對話向使用者回報。若需提交給 OpenAI，先整理去識別化的重現資料並取得使用者批准，不自行上傳專案內容、完整紀錄或敏感資訊。
+- FastAPI／Python 後端在 `backend/src/ai_stock_sentinel/`，React／TypeScript 前端在 `frontend/`。按功能追 router → service／provider → repository／DB → presenter → frontend，先確認責任層再修改。
+- Daily Radar 的工作結果必須核對同一 `run_date`、必要 refresh step、資料 provenance 日期、missing reasons 與 scoring output；HTTP／workflow 綠燈不能單獨代表資料 ready。
+- 讀取與診斷預設唯讀。重跑 production refresh、backfill 或寫入資料庫須有具體授權；有界恢復保留 provenance、cursor、error 與資料完整性檢查。
+- 不把 provider 缺值改成 0 或以寬鬆 fallback 當作成功；區分有效資料不足、provider／transport 失敗與不適用。調整分類時先建立相關 fixture／regression。
+- Portfolio／cache 修改核對 user、symbol、交易日與 mutation owner，避免跨用戶或過期請求提交資料。
+- 合併／push main 會觸發部署流程；後端 startup 包含 Alembic migration。Migration 前核對可還原備份、現行人工確認 gate 與部署影響，不以 review 授權替代發布授權。
 
-這些規則減少不必要的模型喚醒，但不代表已修改等待工具或 Codex 執行層，也不保證空 timeout 不會再次觸發推論。
+## 按需讀取
+
+- 入口與部署契約：[README](README.md)。Radar 行為：[規格](docs/specs/daily-stock-radar-spec.md)。自動化與發布 gate：[自動審核規格](docs/specs/ai-stock-sentinel-automation-review-spec.md)。
+- Radar／EPS backfill／margin／AVWAP 維運使用 `financial-research-operations`；其餘功能依目前程式、CI 與規格判斷。
+
+## 驗證
+
+- 後端從 `backend/` 跑 `uv run pytest <affected-test-files> -q`；後端完整 CI gate 為 `uv run pytest tests/ -v`。
+- 前端從 `frontend/` 跑 `pnpm build`（含 TypeScript 檢查）與 `pnpm lint`；可見行為依相關 Playwright spec 驗證。
+- 維運診斷報告要列 requested/effective run_date、step readiness、來源日期、缺資料原因與仍未驗證部分；不得因 cursor 結束或 HTTP 成功宣稱 coverage 足夠。
+- 指令文件修改驗證本地引用、manifest 命令及工作流一致性，不啟動 production API 或 migration 來驗證文案。
