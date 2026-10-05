@@ -27,6 +27,19 @@ test("Radar separates returning membership from signal strength and shows prior 
   await expect(page.getByText("觀察強度提升", { exact: true }).first()).toBeVisible();
 });
 
+test("Radar avoids claiming a selection gap when its trading calendar is unknown", async ({ page }) => {
+  await authenticate(page);
+  const run = structuredClone(radarRun);
+  run.candidates[0].input_snapshot.observation_history = {
+    membership_status: "previously_selected", first_seen_date: "2026-06-03", last_seen_date: "2026-09-24",
+    appearance_count: 7, consecutive_trading_days: null, signal_status: "stable",
+  };
+  await installApiMocks(page, { dailyRadar: run });
+  await page.goto("/daily-radar");
+  await expect(page.getByText("曾列入觀察", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("重新列入觀察", { exact: true })).toHaveCount(0);
+});
+
 test("Radar reuses fresh results when returning from another research page", async ({ page }) => {
   await authenticate(page);
   const requests: string[] = [];

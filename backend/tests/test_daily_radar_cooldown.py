@@ -19,8 +19,8 @@ from ai_stock_sentinel.daily_radar.cooldown import (
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "daily_radar"
 RUN_DATE = "2026-05-29"
 EXPECTED_OBSERVATION_LABELS = {
-    DAILY_RADAR_REPEAT_STATUSES[0]: "首次觀察",
-    DAILY_RADAR_REPEAT_STATUSES[1]: "連續觀察",
+    DAILY_RADAR_REPEAT_STATUSES[0]: "入選歷史待確認",
+    DAILY_RADAR_REPEAT_STATUSES[1]: "曾列入觀察",
     DAILY_RADAR_REPEAT_STATUSES[2]: "訊號升級",
     DAILY_RADAR_REPEAT_STATUSES[3]: "訊號冷卻",
 }
@@ -137,7 +137,7 @@ def test_old_selection_is_returning_instead_of_first_observation() -> None:
     result = apply_cooldown_status([_candidate("2454.TW", score=72)], history, run_date="2026-10-02")[0]
     assert result["repeat_status"] == "repeat"
     assert result["input_snapshot"]["observation_history"] == {
-        "membership_status": "returning",
+        "membership_status": "previously_selected",
         "first_seen_date": "2026-09-24",
         "last_seen_date": "2026-09-24",
         "appearance_count": 2,
@@ -157,6 +157,13 @@ def test_membership_uses_verified_trading_dates_and_counts_each_date_once() -> N
     assert info["membership_status"] == "continuing"
     assert info["appearance_count"] == 4
     assert info["consecutive_trading_days"] == 4
+
+
+def test_returning_membership_requires_verified_previous_session_absence() -> None:
+    history = [dict(_candidate("2454.TW", score=70), record_date="2026-09-24")]
+    result = apply_cooldown_status([_candidate("2454.TW", score=72)], history, run_date="2026-10-02",
+        trading_dates=["2026-09-24", "2026-10-01", "2026-10-02"])[0]
+    assert result["input_snapshot"]["observation_history"]["membership_status"] == "returning"
 
 
 def test_history_does_not_change_current_candidate_eligibility() -> None:

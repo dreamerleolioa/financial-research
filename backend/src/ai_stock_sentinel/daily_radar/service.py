@@ -417,6 +417,7 @@ def _history_from_repository_or_fixture(
         before_date=run_date,
         lookback_days=None,
         market=market,
+        summary_only=True,
     )
     if history:
         return history

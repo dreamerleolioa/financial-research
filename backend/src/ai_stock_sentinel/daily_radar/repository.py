@@ -232,6 +232,7 @@ def get_symbol_candidate_history(
     before_date: date,
     lookback_days: int | None = 5,
     market: str,
+    summary_only: bool = False,
 ) -> list[dict[str, Any]]:
     symbol_set = {symbol for symbol in symbols}
     if not symbol_set:
@@ -260,6 +261,14 @@ def get_symbol_candidate_history(
     )
     if lookback_days is not None:
         query = query.where(DailyRadarRun.run_date >= before_date - timedelta(days=lookback_days))
+    if summary_only:
+        summary = query.with_only_columns(
+            DailyRadarCandidate.symbol, DailyRadarRun.run_date, DailyRadarCandidate.observation_score,
+            DailyRadarCandidate.score_breakdown["scoring_version"].as_string().label("scoring_version"),
+        ).order_by(DailyRadarRun.run_date.desc())
+        return [{"symbol": row.symbol, "record_date": row.run_date.isoformat(),
+                 "observation_score": row.observation_score, "scoring_version": row.scoring_version}
+                for row in session.execute(summary)]
     rows = session.execute(
         query
         .order_by(

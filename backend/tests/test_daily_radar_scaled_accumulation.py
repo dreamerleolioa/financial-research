@@ -54,3 +54,12 @@ def test_scaled_accumulation_rejects_unadjusted_price_discontinuity():
     entries, audit = build_scaled_accumulation(bars, flows, run_date=bars[-1].trade_date)
     assert entries == []
     assert audit["excluded_symbol_reasons"]["1234.TW"] == "price_discontinuity"
+
+
+def test_scaled_accumulation_reports_missing_archive_sessions_without_shortening_60d_window():
+    bars = _bars()
+    entries, audit = build_scaled_accumulation(bars, _flows(bars[-20:]), run_date=bars[-1].trade_date)
+    assert entries == []
+    assert audit["status"] == "insufficient_institutional_history"
+    assert audit["complete_session_count"] == 20
+    assert len(audit["missing_session_dates"]) == 40

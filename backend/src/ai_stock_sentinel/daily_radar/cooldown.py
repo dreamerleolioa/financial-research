@@ -17,8 +17,8 @@ REPEAT_STATUS_UPGRADED: DailyRadarRepeatStatus = DAILY_RADAR_REPEAT_STATUSES[2]
 REPEAT_STATUS_COOLED_DOWN: DailyRadarRepeatStatus = DAILY_RADAR_REPEAT_STATUSES[3]
 
 COOLDOWN_REPEAT_STATUS_LABELS: dict[DailyRadarRepeatStatus, str] = {
-    REPEAT_STATUS_NEW: "首次觀察",
-    REPEAT_STATUS_REPEAT: "連續觀察",
+    REPEAT_STATUS_NEW: "入選歷史待確認",
+    REPEAT_STATUS_REPEAT: "曾列入觀察",
     REPEAT_STATUS_UPGRADED: "訊號升級",
     REPEAT_STATUS_COOLED_DOWN: "訊號冷卻",
 }
@@ -123,10 +123,11 @@ def observation_history(
     days = {_parse_date(row["record_date"]) for row in rows}
     calendar = sorted({_parse_date(day) for day in trading_dates or [] if _parse_date(day) <= run_day})
     previous_day = next((day for day in reversed(calendar) if day < run_day), None)
-    membership = "new" if not rows else "returning"
+    membership = "new" if not rows else "previously_selected"
     consecutive = None
     if run_day in calendar and previous_day is not None:
-        membership = "continuing" if previous_day in days else membership
+        if rows:
+            membership = "continuing" if previous_day in days else "returning"
         consecutive = 1
         for day in reversed(calendar[:-1]):
             if day not in days:

@@ -20,6 +20,13 @@ def build_scaled_accumulation(bars: Iterable[Any], flows: Iterable[Any], *, run_
              "status": "insufficient_history", "excluded_symbol_reasons": {}, "track_counts": {}}
     if len(days) < 60 or days[-1] != run_date:
         return [], audit
+    flows = [flow for flow in flows if flow.trade_date <= run_date]
+    covered_days = {flow.trade_date for flow in flows}
+    missing_days = [day.isoformat() for day in days if day not in covered_days]
+    audit.update({"required_session_count": 60, "complete_session_count": 60 - len(missing_days),
+                  "missing_session_dates": missing_days})
+    if missing_days:
+        return [], audit | {"status": "insufficient_institutional_history"}
     prices, buying = defaultdict(dict), defaultdict(dict)
     for bar in bars:
         if is_daily_radar_supported_symbol(bar.symbol):

@@ -95,7 +95,7 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 4. Market archive exploration：先讀同日 TW/TWO final 官方行情，掃描最近最多 65 個已歸檔交易日期（240 日曆日界限），從全市場建立 `market_trend` 與 `market_price_volume` 各 top-50；不依賴既有個股 raw data 或法人榜。使用實際 20 日平均成交金額與既有 3 億元／20 元資格門檻；量價軌道要求站上 MA20、收盤上升且量比至少 1.25，趨勢軌道要求至少 65 根完整日線、MA20 ≥ MA60、MA60 五日斜率為正、60 日報酬為正。未還原資料僅作 discovery，序列缺漏、缺成交金額或相鄰收盤變動達 25% 時排除並保留原因，避免把疑似公司行動當成訊號；詳細評分仍讀合格 adjusted history。
 5. Final selected universe：合併所有來源並去重，保留 `primary_track`、全部 `tracks` 與 `track_metrics`。未超過 250 檔時保留原順序；超過時按各軌輪流取下一個未入選 symbol，避免後列技術軌道被法人名單占滿。
 
-5. Scaled institutional accumulation：從已通過完整報表 integrity 驗證的官方 archive 與同期 final market bars 建立 `foreign_scaled_accumulation` / `trust_scaled_accumulation` 各 top-50。要求完整 60 個市場交易日、20/60 日累積淨買超均為正、最近 20 日至少 11 日正買超，依 20 日淨買超股數 ÷ 同期成交股數排序（同分比較 60 日比例，再比較 symbol），減少絕對張數對大型股的偏重。仍要求實際 20 日平均成交金額／最低價格資格、有效 volume 與無疑似未還原價格跳動；缺法人日、缺價格日與非法數值不能補零。歷史 archive integrity 失敗或不足時該新增來源不可用並保留原因，原四條法人來源仍受原 readiness guard；新增 trace 只作 discovery，不新增 scoring bonus。
+5. Scaled institutional accumulation：從已通過完整報表 integrity 驗證的官方 archive 與同期 final market bars 建立 `foreign_scaled_accumulation` / `trust_scaled_accumulation` 各 top-50。要求完整 60 個市場交易日、20/60 日累積淨買超均為正、最近 20 日至少 11 日正買超，依 20 日淨買超股數 ÷ 同期成交股數排序（同分比較 60 日比例，再比較 symbol），減少絕對張數對大型股的偏重。仍要求實際 20 日平均成交金額／最低價格資格、有效 volume 與無疑似未還原價格跳動；缺法人日、缺價格日與非法數值不能補零。歷史 archive integrity 失敗或不足時該新增來源不可用並保留原因；`insufficient_institutional_history` 明列 required／complete session count 與 missing session dates，不把實際窗口縮短後冒稱 60 日。原四條法人來源仍受原 readiness guard；新增 trace 只作 discovery，不新增 scoring bonus。
 
 這代表 live run 的 universe 來自四條原分法人軌道、本地日頻技術 trigger tracks、全市場行情與兩條中期法人比例探索軌道，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的；全市場廉價探索後仍只為有界 selected universe 取得詳細 adjusted history。
 
@@ -308,7 +308,7 @@ uv run python scripts/daily_radar_calibration.py --source fixture --run-date 202
 | `upgraded` | 同一 scoring version 相對上一筆入選分數提升至少 8 分；bucket 切換本身不代表升級 |
 | `cooled_down` | 當日分數低於 60，保留當日候選並顯示強度降溫，不因歷史而移除 |
 
-`input_snapshot.observation_history` 保存 `membership_status`（`new`／`continuing`／`returning`）、`first_seen_date`、`last_seen_date`、`appearance_count`、`consecutive_trading_days` 及獨立的 `signal_status`（`stable`／`improved`／`cooled_down`／`unknown`）。完整可用歷史按 market 與每個日期的最新公開 run 查詢，只計 selected，排除 shadow、失敗與同日重跑舊版本；先選發布版本才過濾 symbol，避免已被新版本移除的候選仍被計入。連續性只使用保存的 benchmark 交易日期；缺少完整日期時不宣稱連續天數。跨 scoring version 或缺少版本證據不比較升級。Public latest／by-date／symbol-history 以唯讀投影修正舊標籤，不修改歷史 JSON 或要求 production 重跑。前端分開呈現「可用紀錄首次列入／持續列入觀察／重新列入觀察」與強度狀態，並顯示可用紀錄首次、上次與累計次數；舊 API 缺少 metadata 時顯示歷史待確認。5／10／20 日 forward validation 與既有資料累積維持不變。
+`input_snapshot.observation_history` 保存 `membership_status`（`new`／`continuing`／`returning`／`previously_selected`）、`first_seen_date`、`last_seen_date`、`appearance_count`、`consecutive_trading_days` 及獨立的 `signal_status`（`stable`／`improved`／`cooled_down`／`unknown`）。完整可用歷史按 market 與每個日期的最新公開 run 查詢，只計 selected，排除 shadow、失敗與同日重跑舊版本；先選發布版本才過濾 symbol，避免已被新版本移除的候選仍被計入。連續性只使用保存的 benchmark 交易日期；缺少可核實日曆時標記 `previously_selected`，不宣稱中斷或連續天數。跨 scoring version 或缺少版本證據不比較升級。Public latest／by-date／symbol-history 以唯讀投影修正舊標籤，不修改歷史 JSON 或要求 production 重跑；全歷史標籤計算只讀取 symbol、run date、score 與 scoring version 等摘要欄位，symbol-history 的詳細 snapshot 仍限定在使用者要求的 lookback window。前端分開呈現「可用紀錄首次列入／持續列入觀察／重新列入觀察／曾列入觀察」與強度狀態，並顯示可用紀錄首次、上次與累計次數；舊 API 缺少 metadata 時顯示歷史待確認。5／10／20 日 forward validation 與既有資料累積維持不變。
 
 ---
 

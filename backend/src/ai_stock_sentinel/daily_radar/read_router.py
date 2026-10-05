@@ -53,8 +53,12 @@ def get_daily_radar_symbol_history_endpoint(
         db,
         symbols=[symbol],
         before_date=dependencies._backend_today() + timedelta(days=1),
-        lookback_days=None,
+        lookback_days=lookback_days,
         market=market,
+    )
+    summary = get_symbol_candidate_history(
+        db, symbols=[symbol], before_date=dependencies._backend_today() + timedelta(days=1),
+        lookback_days=None, market=market, summary_only=True,
     )
     earliest = dependencies._backend_today() + timedelta(days=1) - timedelta(days=lookback_days)
     filtered = []
@@ -62,7 +66,7 @@ def get_daily_radar_symbol_history_endpoint(
         if date.fromisoformat(item["record_date"]) < earliest or not matches_bucket(item, bucket):
             continue
         context = item.get("input_snapshot", {}).get("replay_input", {}).get("market_context", {})
-        projected = apply_cooldown_status([item], history, run_date=item["record_date"], trading_dates=radar_trading_dates(context))[0]
+        projected = apply_cooldown_status([item], summary, run_date=item["record_date"], trading_dates=radar_trading_dates(context))[0]
         filtered.append(history_response(projected))
     return filtered[:limit]
 
@@ -87,6 +91,6 @@ def get_daily_radar_by_date_endpoint(
 def _public_response(db: Session, run: Any, *, bucket: str | None, limit: int) -> DailyRadarRunResponse:
     history = get_symbol_candidate_history(
         db, symbols=[candidate.symbol for candidate in run.candidates if candidate.selection_status == "selected"],
-        before_date=run.run_date, lookback_days=None, market=run.market,
+        before_date=run.run_date, lookback_days=None, market=run.market, summary_only=True,
     )
     return public_run_response(run, bucket=bucket, limit=limit, history_candidates=history)

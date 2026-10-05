@@ -243,6 +243,18 @@ def test_same_run_rejects_duplicate_symbol_candidates(db_session: Session) -> No
         db_session.commit()
 
 
+def test_history_summary_has_same_membership_without_loading_replay_payload(db_session: Session) -> None:
+    run = _create_run(db_session, run_date=date(2026, 6, 1), candidate_count=1)
+    _add_candidate(db_session, run, symbol="2330.TW", score=82)
+    db_session.flush()
+    history = get_symbol_candidate_history(db_session, symbols=["2330.TW"], before_date=date(2026, 6, 2),
+                                           lookback_days=None, market="TW", summary_only=True)
+    assert history[0]["record_date"] == "2026-06-01"
+    assert history[0]["symbol"] == "2330.TW"
+    assert history[0]["observation_score"] == 82
+    assert "input_snapshot" not in history[0]
+
+
 def test_latest_completed_run_uses_newest_completed_log_for_public_reads(db_session: Session) -> None:
     run_date = date(2026, 6, 1)
     old_completed = _create_run(

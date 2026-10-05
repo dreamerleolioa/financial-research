@@ -123,6 +123,7 @@ export function formatMembershipLabel(candidate: DailyRadarCandidate): string {
     case "new": return "可用紀錄首次列入";
     case "continuing": return "持續列入觀察";
     case "returning": return "重新列入觀察";
+    case "previously_selected": return "曾列入觀察";
     default: return "入選歷史待確認";
   }
 }
