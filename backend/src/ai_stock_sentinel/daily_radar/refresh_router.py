@@ -62,6 +62,8 @@ from ai_stock_sentinel.daily_radar.repository import (
     update_daily_radar_prepared_step_status,
     upsert_daily_radar_prepared_run,
 )
+from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration, MarketExplorationReadinessError
+from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarInstitutionalFlowsRefreshRequest,
     DailyRadarInstitutionalFlowsRefreshResponse,
@@ -110,6 +112,13 @@ def prepare_daily_radar_universe_endpoint(
     )
     existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
     try:
+        discoveries, exploration_audit = load_market_exploration(db, run_date=run_date)
+    except MarketExplorationReadinessError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "market_exploration_archive_incomplete", "run_date": run_date.isoformat(),
+            "missing_markets": exc.missing_markets,
+        }) from exc
+    try:
         universe = select_daily_radar_universe(
             universe_provider,
             run_date=run_date,
@@ -145,7 +154,7 @@ def prepare_daily_radar_universe_endpoint(
             },
         ) from exc
     capped_universe = _capped_daily_radar_universe(
-        universe,
+        merge_discovery_universe(universe, discoveries),
         max_symbols=request.max_symbols,
     )
     if not capped_universe:
@@ -175,7 +184,7 @@ def prepare_daily_radar_universe_endpoint(
         prepared,
         step="prepare-universe",
         status="completed",
-        details={"symbol_count": len(selected_symbols)},
+        details={"symbol_count": len(selected_symbols), "market_exploration": exploration_audit},
     )
     db.commit()
     return DailyRadarPreparedRunResponse(

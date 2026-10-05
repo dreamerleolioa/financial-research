@@ -347,6 +347,8 @@ const MATCHED_RULE_VALUE_LABEL: Record<string, string> = {
   neutral: "中性",
   normal: "正常",
   overextended: "短線過熱",
+  market_trend: "全市場中期趨勢探索",
+  market_price_volume: "全市場量價探索",
   price_volume: "量價結構",
   price_volume_strengthening: "量價結構轉強",
   recent_accumulation: "近期累積買超",

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration
+from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
+
 from contextlib import suppress
 import logging
 
@@ -139,8 +142,9 @@ def run_daily_radar_endpoint(
             track_limit=50,
             technical_records=existing_technical_rows,
         )
+        discoveries = load_market_exploration(db, run_date=run_date, required=False)[0] if market == "TW" else []
         universe = _capped_daily_radar_universe(
-            universe,
+            merge_discovery_universe(universe, discoveries),
             max_symbols=DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
         )
         if not universe:

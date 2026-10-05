@@ -56,6 +56,7 @@ from ai_stock_sentinel.db.models import (
     SharedBackgroundContext,
     StockAnalysisCache,
     StockRawData,
+    TaiwanDailyBar,
     TaiwanInstitutionalFlow,
     TaiwanInstitutionalReportSnapshot,
     User,
@@ -768,6 +769,7 @@ def _persist_required_institutional_archive(
     session: Session,
     *,
     run_date: date = date(2026, 6, 1),
+    include_market_bars: bool = True,
 ) -> None:
     provider = FakeInstitutionalFlowProvider()
     for market in ("TW", "TWO"):
@@ -775,7 +777,57 @@ def _persist_required_institutional_archive(
             session,
             provider.fetch_market(market=market, trade_date=run_date),
         )
+    if include_market_bars:
+        _persist_exploration_bar(session, "2330.TW", run_date)
+        _persist_exploration_bar(session, "6488.TWO", run_date)
     session.commit()
+
+
+def _persist_exploration_bar(session: Session, symbol: str, day: date, index: int = 0) -> None:
+    from ai_stock_sentinel.db.models import TaiwanDailyBar
+    existing = session.scalar(select(TaiwanDailyBar).where(TaiwanDailyBar.symbol == symbol, TaiwanDailyBar.trade_date == day))
+    if existing is not None:
+        return
+    session.add(TaiwanDailyBar(
+        symbol=symbol, market="TWO" if symbol.endswith(".TWO") else "TW", trade_date=day,
+        name=symbol, open=50+index*.5, high=51+index*.5, low=49+index*.5, close=50+index*.5,
+        volume=20_000_000, amount=1_000_000_000, dataset="taiwan_market_daily_ohlcv",
+        adjustment_mode="unadjusted", source_provider="official", source_dataset="fixture", is_final=True,
+    ))
+
+
+def test_prepare_explores_market_archive_outside_institutional_leaders(monkeypatch, daily_radar_db_session):
+    run_date = date(2026, 6, 1)
+    _persist_required_institutional_archive(daily_radar_db_session, run_date=run_date)
+    days = []
+    day = run_date
+    while len(days) < 70:
+        if day.weekday() < 5:
+            days.append(day)
+        day -= timedelta(days=1)
+    for index, day in enumerate(reversed(days)):
+        _persist_exploration_bar(daily_radar_db_session, "1234.TW", day, index)
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session, universe_provider=FakeUniverseProvider(same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0)]))
+    try:
+        response = client.post("/internal/daily-radar/prepare-universe", json={"run_date": run_date.isoformat()}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 200
+    assert "1234.TW" in response.json()["selected_symbols"]
+    prepared = daily_radar_db_session.query(DailyRadarPreparedRun).one()
+    assert prepared.step_statuses["prepare-universe"]["market_exploration"]["discovered_symbol_count"] == 1
+
+
+def test_prepare_requires_current_archive_for_both_markets(monkeypatch, daily_radar_db_session):
+    _persist_required_institutional_archive(daily_radar_db_session, include_market_bars=False)
+    client = _api_client(monkeypatch, daily_radar_db_session, universe_provider=FakeUniverseProvider(same_day=[InstitutionalLeaderRow("2330.TW", 1, 91.0)]))
+    try:
+        response = client.post("/internal/daily-radar/prepare-universe", json={"run_date": "2026-06-01"}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "market_exploration_archive_incomplete"
 
 
 @pytest.mark.parametrize("status", ["open", "closed"])
@@ -3622,6 +3674,7 @@ def daily_radar_db_session() -> Session:
             StockAnalysisCache.__table__,
             StockRawData.__table__,
             TaiwanInstitutionalReportSnapshot.__table__,
+            TaiwanDailyBar.__table__,
             TaiwanInstitutionalFlow.__table__,
             User.__table__,
             UserPortfolio.__table__,

@@ -18,6 +18,8 @@ DailyRadarUniverseTrack: TypeAlias = Literal[
     "price_volume",
     "reversal",
     "support_retake",
+    "market_trend",
+    "market_price_volume",
 ]
 
 SegmentedInstitutionalUniverseTrack: TypeAlias = Literal[
@@ -55,7 +57,42 @@ TECHNICAL_TRIGGER_TRACKS: tuple[DailyRadarUniverseTrack, ...] = (
     "reversal",
     "support_retake",
 )
-TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *TECHNICAL_TRIGGER_TRACKS)
+TRACK_PRIORITY: tuple[DailyRadarUniverseTrack, ...] = (*INSTITUTIONAL_TRACKS, *TECHNICAL_TRIGGER_TRACKS, "market_trend", "market_price_volume")
+
+
+def merge_discovery_universe(
+    universe: Iterable[DailyRadarUniverseEntry], discoveries: Iterable[DailyRadarUniverseEntry],
+) -> list[DailyRadarUniverseEntry]:
+    entries = {entry.symbol: entry for entry in universe}
+    for discovery in discoveries:
+        existing = entries.get(discovery.symbol)
+        entries[discovery.symbol] = discovery if existing is None else replace(
+            existing, tracks=_ordered_tracks((*existing.tracks, *discovery.tracks)),
+            track_metrics=existing.track_metrics | discovery.track_metrics,
+        )
+    return _supported_ranked_entries(entries.values())
+
+
+def allocate_universe(universe: Iterable[DailyRadarUniverseEntry], *, max_symbols: int) -> list[DailyRadarUniverseEntry]:
+    entries = list(universe)
+    if len(entries) <= max_symbols:
+        return _supported_ranked_entries(entries)
+    queues = {track: [entry for entry in entries if track in entry.tracks] for track in TRACK_PRIORITY}
+    positions = {track: 0 for track in queues}
+    selected: dict[str, DailyRadarUniverseEntry] = {}
+    while len(selected) < max_symbols:
+        progressed = False
+        for track, queue in queues.items():
+            while positions[track] < len(queue) and queue[positions[track]].symbol in selected:
+                positions[track] += 1
+            if positions[track] < len(queue) and len(selected) < max_symbols:
+                entry = queue[positions[track]]
+                selected[entry.symbol] = entry
+                positions[track] += 1
+                progressed = True
+        if not progressed:
+            break
+    return _supported_ranked_entries(selected.values())
 
 # 9105 泰金寶-DR 的 MOPS 歷史 EPS 與 FinMind 財報皆無資料；來源支援前不納入雷達及回補。
 EXCLUDED_TW_STOCK_IDS = frozenset({"9105"})
