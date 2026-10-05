@@ -7,7 +7,12 @@ from typing import Any
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.calibration.forward_validation import number
+from ai_stock_sentinel.calibration.forward_validation import (
+    OHLC_PRICE_FIELDS,
+    PRICE_CONFLICT_FIELDS_KEY,
+    number,
+    price_conflict_fields,
+)
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun, StockRawData
 
 
@@ -123,23 +128,24 @@ def completed_price_rows_from_raw_data(
 ) -> list[dict[str, Any]]:
     """Extract prices by proven embedded trade date, never observation date."""
     prices_by_date: dict[date, dict[str, Any]] = {}
+    evidence_by_date: dict[date, dict[str, Any]] = {}
     for row in rows:
         if _row_value(row, "raw_data_is_final") is False:
             continue
         technical = _mapping(_row_value(row, "technical"))
         for item in _as_list(technical.get("price_history")):
             if isinstance(item, Mapping):
-                _store_completed_price(prices_by_date, item.get("date"), item)
+                _store_completed_price(prices_by_date, item.get("date"), item, evidence_by_date=evidence_by_date)
 
         recent_closes = _as_list(technical.get("recent_closes"))
         recent_dates = _as_list(technical.get("recent_close_dates"))
         if len(recent_closes) == len(recent_dates):
             for value_date, close in zip(recent_dates, recent_closes, strict=True):
-                _store_completed_price(prices_by_date, value_date, {"close": close})
+                _store_completed_price(prices_by_date, value_date, {"close": close}, evidence_by_date=evidence_by_date)
 
         data_dates = _mapping(technical.get("data_dates"))
         ohlcv = _mapping(technical.get("ohlcv") or technical)
-        _store_completed_price(prices_by_date, data_dates.get("ohlcv"), ohlcv)
+        _store_completed_price(prices_by_date, data_dates.get("ohlcv"), ohlcv, evidence_by_date=evidence_by_date)
 
     return [
         prices_by_date[value_date]
@@ -153,6 +159,8 @@ def _store_completed_price(
     output: dict[date, dict[str, Any]],
     raw_date: Any,
     price: Mapping[str, Any],
+    *,
+    evidence_by_date: dict[date, dict[str, Any]],
 ) -> None:
     value_date = _parse_date(raw_date)
     close = number(price.get("close"))
@@ -171,6 +179,17 @@ def _store_completed_price(
         for key in ("date", "open", "high", "low", "close")
         for value in [candidate.get(key) if candidate.get(key) is not None else existing.get(key)]
     }
+    # Keep valid comparison evidence separate from the legacy numeric projection:
+    # an intervening zero/negative field must not hide two differing valid values.
+    previous_evidence = evidence_by_date.get(value_date, {})
+    conflicts = price_conflict_fields(previous_evidence, price)
+    evidence_by_date[value_date] = previous_evidence | {
+        field: value for field in OHLC_PRICE_FIELDS
+        if (value := candidate.get(field)) is not None and value > 0
+    }
+    if conflicts:
+        evidence_by_date[value_date][PRICE_CONFLICT_FIELDS_KEY] = conflicts
+        output[value_date][PRICE_CONFLICT_FIELDS_KEY] = conflicts
 
 
 def _row_value(row: Any, key: str) -> Any:

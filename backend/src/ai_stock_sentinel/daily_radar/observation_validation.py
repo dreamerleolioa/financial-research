@@ -6,7 +6,9 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from ai_stock_sentinel.calibration.forward_validation import candidate_key, number, parse_date
+from ai_stock_sentinel.calibration.forward_validation import (
+    OHLC_PRICE_FIELDS, candidate_key, number, parse_date, price_conflict_fields,
+)
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 
@@ -115,20 +117,22 @@ def evaluate_observation(candidate: Mapping[str, Any], *, price_series: Sequence
         day = parse_date(row.get("date"))
         if day not in days:
             continue
-        close, high, low = (number(row.get(key)) for key in ("close", "high", "low"))
+        prices = {field: number(row.get(field)) for field in OHLC_PRICE_FIELDS}
+        close, high, low = (prices[key] for key in ("close", "high", "low"))
         if close is None or high is None or low is None or not 0 < low <= close <= high:
             conflicting.add(day)
             continue
-        values = (close, high, low)
-        if day in rows and rows[day] != values:
+        if price_conflict_fields(rows.get(day, {}), row):
             conflicting.add(day)
-        rows[day] = values
+        rows[day] = dict(rows.get(day, {})) | {
+            field: value for field, value in prices.items() if value is not None and value > 0
+        }
     if conflicting or any(day not in rows for day in days):
         return result | {"missing_reason": "candidate_history_gap_or_invalid_ohlc"}
     minimum, above_count = entry, 0
     result["status"] = "unconfirmed"
     for elapsed, day in enumerate(days, 1):
-        close, _high, low = rows[day]
+        close, low = rows[day]["close"], rows[day]["low"]
         minimum = min(minimum, low)
         result.update(waiting_end_date=day.isoformat(),
                       waiting_max_adverse_excursion_pct=round((minimum / entry - 1) * 100, 4))

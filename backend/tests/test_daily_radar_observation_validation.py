@@ -196,6 +196,37 @@ def test_diagnostic_requires_exact_candidate_calendar_and_rejects_conflicting_oh
         assert result["missing_reason"] == "candidate_history_gap_or_invalid_ohlc"
 
 
+@pytest.mark.parametrize("field,value", [("open", 106), ("high", 109), ("low", 105), ("close", 106)])
+def test_direct_duplicate_ohlc_conflict_cannot_publish_an_observation(field, value):
+    rows = prices([106, 107, 108, 109, 110])
+    duplicate = dict(rows[2]) | {field: value}
+    result = diagnostic(candidate(), rows + [duplicate])
+    assert result["status"] == "insufficient_data"
+    assert result["missing_reason"] == "candidate_history_gap_or_invalid_ohlc"
+
+
+def test_direct_open_conflict_survives_an_intermediate_close_high_low_only_row():
+    rows = prices([106, 107, 108, 109, 110])
+    partial = {key: value for key, value in rows[2].items() if key != "open"}
+    result = diagnostic(candidate(), rows + [partial, dict(rows[2]) | {"open": 106}])
+    assert result["status"] == "insufficient_data"
+
+
+def test_optional_open_absence_on_an_identical_duplicate_does_not_create_conflict():
+    rows = prices([106, 107, 108, 109, 110])
+    partial = {key: value for key, value in rows[2].items() if key != "open"}
+    assert diagnostic(candidate(), rows + [partial])["status"] == "confirmed"
+
+
+def test_conflict_marker_blocks_only_windows_containing_its_trading_date():
+    rows = prices([106] * 10)
+    rows[6]["ohlc_conflict_fields"] = ["high"]
+    assert diagnostic(candidate(), rows, window=5)["status"] == "confirmed"
+    result = diagnostic(candidate(), rows, window=10)
+    assert result["status"] == "insufficient_data"
+    assert result["missing_reason"] == "candidate_history_gap_or_invalid_ohlc"
+
+
 def test_reference_date_mismatch_and_future_rows_are_not_used():
     from ai_stock_sentinel.daily_radar.observation_validation import evaluate_observation
     c = candidate()

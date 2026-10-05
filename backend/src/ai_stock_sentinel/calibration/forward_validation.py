@@ -11,6 +11,8 @@ DEFAULT_FORWARD_WINDOWS = (5, 10, 20)
 DEFAULT_BENCHMARK_SYMBOL = "TAIEX"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
 DEFAULT_DUE_LOOKBACK_MULTIPLIER = 10
+OHLC_PRICE_FIELDS = ("open", "high", "low", "close")
+PRICE_CONFLICT_FIELDS_KEY = "ohlc_conflict_fields"
 TERMINAL_FORWARD_VALIDATION_SKIP_REASONS = frozenset({"stale_candidate_price"})
 
 
@@ -308,6 +310,26 @@ def benchmark_requires_forward_price_refresh(
     return False
 
 
+def price_conflict_fields(
+    existing: Mapping[str, Any], incoming: Mapping[str, Any],
+) -> list[str]:
+    """Keep same-date conflict evidence even when later values agree or fill gaps."""
+    conflicts: set[str] = set()
+    for row in (existing, incoming):
+        flagged = row.get(PRICE_CONFLICT_FIELDS_KEY)
+        if isinstance(flagged, (list, tuple)):
+            conflicts.update(field for field in OHLC_PRICE_FIELDS if field in flagged)
+    for field in OHLC_PRICE_FIELDS:
+        before, after = number(existing.get(field)), number(incoming.get(field))
+        if (
+            before is not None and before > 0
+            and after is not None and after > 0
+            and before != after
+        ):
+            conflicts.add(field)
+    return [field for field in OHLC_PRICE_FIELDS if field in conflicts]
+
+
 def merge_price_series(
     existing: Mapping[str, Sequence[Mapping[str, Any]]],
     fetched: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -327,16 +349,19 @@ def merge_price_series(
                 **{
                     key: value
                     for key, value in row.items()
-                    if key not in {"open", "high", "low", "close"}
+                    if key not in {*OHLC_PRICE_FIELDS, PRICE_CONFLICT_FIELDS_KEY}
                     and value is not None
                 },
             }
-            for key in ("open", "high", "low", "close"):
+            for key in OHLC_PRICE_FIELDS:
                 value = number(row.get(key))
                 if value is not None and value > 0:
                     candidate[key] = value
             close = number(candidate.get("close"))
             if close is not None and close > 0:
+                conflicts = price_conflict_fields(existing_row, row)
+                if conflicts:
+                    candidate[PRICE_CONFLICT_FIELDS_KEY] = conflicts
                 rows_by_date[date_key] = candidate
         merged[symbol] = [rows_by_date[key] for key in sorted(rows_by_date)]
     return merged
@@ -448,6 +473,8 @@ def _skip(base: Mapping[str, Any], reason: str) -> dict[str, Any]:
 __all__ = [
     "DEFAULT_BENCHMARK_SYMBOL",
     "DEFAULT_FORWARD_WINDOWS",
+    "OHLC_PRICE_FIELDS",
+    "PRICE_CONFLICT_FIELDS_KEY",
     "ForwardValidationAdapter",
     "ForwardValidationEvaluation",
     "TERMINAL_FORWARD_VALIDATION_SKIP_REASONS",
@@ -466,5 +493,6 @@ __all__ = [
     "number",
     "number_or_default",
     "parse_date",
+    "price_conflict_fields",
     "symbols_requiring_forward_price_refresh",
 ]
