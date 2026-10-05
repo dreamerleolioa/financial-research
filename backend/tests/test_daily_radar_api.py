@@ -4336,34 +4336,12 @@ def test_public_daily_radar_symbol_history_returns_recent_public_candidates_with
     )
 
     assert response.status_code == 200
-    assert response.json() == [
-        {
-            "symbol": "2330.TW",
-            "name": "2330.TW fixture",
-            "record_date": "2026-06-02",
-            "primary_bucket": "institutional_accumulation",
-            "secondary_buckets": ["price_volume_strengthening"],
-            "observation_score": 86,
-            "risk_labels": [],
-            "repeat_status": "new",
-            "bucket_scores": {"institutional_accumulation": 86, "price_volume_strengthening": 76},
-            "matched_rules": [
-                {
-                    "rule_id": "fixture_rule",
-                    "label": "Fixture observation rule",
-                    "details": {"score": 86},
-                }
-            ],
-            "score_breakdown": {"observation_score": 86, "bucket_scores": {"institutional_accumulation": 86}},
-            "input_snapshot": {
-                "symbol": "2330.TW",
-                "close": 980,
-                "market_context": {"index_symbol": "TAIEX", "trend_state": "above_ma20"},
-            },
-            "data_dates": {"ohlcv": "2026-06-02", "institutional_flow": "2026-06-02"},
-            "background_context_labels": [],
-        }
-    ]
+    payload = response.json()
+    # The later public revision omitted 2330; the superseded revision is not history.
+    assert len(payload) == 1
+    assert payload[0]["record_date"] == "2026-05-30"
+    assert payload[0]["observation_score"] == 72
+    assert payload[0]["input_snapshot"]["observation_history"]["appearance_count"] == 1
 
 
 def test_public_daily_radar_no_data_cases_are_explicit_and_do_not_require_internal_token(

@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
@@ -230,25 +230,38 @@ def get_symbol_candidate_history(
     *,
     symbols: Iterable[str],
     before_date: date,
-    lookback_days: int = 5,
+    lookback_days: int | None = 5,
     market: str,
 ) -> list[dict[str, Any]]:
     symbol_set = {symbol for symbol in symbols}
     if not symbol_set:
         return []
 
-    earliest_date = before_date - timedelta(days=lookback_days)
-    rows = session.execute(
+    public_runs = select(
+        DailyRadarRun.id.label("run_id"),
+        func.row_number().over(
+            partition_by=DailyRadarRun.run_date,
+            order_by=(DailyRadarRun.created_at.desc(), DailyRadarRun.id.desc()),
+        ).label("revision"),
+    ).where(
+        DailyRadarRun.market == market,
+        DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+        DailyRadarRun.run_date < before_date,
+    ).subquery()
+    query = (
         select(DailyRadarCandidate, DailyRadarRun)
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
+        .join(public_runs, public_runs.c.run_id == DailyRadarRun.id)
         .where(
-            DailyRadarRun.market == market,
-            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
-            DailyRadarRun.run_date >= earliest_date,
-            DailyRadarRun.run_date < before_date,
+            public_runs.c.revision == 1,
             DailyRadarCandidate.symbol.in_(symbol_set),
             DailyRadarCandidate.selection_status == "selected",
         )
+    )
+    if lookback_days is not None:
+        query = query.where(DailyRadarRun.run_date >= before_date - timedelta(days=lookback_days))
+    rows = session.execute(
+        query
         .order_by(
             DailyRadarRun.run_date.desc(),
             DailyRadarRun.created_at.desc(),

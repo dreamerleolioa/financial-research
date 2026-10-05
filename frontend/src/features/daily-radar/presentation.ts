@@ -28,8 +28,8 @@ const RISK_LABEL: Record<DailyRadarRiskLabel, string> = {
 };
 
 const REPEAT_STATUS_LABEL: Record<DailyRadarRepeatStatus, string> = {
-  new: "首次列入觀察",
-  repeat: "連續觀察中",
+  new: "入選歷史待確認",
+  repeat: "再次列入觀察",
   upgraded: "觀察強度提升",
   cooled_down: "觀察降溫追蹤",
 };
@@ -109,6 +109,40 @@ export function formatRiskLabel(value: string): string {
 
 export function formatRepeatStatusLabel(value: string): string {
   return (REPEAT_STATUS_LABEL as Record<string, string>)[value] ?? "觀察狀態未明";
+}
+
+export function getObservationHistory(candidate: DailyRadarCandidate): Record<string, unknown> | null {
+  const value = candidate.input_snapshot.observation_history;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+export function formatMembershipLabel(candidate: DailyRadarCandidate): string {
+  const history = getObservationHistory(candidate);
+  switch (history?.membership_status) {
+    case "new": return "可用紀錄首次列入";
+    case "continuing": return "持續列入觀察";
+    case "returning": return "重新列入觀察";
+    default: return "入選歷史待確認";
+  }
+}
+
+export function formatObservationHistory(candidate: DailyRadarCandidate): string | null {
+  const history = getObservationHistory(candidate);
+  if (!history) return null;
+  const parts: string[] = [];
+  if (typeof history.first_seen_date === "string") parts.push(`紀錄首次 ${history.first_seen_date}`);
+  if (typeof history.last_seen_date === "string") parts.push(`上次 ${history.last_seen_date}`);
+  if (typeof history.appearance_count === "number") parts.push(`累計 ${history.appearance_count} 次`);
+  return parts.join("・") || null;
+}
+
+export function formatSignalStatus(candidate: DailyRadarCandidate): string | null {
+  const labels: Record<string, string> = {
+    improved: "觀察強度提升", stable: "觀察強度維持", cooled_down: "觀察強度降溫", unknown: "強度比較待確認",
+  };
+  const value = getObservationHistory(candidate)?.signal_status;
+  return typeof value === "string" ? labels[value] ?? null : null;
 }
 
 export function getRepeatStatusClass(value: string): string {

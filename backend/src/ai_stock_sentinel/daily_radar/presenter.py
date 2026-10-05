@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import date
 from typing import Any
 
+from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status, radar_trading_dates
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarCandidateResponse,
     DailyRadarRunResponse,
@@ -32,12 +34,21 @@ def public_run_response(
     *,
     bucket: str | None,
     limit: int,
+    history_candidates: Iterable[Mapping[str, Any]] | None = None,
 ) -> DailyRadarRunResponse:
     candidates = [
         candidate_response(candidate)
         for candidate in _ordered_candidates(run.candidates)
         if candidate.selection_status == "selected"
     ]
+    if history_candidates is not None:
+        context = next((candidate.input_snapshot.get("replay_input", {}).get("market_context", {})
+                        for candidate in candidates if candidate.input_snapshot), {})
+        projected = apply_cooldown_status(
+            [candidate.model_dump() for candidate in candidates], history_candidates,
+            run_date=run.run_date, trading_dates=radar_trading_dates(context),
+        )
+        candidates = [DailyRadarCandidateResponse.model_validate(item) for item in projected]
     if bucket is not None:
         candidates = [candidate for candidate in candidates if matches_bucket(candidate.model_dump(), bucket)]
     candidates = candidates[:limit]

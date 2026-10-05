@@ -1,6 +1,22 @@
 import { expect, test } from "@playwright/test";
 import { authenticate, installApiMocks, radarRun } from "./fixtures";
 
+test("Radar separates returning membership from signal strength and shows prior dates", async ({ page }) => {
+  await authenticate(page);
+  const returningRun = structuredClone(radarRun);
+  const candidate = returningRun.candidates[0];
+  candidate.repeat_status = "upgraded";
+  candidate.input_snapshot.observation_history = {
+    membership_status: "returning", first_seen_date: "2026-06-03", last_seen_date: "2026-09-24",
+    appearance_count: 7, consecutive_trading_days: 1, signal_status: "improved",
+  };
+  await installApiMocks(page, { dailyRadar: returningRun });
+  await page.goto("/daily-radar");
+  await expect(page.getByText("重新列入觀察", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/上次 2026-09-24/).first()).toBeVisible();
+  await expect(page.getByText("觀察強度提升", { exact: true }).first()).toBeVisible();
+});
+
 test("Radar reuses fresh results when returning from another research page", async ({ page }) => {
   await authenticate(page);
   const requests: string[] = [];

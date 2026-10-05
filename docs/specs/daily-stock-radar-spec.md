@@ -277,16 +277,16 @@ uv run python scripts/daily_radar_calibration.py --source fixture --run-date 202
 
 ### 8.2 Cooldown 與 repeat handling
 
-避免同一股票連續多日佔據榜單但沒有新資訊。
+入選歷史與訊號強度分開判斷。歷史本身不改變分數、排序或候選資格；新舊標的套用相同的當日資料與策略門檻。
 
 | 狀態 | 規則 |
 | ---- | ---- |
-| `new` | 近 N 個交易日未入選，今日首次命中 |
-| `repeat` | 連續入選但分數與 bucket 沒有明顯變化 |
-| `upgraded` | 分數提高或新增更強 bucket |
-| `cooled_down` | 近期入選後訊號消退，暫不重複顯示 |
+| `new` | 可用公開歷史中未入選；不宣稱覆蓋系統建立前的歷史 |
+| `repeat` | 曾入選且當前強度維持；不等於連續交易日入選 |
+| `upgraded` | 同一 scoring version 相對上一筆入選分數提升至少 8 分；bucket 切換本身不代表升級 |
+| `cooled_down` | 當日分數低於 60，保留當日候選並顯示強度降溫，不因歷史而移除 |
 
-前端預設優先顯示 `new` 與 `upgraded`。`repeat` 可保留在次要區塊，並顯示「連續觀察第 X 天」。
+`input_snapshot.observation_history` 保存 `membership_status`（`new`／`continuing`／`returning`）、`first_seen_date`、`last_seen_date`、`appearance_count`、`consecutive_trading_days` 及獨立的 `signal_status`（`stable`／`improved`／`cooled_down`／`unknown`）。完整可用歷史按 market 與每個日期的最新公開 run 查詢，只計 selected，排除 shadow、失敗與同日重跑舊版本；先選發布版本才過濾 symbol，避免已被新版本移除的候選仍被計入。連續性只使用保存的 benchmark 交易日期；缺少完整日期時不宣稱連續天數。跨 scoring version 或缺少版本證據不比較升級。Public latest／by-date／symbol-history 以唯讀投影修正舊標籤，不修改歷史 JSON 或要求 production 重跑。前端分開呈現「可用紀錄首次列入／持續列入觀察／重新列入觀察」與強度狀態，並顯示可用紀錄首次、上次與累計次數；舊 API 缺少 metadata 時顯示歷史待確認。5／10／20 日 forward validation 與既有資料累積維持不變。
 
 ---
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status
+from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status, radar_trading_dates
 from ai_stock_sentinel.daily_radar.background_context import build_background_context_labels
 from ai_stock_sentinel.daily_radar.data_loader import (
     load_daily_radar_cache_records,
@@ -170,6 +170,7 @@ def _run_daily_radar_with_session(
             scored_candidates,
             history,
             run_date=run_date,
+            trading_dates=radar_trading_dates(active_market_context),
         )
         final_candidates = _with_explanations(cooled_candidates, errors)
         final_candidates.sort(key=lambda candidate: (-int(candidate["observation_score"]), str(candidate["symbol"])))
@@ -399,7 +400,7 @@ def _history_from_repository_or_fixture(
         session,
         symbols=symbols,
         before_date=run_date,
-        lookback_days=5,
+        lookback_days=None,
         market=market,
     )
     if history:
