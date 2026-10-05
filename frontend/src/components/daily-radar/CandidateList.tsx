@@ -2,7 +2,10 @@ import { type DailyRadarCandidate } from "../../lib/dailyRadarTypes";
 import {
   formatBucketLabel,
   formatRiskLabel,
-  formatRepeatStatusLabel,
+  formatMembershipLabel,
+  formatObservationHistory,
+  formatSignalStatus,
+  formatMediumTermObservation,
   getRepeatStatusClass,
   getBucketResearchThesis,
   getBucketInvalidationHint,
@@ -21,12 +24,15 @@ export function CandidateResearchCard({ candidate }: { candidate: DailyRadarCand
         <span
           className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${getRepeatStatusClass(candidate.repeat_status)}`}
         >
-          {formatRepeatStatusLabel(candidate.repeat_status)}
+          {formatMembershipLabel(candidate)}
         </span>
+        {formatSignalStatus(candidate) && <span className="text-xs text-text-secondary">{formatSignalStatus(candidate)}</span>}
         <span className="rounded-md bg-surface-raised/75 px-2 py-0.5 text-xs font-medium text-accent">
           {formatBucketLabel(candidate.primary_bucket)}候選
         </span>
       </div>
+      {formatObservationHistory(candidate) && <p className="mt-2 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
+      {formatMediumTermObservation(candidate) && <p className="mt-2 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
       <h3 className="mt-3 text-base font-semibold text-text-primary">
         {formatBucketLabel(candidate.primary_bucket)}候選，僅供觀察追蹤
       </h3>
@@ -139,8 +145,11 @@ export function DailyRadarCandidateList({
                 <span
                   className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-medium md:mt-0 ${getRepeatStatusClass(candidate.repeat_status)}`}
                 >
-                  {formatRepeatStatusLabel(candidate.repeat_status)}
+                  {formatMembershipLabel(candidate)}
                 </span>
+                {formatObservationHistory(candidate) && <p className="mt-1 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
+                {formatSignalStatus(candidate) && <p className="mt-1 text-xs text-text-secondary">{formatSignalStatus(candidate)}</p>}
+                {formatMediumTermObservation(candidate) && <p className="mt-1 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
               </div>
 
               <div className="min-w-0">

@@ -92,9 +92,27 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 1. Same-day institutional leaders：分開讀取當日外資與投信正買超名單，形成 `foreign_same_day` 與 `trust_same_day` 兩條獨立 top-50 軌道；不先把法人角色合併，以免強勢投信訊號被外資排名稀釋。
 2. Recent accumulation leaders：分開計算最近最多 5 個完整市場日的外資與投信 trailing buy streak，形成 `foreign_recent_accumulation` 與 `trust_recent_accumulation` 兩條獨立 top-50 軌道；必須截至 `run_date` 仍連買至少 2 日且窗口累計淨買超為正。
 3. Daily trigger technical tracks：從當日已存在的 final `StockRawData` OHLCV/canonical `technical_profile` 與 compatibility `indicators` 建立 `price_volume`、`reversal`、`support_retake` 等日頻 trigger tracks，不對全市場逐檔呼叫外部 API。`technical_profile` 提供 canonical layer trace、data quality 與後續遷移依據；現行 bucket/cross scoring 仍讀 compatibility `indicators`。
-4. Final selected universe：依上述軌道順序合併，保留第一次出現的位置，重複 symbol 只留一筆，並保存 `primary_track`、`tracks` 與 `track_metrics` trace。
+4. Market archive exploration：先讀同日 TW/TWO final 官方行情，掃描最近最多 65 個已知交易日期（240 日曆日界限，取已觀測行情與 completed 官方法人歸檔的日期聯集，僅 final 行情能滿足 coverage），從全市場建立 `market_trend` 與 `market_price_volume` 各 top-50；不依賴既有個股 raw data 或法人榜。使用實際 20 日平均成交金額與既有 3 億元／20 元資格門檻；量價軌道要求站上 MA20、收盤上升且量比至少 1.25，趨勢軌道要求至少 65 根完整日線、MA20 ≥ MA60、MA60 五日斜率為正、60 日報酬為正。未還原資料僅作 discovery，序列缺漏、缺成交金額或相鄰收盤變動達 25% 時排除並保留原因，避免把疑似公司行動當成訊號；詳細評分仍讀合格 adjusted history。
+5. Final selected universe：合併所有來源並去重，保留 `primary_track`、全部 `tracks` 與 `track_metrics`。未超過 250 檔時保留原順序；超過時按各軌輪流取下一個未入選 symbol，避免後列技術軌道被法人名單占滿。
 
-這代表 live run 的 universe 來自四條分法人軌道加上本地日頻技術 trigger tracks，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的，但目前 live default 是 multi-track 候選 universe，不是完整上市櫃全市場逐檔掃描。
+5. Scaled institutional accumulation：從已通過完整報表 integrity 驗證的官方 archive 與同期 final market bars 建立 `foreign_scaled_accumulation` / `trust_scaled_accumulation` 各 top-50。要求完整 60 個市場交易日、20/60 日累積淨買超均為正、最近 20 日至少 11 日正買超，依 20 日淨買超股數 ÷ 同期成交股數排序（同分比較 60 日比例，再比較 symbol），減少絕對張數對大型股的偏重。仍要求實際 20 日平均成交金額／最低價格資格、有效 volume 與無疑似未還原價格跳動；缺法人日、缺價格日與非法數值不能補零。歷史 archive integrity 失敗或不足時該新增來源不可用並保留原因；`insufficient_institutional_history` 明列 required／complete session count 與 missing session dates，不把實際窗口縮短後冒稱 60 日。原四條法人來源仍受原 readiness guard；新增 trace 只作 discovery，不新增 scoring bonus。
+
+這代表 live run 的 universe 來自四條原分法人軌道、本地日頻技術 trigger tracks、全市場行情與兩條中期法人比例探索軌道，實際數量會因軌道重疊去重而低於各軌 limit 加總。MVP 原始設計仍排除 ETF、權證、特別股與資料欄位明顯不完整標的；全市場廉價探索後仍只為有界 selected universe 取得詳細 adjusted history。
+
+```mermaid
+flowchart TD
+    A[歸檔同日完整法人與官方行情] --> B{同日與所需歷史 archive 可用？}
+    B -->|否| C[阻擋 prepare 並保留缺檔原因]
+    B -->|是| D[原法人榜、全市場行情與中期法人比例探索]
+    D --> E[跨來源去重並按軌道輪流分配最多 250 檔]
+    E --> F[刷新 selected symbols 詳細 adjusted history 與必要核心資料]
+    F --> G{資料與候選資格通過？}
+    G -->|否| H[完整資料的業務排除保留影子樣本；缺資料不評分]
+    G -->|是| I[計算既有評分並保留中期趨勢與短期時機 trace]
+    I --> J[依評分分配最多 100 檔；超額保留 comparable shadow]
+    J --> K[顯示入選歷史、觀察強度與短期等待整理狀態]
+    K --> L[維持 5／10／20 日結果累積]
+```
 
 `9105.TW`（泰金寶-DR）在現有 MOPS 歷史 EPS 與 FinMind 財報來源均無可用資料，因此從 Daily Radar 候選池及基本面回補排除。排除規則同時套用到新回補佇列與既有 job 的執行入口，避免舊股票清單反覆查詢；保留歷史資料，不刪除使用者持股或追蹤清單。恢復納入前須驗證來源可提供足夠 EPS 歷史。
 
@@ -109,7 +127,7 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 原則：Stage 1 不應對全市場逐檔打昂貴外部 API。GitHub Actions 以分段 internal endpoints 準備資料；正式 scoring 階段不得再打 FinMind、yfinance、TWSE 或 market index provider，只能讀已落庫的 cache/snapshot。若未來需要新增資料源，應新增具 bounded universe、聚合審計與明確認證的獨立 refresh step，不得把單股 request path 當成批次 ingestion。
 
-目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時 scheduled pipeline 與一般手動 step skip，但 provider 錯誤或無法判斷時 fail closed；明確日期範圍的 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是不受當日開市判斷阻擋的手動 maintenance steps。開市後 17:30 的 `refresh-institutional-flows` 先抓取並歸檔 TWSE/TPEX 完整法人日報；18:00 的 `prepare-universe` 必須確認同日 TW/TWO 都有 completed snapshot，才從 archive 建立 `foreign_same_day`、`trust_same_day`、`foreign_recent_accumulation`、`trust_recent_accumulation` 四條法人軌道，加上既有技術軌道後保存 capped 250 selected symbols，並把 archive 來源與列數寫入 required step status。近期軌道最多讀最近 5 個同時具備 TW/TWO 完整 snapshot 的市場日，只有截至 `run_date` 仍連續買超至少 2 日且窗口累計淨買超為正才入選；已在當日轉賣超的舊 streak 不得入選，也不得跨越缺少 completed archive 的平日拼接 streak（週末可自然銜接）。18:30 的 `refresh-market-bars` 再把 TWSE/TPEX 官方整表 OHLCV 寫入 `taiwan_daily_bars`，其後 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-managed-raw-data`、`refresh-ai-evidence`、`refresh-market-context` 分別準備資料並寫入 prepared run step status。22:40 的 optional `refresh-managed-raw-data` 以 active positions 優先，再合併 `run_date` 前 30 日內的分析 cache，去重後 capped 250 symbols；它只補同日 final raw rows，不改 selected symbols、universe tracks 或 scoring membership，失敗也不列入 required refresh steps。API 與 workflow log 只揭露 target、active、recent、overlap、reused、written、missing、deferred 等聚合數量，不輸出持股 symbol。23:00 的 `refresh-ai-evidence` 以同日全部 final 支援台股 raw rows 為 pool，補齊技術、TWSE/TPEX 官方法人、full-margin projection 與 `official_cache_only` 基本面，並輸出各 evidence lane 缺漏；它不得改 selected symbols、universe tracks 或 candidate/scoring 結論，也不列入 required refresh steps。`run-scoring` 只讀 DB cache/snapshot，且必須看到 institutional-flow archive、lending、full-margin、OHLCV、market context required steps 都是 `completed`，拒絕空 selected universe，並再次確認每個 selected symbol 的 final raw row 同時具備 scoring 與 replay 必要資料，才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
+目前已落地的 live pipeline 是分段流程：workflow 先用 `market-session` 對 intended `run_date` 查詢 TWSE `MI_INDEX`，休市時 scheduled pipeline 與一般手動 step skip，但 provider 錯誤或無法判斷時 fail closed；明確日期範圍的 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是不受當日開市判斷阻擋的手動 maintenance steps。開市後 17:30 的 `refresh-institutional-flows` 先抓取並歸檔 TWSE/TPEX 完整法人日報；18:00 的 `prepare-universe` 必須確認同日 TW/TWO 都有 completed 法人 snapshot 及 final 行情歸檔，才從 archive 建立 `foreign_same_day`、`trust_same_day`、`foreign_recent_accumulation`、`trust_recent_accumulation` 四條法人軌道，加上既有技術軌道後保存 capped 250 selected symbols，並把 archive 來源與列數寫入 required step status。近期軌道最多讀最近 5 個同時具備 TW/TWO 完整 snapshot 的市場日，只有截至 `run_date` 仍連續買超至少 2 日且窗口累計淨買超為正才入選；已在當日轉賣超的舊 streak 不得入選，也不得跨越缺少 completed archive 的平日拼接 streak（週末可自然銜接）。17:45 的 `refresh-market-bars` 必須先把 TWSE/TPEX 官方整表 OHLCV 寫入 `taiwan_daily_bars`，行情歸檔缺少任一市場時以 `market_exploration_archive_incomplete` 阻擋 prepare，不用既有 raw pool 假裝完成全市場探索；prepare step 保存掃描、資格、發現與排除原因。相容單次 run 入口在歸檔可用時合併探索結果，無歸檔時維持舊有 provider universe；正式排程只用受 guard 保護的分段入口。其後 `refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-managed-raw-data`、`refresh-ai-evidence`、`refresh-market-context` 分別準備資料並寫入 prepared run step status。22:40 的 optional `refresh-managed-raw-data` 以 active positions 優先，再合併 `run_date` 前 30 日內的分析 cache，去重後 capped 250 symbols；它只補同日 final raw rows，不改 selected symbols、universe tracks 或 scoring membership，失敗也不列入 required refresh steps。API 與 workflow log 只揭露 target、active、recent、overlap、reused、written、missing、deferred 等聚合數量，不輸出持股 symbol。23:00 的 `refresh-ai-evidence` 以同日全部 final 支援台股 raw rows 為 pool，補齊技術、TWSE/TPEX 官方法人、full-margin projection 與 `official_cache_only` 基本面，並輸出各 evidence lane 缺漏；它不得改 selected symbols、universe tracks 或 candidate/scoring 結論，也不列入 required refresh steps。`run-scoring` 只讀 DB cache/snapshot，且必須看到 institutional-flow archive、lending、full-margin、OHLCV、market context required steps 都是 `completed`，拒絕空 selected universe，並再次確認每個 selected symbol 的 final raw row 同時具備 scoring 與 replay 必要資料，才會執行 Stage 1/2 rule-based scoring，最後寫入 run log 與 candidates。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 detail 必須保留 missing caveat。公開 Daily Radar 讀取端點與 response schema 不因這個後端流程改變。
 
 ### 4.3 外部資料 request budget
 
@@ -131,7 +149,9 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 
 ## 5. 嚴格前置濾網
 
-所有標的必須通過前置濾網才可進入排名。濾網是 hard gate，不用分數補償。
+Market archive 窗口必須先固定交易日期，再逐日驗證 TW 與 TWO 都有同 dataset 的 final、unadjusted 行情；不可用缺檔市場剩餘的 rows 重建更短日曆。探索使用最近最多 65 日，官方成交金額使用最近 20 日，中期法人探索使用最近 60 日。已觀測行情日期聯集（non-final 只能證明日期，不能滿足 coverage）與已完成的官方法人歸檔可證明所需交易日，因此一個市場、或兩市場同日完全缺行情，都保留在 required dates 中；不以平日推造休市日。`prepare-universe` 對所需窗口的缺口回傳 `market_exploration_archive_incomplete`，附上 `archive_dates`、`missing_market_dates`（date → missing markets）與聚合 `missing_markets`。相容單次 run 遇到缺口時不使用新探索來源。成交金額遇到已知市場歸檔缺口時，`turnover_context.missing_reason = market_archive_history_gap` 且 `avg_turnover_value_million = null`，讓 prefilter 以 `data_gap` 排除，不得改用 close × avg_volume_20 估值掩蓋；只有完全沒有可觀測 archive calendar 的舊資料，或市場歸檔齊全但個股 amount 窗口不足，才維持原本明示不足原因的 legacy estimate 契約。
+
+所有標的必須通過資料、流動性、價格、弱勢結構與融資等前置資格才可進入排名。完整評分後依 `observation_score`（同分依 symbol）分配最多 100 個公開名額，資格通過但超出名額者保留為 comparable shadow，不再於評分前按成交量截斷；`prefilter_count` 表示所有通過資格的標的數。
 
 | 濾網 | MVP 規則方向 | 淘汰原因 |
 | ---- | ------------ | -------- |
@@ -144,6 +164,10 @@ Daily Radar 只處理日頻可穩定更新的資料。週頻資料可在未來�
 | 資料時效 | 最新資料日期落後最近交易日超過容忍值 | 避免 stale data 進入雷達 |
 
 前置濾網需回傳 `prefilter_status` 與 `prefilter_reasons`，方便除錯與前端顯示「未入選原因」。
+
+中期觀察使用 `medium-term-v1`：同日 adjusted candidate history 必須完整覆蓋 benchmark 最近 65 個已知交易日期，收盤 ≥ MA20 ≥ MA60、MA60 五日斜率為正且 60 日相對大盤報酬為正，才標記 `constructive`。65 根不足、缺交易日或 benchmark 不在當日均為 `unknown`，數值保持 null。20/60 日相對強度只補充 trace；既有 deterministic scoring 權重與 signal-family caps 保留。僅 constructive 的同日證據允許把 `overextended` 從硬排除改為 `observation_caveats`，保留風險標籤及原有扣分，畫面顯示「中期趨勢符合 · 短期等待整理」；資料、價格、流動性與融資資格不因此放寬。`input_snapshot.selection_version = quality-selection-v1` 區分新名額策略，既有 5/10/20 日 forward validation 的排程與結果定義維持原樣。
+
+`refresh-ohlcv` 同時將官方 final 行情最近 20 個交易日期的實際 amount 平均值與 source dates 存入 `ohlcv.avg_turnover_value_million` / `turnover_context`。有完整實際值時 prefilter 優先使用；明確提供的非法值不能改用估值。舊資料或官方 amount 窗口不足時沿用原 close × avg_volume_20 的估計資格，debug 明列 `close_times_avg_volume_estimate` 與不足原因，不能宣稱它是實際成交金額；全市場探索本身仍要求完整實際 amount 才能發現標的。
 
 ---
 
@@ -277,16 +301,16 @@ uv run python scripts/daily_radar_calibration.py --source fixture --run-date 202
 
 ### 8.2 Cooldown 與 repeat handling
 
-避免同一股票連續多日佔據榜單但沒有新資訊。
+入選歷史與訊號強度分開判斷。歷史本身不改變分數、排序或候選資格；新舊標的套用相同的當日資料與策略門檻。
 
 | 狀態 | 規則 |
 | ---- | ---- |
-| `new` | 近 N 個交易日未入選，今日首次命中 |
-| `repeat` | 連續入選但分數與 bucket 沒有明顯變化 |
-| `upgraded` | 分數提高或新增更強 bucket |
-| `cooled_down` | 近期入選後訊號消退，暫不重複顯示 |
+| `new` | 可用公開歷史中未入選；不宣稱覆蓋系統建立前的歷史 |
+| `repeat` | 曾入選且當前強度維持；不等於連續交易日入選 |
+| `upgraded` | 同一 scoring version 相對上一筆入選分數提升至少 8 分；bucket 切換本身不代表升級 |
+| `cooled_down` | 當日分數低於 60，保留當日候選並顯示強度降溫，不因歷史而移除 |
 
-前端預設優先顯示 `new` 與 `upgraded`。`repeat` 可保留在次要區塊，並顯示「連續觀察第 X 天」。
+`input_snapshot.observation_history` 保存 `membership_status`（`new`／`continuing`／`returning`／`previously_selected`）、`first_seen_date`、`last_seen_date`、`appearance_count`、`consecutive_trading_days` 及獨立的 `signal_status`（`stable`／`improved`／`cooled_down`／`unknown`）。完整可用歷史按 market 與每個日期的最新公開 run 查詢，只計 selected，排除 shadow、失敗與同日重跑舊版本；先選發布版本才過濾 symbol，避免已被新版本移除的候選仍被計入。連續性只使用保存的 benchmark 交易日期；缺少可核實日曆時標記 `previously_selected`，不宣稱中斷或連續天數。跨 scoring version 或缺少版本證據不比較升級。Public latest／by-date／symbol-history 以唯讀投影修正舊標籤，不修改歷史 JSON 或要求 production 重跑；全歷史標籤計算只讀取 symbol、run date、score 與 scoring version 等摘要欄位，symbol-history 的詳細 snapshot 仍限定在使用者要求的 lookback window。前端分開呈現「可用紀錄首次列入／持續列入觀察／重新列入觀察／曾列入觀察」與強度狀態，並顯示可用紀錄首次、上次與累計次數；舊 API 缺少 metadata 時顯示歷史待確認。5／10／20 日 forward validation 與既有資料累積維持不變。
 
 ---
 

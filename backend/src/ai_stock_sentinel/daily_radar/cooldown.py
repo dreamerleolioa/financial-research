@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from ai_stock_sentinel.daily_radar.constants import (
-    DAILY_RADAR_BUCKETS,
     DAILY_RADAR_REPEAT_STATUSES,
 )
-from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRepeatStatus
+from ai_stock_sentinel.daily_radar.types import DailyRadarRepeatStatus
 
 
 REPEAT_STATUS_NEW: DailyRadarRepeatStatus = DAILY_RADAR_REPEAT_STATUSES[0]
@@ -18,8 +17,8 @@ REPEAT_STATUS_UPGRADED: DailyRadarRepeatStatus = DAILY_RADAR_REPEAT_STATUSES[2]
 REPEAT_STATUS_COOLED_DOWN: DailyRadarRepeatStatus = DAILY_RADAR_REPEAT_STATUSES[3]
 
 COOLDOWN_REPEAT_STATUS_LABELS: dict[DailyRadarRepeatStatus, str] = {
-    REPEAT_STATUS_NEW: "首次觀察",
-    REPEAT_STATUS_REPEAT: "連續觀察",
+    REPEAT_STATUS_NEW: "入選歷史待確認",
+    REPEAT_STATUS_REPEAT: "曾列入觀察",
     REPEAT_STATUS_UPGRADED: "訊號升級",
     REPEAT_STATUS_COOLED_DOWN: "訊號冷卻",
 }
@@ -30,10 +29,7 @@ class CooldownConfig:
     lookback_days: int = 5
     score_upgrade_threshold: int = 8
     min_current_signal_score: int = 60
-    bucket_upgrade_steps: int = 1
-    bucket_strength_order: tuple[DailyRadarBucket, ...] = field(
-        default_factory=lambda: tuple(reversed(DAILY_RADAR_BUCKETS))
-    )
+
 
 
 def apply_cooldown_status(
@@ -43,31 +39,32 @@ def apply_cooldown_status(
     run_date: str | date,
     config: CooldownConfig | None = None,
     include_cooled_down: bool = False,
+    trading_dates: Iterable[str | date] | None = None,
 ) -> list[dict[str, Any]]:
     active_config = config or CooldownConfig()
-    recent_history = _latest_recent_history(history_candidates, run_date, active_config.lookback_days)
+    history_rows = list(history_candidates)
+    verified_trading_dates = list(trading_dates or [])
+    recent_history = _latest_recent_history(history_rows, run_date, active_config.lookback_days)
+    all_history = _history_by_symbol(history_rows, run_date)
     today_symbols: dict[str, None] = {}
     results: list[dict[str, Any]] = []
 
     for candidate in today_candidates:
         symbol = str(candidate["symbol"])
         today_symbols[symbol] = None
-        history = recent_history.get(symbol)
+        symbol_history = all_history.get(symbol, [])
+        history = symbol_history[0] if symbol_history else None
         current_score = _int(candidate.get("observation_score"))
-
-        if history is not None and current_score < active_config.min_current_signal_score:
-            if include_cooled_down:
-                results.append(
-                    _cooled_down_candidate(
-                        candidate,
-                        reason="current_signal_below_threshold",
-                        config=active_config,
-                    )
-                )
-            continue
 
         result = dict(candidate)
         result["repeat_status"] = _repeat_status_for_candidate(candidate, history, active_config)
+        if current_score < active_config.min_current_signal_score:
+            result = _cooled_down_candidate(result, reason="current_signal_below_threshold", config=active_config)
+        snapshot = dict(candidate.get("input_snapshot") or {})
+        snapshot["observation_history"] = observation_history(
+            candidate, symbol_history, run_date=run_date, config=active_config, trading_dates=verified_trading_dates,
+        )
+        result["input_snapshot"] = snapshot
         results.append(result)
 
     if include_cooled_down:
@@ -95,9 +92,70 @@ def _repeat_status_for_candidate(
 ) -> DailyRadarRepeatStatus:
     if history is None:
         return REPEAT_STATUS_NEW
-    if _score_upgraded(candidate, history, config) or _bucket_upgraded(candidate, history, config):
+    if _versions_match(candidate, history) and _score_upgraded(candidate, history, config):
         return REPEAT_STATUS_UPGRADED
     return REPEAT_STATUS_REPEAT
+
+
+def _versions_match(candidate: Mapping[str, Any], history: Mapping[str, Any]) -> bool:
+    def version(row: Mapping[str, Any]) -> Any:
+        return row.get("scoring_version") or (row.get("score_breakdown") or {}).get("scoring_version")
+    current_version = version(candidate)
+    return current_version is not None and current_version == version(history)
+
+
+def _history_by_symbol(rows: Iterable[Mapping[str, Any]], run_date: str | date) -> dict[str, list[Mapping[str, Any]]]:
+    by_symbol: dict[str, dict[date, Mapping[str, Any]]] = {}
+    for row in rows:
+        day = _parse_date(row["record_date"])
+        if day < _parse_date(run_date):
+            by_symbol.setdefault(str(row["symbol"]), {}).setdefault(day, row)
+    return {symbol: [dates[day] for day in sorted(dates, reverse=True)] for symbol, dates in by_symbol.items()}
+
+
+def observation_history(
+    candidate: Mapping[str, Any], history: Iterable[Mapping[str, Any]], *, run_date: str | date,
+    config: CooldownConfig | None = None, trading_dates: Iterable[str | date] | None = None,
+) -> dict[str, Any]:
+    active_config = config or CooldownConfig()
+    run_day = _parse_date(run_date)
+    rows = _history_by_symbol(history, run_day).get(str(candidate["symbol"]), [])
+    days = {_parse_date(row["record_date"]) for row in rows}
+    calendar = sorted({_parse_date(day) for day in trading_dates or [] if _parse_date(day) <= run_day})
+    previous_day = next((day for day in reversed(calendar) if day < run_day), None)
+    membership = "new" if not rows else "previously_selected"
+    consecutive = None
+    if run_day in calendar and previous_day is not None:
+        if rows:
+            membership = "continuing" if previous_day in days else "returning"
+        consecutive = 1
+        for day in reversed(calendar[:-1]):
+            if day not in days:
+                break
+            consecutive += 1
+        if consecutive == len(calendar) and any(day < calendar[0] for day in days):
+            consecutive = None
+    signal = "stable"
+    if _int(candidate.get("observation_score")) < active_config.min_current_signal_score:
+        signal = "cooled_down"
+    elif rows and not _versions_match(candidate, rows[0]):
+        signal = "unknown"
+    elif rows and _score_upgraded(candidate, rows[0], active_config):
+        signal = "improved"
+    return {
+        "membership_status": membership,
+        "first_seen_date": min(days | {run_day}).isoformat(),
+        "last_seen_date": max(days).isoformat() if days else None,
+        "appearance_count": len(days) + 1,
+        "consecutive_trading_days": consecutive,
+        "signal_status": signal,
+    }
+
+
+def radar_trading_dates(context: Mapping[str, Any]) -> list[str]:
+    benchmark = context.get("benchmark") or {}
+    return [str(row["date"]) for row in benchmark.get("price_history", [])
+            if isinstance(row, Mapping) and row.get("date")]
 
 
 def _latest_recent_history(
@@ -131,25 +189,6 @@ def _score_upgraded(
     current_score = _int(candidate.get("observation_score"))
     previous_score = _int(history.get("observation_score"))
     return current_score - previous_score >= config.score_upgrade_threshold
-
-
-def _bucket_upgraded(
-    candidate: Mapping[str, Any],
-    history: Mapping[str, Any],
-    config: CooldownConfig,
-) -> bool:
-    current_strength = _strongest_bucket_rank(candidate, config.bucket_strength_order)
-    previous_strength = _strongest_bucket_rank(history, config.bucket_strength_order)
-    return current_strength - previous_strength >= config.bucket_upgrade_steps
-
-
-def _strongest_bucket_rank(
-    candidate: Mapping[str, Any],
-    bucket_strength_order: tuple[DailyRadarBucket, ...],
-) -> int:
-    ranks = {bucket: index for index, bucket in enumerate(bucket_strength_order)}
-    buckets = [str(candidate["primary_bucket"]), *[str(bucket) for bucket in candidate.get("secondary_buckets", [])]]
-    return max(ranks.get(bucket, -1) for bucket in buckets)
 
 
 def _cooled_down_candidate(

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar import dependencies
+from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status, radar_trading_dates
 from ai_stock_sentinel.daily_radar.presenter import (
     history_response,
     matches_bucket,
@@ -36,7 +37,7 @@ def get_latest_daily_radar_endpoint(
     run = get_latest_daily_radar_run(db, market=market)
     if run is None:
         raise HTTPException(status_code=404, detail="No public Daily Radar run is available.")
-    return public_run_response(run, bucket=bucket, limit=limit)
+    return _public_response(db, run, bucket=bucket, limit=limit)
 
 
 @router.get("/daily-radar/symbol/{symbol}", response_model=list[dict[str, Any]])
@@ -55,7 +56,18 @@ def get_daily_radar_symbol_history_endpoint(
         lookback_days=lookback_days,
         market=market,
     )
-    filtered = [history_response(item) for item in history if matches_bucket(item, bucket)]
+    summary = get_symbol_candidate_history(
+        db, symbols=[symbol], before_date=dependencies._backend_today() + timedelta(days=1),
+        lookback_days=None, market=market, summary_only=True,
+    )
+    earliest = dependencies._backend_today() + timedelta(days=1) - timedelta(days=lookback_days)
+    filtered = []
+    for item in history:
+        if date.fromisoformat(item["record_date"]) < earliest or not matches_bucket(item, bucket):
+            continue
+        context = item.get("input_snapshot", {}).get("replay_input", {}).get("market_context", {})
+        projected = apply_cooldown_status([item], summary, run_date=item["record_date"], trading_dates=radar_trading_dates(context))[0]
+        filtered.append(history_response(projected))
     return filtered[:limit]
 
 
@@ -73,4 +85,12 @@ def get_daily_radar_by_date_endpoint(
             status_code=404,
             detail=f"No public Daily Radar run is available for {run_date.isoformat()}.",
         )
-    return public_run_response(run, bucket=bucket, limit=limit)
+    return _public_response(db, run, bucket=bucket, limit=limit)
+
+
+def _public_response(db: Session, run: Any, *, bucket: str | None, limit: int) -> DailyRadarRunResponse:
+    history = get_symbol_candidate_history(
+        db, symbols=[candidate.symbol for candidate in run.candidates if candidate.selection_status == "selected"],
+        before_date=run.run_date, lookback_days=None, market=run.market, summary_only=True,
+    )
+    return public_run_response(run, bucket=bucket, limit=limit, history_candidates=history)

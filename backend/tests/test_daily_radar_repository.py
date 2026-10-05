@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, StockRawData
 from ai_stock_sentinel.db.session import Base
+from ai_stock_sentinel.daily_radar.presenter import public_run_response
 from ai_stock_sentinel.daily_radar.repository import (
     create_daily_radar_run,
     get_daily_radar_run_by_date,
@@ -240,6 +241,18 @@ def test_same_run_rejects_duplicate_symbol_candidates(db_session: Session) -> No
 
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_history_summary_has_same_membership_without_loading_replay_payload(db_session: Session) -> None:
+    run = _create_run(db_session, run_date=date(2026, 6, 1), candidate_count=1)
+    _add_candidate(db_session, run, symbol="2330.TW", score=82)
+    db_session.flush()
+    history = get_symbol_candidate_history(db_session, symbols=["2330.TW"], before_date=date(2026, 6, 2),
+                                           lookback_days=None, market="TW", summary_only=True)
+    assert history[0]["record_date"] == "2026-06-01"
+    assert history[0]["symbol"] == "2330.TW"
+    assert history[0]["observation_score"] == 82
+    assert "input_snapshot" not in history[0]
 
 
 def test_latest_completed_run_uses_newest_completed_log_for_public_reads(db_session: Session) -> None:
@@ -466,6 +479,35 @@ def test_repository_symbol_history_returns_recent_candidates_for_cooldown(db_ses
     assert [item["record_date"] for item in history] == ["2026-05-30", "2026-05-28"]
     assert [item["observation_score"] for item in history] == [83, 71]
     assert all(item["symbol"] == "2330.TW" for item in history)
+
+
+def test_full_history_uses_latest_public_run_per_date_before_filtering_symbols(db_session: Session) -> None:
+    old = _create_run(db_session, run_date=date(2026, 6, 1))
+    _add_candidate(db_session, old)
+    replaced = _create_run(db_session, run_date=date(2026, 9, 24), created_at=datetime(2026, 9, 24, 1, tzinfo=timezone.utc))
+    _add_candidate(db_session, replaced)
+    latest = _create_run(db_session, run_date=date(2026, 9, 24), created_at=datetime(2026, 9, 24, 2, tzinfo=timezone.utc))
+    _add_candidate(db_session, latest, symbol="2454.TW")
+    shadow_run = _create_run(db_session, run_date=date(2026, 9, 25))
+    shadow = _add_candidate(db_session, shadow_run)
+    shadow.selection_status = "shadow"
+    shadow.shadow_cohort = "comparable"
+    db_session.commit()
+    history = get_symbol_candidate_history(db_session, symbols=["2330.TW"], before_date=date(2026, 10, 2), lookback_days=None, market="TW")
+    assert [item["record_date"] for item in history] == ["2026-06-01"]
+
+
+def test_public_projection_corrects_old_first_label_without_mutating_persisted_snapshot(db_session: Session) -> None:
+    old = _create_run(db_session, run_date=date(2026, 6, 1))
+    _add_candidate(db_session, old)
+    current = _create_run(db_session, run_date=date(2026, 10, 2))
+    stored = _add_candidate(db_session, current)
+    history = get_symbol_candidate_history(db_session, symbols=["2330.TW"], before_date=current.run_date, lookback_days=None, market="TW")
+    response = public_run_response(current, bucket=None, limit=20, history_candidates=history)
+    assert response.candidates[0].repeat_status == "repeat"
+    assert response.candidates[0].input_snapshot["observation_history"]["last_seen_date"] == "2026-06-01"
+    assert stored.repeat_status == "new"
+    assert "observation_history" not in stored.input_snapshot
 
 
 def test_repository_symbol_history_returns_version_trace_from_score_breakdown(db_session: Session) -> None:

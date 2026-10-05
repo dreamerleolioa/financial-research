@@ -428,7 +428,10 @@ Daily Radar run status：
 
 - 17:30 TWT：`POST /internal/daily-radar/refresh-institutional-flows`，歸檔同日 TWSE `T86` 與 TPEX `3itrade_hedge` 完整法人日報；TW/TWO 任一失敗都不得讓後續 `prepare-universe` 冒充完整。
 - 18:00 TWT：`POST /internal/daily-radar/prepare-universe`，從已驗證 archive 建立外資當日、投信當日、外資近期連續累積、投信近期連續累積四條獨立軌道，再保存 capped 250 selected symbols、universe trace 與 prepared step status。
-- 18:30 TWT：`POST /internal/daily-radar/refresh-market-bars`，以 TWSE/TPEX 官方整表行情刷新 `taiwan_daily_bars`；手動 maintenance/backfill 不受目前 `run_date` 的 `market_open` 結果阻擋，但仍受 180 calendar days range limit 與 endpoint 驗證約束。transport、HTTP 408/425/429/5xx 與 JSON decode 暫時性錯誤最多三次 exponential-backoff attempt，TPEX requests 在同一 provider 內序列化；永久 4xx 與 schema/date mismatch 不 retry。
+
+Daily Radar 候選探索（2026-10-05）：18:00 prepare 必須具同日 TW/TWO final 行情與完整法人歸檔；行情缺少任一市場回傳 409 `market_exploration_archive_incomplete`，列出 `missing_markets`。新增 discovery-only `market_trend`／`market_price_volume`，由最近最多 65 個歸檔交易日期建立各 top-50，與原來源去重後在總上限 250 內分配名額。`prepare-universe` step 保存 `market_exploration` 的來源日、掃描／發現數與逐標的排除原因；未還原行情不直接進詳細技術評分。
+
+- 17:45 TWT：`POST /internal/daily-radar/refresh-market-bars`，以 TWSE/TPEX 官方整表行情刷新 `taiwan_daily_bars`；手動 maintenance/backfill 不受目前 `run_date` 的 `market_open` 結果阻擋，但仍受 180 calendar days range limit 與 endpoint 驗證約束。transport、HTTP 408/425/429/5xx 與 JSON decode 暫時性錯誤最多三次 exponential-backoff attempt，TPEX requests 在同一 provider 內序列化；永久 4xx 與 schema/date mismatch 不 retry。
 - 19:00 TWT：`POST /internal/daily-radar/refresh-avwap`，刷新 `phase1_avwap_snapshots`。
 - 20:00 TWT：`POST /internal/daily-radar/refresh-lending`，刷新 `shared_background_contexts` 的 `lending`。TWSE 借券資料以回應內全市場實際出現的交易日期建立共同日期軸；個股在有效市場日期沒有活動列時必須補 `0`，不得以個股最後活動日誤判 stale/missing；整個查詢區間沒有任何可驗證市場日期時視為 dataset failure。Required segmented refresh 另要求每個 selected symbol 都收到 `as_of_date = run_date` 的 fresh payload；stale/missing 或 provider 少回 symbol 時列出 `missing_symbols` / `missing_symbol_reasons`、step 標 `failed` 並阻擋 scoring。
 - 21:30 TWT：`POST /internal/daily-radar/refresh-full-margin`，等待 FinMind 21:00 更新後刷新 `full_margin`。

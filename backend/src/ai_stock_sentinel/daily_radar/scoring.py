@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ai_stock_sentinel.daily_radar.medium_term import build_medium_term_context
+
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -399,6 +401,7 @@ def score_daily_radar_record(
                 weighted_relative_strength_score,
             ),
             "evidence": [_relative_strength_evidence(normalized["symbol"], relative_strength_component)],
+            "medium_term_context": build_medium_term_context(normalized, _mapping(market_context)),
             "replay_input": {
                 "schema_version": DAILY_RADAR_REPLAY_INPUT_VERSION,
                 "record": {

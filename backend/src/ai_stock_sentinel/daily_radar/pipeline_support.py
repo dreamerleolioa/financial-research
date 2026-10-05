@@ -175,7 +175,8 @@ def _capped_daily_radar_universe(
     *,
     max_symbols: int,
 ) -> list[DailyRadarUniverseEntry]:
-    return universe[: max(0, max_symbols)]
+    from ai_stock_sentinel.daily_radar.universe import allocate_universe
+    return allocate_universe(universe, max_symbols=max(0, max_symbols))
 
 
 def _universe_provider_error_type(exc: Exception) -> str:

@@ -478,7 +478,7 @@ def test_market_bar_manual_backfill_is_not_gated_by_current_market_session() -> 
 
     assert (
         "if: (needs.resolve-run-context.outputs.market_open == 'true' && "
-        "github.event.schedule == '30 10 * * 1-5') || "
+        "github.event.schedule == '45 9 * * 1-5') || "
         "(github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars')"
         in text
     )

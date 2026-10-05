@@ -1,6 +1,45 @@
 import { expect, test } from "@playwright/test";
 import { authenticate, installApiMocks, radarRun } from "./fixtures";
 
+test("Radar distinguishes a constructive medium trend from waiting for consolidation", async ({ page }) => {
+  await authenticate(page);
+  const run = structuredClone(radarRun);
+  run.candidates[0].input_snapshot.medium_term_context = { trend_status: "constructive" };
+  run.candidates[0].input_snapshot.timing_status = "wait_for_consolidation";
+  await installApiMocks(page, { dailyRadar: run });
+  await page.goto("/daily-radar");
+  await expect(page.getByText("中期趨勢符合 · 短期等待整理", { exact: true }).first()).toBeVisible();
+});
+
+test("Radar separates returning membership from signal strength and shows prior dates", async ({ page }) => {
+  await authenticate(page);
+  const returningRun = structuredClone(radarRun);
+  const candidate = returningRun.candidates[0];
+  candidate.repeat_status = "upgraded";
+  candidate.input_snapshot.observation_history = {
+    membership_status: "returning", first_seen_date: "2026-06-03", last_seen_date: "2026-09-24",
+    appearance_count: 7, consecutive_trading_days: 1, signal_status: "improved",
+  };
+  await installApiMocks(page, { dailyRadar: returningRun });
+  await page.goto("/daily-radar");
+  await expect(page.getByText("重新列入觀察", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/上次 2026-09-24/).first()).toBeVisible();
+  await expect(page.getByText("觀察強度提升", { exact: true }).first()).toBeVisible();
+});
+
+test("Radar avoids claiming a selection gap when its trading calendar is unknown", async ({ page }) => {
+  await authenticate(page);
+  const run = structuredClone(radarRun);
+  run.candidates[0].input_snapshot.observation_history = {
+    membership_status: "previously_selected", first_seen_date: "2026-06-03", last_seen_date: "2026-09-24",
+    appearance_count: 7, consecutive_trading_days: null, signal_status: "stable",
+  };
+  await installApiMocks(page, { dailyRadar: run });
+  await page.goto("/daily-radar");
+  await expect(page.getByText("曾列入觀察", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("重新列入觀察", { exact: true })).toHaveCount(0);
+});
+
 test("Radar reuses fresh results when returning from another research page", async ({ page }) => {
   await authenticate(page);
   const requests: string[] = [];
