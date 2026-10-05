@@ -25,6 +25,9 @@ from ai_stock_sentinel.calibration.repository import (
 )
 from ai_stock_sentinel.daily_radar.calibration import calibration_candidates_from_fixture
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
+from ai_stock_sentinel.daily_radar.observation_validation import (
+    canonical_radar_run_ids, evaluate_observation, load_observation_origins, observation_report, strategy_cohort,
+)
 from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION, SCORING_VERSION
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
@@ -73,7 +76,10 @@ def build_forward_validation_report(
         hit_threshold_pct=hit_threshold_pct,
         windows_by_candidate=windows_by_candidate,
     )
-    outcomes = evaluation.outcomes
+    outcomes = _with_observation_diagnostics(
+        candidate_list, evaluation.outcomes, price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices, as_of_date=as_of_date,
+    )
 
     report = _build_report_from_outcomes(
         candidate_list,
@@ -86,6 +92,7 @@ def build_forward_validation_report(
         validation_version=validation_version,
         hit_threshold_pct=hit_threshold_pct,
         aggregation_scope=aggregation_scope,
+        benchmark_prices=benchmark_prices,
     )
     return ForwardValidationEvaluation(report=report, outcomes=outcomes)
 
@@ -102,6 +109,7 @@ def build_forward_validation_report_from_outcomes(
     validation_version: str = FORWARD_VALIDATION_VERSION,
     hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
     aggregation_scope: str = "persisted_fixed_date_cohort",
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return _build_report_from_outcomes(
         [dict(candidate) for candidate in candidates],
@@ -114,6 +122,7 @@ def build_forward_validation_report_from_outcomes(
         validation_version=validation_version,
         hit_threshold_pct=hit_threshold_pct,
         aggregation_scope=aggregation_scope,
+        benchmark_prices=benchmark_prices,
     )
 
 
@@ -129,6 +138,7 @@ def _build_report_from_outcomes(
     validation_version: str,
     hit_threshold_pct: float,
     aggregation_scope: str,
+    benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     outcome_rows = [dict(outcome) for outcome in outcomes]
     valid_outcomes = [outcome for outcome in outcome_rows if outcome["status"] == "validated"]
@@ -156,6 +166,9 @@ def _build_report_from_outcomes(
             outcome_rows,
             active_windows,
             hit_threshold_pct=hit_threshold_pct,
+        ),
+        "observation_diagnostics": observation_report(
+            candidates, outcome_rows, active_windows, as_of_date=as_of_date, benchmark_prices=benchmark_prices,
         ),
         "shadow_prefilter_reason_outcomes": _grouped_outcomes(
             shadow_valid_outcomes,
@@ -213,7 +226,7 @@ def evaluate_forward_window(
     validation_version: str,
     hit_threshold_pct: float,
 ) -> dict[str, Any]:
-    return shared_forward_validation.evaluate_forward_window(
+    result = shared_forward_validation.evaluate_forward_window(
         candidate,
         price_series=price_series,
         benchmark_prices=benchmark_prices,
@@ -224,6 +237,31 @@ def evaluate_forward_window(
         validation_version=validation_version,
         hit_threshold_pct=hit_threshold_pct,
     )
+    return _with_observation_diagnostics(
+        [candidate], [result], price_series_by_symbol={str(candidate.get("symbol")): price_series},
+        benchmark_prices=benchmark_prices, as_of_date=as_of_date,
+    )[0]
+
+
+def _with_observation_diagnostics(candidates, outcomes, *, price_series_by_symbol,
+                                 benchmark_prices, as_of_date):
+    from ai_stock_sentinel.calibration.forward_validation import candidate_key
+    by_key = {candidate_key(candidate): candidate for candidate in candidates}
+    enriched = []
+    for outcome in outcomes:
+        if outcome["status"] != "validated":
+            enriched.append(outcome)
+            continue
+        candidate = by_key[candidate_key(dict(outcome) | {"record_date": outcome.get("signal_date")})]
+        diagnostic = evaluate_observation(
+            candidate, price_series=price_series_by_symbol.get(str(candidate.get("symbol"))) or [],
+            benchmark_prices=benchmark_prices, window_days=int(outcome["window_days"]),
+            as_of_date=as_of_date,
+        )
+        enriched.append(dict(outcome) | {"outcome": dict(outcome["outcome"]) | {
+            "observation_diagnostic": diagnostic,
+        }})
+    return enriched
 
 
 def forward_validation_candidates_from_runs(
@@ -237,12 +275,10 @@ def forward_validation_candidates_from_runs(
     query = (
         select(DailyRadarCandidate, DailyRadarRun)
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
-        .where(DailyRadarRun.market == market, DailyRadarRun.status.in_(statuses))
+        .where(DailyRadarRun.id.in_(canonical_radar_run_ids(
+            market=market, start_date=start_date, end_date=end_date, statuses=statuses,
+        )))
     )
-    if start_date is not None:
-        query = query.where(DailyRadarRun.run_date >= start_date)
-    if end_date is not None:
-        query = query.where(DailyRadarRun.run_date <= end_date)
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
@@ -252,12 +288,12 @@ def forward_validation_candidates_from_runs(
             DailyRadarCandidate.symbol.asc(),
         )
     ).all()
-    latest_run_by_date: dict[date, int] = {}
-    snapshots: list[dict[str, Any]] = []
-    for candidate, run in rows:
-        selected_run_id = latest_run_by_date.setdefault(run.run_date, run.id)
-        if run.id == selected_run_id:
-            snapshots.append(_candidate_snapshot(candidate, run))
+    snapshots = [_candidate_snapshot(candidate, run) for candidate, run in rows]
+    if snapshots:
+        through_date = max(_parse_date(candidate["record_date"]) for candidate in snapshots)
+        origins = load_observation_origins(session, snapshots, market=market, through_date=through_date)
+        for candidate in snapshots:
+            candidate["observation_origin"] = origins.get((candidate["symbol"], strategy_cohort(candidate)))
     return snapshots
 
 
@@ -1010,6 +1046,7 @@ def _candidate_snapshot(candidate: DailyRadarCandidate, run: DailyRadarRun) -> d
         "symbol": candidate.symbol,
         "name": candidate.name,
         "record_date": run.run_date.isoformat(),
+        "daily_selected_pool_count": run.candidate_count,
         "primary_bucket": candidate.primary_bucket,
         "secondary_buckets": list(candidate.secondary_buckets or []),
         "observation_score": candidate.observation_score,

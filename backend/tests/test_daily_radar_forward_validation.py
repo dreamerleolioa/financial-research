@@ -852,6 +852,87 @@ def test_forward_validation_uses_latest_public_rerun_for_each_run_date() -> None
     assert [candidate["symbol"] for candidate in candidates] == ["NEW.TW"]
 
 
+def test_observation_origin_uses_history_before_requested_range_and_separates_policy():
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__])
+    with Session(engine) as session:
+        first = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 1)))
+        repeated = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 2)))
+        changed = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 3)))
+        for row, policy in [(first, "s1"), (repeated, "s1"), (changed, "s2")]:
+            row.input_snapshot = dict(row.input_snapshot) | {
+                "versions": {"scoring_version": "v1", "rule_version": "r1", "config_version": "c1"},
+                "selection_version": policy,
+            }
+        session.commit()
+        snapshots = forward_validation_candidates_from_runs(
+            session, market="TW", start_date=date(2026, 6, 2), end_date=date(2026, 6, 3))
+        assert snapshots[0]["observation_origin"]["first_seen_date"] == "2026-06-01"
+        assert snapshots[0]["observation_origin"]["candidate_id"] == first.id
+        assert snapshots[1]["observation_origin"]["first_seen_date"] == "2026-06-03"
+
+
+def test_forward_validation_does_not_resurrect_old_candidates_when_latest_public_run_is_empty():
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__])
+    with Session(engine) as session:
+        _add_candidate(session, _add_run(session))
+        latest = _add_run(session)
+        latest.candidate_count = 0
+        session.commit()
+        assert forward_validation_candidates_from_runs(session, market="TW") == []
+
+
+@pytest.mark.parametrize("old_status", ["shadow", "superseded", "failed"])
+def test_observation_origin_does_not_resurrect_shadow_failed_or_superseded_signal(old_status):
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__])
+    with Session(engine) as session:
+        old_run = _add_run(session, run_date=date(2026, 6, 1))
+        old = _add_candidate(session, old_run)
+        if old_status == "shadow":
+            old.selection_status, old.shadow_cohort = "shadow", "comparable"
+        elif old_status == "failed":
+            old_run.status = "failed"
+        else:
+            # The latest public revision removed this symbol altogether.
+            _add_run(session, run_date=date(2026, 6, 1))
+        current = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 2)))
+        future = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 3)))
+        session.commit()
+        snapshot = forward_validation_candidates_from_runs(
+            session, market="TW", start_date=date(2026, 6, 2), end_date=date(2026, 6, 2))[0]
+        assert snapshot["observation_origin"]["candidate_id"] == current.id
+        assert snapshot["observation_origin"]["candidate_id"] != future.id
+
+
+def test_observation_diagnostic_persists_idempotently_without_changing_return_values():
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__,
+                                           DailyRadarForwardValidationResult.__table__])
+    with Session(engine) as session:
+        row = _add_candidate(session, _add_run(session))
+        row.input_snapshot = dict(row.input_snapshot) | {
+            "indicators": {"support_level": 95, "resistance_level": 105}}
+        session.flush()
+        candidates = forward_validation_candidates_from_runs(session, market="TW")
+        rows = [_price("2026-06-01", 100, 101, 99, 100),
+                *[_price(day, close, close + 1, close - 1, close) for day, close in [
+                    ("2026-06-02", 103), ("2026-06-03", 106), ("2026-06-04", 107),
+                    ("2026-06-05", 108), ("2026-06-08", 109)]]]
+        evaluation = build_forward_validation_report(
+            candidates, price_series_by_symbol={row.symbol: rows}, benchmark_prices=rows,
+            market="TW", sample_source="test", as_of_date=date(2026, 6, 8), windows=[5])
+        upsert_forward_validation_results(session, evaluation.outcomes)
+        upsert_forward_validation_results(session, evaluation.outcomes)
+        persisted = persisted_forward_validation_outcomes(
+            session, candidates, windows=[5], as_of_date=date(2026, 6, 8))
+        assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 1
+        assert persisted[0]["outcome"] == evaluation.outcomes[0]["outcome"]
+        assert persisted[0]["outcome"]["forward_return_pct"] == 9
+        assert persisted[0]["outcome"]["observation_diagnostic"]["confirmation_date"] == "2026-06-04"
+
+
 def test_benchmark_prices_fall_back_to_latest_prepared_market_context() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(engine, tables=[DailyRadarPreparedRun.__table__])
