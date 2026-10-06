@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
+from itertools import groupby
 from typing import Any
 
 from sqlalchemy import inspect, select
@@ -16,6 +17,9 @@ from ai_stock_sentinel.calibration.forward_validation import (
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun, StockRawData
 
 
+RAW_PRICE_BATCH_SIZE = 128
+
+
 def load_price_series_from_raw_data(
     session: Session,
     *,
@@ -26,8 +30,8 @@ def load_price_series_from_raw_data(
     normalized_symbols = sorted({str(symbol) for symbol in symbols if symbol})
     if not normalized_symbols:
         return {}
-    rows = session.scalars(
-        select(StockRawData)
+    rows = session.execute(
+        select(StockRawData.symbol, StockRawData.technical)
         .where(
             StockRawData.symbol.in_(normalized_symbols),
             StockRawData.record_date >= start_date,
@@ -35,17 +39,18 @@ def load_price_series_from_raw_data(
             StockRawData.raw_data_is_final.is_(True),
         )
         .order_by(StockRawData.symbol.asc(), StockRawData.record_date.asc())
-    ).all()
-    raw_rows_by_symbol: dict[str, list[StockRawData]] = {}
-    for row in rows:
-        raw_rows_by_symbol.setdefault(row.symbol, []).append(row)
+        .execution_options(yield_per=RAW_PRICE_BATCH_SIZE)
+    ).mappings()
     output: dict[str, list[dict[str, Any]]] = {}
-    for symbol, symbol_rows in raw_rows_by_symbol.items():
-        output[symbol] = completed_price_rows_from_raw_data(
-            symbol_rows,
-            start_date=start_date,
-            end_date=end_date,
-        )
+    try:
+        for symbol, symbol_rows in groupby(rows, key=lambda row: row["symbol"]):
+            output[symbol] = completed_price_rows_from_raw_data(
+                symbol_rows,
+                start_date=start_date,
+                end_date=end_date,
+            )
+    finally:
+        rows.close()
     return output
 
 
@@ -60,8 +65,8 @@ def load_benchmark_prices_from_prepared_market_context(
     bind = session.get_bind()
     if bind is None or not inspect(bind).has_table("daily_radar_prepared_runs"):
         return []
-    prepared_runs = session.scalars(
-        select(DailyRadarPreparedRun)
+    prepared_runs = session.execute(
+        select(DailyRadarPreparedRun.market_context["benchmark"].as_json())
         .where(
             DailyRadarPreparedRun.market == market,
             DailyRadarPreparedRun.run_date <= as_of_date,
@@ -72,56 +77,60 @@ def load_benchmark_prices_from_prepared_market_context(
             DailyRadarPreparedRun.id.desc(),
         )
         .limit(30)
-    ).all()
+        .execution_options(yield_per=1)
+    ).scalars()
     required = set(required_dates)
     best_rows: list[dict[str, Any]] = []
     best_coverage = -1
-    for prepared in prepared_runs:
-        benchmark = _mapping(_mapping(prepared.market_context).get("benchmark"))
-        if str(benchmark.get("symbol") or "") != benchmark_symbol:
-            continue
-        rows: list[dict[str, Any]] = []
-        for item in _as_list(benchmark.get("price_history")):
-            if not isinstance(item, Mapping):
+    try:
+        for prepared_benchmark in prepared_runs:
+            benchmark = _mapping(prepared_benchmark)
+            if str(benchmark.get("symbol") or "") != benchmark_symbol:
                 continue
-            row_date = _parse_date(item.get("date"))
-            close = number(item.get("close"))
-            if (
-                row_date is None
-                or row_date > as_of_date
-                or close is None
-                or close <= 0
+            rows: list[dict[str, Any]] = []
+            for item in _as_list(benchmark.get("price_history")):
+                if not isinstance(item, Mapping):
+                    continue
+                row_date = _parse_date(item.get("date"))
+                close = number(item.get("close"))
+                if (
+                    row_date is None
+                    or row_date > as_of_date
+                    or close is None
+                    or close <= 0
+                ):
+                    continue
+                rows.append({
+                    "date": row_date.isoformat(),
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                })
+            if not rows:
+                continue
+            rows = sorted(rows, key=lambda row: str(row["date"]))
+            available_dates = {
+                row_date
+                for row in rows
+                for row_date in [_parse_date(row.get("date"))]
+                if row_date is not None
+            }
+            coverage = len(required.intersection(available_dates))
+            if coverage > best_coverage or (
+                coverage == best_coverage and len(rows) > len(best_rows)
             ):
-                continue
-            rows.append({
-                "date": row_date.isoformat(),
-                "open": close,
-                "high": close,
-                "low": close,
-                "close": close,
-            })
-        if not rows:
-            continue
-        rows = sorted(rows, key=lambda row: str(row["date"]))
-        available_dates = {
-            row_date
-            for row in rows
-            for row_date in [_parse_date(row.get("date"))]
-            if row_date is not None
-        }
-        coverage = len(required.intersection(available_dates))
-        if coverage > best_coverage or (
-            coverage == best_coverage and len(rows) > len(best_rows)
-        ):
-            best_rows = rows
-            best_coverage = coverage
-        if required.issubset(available_dates):
-            return rows
+                best_rows = rows
+                best_coverage = coverage
+            if required.issubset(available_dates):
+                return rows
+    finally:
+        prepared_runs.close()
     return best_rows
 
 
 def completed_price_rows_from_raw_data(
-    rows: Sequence[Any],
+    rows: Iterable[Any],
     *,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -129,23 +138,31 @@ def completed_price_rows_from_raw_data(
     """Extract prices by proven embedded trade date, never observation date."""
     prices_by_date: dict[date, dict[str, Any]] = {}
     evidence_by_date: dict[date, dict[str, Any]] = {}
+
+    def store(raw_date: Any, price: Mapping[str, Any]) -> None:
+        value_date = _parse_date(raw_date)
+        if (value_date is None or (start_date is not None and value_date < start_date)
+                or (end_date is not None and value_date > end_date)):
+            return
+        _store_completed_price(prices_by_date, value_date, price, evidence_by_date=evidence_by_date)
+
     for row in rows:
         if _row_value(row, "raw_data_is_final") is False:
             continue
         technical = _mapping(_row_value(row, "technical"))
         for item in _as_list(technical.get("price_history")):
             if isinstance(item, Mapping):
-                _store_completed_price(prices_by_date, item.get("date"), item, evidence_by_date=evidence_by_date)
+                store(item.get("date"), item)
 
         recent_closes = _as_list(technical.get("recent_closes"))
         recent_dates = _as_list(technical.get("recent_close_dates"))
         if len(recent_closes) == len(recent_dates):
             for value_date, close in zip(recent_dates, recent_closes, strict=True):
-                _store_completed_price(prices_by_date, value_date, {"close": close}, evidence_by_date=evidence_by_date)
+                store(value_date, {"close": close})
 
         data_dates = _mapping(technical.get("data_dates"))
         ohlcv = _mapping(technical.get("ohlcv") or technical)
-        _store_completed_price(prices_by_date, data_dates.get("ohlcv"), ohlcv, evidence_by_date=evidence_by_date)
+        store(data_dates.get("ohlcv"), ohlcv)
 
     return [
         prices_by_date[value_date]

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.forward_validation_planning import prepare_due_forward_validation
+from ai_stock_sentinel.calibration.runtime_metrics import ForwardValidationMetrics
 from ai_stock_sentinel.calibration.price_provider import (
     ForwardPriceProvider,
     get_forward_price_provider,
@@ -329,12 +330,15 @@ def run_daily_radar_forward_validation_endpoint(
     start_date = request.start_date
     if request.mode == "due" and start_date is None:
         start_date = default_due_start_date(as_of_date, max(request.windows or list(DEFAULT_FORWARD_WINDOWS)))
-    candidates = forward_validation_candidates_from_runs(
-        db,
-        market=request.market,
-        start_date=start_date,
-        end_date=request.end_date or as_of_date,
-    )
+    metrics = ForwardValidationMetrics(logger, as_of_date=as_of_date)
+    with metrics.stage("load_candidates"):
+        candidates = forward_validation_candidates_from_runs(
+            db,
+            market=request.market,
+            start_date=start_date,
+            end_date=request.end_date or as_of_date,
+        )
+        metrics.counts["candidate_count"] = len(candidates)
     try:
         validate_forward_validation_benchmark(
             candidates,
@@ -343,6 +347,7 @@ def run_daily_radar_forward_validation_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     symbols = {str(candidate["symbol"]) for candidate in candidates}
+    metrics.counts["symbol_count"] = len(symbols)
     candidate_record_dates = [
         parsed_date
         for candidate in candidates
@@ -352,78 +357,96 @@ def run_daily_radar_forward_validation_endpoint(
         candidate_record_dates,
         default=start_date or as_of_date,
     )
-    price_series = load_price_series_from_raw_data(
-        db,
-        symbols=sorted(symbols | {request.benchmark_symbol}),
-        start_date=price_start_date,
-        end_date=as_of_date,
-    )
+    with metrics.stage("load_raw_prices"):
+        price_series = load_price_series_from_raw_data(
+            db,
+            symbols=sorted(symbols | {request.benchmark_symbol}),
+            start_date=price_start_date,
+            end_date=as_of_date,
+        )
+        metrics.counts["price_rows"] = sum(len(rows) for rows in price_series.values())
     benchmark_prices = price_series.get(request.benchmark_symbol, [])
     if not benchmark_prices:
-        benchmark_prices = load_benchmark_prices_from_prepared_market_context(
-            db,
-            market=request.market,
-            benchmark_symbol=request.benchmark_symbol,
-            as_of_date=as_of_date,
-        )
+        with metrics.stage("load_benchmark"):
+            benchmark_prices = load_benchmark_prices_from_prepared_market_context(
+                db,
+                market=request.market,
+                benchmark_symbol=request.benchmark_symbol,
+                as_of_date=as_of_date,
+            )
+
+    def fetch_prices(symbols, *, start_date, end_date):
+        with metrics.stage("fetch_prices", batch_symbol_count=len(symbols)):
+            return price_provider.fetch(symbols, start_date=start_date, end_date=end_date)
+
     windows_by_candidate = None
     if request.mode == "due":
-        windows_by_candidate = due_windows_by_candidate(
-            candidates,
-            as_of_date=as_of_date,
-            windows=request.windows,
-            price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
-            benchmark_prices=benchmark_prices,
-        )
-        windows_by_candidate = exclude_persisted_daily_radar_windows(
-            db,
-            windows_by_candidate,
-            benchmark_symbol=request.benchmark_symbol,
-        )
-        preparation = prepare_due_forward_validation(
-            candidates,
-            adapter=DAILY_RADAR_FORWARD_ADAPTER,
-            pending_windows_by_candidate=windows_by_candidate,
-            price_series_by_symbol=price_series,
-            benchmark_prices=benchmark_prices,
-            benchmark_symbol=request.benchmark_symbol,
-            as_of_date=as_of_date,
-            price_start_date=price_start_date,
-            fetch_prices=price_provider.fetch,
-        )
+        with metrics.stage("discover_due_windows"):
+            windows_by_candidate = due_windows_by_candidate(
+                candidates,
+                as_of_date=as_of_date,
+                windows=request.windows,
+                price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+                benchmark_prices=benchmark_prices,
+            )
+        with metrics.stage("exclude_persisted_windows"):
+            windows_by_candidate = exclude_persisted_daily_radar_windows(
+                db,
+                windows_by_candidate,
+                benchmark_symbol=request.benchmark_symbol,
+            )
+        with metrics.stage("prepare_prices"):
+            preparation = prepare_due_forward_validation(
+                candidates,
+                adapter=DAILY_RADAR_FORWARD_ADAPTER,
+                pending_windows_by_candidate=windows_by_candidate,
+                price_series_by_symbol=price_series,
+                benchmark_prices=benchmark_prices,
+                benchmark_symbol=request.benchmark_symbol,
+                as_of_date=as_of_date,
+                price_start_date=price_start_date,
+                fetch_prices=fetch_prices,
+            )
+        metrics.counts["price_rows"] = sum(len(rows) for rows in preparation.price_series_by_symbol.values())
         price_series = preparation.price_series_by_symbol
         benchmark_prices = preparation.benchmark_prices
         windows_by_candidate = preparation.evaluation_windows_by_candidate
-    evaluation = build_forward_validation_report(
-        candidates,
-        price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
-        benchmark_prices=benchmark_prices,
-        market=request.market,
-        sample_source="production_db",
-        as_of_date=as_of_date,
-        windows=request.windows,
-        benchmark_symbol=request.benchmark_symbol,
-        windows_by_candidate=windows_by_candidate,
-    )
-    write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
-    persisted_outcomes = persisted_forward_validation_outcomes(
-        db,
-        candidates,
-        windows=request.windows,
-        as_of_date=as_of_date,
-    )
-    report = build_forward_validation_report_from_outcomes(
-        candidates,
-        persisted_outcomes,
-        market=request.market,
-        sample_source="production_db_persisted_cohort",
-        as_of_date=as_of_date,
-        windows=request.windows,
-        benchmark_symbol=request.benchmark_symbol,
-        aggregation_scope="persisted_fixed_date_cohort",
-        benchmark_prices=benchmark_prices,
-    )
-    db.commit()
+    with metrics.stage("evaluate"):
+        evaluation = build_forward_validation_report(
+            candidates,
+            price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+            benchmark_prices=benchmark_prices,
+            market=request.market,
+            sample_source="production_db",
+            as_of_date=as_of_date,
+            windows=request.windows,
+            benchmark_symbol=request.benchmark_symbol,
+            windows_by_candidate=windows_by_candidate,
+        )
+    with metrics.stage("upsert"):
+        write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
+        metrics.counts["records_written"] = write_summary["records_written"]
+    with metrics.stage("read_persisted"):
+        persisted_outcomes = persisted_forward_validation_outcomes(
+            db,
+            candidates,
+            windows=request.windows,
+            as_of_date=as_of_date,
+        )
+    with metrics.stage("report"):
+        report = build_forward_validation_report_from_outcomes(
+            candidates,
+            persisted_outcomes,
+            market=request.market,
+            sample_source="production_db_persisted_cohort",
+            as_of_date=as_of_date,
+            windows=request.windows,
+            benchmark_symbol=request.benchmark_symbol,
+            aggregation_scope="persisted_fixed_date_cohort",
+            benchmark_prices=benchmark_prices,
+        )
+    with metrics.stage("commit"):
+        db.commit()
     return DailyRadarForwardValidationRunResponse(
         status="completed",
         mode=request.mode,

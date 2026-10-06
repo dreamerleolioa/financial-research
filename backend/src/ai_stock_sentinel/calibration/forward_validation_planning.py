@@ -29,6 +29,28 @@ class ForwardPriceFetcher(Protocol):
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]: ...
 
 
+FORWARD_PRICE_FETCH_BATCH_SIZE = 32
+
+
+def _fetch_prices_in_batches(
+    fetch_prices: ForwardPriceFetcher,
+    symbols: Sequence[str],
+    *,
+    start_date: date,
+    end_date: date,
+) -> dict[str, list[dict[str, Any]]]:
+    prices: dict[str, list[dict[str, Any]]] = {}
+    ordered_symbols = sorted(set(symbols))
+    for offset in range(0, len(ordered_symbols), FORWARD_PRICE_FETCH_BATCH_SIZE):
+        fetched = fetch_prices(
+            ordered_symbols[offset:offset + FORWARD_PRICE_FETCH_BATCH_SIZE],
+            start_date=start_date,
+            end_date=end_date,
+        )
+        prices = merge_price_series(prices, fetched)
+    return prices
+
+
 @dataclass(frozen=True)
 class PreparedForwardValidation:
     price_series_by_symbol: dict[str, list[dict[str, Any]]]
@@ -61,7 +83,8 @@ def prepare_due_forward_validation(
         benchmark_prices=current_benchmark,
         as_of_date=as_of_date,
     ):
-        fetched_prices = fetch_prices(
+        fetched_prices = _fetch_prices_in_batches(
+            fetch_prices,
             [benchmark_symbol],
             start_date=price_start_date,
             end_date=as_of_date,
@@ -77,7 +100,8 @@ def prepare_due_forward_validation(
         as_of_date=as_of_date,
     )
     if refresh_symbols:
-        fetched_prices = fetch_prices(
+        fetched_prices = _fetch_prices_in_batches(
+            fetch_prices,
             refresh_symbols,
             start_date=price_start_date,
             end_date=as_of_date,

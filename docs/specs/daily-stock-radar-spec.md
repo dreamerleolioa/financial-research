@@ -565,6 +565,10 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 
 現有 `daily-radar-forward-validation-v2` 的訊號日收盤價、5／10／20 交易日報酬、benchmark、MFE／MAE 與排程維持原契約。Daily Radar adapter 在新 validated outcome 的 JSON 內另存 `observation_diagnostic`，其獨立版本為 `daily-radar-observation-v1`；一般分析 adapter 不加入此診斷，不新增資料表或 migration。
 
+Forward-validation 的候選查詢僅投影報告分類、固定價位、版本與 benchmark 身分所需欄位；已保存窗口排除及寫入身分核對不得重新載入完整 `input_snapshot`。Raw 價格只讀 final rows 的 symbol／technical，以每批 128 筆串流、依 symbol 與 record_date 合併；同日 OHLC 衝突證據須跨批次保留，歷史價格僅保留請求日期範圍。Prepared benchmark 僅投影 benchmark JSON。共用 planning service 保留 benchmark-first 順序，缺漏股票每批最多 32 個循序補抓，失敗直接中止，不以空值或重試吞掉錯誤；Daily Radar 全部結果仍在單次交易提交，批次補抓不產生部分提交。
+
+Daily Radar 維護 endpoint 在候選／raw 價格／benchmark 載入、窗口判斷、已保存窗口排除、每次 provider 補抓、評估、寫入、報告重建與 commit 前後記錄同一 run ID、as-of date、耗時、資料量與程序記憶體。Linux `rss_bytes` 為當前 RSS，`peak_rss_bytes` 為程序生命週期峰值，不能解讀為單次請求專屬峰值；非 Linux 無當前 RSS 時列 null。紀錄不包含候選內容、價格 payload 或 token。HTTP completed 仍只代表本次請求完成；正式環境記憶體改善需以部署後量測確認。
+
 1. **觀察起點**：採同一 symbol 與 scoring／rule／config／selection version 的可用公開紀錄首次 selected 日期。查詢評估區間之前的歷史時，只投影 ID、symbol、日期及版本，不讀整份歷史 snapshot。先選同日最新 `completed`／`stale_data` run，再讀候選；即使最新 run 為空，也不得回取舊 run。Shadow、failed、superseded 與未來日期不建立起點；重複入選標記 `not_first_observation`，不重算新機會。缺起點證據標記 `origin_unknown`，不得將 bounded query 第一筆當成首次。
 2. **固定價位**：使用首次入選 snapshot 的 `indicators.support_level`／`resistance_level`，不以後續價格重畫區間，也不以 MA20／MA60 補缺。需為有限正數、支撐小於壓力、入選 OHLCV 日期一致；若有 technical indicators 日期，也需同日。入選收盤已高於壓力或低於支撐，分別列 `already_broken_out`／`already_invalidated`，不計提前辨識成功率。
 3. **確認與失效**：在 benchmark 定義的完整 5／10／20 日窗口中，連續兩個交易日收盤嚴格高於固定壓力，第二日為 `confirmed`；確認前先收盤嚴格低於固定支撐則為 `invalidated`，之後即使突破也不改判。盤中穿越與收盤等於價位均不觸發。窗口最後一日僅首次站上壓力時，該窗口仍是 `unconfirmed`；不得借用窗口外或 as-of 之後行情確認。

@@ -273,7 +273,25 @@ def forward_validation_candidates_from_runs(
     statuses: tuple[str, ...] = PUBLIC_RUN_STATUSES,
 ) -> list[dict[str, Any]]:
     query = (
-        select(DailyRadarCandidate, DailyRadarRun)
+        select(
+            DailyRadarCandidate.id.label("candidate_id"), DailyRadarCandidate.run_id,
+            DailyRadarRun.run_date, DailyRadarRun.candidate_count.label("daily_selected_pool_count"),
+            *[getattr(DailyRadarCandidate, field) for field in (
+                "symbol", "name", "primary_bucket", "secondary_buckets", "observation_score",
+                "bucket_scores", "risk_labels", "matched_rules", "repeat_status",
+                "data_dates", "selection_status", "prefilter_status", "prefilter_reasons", "shadow_cohort",
+            )],
+            DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_json().label("close"),
+            *[DailyRadarCandidate.input_snapshot["indicators"][field].as_json().label(field)
+              for field in ("support_level", "resistance_level", "ma20", "ma60")],
+            DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
+            DailyRadarCandidate.input_snapshot["selection_version"].as_json().label("selection_version"),
+            DailyRadarCandidate.input_snapshot["market_context"]["regime"].as_json().label("market_regime"),
+            _candidate_benchmark_column().label("candidate_benchmark"),
+            DailyRadarCandidate.score_breakdown["relative_strength"]["freshness"].as_json().label("relative_freshness"),
+            DailyRadarCandidate.score_breakdown["relative_strength"]["relative_value"].as_json().label("relative_value"),
+            DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
+        )
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
         .where(DailyRadarRun.id.in_(canonical_radar_run_ids(
             market=market, start_date=start_date, end_date=end_date, statuses=statuses,
@@ -286,9 +304,9 @@ def forward_validation_candidates_from_runs(
             DailyRadarRun.id.desc(),
             DailyRadarCandidate.observation_score.desc(),
             DailyRadarCandidate.symbol.asc(),
-        )
-    ).all()
-    snapshots = [_candidate_snapshot(candidate, run) for candidate, run in rows]
+        ).execution_options(yield_per=128)
+    ).mappings()
+    snapshots = [_candidate_snapshot(row) for row in rows]
     if snapshots:
         through_date = max(_parse_date(candidate["record_date"]) for candidate in snapshots)
         origins = load_observation_origins(session, snapshots, market=market, through_date=through_date)
@@ -391,6 +409,10 @@ def candidate_forward_validation_benchmark_symbol(input_snapshot: Any) -> str:
     return str(benchmark.get("symbol") or DEFAULT_BENCHMARK_SYMBOL)
 
 
+def _candidate_benchmark_column():
+    return DailyRadarCandidate.input_snapshot["replay_input"]["market_context"]["benchmark"]["symbol"].as_json()
+
+
 def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
@@ -404,16 +426,17 @@ def upsert_forward_validation_results(
     candidate_identity_by_id = {
         int(candidate_id): (
             run_date,
-            candidate_forward_validation_benchmark_symbol(input_snapshot),
+            str(benchmark_symbol or DEFAULT_BENCHMARK_SYMBOL),
         )
-        for candidate_id, run_date, input_snapshot in session.execute(
+        for candidate_id, run_date, benchmark_symbol in session.execute(
             select(
                 DailyRadarCandidate.id,
                 DailyRadarRun.run_date,
-                DailyRadarCandidate.input_snapshot,
+                _candidate_benchmark_column(),
             )
             .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
             .where(DailyRadarCandidate.id.in_(candidate_ids))
+            .execution_options(yield_per=128)
         )
     }
     written = 0
@@ -615,38 +638,37 @@ def exclude_persisted_daily_radar_windows(
             if windows
         }
     terminal = {
-        (result.candidate_id, result.window_days)
-        for result, candidate, run in session.execute(
+        (row["candidate_id"], row["window_days"])
+        for row in session.execute(
             select(
-                DailyRadarForwardValidationResult,
-                DailyRadarCandidate,
-                DailyRadarRun,
+                DailyRadarForwardValidationResult.candidate_id,
+                DailyRadarForwardValidationResult.window_days,
+                DailyRadarForwardValidationResult.signal_date,
+                DailyRadarForwardValidationResult.benchmark_symbol,
+                DailyRadarForwardValidationResult.status,
+                DailyRadarForwardValidationResult.evaluation_as_of_date,
+                DailyRadarForwardValidationResult.skip_reason,
+                DailyRadarRun.run_date,
+                _candidate_benchmark_column().label("candidate_benchmark"),
             )
-            .join(
-                DailyRadarCandidate,
-                DailyRadarForwardValidationResult.candidate_id
-                == DailyRadarCandidate.id,
-            )
+            .join(DailyRadarCandidate, DailyRadarForwardValidationResult.candidate_id == DailyRadarCandidate.id)
             .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
             .where(
                 DailyRadarForwardValidationResult.candidate_id.in_(candidate_ids),
                 DailyRadarForwardValidationResult.validation_version == validation_version,
             )
-        ).all()
+            .execution_options(yield_per=128)
+        ).mappings()
         if (
-            result.signal_date == run.run_date
-            and result.benchmark_symbol == benchmark_symbol
-            and result.benchmark_symbol
-            == candidate_forward_validation_benchmark_symbol(
-                candidate.input_snapshot
-            )
+            row["signal_date"] == row["run_date"]
+            and row["benchmark_symbol"] == benchmark_symbol
+            and row["benchmark_symbol"] == str(row["candidate_benchmark"] or DEFAULT_BENCHMARK_SYMBOL)
             and (
-                result.status == "validated"
+                row["status"] == "validated"
                 or (
-                    result.status == "skipped"
-                    and result.evaluation_as_of_date is not None
-                    and result.skip_reason
-                    in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+                    row["status"] == "skipped"
+                    and row["evaluation_as_of_date"] is not None
+                    and row["skip_reason"] in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
                 )
             )
         )
@@ -1039,29 +1061,29 @@ def _data_freshness_status(candidate: Mapping[str, Any]) -> str:
     return "fresh"
 
 
-def _candidate_snapshot(candidate: DailyRadarCandidate, run: DailyRadarRun) -> dict[str, Any]:
-    return {
-        "candidate_id": candidate.id,
-        "run_id": run.id,
-        "symbol": candidate.symbol,
-        "name": candidate.name,
-        "record_date": run.run_date.isoformat(),
-        "daily_selected_pool_count": run.candidate_count,
-        "primary_bucket": candidate.primary_bucket,
-        "secondary_buckets": list(candidate.secondary_buckets or []),
-        "observation_score": candidate.observation_score,
-        "bucket_scores": dict(candidate.bucket_scores or {}),
-        "risk_labels": list(candidate.risk_labels or []),
-        "matched_rules": list(candidate.matched_rules or []),
-        "repeat_status": candidate.repeat_status,
-        "score_breakdown": dict(candidate.score_breakdown or {}),
-        "input_snapshot": dict(candidate.input_snapshot or {}),
-        "data_dates": dict(candidate.data_dates or {}),
-        "selection_status": candidate.selection_status,
-        "prefilter_status": candidate.prefilter_status,
-        "prefilter_reasons": list(candidate.prefilter_reasons or []),
-        "shadow_cohort": candidate.shadow_cohort,
+def _candidate_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
+    snapshot = {field: row[field] for field in (
+        "candidate_id", "run_id", "symbol", "name", "daily_selected_pool_count", "primary_bucket",
+        "observation_score", "repeat_status", "selection_status", "prefilter_status", "shadow_cohort",
+    )}
+    snapshot["record_date"] = row["run_date"].isoformat()
+    for field in ("secondary_buckets", "risk_labels", "matched_rules", "prefilter_reasons"):
+        snapshot[field] = list(row[field] or [])
+    for field in ("bucket_scores", "data_dates"):
+        snapshot[field] = dict(row[field] or {})
+    snapshot["score_breakdown"] = {
+        "relative_strength": {"freshness": row["relative_freshness"], "relative_value": row["relative_value"]},
+        "market_context": {"details": {"regime": row["score_market_regime"]}},
     }
+    snapshot["input_snapshot"] = {
+        "ohlcv": {"close": row["close"]},
+        "indicators": {field: row[field] for field in ("support_level", "resistance_level", "ma20", "ma60")},
+        "versions": row["versions"] or {},
+        "selection_version": row["selection_version"],
+        "market_context": {"regime": row["market_regime"]},
+        "replay_input": {"market_context": {"benchmark": {"symbol": row["candidate_benchmark"]}}},
+    }
+    return snapshot
 
 
 def _entry_price(candidate: Mapping[str, Any], prices: Mapping[date, Mapping[str, float]], signal_date: date) -> float | None:
