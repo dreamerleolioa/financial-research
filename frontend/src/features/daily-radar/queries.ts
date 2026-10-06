@@ -1,9 +1,24 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchLatestDailyRadarRun, isNoPublicDailyRadarRunUnavailableError } from "../../lib/dailyRadarApi";
+import {
+  fetchDailyRadarValidation,
+  fetchLatestDailyRadarRun,
+  isNoPublicDailyRadarRunUnavailableError,
+} from "../../lib/dailyRadarApi";
 
 export const dailyRadarKeys = {
   latest: ["daily-radar", "latest"] as const,
+  validation: ["daily-radar", "validation"] as const,
 };
+
+export function useDailyRadarValidationQuery(enabled: boolean) {
+  return useQuery({
+    queryKey: dailyRadarKeys.validation,
+    queryFn: ({ signal }) => fetchDailyRadarValidation(signal),
+    enabled,
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
 
 export function useLatestDailyRadarQuery() {
   return useQuery({

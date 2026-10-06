@@ -421,6 +421,7 @@ def run_daily_radar_forward_validation_endpoint(
         windows=request.windows,
         benchmark_symbol=request.benchmark_symbol,
         aggregation_scope="persisted_fixed_date_cohort",
+        benchmark_prices=benchmark_prices,
     )
     db.commit()
     return DailyRadarForwardValidationRunResponse(

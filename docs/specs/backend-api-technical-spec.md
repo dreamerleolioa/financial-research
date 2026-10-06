@@ -564,6 +564,11 @@ Daily Radar 候選探索（2026-10-05）：18:00 prepare 必須具同日 TW/TWO 
 公開讀取 API 不需要 `DAILY_RADAR_INTERNAL_TOKEN`。
 
 - `GET /daily-radar/latest?market=TW&bucket=&limit=`：讀取指定市場最新可公開 run 的候選標的。
+- `GET /daily-radar/validation?market=TW&lookback_days=90`：唯讀突破前觀察統計；`lookback_days` 為日曆天數，範圍 1–365，預設 90。
+  - 先選同日最新公開 run，再載入完整 selected 名單及已保存的目前 forward-validation-v2 結果，按 scoring／rule／config／selection version 分組，逐 5／10／20 交易日回傳全部、前 3／5 檔與其餘候選。
+  - 回應包含 `diagnostic_version`、`as_of_date`、`sample_start_date`／`sample_end_date`、`lookback_days`、`last_evaluated_date`、`calendar_through_date`、`default_cohort_id` 與 `cohorts`；各 cohort 含 `id`、`strategy`、`signal_start_date`／`signal_end_date`、`windows`。`default_cohort_id` 對應最新已公開入選訊號的策略，不依成效選版本。
+  - Stats 僅暴露樣本數、狀態／缺資料原因計數、比率及限定於有效樣本的平均值，不回傳 candidate ID、原始 snapshot、shadow 身分或完整 outcome。查無候選仍回 `200` 與空 `cohorts`；缺資料的比率為 null。
+  - 交易日資料不完整或與已保存成熟窗口不一致時，`calendar_through_date` 為 null，缺結果維持 missing 而非推定等待滿期。此 GET 不呼叫行情 provider、不重新評估、不 upsert 或 commit，也不補算缺診斷的舊結果。
 - `GET /daily-radar/{run_date}?market=TW&bucket=&limit=`：讀取指定日期與市場的候選標的。
 - `GET /daily-radar/symbol/{symbol}?market=TW&bucket=&limit=&lookback_days=`：讀取指定標的的 Daily Radar 歷史。
 
@@ -619,6 +624,7 @@ Daily Radar 候選探索（2026-10-05）：18:00 prepare 必須具同日 TW/TWO 
 #### Internal calibration lifecycle
 
 - `POST /internal/daily-radar/forward-validation/run`：以 `mode = due` 評估最新公開 run 中已成熟的 5 / 10 / 20 交易日窗口；同日 rerun 只採最新公開 run。
+  - 新 validated outcome 另保存 `observation_diagnostic`（`daily-radar-observation-v1`）；response 的 `report.observation_diagnostics` 按評分／規則／設定／選股版本與 5／10／20 日窗口，提供固定前 3／5 檔和其餘 selected 的首次觀察比較。突破須連續兩日收盤站上入選時固定壓力，先收盤跌破固定支撐則失效；原 v2 報酬與 due 完成條件維持原契約。Raw 載入／合併會保留同日 OHLC 衝突欄位，窗口內的衝突診斷回報 `insufficient_data`／`candidate_history_gap_or_invalid_ohlc`，不得因後續合併變成 confirmed／invalidated。報告揭露未成熟、重複與未計算舊診斷；缺資料不算失敗，缺結果不遞補前順位。既有已保存診斷不因本修正自動重算。詳細定義見 [Daily Radar 規格](daily-stock-radar-spec.md#122-突破前觀察診斷)。
   - `daily-radar-forward-validation-report-v2` 的 production report 會在 upsert 後重新讀取已持久化的固定日期 cohort，避免 due rerun 只回傳本批新到期窗口。`selection_diagnostics` 分成 `selected`、可比較 `shadow` 與 `eligibility_audit`，逐 cohort 揭露驗證／跳過率，並同時輸出 absolute-positive 與 benchmark-outperformance 的 conditional precision、observed-pool recall 與 shadow miss share。這些指標只描述目前 Daily Radar universe 內且可驗證的比較池，不代表全市場召回率；既有 bucket／rule／risk／ablation 報表維持 selected-only。
 - `POST /internal/analysis-calibration/forward-validation/run`：評估 append-only、final `/analyze` 樣本的 5 / 10 / 20 交易日 outcome。
 - `POST /internal/daily-radar/rule-review/monthly`：輸出 Daily Radar baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。

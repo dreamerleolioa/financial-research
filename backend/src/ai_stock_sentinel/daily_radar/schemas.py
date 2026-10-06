@@ -233,6 +233,48 @@ class DailyRadarForwardValidationRunRequest(BaseModel):
     benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
 
 
+class DailyRadarObservationStats(BaseModel):
+    signal_date_count: int
+    selected_count: int
+    evaluated_observation_count: int
+    evaluated_signal_date_count: int
+    evaluated_distinct_symbol_count: int
+    missing_outcome_count: int
+    missing_diagnostic_count: int
+    immature_observation_count: int
+    excluded_repeat_count: int
+    ranking_pool_complete: bool
+    skipped_validation_count: int
+    status_counts: dict[str, int]
+    missing_reasons: dict[str, int]
+    coverage_complete: bool
+    confirmation_rate: float | None
+    invalidation_rate: float | None
+    mean_lead_trading_days: float | None
+    mean_waiting_max_adverse_excursion_pct: float | None
+    means_scope: str
+
+
+class DailyRadarValidationCohort(BaseModel):
+    id: str
+    strategy: dict[str, str]
+    signal_start_date: date
+    signal_end_date: date
+    windows: dict[str, dict[str, DailyRadarObservationStats]]
+
+
+class DailyRadarValidationResponse(BaseModel):
+    diagnostic_version: str
+    as_of_date: date
+    sample_start_date: date
+    sample_end_date: date
+    lookback_days: int
+    calendar_through_date: date | None
+    last_evaluated_date: date | None
+    default_cohort_id: str | None
+    cohorts: list[DailyRadarValidationCohort]
+
+
 class DailyRadarForwardValidationRunResponse(BaseModel):
     status: Literal["completed"]
     mode: Literal["due", "range"]

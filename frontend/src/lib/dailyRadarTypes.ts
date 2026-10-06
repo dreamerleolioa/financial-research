@@ -115,6 +115,48 @@ export interface DailyRadarCandidate {
   background_context_labels: DailyRadarBackgroundContextLabel[];
 }
 
+export interface DailyRadarObservationStats {
+  signal_date_count: number;
+  selected_count: number;
+  evaluated_observation_count: number;
+  evaluated_signal_date_count: number;
+  evaluated_distinct_symbol_count: number;
+  missing_outcome_count: number;
+  missing_diagnostic_count: number;
+  immature_observation_count: number;
+  excluded_repeat_count: number;
+  ranking_pool_complete: boolean;
+  skipped_validation_count: number;
+  status_counts: Record<string, number>;
+  missing_reasons: Record<string, number>;
+  coverage_complete: boolean;
+  confirmation_rate: number | null;
+  invalidation_rate: number | null;
+  mean_lead_trading_days: number | null;
+  mean_waiting_max_adverse_excursion_pct: number | null;
+  means_scope: string;
+}
+
+export interface DailyRadarValidationCohort {
+  id: string;
+  strategy: Record<string, string>;
+  signal_start_date: string;
+  signal_end_date: string;
+  windows: Record<string, Record<string, DailyRadarObservationStats>>;
+}
+
+export interface DailyRadarValidationResponse {
+  diagnostic_version: string;
+  as_of_date: string;
+  sample_start_date: string;
+  sample_end_date: string;
+  lookback_days: number;
+  calendar_through_date: string | null;
+  last_evaluated_date: string | null;
+  default_cohort_id: string | null;
+  cohorts: DailyRadarValidationCohort[];
+}
+
 export interface DailyRadarRunResponse {
   run_date: string;
   status: DailyRadarRunStatus;

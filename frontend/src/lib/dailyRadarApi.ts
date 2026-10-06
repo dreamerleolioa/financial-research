@@ -1,4 +1,9 @@
-import type { DailyRadarBucket, DailyRadarRunResponse, DailyRadarSymbolHistoryItem } from "./dailyRadarTypes";
+import type {
+  DailyRadarBucket,
+  DailyRadarRunResponse,
+  DailyRadarSymbolHistoryItem,
+  DailyRadarValidationResponse,
+} from "./dailyRadarTypes";
 import { apiUrl } from "./apiClient";
 
 const NO_PUBLIC_DAILY_RADAR_RUN_DETAIL = "No public Daily Radar run is available.";
@@ -50,7 +55,14 @@ export function isNoPublicDailyRadarRunUnavailableError(error: unknown): boolean
   );
 }
 
-export async function fetchLatestDailyRadarRun(query: DailyRadarRunQuery = {}, signal?: AbortSignal): Promise<DailyRadarRunResponse> {
+export async function fetchDailyRadarValidation(signal?: AbortSignal): Promise<DailyRadarValidationResponse> {
+  return requestDailyRadar<DailyRadarValidationResponse>(apiUrl("/daily-radar/validation"), signal);
+}
+
+export async function fetchLatestDailyRadarRun(
+  query: DailyRadarRunQuery = {},
+  signal?: AbortSignal,
+): Promise<DailyRadarRunResponse> {
   return requestDailyRadar<DailyRadarRunResponse>(buildDailyRadarUrl("/daily-radar/latest", query), signal);
 }
 

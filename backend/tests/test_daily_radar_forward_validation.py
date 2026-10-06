@@ -26,6 +26,7 @@ from ai_stock_sentinel.calibration.forward_validation import (
 )
 from ai_stock_sentinel.calibration.forward_validation_planning import (
     evaluation_ready_windows_by_candidate,
+    prepare_due_forward_validation,
 )
 from ai_stock_sentinel.calibration.price_provider import _price_rows, get_forward_price_provider
 from ai_stock_sentinel.daily_radar.forward_validation import (
@@ -38,6 +39,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     forward_validation_candidates_from_runs,
     forward_validation_fixture_inputs,
     load_benchmark_prices_from_prepared_market_context,
+    load_price_series_from_raw_data,
     merge_price_series,
     persisted_forward_validation_outcomes,
     symbols_requiring_forward_price_refresh,
@@ -852,6 +854,142 @@ def test_forward_validation_uses_latest_public_rerun_for_each_run_date() -> None
     assert [candidate["symbol"] for candidate in candidates] == ["NEW.TW"]
 
 
+def test_observation_origin_uses_history_before_requested_range_and_separates_policy():
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__])
+    with Session(engine) as session:
+        first = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 1)))
+        repeated = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 2)))
+        changed = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 3)))
+        for row, policy in [(first, "s1"), (repeated, "s1"), (changed, "s2")]:
+            row.input_snapshot = dict(row.input_snapshot) | {
+                "versions": {"scoring_version": "v1", "rule_version": "r1", "config_version": "c1"},
+                "selection_version": policy,
+            }
+        session.commit()
+        snapshots = forward_validation_candidates_from_runs(
+            session, market="TW", start_date=date(2026, 6, 2), end_date=date(2026, 6, 3))
+        assert snapshots[0]["observation_origin"]["first_seen_date"] == "2026-06-01"
+        assert snapshots[0]["observation_origin"]["candidate_id"] == first.id
+        assert snapshots[1]["observation_origin"]["first_seen_date"] == "2026-06-03"
+
+
+def test_forward_validation_does_not_resurrect_old_candidates_when_latest_public_run_is_empty():
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__])
+    with Session(engine) as session:
+        _add_candidate(session, _add_run(session))
+        latest = _add_run(session)
+        latest.candidate_count = 0
+        session.commit()
+        assert forward_validation_candidates_from_runs(session, market="TW") == []
+
+
+@pytest.mark.parametrize("old_status", ["shadow", "superseded", "failed"])
+def test_observation_origin_does_not_resurrect_shadow_failed_or_superseded_signal(old_status):
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__])
+    with Session(engine) as session:
+        old_run = _add_run(session, run_date=date(2026, 6, 1))
+        old = _add_candidate(session, old_run)
+        if old_status == "shadow":
+            old.selection_status, old.shadow_cohort = "shadow", "comparable"
+        elif old_status == "failed":
+            old_run.status = "failed"
+        else:
+            # The latest public revision removed this symbol altogether.
+            _add_run(session, run_date=date(2026, 6, 1))
+        current = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 2)))
+        future = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 3)))
+        session.commit()
+        snapshot = forward_validation_candidates_from_runs(
+            session, market="TW", start_date=date(2026, 6, 2), end_date=date(2026, 6, 2))[0]
+        assert snapshot["observation_origin"]["candidate_id"] == current.id
+        assert snapshot["observation_origin"]["candidate_id"] != future.id
+
+
+def test_observation_diagnostic_persists_idempotently_without_changing_return_values():
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__,
+                                           DailyRadarForwardValidationResult.__table__])
+    with Session(engine) as session:
+        row = _add_candidate(session, _add_run(session))
+        row.input_snapshot = dict(row.input_snapshot) | {
+            "indicators": {"support_level": 95, "resistance_level": 105}}
+        session.flush()
+        candidates = forward_validation_candidates_from_runs(session, market="TW")
+        rows = [_price("2026-06-01", 100, 101, 99, 100),
+                *[_price(day, close, close + 1, close - 1, close) for day, close in [
+                    ("2026-06-02", 103), ("2026-06-03", 106), ("2026-06-04", 107),
+                    ("2026-06-05", 108), ("2026-06-08", 109)]]]
+        evaluation = build_forward_validation_report(
+            candidates, price_series_by_symbol={row.symbol: rows}, benchmark_prices=rows,
+            market="TW", sample_source="test", as_of_date=date(2026, 6, 8), windows=[5])
+        upsert_forward_validation_results(session, evaluation.outcomes)
+        upsert_forward_validation_results(session, evaluation.outcomes)
+        persisted = persisted_forward_validation_outcomes(
+            session, candidates, windows=[5], as_of_date=date(2026, 6, 8))
+        assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 1
+        assert persisted[0]["outcome"] == evaluation.outcomes[0]["outcome"]
+        assert persisted[0]["outcome"]["forward_return_pct"] == 9
+        assert persisted[0]["outcome"]["observation_diagnostic"]["confirmation_date"] == "2026-06-04"
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_overlapping_final_snapshots_keep_conflict_through_due_planning_and_persistence(refresh):
+    engine = _forward_validation_sqlite_engine()
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__,
+                                           DailyRadarForwardValidationResult.__table__, StockRawData.__table__])
+    with Session(engine) as session:
+        row = _add_candidate(session, _add_run(session))
+        row.input_snapshot = dict(row.input_snapshot) | {
+            "indicators": {"support_level": 95, "resistance_level": 105}}
+        days = ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-08"]
+        latest = [_price(day, close, close + 1, close - 1, close)
+                  for day, close in zip(days, [100, 106, 107, 108, 109, 110], strict=True)]
+        old = [dict(item) for item in latest[:-1]]
+        old[2] = _price(days[2], 94, 95, 93, 94)
+        for record_day, history in [(date(2026, 6, 5), old), (date(2026, 6, 8), latest)]:
+            session.add(StockRawData(symbol=row.symbol, record_date=record_day, raw_data_is_final=True,
+                                     technical={"price_history": history}, institutional={}, fundamental={}))
+        session.flush()
+        candidates = forward_validation_candidates_from_runs(session, market="TW")
+        loaded = load_price_series_from_raw_data(session, symbols=[row.symbol],
+                                                start_date=date(2026, 6, 1), end_date=date(2026, 6, 8))
+        if refresh:
+            loaded[row.symbol] = loaded[row.symbol][:-1]
+        benchmark = [_price(day, 1000, 1000, 1000, 1000) for day in days]
+        fetched = []
+
+        def fetch_prices(symbols, **kwargs):
+            fetched.extend(symbols)
+            return {row.symbol: latest}
+
+        prepared = prepare_due_forward_validation(
+            candidates, adapter=DAILY_RADAR_FORWARD_ADAPTER, pending_windows_by_candidate={f"id:{row.id}": [5]},
+            price_series_by_symbol=loaded, benchmark_prices=benchmark, benchmark_symbol="TAIEX",
+            as_of_date=date(2026, 6, 8), price_start_date=date(2026, 6, 1), fetch_prices=fetch_prices)
+        assert fetched == ([row.symbol] if refresh else [])
+        evaluation = build_forward_validation_report(
+            candidates, price_series_by_symbol=prepared.price_series_by_symbol,
+            benchmark_prices=prepared.benchmark_prices, market="TW", sample_source="test",
+            as_of_date=date(2026, 6, 8), windows=[5],
+            windows_by_candidate=prepared.evaluation_windows_by_candidate)
+        outcome = evaluation.outcomes[0]
+        assert outcome["status"] == "validated"
+        assert outcome["outcome"]["forward_return_pct"] == 10
+        assert outcome["outcome"]["observation_diagnostic"]["status"] == "insufficient_data"
+        assert outcome["outcome"]["observation_diagnostic"]["missing_reason"] == "candidate_history_gap_or_invalid_ohlc"
+        upsert_forward_validation_results(session, evaluation.outcomes)
+        saved = persisted_forward_validation_outcomes(session, candidates, windows=[5], as_of_date=date(2026, 6, 8))
+        report = build_forward_validation_report_from_outcomes(
+            candidates, saved, market="TW", sample_source="test", as_of_date=date(2026, 6, 8),
+            windows=[5], benchmark_prices=benchmark)
+        stats = report["observation_diagnostics"]["cohorts"][0]["windows"]["5"]["all_selected"]
+        assert stats["status_counts"] == {"insufficient_data": 1}
+        assert stats["confirmation_rate"] is None and stats["invalidation_rate"] is None
+
+
 def test_benchmark_prices_fall_back_to_latest_prepared_market_context() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(engine, tables=[DailyRadarPreparedRun.__table__])
@@ -1305,7 +1443,8 @@ def test_merge_price_series_does_not_erase_existing_ohlc_with_close_only_row() -
     )
 
     assert merged["2330.TW"] == [
-        {"date": "2026-06-02", "open": 95.0, "high": 110.0, "low": 80.0, "close": 101.0},
+        {"date": "2026-06-02", "open": 95.0, "high": 110.0, "low": 80.0, "close": 101.0,
+         "ohlc_conflict_fields": ["close"]},
     ]
 
 
@@ -1329,7 +1468,8 @@ def test_merge_price_series_keeps_valid_fallback_for_invalid_refresh_field(
     )
 
     assert merged["2330.TW"] == [
-        {"date": "2026-06-02", "open": 96.0, "high": 110.0, "low": 81.0, "close": 101.0},
+        {"date": "2026-06-02", "open": 96.0, "high": 110.0, "low": 81.0, "close": 101.0,
+         "ohlc_conflict_fields": ["open", "low", "close"]},
     ]
 
 
