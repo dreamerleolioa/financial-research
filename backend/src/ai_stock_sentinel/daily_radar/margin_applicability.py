@@ -9,6 +9,7 @@ from typing import Any
 TWSE_NEW_LISTING_URL = "https://www.twse.com.tw/rwd/zh/company/newlisting"
 TWSE_PUBLIC_OFFERING_URL = "https://www.twse.com.tw/announcement/publicForm"
 TWSE_CREDIT_STATUS_URL = "https://www.twse.com.tw/exchangeReport/TWT93U"
+TPEX_CREDIT_STATUS_URL = "https://www.tpex.org.tw/www/zh-tw/margin/sbl"
 # 僅接受官方明確標示的第一上市；轉上市及其他註記不能用此規則推定資格。
 _INITIAL_LISTING_REMARKS = {"第一上市", "創新板第一上市"}
 
@@ -23,7 +24,8 @@ def margin_is_not_applicable(
     if payload.get("applicability") != "not_applicable" or not isinstance(evidence, Mapping):
         return False
     source = evidence.get("source_url")
-    if source == TWSE_CREDIT_STATUS_URL:
+    if source in (TWSE_CREDIT_STATUS_URL, TPEX_CREDIT_STATUS_URL):
+        suffix = ".TW" if source == TWSE_CREDIT_STATUS_URL else ".TWO"
         try:
             reported = date.fromisoformat(str(evidence.get("report_date")))
             evaluated = date.fromisoformat(str(evidence.get("evaluated_for")))
@@ -32,7 +34,7 @@ def margin_is_not_applicable(
         return (
             evidence.get("reason") == "official_credit_trading_ineligible"
             and evidence.get("credit_status") == "Y"
-            and str(evidence.get("symbol", "")).endswith(".TW")
+            and str(evidence.get("symbol", "")).endswith(suffix)
             and (symbol is None or evidence.get("symbol") == symbol)
             and reported == evaluated
             and (run_date is None or evaluated == run_date)
@@ -101,6 +103,51 @@ def credit_trading_inapplicability(
                 "credit_status": "Y",
                 "report_date": run_date.isoformat(),
                 "evaluated_for": run_date.isoformat(),
+            },
+        }
+    return result
+
+
+def tpex_credit_trading_inapplicability(
+    report: Mapping[str, Any], *, symbols: list[str], run_date: date,
+) -> dict[str, dict[str, Any]]:
+    """TPEx margin/sbl Y means ineligible; absent or ambiguous rows prove nothing."""
+    if report.get("stat") != "ok" or report.get("date") != run_date.strftime("%Y%m%d"):
+        return {}
+    tables = report.get("tables")
+    if not isinstance(tables, list):
+        return {}
+    matches = [table for table in tables if isinstance(table, Mapping)
+               and table.get("title") == "信用額度總量管制餘額表"]
+    if len(matches) != 1:
+        return {}
+    fields, rows = matches[0].get("fields"), matches[0].get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        return {}
+    fields = [str(field).strip() for field in fields]
+    if any(fields.count(field) != 1 for field in ("股票代號", "股票名稱", "備註")):
+        return {}
+    id_index, status_index = fields.index("股票代號"), fields.index("備註")
+    result: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) <= id_index:
+            continue
+        symbol = f"{str(row[id_index]).strip()}.TWO"
+        if symbol not in symbols:
+            continue
+        if symbol in seen:
+            result.pop(symbol, None)
+            continue
+        seen.add(symbol)
+        if len(row) != len(fields) or str(row[status_index]).strip() != "Y":
+            continue
+        result[symbol] = {
+            "applicability": "not_applicable",
+            "eligibility": {
+                "symbol": symbol, "source_url": TPEX_CREDIT_STATUS_URL,
+                "reason": "official_credit_trading_ineligible", "credit_status": "Y",
+                "report_date": run_date.isoformat(), "evaluated_for": run_date.isoformat(),
             },
         }
     return result

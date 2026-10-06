@@ -132,7 +132,7 @@ def test_refresh_persists_and_reuses_not_applicable_separately_from_missing():
         assert calls.count(LISTING_URL) == 1
 
 
-@pytest.mark.parametrize('evidence_kind', ['initial_listing', 'credit_status'])
+@pytest.mark.parametrize('evidence_kind', ['initial_listing', 'credit_status', 'tpex_credit_status'])
 def test_not_applicable_scoring_has_no_margin_bonus_and_keeps_replay_evidence(evidence_kind):
     from tests.test_daily_radar_scoring import _joined_records_by_symbol, _market_context
     from ai_stock_sentinel.daily_radar.prefilter import prefilter_record
@@ -146,7 +146,7 @@ def test_not_applicable_scoring_has_no_margin_bonus_and_keeps_replay_evidence(ev
             record['margin']['eligibility'].update(
                 symbol=symbol, listing_date='2026-04-01', evaluated_for=record['record_date'],
             )
-        else:
+        elif evidence_kind == 'credit_status':
             from ai_stock_sentinel.daily_radar.margin_applicability import credit_trading_inapplicability
             evaluated = date.fromisoformat(record['record_date'])
             report = _credit_status_report() | {
@@ -156,6 +156,16 @@ def test_not_applicable_scoring_has_no_margin_bonus_and_keeps_replay_evidence(ev
             record['margin'] = credit_trading_inapplicability(
                 report, symbols=[symbol], run_date=evaluated,
             )[symbol]
+        else:
+            from ai_stock_sentinel.daily_radar.margin_applicability import tpex_credit_trading_inapplicability
+            record['symbol'] = symbol.removesuffix('.TW') + '.TWO'
+            evaluated = date.fromisoformat(record['record_date'])
+            report = _tpex_credit_report()
+            report['date'] = evaluated.strftime('%Y%m%d')
+            report['tables'][0]['data'][0][0] = symbol.removesuffix('.TW')
+            record['margin'] = tpex_credit_trading_inapplicability(
+                report, symbols=[record['symbol']], run_date=evaluated,
+            )[record['symbol']]
         filtered = prefilter_record(record)
         assert 'data_gap' not in {item['code'] for item in filtered['prefilter_reasons']}
         result = score_daily_radar_record(record, market_context=_market_context(), prefilter_result=filtered)
@@ -177,7 +187,8 @@ def test_wrong_symbol_or_date_cannot_exempt_required_scoring_fields(field, value
     assert 'margin.margin_to_volume' in missing
 
 
-def test_new_raw_row_roundtrip_retains_applicability_without_old_margin_values():
+@pytest.mark.parametrize('evidence_kind', ['initial_listing', 'tpex_credit_status'])
+def test_new_raw_row_roundtrip_retains_applicability_without_old_margin_values(evidence_kind):
     from tests.test_daily_radar_raw_data import FakeBatchFetcher
     from ai_stock_sentinel.daily_radar.raw_data import ensure_daily_radar_raw_rows
     from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
@@ -185,16 +196,23 @@ def test_new_raw_row_roundtrip_retains_applicability_without_old_margin_values()
 
     engine = create_engine('sqlite://')
     StockRawData.__table__.create(engine)
-    context = vars(_fetch(_provider()))
+    if evidence_kind == 'initial_listing':
+        symbol, evaluated = '7827.TW', RUN_DATE
+        context = vars(_fetch(_provider()))
+    else:
+        symbol, evaluated = '8084.TWO', date(2026, 10, 5)
+        [payload] = _tpex_credit_provider().fetch(symbols=[symbol],
+            context_types=['full_margin'], run_date=evaluated, market='TW')
+        context = vars(payload)
     with Session(engine, autoflush=False) as session:
-        rows = ensure_daily_radar_raw_rows(session, RUN_DATE, ['7827.TW'],
+        rows = ensure_daily_radar_raw_rows(session, evaluated, [symbol],
                                           technical_fetcher=FakeBatchFetcher(),
-                                          margin_contexts_by_symbol={'7827.TW': context})
+                                          margin_contexts_by_symbol={symbol: context})
         session.flush()
         session.expire_all()
         [record] = load_daily_radar_cache_records(rows)
         assert record['margin']['applicability'] == 'not_applicable'
-        assert record['data_dates']['margin'] == RUN_DATE.isoformat()
+        assert record['data_dates']['margin'] == evaluated.isoformat()
         assert 'margin_delta_pct' not in record['margin']
 
 
@@ -317,6 +335,124 @@ def test_tw_public_offering_exemption_expires_on_six_month_anniversary():
 
 
 CREDIT_STATUS_URL = 'https://www.twse.com.tw/exchangeReport/TWT93U'
+TPEX_CREDIT_URL = 'https://www.tpex.org.tw/www/zh-tw/margin/sbl'
+
+
+def _tpex_credit_report():
+    # Same-day official schema, including repeated margin/lending balance headings.
+    return {'stat': 'ok', 'date': '20261005', 'tables': [{
+        'title': '信用額度總量管制餘額表', 'notes': [],
+        'fields': ['股票代號', '股票名稱', '前日餘額', '賣出', '買進', '現券',
+                   '當日餘額', '限額', '前日餘額', '當日賣出', '當日還券',
+                   '當日調整數額', '當日餘額', '次一營業日可借券賣出限額', '備註'],
+        'data': [['8084', '巨虹', '0', '0', '0', '0', '0', '0', '129,000',
+                  '0', '14,000', '0', '115,000', '202,264', 'Y']],
+    }]}
+
+
+def _tpex_credit_provider(report=None, *, include_margin=False, margin_date=None, calls=None):
+    from tests.test_official_background_context import _tpex_margin_payload
+
+    def get(url, *, params, **kwargs):
+        if calls is not None:
+            calls.append((url, params))
+        if url == TPEX_CREDIT_URL:
+            if isinstance(report, Exception):
+                raise report
+            return _FakeResponse(_tpex_credit_report() if report is None else report)
+        if url == OTC_LISTING_URL:
+            return _FakeResponse({'stat': 'OK', 'date': 2026, 'fields': [], 'data': []})
+        return _FakeResponse(_tpex_margin_payload(margin_date or '20261005', [[
+            '8084' if include_margin else '6488', '測試', '900', '0', '0', '0',
+            '1000', '0', '0', '0', '40', '0', '0', '0', '50', '0', '0', '0', '0',
+        ]]))
+
+    return OfficialBackgroundChipContextProvider(request_get=get,
+        lookback_trading_days=1, max_lookback_calendar_days=1)
+
+
+def test_tpex_credit_ineligibility_survives_cache_projection_and_export():
+    evaluated = date(2026, 10, 5)
+    engine = create_engine('sqlite://')
+    SharedBackgroundContext.__table__.create(engine)
+    calls = []
+    with Session(engine) as session:
+        for attempt in range(2):
+            result = update_background_chip_context_cache(session, run_date=evaluated,
+                market='TW', provider=_tpex_credit_provider(calls=calls),
+                symbols=['8084.TWO'], context_types=['full_margin'],
+                require_same_day_fresh=True, reuse_same_day_fresh=True)
+            session.flush()
+            assert result['status'] == 'completed'
+            assert result['missing_symbols'] == []
+            assert result['not_applicable_symbols'] == ['8084.TWO']
+            assert result['records_written'] == (1 if attempt == 0 else 0)
+        context = session.query(SharedBackgroundContext).one()
+        assert context.source['dataset'] == 'TPEX_margin_sbl'
+        projected = _project_margin_context(vars(context), technical={})
+        assert margin_evidence_is_complete(projected, record_date=evaluated, symbol='8084.TWO')
+        assert projected['eligibility']['source_url'] == TPEX_CREDIT_URL
+        assert projected['eligibility']['report_date'] == '2026-10-05'
+        assert projected['eligibility']['credit_status'] == 'Y'
+        assert not margin_evidence_is_complete(projected, symbol='8084.TW')
+        assert not margin_evidence_is_complete(projected, record_date=date(2026, 10, 6))
+        assert 'margin_balance' not in projected
+        assert 'margin_delta_pct' not in projected
+        from tests.test_export_codex_daily_radar import exporter
+        completeness = exporter._analytical_completeness([{'symbol': '8084.TWO',
+            'record_date': '2026-10-05', 'fundamental': {'margin': projected}}])
+        assert completeness['lanes']['margin']['missing_symbols'] == []
+    assert [params for url, params in calls if url == TPEX_CREDIT_URL] == [
+        {'response': 'json', 'date': '2026/10/05'}]
+
+
+@pytest.mark.parametrize('case', ['stale', 'future', 'date_missing', 'error', 'tables_missing',
+    'title', 'duplicate_table', 'fields_missing', 'duplicate_field', 'empty', 'wrong_symbol',
+    'short_row', 'duplicate_row', 'X', 'blank', 'unknown', 'failure'])
+def test_tpex_credit_evidence_fails_closed(case):
+    report = _tpex_credit_report()
+    table = report['tables'][0]
+    if case in {'stale', 'future', 'date_missing'}:
+        report['date'] = {'stale': '20261002', 'future': '20261006', 'date_missing': None}[case]
+    elif case == 'error': report['stat'] = 'error'
+    elif case == 'tables_missing': report['tables'] = None
+    elif case == 'title': table['title'] = '其他表格'
+    elif case == 'duplicate_table': report['tables'].append(deepcopy(table))
+    elif case == 'fields_missing': table['fields'] = []
+    elif case == 'duplicate_field': table['fields'][1] = '股票代號'
+    elif case == 'empty': table['data'] = []
+    elif case == 'wrong_symbol': table['data'][0][0] = '8085'
+    elif case == 'short_row': table['data'] = [['8084']]
+    elif case == 'duplicate_row': table['data'].append(deepcopy(table['data'][0]))
+    elif case in {'X', 'blank', 'unknown'}:
+        table['data'][0][-1] = {'X': 'X', 'blank': '', 'unknown': 'UNKNOWN Y'}[case]
+    elif case == 'failure': report = RuntimeError('upstream unavailable')
+    [result] = list(_tpex_credit_provider(report).fetch(symbols=['8084.TWO'],
+        context_types=['full_margin'], run_date=date(2026, 10, 5), market='TW'))
+    assert result.missing_reason == 'official_no_data'
+
+
+@pytest.mark.parametrize('include_margin,margin_date', [(True, None), (False, '20261002')])
+def test_tpex_credit_cannot_override_margin_rows_or_missing_same_day_market(include_margin, margin_date):
+    calls = []
+    [result] = list(_tpex_credit_provider(include_margin=include_margin,
+        margin_date=margin_date, calls=calls).fetch(symbols=['8084.TWO'],
+        context_types=['full_margin'], run_date=date(2026, 10, 5), market='TW'))
+    assert not any(url == TPEX_CREDIT_URL for url, _ in calls)
+    if include_margin:
+        assert result.payload['latest_margin_balance'] == 1000
+    else:
+        assert result.missing_reason == 'official_no_data'
+
+
+@pytest.mark.parametrize('field,value', [('source_url', {}), ('source_url', []),
+    ('source_url', CREDIT_STATUS_URL), ('credit_status', 'X'), ('report_date', '2026-10-02')])
+def test_tpex_persisted_evidence_cannot_bypass_source_market_status_or_date(field, value):
+    from ai_stock_sentinel.daily_radar.margin_applicability import tpex_credit_trading_inapplicability
+    margin = tpex_credit_trading_inapplicability(_tpex_credit_report(),
+        symbols=['8084.TWO'], run_date=date(2026, 10, 5))['8084.TWO']
+    margin['eligibility'][field] = value
+    assert not margin_evidence_is_complete(margin, record_date=date(2026, 10, 5), symbol='8084.TWO')
 
 
 def _credit_status_report():
