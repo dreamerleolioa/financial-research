@@ -25,6 +25,9 @@ class ForwardPriceProvider(Protocol):
 
 
 class YFinanceForwardPriceProvider:
+    auto_adjust = True
+    actions = False
+
     def fetch(
         self,
         symbols: Sequence[str],
@@ -47,14 +50,30 @@ class YFinanceForwardPriceProvider:
             interval="1d",
             threads=True,
             progress=False,
+            auto_adjust=self.auto_adjust,
+            actions=self.actions,
         )
         if history is None or getattr(history, "empty", False):
             raise RuntimeError("forward_price_provider_returned_no_data")
         return {
             symbol: rows
             for symbol, provider_symbol in provider_symbols.items()
-            if (rows := _price_rows(_symbol_frame(history, provider_symbol)))
+            if (rows := _price_rows(
+                _symbol_frame(history, provider_symbol),
+                research=not self.auto_adjust,
+                benchmark=symbol in BENCHMARK_YFINANCE_SYMBOLS,
+            ))
         }
+
+
+class YFinanceResearchPriceProvider(YFinanceForwardPriceProvider):
+    """Separate price-only data; never merge with adjusted technical snapshots."""
+    auto_adjust = False
+    actions = True
+
+
+def get_research_price_provider() -> ForwardPriceProvider:
+    return YFinanceResearchPriceProvider()
 
 
 def get_forward_price_provider() -> ForwardPriceProvider:
@@ -76,7 +95,7 @@ def _symbol_frame(history: Any, symbol: str) -> Any:
     return history.iloc[0:0] if hasattr(history, "iloc") else history
 
 
-def _price_rows(frame: Any) -> list[dict[str, Any]]:
+def _price_rows(frame: Any, *, research: bool = False, benchmark: bool = False) -> list[dict[str, Any]]:
     index = getattr(frame, "index", None)
     if index is None:
         return []
@@ -86,6 +105,8 @@ def _price_rows(frame: Any) -> list[dict[str, Any]]:
     }
     if columns["Close"] is None:
         return []
+    dividend_column = _matching_column(frame, "Dividends")
+    split_column = _matching_column(frame, "Stock Splits")
     rows: list[dict[str, Any]] = []
     for position, index_value in enumerate(index):
         close = _frame_number(frame, columns["Close"], position)
@@ -93,13 +114,24 @@ def _price_rows(frame: Any) -> list[dict[str, Any]]:
         if close is None or close <= 0 or row_date is None:
             continue
         open_price = _frame_number(frame, columns["Open"], position)
-        rows.append({
+        row = {
             "date": row_date.isoformat(),
-            "open": open_price if open_price is not None and open_price > 0 else close,
+            "open": (open_price if open_price is not None and open_price > 0 else None)
+                    if research else (open_price if open_price is not None and open_price > 0 else close),
             "high": _frame_number(frame, columns["High"], position),
             "low": _frame_number(frame, columns["Low"], position),
             "close": close,
-        })
+        }
+        if research:
+            dividend = _frame_number(frame, dividend_column, position)
+            split = _frame_number(frame, split_column, position)
+            row.update({
+                "price_basis": "unadjusted_price", "price_source": "yfinance",
+                "corporate_actions_checked": benchmark or (dividend is not None and split is not None),
+                "dividends": 0 if benchmark else dividend,
+                "stock_splits": 0 if benchmark else split,
+            })
+        rows.append(row)
     return rows
 
 

@@ -231,6 +231,7 @@ class DailyRadarForwardValidationRunRequest(BaseModel):
     end_date: date | None = None
     windows: list[int] = Field(default_factory=lambda: list(DEFAULT_FORWARD_WINDOWS))
     benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
+    return_basis: Literal["signal_close", "next_open"] = "signal_close"
 
 
 class DailyRadarObservationStats(BaseModel):
