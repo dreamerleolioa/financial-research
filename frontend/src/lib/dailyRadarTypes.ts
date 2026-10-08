@@ -204,6 +204,15 @@ export interface DailyRadarPoolSummary {
   comparable_shadow_count: number;
   eligibility_audit_shadow_count: number;
   reason_counts: Record<string, number>;
+  discovery_summary?: {
+    version: string;
+    run_date: string;
+    scanned_symbol_count: number;
+    eligible_symbol_count: number;
+    discovered_symbol_count: number;
+    track_counts: Record<string, number>;
+    excluded_reason_counts: Record<string, number>;
+  } | null;
 }
 
 export interface DailyRadarSymbolHistoryItem {

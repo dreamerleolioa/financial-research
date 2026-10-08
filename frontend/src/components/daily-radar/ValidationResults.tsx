@@ -157,7 +157,6 @@ export function ValidationResults({
           )}
           {focused && groups && (
             <>
-              {poolComparison && <PoolQuality comparison={poolComparison} windowDays={windowDays} />}
               <div className="flex flex-wrap items-center gap-3">
                 <div aria-label="觀察期間" className="flex rounded-[10px] border border-border bg-surface-raised p-1">
                   {[5, 10, 20].map((day) => (
@@ -177,6 +176,7 @@ export function ValidationResults({
                   ))}
                 </div>
               </div>
+              {poolComparison && <PoolQuality comparison={poolComparison} windowDays={windowDays} />}
               {!focused.evaluated_observation_count && (
                 <section className={panel}>
                   <h3 className="font-semibold text-text-primary">尚未累積可評估結果</h3>

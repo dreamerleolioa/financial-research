@@ -117,6 +117,28 @@ def test_pool_comparison_reads_comparable_shadow_only_without_writes(storage):
     assert not session.dirty and not session.new
 
 
+def test_public_pool_reads_frozen_discovery_after_preparation_changes(storage):
+    from ai_stock_sentinel.daily_radar.pool import freeze_discovery_summary
+    session, client, _ = storage
+    run = add_run(session)
+    add_candidate(session, run)
+    audit = {"run_date": str(run.run_date), "scanned_symbol_count": 1800,
+             "eligible_symbol_count": 100, "discovered_symbol_count": 40,
+             "track_counts": {"market_trend": 30}, "excluded_symbol_reasons": {}}
+    freeze_discovery_summary(run, audit)
+    session.commit()
+    session.add(DailyRadarPreparedRun(run_date=run.run_date, market="TW", status="prepared",
+        selected_symbols=[], universe=[], symbol_count=0, errors=[],
+        step_statuses={"prepare-universe": {"market_exploration": audit | {"scanned_symbol_count": 9999}}}))
+    session.commit()
+    session.expire_all()
+    response = client.get("/daily-radar/latest")
+    assert response.status_code == 200
+    summary = response.json()["pool_summary"]["discovery_summary"]
+    assert summary["scanned_symbol_count"] == 1800
+    assert summary["run_date"] == "2026-06-01"
+
+
 def test_empty_read_is_200_without_any_write(storage):
     session, client, engine = storage
     statements = []

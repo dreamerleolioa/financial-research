@@ -145,11 +145,41 @@ export function formatObservationHistory(candidate: DailyRadarCandidate): string
 }
 
 export function formatSignalStatus(candidate: DailyRadarCandidate): string | null {
+  if (getScoreComparison(candidate)?.status === "version_changed") return "策略版本不同，強度不直接比較";
   const labels: Record<string, string> = {
     improved: "觀察強度提升", stable: "觀察強度維持", cooled_down: "觀察強度降溫", unknown: "強度比較待確認",
   };
   const value = getObservationHistory(candidate)?.signal_status;
   return typeof value === "string" ? labels[value] ?? null : null;
+}
+
+function getScoreComparison(candidate: DailyRadarCandidate) {
+  const history = getObservationHistory(candidate);
+  return history?.score_comparison as { status?: string; previous_date?: string; score_change?: number } | undefined;
+}
+
+export function formatScoreComparison(candidate: DailyRadarCandidate): string | null {
+  const comparison = getScoreComparison(candidate);
+  if (!comparison || comparison.status === "first_observation") return null;
+  if (comparison.status === "version_changed") return "前次策略版本不同，分數不直接比較";
+  if (comparison.status !== "comparable" || typeof comparison.score_change !== "number") return "前次分數比較資料不足";
+  const change = comparison.score_change;
+  return `較前次入池（${comparison.previous_date}）${change === 0 ? "分數維持" : `分數 ${change > 0 ? "+" : ""}${change}`}`;
+}
+
+export function getCandidateDiscoverySources(candidate: DailyRadarCandidate): string[] {
+  const universe = candidate.input_snapshot.universe as Record<string, unknown> | undefined;
+  const tracks = universe?.institutional_universe_tracks;
+  const labels: Record<string, string> = {
+    foreign_same_day: "外資當日買超", trust_same_day: "投信當日買超", same_day_institutional: "法人當日買超",
+    foreign_recent_accumulation: "外資近期累積", trust_recent_accumulation: "投信近期累積",
+    market_trend: "市場中期趨勢探索", market_price_volume: "市場價量探索",
+    foreign_scaled_accumulation: "外資規模化累積", trust_scaled_accumulation: "投信規模化累積",
+    price_volume: "量價結構探索", reversal: "低位反轉探索", support_retake: "支撐收復探索",
+    recent_accumulation: "法人近期累積",
+  };
+  const values = new Set([...(Array.isArray(tracks) ? tracks : []), universe?.universe_primary_track]);
+  return [...values].filter((track): track is string => typeof track === "string" && Object.hasOwn(labels, track)).map((track) => labels[track]);
 }
 
 export function getRepeatStatusClass(value: string): string {

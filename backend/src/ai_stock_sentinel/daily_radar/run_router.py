@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration, attach_official_turnover
 from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
+from ai_stock_sentinel.daily_radar.pool import freeze_discovery_summary
 
 from contextlib import suppress
 import logging
@@ -109,6 +110,7 @@ def run_daily_radar_scoring_endpoint(
         allow_fixture_fallback=False,
     )
     prepared.status = "scored"
+    freeze_discovery_summary(run, (prepared.step_statuses.get("prepare-universe") or {}).get("market_exploration"))
     db.add(prepared)
     db.commit()
     return run_trigger_response(run)

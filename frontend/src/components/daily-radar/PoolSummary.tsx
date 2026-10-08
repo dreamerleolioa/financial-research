@@ -17,6 +17,13 @@ export function PoolSummary({ summary }: { summary: DailyRadarPoolSummary }) {
       <p className="mt-1 text-xs leading-relaxed text-text-muted">
         本批次掃描 {summary.input_record_count} 筆資料列；統計範圍為已取得資料的掃描標的，非全市場涵蓋率。數量涵蓋完整批次，不受下方分類或顯示筆數影響。
       </p>
+      {summary.discovery_summary ? (
+        <p className="mt-2 text-xs leading-relaxed text-text-secondary">
+          市場價量探索（{summary.discovery_summary.run_date}）：掃描 {summary.discovery_summary.scanned_symbol_count} 檔，
+          符合資料與流動性門檻 {summary.discovery_summary.eligible_symbol_count} 檔，
+          保留探索候選 {summary.discovery_summary.discovered_symbol_count} 檔。探索後仍需取得還原行情並通過評分。
+        </p>
+      ) : <p className="mt-2 text-xs text-text-muted">此批次未保存市場探索摘要，無法由入池數推算探索涵蓋率。</p>}
       <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
         {Object.entries(stateLabels).map(([state, label]) => (
           <div key={state} className="rounded-[10px] border border-border-subtle p-3">

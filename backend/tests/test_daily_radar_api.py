@@ -3327,6 +3327,33 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
     assert [row.symbol for row in captured["cache_rows"]] == ["2330.TW"]
 
 
+def test_daily_radar_scoring_attaches_prepared_discovery_audit(monkeypatch, daily_radar_db_session: Session) -> None:
+    day = date(2026, 6, 1)
+    _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=day,
+                      technical=_technical_payload("2330.TW", day))
+    audit = {"run_date": str(day), "scanned_symbol_count": 1800,
+             "eligible_symbol_count": 100, "discovered_symbol_count": 40}
+    steps = {step: {"status": "completed"} for step in (
+        "refresh-institutional-flows", "refresh-lending", "refresh-full-margin", "refresh-ohlcv", "refresh-market-context",
+    )}
+    steps["prepare-universe"] = {"status": "completed", "market_exploration": audit}
+    daily_radar_db_session.add(DailyRadarPreparedRun(
+        run_date=day, market="TW", selected_symbols=["2330.TW"], universe=[], symbol_count=1,
+        market_context=_market_context(), step_statuses=steps,
+    ))
+    daily_radar_db_session.commit()
+    run = _daily_radar_run(run_date=day)
+    run.candidates = [SimpleNamespace(symbol="2330.TW", input_snapshot={})]
+    client = _api_client(monkeypatch, daily_radar_db_session, run=run)
+    try:
+        response = client.post("/internal/daily-radar/run-scoring", json={"run_date": str(day), "market": "TW"},
+                               headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 200
+    assert run.candidates[0].input_snapshot["pool_discovery_summary"]["scanned_symbol_count"] == 1800
+
+
 def test_daily_radar_run_scoring_rejects_incomplete_selected_rows(
     monkeypatch,
     daily_radar_db_session: Session,

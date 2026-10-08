@@ -78,6 +78,9 @@ test("Pool quality compares saved selected and shadow samples with explicit scop
   await expect(panel.getByRole("row", { name: /可比較未入選/ })).toContainText("50.0%");
   await expect(panel.getByRole("row", { name: /可比較未入選/ })).toContainText("-0.5%");
   await expect(page.getByTestId("pool-capture-share")).toHaveText("60.0%");
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.screenshot({ path: "/private/tmp/candidate-pool-quality-mobile.png", fullPage: true });
   await page.getByRole("button", { name: "10 日", exact: true }).click();
   await expect(page.getByTestId("confirmation-rate")).toHaveText("70.0%");
   await expect(page.getByTestId("pool-capture-share")).toHaveCount(0);

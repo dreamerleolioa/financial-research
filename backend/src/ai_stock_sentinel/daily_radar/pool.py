@@ -18,6 +18,30 @@ def research_status(snapshot: dict[str, Any], data_dates: dict[str, Any], record
     return "structure_watch" if trend.get("trend_status") == "weak" else "data_pending"
 
 
+def freeze_discovery_summary(run: Any, audit: dict[str, Any] | None) -> None:
+    """Store a small immutable audit on one candidate, without a schema migration."""
+    if (not isinstance(audit, dict) or audit.get("run_date") != str(run.run_date)
+            or audit.get("status") == "unavailable" or audit.get("missing_market_dates")):
+        return
+    fields = ("scanned_symbol_count", "eligible_symbol_count", "discovered_symbol_count")
+    if not all(type(audit.get(field)) is int and audit[field] >= 0 for field in fields):
+        return
+    if not run.candidates:
+        return
+    tracks = audit.get("track_counts")
+    exclusions = audit.get("excluded_symbol_reasons")
+    summary = {
+        "version": "candidate-pool-discovery-v1", "run_date": str(run.run_date),
+        **{field: audit[field] for field in fields},
+        "track_counts": {key: value for key, value in (tracks if isinstance(tracks, dict) else {}).items()
+                         if key in {"market_trend", "market_price_volume"} and type(value) is int and value >= 0},
+        "excluded_reason_counts": dict(sorted(Counter(value for value in
+            (exclusions if isinstance(exclusions, dict) else {}).values() if isinstance(value, str)).items())),
+    }
+    owner = min(run.candidates, key=lambda row: row.symbol)
+    owner.input_snapshot = dict(owner.input_snapshot or {}) | {"pool_discovery_summary": summary}
+
+
 def pool_summary(run: Any) -> dict[str, Any]:
     reasons_by_symbol = defaultdict(set)
     failed_symbols = set()
@@ -64,4 +88,7 @@ def pool_summary(run: Any) -> dict[str, Any]:
         "comparable_shadow_count": sum(row.shadow_cohort == "comparable" for row in candidates.values()),
         "eligibility_audit_shadow_count": sum(row.shadow_cohort == "eligibility_audit" for row in candidates.values()),
         "reason_counts": dict(sorted(Counter(reason for reasons in reasons_by_symbol.values() for reason in reasons).items())),
+        "discovery_summary": next((row.input_snapshot["pool_discovery_summary"] for row in candidates.values()
+                                   if (row.input_snapshot or {}).get("pool_discovery_summary", {}).get("version") == "candidate-pool-discovery-v1"
+                                   and row.input_snapshot["pool_discovery_summary"].get("run_date") == str(run.run_date)), None),
     }

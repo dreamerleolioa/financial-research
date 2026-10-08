@@ -50,3 +50,38 @@ test("Research-state filtering retains waiting candidates and original ranking",
   await page.getByLabel("研究狀態", { exact: true }).selectOption("all");
   await expect(page.locator("[data-daily-radar-candidate]")).toHaveCount(3);
 });
+
+test("Research details show discovery sources and an explicitly dated score change", async ({ page }) => {
+  await authenticate(page);
+  const base = radarRun.candidates[0];
+  await installApiMocks(page, { dailyRadar: {
+    ...radarRun, candidates: [{ ...base, research_status: "trend_forming", input_snapshot: {
+      universe: { institutional_universe_tracks: ["market_trend", "foreign_same_day", "unknown_private_track"] },
+      observation_history: { membership_status: "returning", score_comparison: {
+        status: "comparable", previous_date: "2026-07-10", previous_score: 78, score_change: 8,
+      } },
+    } }],
+  } });
+  await page.goto("/daily-radar");
+  await page.getByRole("button", { name: "查看細節", exact: true }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("較前次入池（2026-07-10）分數 +8");
+  await expect(drawer).toContainText("市場中期趨勢探索、外資當日買超");
+  await expect(drawer).not.toContainText("unknown_private_track");
+});
+
+test("Version changes do not display a misleading score improvement", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page, { dailyRadar: {
+    ...radarRun, candidates: [{ ...radarRun.candidates[0], input_snapshot: {
+      observation_history: { membership_status: "returning", signal_status: "improved", score_comparison: {
+        status: "version_changed", previous_date: "2026-07-10", previous_score: 78, score_change: null,
+      } },
+    } }],
+  } });
+  await page.goto("/daily-radar");
+  await page.getByRole("button", { name: "查看細節", exact: true }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("前次策略版本不同，分數不直接比較");
+  await expect(drawer).not.toContainText("觀察強度提升");
+});

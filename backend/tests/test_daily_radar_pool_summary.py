@@ -94,3 +94,41 @@ def test_research_status_does_not_promote_missing_future_or_stale_evidence():
         assert research_status(context, dates, "2026-06-01") == "data_pending"
     context = {"medium_term_context": {"trend_status": "constructive", "as_of_date": "2026-06-01"}}
     assert research_status(context, {"ohlcv": "2026-05-29"}, "2026-06-01") == "data_pending"
+
+
+def test_discovery_summary_is_frozen_allowlisted_and_bound_to_run_date():
+    from datetime import date
+    from copy import deepcopy
+    from ai_stock_sentinel.daily_radar.pool import freeze_discovery_summary
+    row = candidate("2330.TW", selected=True)
+    run = SimpleNamespace(run_date=date(2026, 6, 1), candidates=[row], universe_count=1, errors=[])
+    audit = {"run_date": "2026-06-01", "scanned_symbol_count": 1800, "eligible_symbol_count": 100,
+             "discovered_symbol_count": 40, "track_counts": {"market_trend": 30},
+             "excluded_symbol_reasons": {"PRIVATE.TW": "history_gap"}, "secret": "DO_NOT_EXPOSE"}
+    original = deepcopy(audit)
+    freeze_discovery_summary(run, audit)
+    assert audit == original
+    audit["scanned_symbol_count"] = 9999
+    summary = pool_summary(run)["discovery_summary"]
+    assert summary["scanned_symbol_count"] == 1800
+    assert summary["excluded_reason_counts"] == {"history_gap": 1}
+    assert "DO_NOT_EXPOSE" not in str(summary) and "PRIVATE.TW" not in str(summary)
+    old = candidate("2317.TW", selected=True)
+    run.candidates = [old]
+    freeze_discovery_summary(run, audit | {"run_date": "2026-06-02"})
+    assert pool_summary(run)["discovery_summary"] is None
+
+
+def test_score_change_requires_complete_matching_strategy_versions():
+    from ai_stock_sentinel.daily_radar.cooldown import observation_history
+    versions = {"scoring_version": "s1", "rule_version": "r1", "config_version": "c1"}
+    current = {"symbol": "2330.TW", "record_date": "2026-06-01", "observation_score": 90,
+               "scoring_version": "s1", "input_snapshot": {"versions": versions, "selection_version": "v1"}}
+    previous = current | {"record_date": "2026-05-29", "observation_score": 80}
+    result = observation_history(current, [previous], run_date="2026-06-01")["score_comparison"]
+    assert result == {"status": "comparable", "previous_date": "2026-05-29", "previous_score": 80, "score_change": 10}
+    changed = previous | {"input_snapshot": {"versions": versions | {"config_version": "c2"}, "selection_version": "v1"}}
+    result = observation_history(current, [changed], run_date="2026-06-01")["score_comparison"]
+    assert result["status"] == "version_changed" and result["score_change"] is None
+    legacy = previous | {"input_snapshot": {}}
+    assert observation_history(current, [legacy], run_date="2026-06-01")["score_comparison"]["status"] == "unavailable"

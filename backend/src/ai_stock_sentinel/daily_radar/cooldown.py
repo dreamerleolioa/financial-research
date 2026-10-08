@@ -149,7 +149,26 @@ def observation_history(
         "appearance_count": len(days) + 1,
         "consecutive_trading_days": consecutive,
         "signal_status": signal,
+        "score_comparison": _score_comparison(candidate, rows[0] if rows else None),
     }
+
+
+def _score_comparison(candidate: Mapping[str, Any], previous: Mapping[str, Any] | None) -> dict[str, Any]:
+    result = {"status": "first_observation", "previous_date": None, "previous_score": None, "score_change": None}
+    if previous is None:
+        return result
+    result.update(previous_date=str(previous["record_date"]), previous_score=_int(previous.get("observation_score")))
+    def identity(row):
+        snapshot = row.get("input_snapshot") or {}
+        versions = row.get("strategy_versions") or snapshot.get("versions") or {}
+        keys = ("scoring_version", "rule_version", "config_version")
+        return tuple(versions.get(key) for key in keys) + (row.get("selection_version") or snapshot.get("selection_version"),)
+    current, prior = identity(candidate), identity(previous)
+    if not all(current) or not all(prior):
+        return result | {"status": "unavailable"}
+    if current != prior:
+        return result | {"status": "version_changed"}
+    return result | {"status": "comparable", "score_change": _int(candidate.get("observation_score")) - result["previous_score"]}
 
 
 def radar_trading_dates(context: Mapping[str, Any]) -> list[str]:

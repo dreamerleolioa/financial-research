@@ -13,11 +13,14 @@ import {
   getCandidateWatchItems,
   getCandidateDisplayName,
   RESEARCH_STATUS_LABEL,
+  formatScoreComparison,
+  getCandidateDiscoverySources,
 } from "../../features/daily-radar/presentation";
 
 export function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }) {
   const reasons = getCandidateReasonHighlights(candidate);
   const watchItems = getCandidateWatchItems(candidate);
+  const discoverySources = getCandidateDiscoverySources(candidate);
 
   return (
     <section className="rounded-xl border border-accent/30 bg-accent-soft/35 p-4">
@@ -35,6 +38,10 @@ export function CandidateResearchCard({ candidate }: { candidate: DailyRadarCand
       {formatObservationHistory(candidate) && <p className="mt-2 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
       {formatMediumTermObservation(candidate) && <p className="mt-2 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
       <p className="mt-2 text-xs font-medium text-accent">研究狀態：{RESEARCH_STATUS_LABEL[candidate.research_status ?? "data_pending"]}</p>
+      {formatScoreComparison(candidate) && <p className="mt-2 text-xs text-text-secondary">{formatScoreComparison(candidate)}</p>}
+      <p className="mt-2 text-xs text-text-muted">
+        探索來源：{discoverySources.length ? discoverySources.join("、") : "此紀錄未提供探索來源"}
+      </p>
       <h3 className="mt-3 text-base font-semibold text-text-primary">
         {formatBucketLabel(candidate.primary_bucket)}候選，僅供觀察追蹤
       </h3>

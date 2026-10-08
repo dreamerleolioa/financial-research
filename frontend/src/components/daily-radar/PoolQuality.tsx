@@ -37,6 +37,7 @@ export function PoolQuality({ comparison, windowDays }: { comparison: DailyRadar
           })}</tbody>
         </table>
       </div>
+      <p className="mt-2 text-xs text-text-muted md:hidden">表格可左右滑動，查看完整指標。</p>
       <p className="mt-3 text-xs leading-relaxed text-text-muted">
         已觀察可比較樣本中，超越基準機會的入池占比：
         <span data-testid="pool-capture-share" className="font-semibold text-text-secondary">

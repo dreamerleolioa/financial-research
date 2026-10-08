@@ -453,6 +453,16 @@ class DailyRadarCandidateResponse(BaseModel):
     background_context_labels: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarDiscoverySummary(BaseModel):
+    version: Literal["candidate-pool-discovery-v1"]
+    run_date: date
+    scanned_symbol_count: int
+    eligible_symbol_count: int
+    discovered_symbol_count: int
+    track_counts: dict[str, int]
+    excluded_reason_counts: dict[str, int]
+
+
 class DailyRadarPoolSummary(BaseModel):
     version: str
     population_scope: Literal["scored_raw_records"]
@@ -463,6 +473,7 @@ class DailyRadarPoolSummary(BaseModel):
     comparable_shadow_count: int
     eligibility_audit_shadow_count: int
     reason_counts: dict[str, int]
+    discovery_summary: DailyRadarDiscoverySummary | None = None
 
 
 class DailyRadarRunResponse(BaseModel):
