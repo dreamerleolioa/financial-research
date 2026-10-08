@@ -4,6 +4,7 @@ import {
   type DailyRadarBucket,
   type DailyRadarCandidate,
   type DailyRadarRunResponse,
+  type DailyRadarResearchStatus,
 } from "../../lib/dailyRadarTypes";
 import {
   BUCKET_LABEL,
@@ -16,6 +17,7 @@ import {
   getFreshnessSummary,
   hasLaggingRunData,
   getRunStatusClass,
+  RESEARCH_STATUS_LABEL,
 } from "../../features/daily-radar/presentation";
 import { DailyRadarCandidateList } from "./CandidateList";
 import { DailyRadarDetailDrawer } from "./CandidateDetailDrawer";
@@ -122,6 +124,7 @@ function StaleRunDataNotice({ runDate, freshnessSummary }: { runDate: string; fr
 }
 
 export function RunSummary({ run }: { run: DailyRadarRunResponse }) {
+  const [researchStatus, setResearchStatus] = useState<DailyRadarResearchStatus | "all">("all");
   const [selectedBucket, setSelectedBucket] = useState<DailyRadarBucket | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<DailyRadarCandidate | null>(null);
   const dataDateEntries = Object.entries(run.data_dates);
@@ -129,13 +132,25 @@ export function RunSummary({ run }: { run: DailyRadarRunResponse }) {
   const shouldShowStaleNotice = run.status === "stale_data" || hasLaggingRunData(run.run_date, run.data_dates);
   const sortedCandidates = sortDailyRadarCandidates(run.candidates);
   const bucketCounts = getBucketCounts(sortedCandidates);
-  const visibleCandidates = selectedBucket
+  const bucketCandidates = selectedBucket
     ? sortedCandidates.filter((candidate) => candidate.primary_bucket === selectedBucket)
     : sortedCandidates;
+  const visibleCandidates = researchStatus === "all" ? bucketCandidates
+    : bucketCandidates.filter((candidate) => (candidate.research_status ?? "data_pending") === researchStatus);
 
   return (
     <>
       {run.pool_summary && <PoolSummary summary={run.pool_summary} />}
+      <div className="flex flex-wrap items-center gap-3">
+        <label htmlFor="radar-research-status" className="text-sm font-medium text-text-secondary">研究狀態</label>
+        <select id="radar-research-status" value={researchStatus}
+          onChange={(event) => setResearchStatus(event.target.value as DailyRadarResearchStatus | "all")}
+          className="min-h-10 rounded-[8px] border border-border bg-surface-raised px-3 text-sm text-text-primary">
+          <option value="all">全部研究狀態</option>
+          {Object.entries(RESEARCH_STATUS_LABEL).map(([status, label]) => <option key={status} value={status}>{label}</option>)}
+        </select>
+        <span className="text-xs text-text-muted">等待整理的標的保留在候選池，可分開查看。</span>
+      </div>
       <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
         <div className="flex flex-col gap-2 border-b border-border-subtle px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-5">
           <div>

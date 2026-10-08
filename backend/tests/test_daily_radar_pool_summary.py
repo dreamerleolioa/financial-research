@@ -73,3 +73,24 @@ def test_public_limit_does_not_shrink_pool_summary_or_expose_shadow_symbols():
     assert response.pool_summary.state_counts["selected"] == 2
     assert response.pool_summary.state_counts["limit_deferred"] == 1
     assert "PRIVATE.TW" not in response.model_dump_json()
+
+
+def test_research_status_separates_trend_from_timing():
+    from ai_stock_sentinel.daily_radar.pool import research_status
+    context = {"medium_term_context": {"trend_status": "constructive", "as_of_date": "2026-06-01"},
+               "timing_status": "normal"}
+    dates = {"ohlcv": "2026-06-01"}
+    assert research_status(context, dates, "2026-06-01") == "trend_forming"
+    assert research_status(context | {"timing_status": "wait_for_consolidation"}, dates, "2026-06-01") == "waiting_for_consolidation"
+    assert research_status(context | {"medium_term_context": {"trend_status": "weak", "as_of_date": "2026-06-01"}}, dates, "2026-06-01") == "structure_watch"
+
+
+def test_research_status_does_not_promote_missing_future_or_stale_evidence():
+    from ai_stock_sentinel.daily_radar.pool import research_status
+    dates = {"ohlcv": "2026-06-01"}
+    assert research_status({}, dates, "2026-06-01") == "data_pending"
+    for day in ("2026-05-29", "2026-06-02"):
+        context = {"medium_term_context": {"trend_status": "constructive", "as_of_date": day}}
+        assert research_status(context, dates, "2026-06-01") == "data_pending"
+    context = {"medium_term_context": {"trend_status": "constructive", "as_of_date": "2026-06-01"}}
+    assert research_status(context, {"ohlcv": "2026-05-29"}, "2026-06-01") == "data_pending"

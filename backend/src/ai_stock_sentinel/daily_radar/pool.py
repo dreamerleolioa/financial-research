@@ -7,6 +7,17 @@ ELIGIBILITY_REASONS = frozenset({"low_liquidity", "min_price", "unsupported_dail
 SIGNAL_REASONS = frozenset({"overextended", "weak_structure", "margin_crowding"})
 
 
+def research_status(snapshot: dict[str, Any], data_dates: dict[str, Any], record_date: str) -> str:
+    trend = snapshot.get("medium_term_context") or {}
+    if (str(trend.get("as_of_date")) != record_date
+            or str(data_dates.get("ohlcv")) != record_date):
+        return "data_pending"
+    if trend.get("trend_status") == "constructive":
+        return ("waiting_for_consolidation" if snapshot.get("timing_status") == "wait_for_consolidation"
+                else "trend_forming")
+    return "structure_watch" if trend.get("trend_status") == "weak" else "data_pending"
+
+
 def pool_summary(run: Any) -> dict[str, Any]:
     reasons_by_symbol = defaultdict(set)
     failed_symbols = set()

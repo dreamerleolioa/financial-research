@@ -10,7 +10,13 @@ import {
   type DailyRadarRepeatStatus,
   type DailyRadarRiskLabel,
   type DailyRadarRunStatus,
+  type DailyRadarResearchStatus,
 } from "../../lib/dailyRadarTypes";
+
+export const RESEARCH_STATUS_LABEL: Record<DailyRadarResearchStatus, string> = {
+  trend_forming: "趨勢形成", waiting_for_consolidation: "等待整理",
+  structure_watch: "結構觀察", data_pending: "趨勢資料待確認",
+};
 
 export const BUCKET_LABEL: Record<DailyRadarBucket, string> = {
   institutional_accumulation: "法人籌碼延續",

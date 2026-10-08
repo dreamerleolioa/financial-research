@@ -12,6 +12,7 @@ import {
   getCandidateReasonHighlights,
   getCandidateWatchItems,
   getCandidateDisplayName,
+  RESEARCH_STATUS_LABEL,
 } from "../../features/daily-radar/presentation";
 
 export function CandidateResearchCard({ candidate }: { candidate: DailyRadarCandidate }) {
@@ -33,6 +34,7 @@ export function CandidateResearchCard({ candidate }: { candidate: DailyRadarCand
       </div>
       {formatObservationHistory(candidate) && <p className="mt-2 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
       {formatMediumTermObservation(candidate) && <p className="mt-2 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
+      <p className="mt-2 text-xs font-medium text-accent">研究狀態：{RESEARCH_STATUS_LABEL[candidate.research_status ?? "data_pending"]}</p>
       <h3 className="mt-3 text-base font-semibold text-text-primary">
         {formatBucketLabel(candidate.primary_bucket)}候選，僅供觀察追蹤
       </h3>
@@ -150,6 +152,7 @@ export function DailyRadarCandidateList({
                 {formatObservationHistory(candidate) && <p className="mt-1 text-xs text-text-muted">{formatObservationHistory(candidate)}</p>}
                 {formatSignalStatus(candidate) && <p className="mt-1 text-xs text-text-secondary">{formatSignalStatus(candidate)}</p>}
                 {formatMediumTermObservation(candidate) && <p className="mt-1 text-xs text-text-secondary">{formatMediumTermObservation(candidate)}</p>}
+                <p className="mt-1 text-xs text-accent">{RESEARCH_STATUS_LABEL[candidate.research_status ?? "data_pending"]}</p>
               </div>
 
               <div className="min-w-0">

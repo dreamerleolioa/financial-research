@@ -347,6 +347,7 @@ class DailyRadarMatchedRule(BaseModel):
 
 
 class DailyRadarCandidateResponse(BaseModel):
+    research_status: Literal["trend_forming", "waiting_for_consolidation", "structure_watch", "data_pending"] = "data_pending"
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

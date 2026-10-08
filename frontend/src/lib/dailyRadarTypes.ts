@@ -18,6 +18,7 @@ export const DAILY_RADAR_REPEAT_STATUSES = ["new", "repeat", "upgraded", "cooled
 export type DailyRadarBucket = (typeof DAILY_RADAR_BUCKETS)[number];
 export type DailyRadarRiskLabel = (typeof DAILY_RADAR_RISK_LABELS)[number];
 export type DailyRadarRepeatStatus = (typeof DAILY_RADAR_REPEAT_STATUSES)[number];
+export type DailyRadarResearchStatus = "trend_forming" | "waiting_for_consolidation" | "structure_watch" | "data_pending";
 export type DailyRadarRunStatus = "completed" | "running" | "failed" | "stale_data";
 export type DailyRadarDateMap = Record<string, string>;
 export type DailyRadarTracePayload = Record<string, unknown>;
@@ -97,6 +98,7 @@ export interface DailyRadarMatchedRule {
 }
 
 export interface DailyRadarCandidate {
+  research_status?: DailyRadarResearchStatus;
   symbol: string;
   name: string;
   primary_bucket: DailyRadarBucket;
