@@ -8,6 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.forward_validation import DEFAULT_BENCHMARK_SYMBOL, number, parse_date
+from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
 from ai_stock_sentinel.daily_radar.forward_validation import (
     load_benchmark_prices_from_prepared_market_context,
     load_price_series_from_raw_data,
@@ -67,9 +68,13 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     research_outcomes = [row for row in research_outcomes
         if (evaluated := parse_date(row.get("evaluation_as_of_date"))) is None or evaluated <= as_of_date]
     benchmark = []
+    research_calendar_days: set[date] = set()
     if candidates:
         cached = load_price_series_from_raw_data(session, symbols=[DEFAULT_BENCHMARK_SYMBOL],
                                                 start_date=start, end_date=as_of_date)
+        research_calendar_days.update(date.fromisoformat(row["date"])
+            for row in cached.get(DEFAULT_BENCHMARK_SYMBOL, [])
+            if (close := number(row.get("close"))) is not None and close > 0)
         fallback = load_benchmark_prices_from_prepared_market_context(
             session, market=market, benchmark_symbol=DEFAULT_BENCHMARK_SYMBOL,
             as_of_date=as_of_date, required_dates=[date.fromisoformat(c["record_date"]) for c in candidates])
@@ -77,27 +82,33 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     calendar_days = {date.fromisoformat(row["date"]) for row in benchmark
                      if (close := number(row.get("close"))) is not None and close > 0}
     calendar_through = max(calendar_days, default=None)
+    # Research uses date evidence from the full lookback, while the legacy price
+    # snapshot and its diagnostic/maturity behavior remain unchanged.
+    if candidates:
+        research_calendar_days.update(load_benchmark_calendar_from_prepared_market_context(
+            session, market=market, benchmark_symbol=DEFAULT_BENCHMARK_SYMBOL,
+            start_date=start, as_of_date=as_of_date))
     # A partial/older calendar must not hide an already saved mature result as
     # immature. Without usable dates, absent outcomes stay missing, not pending.
-    def usable_calendar(saved):
-        return bool(calendar_days) and all(
-            date.fromisoformat(c["record_date"]) in calendar_days for c in candidates
+    def usable_calendar(saved, days):
+        return bool(days) and all(
+            date.fromisoformat(c["record_date"]) in days for c in candidates
         ) and all(
-            parse_date(row.get("target_date")) in calendar_days and
+            parse_date(row.get("target_date")) in days and
             sum(date.fromisoformat(row["signal_date"]) < day <= date.fromisoformat(row["target_date"])
-                for day in calendar_days) == row["window_days"]
+                for day in days) == row["window_days"]
             for row in saved if row["status"] == "validated"
         )
     # Each validation basis owns its calendar checks; a malformed new result
     # must never change legacy observation maturity or hide its saved results.
-    calendar_usable = usable_calendar(outcomes)
-    research_calendar_usable = usable_calendar(research_outcomes)
+    calendar_usable = usable_calendar(outcomes, calendar_days)
+    research_calendar_usable = usable_calendar(research_outcomes, research_calendar_days)
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
     comparisons = pool_comparisons(candidates, outcomes, windows,
                                    calendar=sorted(calendar_days) if calendar_usable else None)
     research_comparisons = research_pool_comparisons(candidates, research_outcomes, windows,
-        calendar=sorted(calendar_days) if research_calendar_usable else None)
+        calendar=sorted(research_calendar_days) if research_calendar_usable else None)
     dates_by_strategy = {}
     for candidate in candidates:
         if candidate["selection_status"] == "selected":

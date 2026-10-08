@@ -129,6 +129,51 @@ def load_benchmark_prices_from_prepared_market_context(
     return best_rows
 
 
+def load_benchmark_calendar_from_prepared_market_context(
+    session: Session,
+    *,
+    market: str,
+    benchmark_symbol: str,
+    start_date: date,
+    as_of_date: date,
+) -> list[date]:
+    """Union saved trade dates across the research range, without merging prices.
+
+    A prepared payload holds only a rolling price history. Research confidence
+    needs older dates too, so stream all in-range histories rather than choosing
+    one price snapshot or limiting discovery to the newest thirty runs.
+    """
+    bind = session.get_bind()
+    if bind is None or not inspect(bind).has_table("daily_radar_prepared_runs"):
+        return []
+    rows = session.execute(
+        select(
+            DailyRadarPreparedRun.run_date,
+            DailyRadarPreparedRun.market_context["benchmark"]["price_history"].as_json(),
+        )
+        .where(
+            DailyRadarPreparedRun.market == market,
+            DailyRadarPreparedRun.run_date >= start_date,
+            DailyRadarPreparedRun.run_date <= as_of_date,
+            DailyRadarPreparedRun.market_context["benchmark"]["symbol"].as_string() == benchmark_symbol,
+        )
+        .execution_options(yield_per=1)
+    )
+    days: set[date] = set()
+    try:
+        for run_date, history in rows:
+            for item in _as_list(history):
+                if not isinstance(item, Mapping):
+                    continue
+                day = _parse_date(item.get("date"))
+                close = number(item.get("close"))
+                if day is not None and start_date <= day <= run_date and close is not None and close > 0:
+                    days.add(day)
+    finally:
+        rows.close()
+    return sorted(days)
+
+
 def completed_price_rows_from_raw_data(
     rows: Iterable[Any],
     *,
@@ -234,6 +279,7 @@ def _parse_date(value: Any) -> date | None:
 
 __all__ = [
     "completed_price_rows_from_raw_data",
+    "load_benchmark_calendar_from_prepared_market_context",
     "load_benchmark_prices_from_prepared_market_context",
     "load_price_series_from_raw_data",
 ]
