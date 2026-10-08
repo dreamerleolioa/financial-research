@@ -417,8 +417,8 @@ Daily Radar run status：
 
 候選池新增欄位：
 
-- `GET /daily-radar/latest` 與指定日期回應的 `pool_summary`，以完整 scoring run 投影篩選狀態、原因數量、重複與未分類資料列及兩類 shadow 數量；不受 bucket／limit 影響，不回傳未入選標的名單。`population_scope = scored_raw_records`，不宣稱全市場涵蓋率。
-- `pool_summary.discovery_summary` 為 scoring 時保存的市場價量探索摘要，包含日期、掃描／符合門檻／保留探索候選數。摘要存於一筆 candidate 的既有 snapshot，不新增資料表或 migration。缺少、日期不符或不可用的 audit 不保存為成功；沒有 candidate 的批次不提供探索摘要。公開讀取不查詢可被後續重跑覆寫的 prepared audit。
+- `GET /daily-radar/latest` 與指定日期回應的 `pool_summary`，以完整 scoring run 投影篩選狀態、原因數量、重複與未分類資料列及兩類 shadow 數量；不受 bucket／limit 影響，不回傳未入選標的名單。`population_scope = scored_raw_records`，不宣稱全市場涵蓋率。去重保留首筆評分資料，每筆額外輸入各記一筆 `duplicate_universe_symbol`，重複資料列數不以重複股票種類數計算；舊批次已遺失的重複次數不回推。
+- `pool_summary.discovery_summary` 為 scoring 時保存的市場價量探索摘要，包含日期、掃描／符合門檻／保留探索候選數。一鍵 `POST /internal/daily-radar/run` 與分段 `POST /internal/daily-radar/run-scoring` 均在 commit 前保存當次摘要。摘要存於一筆 candidate 的既有 snapshot，不新增資料表或 migration。缺少、日期不符或不可用的 audit 不保存為成功；沒有 candidate 的批次不提供探索摘要。公開讀取不查詢可被後續重跑覆寫的 prepared audit。
 - 候選的 `research_status` 為 `trend_forming`、`waiting_for_consolidation`、`structure_watch` 或 `data_pending`；行情日期與中期趨勢日期必須同時符合 run 日期，才能投影有效趨勢狀態。
 - `input_snapshot.observation_history.score_comparison` 保存前次入池日期、分數與比較狀態。四個策略版本完整且一致時才給 `score_change`；缺版本為 `unavailable`，不同版本為 `version_changed`。
 - `GET /daily-radar/validation` 的每個 cohort 新增 `pool_comparison`，按 5／10／20 日提供 selected、top_3、top_5、comparable_shadow 的有效樣本數、日期／股票數、完整度、超越基準比例與超額報酬中位數。排名先固定再連結結果，不以低排名補缺漏。未滿期與缺漏分開；缺漏或跳過不發布完整比例。`observed_positive_capture_share` 另要求兩組都有有效樣本、完整且使用相同基準；僅為已觀察可比較樣本的機會入池占比。

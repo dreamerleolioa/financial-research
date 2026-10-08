@@ -233,14 +233,15 @@ def _load_records(
 def _deduplicate_records(
     records: Iterable[Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep the first record and one duplicate entry per discarded input row."""
     canonical: list[dict[str, Any]] = []
-    duplicate_symbols: set[str] = set()
+    duplicate_symbols: list[str] = []
     seen_symbols: set[str] = set()
     for record in records:
         normalized = dict(record)
         symbol = str(normalized.get("symbol") or "").strip()
         if symbol in seen_symbols:
-            duplicate_symbols.add(symbol)
+            duplicate_symbols.append(symbol)
             continue
         seen_symbols.add(symbol)
         canonical.append(normalized)

@@ -144,7 +144,9 @@ def run_daily_radar_endpoint(
             track_limit=50,
             technical_records=existing_technical_rows,
         )
-        discoveries = load_market_exploration(db, run_date=run_date, required=False)[0] if market == "TW" else []
+        discoveries, discovery_audit = (
+            load_market_exploration(db, run_date=run_date, required=False) if market == "TW" else ([], None)
+        )
         universe = _capped_daily_radar_universe(
             merge_discovery_universe(universe, discoveries),
             max_symbols=DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
@@ -224,6 +226,7 @@ def run_daily_radar_endpoint(
             background_contexts_by_symbol=background_contexts_by_symbol,
             allow_fixture_fallback=False,
         )
+        freeze_discovery_summary(run, discovery_audit)
         db.commit()
         return run_trigger_response(run)
     except HTTPException:
