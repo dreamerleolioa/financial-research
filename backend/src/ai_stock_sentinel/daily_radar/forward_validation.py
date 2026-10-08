@@ -625,6 +625,7 @@ def exclude_persisted_daily_radar_windows(
     *,
     validation_version: str = FORWARD_VALIDATION_VERSION,
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
+    terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
 ) -> dict[str, list[int]]:
     candidate_ids = [
         int(key.removeprefix("id:"))
@@ -668,7 +669,7 @@ def exclude_persisted_daily_radar_windows(
                 or (
                     row["status"] == "skipped"
                     and row["evaluation_as_of_date"] is not None
-                    and row["skip_reason"] in TERMINAL_FORWARD_VALIDATION_SKIP_REASONS
+                    and row["skip_reason"] in terminal_skip_reasons
                 )
             )
         )

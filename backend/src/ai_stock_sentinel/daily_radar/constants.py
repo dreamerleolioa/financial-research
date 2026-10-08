@@ -8,6 +8,8 @@ from ai_stock_sentinel.daily_radar.types import (
     DailyRadarRiskLabel,
 )
 
+DAILY_RADAR_VALIDATION_WINDOWS: Final = (5, 10, 20, 40, 60)
+
 DAILY_RADAR_BUCKETS: Final[tuple[DailyRadarBucket, ...]] = (
     "institutional_accumulation",
     "price_volume_strengthening",

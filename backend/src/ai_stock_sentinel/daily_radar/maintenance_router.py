@@ -13,6 +13,7 @@ from ai_stock_sentinel.calibration.runtime_metrics import ForwardValidationMetri
 from ai_stock_sentinel.calibration.price_provider import (
     ForwardPriceProvider,
     get_forward_price_provider,
+    get_research_price_provider,
 )
 from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
@@ -62,6 +63,7 @@ from ai_stock_sentinel.daily_radar.name_backfill import (
 from ai_stock_sentinel.daily_radar.presenter import parse_date
 from ai_stock_sentinel.daily_radar.repository import BACKGROUND_CONTEXT_TYPES
 from ai_stock_sentinel.daily_radar.rule_governance import build_monthly_rule_review_report
+from ai_stock_sentinel.daily_radar.research_validation import run_research_validation
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarChipContextUpdateRequest,
     DailyRadarChipContextUpdateResponse,
@@ -324,9 +326,17 @@ def run_daily_radar_forward_validation_endpoint(
     payload: DailyRadarForwardValidationRunRequest | None = None,
     db: Session = Depends(get_db),
     price_provider: ForwardPriceProvider = Depends(get_forward_price_provider),
+    research_price_provider: ForwardPriceProvider = Depends(get_research_price_provider),
 ) -> DailyRadarForwardValidationRunResponse:
     request = payload or DailyRadarForwardValidationRunRequest()
     as_of_date = request.as_of_date or dependencies._backend_today()
+    if request.return_basis == "next_open":
+        try:
+            result = run_research_validation(db, request, as_of_date=as_of_date, price_provider=research_price_provider)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        db.commit()
+        return DailyRadarForwardValidationRunResponse(**result)
     start_date = request.start_date
     if request.mode == "due" and start_date is None:
         start_date = default_due_start_date(as_of_date, max(request.windows or list(DEFAULT_FORWARD_WINDOWS)))

@@ -146,6 +146,7 @@ export interface DailyRadarValidationCohort {
   signal_end_date: string;
   windows: Record<string, Record<string, DailyRadarObservationStats>>;
   pool_comparison?: Record<string, DailyRadarPoolComparison>;
+  research_pool_comparison?: Record<string, DailyRadarResearchComparison>;
 }
 
 export interface DailyRadarPoolQualityStats {
@@ -183,6 +184,48 @@ export interface DailyRadarValidationResponse {
   last_evaluated_date: string | null;
   default_cohort_id: string | null;
   cohorts: DailyRadarValidationCohort[];
+}
+
+export interface DailyRadarResearchQualityStats extends DailyRadarPoolQualityStats {
+  median_return_pct: number | null;
+  worst_decile_mean_return_pct: number | null;
+  worst_adverse_excursion_pct: number | null;
+  median_adverse_excursion_pct: number | null;
+  risk_sample_count: number;
+  missing_risk_count: number;
+  missing_reasons: Record<string, number>;
+}
+
+export interface DailyRadarResearchConfidence {
+  status: "estimated" | "insufficient_blocks" | "incomplete_coverage" | "calendar_missing" | "sparse_comparable_dates" | "strategy_unknown";
+  method: "paired_daily_moving_block_bootstrap";
+  level: number;
+  block_trading_days: number;
+  minimum_blocks: number;
+  paired_date_count: number;
+  effective_block_count: number | null;
+  mean_difference_pct: number | null;
+  lower_pct: number | null;
+  upper_pct: number | null;
+}
+
+export interface DailyRadarResearchPoolComparison extends DailyRadarPoolComparison {
+  selected: DailyRadarResearchQualityStats;
+  top_3: DailyRadarResearchQualityStats;
+  top_5: DailyRadarResearchQualityStats;
+  comparable_shadow: DailyRadarResearchQualityStats;
+  confidence: DailyRadarResearchConfidence;
+}
+
+export interface DailyRadarResearchComparison {
+  validation_version: string;
+  return_basis: "next_open";
+  price_basis: "unadjusted_price";
+  dividends_included: false;
+  cost_model: "assumed_total_cost_percentage_points";
+  last_evaluated_date: string | null;
+  calendar_through_date?: string | null;
+  cost_scenarios: Record<string, DailyRadarResearchPoolComparison>;
 }
 
 export interface DailyRadarRunResponse {

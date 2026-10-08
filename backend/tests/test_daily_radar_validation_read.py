@@ -89,6 +89,168 @@ def groups(body, window="5", cohort=0):
     return body["cohorts"][cohort]["windows"][window]
 
 
+def add_long_research_history(session, *, lookback, window, paired_count, gap=False):
+    from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+
+    end = date(2026, 6, 30)
+    start = end - timedelta(days=lookback - 1)
+    calendar = [start + timedelta(days=i) for i in range(lookback)
+                if (start + timedelta(days=i)).weekday() < 5]
+    missing = calendar[paired_count + 2] if gap else None
+    for i, signal in enumerate(calendar[:paired_count]):
+        run = add_run(session, signal)
+        for symbol, status, excess in (("2330.TW", "selected", 2), ("2317.TW", "shadow", 1)):
+            candidate = add_candidate(session, run, symbol, status=status)
+            if status == "shadow":
+                candidate.shadow_cohort = "comparable"
+            session.add(DailyRadarForwardValidationResult(
+                candidate_id=candidate.id, window_days=window,
+                validation_version=RESEARCH_VALIDATION_VERSION, status="validated",
+                signal_date=signal, target_date=calendar[i + window], benchmark_symbol="TAIEX",
+                evaluation_as_of_date=end,
+                outcome={"forward_return_pct": excess + 1, "excess_return_vs_benchmark_pct": excess,
+                         "max_adverse_excursion_pct": -2, "return_basis": "next_open",
+                         "price_basis": "unadjusted_price"}))
+    # Each saved weekly snapshot has the provider's real 120-calendar-day bound;
+    # even the 30 newest snapshots cannot cover the longest research sample.
+    snapshot_dates = {start + timedelta(days=i) for i in range(0, lookback, 7)} | {end}
+    for day in sorted(snapshot_dates):
+        session.add(DailyRadarPreparedRun(
+            run_date=day, market="TW", status="prepared", selected_symbols=[], universe=[],
+            symbol_count=0, step_statuses={}, errors=[],
+            market_context={"benchmark": {"symbol": "TAIEX", "price_history": [
+                {"date": d.isoformat(), "close": 1000}
+                for d in calendar if day - timedelta(days=120) <= d <= day and d != missing]}}))
+    session.commit()
+    return end, missing
+
+
+@pytest.mark.parametrize("lookback,window,paired_count,status", [
+    (180, 20, 100, "insufficient_blocks"),
+    (365, 20, 200, "estimated"),
+    (1095, 40, 400, "estimated"),
+    (1095, 60, 600, "estimated"),
+])
+def test_public_research_confidence_merges_long_calendar_history(
+        storage, lookback, window, paired_count, status):
+    session, client, engine = storage
+    end, _ = add_long_research_history(session, lookback=lookback, window=window, paired_count=paired_count)
+    statements = []
+    event.listen(engine, "before_cursor_execute", lambda c, cu, sql, p, ctx, many: statements.append(sql))
+    response = client.get(f"/daily-radar/validation?lookback_days={lookback}")
+    assert response.status_code == 200
+    research = response.json()["cohorts"][0]["research_pool_comparison"][str(window)]
+    confidence = research["cost_scenarios"]["0"]["confidence"]
+    assert research["calendar_through_date"] == end.isoformat()
+    assert confidence["status"] == status
+    assert confidence["paired_date_count"] == paired_count
+    assert confidence["effective_block_count"] == paired_count // window
+    if status == "estimated":
+        assert confidence["lower_pct"] == confidence["upper_pct"] == confidence["mean_difference_pct"] == 1
+    else:
+        assert confidence["lower_pct"] is None and confidence["upper_pct"] is None
+    assert not any(sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for sql in statements)
+    assert "DO_NOT_EXPOSE" not in response.text
+
+
+def test_public_research_long_calendar_gap_still_blocks_confidence(storage):
+    session, client, engine = storage
+    add_long_research_history(session, lookback=365, window=20, paired_count=200, gap=True)
+    research = client.get("/daily-radar/validation?lookback_days=365").json()[
+        "cohorts"][0]["research_pool_comparison"]["20"]
+    confidence = research["cost_scenarios"]["0"]["confidence"]
+    assert confidence["status"] == "calendar_missing"
+    assert confidence["paired_date_count"] == 200
+    assert confidence["lower_pct"] is None and confidence["upper_pct"] is None
+
+
+def test_public_research_calendar_combines_prepared_and_final_raw_date_evidence(storage):
+    session, client, engine = storage
+    end, missing = add_long_research_history(session, lookback=365, window=20, paired_count=200, gap=True)
+    session.add(StockRawData(symbol="TAIEX", record_date=end, raw_data_is_final=True,
+        technical={"price_history": [{"date": missing.isoformat(), "close": 1000}]}))
+    session.commit()
+    research = client.get("/daily-radar/validation?lookback_days=365").json()[
+        "cohorts"][0]["research_pool_comparison"]["20"]
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "estimated"
+
+
+def test_research_calendar_rejects_dates_after_the_source_run_without_changing_legacy(storage):
+    from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+    session, client, engine = storage
+    candidate = add_candidate(session, add_run(session))
+    add_result(session, candidate)
+    add_result(session, candidate, version=RESEARCH_VALIDATION_VERSION, diagnostic=False)
+    research_result = session.scalar(select(DailyRadarForwardValidationResult).where(
+        DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION))
+    research_result.outcome = research_result.outcome | {
+        "excess_return_vs_benchmark_pct": 1, "return_basis": "next_open", "price_basis": "unadjusted_price"}
+    add_calendar(session)
+    prepared = session.scalar(select(DailyRadarPreparedRun))
+    prepared.run_date = date(2026, 6, 1)  # its later embedded dates were not yet observed
+    session.commit()
+    body = client.get("/daily-radar/validation").json()
+    research = body["cohorts"][0]["research_pool_comparison"]["5"]
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "calendar_missing"
+    assert body["calendar_through_date"] == "2026-06-30"
+
+
+def test_public_validation_includes_medium_term_windows_and_longer_sample_period(storage):
+    session, client, engine = storage
+    add_candidate(session, add_run(session))
+    add_calendar(session)
+    session.commit()
+    response = client.get("/daily-radar/validation?lookback_days=1095")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lookback_days"] == 1095
+    assert set(body["cohorts"][0]["windows"]) == {"5", "10", "20", "40", "60"}
+    assert groups(body, "60")["all_selected"]["immature_observation_count"] == 1
+
+
+def test_public_research_comparison_separates_versions_and_is_read_only(storage):
+    from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+    session, client, engine = storage
+    c = add_candidate(session, add_run(session))
+    add_result(session, c)
+    add_result(session, c, version=RESEARCH_VALIDATION_VERSION, diagnostic=False)
+    new = session.scalar(select(DailyRadarForwardValidationResult).where(
+        DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION))
+    new.outcome = {"forward_return_pct": 10, "excess_return_vs_benchmark_pct": 8,
+                   "max_adverse_excursion_pct": -4, "return_basis": "next_open",
+                   "price_basis": "unadjusted_price"}
+    add_calendar(session)
+    session.commit()
+    statements = []
+    event.listen(engine, "before_cursor_execute", lambda c, cu, sql, p, ctx, many: statements.append(sql))
+    response = client.get("/daily-radar/validation")
+    assert response.status_code == 200
+    research = response.json()["cohorts"][0]["research_pool_comparison"]["5"]
+    assert research["validation_version"] == RESEARCH_VALIDATION_VERSION
+    assert research["cost_scenarios"]["0.5"]["selected"]["median_return_pct"] == 9.5
+    assert research["cost_scenarios"]["0"]["selected"]["worst_adverse_excursion_pct"] == -4
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "insufficient_blocks"
+    assert not any(sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for sql in statements)
+    assert response.json()["cohorts"][0]["pool_comparison"]["5"]["selected"]["median_excess_return_pct"] is None
+
+
+def test_research_calendar_conflict_does_not_change_legacy_maturity(storage):
+    from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+    session, client, engine = storage
+    old = add_candidate(session, add_run(session))
+    add_result(session, old)
+    add_result(session, old, version=RESEARCH_VALIDATION_VERSION)
+    new = session.scalar(select(DailyRadarForwardValidationResult).where(
+        DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION))
+    new.target_date = date(2026, 6, 9)  # six sessions after signal, inconsistent with window=5
+    add_candidate(session, add_run(session, date(2026, 6, 25)), "2317.TW")
+    add_calendar(session)
+    session.commit()
+    body = client.get("/daily-radar/validation").json()
+    assert body["calendar_through_date"] == "2026-06-30"
+    assert groups(body)["all_selected"]["immature_observation_count"] == 1
+
+
 def test_pool_comparison_reads_comparable_shadow_only_without_writes(storage):
     session, client, engine = storage
     run = add_run(session, count=1)
@@ -273,6 +435,6 @@ def test_latest_empty_revision_shadow_failed_other_market_and_future_are_exclude
     assert body["cohorts"] == []
 
 
-@pytest.mark.parametrize("query", ["lookback_days=0", "lookback_days=366", "lookback_days=bad"])
+@pytest.mark.parametrize("query", ["lookback_days=0", "lookback_days=1096", "lookback_days=bad"])
 def test_read_bounds_sample_size(storage, query):
     assert storage[1].get("/daily-radar/validation?" + query).status_code == 422

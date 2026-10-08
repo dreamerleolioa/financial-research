@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.daily_radar.constants import (
+    DAILY_RADAR_VALIDATION_WINDOWS,
     DAILY_RADAR_BACKGROUND_CONTEXT_TYPES,
     DAILY_RADAR_BUCKETS,
     DAILY_RADAR_REPEAT_STATUSES,
@@ -14,7 +15,6 @@ from ai_stock_sentinel.daily_radar.constants import (
 )
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
-    DEFAULT_FORWARD_WINDOWS,
 )
 from ai_stock_sentinel.daily_radar.rule_governance import DEFAULT_MIN_SAMPLE_COUNT
 from ai_stock_sentinel.daily_radar.types import (
@@ -229,8 +229,9 @@ class DailyRadarForwardValidationRunRequest(BaseModel):
     as_of_date: date | None = None
     start_date: date | None = None
     end_date: date | None = None
-    windows: list[int] = Field(default_factory=lambda: list(DEFAULT_FORWARD_WINDOWS))
+    windows: list[int] = Field(default_factory=lambda: list(DAILY_RADAR_VALIDATION_WINDOWS), min_length=1)
     benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
+    return_basis: Literal["signal_close", "next_open"] = "signal_close"
 
 
 class DailyRadarObservationStats(BaseModel):
@@ -280,6 +281,48 @@ class DailyRadarPoolComparison(BaseModel):
     observed_positive_capture_share: float | None
 
 
+class DailyRadarResearchQualityStats(DailyRadarPoolQualityStats):
+    median_return_pct: float | None
+    worst_decile_mean_return_pct: float | None
+    worst_adverse_excursion_pct: float | None
+    median_adverse_excursion_pct: float | None
+    risk_sample_count: int
+    missing_risk_count: int
+    missing_reasons: dict[str, int]
+
+
+class DailyRadarResearchConfidence(BaseModel):
+    status: Literal["estimated", "insufficient_blocks", "incomplete_coverage", "calendar_missing", "sparse_comparable_dates", "strategy_unknown"]
+    method: Literal["paired_daily_moving_block_bootstrap"]
+    level: float
+    block_trading_days: int
+    minimum_blocks: int
+    paired_date_count: int
+    effective_block_count: int | None
+    mean_difference_pct: float | None
+    lower_pct: float | None
+    upper_pct: float | None
+
+
+class DailyRadarResearchPoolComparison(DailyRadarPoolComparison):
+    selected: DailyRadarResearchQualityStats
+    top_3: DailyRadarResearchQualityStats
+    top_5: DailyRadarResearchQualityStats
+    comparable_shadow: DailyRadarResearchQualityStats
+    confidence: DailyRadarResearchConfidence
+
+
+class DailyRadarResearchComparison(BaseModel):
+    validation_version: str
+    return_basis: Literal["next_open"]
+    price_basis: Literal["unadjusted_price"]
+    dividends_included: Literal[False]
+    cost_model: Literal["assumed_total_cost_percentage_points"]
+    last_evaluated_date: date | None
+    calendar_through_date: date | None
+    cost_scenarios: dict[str, DailyRadarResearchPoolComparison]
+
+
 class DailyRadarValidationCohort(BaseModel):
     id: str
     strategy: dict[str, str]
@@ -287,6 +330,7 @@ class DailyRadarValidationCohort(BaseModel):
     signal_end_date: date
     windows: dict[str, dict[str, DailyRadarObservationStats]]
     pool_comparison: dict[str, DailyRadarPoolComparison] = Field(default_factory=dict)
+    research_pool_comparison: dict[str, DailyRadarResearchComparison] = Field(default_factory=dict)
 
 
 class DailyRadarValidationResponse(BaseModel):
