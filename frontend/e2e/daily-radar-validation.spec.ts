@@ -80,7 +80,7 @@ test("Pool quality compares saved selected and shadow samples with explicit scop
   await expect(page.getByTestId("pool-capture-share")).toHaveText("60.0%");
   await page.setViewportSize({ width: 375, height: 812 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
-  await page.screenshot({ path: "/private/tmp/candidate-pool-quality-mobile.png", fullPage: true });
+  await page.screenshot({ path: test.info().outputPath("candidate-pool-quality-mobile.png"), fullPage: true });
   await page.getByRole("button", { name: "10 日", exact: true }).click();
   await expect(page.getByTestId("confirmation-rate")).toHaveText("70.0%");
   await expect(page.getByTestId("pool-capture-share")).toHaveCount(0);
@@ -212,7 +212,7 @@ test("Validation renders at desktop and mobile widths without page overflow", as
     await page.setViewportSize({ width, height: 1000 });
     await expect(page.getByRole("heading", { name: "突破前觀察驗證" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.screenshot({ path: `/tmp/daily-radar-validation-${width}.png`, fullPage: true });
+    await page.screenshot({ path: test.info().outputPath(`daily-radar-validation-${width}.png`), fullPage: true });
   }
 });
 
