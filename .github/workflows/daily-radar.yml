@@ -767,7 +767,7 @@ jobs:
     needs: resolve-run-context
     if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '50 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-forward-validation'))
     steps:
-      - name: Validate mature 5 / 10 / 20-day windows
+      - name: Validate mature 5 / 10 / 20 / 40 / 60-day windows in both return bases
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
@@ -776,38 +776,42 @@ jobs:
           set -euo pipefail
           endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/forward-validation/run"
           response_file="$(mktemp)"
-          payload="$(jq -n \
-            --arg as_of_date "${DAILY_RADAR_RUN_DATE}" \
-            '{
-              mode: "due",
-              market: "TW",
-              as_of_date: $as_of_date,
-              windows: [5, 10, 20],
-              benchmark_symbol: "TAIEX"
-            }')"
-          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
-            -X POST "$endpoint" \
-            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "${payload}")"
-          echo "Forward-validation HTTP status: ${http_status}"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
-          jq '{
-            status,
-            mode,
-            as_of_date,
-            candidate_count,
-            records_written,
-            validated_count,
-            skipped_count,
-            retryable_skipped_count,
-            terminal_skipped_count,
-            skip_reasons: (.report.skip_reasons // {})
-          }' "$response_file"
-          jq -e '.status == "completed" and .retryable_skipped_count == 0' "$response_file" > /dev/null
+          for return_basis in signal_close next_open; do
+            payload="$(jq -n \
+              --arg as_of_date "${DAILY_RADAR_RUN_DATE}" \
+              --arg return_basis "${return_basis}" \
+              '{
+                mode: "due",
+                market: "TW",
+                as_of_date: $as_of_date,
+                windows: [5, 10, 20, 40, 60],
+                return_basis: $return_basis,
+                benchmark_symbol: "TAIEX"
+              }')"
+            http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+              -X POST "$endpoint" \
+              -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "${payload}")"
+            echo "Forward-validation ${return_basis} HTTP status: ${http_status}"
+            if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+              cat "$response_file"
+              exit 1
+            fi
+            jq '{
+              status,
+              mode,
+              as_of_date,
+              candidate_count,
+              records_written,
+              validated_count,
+              skipped_count,
+              retryable_skipped_count,
+              terminal_skipped_count,
+              skip_reasons: (.report.skip_reasons // {})
+            }' "$response_file"
+            jq -e '.status == "completed" and .retryable_skipped_count == 0' "$response_file" > /dev/null
+          done
 
   repair-avwap-and-rescore:
     name: Repair Daily Radar margin/OHLCV/AVWAP/managed raw data and rescore

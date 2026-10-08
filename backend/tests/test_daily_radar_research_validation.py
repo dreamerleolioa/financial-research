@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -109,6 +109,27 @@ def test_old_incomplete_benchmark_is_missing_data_rather_than_immature():
     row = evaluate(as_of=date(2026, 7, 1), benchmark=[price("2026-06-05"), price("2026-06-08")])
     assert row["status"] == "skipped"
     assert row["skip_reason"] == "missing_benchmark"
+
+
+def test_radar_request_defaults_cover_medium_term_without_changing_shared_analysis():
+    from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunRequest
+    from ai_stock_sentinel.calibration.forward_validation import DEFAULT_FORWARD_WINDOWS
+    assert DailyRadarForwardValidationRunRequest().windows == [5, 10, 20, 40, 60]
+    assert DEFAULT_FORWARD_WINDOWS == (5, 10, 20)
+
+
+@pytest.mark.parametrize("window", [20, 40, 60])
+def test_medium_term_targets_count_trading_sessions_and_wait_for_maturity(window):
+    days = [date(2026, 6, 5) + timedelta(days=i) for i in range(110)
+            if (date(2026, 6, 5) + timedelta(days=i)).weekday() < 5]
+    prices = [price(day.isoformat(), 100, 100 + i / 10) for i, day in enumerate(days)]
+    kwargs = dict(candidate={"candidate_id": 1, "symbol": "2330.TW", "record_date": days[0].isoformat()},
+                  price_series=prices, benchmark_prices=prices, window_days=window, benchmark_symbol="TAIEX")
+    mature = evaluate_research_window(**kwargs, as_of_date=days[window])
+    assert mature["status"] == "validated"
+    assert mature["target_date"] == days[window].isoformat()
+    pending = evaluate_research_window(**kwargs, as_of_date=days[window - 1])
+    assert pending["status"] == "pending"
 
 
 def test_api_keeps_legacy_results_and_research_retry_is_idempotent(monkeypatch):

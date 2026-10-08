@@ -55,8 +55,9 @@ export function isNoPublicDailyRadarRunUnavailableError(error: unknown): boolean
   );
 }
 
-export async function fetchDailyRadarValidation(signal?: AbortSignal): Promise<DailyRadarValidationResponse> {
-  return requestDailyRadar<DailyRadarValidationResponse>(apiUrl("/daily-radar/validation"), signal);
+export async function fetchDailyRadarValidation(signal?: AbortSignal, lookbackDays = 90): Promise<DailyRadarValidationResponse> {
+  return requestDailyRadar<DailyRadarValidationResponse>(
+    apiUrl("/daily-radar/validation", lookbackDays === 90 ? {} : { lookback_days: lookbackDays }), signal);
 }
 
 export async function fetchLatestDailyRadarRun(

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.daily_radar.constants import (
+    DAILY_RADAR_VALIDATION_WINDOWS,
     DAILY_RADAR_BACKGROUND_CONTEXT_TYPES,
     DAILY_RADAR_BUCKETS,
     DAILY_RADAR_REPEAT_STATUSES,
@@ -14,7 +15,6 @@ from ai_stock_sentinel.daily_radar.constants import (
 )
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
-    DEFAULT_FORWARD_WINDOWS,
 )
 from ai_stock_sentinel.daily_radar.rule_governance import DEFAULT_MIN_SAMPLE_COUNT
 from ai_stock_sentinel.daily_radar.types import (
@@ -229,7 +229,7 @@ class DailyRadarForwardValidationRunRequest(BaseModel):
     as_of_date: date | None = None
     start_date: date | None = None
     end_date: date | None = None
-    windows: list[int] = Field(default_factory=lambda: list(DEFAULT_FORWARD_WINDOWS))
+    windows: list[int] = Field(default_factory=lambda: list(DAILY_RADAR_VALIDATION_WINDOWS), min_length=1)
     benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
     return_basis: Literal["signal_close", "next_open"] = "signal_close"
 

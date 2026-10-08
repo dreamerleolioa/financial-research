@@ -52,11 +52,15 @@ export function ValidationResults({
   loading,
   error,
   onRetry,
+  lookbackDays,
+  onLookbackChange,
 }: {
   data: DailyRadarValidationResponse | undefined;
   loading: boolean;
   error: unknown;
   onRetry: () => void;
+  lookbackDays: number;
+  onLookbackChange: (days: number) => void;
 }) {
   const [windowDays, setWindowDays] = useState(5);
   const [priority, setPriority] = useState<3 | 5>(3);
@@ -97,7 +101,7 @@ export function ValidationResults({
                   檢查雷達是否提早發現趨勢，以及每日優先關注的標的是否提供更多有效機會。
                 </p>
               </div>
-              <span className="ui-badge">5／10／20 交易日</span>
+              <span className="ui-badge">5／10／20／40／60 交易日</span>
             </div>
             <dl className="mt-4 grid gap-3 text-xs text-text-muted sm:grid-cols-2">
               <div>
@@ -123,6 +127,13 @@ export function ValidationResults({
                 </dd>
               </div>
             </dl>
+            <label className="mt-4 block text-xs font-medium text-text-muted">
+              驗證樣本期間
+              <select value={lookbackDays} onChange={(e) => onLookbackChange(Number(e.target.value))}
+                className="ml-3 min-h-10 rounded-[8px] border border-border bg-surface px-3 text-sm text-text-primary">
+                {[90, 180, 365, 1095].map((days) => <option key={days} value={days}>最近 {days} 日</option>)}
+              </select>
+            </label>
             {cohort && (
               <div className="mt-4 border-t border-border-subtle pt-4">
                 <label htmlFor="validation-strategy" className="text-xs font-medium text-text-muted">
@@ -155,11 +166,10 @@ export function ValidationResults({
               </p>
             </section>
           )}
-          {focused && groups && (
-            <>
+          {cohort && (
               <div className="flex flex-wrap items-center gap-3">
                 <div aria-label="觀察期間" className="flex rounded-[10px] border border-border bg-surface-raised p-1">
-                  {[5, 10, 20].map((day) => (
+                  {[5, 10, 20, 40, 60].map((day) => (
                     <Choice
                       key={day}
                       active={windowDays === day}
@@ -176,6 +186,10 @@ export function ValidationResults({
                   ))}
                 </div>
               </div>
+          )}
+          {cohort && !groups && <section className={panel}>此期間尚無已保存驗證資料。</section>}
+          {focused && groups && (
+            <>
               {poolComparison && <PoolQuality comparison={poolComparison} windowDays={windowDays} />}
               {!focused.evaluated_observation_count && (
                 <section className={panel}>

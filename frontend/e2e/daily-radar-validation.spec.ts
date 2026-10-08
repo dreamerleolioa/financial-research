@@ -63,6 +63,24 @@ const qualityStats = {
   positive_excess_rate: .75, median_excess_return_pct: 2.5,
 };
 
+test("Validation supports 40 and 60 trading-day windows and requests longer history", async ({ page }) => {
+  const body = structuredClone(validationFixture);
+  body.cohorts[0].windows["40"] = windowGroups;
+  body.cohorts[0].windows["60"] = Object.fromEntries(Object.entries(windowGroups).map(([key, value]) =>
+    [key, { ...value, confirmation_rate: .8 }]));
+  await setup(page, body);
+  await page.route("**/daily-radar/validation?lookback_days=365", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ ...body, lookback_days: 365 }),
+  }));
+  await page.getByRole("tab", { name: "驗證結果", exact: true }).click();
+  await page.getByRole("button", { name: "40 日", exact: true }).click();
+  await expect(page.getByTestId("confirmation-rate")).toHaveText("60.0%");
+  await page.getByRole("button", { name: "60 日", exact: true }).click();
+  await expect(page.getByTestId("confirmation-rate")).toHaveText("80.0%");
+  await page.getByLabel("驗證樣本期間").selectOption("365");
+  await expect(page.getByText("樣本範圍（最近 365 日）", { exact: true })).toBeVisible();
+});
+
 test("Pool quality compares saved selected and shadow samples with explicit scope", async ({ page }) => {
   const body = structuredClone(validationFixture);
   body.cohorts[0].pool_comparison = { "5": {

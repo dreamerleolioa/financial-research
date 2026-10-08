@@ -7,6 +7,7 @@ import { LoadingState, ErrorState, WholeRunEmptyState } from "../components/dail
 
 export default function DailyRadarPage() {
   const [view, setView] = useState<"observations" | "validation">("observations");
+  const [lookbackDays, setLookbackDays] = useState(90);
   const {
     data: run,
     isPending: loading,
@@ -14,7 +15,7 @@ export default function DailyRadarPage() {
     error: queryError,
     refetch,
   } = useLatestDailyRadarQuery();
-  const validation = useDailyRadarValidationQuery(view === "validation");
+  const validation = useDailyRadarValidationQuery(view === "validation", lookbackDays);
   const isFetching = view === "validation" ? validation.isFetching : runFetching;
   const error = queryError ? toDailyRadarDisplayError(queryError) : null;
   const refresh = () => {
@@ -108,6 +109,8 @@ export default function DailyRadarPage() {
         hidden={view !== "validation"}
       >
         <ValidationResults
+          lookbackDays={lookbackDays}
+          onLookbackChange={setLookbackDays}
           data={validation.data}
           loading={validation.isPending}
           error={validation.error}

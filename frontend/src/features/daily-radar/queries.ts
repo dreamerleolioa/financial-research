@@ -10,10 +10,10 @@ export const dailyRadarKeys = {
   validation: ["daily-radar", "validation"] as const,
 };
 
-export function useDailyRadarValidationQuery(enabled: boolean) {
+export function useDailyRadarValidationQuery(enabled: boolean, lookbackDays = 90) {
   return useQuery({
-    queryKey: dailyRadarKeys.validation,
-    queryFn: ({ signal }) => fetchDailyRadarValidation(signal),
+    queryKey: [...dailyRadarKeys.validation, lookbackDays],
+    queryFn: ({ signal }) => fetchDailyRadarValidation(signal, lookbackDays),
     enabled,
     staleTime: 60_000,
     retry: 1,

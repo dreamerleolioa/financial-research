@@ -19,6 +19,7 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
     load_observation_origins, observation_report, strategy_cohort,
 )
 from ai_stock_sentinel.daily_radar.pool_quality import pool_comparisons
+from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarObservationStats, DailyRadarValidationCohort, DailyRadarValidationResponse,
 )
@@ -53,7 +54,7 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     origins = load_observation_origins(session, candidates, market=market, through_date=as_of_date)
     for candidate in candidates:
         candidate["observation_origin"] = origins.get((candidate["symbol"], strategy_cohort(candidate)))
-    windows = (5, 10, 20)
+    windows = DAILY_RADAR_VALIDATION_WINDOWS
     outcomes = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date)
     outcomes = [row for row in outcomes

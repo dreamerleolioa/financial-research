@@ -75,7 +75,7 @@ def get_daily_radar_symbol_history_endpoint(
 @router.get("/daily-radar/validation", response_model=DailyRadarValidationResponse)
 def get_daily_radar_validation_endpoint(
     market: str = Query(default="TW", min_length=1, max_length=20),
-    lookback_days: int = Query(default=90, ge=1, le=365),
+    lookback_days: int = Query(default=90, ge=1, le=1095),
     db: Session = Depends(get_db),
 ) -> DailyRadarValidationResponse:
     with db.no_autoflush:

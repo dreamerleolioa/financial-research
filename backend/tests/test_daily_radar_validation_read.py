@@ -89,6 +89,19 @@ def groups(body, window="5", cohort=0):
     return body["cohorts"][cohort]["windows"][window]
 
 
+def test_public_validation_includes_medium_term_windows_and_longer_sample_period(storage):
+    session, client, engine = storage
+    add_candidate(session, add_run(session))
+    add_calendar(session)
+    session.commit()
+    response = client.get("/daily-radar/validation?lookback_days=1095")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lookback_days"] == 1095
+    assert set(body["cohorts"][0]["windows"]) == {"5", "10", "20", "40", "60"}
+    assert groups(body, "60")["all_selected"]["immature_observation_count"] == 1
+
+
 def test_pool_comparison_reads_comparable_shadow_only_without_writes(storage):
     session, client, engine = storage
     run = add_run(session, count=1)
@@ -273,6 +286,6 @@ def test_latest_empty_revision_shadow_failed_other_market_and_future_are_exclude
     assert body["cohorts"] == []
 
 
-@pytest.mark.parametrize("query", ["lookback_days=0", "lookback_days=366", "lookback_days=bad"])
+@pytest.mark.parametrize("query", ["lookback_days=0", "lookback_days=1096", "lookback_days=bad"])
 def test_read_bounds_sample_size(storage, query):
     assert storage[1].get("/daily-radar/validation?" + query).status_code == 422
