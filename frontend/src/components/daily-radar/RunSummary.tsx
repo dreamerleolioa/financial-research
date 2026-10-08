@@ -20,6 +20,7 @@ import {
 import { DailyRadarCandidateList } from "./CandidateList";
 import { DailyRadarDetailDrawer } from "./CandidateDetailDrawer";
 import { WholeRunEmptyState } from "./QueryStates";
+import { PoolSummary } from "./PoolSummary";
 
 function RunMetric({
   label,
@@ -134,6 +135,7 @@ export function RunSummary({ run }: { run: DailyRadarRunResponse }) {
 
   return (
     <>
+      {run.pool_summary && <PoolSummary summary={run.pool_summary} />}
       <section className="overflow-hidden rounded-[14px] border border-border bg-surface-raised shadow-panel">
         <div className="flex flex-col gap-2 border-b border-border-subtle px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-5">
           <div>

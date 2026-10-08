@@ -162,7 +162,20 @@ export interface DailyRadarRunResponse {
   status: DailyRadarRunStatus;
   data_dates: DailyRadarDateMap;
   market_context: DailyRadarTracePayload;
+  pool_summary?: DailyRadarPoolSummary | null;
   candidates: DailyRadarCandidate[];
+}
+
+export interface DailyRadarPoolSummary {
+  version: string;
+  population_scope: "scored_raw_records";
+  input_record_count: number;
+  state_counts: Record<string, number>;
+  duplicate_record_count: number;
+  unclassified_record_count: number;
+  comparable_shadow_count: number;
+  eligibility_audit_shadow_count: number;
+  reason_counts: Record<string, number>;
 }
 
 export interface DailyRadarSymbolHistoryItem {

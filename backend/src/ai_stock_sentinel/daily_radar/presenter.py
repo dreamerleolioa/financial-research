@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status, radar_trading_dates
+from ai_stock_sentinel.daily_radar.pool import pool_summary
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarCandidateResponse,
     DailyRadarRunResponse,
@@ -57,6 +58,7 @@ def public_run_response(
         status=run.status,
         data_dates=_run_data_dates(candidates),
         market_context=_run_market_context(candidates),
+        pool_summary=pool_summary(run),
         candidates=candidates,
     )
 
