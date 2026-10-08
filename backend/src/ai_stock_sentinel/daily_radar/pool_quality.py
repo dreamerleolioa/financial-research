@@ -8,7 +8,7 @@ from ai_stock_sentinel.calibration.forward_validation import candidate_key, numb
 from ai_stock_sentinel.daily_radar.observation_validation import strategy_cohort
 
 
-def pool_comparisons(candidates, outcomes, windows, *, calendar: list[date] | None = None):
+def ranked_pool_groups(candidates):
     by_day = defaultdict(list)
     cohorts = defaultdict(lambda: defaultdict(list))
     for candidate in candidates:
@@ -28,6 +28,11 @@ def pool_comparisons(candidates, outcomes, windows, *, calendar: list[date] | No
                 groups["top_3"].append(row)
             if rank <= 5:
                 groups["top_5"].append(row)
+    return cohorts
+
+
+def pool_comparisons(candidates, outcomes, windows, *, calendar: list[date] | None = None):
+    cohorts = ranked_pool_groups(candidates)
     by_candidate = {(candidate_key(row | {"record_date": row.get("signal_date")}), row["window_days"]): row
                     for row in outcomes}
     reports = {}

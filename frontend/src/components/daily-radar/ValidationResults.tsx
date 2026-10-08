@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { DailyRadarObservationStats, DailyRadarValidationResponse } from "../../lib/dailyRadarTypes";
 import { PoolQuality } from "./PoolQuality";
+import { ResearchPoolQuality } from "./ResearchPoolQuality";
 
 const panel = "rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel md:p-5";
 const percent = (value: number | null, scale = 1) => (value === null ? "—" : `${(value * scale).toFixed(1)}%`);
@@ -65,6 +66,7 @@ export function ValidationResults({
   const [windowDays, setWindowDays] = useState(5);
   const [priority, setPriority] = useState<3 | 5>(3);
   const [cohortId, setCohortId] = useState<string | null>(null);
+  const [returnBasis, setReturnBasis] = useState("next_open");
   const cohort =
     data?.cohorts.find((c) => c.id === (cohortId ?? data.default_cohort_id)) ??
     data?.cohorts.find((c) => c.id === data.default_cohort_id) ??
@@ -72,6 +74,8 @@ export function ValidationResults({
   const groups = cohort?.windows[String(windowDays)];
   const focused = groups?.[`top_${priority}`];
   const poolComparison = cohort?.pool_comparison?.[String(windowDays)];
+  const researchComparison = cohort?.research_pool_comparison?.[String(windowDays)];
+  const activeBasis = cohort?.research_pool_comparison ? returnBasis : "signal_close";
 
   return (
     <div className="space-y-5">
@@ -187,10 +191,20 @@ export function ValidationResults({
                 </div>
               </div>
           )}
+          {cohort?.research_pool_comparison && <label className="block text-xs font-medium text-text-muted">
+            報酬計算口徑
+            <select value={activeBasis} onChange={(e) => setReturnBasis(e.target.value)}
+              className="ml-3 min-h-10 rounded-[8px] border border-border bg-surface px-3 text-sm text-text-primary">
+              <option value="next_open">次日開盤起算（價格報酬）</option>
+              <option value="signal_close">訊號日收盤起算（歷史口徑）</option>
+            </select>
+          </label>}
+          {activeBasis === "next_open" && researchComparison && <ResearchPoolQuality comparison={researchComparison} windowDays={windowDays} />}
+          {activeBasis === "signal_close" && poolComparison && <PoolQuality comparison={poolComparison} windowDays={windowDays} />}
+          {activeBasis === "next_open" && cohort && !researchComparison && <section className={panel}>此期間尚無次日開盤研究資料。</section>}
           {cohort && !groups && <section className={panel}>此期間尚無已保存驗證資料。</section>}
           {focused && groups && (
             <>
-              {poolComparison && <PoolQuality comparison={poolComparison} windowDays={windowDays} />}
               {!focused.evaluated_observation_count && (
                 <section className={panel}>
                   <h3 className="font-semibold text-text-primary">尚未累積可評估結果</h3>

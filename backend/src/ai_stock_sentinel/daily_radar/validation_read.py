@@ -20,6 +20,8 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
 )
 from ai_stock_sentinel.daily_radar.pool_quality import pool_comparisons
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
+from ai_stock_sentinel.daily_radar.research_quality import research_pool_comparisons
+from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarObservationStats, DailyRadarValidationCohort, DailyRadarValidationResponse,
 )
@@ -59,6 +61,11 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
         session, candidates, windows=windows, as_of_date=as_of_date)
     outcomes = [row for row in outcomes
                 if (evaluated := parse_date(row.get("evaluation_as_of_date"))) is None or evaluated <= as_of_date]
+    research_outcomes = persisted_forward_validation_outcomes(
+        session, candidates, windows=windows, as_of_date=as_of_date,
+        validation_version=RESEARCH_VALIDATION_VERSION)
+    research_outcomes = [row for row in research_outcomes
+        if (evaluated := parse_date(row.get("evaluation_as_of_date"))) is None or evaluated <= as_of_date]
     benchmark = []
     if candidates:
         cached = load_price_series_from_raw_data(session, symbols=[DEFAULT_BENCHMARK_SYMBOL],
@@ -70,21 +77,27 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     calendar_days = {date.fromisoformat(row["date"]) for row in benchmark
                      if (close := number(row.get("close"))) is not None and close > 0}
     calendar_through = max(calendar_days, default=None)
-    saved_targets = [day for row in outcomes if (day := parse_date(row.get("target_date"))) is not None]
     # A partial/older calendar must not hide an already saved mature result as
     # immature. Without usable dates, absent outcomes stay missing, not pending.
-    calendar_usable = bool(calendar_days) and all(
-        date.fromisoformat(c["record_date"]) in calendar_days for c in candidates)
-    calendar_usable = calendar_usable and all(day in calendar_days for day in saved_targets)
-    calendar_usable = calendar_usable and all(
-        sum(date.fromisoformat(row["signal_date"]) < day <= date.fromisoformat(row["target_date"])
-            for day in calendar_days) == row["window_days"]
-        for row in outcomes if row["status"] == "validated"
-    )
+    def usable_calendar(saved):
+        return bool(calendar_days) and all(
+            date.fromisoformat(c["record_date"]) in calendar_days for c in candidates
+        ) and all(
+            parse_date(row.get("target_date")) in calendar_days and
+            sum(date.fromisoformat(row["signal_date"]) < day <= date.fromisoformat(row["target_date"])
+                for day in calendar_days) == row["window_days"]
+            for row in saved if row["status"] == "validated"
+        )
+    # Each validation basis owns its calendar checks; a malformed new result
+    # must never change legacy observation maturity or hide its saved results.
+    calendar_usable = usable_calendar(outcomes)
+    research_calendar_usable = usable_calendar(research_outcomes)
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
     comparisons = pool_comparisons(candidates, outcomes, windows,
                                    calendar=sorted(calendar_days) if calendar_usable else None)
+    research_comparisons = research_pool_comparisons(candidates, research_outcomes, windows,
+        calendar=sorted(calendar_days) if research_calendar_usable else None)
     dates_by_strategy = {}
     for candidate in candidates:
         if candidate["selection_status"] == "selected":
@@ -99,13 +112,14 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
             windows={window: {group: DailyRadarObservationStats.model_validate(stats)
                               for group, stats in groups.items()} for window, groups in cohort["windows"].items()},
             pool_comparison=comparisons.get(key, {}),
+            research_pool_comparison=research_comparisons.get(key, {}),
         ))
     # Date/id ordering reflects the latest published selected signal, not a
     # lexicographic version sort or the cohort with the best-looking results.
     latest_selected = next((c for c in reversed(candidates) if c["selection_status"] == "selected"), None)
     latest_key = strategy_cohort(latest_selected) if latest_selected else None
     default_id = json.dumps(latest_key, ensure_ascii=True, separators=(",", ":")) if latest_key else None
-    evaluated_dates = [day for row in outcomes if (day := parse_date(row.get("evaluation_as_of_date"))) is not None]
+    evaluated_dates = [day for row in outcomes + research_outcomes if (day := parse_date(row.get("evaluation_as_of_date"))) is not None]
     return DailyRadarValidationResponse(
         diagnostic_version=OBSERVATION_DIAGNOSTIC_VERSION, as_of_date=as_of_date,
         sample_start_date=start, sample_end_date=as_of_date, lookback_days=lookback_days,

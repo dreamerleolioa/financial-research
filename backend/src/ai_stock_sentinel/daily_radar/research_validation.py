@@ -10,6 +10,7 @@ from ai_stock_sentinel.calibration.forward_validation_planning import FORWARD_PR
 from ai_stock_sentinel.daily_radar.forward_validation import (
     default_due_start_date, exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs, persisted_forward_validation_outcomes,
+    load_benchmark_prices_from_prepared_market_context,
     upsert_forward_validation_results, validate_forward_validation_benchmark,
 )
 
@@ -27,7 +28,7 @@ def _index(rows):
 
 
 def evaluate_research_window(candidate, *, price_series, benchmark_prices,
-                             window_days, as_of_date, benchmark_symbol):
+                             window_days, as_of_date, benchmark_symbol, trading_calendar=None):
     signal = parse_date(candidate.get("record_date"))
     base = {"candidate_id": candidate.get("candidate_id"), "symbol": candidate.get("symbol"),
             "signal_date": signal.isoformat() if signal else None, "window_days": window_days,
@@ -45,6 +46,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
     benchmark = _index(benchmark_prices)
     calendar = sorted(day for day, row in benchmark.items()
                       if signal < day <= as_of_date and (number(row.get("close")) or 0) > 0)
+    if trading_calendar is not None:
+        calendar = sorted({day for day in trading_calendar if signal < day <= as_of_date})
     if signal not in benchmark:
         return skip("missing_benchmark")
     if len(calendar) < window_days:
@@ -54,6 +57,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             return skip("missing_benchmark")
         return skip("window_not_mature", pending=True)
     days = calendar[:window_days]
+    if any(day not in benchmark for day in days):
+        return skip("missing_benchmark")
     prices = _index(price_series)
     if any(day not in prices for day in days):
         return skip("missing_future_price")
@@ -134,26 +139,33 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         benchmark = list(price_provider.fetch(
             [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
         ).get(request.benchmark_symbol, []))
+        reference = load_benchmark_prices_from_prepared_market_context(
+            session, market=request.market, benchmark_symbol=request.benchmark_symbol,
+            as_of_date=as_of_date, required_dates=[parse_date(c["record_date"]) for c in active])
+        reference_days = sorted(day for day in _index(reference) if day <= as_of_date)
         calendar = sorted(day for day in _index(benchmark) if day <= as_of_date)
         by_symbol = {}
         for candidate in active:
             signal = parse_date(candidate["record_date"])
+            reference_usable = signal in reference_days and reference_days[-1] >= max(calendar, default=signal)
+            candidate_calendar = reference_days if reference_usable else calendar
             due = [w for w in pending[candidate_key(candidate)]
-                   if sum(day > signal for day in calendar) >= w
+                   if sum(day > signal for day in candidate_calendar) >= w
                    or (as_of_date - signal).days >= w * 2]
             if due:
-                by_symbol.setdefault(candidate["symbol"], []).append((candidate, due))
+                by_symbol.setdefault(candidate["symbol"], []).append((candidate, due, reference_days if reference_usable else None))
         symbols = sorted(by_symbol)
         for offset in range(0, len(symbols), FORWARD_PRICE_FETCH_BATCH_SIZE):
             batch = symbols[offset:offset + FORWARD_PRICE_FETCH_BATCH_SIZE]
-            batch_start = min(parse_date(c["record_date"]) for s in batch for c, _ in by_symbol[s])
+            batch_start = min(parse_date(c["record_date"]) for s in batch for c, _, _ in by_symbol[s])
             prices = price_provider.fetch(batch, start_date=batch_start, end_date=as_of_date)
             for symbol in batch:
-                for candidate, due in by_symbol[symbol]:
+                for candidate, due, reference_calendar in by_symbol[symbol]:
                     for window in due:
                         row = evaluate_research_window(
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
-                            window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
+                            window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
+                            trading_calendar=reference_calendar)
                         if row["status"] != "pending":
                             outcomes.append(row)
     summary = upsert_forward_validation_results(session, outcomes)

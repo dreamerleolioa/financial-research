@@ -81,6 +81,67 @@ test("Validation supports 40 and 60 trading-day windows and requests longer hist
   await expect(page.getByText("樣本範圍（最近 365 日）", { exact: true })).toBeVisible();
 });
 
+test("Next-open research shows downside, cost sensitivity and insufficient confidence without false zeros", async ({ page }) => {
+  const body = structuredClone(validationFixture);
+  const researchStats = { ...qualityStats, evaluated_count: 10, immature_count: 0,
+    median_return_pct: 10, worst_decile_mean_return_pct: -8,
+    worst_adverse_excursion_pct: -12, median_adverse_excursion_pct: -4,
+    risk_sample_count: 10, missing_risk_count: 0, missing_reasons: {} };
+  const confidence = { status: "insufficient_blocks" as const, method: "paired_daily_moving_block_bootstrap" as const,
+    level: .95, block_trading_days: 5, minimum_blocks: 10, paired_date_count: 4, effective_block_count: 0,
+    mean_difference_pct: 2, lower_pct: null, upper_pct: null };
+  const scenario = { selected: researchStats, top_3: researchStats, top_5: researchStats,
+    comparable_shadow: researchStats, confidence, observed_positive_capture_share: .5,
+    population_scope: "observed_daily_comparable_pool" as const };
+  body.cohorts[0].research_pool_comparison = { "5": {
+    validation_version: "daily-radar-next-open-price-v1", return_basis: "next_open", price_basis: "unadjusted_price",
+    dividends_included: false, cost_model: "assumed_total_cost_percentage_points", last_evaluated_date: "2026-07-15",
+    cost_scenarios: { "0": scenario, "0.5": { ...scenario, selected: { ...researchStats, median_return_pct: 9.5 } },
+      "1": scenario },
+  }};
+  body.cohorts[0].pool_comparison = { "5": { selected: qualityStats, top_3: qualityStats, top_5: qualityStats,
+    comparable_shadow: qualityStats, population_scope: "observed_daily_comparable_pool", observed_positive_capture_share: .5 }};
+  await setup(page, body);
+  await page.getByRole("tab", { name: "驗證結果", exact: true }).click();
+  const panel = page.getByTestId("research-pool-quality");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("cell", { name: "-12.0%", exact: true })).toHaveCount(4);
+  await expect(panel.getByRole("cell", { name: "-8.0%", exact: true })).toHaveCount(4);
+  await expect(panel.getByTestId("research-confidence")).toContainText("樣本不足");
+  await page.getByLabel("假設總成本").selectOption("0.5");
+  await expect(panel.getByRole("cell", { name: "9.5%", exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.screenshot({ path: test.info().outputPath("next-open-research-mobile.png"), fullPage: true });
+  const research = body.cohorts[0].research_pool_comparison["5"];
+  for (const scenario of Object.values(research.cost_scenarios)) {
+    scenario.confidence = { ...confidence, status: "estimated", paired_date_count: 50,
+      effective_block_count: 10, lower_pct: -.5, upper_pct: 3 };
+  }
+  await page.getByRole("button", { name: "重新整理", exact: true }).click();
+  await expect(panel.getByTestId("research-confidence")).toContainText("95% 估計區間：-0.5% ～ 3.0%");
+  for (const scenario of Object.values(research.cost_scenarios)) {
+    for (const key of ["selected", "top_3", "top_5", "comparable_shadow"] as const) {
+      scenario[key] = { ...scenario[key], coverage_complete: false, evaluated_count: 0,
+        median_return_pct: null, median_excess_return_pct: null, positive_excess_rate: null,
+        worst_adverse_excursion_pct: null, median_adverse_excursion_pct: null,
+        worst_decile_mean_return_pct: null, risk_sample_count: 0, skipped_count: 10,
+        missing_reasons: { missing_entry_open: 10 } };
+    }
+    scenario.confidence = { ...confidence, status: "calendar_missing", effective_block_count: null };
+    scenario.observed_positive_capture_share = null;
+  }
+  research.last_evaluated_date = null;
+  await page.getByRole("button", { name: "重新整理", exact: true }).click();
+  await expect(panel.getByTestId("research-confidence")).toContainText("完整日期區塊無法判定");
+  await expect(panel.getByRole("cell", { name: "0.0%", exact: true })).toHaveCount(0);
+  await panel.getByText("缺資料原因與結果版本", { exact: true }).click();
+  await expect(panel.getByText(/缺少股票次日開盤價 10 筆/)).toHaveCount(4);
+  await page.getByLabel("報酬計算口徑").selectOption("signal_close");
+  await expect(panel).toHaveCount(0);
+  await expect(page.getByText("相對基準報酬以訊號日價格計算，未扣交易成本。", { exact: false })).toBeVisible();
+});
+
 test("Pool quality compares saved selected and shadow samples with explicit scope", async ({ page }) => {
   const body = structuredClone(validationFixture);
   body.cohorts[0].pool_comparison = { "5": {

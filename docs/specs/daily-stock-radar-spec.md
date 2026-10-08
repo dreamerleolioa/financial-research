@@ -569,7 +569,7 @@ Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`�
 
 ### 12.2 突破前觀察診斷
 
-現有 `daily-radar-forward-validation-v2` 的訊號日收盤價、5／10／20 交易日報酬、benchmark、MFE／MAE 與排程維持原契約。Daily Radar adapter 在新 validated outcome 的 JSON 內另存 `observation_diagnostic`，其獨立版本為 `daily-radar-observation-v1`；一般分析 adapter 不加入此診斷，不新增資料表或 migration。
+現有 `daily-radar-forward-validation-v2` 的訊號日收盤價、5／10／20 交易日報酬、benchmark、MFE／MAE 定義維持原契約；Daily Radar 排程另擴充 40／60 日窗口並執行獨立的次日開盤研究口徑。Daily Radar adapter 在新 validated outcome 的 JSON 內另存 `observation_diagnostic`，其獨立版本為 `daily-radar-observation-v1`；一般分析 adapter 不加入此診斷，不新增資料表或 migration。
 
 Forward-validation 的候選查詢僅投影報告分類、固定價位、版本與 benchmark 身分所需欄位；已保存窗口排除及寫入身分核對不得重新載入完整 `input_snapshot`。Raw 價格只讀 final rows 的 symbol／technical，以每批 128 筆串流、依 symbol 與 record_date 合併；同日 OHLC 衝突證據須跨批次保留，歷史價格僅保留請求日期範圍。Prepared benchmark 僅投影 benchmark JSON。共用 planning service 保留 benchmark-first 順序，缺漏股票每批最多 32 個循序補抓，失敗直接中止，不以空值或重試吞掉錯誤；Daily Radar 全部結果仍在單次交易提交，批次補抓不產生部分提交。
 
@@ -577,7 +577,7 @@ Daily Radar 維護 endpoint 在候選／raw 價格／benchmark 載入、窗口�
 
 1. **觀察起點**：採同一 symbol 與 scoring／rule／config／selection version 的可用公開紀錄首次 selected 日期。查詢評估區間之前的歷史時，只投影 ID、symbol、日期及版本，不讀整份歷史 snapshot。先選同日最新 `completed`／`stale_data` run，再讀候選；即使最新 run 為空，也不得回取舊 run。Shadow、failed、superseded 與未來日期不建立起點；重複入選標記 `not_first_observation`，不重算新機會。缺起點證據標記 `origin_unknown`，不得將 bounded query 第一筆當成首次。
 2. **固定價位**：使用首次入選 snapshot 的 `indicators.support_level`／`resistance_level`，不以後續價格重畫區間，也不以 MA20／MA60 補缺。需為有限正數、支撐小於壓力、入選 OHLCV 日期一致；若有 technical indicators 日期，也需同日。入選收盤已高於壓力或低於支撐，分別列 `already_broken_out`／`already_invalidated`，不計提前辨識成功率。
-3. **確認與失效**：在 benchmark 定義的完整 5／10／20 日窗口中，連續兩個交易日收盤嚴格高於固定壓力，第二日為 `confirmed`；確認前先收盤嚴格低於固定支撐則為 `invalidated`，之後即使突破也不改判。盤中穿越與收盤等於價位均不觸發。窗口最後一日僅首次站上壓力時，該窗口仍是 `unconfirmed`；不得借用窗口外或 as-of 之後行情確認。
+3. **確認與失效**：在 benchmark 定義的完整 5／10／20／40／60 日窗口中，連續兩個交易日收盤嚴格高於固定壓力，第二日為 `confirmed`；確認前先收盤嚴格低於固定支撐則為 `invalidated`，之後即使突破也不改判。盤中穿越與收盤等於價位均不觸發。窗口最後一日僅首次站上壓力時，該窗口仍是 `unconfirmed`；不得借用窗口外或 as-of 之後行情確認。
 4. **等待風險與提前天數**：`lead_trading_days` 為首次入選至確認日經過的 benchmark 交易日數。`waiting_max_adverse_excursion_pct` 以訊號收盤價為基準，取下一交易日至確認／失效當日（含當日）的最低價；無事件則取完整窗口，沒有下跌為 0。此欄位是等待期間價格風險，並非模擬實際交易報酬。
 5. **資料完整性**：行情缺交易日、OHLC 不合理、同日行情衝突或缺固定價位，均為 `insufficient_data`，不算失敗。Raw snapshot 載入與共用價格合併在同日共有的有效正數 OHLC 值不同時，保留 `ohlc_conflict_fields`；相同數值或補齊原缺欄位不算衝突，後續一致資料、空標記或再次合併不能清除已發現的衝突。診斷也直接比對未合併的重複 OHLC 列；目前窗口內的衝突回報 `candidate_history_gap_or_invalid_ohlc`，窗口外的衝突不阻擋該窗口。此證據僅加入價格處理資料，原數值合併優先順序、一般分析及原 v2 報酬計算保持相容。原報酬窗口若 skipped，沿用原 skip reason，不產生觀察事件。既有 v2 結果若缺本診斷，報告揭露 `missing_diagnostic_count`；due 模式不因此重新評估已完成的舊結果，也不因本次衝突偵測修正自動重算已保存診斷或回填 production。
 6. **研究名單比較**：報告新增 `observation_diagnostics`，按 scoring／rule／config／selection version 分組，再逐窗口列 `all_selected`、`top_3`、`remaining_after_3`、`top_5`、`remaining_after_5`。先以完整當日 selected 清單的原分數與 symbol 決定排名，再接 outcome、排除重複入選及尚未成熟的新觀察；不得用低順位遞補缺 result 的前順位。DB 載入保留 run 的 `candidate_count` 以查核名單完整性。缺 outcome／診斷、資料不足、skipped 或名單不完整時，確認率／失效率為 null；分母僅為可評估首次觀察。報告同時揭露未成熟、重複、已突破、缺資料數量，以及 evaluated distinct symbol／signal date 數。部分有效樣本的等待風險／提前天數平均值明確限定為 `evaluated_first_observations_only`，不宣稱完整母體成效。
@@ -600,7 +600,7 @@ flowchart LR
 
 「盤後觀察雷達」預設顯示「觀察名單」，另提供「驗證結果」分頁；首次進入時以 `GET /daily-radar/validation` 讀取最近 90 個日曆天的已保存統計。查看與重新整理皆為唯讀，不觸發行情刷新、評估或歷史補算。
 
-- 可切換 5／10／20 **交易日**窗口與每日前 3／5 檔，顯示優先候選的突破確認率、突破前失效率、已突破樣本平均提前天數，以及有效樣本平均等待最大不利波動；比較表並列優先、其餘與全部候選。窗口選擇只切換已讀取的統計。
+- 可切換 5／10／20／40／60 **交易日**窗口與每日前 3／5 檔，顯示優先候選的突破確認率、突破前失效率、已突破樣本平均提前天數，以及有效樣本平均等待最大不利波動；比較表並列優先、其餘與全部候選。窗口選擇只切換已讀取的統計。
 - 不同策略版本分開呈現，預設選最新公開入選訊號的策略；頁面揭露樣本範圍、策略入選期間、統計截止日、最後已保存驗證日期及可用交易日資料截止日。
 - 缺 outcome、舊 outcome 缺診斷、skipped、診斷資料不足或排名名單不完整時，比率顯示「資料不足」；有效樣本數為零時顯示「尚未累積可評估結果」。尚未成熟、重複、滿期未突破、首次已突破與首次已跌破支撐各自計數，不將缺值當作 0% 或失敗。平均值只代表已取得的有效樣本，資料不足時需標明部分樣本。
 - 交易日證據不足時明確說明無法判定未計算樣本是否滿期；缺日期的 calendar 不得將已保存成熟結果誤判為尚未成熟。載入、首次失敗重試與保留上次結果的更新失敗有獨立畫面；刷新不清空既有統計。
@@ -619,6 +619,19 @@ flowchart LR
 | Background labels | `background_context_labels` 只描述背景脈絡與資料完整度，不作為 score driver、交易 action 或 portfolio recommendation |
 
 ---
+
+### 12.4 次日開盤候選池研究
+
+驗證頁提供「次日開盤起算（價格報酬）」及「訊號日收盤起算（歷史口徑）」切換。新 API 的研究欄位可用時預設次日開盤；舊 API 沒有研究欄位時繼續顯示歷史比較。樣本期間可選最近 90／180／365／1095 個日曆天。查看、切換與重新整理只讀已保存結果，不觸發正式環境補算。
+
+- 新結果以 `daily-radar-next-open-price-v1` 保存；既有 candidate／window／validation_version 唯一鍵足以隔離兩種口徑，不新增 migration、不覆寫 v2，也不變更 scoring、選股名額、排序或月度 5／10／20 日治理 gate。
+- 起點為訊號後第一個基準交易日真實開盤，終點為訊號後第 N 個交易日收盤。股票與基準使用同一起訖日，均明確請求 `auto_adjust=False` 的 OHLC；不使用入選 technical snapshot，不加入現金股息。資料來源與口徑、起訖價格／日期及成本模型隨 outcome 保存。
+- 已準備的 benchmark calendar 完整涵蓋時，以日期作為獨立交易日證據，缺 benchmark session 不得把終點順延；無完整 reference 時使用 provider 的 index calendar。開盤缺值、OHLC 衝突／無效、價格口徑或 corporate-action evidence 不明皆保留缺資料原因；不以收盤補開盤。期間含拆併股時暫不比較。未滿期不寫入失敗 outcome；行情年代明顯不足時保留 missing reason，不能冒充未滿期。
+- 固定總成本情境為 0／0.5／1 **個百分點**：每筆股票價格報酬與超額報酬扣除相同假設成本，基準維持未扣成本的價格報酬。成本情境並非個人費率、稅率、實際滑價或成交績效。公司股息未納入，因此此頁不是總報酬研究。
+- 對全部入池、每日前 3／5 檔、可比較未入選組別，按原始固定每日排名統計。顯示報酬／超額報酬中位數、超越基準比例、期間最深跌幅及跌幅中位數；跌幅相對次日開盤價，涵蓋窗口內盤中低點，最高為 0，不稱為峰值到谷值的最大回撤。最差 10% 平均報酬至少需 10 筆有效樣本，取 `ceil(n * 0.1)` 筆。缺資料不改為零，也不遞補缺結果的前順位。
+- 可信度針對「入池減可比較未入選的每日平均超額報酬差」。只用兩組皆有有效資料的同日，先對同日同股票重複觀察取平均，再股票等權、日期等權；與表格中各組不同日期組成的中位數是不同統計量。按 N 個連續基準交易日 moving blocks 同步抽樣 500 次，固定 seed 1729，以線性插值的 2.5／97.5 百分位給出 95% 估計區間。至少需要 10 個完整且不重疊的配對日期區塊，配對日期覆蓋期間交易日比例須達 80%，且兩組資料／排名／基準完整；不足則顯示原因。相同固定成本在兩組差值中抵銷。策略版本不完整時保留描述統計，但不發布可信區間；缺交易日證據時，完整區塊數為 null，不冒充 0。
+- 95% 區間反映這批已觀察樣本的區塊抽樣估計，不能保證獨立交易、因果效果或未來 alpha。沒有足夠滿期樣本時維持「樣本不足」，不調整門檻換取可發布數字。
+- 新舊口徑各自檢查 calendar；研究結果的日期衝突不能改變舊版突破診斷的成熟狀態。舊結果不會因新版本自動回補；新結果需排程完成並等窗口滿期，歷史回補另行授權。
 
 ## 13. 測試需求
 

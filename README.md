@@ -337,14 +337,16 @@ make run-api
 - `POST /internal/daily-radar/run-scoring`：只讀已準備資料並持久化 Daily Radar run/candidates；會要求 lending、full-margin、OHLCV、market context refresh step 完成，AVWAP 缺漏只保留為 optional evidence caveat，需 `DAILY_RADAR_INTERNAL_TOKEN`
 - `POST /internal/daily-radar/run`：保留一鍵手動相容入口；正式排程使用上述分段 workflow
 - `POST /internal/daily-radar/chip-context/update`：更新 shared background context cache，背景資料包含 weekly major holders、lending 與 full margin
-- `POST /internal/daily-radar/forward-validation/run`：執行 Daily Radar 成熟候選 forward validation，寫入可回放 validation result
+- `POST /internal/daily-radar/forward-validation/run`：執行 Daily Radar 成熟 5／10／20／40／60 日候選驗證；`return_basis` 可選 `signal_close`（預設）或 `next_open`，結果依版本分開保存
 - `POST /internal/analysis-calibration/forward-validation/run`：執行 final `/analyze` 樣本的成熟 5 / 10 / 20 日驗證
 - `POST /internal/daily-radar/rule-review/monthly`：產生 Daily Radar 六個成熟月份 training / holdout 調權報表
 - `POST /internal/analysis-calibration/monthly`：產生一般分析 confidence 六個成熟月份 training / holdout 調權報表
 
 Daily Radar due validation 已接在 `.github/workflows/daily-radar.yml` 的 OHLCV／market context 後；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
 
-兩軌共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個 5／10／20 日皆成熟的月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個 blocks，且整體與每個入選月份的逐窗口 validated coverage、replay coverage 均達 90%；Daily Radar 涉及排名或 counterfactual 的治理另要求每個交易日／窗口 replay ranking pool 100% 完整。每個 horizon 另有獨立 holdout 非劣性 gate。一般分析與 Daily Radar 都會在 scoring／bootstrap 前檢查整批 replay workload，超限時 fail closed；一般分析只採目前 strategy/config version，且資料庫以 strategy/config version 鎖定同一 market／symbol／日期唯一的 point-in-time sample；validation 的 `signal_date` 與 `benchmark_symbol` 必須和該 sample 完全一致，否則不得計入 watermark 或 optimizer。Daily Radar 缺少 validation result 時明確標記 missing，先決定 Top 20 再接 outcome，並只對 live-score 規則執行同輸入 counterfactual replay；context-only 群組標記為不適用。兩軌報告都只提出建議，不直接變更 live scoring。
+候選池研究結果可在「盤後觀察雷達 → 驗證結果」查看次日開盤報酬、0／0.5／1 個百分點假設成本、下跌幅度與日期區塊可信度。新口徑不含股息，僅供候選研究；舊結果保留。Daily Radar 排程依序保存兩種口徑，歷史補算不會隨查看自動執行，詳見 [次日開盤候選池研究規格](docs/specs/daily-stock-radar-spec.md#124-次日開盤候選池研究)。
+
+兩軌的歷史收盤口徑共用 feature-neutral `ai_stock_sentinel.calibration.forward_validation` 處理交易窗口、價格正規化、benchmark 完整性與 outcome 計算，各自只提供 feature adapter；月報先以 DB aggregation 選出最近六個 5／10／20 日皆成熟的月份，optimizer 只載入所選月份的 replay / validation 明細，Daily Radar 的當月 rule diagnostics 另以單月 bounded query 載入。自動修改資格要求每個窗口都有足夠 distinct signal／candidate、training 至少 20 個日期 block、holdout 至少 5 個 blocks，且整體與每個入選月份的逐窗口 validated coverage、replay coverage 均達 90%；Daily Radar 涉及排名或 counterfactual 的治理另要求每個交易日／窗口 replay ranking pool 100% 完整。每個 horizon 另有獨立 holdout 非劣性 gate。一般分析與 Daily Radar 都會在 scoring／bootstrap 前檢查整批 replay workload，超限時 fail closed；一般分析只採目前 strategy/config version，且資料庫以 strategy/config version 鎖定同一 market／symbol／日期唯一的 point-in-time sample；validation 的 `signal_date` 與 `benchmark_symbol` 必須和該 sample 完全一致，否則不得計入 watermark 或 optimizer。Daily Radar 缺少 validation result 時明確標記 missing，先決定 Top 20 再接 outcome，並只對 live-score 規則執行同輸入 counterfactual replay；context-only 群組標記為不適用。兩軌報告都只提出建議，不直接變更 live scoring。
 
 Final `/analyze` cache 會保存去識別化的精簡 replay payload；若首次 calibration capture 暫時失敗，後續 final cache hit 會以同一 payload 冪等補寫。舊 cache 沒有正式 replay payload 時維持跳過，不會從輸出猜測輸入。
 

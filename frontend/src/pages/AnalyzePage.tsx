@@ -344,7 +344,7 @@ export default function AnalyzePage() {
         <WorkspaceEmptyState
           eyebrow="Research ready"
           title="從一個明確標的開始"
-          description="取得可回放的技術、籌碼與風險資料；分析完成後可加入關注、持股，或複製給外部 AI 深入研究。"
+          description="取得可回放的技術、籌碼與風險資料，協助研究投資候選標的；分析完成後可複製給外部 AI 深入研究。"
           meta="上市股票使用 .TW，上櫃股票使用 .TWO。"
           actions={
             <button

@@ -102,6 +102,49 @@ def test_public_validation_includes_medium_term_windows_and_longer_sample_period
     assert groups(body, "60")["all_selected"]["immature_observation_count"] == 1
 
 
+def test_public_research_comparison_separates_versions_and_is_read_only(storage):
+    from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+    session, client, engine = storage
+    c = add_candidate(session, add_run(session))
+    add_result(session, c)
+    add_result(session, c, version=RESEARCH_VALIDATION_VERSION, diagnostic=False)
+    new = session.scalar(select(DailyRadarForwardValidationResult).where(
+        DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION))
+    new.outcome = {"forward_return_pct": 10, "excess_return_vs_benchmark_pct": 8,
+                   "max_adverse_excursion_pct": -4, "return_basis": "next_open",
+                   "price_basis": "unadjusted_price"}
+    add_calendar(session)
+    session.commit()
+    statements = []
+    event.listen(engine, "before_cursor_execute", lambda c, cu, sql, p, ctx, many: statements.append(sql))
+    response = client.get("/daily-radar/validation")
+    assert response.status_code == 200
+    research = response.json()["cohorts"][0]["research_pool_comparison"]["5"]
+    assert research["validation_version"] == RESEARCH_VALIDATION_VERSION
+    assert research["cost_scenarios"]["0.5"]["selected"]["median_return_pct"] == 9.5
+    assert research["cost_scenarios"]["0"]["selected"]["worst_adverse_excursion_pct"] == -4
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "insufficient_blocks"
+    assert not any(sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for sql in statements)
+    assert response.json()["cohorts"][0]["pool_comparison"]["5"]["selected"]["median_excess_return_pct"] is None
+
+
+def test_research_calendar_conflict_does_not_change_legacy_maturity(storage):
+    from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+    session, client, engine = storage
+    old = add_candidate(session, add_run(session))
+    add_result(session, old)
+    add_result(session, old, version=RESEARCH_VALIDATION_VERSION)
+    new = session.scalar(select(DailyRadarForwardValidationResult).where(
+        DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION))
+    new.target_date = date(2026, 6, 9)  # six sessions after signal, inconsistent with window=5
+    add_candidate(session, add_run(session, date(2026, 6, 25)), "2317.TW")
+    add_calendar(session)
+    session.commit()
+    body = client.get("/daily-radar/validation").json()
+    assert body["calendar_through_date"] == "2026-06-30"
+    assert groups(body)["all_selected"]["immature_observation_count"] == 1
+
+
 def test_pool_comparison_reads_comparable_shadow_only_without_writes(storage):
     session, client, engine = storage
     run = add_run(session, count=1)
