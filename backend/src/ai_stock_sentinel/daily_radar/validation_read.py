@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.forward_validation import DEFAULT_BENCHMARK_SYMBOL, number, parse_date
@@ -18,6 +18,7 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
     OBSERVATION_DIAGNOSTIC_VERSION, STRATEGY_FIELDS, canonical_radar_run_ids,
     load_observation_origins, observation_report, strategy_cohort,
 )
+from ai_stock_sentinel.daily_radar.pool_quality import pool_comparisons
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarObservationStats, DailyRadarValidationCohort, DailyRadarValidationResponse,
 )
@@ -32,20 +33,23 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     rows = session.execute(select(
         DailyRadarCandidate.id, DailyRadarCandidate.symbol, DailyRadarCandidate.observation_score,
         DailyRadarRun.run_date, DailyRadarRun.candidate_count,
+        DailyRadarCandidate.selection_status, DailyRadarCandidate.shadow_cohort,
         DailyRadarCandidate.input_snapshot["versions"].as_json(),
         DailyRadarCandidate.input_snapshot["selection_version"].as_string(),
         DailyRadarCandidate.input_snapshot["replay_input"]["market_context"]["benchmark"]["symbol"].as_string(),
     ).join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
       .where(DailyRadarRun.id.in_(canonical_radar_run_ids(
           market=market, start_date=start, end_date=as_of_date)),
-          DailyRadarCandidate.selection_status == "selected")
+          or_(DailyRadarCandidate.selection_status == "selected",
+              (DailyRadarCandidate.selection_status == "shadow") & (DailyRadarCandidate.shadow_cohort == "comparable")))
       .order_by(DailyRadarRun.run_date, DailyRadarCandidate.id)).all()
     candidates = [{
         "candidate_id": cid, "symbol": symbol, "observation_score": score,
-        "record_date": day.isoformat(), "daily_selected_pool_count": count, "selection_status": "selected",
+        "record_date": day.isoformat(), "daily_selected_pool_count": count,
+        "selection_status": status, "shadow_cohort": shadow,
         "input_snapshot": {"versions": versions, "selection_version": selection,
                            "replay_input": {"market_context": {"benchmark": {"symbol": benchmark}}}},
-    } for cid, symbol, score, day, count, versions, selection, benchmark in rows]
+    } for cid, symbol, score, day, count, status, shadow, versions, selection, benchmark in rows]
     origins = load_observation_origins(session, candidates, market=market, through_date=as_of_date)
     for candidate in candidates:
         candidate["observation_origin"] = origins.get((candidate["symbol"], strategy_cohort(candidate)))
@@ -78,9 +82,12 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     )
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
+    comparisons = pool_comparisons(candidates, outcomes, windows,
+                                   calendar=sorted(calendar_days) if calendar_usable else None)
     dates_by_strategy = {}
     for candidate in candidates:
-        dates_by_strategy.setdefault(strategy_cohort(candidate), []).append(date.fromisoformat(candidate["record_date"]))
+        if candidate["selection_status"] == "selected":
+            dates_by_strategy.setdefault(strategy_cohort(candidate), []).append(date.fromisoformat(candidate["record_date"]))
     cohorts = []
     for cohort in report["cohorts"]:
         key = tuple(cohort["strategy"][field] for field in STRATEGY_FIELDS)
@@ -90,10 +97,12 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
             signal_start_date=min(dates), signal_end_date=max(dates),
             windows={window: {group: DailyRadarObservationStats.model_validate(stats)
                               for group, stats in groups.items()} for window, groups in cohort["windows"].items()},
+            pool_comparison=comparisons.get(key, {}),
         ))
     # Date/id ordering reflects the latest published selected signal, not a
     # lexicographic version sort or the cohort with the best-looking results.
-    latest_key = strategy_cohort(candidates[-1]) if candidates else None
+    latest_selected = next((c for c in reversed(candidates) if c["selection_status"] == "selected"), None)
+    latest_key = strategy_cohort(latest_selected) if latest_selected else None
     default_id = json.dumps(latest_key, ensure_ascii=True, separators=(",", ":")) if latest_key else None
     evaluated_dates = [day for row in outcomes if (day := parse_date(row.get("evaluation_as_of_date"))) is not None]
     return DailyRadarValidationResponse(

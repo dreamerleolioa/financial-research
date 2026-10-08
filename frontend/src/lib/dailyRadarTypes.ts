@@ -18,6 +18,7 @@ export const DAILY_RADAR_REPEAT_STATUSES = ["new", "repeat", "upgraded", "cooled
 export type DailyRadarBucket = (typeof DAILY_RADAR_BUCKETS)[number];
 export type DailyRadarRiskLabel = (typeof DAILY_RADAR_RISK_LABELS)[number];
 export type DailyRadarRepeatStatus = (typeof DAILY_RADAR_REPEAT_STATUSES)[number];
+export type DailyRadarResearchStatus = "trend_forming" | "waiting_for_consolidation" | "structure_watch" | "data_pending";
 export type DailyRadarRunStatus = "completed" | "running" | "failed" | "stale_data";
 export type DailyRadarDateMap = Record<string, string>;
 export type DailyRadarTracePayload = Record<string, unknown>;
@@ -97,6 +98,7 @@ export interface DailyRadarMatchedRule {
 }
 
 export interface DailyRadarCandidate {
+  research_status?: DailyRadarResearchStatus;
   symbol: string;
   name: string;
   primary_bucket: DailyRadarBucket;
@@ -143,6 +145,32 @@ export interface DailyRadarValidationCohort {
   signal_start_date: string;
   signal_end_date: string;
   windows: Record<string, Record<string, DailyRadarObservationStats>>;
+  pool_comparison?: Record<string, DailyRadarPoolComparison>;
+}
+
+export interface DailyRadarPoolQualityStats {
+  sample_count: number;
+  evaluated_count: number;
+  signal_date_count: number;
+  distinct_symbol_count: number;
+  missing_outcome_count: number;
+  skipped_count: number;
+  immature_count: number;
+  missing_metric_count: number;
+  benchmark_symbols: string[];
+  coverage_complete: boolean;
+  positive_excess_count: number;
+  positive_excess_rate: number | null;
+  median_excess_return_pct: number | null;
+}
+
+export interface DailyRadarPoolComparison {
+  selected: DailyRadarPoolQualityStats;
+  top_3: DailyRadarPoolQualityStats;
+  top_5: DailyRadarPoolQualityStats;
+  comparable_shadow: DailyRadarPoolQualityStats;
+  population_scope: "observed_daily_comparable_pool";
+  observed_positive_capture_share: number | null;
 }
 
 export interface DailyRadarValidationResponse {
@@ -162,7 +190,29 @@ export interface DailyRadarRunResponse {
   status: DailyRadarRunStatus;
   data_dates: DailyRadarDateMap;
   market_context: DailyRadarTracePayload;
+  pool_summary?: DailyRadarPoolSummary | null;
   candidates: DailyRadarCandidate[];
+}
+
+export interface DailyRadarPoolSummary {
+  version: string;
+  population_scope: "scored_raw_records";
+  input_record_count: number;
+  state_counts: Record<string, number>;
+  duplicate_record_count: number;
+  unclassified_record_count: number;
+  comparable_shadow_count: number;
+  eligibility_audit_shadow_count: number;
+  reason_counts: Record<string, number>;
+  discovery_summary?: {
+    version: string;
+    run_date: string;
+    scanned_symbol_count: number;
+    eligible_symbol_count: number;
+    discovered_symbol_count: number;
+    track_counts: Record<string, number>;
+    excluded_reason_counts: Record<string, number>;
+  } | null;
 }
 
 export interface DailyRadarSymbolHistoryItem {

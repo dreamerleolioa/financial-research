@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ai_stock_sentinel.daily_radar.market_exploration import load_market_exploration, attach_official_turnover
 from ai_stock_sentinel.daily_radar.universe import merge_discovery_universe
+from ai_stock_sentinel.daily_radar.pool import freeze_discovery_summary
 
 from contextlib import suppress
 import logging
@@ -109,6 +110,7 @@ def run_daily_radar_scoring_endpoint(
         allow_fixture_fallback=False,
     )
     prepared.status = "scored"
+    freeze_discovery_summary(run, (prepared.step_statuses.get("prepare-universe") or {}).get("market_exploration"))
     db.add(prepared)
     db.commit()
     return run_trigger_response(run)
@@ -142,7 +144,9 @@ def run_daily_radar_endpoint(
             track_limit=50,
             technical_records=existing_technical_rows,
         )
-        discoveries = load_market_exploration(db, run_date=run_date, required=False)[0] if market == "TW" else []
+        discoveries, discovery_audit = (
+            load_market_exploration(db, run_date=run_date, required=False) if market == "TW" else ([], None)
+        )
         universe = _capped_daily_radar_universe(
             merge_discovery_universe(universe, discoveries),
             max_symbols=DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
@@ -222,6 +226,7 @@ def run_daily_radar_endpoint(
             background_contexts_by_symbol=background_contexts_by_symbol,
             allow_fixture_fallback=False,
         )
+        freeze_discovery_summary(run, discovery_audit)
         db.commit()
         return run_trigger_response(run)
     except HTTPException:

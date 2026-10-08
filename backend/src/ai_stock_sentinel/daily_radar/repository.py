@@ -265,9 +265,12 @@ def get_symbol_candidate_history(
         summary = query.with_only_columns(
             DailyRadarCandidate.symbol, DailyRadarRun.run_date, DailyRadarCandidate.observation_score,
             DailyRadarCandidate.score_breakdown["scoring_version"].as_string().label("scoring_version"),
+            DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
+            DailyRadarCandidate.input_snapshot["selection_version"].as_string().label("selection_version"),
         ).order_by(DailyRadarRun.run_date.desc())
         return [{"symbol": row.symbol, "record_date": row.run_date.isoformat(),
-                 "observation_score": row.observation_score, "scoring_version": row.scoring_version}
+                 "observation_score": row.observation_score, "scoring_version": row.scoring_version,
+                 "strategy_versions": row.versions, "selection_version": row.selection_version}
                 for row in session.execute(summary)]
     rows = session.execute(
         query

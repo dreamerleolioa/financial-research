@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { DailyRadarObservationStats, DailyRadarValidationResponse } from "../../lib/dailyRadarTypes";
+import { PoolQuality } from "./PoolQuality";
 
 const panel = "rounded-[14px] border border-border bg-surface-raised p-4 shadow-panel md:p-5";
 const percent = (value: number | null, scale = 1) => (value === null ? "—" : `${(value * scale).toFixed(1)}%`);
@@ -66,6 +67,7 @@ export function ValidationResults({
     data?.cohorts[0];
   const groups = cohort?.windows[String(windowDays)];
   const focused = groups?.[`top_${priority}`];
+  const poolComparison = cohort?.pool_comparison?.[String(windowDays)];
 
   return (
     <div className="space-y-5">
@@ -174,6 +176,7 @@ export function ValidationResults({
                   ))}
                 </div>
               </div>
+              {poolComparison && <PoolQuality comparison={poolComparison} windowDays={windowDays} />}
               {!focused.evaluated_observation_count && (
                 <section className={panel}>
                   <h3 className="font-semibold text-text-primary">尚未累積可評估結果</h3>

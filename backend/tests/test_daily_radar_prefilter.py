@@ -92,6 +92,17 @@ def test_prefilter_shadow_pool_deduplicates_symbols_before_selection() -> None:
     assert batch["duplicates"] == [{"symbol": "2330.TW"}]
 
 
+@pytest.mark.parametrize("record_count", [3, 5])
+def test_prefilter_shadow_pool_preserves_duplicate_record_multiplicity(record_count: int) -> None:
+    record = _records_by_symbol()["2330.TW"]
+    batch = run_stage1_prefilter_with_shadow([copy.deepcopy(record) for _ in range(record_count)])
+
+    assert [row["symbol"] for row in batch["selected"]] == ["2330.TW"]
+    assert batch["duplicates"] == [{"symbol": "2330.TW"}] * (record_count - 1)
+    assert batch["shadow"] == []
+    assert batch["excluded"] == []
+
+
 def test_prefilter_shadow_pool_keeps_all_cohorts_when_accepted_overflow_is_large() -> None:
     base = _records_by_symbol()["2330.TW"]
     accepted = []

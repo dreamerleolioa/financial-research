@@ -415,6 +415,16 @@ Daily Radar run status：
 
 公開讀取 API 只暴露 `completed` 與 `stale_data` run。
 
+候選池新增欄位：
+
+- `GET /daily-radar/latest` 與指定日期回應的 `pool_summary`，以完整 scoring run 投影篩選狀態、原因數量、重複與未分類資料列及兩類 shadow 數量；不受 bucket／limit 影響，不回傳未入選標的名單。`population_scope = scored_raw_records`，不宣稱全市場涵蓋率。去重保留首筆評分資料，每筆額外輸入各記一筆 `duplicate_universe_symbol`，重複資料列數不以重複股票種類數計算；舊批次已遺失的重複次數不回推。
+- `pool_summary.discovery_summary` 為 scoring 時保存的市場價量探索摘要，包含日期、掃描／符合門檻／保留探索候選數。一鍵 `POST /internal/daily-radar/run` 與分段 `POST /internal/daily-radar/run-scoring` 均在 commit 前保存當次摘要。摘要存於一筆 candidate 的既有 snapshot，不新增資料表或 migration。缺少、日期不符或不可用的 audit 不保存為成功；沒有 candidate 的批次不提供探索摘要。公開讀取不查詢可被後續重跑覆寫的 prepared audit。
+- 候選的 `research_status` 為 `trend_forming`、`waiting_for_consolidation`、`structure_watch` 或 `data_pending`；行情日期與中期趨勢日期必須同時符合 run 日期，才能投影有效趨勢狀態。
+- `input_snapshot.observation_history.score_comparison` 保存前次入池日期、分數與比較狀態。四個策略版本完整且一致時才給 `score_change`；缺版本為 `unavailable`，不同版本為 `version_changed`。
+- `GET /daily-radar/validation` 的每個 cohort 新增 `pool_comparison`，按 5／10／20 日提供 selected、top_3、top_5、comparable_shadow 的有效樣本數、日期／股票數、完整度、超越基準比例與超額報酬中位數。排名先固定再連結結果，不以低排名補缺漏。未滿期與缺漏分開；缺漏或跳過不發布完整比例。`observed_positive_capture_share` 另要求兩組都有有效樣本、完整且使用相同基準；僅為已觀察可比較樣本的機會入池占比。
+
+此比較與既有首次突破診斷的母體不同：每日重複訊號列入 pool 比較，不能解讀為獨立交易；各組日期與股票組成可能不同。公開 endpoint 維持唯讀，不抓 provider、重算 outcome 或回傳 private replay payload。
+
 #### Daily Radar segmented internal pipeline
 
 正式 GitHub Actions workflow 使用分段 endpoints，所有 cron 以 UTC 設定並對應台灣時間；workflow 會明確生成 payload `run_date`，避免 GitHub runner / Zeabur runtime 時區影響資料日期。Scheduled run 會用 GitHub Actions run API 讀取原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；啟動延遲、跨過台灣午夜與對舊 run 按 Re-run 都不會改變原本 intended trading date。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期。接著 workflow 的一般 step 先呼叫 `POST /internal/daily-radar/market-session`；TWSE 明確回報休市時 scheduled pipeline 與一般手動 step skip，provider 或 payload 異常時 fail closed。明確日期範圍的 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是 maintenance exceptions，不依賴目前 `run_date` 的 `market_open` 結果。

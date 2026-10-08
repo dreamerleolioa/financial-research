@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status, radar_trading_dates
+from ai_stock_sentinel.daily_radar.pool import pool_summary, research_status
 from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarCandidateResponse,
     DailyRadarRunResponse,
@@ -37,7 +38,7 @@ def public_run_response(
     history_candidates: Iterable[Mapping[str, Any]] | None = None,
 ) -> DailyRadarRunResponse:
     candidates = [
-        candidate_response(candidate)
+        candidate_response(candidate, record_date=run.run_date)
         for candidate in _ordered_candidates(run.candidates)
         if candidate.selection_status == "selected"
     ]
@@ -57,6 +58,7 @@ def public_run_response(
         status=run.status,
         data_dates=_run_data_dates(candidates),
         market_context=_run_market_context(candidates),
+        pool_summary=pool_summary(run),
         candidates=candidates,
     )
 
@@ -77,6 +79,7 @@ def history_response(item: dict[str, Any]) -> dict[str, Any]:
         "input_snapshot": _public_input_snapshot(item.get("input_snapshot")),
         "data_dates": {key: value.isoformat() for key, value in _date_mapping(item.get("data_dates") or {}).items()},
         "background_context_labels": _background_context_labels(item.get("input_snapshot")),
+        "research_status": research_status(item.get("input_snapshot") or {}, item.get("data_dates") or {}, str(item["record_date"])),
     }
     scoring_version = item.get("scoring_version") or _trace_version(item.get("score_breakdown"), "scoring_version")
     rule_version = item.get("rule_version") or _trace_version(item.get("score_breakdown"), "rule_version")
@@ -87,7 +90,7 @@ def history_response(item: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
-def candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateResponse:
+def candidate_response(candidate: DailyRadarCandidate, *, record_date: date | None = None) -> DailyRadarCandidateResponse:
     return DailyRadarCandidateResponse(
         symbol=candidate.symbol,
         name=_stored_display_name(candidate.symbol, candidate.name),
@@ -105,6 +108,7 @@ def candidate_response(candidate: DailyRadarCandidate) -> DailyRadarCandidateRes
         data_dates=_date_mapping(candidate.data_dates or {}),
         matched_rules=_matched_rules(candidate.matched_rules or []),
         background_context_labels=_background_context_labels(candidate.input_snapshot),
+        research_status=research_status(candidate.input_snapshot or {}, candidate.data_dates or {}, str(record_date)),
     )
 
 

@@ -1369,6 +1369,53 @@ def test_daily_radar_refresh_market_context_preserves_valid_existing_context_on_
     assert prepared.step_statuses["refresh-market-context"]["reused_existing_context"] is True
 
 
+def test_daily_radar_one_shot_run_persists_discovery_audit(monkeypatch, daily_radar_db_session: Session) -> None:
+    from ai_stock_sentinel.daily_radar.presenter import public_run_response
+    from ai_stock_sentinel.daily_radar.service import run_daily_radar
+
+    day = date(2026, 5, 29)
+    _persist_required_institutional_archive(daily_radar_db_session, run_date=day)
+    days = []
+    current = day
+    while len(days) < 70:
+        if current.weekday() < 5:
+            days.append(current)
+        current -= timedelta(days=1)
+    for index, bar_day in enumerate(reversed(days)):
+        for symbol in ("2330.TW", "6488.TWO", "1234.TW"):
+            _persist_exploration_bar(daily_radar_db_session, symbol, bar_day, index if symbol == "1234.TW" else 0)
+    for symbol in ("2330.TW", "1234.TW"):
+        raw = _persist_raw_data(daily_radar_db_session, symbol=symbol, record_date=day,
+                                technical=_technical_payload(symbol, day))
+        raw.institutional = {"institutional_flow": {
+            "three_party_net_shares": 1_000_000, "consecutive_positive_days": 3,
+            "flow_state": "buying", "net_flow_to_avg_volume": 0.5,
+        }, "data_dates": {"institutional_flow": str(day)}}
+        raw.fundamental = {"margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.1},
+                           "data_dates": {"margin": str(day)}}
+    daily_radar_db_session.commit()
+    client = _api_client(monkeypatch, daily_radar_db_session,
+                         background_context_provider=BaselineZeroBackgroundChipContextProvider())
+    monkeypatch.setattr(run_router, "run_daily_radar", run_daily_radar)
+    try:
+        response = client.post("/internal/daily-radar/run", json={"run_date": str(day), "market": "TW"},
+                               headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 200
+    assert response.json()["status"] in {"completed", "stale_data"}, response.json()["errors"]
+    assert response.json()["candidate_count"] > 0, response.json()
+    daily_radar_db_session.expire_all()
+    run = daily_radar_db_session.get(DailyRadarRun, response.json()["run_id"])
+    summary = public_run_response(run, bucket=None, limit=1).pool_summary.discovery_summary
+    assert summary is not None
+    assert summary.run_date == day
+    assert summary.scanned_symbol_count == 3
+    assert summary.eligible_symbol_count == 3
+    assert summary.discovered_symbol_count == 1
+    assert summary.track_counts["market_trend"] == 1
+
+
 def test_daily_radar_run_endpoint_accepts_authenticated_explicit_run_date(monkeypatch, daily_radar_db_session: Session) -> None:
     raw_row = _persist_raw_data(daily_radar_db_session, record_date=date(2026, 5, 29))
     client = _api_client(monkeypatch, daily_radar_db_session)
@@ -3325,6 +3372,33 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
     assert body["status"] == "completed"
     captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
     assert [row.symbol for row in captured["cache_rows"]] == ["2330.TW"]
+
+
+def test_daily_radar_scoring_attaches_prepared_discovery_audit(monkeypatch, daily_radar_db_session: Session) -> None:
+    day = date(2026, 6, 1)
+    _persist_raw_data(daily_radar_db_session, symbol="2330.TW", record_date=day,
+                      technical=_technical_payload("2330.TW", day))
+    audit = {"run_date": str(day), "scanned_symbol_count": 1800,
+             "eligible_symbol_count": 100, "discovered_symbol_count": 40}
+    steps = {step: {"status": "completed"} for step in (
+        "refresh-institutional-flows", "refresh-lending", "refresh-full-margin", "refresh-ohlcv", "refresh-market-context",
+    )}
+    steps["prepare-universe"] = {"status": "completed", "market_exploration": audit}
+    daily_radar_db_session.add(DailyRadarPreparedRun(
+        run_date=day, market="TW", selected_symbols=["2330.TW"], universe=[], symbol_count=1,
+        market_context=_market_context(), step_statuses=steps,
+    ))
+    daily_radar_db_session.commit()
+    run = _daily_radar_run(run_date=day)
+    run.candidates = [SimpleNamespace(symbol="2330.TW", input_snapshot={})]
+    client = _api_client(monkeypatch, daily_radar_db_session, run=run)
+    try:
+        response = client.post("/internal/daily-radar/run-scoring", json={"run_date": str(day), "market": "TW"},
+                               headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 200
+    assert run.candidates[0].input_snapshot["pool_discovery_summary"]["scanned_symbol_count"] == 1800
 
 
 def test_daily_radar_run_scoring_rejects_incomplete_selected_rows(

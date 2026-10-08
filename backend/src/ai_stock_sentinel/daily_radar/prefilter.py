@@ -254,7 +254,7 @@ def run_stage1_prefilter_with_shadow(
         "selected": selected,
         "shadow": shadow,
         "excluded": excluded,
-        "duplicates": [{"symbol": symbol} for symbol in sorted(set(duplicate_symbols))],
+        "duplicates": [{"symbol": symbol} for symbol in sorted(duplicate_symbols)],
     }
 
 

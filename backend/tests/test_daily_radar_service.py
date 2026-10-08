@@ -176,6 +176,30 @@ def test_run_daily_radar_deduplicates_shadow_symbols_without_integrity_error(db_
     assert {error["code"] for error in run.errors or []} == {"duplicate_universe_symbol"}
 
 
+@pytest.mark.parametrize("symbols", [
+    ["2330.TW"] * 3,
+    ["2330.TW"] * 5,
+    ["2330.TW"] * 3 + ["3661.TW"] * 4 + ["1101.TW"] * 2,
+])
+def test_run_daily_radar_counts_every_duplicate_input_record(db_session: Session, symbols: list[str]) -> None:
+    records = {row["symbol"]: row for row in load_daily_radar_fixture_records(FIXTURE_DIR)}
+    run = run_daily_radar(
+        date(2026, 5, 29), "TW", session=db_session,
+        records=[deepcopy(records[symbol]) for symbol in symbols],
+    )
+    db_session.commit()
+    db_session.expire_all()
+    persisted = db_session.get(DailyRadarRun, run.id)
+    summary = public_run_response(persisted, bucket=None, limit=100).pool_summary
+
+    assert persisted.universe_count == len(symbols)
+    assert summary.duplicate_record_count == len(symbols) - len(set(symbols))
+    assert summary.unclassified_record_count == 0
+    assert sum(summary.state_counts.values()) == len(set(symbols))
+    assert len(persisted.candidates) == len({row.symbol for row in persisted.candidates})
+    assert sum(error["code"] == "duplicate_universe_symbol" for error in persisted.errors) == summary.duplicate_record_count
+
+
 def test_run_daily_radar_keeps_shadow_when_internal_explanation_fails(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,

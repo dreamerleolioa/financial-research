@@ -255,12 +255,38 @@ class DailyRadarObservationStats(BaseModel):
     means_scope: str
 
 
+class DailyRadarPoolQualityStats(BaseModel):
+    sample_count: int
+    evaluated_count: int
+    signal_date_count: int
+    distinct_symbol_count: int
+    missing_outcome_count: int
+    skipped_count: int
+    immature_count: int
+    missing_metric_count: int
+    benchmark_symbols: list[str]
+    coverage_complete: bool
+    positive_excess_count: int
+    positive_excess_rate: float | None
+    median_excess_return_pct: float | None
+
+
+class DailyRadarPoolComparison(BaseModel):
+    selected: DailyRadarPoolQualityStats
+    top_3: DailyRadarPoolQualityStats
+    top_5: DailyRadarPoolQualityStats
+    comparable_shadow: DailyRadarPoolQualityStats
+    population_scope: Literal["observed_daily_comparable_pool"]
+    observed_positive_capture_share: float | None
+
+
 class DailyRadarValidationCohort(BaseModel):
     id: str
     strategy: dict[str, str]
     signal_start_date: date
     signal_end_date: date
     windows: dict[str, dict[str, DailyRadarObservationStats]]
+    pool_comparison: dict[str, DailyRadarPoolComparison] = Field(default_factory=dict)
 
 
 class DailyRadarValidationResponse(BaseModel):
@@ -347,6 +373,7 @@ class DailyRadarMatchedRule(BaseModel):
 
 
 class DailyRadarCandidateResponse(BaseModel):
+    research_status: Literal["trend_forming", "waiting_for_consolidation", "structure_watch", "data_pending"] = "data_pending"
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -426,6 +453,29 @@ class DailyRadarCandidateResponse(BaseModel):
     background_context_labels: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DailyRadarDiscoverySummary(BaseModel):
+    version: Literal["candidate-pool-discovery-v1"]
+    run_date: date
+    scanned_symbol_count: int
+    eligible_symbol_count: int
+    discovered_symbol_count: int
+    track_counts: dict[str, int]
+    excluded_reason_counts: dict[str, int]
+
+
+class DailyRadarPoolSummary(BaseModel):
+    version: str
+    population_scope: Literal["scored_raw_records"]
+    input_record_count: int
+    state_counts: dict[str, int]
+    duplicate_record_count: int
+    unclassified_record_count: int
+    comparable_shadow_count: int
+    eligibility_audit_shadow_count: int
+    reason_counts: dict[str, int]
+    discovery_summary: DailyRadarDiscoverySummary | None = None
+
+
 class DailyRadarRunResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -465,6 +515,7 @@ class DailyRadarRunResponse(BaseModel):
         ],
     )
     market_context: dict[str, Any] = Field(default_factory=dict)
+    pool_summary: DailyRadarPoolSummary | None = None
     candidates: list[DailyRadarCandidateResponse] = Field(default_factory=list)
 
 

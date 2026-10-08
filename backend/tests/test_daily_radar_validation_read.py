@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
@@ -87,6 +87,56 @@ def add_calendar(session):
 
 def groups(body, window="5", cohort=0):
     return body["cohorts"][cohort]["windows"][window]
+
+
+def test_pool_comparison_reads_comparable_shadow_only_without_writes(storage):
+    session, client, engine = storage
+    run = add_run(session, count=1)
+    selected = add_candidate(session, run)
+    shadow = add_candidate(session, run, "2317.TW", status="shadow")
+    shadow.shadow_cohort = "comparable"
+    audit = add_candidate(session, run, "PRIVATE.TW", status="shadow")
+    audit.shadow_cohort = "eligibility_audit"
+    for row in (selected, shadow, audit):
+        add_result(session, row)
+    for result in session.scalars(select(DailyRadarForwardValidationResult)):
+        result.outcome = result.outcome | {"excess_return_vs_benchmark_pct": 2}
+    add_calendar(session)
+    session.commit()
+    statements = []
+    event.listen(engine, "before_cursor_execute", lambda c, cu, sql, p, ctx, many: statements.append(sql))
+    response = client.get("/daily-radar/validation")
+    assert response.status_code == 200
+    body = response.json()
+    stats = body["cohorts"][0]["pool_comparison"]["5"]
+    assert stats["selected"]["sample_count"] == 1
+    assert stats["comparable_shadow"]["sample_count"] == 1
+    assert stats["observed_positive_capture_share"] == .5
+    assert "PRIVATE.TW" not in response.text and "DO_NOT_EXPOSE" not in response.text
+    assert not any(sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for sql in statements)
+    assert not session.dirty and not session.new
+
+
+def test_public_pool_reads_frozen_discovery_after_preparation_changes(storage):
+    from ai_stock_sentinel.daily_radar.pool import freeze_discovery_summary
+    session, client, _ = storage
+    run = add_run(session)
+    add_candidate(session, run)
+    audit = {"run_date": str(run.run_date), "scanned_symbol_count": 1800,
+             "eligible_symbol_count": 100, "discovered_symbol_count": 40,
+             "track_counts": {"market_trend": 30}, "excluded_symbol_reasons": {}}
+    freeze_discovery_summary(run, audit)
+    session.commit()
+    session.add(DailyRadarPreparedRun(run_date=run.run_date, market="TW", status="prepared",
+        selected_symbols=[], universe=[], symbol_count=0, errors=[],
+        step_statuses={"prepare-universe": {"market_exploration": audit | {"scanned_symbol_count": 9999}}}))
+    session.commit()
+    session.expire_all()
+    response = client.get("/daily-radar/latest")
+    assert response.status_code == 200
+    summary = response.json()["pool_summary"]["discovery_summary"]
+    assert summary["scanned_symbol_count"] == 1800
+    assert summary["run_date"] == "2026-06-01"
 
 
 def test_empty_read_is_200_without_any_write(storage):

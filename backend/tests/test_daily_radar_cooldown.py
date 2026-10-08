@@ -143,6 +143,7 @@ def test_old_selection_is_returning_instead_of_first_observation() -> None:
         "appearance_count": 2,
         "consecutive_trading_days": None,
         "signal_status": "stable",
+        "score_comparison": {"status": "unavailable", "previous_date": "2026-09-24", "previous_score": 70, "score_change": None},
     }
 
 
