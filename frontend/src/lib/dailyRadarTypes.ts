@@ -145,6 +145,32 @@ export interface DailyRadarValidationCohort {
   signal_start_date: string;
   signal_end_date: string;
   windows: Record<string, Record<string, DailyRadarObservationStats>>;
+  pool_comparison?: Record<string, DailyRadarPoolComparison>;
+}
+
+export interface DailyRadarPoolQualityStats {
+  sample_count: number;
+  evaluated_count: number;
+  signal_date_count: number;
+  distinct_symbol_count: number;
+  missing_outcome_count: number;
+  skipped_count: number;
+  immature_count: number;
+  missing_metric_count: number;
+  benchmark_symbols: string[];
+  coverage_complete: boolean;
+  positive_excess_count: number;
+  positive_excess_rate: number | null;
+  median_excess_return_pct: number | null;
+}
+
+export interface DailyRadarPoolComparison {
+  selected: DailyRadarPoolQualityStats;
+  top_3: DailyRadarPoolQualityStats;
+  top_5: DailyRadarPoolQualityStats;
+  comparable_shadow: DailyRadarPoolQualityStats;
+  population_scope: "observed_daily_comparable_pool";
+  observed_positive_capture_share: number | null;
 }
 
 export interface DailyRadarValidationResponse {

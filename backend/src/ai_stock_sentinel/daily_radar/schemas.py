@@ -255,12 +255,38 @@ class DailyRadarObservationStats(BaseModel):
     means_scope: str
 
 
+class DailyRadarPoolQualityStats(BaseModel):
+    sample_count: int
+    evaluated_count: int
+    signal_date_count: int
+    distinct_symbol_count: int
+    missing_outcome_count: int
+    skipped_count: int
+    immature_count: int
+    missing_metric_count: int
+    benchmark_symbols: list[str]
+    coverage_complete: bool
+    positive_excess_count: int
+    positive_excess_rate: float | None
+    median_excess_return_pct: float | None
+
+
+class DailyRadarPoolComparison(BaseModel):
+    selected: DailyRadarPoolQualityStats
+    top_3: DailyRadarPoolQualityStats
+    top_5: DailyRadarPoolQualityStats
+    comparable_shadow: DailyRadarPoolQualityStats
+    population_scope: Literal["observed_daily_comparable_pool"]
+    observed_positive_capture_share: float | None
+
+
 class DailyRadarValidationCohort(BaseModel):
     id: str
     strategy: dict[str, str]
     signal_start_date: date
     signal_end_date: date
     windows: dict[str, dict[str, DailyRadarObservationStats]]
+    pool_comparison: dict[str, DailyRadarPoolComparison] = Field(default_factory=dict)
 
 
 class DailyRadarValidationResponse(BaseModel):

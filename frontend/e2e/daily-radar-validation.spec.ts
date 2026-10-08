@@ -56,6 +56,48 @@ const validationFixture: DailyRadarValidationResponse = {
   ],
 };
 
+const qualityStats = {
+  sample_count: 10, evaluated_count: 8, signal_date_count: 4, distinct_symbol_count: 6,
+  missing_outcome_count: 0, skipped_count: 0, immature_count: 2, missing_metric_count: 0,
+  benchmark_symbols: ["TAIEX"], coverage_complete: true, positive_excess_count: 6,
+  positive_excess_rate: .75, median_excess_return_pct: 2.5,
+};
+
+test("Pool quality compares saved selected and shadow samples with explicit scope", async ({ page }) => {
+  const body = structuredClone(validationFixture);
+  body.cohorts[0].pool_comparison = { "5": {
+    selected: qualityStats, top_3: qualityStats, top_5: qualityStats,
+    comparable_shadow: { ...qualityStats, positive_excess_rate: .5, median_excess_return_pct: -.5 },
+    population_scope: "observed_daily_comparable_pool", observed_positive_capture_share: .6,
+  } };
+  await setup(page, body);
+  await page.getByRole("tab", { name: "驗證結果", exact: true }).click();
+  const panel = page.getByRole("heading", { name: "候選池選股與排序品質 · 5 日" }).locator("..");
+  await expect(panel).toContainText("非獨立交易樣本");
+  await expect(panel).toContainText("非全市場召回率");
+  await expect(panel.getByRole("row", { name: /可比較未入選/ })).toContainText("50.0%");
+  await expect(panel.getByRole("row", { name: /可比較未入選/ })).toContainText("-0.5%");
+  await expect(page.getByTestId("pool-capture-share")).toHaveText("60.0%");
+  await page.getByRole("button", { name: "10 日", exact: true }).click();
+  await expect(page.getByTestId("confirmation-rate")).toHaveText("70.0%");
+  await expect(page.getByTestId("pool-capture-share")).toHaveCount(0);
+});
+
+test("Missing pool outcomes keep rates unavailable", async ({ page }) => {
+  const body = structuredClone(validationFixture);
+  const missing = { ...qualityStats, missing_outcome_count: 1, coverage_complete: false,
+    positive_excess_rate: null, median_excess_return_pct: null };
+  body.cohorts[0].pool_comparison = { "5": {
+    selected: missing, top_3: missing, top_5: missing, comparable_shadow: qualityStats,
+    population_scope: "observed_daily_comparable_pool", observed_positive_capture_share: null,
+  } };
+  await setup(page, body);
+  await page.getByRole("tab", { name: "驗證結果", exact: true }).click();
+  const panel = page.getByRole("heading", { name: "候選池選股與排序品質 · 5 日" }).locator("..");
+  await expect(panel.getByRole("row", { name: /全部入池/ })).toContainText("資料不足");
+  await expect(page.getByTestId("pool-capture-share")).toHaveText("資料不足或尚待累積");
+});
+
 async function setup(page: Parameters<typeof authenticate>[0], body: unknown = validationFixture) {
   await authenticate(page);
   await installApiMocks(page, { dailyRadar: radarRun });
