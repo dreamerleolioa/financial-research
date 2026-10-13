@@ -1,4 +1,4 @@
-"""Verify reconstructed Yahoo prices before extending adjusted technical history."""
+"""Extend verified Yahoo adjustment history with final official market prices."""
 from __future__ import annotations
 
 from datetime import date
@@ -49,7 +49,7 @@ def verified_repaired_frame(
     volume = _number(official.volume)
     if volume < 0 or not volume.is_integer():
         raise TechnicalRepairRejected("official_volume_invalid")
-    required = (*PRICE_FIELDS, "Adj Close")
+    required = (*PRICE_FIELDS, "Adj Close", "Dividends", "Stock Splits")
     if original.empty or repaired.empty or any(field not in repaired for field in required):
         raise TechnicalRepairRejected("repair_history_missing")
     original_dates = [value.date() for value in original.index]
@@ -59,6 +59,8 @@ def verified_repaired_frame(
         or len(set(repaired_dates)) != len(repaired_dates)
         or run_date not in repaired_dates
         or any(value >= run_date for value in original_dates)
+        or original_dates != sorted(original_dates)
+        or repaired_dates != sorted(repaired_dates)
     ):
         raise TechnicalRepairRejected("repair_dates_invalid")
     if set(repaired_dates) - set(original_dates) - {run_date}:
@@ -72,12 +74,22 @@ def verified_repaired_frame(
         or raw_prices["High"] < max(raw_prices["Open"], raw_prices["Close"])
     ):
         raise TechnicalRepairRejected("reconstructed_ohlc_invalid")
-    for field in PRICE_FIELDS:
-        if not math.isclose(
-            raw_prices[field], _number(getattr(official, field.lower())),
-            rel_tol=1e-6, abs_tol=1e-6,
-        ):
-            raise TechnicalRepairRejected("official_prices_mismatch")
+    official_prices = {
+        field: _number(getattr(official, field.lower())) for field in PRICE_FIELDS
+    }
+    if (
+        any(value <= 0 for value in official_prices.values())
+        or official_prices["Low"] > min(official_prices["Open"], official_prices["Close"])
+        or official_prices["High"] < max(official_prices["Open"], official_prices["Close"])
+    ):
+        raise TechnicalRepairRejected("official_ohlc_invalid")
+    # Yahoo intraday reconstruction can stop before the closing auction. Its
+    # opening price still establishes the same currency/share-price units; the
+    # final official bar owns the whole day's OHLCV, including the true close.
+    if not math.isclose(
+        raw_prices["Open"], official_prices["Open"], rel_tol=1e-6, abs_tol=1e-6,
+    ):
+        raise TechnicalRepairRejected("official_price_units_mismatch")
     factor = _number(target["Adj Close"]) / raw_prices["Close"]
     if not math.isfinite(factor) or factor <= 0:
         raise TechnicalRepairRejected("adjustment_factor_invalid")
@@ -99,23 +111,42 @@ def verified_repaired_frame(
                 rel_tol=1e-6, abs_tol=1e-6,
             ):
                 raise TechnicalRepairRejected("adjusted_history_changed")
+    # A changed daily factor needs a reported ex-dividend event. Matching the
+    # existing history alone cannot validate a corrupt target-day Adj Close.
+    dividend = _number(target["Dividends"])
+    split = _number(target["Stock Splits"])
+    if dividend < 0 or split < 0:
+        raise TechnicalRepairRejected("corporate_action_invalid")
+    previous = repaired.iloc[by_date[original_dates[-1]]]
+    previous_close = _number(previous["Close"])
+    dividend_adjustment = 1 - dividend / previous_close
+    if dividend_adjustment <= 0:
+        raise TechnicalRepairRejected("corporate_action_invalid")
+    previous_factor = _number(previous["Adj Close"]) / previous_close
+    expected_factor = previous_factor / dividend_adjustment
+    if not math.isfinite(expected_factor) or not math.isclose(
+        factor, expected_factor, rel_tol=1e-6, abs_tol=0.0,
+    ):
+        raise TechnicalRepairRejected("adjustment_continuity_unverified")
     appended = original.iloc[[-1]].copy()
     target_index = pd.Timestamp(run_date)
     if original.index.tz is not None:
         target_index = target_index.tz_localize(original.index.tz)
     appended.index = pd.DatetimeIndex([target_index], name=original.index.name)
     for field in PRICE_FIELDS:
-        appended[field] = _number(raw_prices[field] * factor)
+        appended[field] = _number(official_prices[field] * factor)
     appended["Volume"] = int(volume)
     # Keep every accepted historical value; append only this date.
     result = pd.concat([original, appended])
     reconstructed = target.get("Repaired?", False)
     provenance = {
-        "provider": "yfinance",
+        "provider": provider,
+        "history_provider": "yfinance",
+        "adjustment_provider": "yfinance",
         "price_basis": "adjusted",
         "repair": {
-            "method": "yfinance_price_repair",
-            "reconstructed": bool(pd.notna(reconstructed) and reconstructed),
+            "method": "official_final_bar_with_yahoo_adjustment",
+            "adjustment_from_repaired_data": bool(pd.notna(reconstructed) and reconstructed),
             "data_date": run_date.isoformat(),
             "official_price_provider": provider,
             "official_price_dataset": official.source_dataset,

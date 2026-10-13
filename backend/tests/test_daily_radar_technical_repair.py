@@ -39,6 +39,8 @@ def _repair_fixture(symbol="2330.TW", factor=0.95):
     for field in ("Open", "High", "Low", "Close"):
         repaired[field] /= factor
     repaired["Adj Close"] = repaired["Close"] * factor
+    repaired["Dividends"] = 0.0
+    repaired["Stock Splits"] = 0.0
     repaired["Repaired?"] = False
     target = pd.Timestamp(RUN_DATE)
     repaired.loc[target, "Repaired?"] = True
@@ -61,7 +63,7 @@ def _repair_fixture(symbol="2330.TW", factor=0.95):
     return original, repaired, official
 
 
-def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW"):
+def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_date=RUN_DATE):
     calls = []
     official_calls = []
 
@@ -80,7 +82,7 @@ def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW"):
         name_resolver=lambda _: None,
         official_bar_loader=load_official,
     )
-    return fetcher.fetch([symbol], run_date=RUN_DATE), calls, official_calls
+    return fetcher.fetch([symbol], run_date=run_date), calls, official_calls
 
 
 @pytest.mark.parametrize("symbol", ["2330.TW", "3264.TWO"])
@@ -100,6 +102,9 @@ def test_repair_verifies_official_prices_keeps_adjustment_and_uses_official_volu
     assert len(technical["price_history"]) == 80
     assert [bar["close"] for bar in technical["price_history"][:-1]] == original["Close"].tolist()[-79:]
     provenance = technical["source_provenance"]
+    assert provenance["provider"] == official.source_provider
+    assert provenance["history_provider"] == "yfinance"
+    assert provenance["adjustment_provider"] == "yfinance"
     assert provenance["price_basis"] == "adjusted"
     assert provenance["repair"]["official_price_provider"] == official.source_provider
     assert provenance["repair"]["volume_provider"] == official.source_provider
@@ -117,7 +122,7 @@ def test_repair_verifies_official_prices_keeps_adjustment_and_uses_official_volu
     [
         "missing_official", "wrong_symbol", "wrong_date", "not_final",
         "wrong_provider", "wrong_market", "wrong_dataset", "adjusted_official",
-        "wrong_price", "bad_adjustment", "changed_history", "missing_history",
+        "wrong_open", "bad_adjustment", "changed_history", "missing_history",
         "invalid_volume", "fractional_volume", "missing_target", "duplicate_target",
         "intermediate_gap",
     ],
@@ -141,8 +146,8 @@ def test_unverified_repair_preserves_stale_dates(monkeypatch, invalid):
         official.dataset = "unverified"
     elif invalid == "adjusted_official":
         official.adjustment_mode = "adjusted"
-    elif invalid == "wrong_price":
-        official.close += 1
+    elif invalid == "wrong_open":
+        official.open += 1
     elif invalid == "bad_adjustment":
         repaired.loc[target, "Adj Close"] = float("nan")
     elif invalid == "changed_history":
@@ -234,7 +239,7 @@ def _compile_jsonb_for_sqlite(type_, compiler, **kw):
 def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_repair(monkeypatch, valid):
     original, repaired, official = _repair_fixture()
     if not valid:
-        official.close += 1
+        official.open += 1
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[StockRawData.__table__, TaiwanDailyBar.__table__])
     try:
@@ -263,3 +268,103 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
                 assert stored.technical["data_dates"]["ohlcv"] == "2026-09-14"
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("symbol, difference", [("1101.TW", 0.05), ("1216.TW", 0.30)])
+def test_official_final_bar_supplies_close_missing_from_intraday_reconstruction(monkeypatch, symbol, difference):
+    original, repaired, official = _repair_fixture(symbol)
+    target = pd.Timestamp(RUN_DATE)
+    repaired.loc[target, "Close"] -= difference
+    repaired.loc[target, "Adj Close"] = repaired.loc[target, "Close"] * 0.95
+    result, calls, _ = _fetch(monkeypatch, original, repaired, official, symbol=symbol)
+    technical = result[symbol]
+    assert technical["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
+    assert technical["ohlcv"]["close"] == pytest.approx(official.close * 0.95)
+    assert technical["ohlcv"]["close"] != pytest.approx(repaired.loc[target, "Adj Close"])
+    assert technical["ohlcv"]["volume"] == official.volume
+    assert [bar["close"] for bar in technical["price_history"][:-1]] == original["Close"].tolist()[-79:]
+    assert technical["source_provenance"]["repair"]["method"] == "official_final_bar_with_yahoo_adjustment"
+    assert len(calls) == 3
+
+
+def test_official_final_bar_supplies_full_price_range_with_verified_adjustment(monkeypatch):
+    original, repaired, official = _repair_fixture()
+    official.high += 1.0
+    official.close = official.high
+    official.low -= 0.1
+    result, _, _ = _fetch(monkeypatch, original, repaired, official)
+    technical = result["2330.TW"]
+    assert technical["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
+    for field in ("open", "high", "low", "close"):
+        assert technical["ohlcv"][field] == pytest.approx(getattr(official, field) * 0.95)
+
+
+@pytest.mark.parametrize("run_date", [date(2026, 8, 11), date(2026, 9, 15), date(2026, 10, 12)])
+def test_official_fallback_uses_each_requested_run_date(monkeypatch, run_date):
+    original, repaired, official = _repair_fixture()
+    original.index = pd.bdate_range(end=pd.Timestamp(run_date) - pd.offsets.BDay(1), periods=80)
+    repaired.index = pd.bdate_range(end=pd.Timestamp(run_date) + pd.offsets.BDay(1), periods=82)
+    official.trade_date = run_date
+    target = pd.Timestamp(run_date)
+    repaired.loc[target, "Close"] -= 0.1
+    repaired.loc[target, "Adj Close"] = repaired.loc[target, "Close"] * 0.95
+    result, _, official_calls = _fetch(monkeypatch, original, repaired, official, run_date=run_date)
+    assert set(result["2330.TW"]["data_dates"].values()) == {run_date.isoformat()}
+    assert result["2330.TW"]["source_provenance"]["repair"]["data_date"] == run_date.isoformat()
+    assert official_calls == [(["2330.TW"], run_date)]
+
+
+def test_same_day_dividend_explains_adjustment_factor_change(monkeypatch):
+    original, repaired, official = _repair_fixture()
+    target = pd.Timestamp(RUN_DATE)
+    previous = original.index[-1]
+    repaired.loc[target, "Dividends"] = repaired.loc[previous, "Close"] * (1 - 0.95)
+    repaired.loc[target, "Adj Close"] = repaired.loc[target, "Close"]
+    result, _, _ = _fetch(monkeypatch, original, repaired, official)
+    assert result["2330.TW"]["ohlcv"]["close"] == pytest.approx(official.close)
+    assert result["2330.TW"]["source_provenance"]["repair"]["adjustment_factor"] == pytest.approx(1.0)
+    assert result["2330.TW"]["price_history"][-2]["close"] == original.loc[previous, "Close"]
+
+
+def test_small_adjustment_factor_cannot_jump_without_a_dividend(monkeypatch):
+    original, repaired, official = _repair_fixture(factor=1e-9)
+    target = pd.Timestamp(RUN_DATE)
+    repaired.loc[target, "Adj Close"] = repaired.loc[target, "Close"] * 2e-9
+    result, _, _ = _fetch(monkeypatch, original, repaired, official)
+    assert result["2330.TW"]["data_dates"]["ohlcv"] != RUN_DATE.isoformat()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["unexplained_factor", "missing_dividend", "nan_dividend", "negative_dividend",
+     "excessive_dividend", "missing_split", "nan_split", "negative_split",
+     "invalid_official_range", "nan_official_price", "unsorted_history"],
+)
+def test_unknown_adjustment_or_invalid_official_prices_remain_non_final(monkeypatch, invalid):
+    original, repaired, official = _repair_fixture()
+    target = pd.Timestamp(RUN_DATE)
+    if invalid == "unexplained_factor":
+        repaired.loc[target, "Adj Close"] = repaired.loc[target, "Close"] * 0.5
+    elif invalid == "missing_dividend":
+        repaired = repaired.drop(columns="Dividends")
+    elif invalid == "nan_dividend":
+        repaired.loc[target, "Dividends"] = float("nan")
+    elif invalid == "negative_dividend":
+        repaired.loc[target, "Dividends"] = -1
+    elif invalid == "excessive_dividend":
+        repaired.loc[target, "Dividends"] = repaired.loc[original.index[-1], "Close"]
+    elif invalid == "missing_split":
+        repaired = repaired.drop(columns="Stock Splits")
+    elif invalid == "nan_split":
+        repaired.loc[target, "Stock Splits"] = float("nan")
+    elif invalid == "negative_split":
+        repaired.loc[target, "Stock Splits"] = -1
+    elif invalid == "invalid_official_range":
+        official.close = official.high + 1
+    elif invalid == "nan_official_price":
+        official.high = float("nan")
+    elif invalid == "unsorted_history":
+        original = original.iloc[::-1]
+    result, _, _ = _fetch(monkeypatch, original, repaired, official)
+    assert result["2330.TW"]["data_dates"]["ohlcv"] != RUN_DATE.isoformat()
+    assert "source_provenance" not in result["2330.TW"]
