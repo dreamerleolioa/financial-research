@@ -135,6 +135,7 @@ class YFinanceBatchTechnicalFetcher:
                 auto_adjust=False, repair=True, keepna=True, actions=True,
                 threads=True, progress=False,
             )
+            missing_history: dict[str, Any] = {}
             for symbol in repair_symbols:
                 repaired = _frame_on_or_before_run_date(
                     _symbol_frame(history, symbol), run_date=run_date, start_date=start_date,
@@ -145,10 +146,43 @@ class YFinanceBatchTechnicalFetcher:
                         symbol=symbol, run_date=run_date,
                     )
                 except TechnicalRepairRejected as exc:
+                    if str(exc) == "repair_history_values_missing":
+                        missing_history[symbol] = repaired
+                        continue
                     logger.warning("Daily Radar technical repair rejected reason=%s", str(exc))
                     continue
                 frames[symbol] = frame
                 provenance[symbol] = source
+            if missing_history:
+                # Repair can erase valid historical prices on a split-event
+                # row. Fetch one independent raw batch only for those symbols;
+                # the verifier still checks every accepted historical value.
+                try:
+                    unrepaired_history = yf.download(
+                        list(missing_history), group_by="ticker", start=start_date, interval="1d",
+                        auto_adjust=False, repair=False, keepna=True, actions=True,
+                        threads=True, progress=False,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Daily Radar history validation unavailable symbol_count=%d error_type=%s",
+                        len(missing_history), type(exc).__name__,
+                    )
+                    return provenance
+                for symbol, repaired in missing_history.items():
+                    unrepaired = _frame_on_or_before_run_date(
+                        _symbol_frame(unrepaired_history, symbol), run_date=run_date, start_date=start_date,
+                    )
+                    try:
+                        frame, source = verified_repaired_frame(
+                            frames[symbol], repaired, official_by_symbol[symbol],
+                            symbol=symbol, run_date=run_date, unrepaired_history=unrepaired,
+                        )
+                    except TechnicalRepairRejected as exc:
+                        logger.warning("Daily Radar history validation rejected reason=%s", str(exc))
+                        continue
+                    frames[symbol] = frame
+                    provenance[symbol] = source
         except Exception as exc:
             logger.warning(
                 "Daily Radar technical repair unavailable symbol_count=%d error_type=%s",

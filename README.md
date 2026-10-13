@@ -187,6 +187,8 @@ Daily Radar 的 live 資料載入有 request budget：法人 universe 只讀已�
 
 `technical.source_provenance.repair.adjustment_from_repaired_data` 表示採用的還原因子來自 yfinance `repair=True` 回傳結果，通過驗證後記為 `true`；此欄位不宣稱因子一定曾被修改。依 [yfinance Price Repair 文件](https://github.com/ranaroussi/yfinance/blob/main/doc/source/advanced/price_repair.rst)，僅修正缺少的股利還原時，`Repaired?` 不會設為 true，因此來源紀錄不依賴這個列級旗標。
 
+若 `repair=True` 使歷史價格缺值，fetcher 僅對受影響標的額外抓取一次 `repair=False`、`auto_adjust=False` 的原始行情，作為歷史核對來源。原始 OHLC × `Adj Close / Close` 必須逐筆符合既有還原歷史，repair 同筆仍有效的價格與 `Adj Close` 也必須符合原始來源；任何缺值、改價、日期重複或因子不連續都維持拒絕。這份原始行情不供應當日因子，也不替換既有歷史；採用的歷史核對日期記在 `technical.source_provenance.repair.history_validation_fallback`。
+
 CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-architecture-spec.md` 的 workflow 地圖為準。
 
 ---
