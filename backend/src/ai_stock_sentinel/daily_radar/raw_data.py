@@ -127,8 +127,9 @@ class YFinanceBatchTechnicalFetcher:
             if not repair_symbols:
                 return {}
             # Fetch through now so Yahoo's live row cannot overwrite yesterday's
-            # missing row. Repair before adjustment, then verify raw OHLC against
-            # the final official bar and clip all future rows before acceptance.
+            # missing row. Repair supplies the adjustment basis; after history
+            # and price-unit checks, the official bar supplies final OHLCV.
+            # Clip all future rows before accepting either source.
             history = yf.download(
                 repair_symbols, group_by="ticker", start=start_date, interval="1d",
                 auto_adjust=False, repair=True, keepna=True, actions=True,
