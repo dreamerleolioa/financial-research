@@ -34,6 +34,7 @@ def verified_repaired_frame(
     *,
     symbol: str,
     run_date: date,
+    unrepaired_history: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     market, provider = ("TWO", "tpex") if symbol.endswith(".TWO") else ("TW", "twse")
     if (
@@ -93,13 +94,62 @@ def verified_repaired_frame(
     factor = _number(target["Adj Close"]) / raw_prices["Close"]
     if not math.isfinite(factor) or factor <= 0:
         raise TechnicalRepairRejected("adjustment_factor_invalid")
+    history_fields = (*PRICE_FIELDS, "Adj Close")
+    unrepaired_by_date: dict[date, Any] = {}
+    if unrepaired_history is not None:
+        if unrepaired_history.empty or any(field not in unrepaired_history for field in history_fields):
+            raise TechnicalRepairRejected("unrepaired_history_missing")
+        dates = [value.date() for value in unrepaired_history.index]
+        if len(set(dates)) != len(dates) or dates != sorted(dates) or any(value > run_date for value in dates):
+            raise TechnicalRepairRejected("unrepaired_history_dates_invalid")
+        unrepaired_by_date = {
+            data_date: unrepaired_history.iloc[position] for position, data_date in enumerate(dates)
+        }
+        # A fallback response is evidence for the complete accepted history,
+        # not just for the rows that repair damaged. Validate it before using
+        # any row, including agreement with repair's remaining finite values.
+        for position, data_date in enumerate(original_dates):
+            if data_date not in unrepaired_by_date:
+                raise TechnicalRepairRejected("unrepaired_history_missing")
+            if data_date not in by_date:
+                raise TechnicalRepairRejected("repair_history_missing")
+            prices = {
+                field: _number(unrepaired_by_date[data_date][field]) for field in history_fields
+            }
+            if (
+                min(prices.values()) <= 0
+                or prices["Low"] > min(prices["Open"], prices["Close"])
+                or prices["High"] < max(prices["Open"], prices["Close"])
+            ):
+                raise TechnicalRepairRejected("unrepaired_history_prices_invalid")
+            ratio = prices["Adj Close"] / prices["Close"]
+            baseline = original.iloc[position]
+            for field in PRICE_FIELDS:
+                if not math.isclose(
+                    _number(baseline[field]), prices[field] * ratio, rel_tol=1e-6, abs_tol=1e-6,
+                ):
+                    raise TechnicalRepairRejected("adjusted_history_changed")
+            candidate = repaired.iloc[by_date[data_date]]
+            for field in history_fields:
+                if pd.notna(candidate[field]) and not math.isclose(
+                    _number(candidate[field]), prices[field], rel_tol=1e-6, abs_tol=0.0,
+                ):
+                    raise TechnicalRepairRejected("adjusted_history_changed")
     # Every existing price must retain its adjustment basis. Never replace the
     # accepted history with the library's dividend/split repair heuristics.
+    history_rows: dict[date, Any] = {}
+    history_fallback_dates: list[str] = []
     for position, data_date in enumerate(original_dates):
         if data_date not in by_date:
             raise TechnicalRepairRejected("repair_history_missing")
         baseline = original.iloc[position]
         candidate = repaired.iloc[by_date[data_date]]
+        missing_prices = candidate.loc[list(history_fields)].isna()
+        if missing_prices.any():
+            if unrepaired_history is None:
+                raise TechnicalRepairRejected("repair_history_values_missing")
+            candidate = unrepaired_by_date[data_date]
+            history_fallback_dates.append(data_date.isoformat())
         close = _number(candidate["Close"])
         adjustment = _number(candidate["Adj Close"])
         if close <= 0 or adjustment <= 0:
@@ -111,13 +161,14 @@ def verified_repaired_frame(
                 rel_tol=1e-6, abs_tol=1e-6,
             ):
                 raise TechnicalRepairRejected("adjusted_history_changed")
+        history_rows[data_date] = candidate
     # A changed daily factor needs a reported ex-dividend event. Matching the
     # existing history alone cannot validate a corrupt target-day Adj Close.
     dividend = _number(target["Dividends"])
     split = _number(target["Stock Splits"])
     if dividend < 0 or split < 0:
         raise TechnicalRepairRejected("corporate_action_invalid")
-    previous = repaired.iloc[by_date[original_dates[-1]]]
+    previous = history_rows[original_dates[-1]]
     previous_close = _number(previous["Close"])
     dividend_adjustment = 1 - dividend / previous_close
     if dividend_adjustment <= 0:
@@ -155,4 +206,9 @@ def verified_repaired_frame(
             "adjustment_factor": factor,
         },
     }
+    if history_fallback_dates:
+        provenance["repair"]["history_validation_fallback"] = {
+            "provider": "yfinance", "repair_enabled": False,
+            "data_dates": history_fallback_dates,
+        }
     return result, provenance

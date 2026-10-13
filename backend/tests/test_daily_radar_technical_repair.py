@@ -63,15 +63,20 @@ def _repair_fixture(symbol="2330.TW", factor=0.95):
     return original, repaired, official
 
 
-def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_date=RUN_DATE):
+def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_date=RUN_DATE, unrepaired=None):
     calls = []
     official_calls = []
 
     def download(symbols, **kwargs):
         calls.append((list(symbols), kwargs))
-        return pd.concat(
-            {symbol: repaired if kwargs.get("repair") else original}, axis=1
-        )
+        frame = original
+        if kwargs.get("repair"):
+            frame = repaired
+        elif kwargs.get("auto_adjust") is False and unrepaired is not None:
+            if isinstance(unrepaired, Exception):
+                raise unrepaired
+            frame = unrepaired
+        return pd.concat({symbol: frame}, axis=1)
 
     def load_official(symbols, *, run_date):
         official_calls.append((list(symbols), run_date))
@@ -83,6 +88,181 @@ def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_d
         official_bar_loader=load_official,
     )
     return fetcher.fetch([symbol], run_date=run_date), calls, official_calls
+
+
+def _repair_history_gap_fixture(*, factor=1.0, symbol="5904.TWO"):
+    original, repaired, official = _repair_fixture(symbol, factor=factor)
+    gap_date = pd.Timestamp("2026-07-30")
+    original.loc[gap_date, ["Open", "High", "Low", "Close"]] = 72.0
+    original.loc[gap_date, "Volume"] = 0
+    repaired.loc[gap_date, ["Open", "High", "Low", "Close"]] = 72.0 / factor
+    repaired.loc[gap_date, "Adj Close"] = 72.0
+    repaired.loc[gap_date, "Volume"] = 0
+    repaired.loc[gap_date, "Stock Splits"] = 10.0
+    unrepaired = repaired.copy()
+    repaired.loc[gap_date, ["Open", "High", "Low", "Close", "Adj Close"]] = float("nan")
+    return original, repaired, unrepaired, official, gap_date
+
+
+@pytest.mark.parametrize("factor", [1.0, 0.95])
+@pytest.mark.parametrize("missing", ["all", "Open", "Close", "Adj Close", "previous"])
+def test_missing_repair_history_uses_verified_unrepaired_prices_without_replacing_history(
+    monkeypatch, missing, factor
+):
+    original, repaired, unrepaired, official, gap_date = _repair_history_gap_fixture(factor=factor)
+    if missing == "previous":
+        repaired.loc[gap_date] = unrepaired.loc[gap_date]
+        gap_date = original.index[-1]
+        repaired.loc[gap_date, ["Open", "High", "Low", "Close", "Adj Close"]] = float("nan")
+    elif missing != "all":
+        repaired.loc[gap_date] = unrepaired.loc[gap_date]
+        repaired.loc[gap_date, missing] = float("nan")
+    # The unrepaired target is unusable; only repair supplies the daily factor.
+    unrepaired.loc[pd.Timestamp(RUN_DATE), ["Open", "High", "Low", "Close", "Adj Close"]] = float("nan")
+    before = original.copy(deep=True)
+    result, calls, _ = _fetch(
+        monkeypatch, original, repaired, official, symbol="5904.TWO", unrepaired=unrepaired,
+    )
+    technical = result["5904.TWO"]
+    assert technical["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
+    assert technical["ohlcv"]["close"] == pytest.approx(official.close * factor)
+    assert technical["ohlcv"]["volume"] == official.volume
+    assert [bar["close"] for bar in technical["price_history"][:-1]] == before["Close"].tolist()[-79:]
+    pd.testing.assert_frame_equal(original, before)
+    repair = technical["source_provenance"]["repair"]
+    assert repair["adjustment_factor"] == pytest.approx(factor)
+    assert repair["adjustment_from_repaired_data"] is True
+    assert repair["history_validation_fallback"] == {
+        "provider": "yfinance", "repair_enabled": False,
+        "data_dates": [gap_date.date().isoformat()],
+    }
+    assert len(calls) == 4
+    assert calls[-1][0] == ["5904.TWO"]
+    assert calls[-1][1]["repair"] is False
+    assert calls[-1][1]["auto_adjust"] is False
+    assert calls[-1][1]["actions"] is True
+    assert "end" not in calls[-1][1]
+
+
+@pytest.mark.parametrize("invalid", [
+    "only_gap_row", "missing_other_date", "nan_other_price", "nan_other_adjustment",
+    "changed_other_adjusted_prices", "changed_raw_prices_same_adjusted_prices",
+    "nonpositive_other_price", "infinite_other_adjustment",
+])
+def test_history_fallback_requires_coverage_and_agreement_for_every_original_date(monkeypatch, invalid):
+    original, repaired, unrepaired, official, gap_date = _repair_history_gap_fixture()
+    other_date = original.index[0]
+    if invalid == "only_gap_row":
+        unrepaired = unrepaired.loc[[gap_date]]
+    elif invalid == "missing_other_date":
+        unrepaired = unrepaired.drop(other_date)
+    elif invalid == "nan_other_price":
+        unrepaired.loc[other_date, "Open"] = float("nan")
+    elif invalid == "nan_other_adjustment":
+        unrepaired.loc[other_date, "Adj Close"] = float("nan")
+    elif invalid == "changed_other_adjusted_prices":
+        unrepaired.loc[other_date, "Adj Close"] *= 1.1
+    elif invalid == "changed_raw_prices_same_adjusted_prices":
+        # Matching adjusted history must not conceal conflicting raw prices.
+        unrepaired.loc[other_date, ["Open", "High", "Low", "Close"]] *= 2
+    elif invalid == "nonpositive_other_price":
+        unrepaired.loc[other_date, "Close"] = 0.0
+    elif invalid == "infinite_other_adjustment":
+        unrepaired.loc[other_date, "Adj Close"] = float("inf")
+    before = original.copy(deep=True)
+    result, calls, _ = _fetch(
+        monkeypatch, original, repaired, official, symbol="5904.TWO", unrepaired=unrepaired,
+    )
+    assert result["5904.TWO"]["data_dates"]["ohlcv"] == original.index[-1].date().isoformat()
+    assert "source_provenance" not in result["5904.TWO"]
+    pd.testing.assert_frame_equal(original, before)
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("invalid", [
+    "raw_unavailable", "missing_raw_row", "raw_missing_adjustment", "raw_nan_price",
+    "raw_changed_history", "partial_repair_changed_price", "partial_repair_changed_adjustment",
+    "raw_zero_price", "raw_inf_adjustment", "raw_invalid_range", "raw_boolean_price", "raw_duplicate_dates",
+    "raw_unsorted_dates", "target_adjustment_nan", "changed_finite_repair_history",
+])
+def test_unverified_history_recovery_preserves_stale_data(monkeypatch, invalid):
+    original, repaired, unrepaired, official, gap_date = _repair_history_gap_fixture()
+    if invalid == "raw_unavailable":
+        unrepaired = RuntimeError("source unavailable")
+    elif invalid == "missing_raw_row":
+        unrepaired = unrepaired.drop(gap_date)
+    elif invalid == "raw_missing_adjustment":
+        unrepaired = unrepaired.drop(columns="Adj Close")
+    elif invalid == "raw_nan_price":
+        unrepaired.loc[gap_date, "High"] = float("nan")
+    elif invalid == "raw_changed_history":
+        unrepaired.loc[gap_date, "Open"] += 1
+    elif invalid == "partial_repair_changed_price":
+        repaired.loc[gap_date] = unrepaired.loc[gap_date]
+        repaired.loc[gap_date, "High"] = float("nan")
+        repaired.loc[gap_date, "Open"] += 1
+    elif invalid == "partial_repair_changed_adjustment":
+        repaired.loc[gap_date] = unrepaired.loc[gap_date]
+        repaired.loc[gap_date, "High"] = float("nan")
+        repaired.loc[gap_date, "Adj Close"] *= 1.1
+    elif invalid == "raw_zero_price":
+        unrepaired.loc[gap_date, "Close"] = 0.0
+    elif invalid == "raw_inf_adjustment":
+        unrepaired.loc[gap_date, "Adj Close"] = float("inf")
+    elif invalid == "raw_invalid_range":
+        unrepaired.loc[gap_date, "High"] = unrepaired.loc[gap_date, "Low"] - 1.0
+    elif invalid == "raw_boolean_price":
+        unrepaired["Close"] = unrepaired["Close"].astype(object)
+        unrepaired.loc[gap_date, "Close"] = True
+    elif invalid == "raw_duplicate_dates":
+        unrepaired = pd.concat([unrepaired, unrepaired.loc[[gap_date]]])
+    elif invalid == "raw_unsorted_dates":
+        unrepaired = unrepaired.iloc[::-1]
+    elif invalid == "target_adjustment_nan":
+        repaired.loc[pd.Timestamp(RUN_DATE), "Adj Close"] = float("nan")
+    elif invalid == "changed_finite_repair_history":
+        repaired.loc[original.index[-1], "Adj Close"] *= 1.1
+    result, calls, _ = _fetch(
+        monkeypatch, original, repaired, official, symbol="5904.TWO", unrepaired=unrepaired,
+    )
+    assert result["5904.TWO"]["data_dates"]["ohlcv"] == original.index[-1].date().isoformat()
+    assert "source_provenance" not in result["5904.TWO"]
+    assert len(calls) <= 4
+    if invalid == "target_adjustment_nan":
+        assert len(calls) == 3
+
+
+@pytest.mark.parametrize("raw_available", [True, False])
+def test_history_recovery_fetches_only_affected_symbols_and_keeps_other_verified_repairs(
+    monkeypatch, raw_available
+):
+    gap_original, gap_repaired, gap_raw, gap_official, _ = _repair_history_gap_fixture()
+    good_original, good_repaired, good_official = _repair_fixture()
+    originals = {"5904.TWO": gap_original, "2330.TW": good_original}
+    repairs = {"5904.TWO": gap_repaired, "2330.TW": good_repaired}
+    calls = []
+
+    def download(symbols, **kwargs):
+        calls.append(list(symbols))
+        frames = originals
+        if kwargs.get("repair"):
+            frames = repairs
+        elif kwargs.get("auto_adjust") is False:
+            if not raw_available:
+                raise RuntimeError("source unavailable")
+            frames = {"5904.TWO": gap_raw}
+        return pd.concat({symbol: frames[symbol] for symbol in symbols}, axis=1)
+
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
+    result = YFinanceBatchTechnicalFetcher(
+        name_resolver=lambda _: None,
+        official_bar_loader=lambda *args, **kwargs: {
+            "5904.TWO": gap_official, "2330.TW": good_official,
+        },
+    ).fetch(["5904.TWO", "2330.TW"], run_date=RUN_DATE)
+    assert result["2330.TW"]["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
+    assert (result["5904.TWO"]["data_dates"]["ohlcv"] == RUN_DATE.isoformat()) is raw_available
+    assert calls == [["5904.TWO", "2330.TW"]] * 3 + [["5904.TWO"]]
 
 
 @pytest.mark.parametrize("symbol", ["2330.TW", "3264.TWO"])
@@ -257,8 +437,16 @@ def _compile_jsonb_for_sqlite(type_, compiler, **kw):
 
 
 @pytest.mark.parametrize("valid", [True, False])
-def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_repair(monkeypatch, valid):
+@pytest.mark.parametrize("history_gap", [True, False])
+@pytest.mark.parametrize("raw_history_complete", [True, False])
+def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_repair(monkeypatch, valid, history_gap, raw_history_complete):
     original, repaired, official = _repair_fixture()
+    unrepaired = repaired.copy()
+    gap_date = pd.Timestamp("2026-07-30")
+    if history_gap:
+        repaired.loc[gap_date, ["Open", "High", "Low", "Close", "Adj Close"]] = float("nan")
+    if not raw_history_complete:
+        unrepaired = unrepaired.drop(original.index[0])
     repaired["Repaired?"] = False
     if not valid:
         official.open += 1
@@ -270,7 +458,8 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
             session.flush()
 
             def download(symbols, **kwargs):
-                return pd.concat({"2330.TW": repaired if kwargs.get("repair") else original}, axis=1)
+                frame = repaired if kwargs.get("repair") else unrepaired if kwargs.get("auto_adjust") is False else original
+                return pd.concat({"2330.TW": frame}, axis=1)
 
             monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
             rows = ensure_daily_radar_raw_rows(
@@ -278,9 +467,10 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
                 technical_fetcher=LocalFirstBatchTechnicalFetcher(session, name_resolver=lambda _: None),
             )
             stored = session.query(StockRawData).one()
-            assert stored.raw_data_is_final is valid
-            assert len(rows) == int(valid)
-            if valid:
+            expected_final = valid and (not history_gap or raw_history_complete)
+            assert stored.raw_data_is_final is expected_final
+            assert len(rows) == int(expected_final)
+            if expected_final:
                 assert stored.technical["source_provenance"]["repair"]["volume_provider"] == "twse"
                 assert stored.technical["ohlcv"]["volume"] == official.volume
                 session.commit()
@@ -289,6 +479,8 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
                 assert persisted["data_date"] == RUN_DATE.isoformat()
                 assert persisted["adjustment_from_repaired_data"] is True
                 assert persisted["adjustment_factor"] == pytest.approx(0.95)
+                if history_gap:
+                    assert persisted["history_validation_fallback"]["data_dates"] == [gap_date.date().isoformat()]
             else:
                 assert stored.technical["data_dates"]["ohlcv"] == "2026-09-14"
     finally:

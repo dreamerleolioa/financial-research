@@ -147,6 +147,8 @@ flowchart TD
 
 ---
 
+Adjusted technical 備援若遇到 repair 歷史價格缺值，僅對受影響標的額外查詢一次未啟用 repair 的原始行情。原始回應須涵蓋所有既有歷史日期，每筆 OHLC 與 `Adj Close` 必須完整、價格範圍有效、日期唯一且有序；每筆還原價格符合既有歷史，且每筆 repair 仍有效的值不得與原始來源衝突。完整 coverage 與逐筆一致性通過後才可採用任何 fallback 列。前一日因子使用已驗證的歷史列核對，當日因子仍必須由 repair 結果提供並通過股利連續性檢查。只追加官方當日 final OHLCV，不改既有歷史；`technical.source_provenance.repair.history_validation_fallback` 保存核對來源，`data_dates` 僅列出實際需要 fallback 的日期。查詢失敗、證據不足或核對不一致維持非 final，額外查詢失敗不撤銷同批其他已驗證標的。
+
 ## 5. 嚴格前置濾網
 
 Market archive 窗口必須先固定交易日期，再逐日驗證 TW 與 TWO 都有同 dataset 的 final、unadjusted 行情；不可用缺檔市場剩餘的 rows 重建更短日曆。探索使用最近最多 65 日，官方成交金額使用最近 20 日，中期法人探索使用最近 60 日。已觀測行情日期聯集（non-final 只能證明日期，不能滿足 coverage）與已完成的官方法人歸檔可證明所需交易日，因此一個市場、或兩市場同日完全缺行情，都保留在 required dates 中；不以平日推造休市日。`prepare-universe` 對所需窗口的缺口回傳 `market_exploration_archive_incomplete`，附上 `archive_dates`、`missing_market_dates`（date → missing markets）與聚合 `missing_markets`。相容單次 run 遇到缺口時不使用新探索來源。成交金額遇到已知市場歸檔缺口時，`turnover_context.missing_reason = market_archive_history_gap` 且 `avg_turnover_value_million = null`，讓 prefilter 以 `data_gap` 排除，不得改用 close × avg_volume_20 估值掩蓋；只有完全沒有可觀測 archive calendar 的舊資料，或市場歸檔齊全但個股 amount 窗口不足，才維持原本明示不足原因的 legacy estimate 契約。
