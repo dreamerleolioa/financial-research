@@ -105,6 +105,36 @@ def verified_repaired_frame(
         unrepaired_by_date = {
             data_date: unrepaired_history.iloc[position] for position, data_date in enumerate(dates)
         }
+        # A fallback response is evidence for the complete accepted history,
+        # not just for the rows that repair damaged. Validate it before using
+        # any row, including agreement with repair's remaining finite values.
+        for position, data_date in enumerate(original_dates):
+            if data_date not in unrepaired_by_date:
+                raise TechnicalRepairRejected("unrepaired_history_missing")
+            if data_date not in by_date:
+                raise TechnicalRepairRejected("repair_history_missing")
+            prices = {
+                field: _number(unrepaired_by_date[data_date][field]) for field in history_fields
+            }
+            if (
+                min(prices.values()) <= 0
+                or prices["Low"] > min(prices["Open"], prices["Close"])
+                or prices["High"] < max(prices["Open"], prices["Close"])
+            ):
+                raise TechnicalRepairRejected("unrepaired_history_prices_invalid")
+            ratio = prices["Adj Close"] / prices["Close"]
+            baseline = original.iloc[position]
+            for field in PRICE_FIELDS:
+                if not math.isclose(
+                    _number(baseline[field]), prices[field] * ratio, rel_tol=1e-6, abs_tol=1e-6,
+                ):
+                    raise TechnicalRepairRejected("adjusted_history_changed")
+            candidate = repaired.iloc[by_date[data_date]]
+            for field in history_fields:
+                if pd.notna(candidate[field]) and not math.isclose(
+                    _number(candidate[field]), prices[field], rel_tol=1e-6, abs_tol=0.0,
+                ):
+                    raise TechnicalRepairRejected("adjusted_history_changed")
     # Every existing price must retain its adjustment basis. Never replace the
     # accepted history with the library's dividend/split repair heuristics.
     history_rows: dict[date, Any] = {}
@@ -118,23 +148,7 @@ def verified_repaired_frame(
         if missing_prices.any():
             if unrepaired_history is None:
                 raise TechnicalRepairRejected("repair_history_values_missing")
-            if data_date not in unrepaired_by_date:
-                raise TechnicalRepairRejected("unrepaired_history_missing")
-            fallback = unrepaired_by_date[data_date]
-            fallback_prices = {field: _number(fallback[field]) for field in history_fields}
-            if (
-                min(fallback_prices.values()) <= 0
-                or fallback_prices["Low"] > min(fallback_prices["Open"], fallback_prices["Close"])
-                or fallback_prices["High"] < max(fallback_prices["Open"], fallback_prices["Close"])
-            ):
-                raise TechnicalRepairRejected("unrepaired_history_prices_invalid")
-            # A missing cell must not hide a changed finite price or adjustment.
-            for field in history_fields:
-                if not missing_prices[field] and not math.isclose(
-                    _number(candidate[field]), fallback_prices[field], rel_tol=1e-6, abs_tol=0.0,
-                ):
-                    raise TechnicalRepairRejected("adjusted_history_changed")
-            candidate = fallback
+            candidate = unrepaired_by_date[data_date]
             history_fallback_dates.append(data_date.isoformat())
         close = _number(candidate["Close"])
         adjustment = _number(candidate["Adj Close"])

@@ -147,7 +147,7 @@ flowchart TD
 
 ---
 
-Adjusted technical 備援若遇到 repair 歷史價格缺值，僅對受影響標的額外查詢一次未啟用 repair 的原始行情。歷史 OHLC 與 `Adj Close` 必須完整、價格範圍有效、日期唯一且有序；其還原價格逐筆符合既有歷史，且 repair 同筆仍有效的值不得與原始來源衝突。前一日因子使用已驗證的歷史列核對，當日因子仍必須由 repair 結果提供並通過股利連續性檢查。只追加官方當日 final OHLCV，不改既有歷史；`technical.source_provenance.repair.history_validation_fallback` 保存核對來源與日期。查詢失敗、證據不足或核對不一致維持非 final，額外查詢失敗不撤銷同批其他已驗證標的。
+Adjusted technical 備援若遇到 repair 歷史價格缺值，僅對受影響標的額外查詢一次未啟用 repair 的原始行情。原始回應須涵蓋所有既有歷史日期，每筆 OHLC 與 `Adj Close` 必須完整、價格範圍有效、日期唯一且有序；每筆還原價格符合既有歷史，且每筆 repair 仍有效的值不得與原始來源衝突。完整 coverage 與逐筆一致性通過後才可採用任何 fallback 列。前一日因子使用已驗證的歷史列核對，當日因子仍必須由 repair 結果提供並通過股利連續性檢查。只追加官方當日 final OHLCV，不改既有歷史；`technical.source_provenance.repair.history_validation_fallback` 保存核對來源，`data_dates` 僅列出實際需要 fallback 的日期。查詢失敗、證據不足或核對不一致維持非 final，額外查詢失敗不撤銷同批其他已驗證標的。
 
 ## 5. 嚴格前置濾網
 
