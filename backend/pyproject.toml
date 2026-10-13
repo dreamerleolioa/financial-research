@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "curl-cffi>=0.13.0",
-    "yfinance>=0.2.54",
+    "yfinance[repair]>=0.2.54",
     "python-dotenv>=1.0.1",
     "fastapi>=0.116.0",
     "uvicorn>=0.35.0",
