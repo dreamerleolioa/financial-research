@@ -117,6 +117,27 @@ def test_repair_verifies_official_prices_keeps_adjustment_and_uses_official_volu
     assert "end" not in calls[-1][1]
 
 
+@pytest.mark.parametrize("row_marker", ["repaired", "unchanged", "missing", "unknown"])
+def test_adjustment_provenance_uses_repair_output_independently_of_row_marker(
+    monkeypatch, row_marker
+):
+    original, repaired, official = _repair_fixture()
+    if row_marker == "missing":
+        repaired = repaired.drop(columns="Repaired?")
+    else:
+        repaired["Repaired?"] = {
+            "repaired": True, "unchanged": False, "unknown": pd.NA,
+        }[row_marker]
+    result, calls, _ = _fetch(monkeypatch, original, repaired, official)
+    technical = result["2330.TW"]
+    provenance = technical["source_provenance"]["repair"]
+    assert calls[-1][1]["repair"] is True
+    assert provenance["adjustment_from_repaired_data"] is True
+    assert provenance["adjustment_factor"] == pytest.approx(0.95)
+    assert technical["ohlcv"]["close"] == pytest.approx(official.close * 0.95)
+    assert [bar["close"] for bar in technical["price_history"][:-1]] == original["Close"].tolist()[-79:]
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -238,6 +259,7 @@ def _compile_jsonb_for_sqlite(type_, compiler, **kw):
 @pytest.mark.parametrize("valid", [True, False])
 def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_repair(monkeypatch, valid):
     original, repaired, official = _repair_fixture()
+    repaired["Repaired?"] = False
     if not valid:
         official.open += 1
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -263,7 +285,10 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
                 assert stored.technical["ohlcv"]["volume"] == official.volume
                 session.commit()
                 session.expire_all()
-                assert session.query(StockRawData).one().technical["source_provenance"]["repair"]["data_date"] == RUN_DATE.isoformat()
+                persisted = session.query(StockRawData).one().technical["source_provenance"]["repair"]
+                assert persisted["data_date"] == RUN_DATE.isoformat()
+                assert persisted["adjustment_from_repaired_data"] is True
+                assert persisted["adjustment_factor"] == pytest.approx(0.95)
             else:
                 assert stored.technical["data_dates"]["ohlcv"] == "2026-09-14"
     finally:
@@ -316,6 +341,7 @@ def test_official_fallback_uses_each_requested_run_date(monkeypatch, run_date):
 
 def test_same_day_dividend_explains_adjustment_factor_change(monkeypatch):
     original, repaired, official = _repair_fixture()
+    repaired["Repaired?"] = False
     target = pd.Timestamp(RUN_DATE)
     previous = original.index[-1]
     repaired.loc[target, "Dividends"] = repaired.loc[previous, "Close"] * (1 - 0.95)
@@ -323,6 +349,7 @@ def test_same_day_dividend_explains_adjustment_factor_change(monkeypatch):
     result, _, _ = _fetch(monkeypatch, original, repaired, official)
     assert result["2330.TW"]["ohlcv"]["close"] == pytest.approx(official.close)
     assert result["2330.TW"]["source_provenance"]["repair"]["adjustment_factor"] == pytest.approx(1.0)
+    assert result["2330.TW"]["source_provenance"]["repair"]["adjustment_from_repaired_data"] is True
     assert result["2330.TW"]["price_history"][-2]["close"] == original.loc[previous, "Close"]
 
 

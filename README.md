@@ -185,6 +185,8 @@ Daily Radar 的 live 資料載入有 request budget：法人 universe 只讀已�
 
 若 selected-symbol adjusted OHLCV 經一般補抓仍落後，technical fetcher 每次依 requested `run_date` 執行同一條自動備援：僅對有同日 final 官方行情的標的嘗試一次 yfinance price repair 取得還原因子。既有歷史還原價格、當日開盤價格單位與股利調整連續性都須核對一致，才以該因子換算官方 final OHLC，採官方成交量並追加當日資料；Yahoo 盤中最後成交不作正式收盤價。原歷史值不變，當日行情、歷史與還原因子的來源分別保存在 `technical.source_provenance`；資料不足、官方行情不完整或基準無法核對時仍保留日期缺口，不標為 final。官方未還原行情經驗證與換算後才接入還原歷史。
 
+`technical.source_provenance.repair.adjustment_from_repaired_data` 表示採用的還原因子來自 yfinance `repair=True` 回傳結果，通過驗證後記為 `true`；此欄位不宣稱因子一定曾被修改。依 [yfinance Price Repair 文件](https://github.com/ranaroussi/yfinance/blob/main/doc/source/advanced/price_repair.rst)，僅修正缺少的股利還原時，`Repaired?` 不會設為 true，因此來源紀錄不依賴這個列級旗標。
+
 CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-architecture-spec.md` 的 workflow 地圖為準。
 
 ---

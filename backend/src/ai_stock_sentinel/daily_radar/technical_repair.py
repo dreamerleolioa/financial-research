@@ -138,7 +138,6 @@ def verified_repaired_frame(
     appended["Volume"] = int(volume)
     # Keep every accepted historical value; append only this date.
     result = pd.concat([original, appended])
-    reconstructed = target.get("Repaired?", False)
     provenance = {
         "provider": provider,
         "history_provider": "yfinance",
@@ -146,7 +145,9 @@ def verified_repaired_frame(
         "price_basis": "adjusted",
         "repair": {
             "method": "official_final_bar_with_yahoo_adjustment",
-            "adjustment_from_repaired_data": bool(pd.notna(reconstructed) and reconstructed),
+            # The factor comes from the repair=True response. Repaired? can
+            # remain false when yfinance repairs only dividend adjustments.
+            "adjustment_from_repaired_data": True,
             "data_date": run_date.isoformat(),
             "official_price_provider": provider,
             "official_price_dataset": official.source_dataset,
