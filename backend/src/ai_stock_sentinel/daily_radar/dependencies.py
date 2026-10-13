@@ -36,7 +36,6 @@ from ai_stock_sentinel.daily_radar.market_session import (
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     LocalFirstBatchTechnicalFetcher,
-    YFinanceBatchTechnicalFetcher,
 )
 from ai_stock_sentinel.daily_radar.universe import DailyRadarUniverseProvider
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
@@ -76,7 +75,7 @@ def get_daily_radar_universe_provider(
 def get_daily_radar_technical_fetcher(
     db: Session = Depends(get_db),
 ) -> BatchTechnicalFetcher:
-    return LocalFirstBatchTechnicalFetcher(db, fallback_fetcher=YFinanceBatchTechnicalFetcher())
+    return LocalFirstBatchTechnicalFetcher(db)
 
 
 def get_taiwan_market_bar_provider() -> OfficialTaiwanMarketBarProvider:

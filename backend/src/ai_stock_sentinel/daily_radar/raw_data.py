@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, timedelta
+import logging
 import math
 import os
 from typing import Any, Protocol
@@ -19,11 +20,16 @@ from ai_stock_sentinel.daily_radar.data_quality import (
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
+from ai_stock_sentinel.daily_radar.technical_repair import (
+    TechnicalRepairRejected,
+    verified_repaired_frame,
+)
 from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
 from ai_stock_sentinel.technical.profile import build_technical_profile_payload
 
 
 REQUIRED_TECHNICAL_ADJUSTMENT_MODE = "adjusted"
+logger = logging.getLogger(__name__)
 
 
 class BatchTechnicalFetcher(Protocol):
@@ -31,9 +37,20 @@ class BatchTechnicalFetcher(Protocol):
         ...
 
 
+class OfficialDailyBarLoader(Protocol):
+    def __call__(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, TaiwanDailyBar]:
+        ...
+
+
 class YFinanceBatchTechnicalFetcher:
-    def __init__(self, *, name_resolver: Callable[[str], str | None] = resolve_symbol_name) -> None:
+    def __init__(
+        self,
+        *,
+        name_resolver: Callable[[str], str | None] = resolve_symbol_name,
+        official_bar_loader: OfficialDailyBarLoader | None = None,
+    ) -> None:
         self._name_resolver = name_resolver
+        self._official_bar_loader = official_bar_loader
 
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
@@ -80,6 +97,7 @@ class YFinanceBatchTechnicalFetcher:
             except Exception:
                 # 保留首次回應的日期證據，讓完整性檢查維持失敗，不偽造當日資料。
                 pass
+        provenance_by_symbol = self._repair_stale_frames(frames, run_date=run_date, start_date=start_date)
         payloads: dict[str, Mapping[str, Any]] = {}
         for symbol in ordered_symbols:
             payload = _build_technical_payload(
@@ -89,8 +107,53 @@ class YFinanceBatchTechnicalFetcher:
                 name=self._safe_resolve_name(symbol),
             )
             if payload is not None:
+                if symbol in provenance_by_symbol:
+                    payload["source_provenance"] = provenance_by_symbol[symbol]
                 payloads[symbol] = payload
         return payloads
+
+    def _repair_stale_frames(
+        self, frames: dict[str, Any], *, run_date: date, start_date: date,
+    ) -> dict[str, dict[str, Any]]:
+        stale = [symbol for symbol, frame in frames.items()
+                 if _is_supported_local_bar_symbol(symbol)
+                 and _last_index_date(frame) != run_date.isoformat()]
+        if not stale or self._official_bar_loader is None:
+            return {}
+        provenance: dict[str, dict[str, Any]] = {}
+        try:
+            official_by_symbol = self._official_bar_loader(stale, run_date=run_date)
+            repair_symbols = [symbol for symbol in stale if symbol in official_by_symbol]
+            if not repair_symbols:
+                return {}
+            # Fetch through now so Yahoo's live row cannot overwrite yesterday's
+            # missing row. Repair before adjustment, then verify raw OHLC against
+            # the final official bar and clip all future rows before acceptance.
+            history = yf.download(
+                repair_symbols, group_by="ticker", start=start_date, interval="1d",
+                auto_adjust=False, repair=True, keepna=True, actions=True,
+                threads=True, progress=False,
+            )
+            for symbol in repair_symbols:
+                repaired = _frame_on_or_before_run_date(
+                    _symbol_frame(history, symbol), run_date=run_date, start_date=start_date,
+                )
+                try:
+                    frame, source = verified_repaired_frame(
+                        frames[symbol], repaired, official_by_symbol[symbol],
+                        symbol=symbol, run_date=run_date,
+                    )
+                except TechnicalRepairRejected as exc:
+                    logger.warning("Daily Radar technical repair rejected reason=%s", str(exc))
+                    continue
+                frames[symbol] = frame
+                provenance[symbol] = source
+        except Exception as exc:
+            logger.warning(
+                "Daily Radar technical repair unavailable symbol_count=%d error_type=%s",
+                len(stale), type(exc).__name__,
+            )
+        return provenance
 
     def _safe_resolve_name(self, symbol: str) -> str | None:
         try:
@@ -115,7 +178,7 @@ class LocalFirstBatchTechnicalFetcher:
     ) -> None:
         self._session = session
         self._fallback_fetcher = fallback_fetcher or YFinanceBatchTechnicalFetcher(
-            name_resolver=name_resolver
+            name_resolver=name_resolver, official_bar_loader=self._load_official_bars,
         )
         self._provider_mode = provider_mode or os.getenv(
             "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
@@ -125,6 +188,11 @@ class LocalFirstBatchTechnicalFetcher:
             raise ValueError("invalid DAILY_RADAR_TW_OHLCV_PROVIDER_MODE")
         self._min_trading_bars = max(1, min_trading_bars)
         self._name_resolver = name_resolver
+
+    def _load_official_bars(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, TaiwanDailyBar]:
+        return {row.symbol: row for row in get_taiwan_daily_bars(
+            self._session, symbols=symbols, start_date=run_date, end_date=run_date,
+        )}
 
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
