@@ -29,6 +29,7 @@ from ai_stock_sentinel.daily_radar.institutional_evidence import (
     OfficialInstitutionalEvidenceProvider,
     cached_daily_rows_from_raw_rows,
 )
+from ai_stock_sentinel.daily_radar.institutional_flow_repository import get_complete_institutional_archive_window
 from ai_stock_sentinel.daily_radar.institutional_payloads import _prepared_universe_entries
 from ai_stock_sentinel.daily_radar.managed_raw_data import (
     MANAGED_RAW_DATA_SYMBOL_LIMIT,
@@ -69,6 +70,7 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarRefreshStepResponse,
 )
 from ai_stock_sentinel.daily_radar.universe import is_daily_radar_supported_symbol
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 from ai_stock_sentinel.data_sources.fundamental.interface import PointInTimeFundamentalProvider
 from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.db.session import get_db
@@ -196,7 +198,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
     pool_rows = [
         row
         for row in get_final_raw_data_rows_for_date(db, run_date=run_date)
-        if is_daily_radar_supported_symbol(row.symbol)
+        if is_daily_radar_supported_symbol(row.symbol) and is_supported_taiwan_symbol(row.symbol)
     ]
     symbols = [row.symbol for row in pool_rows]
     if not symbols:
@@ -223,6 +225,21 @@ def refresh_daily_radar_ai_evidence_endpoint(
         )
     ).all()
     cached_daily_rows = cached_daily_rows_from_raw_rows(cached_institutional_rows)
+    cached_market_dates: dict[str, list[date]] = {"TWSE": [], "TPEX": []}
+    if isinstance(institutional_provider, OfficialInstitutionalEvidenceProvider):
+        for market, alias in (("TW", "TWSE"), ("TWO", "TPEX")):
+            archive = get_complete_institutional_archive_window(db,
+                start_date=run_date - timedelta(days=10), end_date=run_date,
+                required_markets=(market,))
+            cached_market_dates[alias].extend(archive)
+            for flows in archive.values():
+                for flow in flows:
+                    if flow.symbol in symbols:
+                        cached_daily_rows.setdefault(flow.symbol, {})[flow.trade_date] = {
+                            "foreign": flow.foreign_net_shares, "trust": flow.investment_trust_net_shares,
+                            "dealer": flow.dealer_net_shares, "total": flow.total_net_shares,
+                            "source_provider": "official_twse_tpex",
+                        }
     missing_technical_symbols = [symbol for symbol in symbols if symbol not in reusable_symbols]
     fresh_background_pairs = {
         (row.symbol, row.context_type)
@@ -244,6 +261,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
                 symbols,
                 run_date=run_date,
                 cached_daily_rows=cached_daily_rows,
+                cached_market_dates=cached_market_dates,
             )
         else:
             evidence_result = institutional_provider.fetch(symbols, run_date=run_date)
@@ -287,7 +305,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
     pool_rows = [
         row
         for row in get_final_raw_data_rows_for_date(db, run_date=run_date)
-        if is_daily_radar_supported_symbol(row.symbol)
+        if is_daily_radar_supported_symbol(row.symbol) and is_supported_taiwan_symbol(row.symbol)
     ]
 
     background_result = update_background_chip_context_cache(
@@ -322,7 +340,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
     refreshed_rows = [
         row
         for row in get_final_raw_data_rows_for_date(db, run_date=run_date)
-        if is_daily_radar_supported_symbol(row.symbol)
+        if is_daily_radar_supported_symbol(row.symbol) and is_supported_taiwan_symbol(row.symbol)
     ]
     missing_by_lane = _ai_evidence_missing_by_lane(refreshed_rows)
     errors = (

@@ -103,6 +103,16 @@ def test_project_price_history_builds_neutral_horizons() -> None:
     assert projected["horizons"]["60d"] is None
 
 
+def test_short_institutional_history_is_visible_to_ai_pool_eligibility() -> None:
+    day = "2026-10-14"
+    row = {"symbol": "2323.TW", "record_date": day,
+           "institutional": {"foreign_net_shares": 1, "investment_trust_net_shares": 2, "three_party_net_shares": 3},
+           "data_dates": {"institutional": {"institutional_flow": day}}}
+    assert exporter._analytical_completeness([row])["lanes"]["institutional"]["missing_symbols"] == []
+    row["institutional"]["history_coverage"] = {"status": "insufficient_history", "available_day_count": 3, "required_day_count": 5}
+    assert exporter._analytical_completeness([row])["lanes"]["institutional"]["missing_symbols"] == ["2323.TW"]
+
+
 def test_analytical_completeness_distinguishes_missing_evidence_from_finality() -> None:
     complete = {
         "symbol": "2330.TW",

@@ -155,8 +155,13 @@ export default function AnalyzePage() {
 
     setLoading(true);
     setResult(null);
+    const normalizedSymbol = symbol.trim().toUpperCase();
+    const unsupportedInstrument = !/^[1-9][0-9]{3}\.(TW|TWO)$/.test(normalizedSymbol);
     try {
-      const data = await analyzeSymbol({ symbol: symbol.trim() }, controller.signal);
+      if (unsupportedInstrument) {
+        throw new Error("目前僅支援台灣上市與上櫃個股，不支援 ETF、權證或特別股分析。");
+      }
+      const data = await analyzeSymbol({ symbol: normalizedSymbol }, controller.signal);
       setResult(data);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return; // 使用者已送出新請求，忽略
@@ -182,7 +187,7 @@ export default function AnalyzePage() {
         data_confidence: null,
         is_final: true,
         intraday_disclaimer: null,
-        errors: [{ code: "NETWORK_ERROR", message: "分析服務連線失敗" }],
+        errors: [{ code: unsupportedInstrument ? "UNSUPPORTED_INSTRUMENT" : "NETWORK_ERROR", message: unsupportedInstrument ? "目前僅支援台灣上市與上櫃個股，不支援 ETF、權證或特別股分析。" : "分析服務連線失敗" }],
       });
     } finally {
       setLoading(false);
@@ -304,7 +309,7 @@ export default function AnalyzePage() {
               disabled={loading}
             />
             <span className="block text-xs leading-relaxed text-text-faint">
-              上市使用 .TW，上櫃使用 .TWO，例如 2330.TW、6488.TWO。
+              僅支援上市與上櫃個股，例如 2330.TW、6488.TWO；不支援 ETF 分析。
             </span>
           </label>
 

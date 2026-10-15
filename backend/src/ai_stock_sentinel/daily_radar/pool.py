@@ -2,6 +2,8 @@
 from collections import Counter, defaultdict
 from typing import Any
 
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
+
 DATA_REASONS = frozenset({"data_gap", "stale_core_data"})
 ELIGIBILITY_REASONS = frozenset({"low_liquidity", "min_price", "unsupported_daily_radar_symbol"})
 SIGNAL_REASONS = frozenset({"overextended", "weak_structure", "margin_crowding"})
@@ -43,10 +45,15 @@ def freeze_discovery_summary(run: Any, audit: dict[str, Any] | None) -> None:
 
 
 def pool_summary(run: Any) -> dict[str, Any]:
+    excluded_symbols = {row.symbol for row in run.candidates
+                        if getattr(run, "market", "TW") == "TW" and not is_supported_taiwan_symbol(row.symbol)}
     reasons_by_symbol = defaultdict(set)
     failed_symbols = set()
     duplicate_count = 0
     for error in run.errors or []:
+        if error.get("symbol") and getattr(run, "market", "TW") == "TW" and not is_supported_taiwan_symbol(error["symbol"]):
+            excluded_symbols.add(error["symbol"])
+            continue
         if error.get("code") == "duplicate_universe_symbol":
             duplicate_count += 1
             continue
@@ -56,7 +63,10 @@ def pool_summary(run: Any) -> dict[str, Any]:
         reasons_by_symbol[symbol].update(error.get("reasons") or [])
         if error.get("code") == "candidate_processing_error":
             failed_symbols.add(symbol)
-    candidates = {row.symbol: row for row in run.candidates}
+    candidates = {row.symbol: row for row in run.candidates
+                  if getattr(run, "market", "TW") != "TW" or is_supported_taiwan_symbol(row.symbol)}
+    excluded_count = len(excluded_symbols)
+    input_count = max(0, run.universe_count - excluded_count)
     for symbol, row in candidates.items():
         reasons_by_symbol[symbol].update(
             reason["code"] for reason in row.prefilter_reasons or [] if reason.get("code")
@@ -82,9 +92,9 @@ def pool_summary(run: Any) -> dict[str, Any]:
             states["processing_error"] += 1
     return {
         "version": "candidate-pool-summary-v1", "population_scope": "scored_raw_records",
-        "input_record_count": run.universe_count,
+        "input_record_count": input_count,
         "state_counts": dict(states), "duplicate_record_count": duplicate_count,
-        "unclassified_record_count": max(0, run.universe_count - duplicate_count - sum(states.values())),
+        "unclassified_record_count": max(0, input_count - duplicate_count - sum(states.values())),
         "comparable_shadow_count": sum(row.shadow_cohort == "comparable" for row in candidates.values()),
         "eligibility_audit_shadow_count": sum(row.shadow_cohort == "eligibility_audit" for row in candidates.values()),
         "reason_counts": dict(sorted(Counter(reason for reasons in reasons_by_symbol.values() for reason in reasons).items())),

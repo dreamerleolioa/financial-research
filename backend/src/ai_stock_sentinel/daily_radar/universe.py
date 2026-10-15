@@ -114,7 +114,7 @@ def is_daily_radar_supported_tw_stock_id(stock_id: str) -> bool:
     return (
         len(normalized) == 4
         and normalized.isdigit()
-        and not normalized.startswith("00")
+        and normalized[0] in "123456789"
         and normalized not in EXCLUDED_TW_STOCK_IDS
     )
 

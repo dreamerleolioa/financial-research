@@ -67,12 +67,12 @@ def test_public_limit_does_not_shrink_pool_summary_or_expose_shadow_symbols():
         shadow_cohort=None if index < 2 else "comparable", prefilter_reasons=[],
         input_snapshot={"selection_reason": "candidate_limit"} if index == 2 else {},
         risk_labels=[], bucket_scores={}, score_breakdown={}, data_dates={}, matched_rules=[],
-    ) for index, symbol in enumerate(["2330.TW", "2317.TW", "PRIVATE.TW"])]
+    ) for index, symbol in enumerate(["2330.TW", "2317.TW", "2454.TW"])]
     response = public_run_response(run, bucket=None, limit=1)
     assert len(response.candidates) == 1
     assert response.pool_summary.state_counts["selected"] == 2
     assert response.pool_summary.state_counts["limit_deferred"] == 1
-    assert "PRIVATE.TW" not in response.model_dump_json()
+    assert "2454.TW" not in response.model_dump_json()
 
 
 def test_research_status_separates_trend_from_timing():

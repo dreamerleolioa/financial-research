@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BUCKETS
 from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_fixture_records
 from ai_stock_sentinel.daily_radar.prefilter import run_stage1_prefilter
@@ -112,6 +113,8 @@ def calibration_candidates_from_runs(
             DailyRadarCandidate.selection_status == "selected",
         )
     )
+    if market.upper() == "TW":
+        query = query.where(taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
     if start_date is not None:
         query = query.where(DailyRadarRun.run_date >= start_date)
     if end_date is not None:

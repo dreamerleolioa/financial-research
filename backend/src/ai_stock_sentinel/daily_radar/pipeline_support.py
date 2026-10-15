@@ -515,7 +515,9 @@ def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
         margin = _mapping(fundamental.get("margin"))
         if missing_daily_radar_candidate_technical_fields(technical, record_date=row.record_date):
             missing["technical"].append(row.symbol)
-        if not all(
+        if _mapping(institutional.get("history_coverage") or flow.get("history_coverage")).get("status") == "insufficient_history":
+            missing["institutional"].append(row.symbol)
+        elif not all(
             _finite_number(flow.get(field))
             for field in ("foreign_net_shares", "investment_trust_net_shares", "three_party_net_shares")
         ):

@@ -209,7 +209,7 @@ def test_endpoint_batches_provider_and_commits_once_with_idempotent_results(monk
         run = _add_run(session)
         run.candidate_count = 5
         for index in range(5):
-            _add_candidate(session, run, symbol=f"{index}.TW")
+            _add_candidate(session, run, symbol=f"{2300 + index}.TW")
         session.commit()
     benchmark = [_price("2026-06-01", 100, 100, 100, 100), _price("2026-06-02", 101, 101, 101, 101)]
     monkeypatch.setattr(maintenance_router, "load_price_series_from_raw_data",
@@ -226,7 +226,7 @@ def test_endpoint_batches_provider_and_commits_once_with_idempotent_results(monk
         result = maintenance_router.run_daily_radar_forward_validation_endpoint(request, db=session, price_provider=Provider())
         assert len(commits) == 1
         assert result.candidate_count == result.validated_count == result.records_written == 5
-        assert calls == [["0.TW", "1.TW"], ["2.TW", "3.TW"], ["4.TW"]]
+        assert calls == [["2300.TW", "2301.TW"], ["2302.TW", "2303.TW"], ["2304.TW"]]
         assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 5
         first_report = result.report
         calls.clear()

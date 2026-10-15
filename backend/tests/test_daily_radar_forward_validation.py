@@ -838,10 +838,10 @@ def test_forward_validation_uses_latest_public_rerun_for_each_run_date() -> None
     with Session(engine) as session:
         first_run = _add_run(session, run_date=date(2026, 6, 1))
         first_run.created_at = datetime(2026, 6, 1, 10, tzinfo=timezone.utc)
-        _add_candidate(session, first_run, symbol="OLD.TW", close=100)
+        _add_candidate(session, first_run, symbol="2330.TW", close=100)
         latest_run = _add_run(session, run_date=date(2026, 6, 1))
         latest_run.created_at = datetime(2026, 6, 2, 1, tzinfo=timezone.utc)
-        _add_candidate(session, latest_run, symbol="NEW.TW", close=100)
+        _add_candidate(session, latest_run, symbol="2454.TW", close=100)
         session.commit()
 
         candidates = forward_validation_candidates_from_runs(
@@ -851,7 +851,7 @@ def test_forward_validation_uses_latest_public_rerun_for_each_run_date() -> None
             end_date=date(2026, 6, 1),
         )
 
-    assert [candidate["symbol"] for candidate in candidates] == ["NEW.TW"]
+    assert [candidate["symbol"] for candidate in candidates] == ["2454.TW"]
 
 
 def test_observation_origin_uses_history_before_requested_range_and_separates_policy():

@@ -26,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol, taiwan_stock_symbol_predicate
 from ai_stock_sentinel.analysis.confidence_scorer import (
     BASE_CONFIDENCE,
     CONFIDENCE_CONFIG_VERSION,
@@ -105,6 +106,8 @@ def capture_general_analysis_calibration_sample(
         )
         return None
     market, benchmark_symbol = partition
+    if market == "TW" and not is_supported_taiwan_symbol(symbol):
+        return None
     active_replay_input = (
         dict(replay_input)
         if replay_input is not None
@@ -1136,6 +1139,8 @@ def _canonical_general_sample_ids() -> Any:
         select(func.min(AnalysisCalibrationSample.id))
         .where(
             AnalysisCalibrationSample.analysis_type == "general",
+            or_(AnalysisCalibrationSample.market != "TW",
+                taiwan_stock_symbol_predicate(AnalysisCalibrationSample.symbol)),
             AnalysisCalibrationSample.analysis_is_final.is_(True),
             AnalysisCalibrationSample.strategy_version == STRATEGY_VERSION,
             AnalysisCalibrationSample.confidence_config_version

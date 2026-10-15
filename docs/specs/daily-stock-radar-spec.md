@@ -626,7 +626,7 @@ flowchart LR
 
 驗證頁提供「次日開盤起算（價格報酬）」及「訊號日收盤起算（歷史口徑）」切換。新 API 的研究欄位可用時預設次日開盤；舊 API 沒有研究欄位時繼續顯示歷史比較。樣本期間可選最近 90／180／365／1095 個日曆天。查看、切換與重新整理只讀已保存結果，不觸發正式環境補算。
 
-- 新結果以 `daily-radar-next-open-price-v1` 保存；既有 candidate／window／validation_version 唯一鍵足以隔離兩種口徑，不新增 migration、不覆寫 v2，也不變更 scoring、選股名額、排序或月度 5／10／20 日治理 gate。
+- 新結果以 `daily-radar-next-open-price-v2` 保存；既有 candidate／window／validation_version 唯一鍵足以隔離兩種口徑，不新增 migration、不覆寫 signal_close 的 `daily-radar-forward-validation-v2`，也不變更 scoring、選股名額、排序或月度 5／10／20 日治理 gate。
 - 起點為訊號後第一個基準交易日真實開盤，終點為訊號後第 N 個交易日收盤。股票與基準使用同一起訖日，均明確請求 `auto_adjust=False` 的 OHLC；不使用入選 technical snapshot，不加入現金股息。資料來源與口徑、起訖價格／日期及成本模型隨 outcome 保存。
 - 已準備的 benchmark calendar 完整涵蓋時，以日期作為獨立交易日證據，缺 benchmark session 不得把終點順延；無完整 reference 時使用 provider 的 index calendar。開盤缺值、OHLC 衝突／無效、價格口徑或 corporate-action evidence 不明皆保留缺資料原因；不以收盤補開盤。期間含拆併股時暫不比較。未滿期不寫入失敗 outcome；行情年代明顯不足時保留 missing reason，不能冒充未滿期。
 - 固定總成本情境為 0／0.5／1 **個百分點**：每筆股票價格報酬與超額報酬扣除相同假設成本，基準維持未扣成本的價格報酬。成本情境並非個人費率、稅率、實際滑價或成交績效。公司股息未納入，因此此頁不是總報酬研究。
@@ -713,3 +713,10 @@ MVP 不做以下事項：
 5. React 前端可呈現最新 Daily Radar、bucket 篩選與細節抽屜。
 6. 所有選股、排名與 bucket 判定不呼叫 LLM。
 7. 文案符合觀察清單定位，不出現買賣命令式建議。
+
+
+### 個股資格與恢復邊界（2026-10-15）
+
+ETF、權證、特別股不納入候選、分析、raw pool 補抓或兩種 forward validation；歷史樣本保留稽核，但退出目前清單與成效統計。Analyze API／CLI 在快取及 provider 前套用相同個股資格，獨立主動式 ETF 持股追蹤保留，TAIEX 仍作比較基準。
+
+市場法人報表完整度不採所有股票資料日期的交集；優先讀通過完整性驗證的官方 archive。個股短歷史保留 coverage／missing dates，後續 refresh 不可洗掉同日 evidence。next_open v2 排除 stale signal，缺行情時做有界官方 OHLC 補缺，保留企業行動與價格口徑檢查。既有 07:00 repair 追加 AI evidence 及兩種 validation；本次與累積 skip 計數分開，真正未解的來源缺口仍讓 monitor 失敗。細節見 backend API 規格的「個股研究資格與資料恢復」。

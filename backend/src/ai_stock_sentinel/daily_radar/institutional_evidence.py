@@ -119,6 +119,7 @@ class OfficialInstitutionalEvidenceProvider:
         *,
         run_date: date,
         cached_daily_rows: CachedDailyRows | None = None,
+        cached_market_dates: Mapping[str, Sequence[date]] | None = None,
     ) -> InstitutionalEvidenceResult:
         requested = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
         earliest_date = run_date - timedelta(days=self._calendar_window_days)
@@ -147,6 +148,11 @@ class OfficialInstitutionalEvidenceProvider:
             )
             for market in markets
         }
+        for market in markets:
+            market_days[market].update(
+                day for day in (cached_market_dates or {}).get(market, ())
+                if earliest_date <= day <= run_date
+            )
         historical_errors: dict[str, list[dict[str, Any]]] = {
             market: [] for market in markets
         }
@@ -283,18 +289,15 @@ class OfficialInstitutionalEvidenceProvider:
         fallback_errors: dict[str, list[dict[str, Any]]] = {
             market: [] for market in markets
         }
-        market_days = {
-            market: _fully_cached_market_dates(
-                [symbol for symbol in requested if _symbol_market(symbol) == market],
-                daily_by_symbol,
-            )
-            for market in markets
-        }
+        # Market report coverage is independent of a stock's trading history.
+        # A suspended/new stock must not shrink every other stock's window.
         if self._finmind_client is not None:
             incomplete_markets = [
                 market
                 for market in markets
                 if len(market_days[market]) < required_market_days
+                or any(run_date not in daily_by_symbol.get(symbol, {})
+                       for symbol in requested if _symbol_market(symbol) == market)
                 or (
                     run_date.weekday() < 5
                     and run_date not in market_days[market]
@@ -309,17 +312,15 @@ class OfficialInstitutionalEvidenceProvider:
                     run_date=run_date,
                     deadline=deadline,
                 )
-                market_days = {
-                    market: _fully_cached_market_dates(
+                for market in markets:
+                    market_days[market].update(_fully_cached_market_dates(
                         [
                             symbol
                             for symbol in requested
                             if _symbol_market(symbol) == market
                         ],
                         daily_by_symbol,
-                    )
-                    for market in markets
-                }
+                    ))
                 recovered_markets = {
                     market
                     for market in incomplete_markets
@@ -383,6 +384,7 @@ class OfficialInstitutionalEvidenceProvider:
                 rows,
                 run_date=run_date,
                 active_dates=active_dates_by_market[_symbol_market(symbol)],
+                required_day_count=required_market_days,
             )
             for symbol, rows in daily_by_symbol.items()
             if rows
@@ -1253,10 +1255,19 @@ def _build_payload(
     *,
     run_date: date,
     active_dates: Sequence[date],
+    required_day_count: int | None = None,
 ) -> dict[str, Any]:
     latest_date = max(rows)
     latest = rows[latest_date]
     ordered_dates = [item for item in sorted(active_dates, reverse=True) if item in rows]
+    required = required_day_count if required_day_count is not None else len(active_dates)
+    history_coverage = {
+        "as_of_date": run_date.isoformat(),
+        "status": "complete" if len(ordered_dates) >= required else "insufficient_history",
+        "required_day_count": required,
+        "available_day_count": len(ordered_dates),
+        "missing_dates": [item.isoformat() for item in sorted(active_dates) if item not in rows],
+    }
     totals = [float(rows[item].get("total", 0.0)) for item in ordered_dates]
     consecutive_positive = _consecutive(totals, positive=True)
     consecutive_negative = _consecutive(totals, positive=False)
@@ -1292,6 +1303,7 @@ def _build_payload(
         ],
     }
     flat: dict[str, Any] = {
+        "history_coverage": history_coverage,
         "foreign_net_shares": float(latest.get("foreign", 0.0)),
         "investment_trust_net_shares": float(latest.get("trust", 0.0)),
         "dealer_net_shares": float(latest.get("dealer", 0.0)),

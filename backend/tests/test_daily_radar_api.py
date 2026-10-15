@@ -2610,6 +2610,7 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_scoring_and_ma
     ('', ''), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
     ('refresh-avwap', 'http'), ('run-scoring', 'http'),
     ('refresh-ohlcv', 'transport'), ('refresh-managed-raw-data', 'payload'),
+    ('refresh-ai-evidence', 'payload'), ('refresh-ai-evidence', 'http'), ('validation', 'payload'),
 ])
 def test_repair_shell_recovers_independent_steps_and_preserves_failure(
     tmp_path, failed_step, failure_kind,
@@ -2620,7 +2621,7 @@ def test_repair_shell_recovers_independent_steps_and_preserves_failure(
     import yaml
 
     workflow = yaml.safe_load((Path(__file__).parents[2] / '.github/workflows/daily-radar.yml').read_text())
-    script = workflow['jobs']['repair-avwap-and-rescore']['steps'][0]['run']
+    script = next(step['run'] for step in workflow['jobs']['repair-avwap-and-rescore']['steps'] if 'run' in step)
     # 執行真正的 workflow shell；所有 HTTP 都在本機替換，無憑證與網路存取。
     mock_curl = r'''
 curl() {
@@ -2641,21 +2642,21 @@ curl() {
             transport) return 7 ;;
         esac
     fi
-    printf '{"status":"%s","missing_record_count":0}' "$status" > "$output"
+    printf '{"status":"%s","run_date":"2026-09-15","missing_record_count":0}' "$status" > "$output"
     printf '%s' "$http"
 }
 '''
     env = {**os.environ, 'ZEABUR_BACKEND_URL': 'https://backend.invalid',
            'DAILY_RADAR_INTERNAL_TOKEN': 'test-only', 'DAILY_RADAR_RUN_DATE': '2026-09-15',
            'CALL_LOG': str(tmp_path / 'calls'), 'FAILED_STEP': failed_step,
-           'FAILURE_KIND': failure_kind, 'TMPDIR': str(tmp_path)}
-    result = subprocess.run(['bash', '-c', textwrap.dedent(mock_curl) + script],
+           'FAILURE_KIND': failure_kind, 'TMPDIR': str(tmp_path), 'RUNNER_TEMP': str(tmp_path)}
+    result = subprocess.run(['bash', '-c', textwrap.dedent(mock_curl) + '\npython() { printf \"validation\\n\" >> \"$CALL_LOG\"; [[ "$FAILED_STEP" != "validation" ]]; }\n' + script],
                             env=env, capture_output=True, text=True, timeout=10)
     calls = (tmp_path / 'calls').read_text().splitlines()
     expected = ['refresh-full-margin', 'refresh-ohlcv', 'refresh-avwap']
     if failed_step not in {'refresh-full-margin', 'refresh-ohlcv'}:
         expected.append('run-scoring')
-    expected.append('refresh-managed-raw-data')
+    expected.extend(['refresh-managed-raw-data', 'refresh-ai-evidence', 'validation'])
     assert calls == expected, result.stdout + result.stderr
     assert result.returncode == (1 if failed_step else 0), result.stdout + result.stderr
 

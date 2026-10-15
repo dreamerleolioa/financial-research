@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
@@ -234,7 +235,8 @@ def get_symbol_candidate_history(
     market: str,
     summary_only: bool = False,
 ) -> list[dict[str, Any]]:
-    symbol_set = {symbol for symbol in symbols}
+    symbol_set = {symbol for symbol in symbols
+                  if market != "TW" or is_supported_taiwan_symbol(symbol)}
     if not symbol_set:
         return []
 

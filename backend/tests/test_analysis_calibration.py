@@ -1270,17 +1270,19 @@ def test_forward_validation_and_monthly_workflows_fail_on_gaps_and_encrypt_artif
 
     assert 'cron: "50 15 * * 1-5"' in daily_radar
     assert "run-forward-validation" in daily_radar
-    assert "/internal/daily-radar/forward-validation/run" in daily_radar
+    runner = (root / ".github/scripts/run_daily_radar_validation.py").read_text()
+    assert "run_daily_radar_validation.py" in daily_radar
+    assert "/internal/daily-radar/forward-validation/run" in runner
     assert "/internal/analysis-calibration/forward-validation/run" in daily
-    assert '.status == "completed" and .retryable_skipped_count == 0' in daily_radar
+    assert 'response["retryable_skipped_count"] == 0' in runner
     assert '.status == "completed" and .retryable_skipped_count == 0' in daily
     assert '.status == "completed" and .skipped_count == 0' not in daily_radar
     assert '.status == "completed" and .skipped_count == 0' not in daily
-    assert "retryable_skipped_count" in daily_radar
-    assert "terminal_skipped_count" in daily_radar
+    assert "retryable_skipped_count" in runner
+    assert "terminal_skipped_count" in runner
     assert "retryable_skipped_count" in daily
     assert "terminal_skipped_count" in daily
-    assert "skip_reasons: (.report.skip_reasons // {})" in daily_radar
+    assert 'persisted_skip_reasons=report.get("skip_reasons", {})' in runner
     assert "skip_reasons: (.report.skip_reasons // {})" in daily
     assert 'cron: "0 10 6 * *"' in monthly
     assert "actions/upload-artifact@v4" in monthly

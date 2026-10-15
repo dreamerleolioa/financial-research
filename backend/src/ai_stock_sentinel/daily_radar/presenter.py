@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping
 from datetime import date
 from typing import Any
 
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 from ai_stock_sentinel.daily_radar.cooldown import apply_cooldown_status, radar_trading_dates
 from ai_stock_sentinel.daily_radar.pool import pool_summary, research_status
 from ai_stock_sentinel.daily_radar.schemas import (
@@ -41,6 +42,7 @@ def public_run_response(
         candidate_response(candidate, record_date=run.run_date)
         for candidate in _ordered_candidates(run.candidates)
         if candidate.selection_status == "selected"
+        and (run.market != "TW" or is_supported_taiwan_symbol(candidate.symbol))
     ]
     if history_candidates is not None:
         context = next((candidate.input_snapshot.get("replay_input", {}).get("market_context", {})

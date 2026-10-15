@@ -1,6 +1,11 @@
 """Versioned next-open price research, isolated from legacy close-based results."""
 from collections import Counter
 from datetime import date
+from collections import defaultdict
+from sqlalchemy import or_, select
+from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, DailyRadarCandidate, DailyRadarRun
+from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
+from ai_stock_sentinel.daily_radar.observation_validation import canonical_radar_run_ids
 
 from ai_stock_sentinel.calibration.forward_validation import (
     candidate_key, merge_price_series, number, ordered_positive_values, parse_date,
@@ -15,7 +20,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 
 
-RESEARCH_VALIDATION_VERSION = "daily-radar-next-open-price-v1"
+RESEARCH_VALIDATION_VERSION = "daily-radar-next-open-price-v2"
 RESEARCH_PRICE_BASIS = "unadjusted_price"
 RESEARCH_COSTS = (0.0, 0.5, 1.0)
 RESEARCH_TERMINAL_REASONS = TERMINAL_FORWARD_VALIDATION_SKIP_REASONS | {"stock_split_in_window"}
@@ -35,21 +40,25 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             "validation_version": RESEARCH_VALIDATION_VERSION, "benchmark_symbol": benchmark_symbol,
             "evaluation_as_of_date": as_of_date.isoformat()}
 
-    def skip(reason, *, pending=False):
+    def skip(reason, *, pending=False, missing_dates=(), target_date=None):
         return base | {"status": "pending" if pending else "skipped", "target_date": None,
-                       "skip_reason": reason, "outcome": {}}
+                       "skip_reason": reason, "outcome": {"missing_dates": [str(d) for d in missing_dates],
+                       "expected_target_date": str(target_date) if target_date else None}}
 
     if signal is None:
         return skip("signal_date_missing")
     if signal > as_of_date:
         return skip("future_signal_date")
+    ohlcv_date = parse_date((candidate.get("data_dates") or {}).get("ohlcv"))
+    if ohlcv_date is not None and ohlcv_date < signal:
+        return skip("stale_candidate_price")
     benchmark = _index(benchmark_prices)
     calendar = sorted(day for day, row in benchmark.items()
                       if signal < day <= as_of_date and (number(row.get("close")) or 0) > 0)
     if trading_calendar is not None:
         calendar = sorted({day for day in trading_calendar if signal < day <= as_of_date})
     if signal not in benchmark:
-        return skip("missing_benchmark")
+        return skip("missing_benchmark", missing_dates=[signal])
     if len(calendar) < window_days:
         # Beyond a conservative calendar bound, an incomplete index history is
         # missing evidence, not proof that the observation is still immature.
@@ -58,10 +67,10 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
         return skip("window_not_mature", pending=True)
     days = calendar[:window_days]
     if any(day not in benchmark for day in days):
-        return skip("missing_benchmark")
+        return skip("missing_benchmark", missing_dates=[d for d in days if d not in benchmark], target_date=days[-1])
     prices = _index(price_series)
     if any(day not in prices for day in days):
-        return skip("missing_future_price")
+        return skip("missing_future_price", missing_dates=[d for d in days if d not in prices], target_date=days[-1])
     entry = number(prices[days[0]].get("open"))
     benchmark_entry = number(benchmark[days[0]].get("open"))
     if entry is None or entry <= 0:
@@ -105,6 +114,11 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
         "cash_dividends_excluded": sum(prices[d]["dividends"] for d in days),
         "price_sources": sorted({prices[d]["price_source"] for d in days}),
         "benchmark_price_sources": sorted({benchmark[d]["price_source"] for d in days}),
+        "corporate_action_sources": sorted({prices[d].get("corporate_action_source", prices[d]["price_source"]) for d in days}),
+        "recovery_provenance": [{"date": str(d), "price_source": prices[d]["price_source"],
+            "corporate_action_source": prices[d]["corporate_action_source"],
+            "corporate_action_coverage": {k: v for k, v in (prices[d].get("corporate_action_coverage") or {}).items() if k != "events"}}
+            for d in days if prices[d].get("corporate_action_source")],
         "cost_model": "assumed_total_cost_percentage_points",
         "cost_scenarios": {format(cost, "g"): {
             "assumed_cost_pct": cost, "net_return_pct": round(gross - cost, 4),
@@ -116,56 +130,112 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
 
 
 def run_research_validation(session, request, *, as_of_date: date, price_provider):
-    """Fetch only pending symbols in bounded batches; commit belongs to the router."""
+    """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
     start = request.start_date
-    if request.mode == "due" and start is None:
-        start = default_due_start_date(as_of_date, max(windows))
+    resume = defaultdict(set)
+    if request.mode == "due":
+        if start is None:
+            start = default_due_start_date(as_of_date, max(windows))
+        # Do not lose unresolved observations as the default date window moves.
+        # Explicit caller date bounds remain authoritative.
+        query = select(DailyRadarForwardValidationResult.candidate_id,
+                       DailyRadarForwardValidationResult.window_days).join(
+            DailyRadarCandidate, DailyRadarCandidate.id == DailyRadarForwardValidationResult.candidate_id
+        ).join(DailyRadarRun, DailyRadarRun.id == DailyRadarCandidate.run_id).where(
+            DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION,
+            DailyRadarForwardValidationResult.status == "skipped",
+            DailyRadarForwardValidationResult.skip_reason.not_in(RESEARCH_TERMINAL_REASONS),
+            DailyRadarForwardValidationResult.window_days.in_(windows),
+            DailyRadarForwardValidationResult.signal_date <= (request.end_date or as_of_date),
+            DailyRadarRun.market == request.market,
+            DailyRadarRun.id.in_(canonical_radar_run_ids(market=request.market, end_date=request.end_date or as_of_date)),
+            DailyRadarForwardValidationResult.benchmark_symbol == request.benchmark_symbol,
+            DailyRadarForwardValidationResult.signal_date == DailyRadarRun.run_date,
+            or_(DailyRadarCandidate.selection_status == "selected",
+                (DailyRadarCandidate.selection_status == "shadow") & (DailyRadarCandidate.shadow_cohort == "comparable")),
+            taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if request.market == "TW" else True,
+        ).order_by(DailyRadarForwardValidationResult.updated_at,
+                   DailyRadarForwardValidationResult.signal_date,
+                   DailyRadarForwardValidationResult.candidate_id,
+                   DailyRadarForwardValidationResult.window_days).limit(512)
+        if request.start_date is not None:
+            query = query.where(DailyRadarForwardValidationResult.signal_date >= request.start_date)
+        for cid, window in session.execute(query):
+            resume[cid].add(window)
     candidates = forward_validation_candidates_from_runs(
-        session, market=request.market, start_date=start, end_date=request.end_date or as_of_date)
+        session, market=request.market, start_date=start, end_date=request.end_date or as_of_date,
+        include_candidate_ids=list(resume))
     candidates = [c for c in candidates if c["selection_status"] == "selected"
                   or (c["selection_status"] == "shadow" and c["shadow_cohort"] == "comparable")]
     validate_forward_validation_benchmark(candidates, benchmark_symbol=request.benchmark_symbol)
-    pending = {candidate_key(c): windows for c in candidates}
+    pending = {candidate_key(c): (sorted(resume[c["candidate_id"]])
+               if start and parse_date(c["record_date"]) < start else windows) for c in candidates}
     if request.mode == "due":
         pending = exclude_persisted_daily_radar_windows(
             session, pending, validation_version=RESEARCH_VALIDATION_VERSION,
             benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS)
     active = [c for c in candidates if pending.get(candidate_key(c))]
-    benchmark = []
     outcomes = []
-    if active:
-        price_start = min(parse_date(c["record_date"]) for c in active)
+    fresh = []
+    for candidate in active:
+        signal = parse_date(candidate["record_date"])
+        observed = parse_date((candidate.get("data_dates") or {}).get("ohlcv"))
+        if observed and observed < signal:
+            outcomes.extend(evaluate_research_window(candidate, price_series=[], benchmark_prices=[],
+                window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
+                for w in pending[candidate_key(candidate)])
+        else:
+            fresh.append(candidate)
+    if fresh:
+        price_start = min(parse_date(c["record_date"]) for c in fresh)
         benchmark = list(price_provider.fetch(
             [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
         ).get(request.benchmark_symbol, []))
         reference = load_benchmark_prices_from_prepared_market_context(
             session, market=request.market, benchmark_symbol=request.benchmark_symbol,
-            as_of_date=as_of_date, required_dates=[parse_date(c["record_date"]) for c in active])
-        reference_days = sorted(day for day in _index(reference) if day <= as_of_date)
+            as_of_date=as_of_date, required_dates=[parse_date(c["record_date"]) for c in fresh])
+        reference_days = sorted(day for day in _index(reference) if price_start <= day <= as_of_date)
+        repair = getattr(price_provider, "repair", None)
+        if callable(repair):
+            required = sorted(set(reference_days) | {price_start, as_of_date})
+            benchmark = repair({request.benchmark_symbol: benchmark},
+                required_dates_by_symbol={request.benchmark_symbol: required},
+                as_of_date=as_of_date).get(request.benchmark_symbol, [])
         calendar = sorted(day for day in _index(benchmark) if day <= as_of_date)
-        by_symbol = {}
-        for candidate in active:
+        # Both sources can prove a session. Never drop a real provider session
+        # merely because an older prepared snapshot has an internal hole.
+        complete_calendar = sorted(set(reference_days) | set(calendar))
+        by_symbol = defaultdict(list)
+        for candidate in fresh:
             signal = parse_date(candidate["record_date"])
-            reference_usable = signal in reference_days and reference_days[-1] >= max(calendar, default=signal)
-            candidate_calendar = reference_days if reference_usable else calendar
+            candidate_calendar = complete_calendar
             due = [w for w in pending[candidate_key(candidate)]
                    if sum(day > signal for day in candidate_calendar) >= w
                    or (as_of_date - signal).days >= w * 2]
             if due:
-                by_symbol.setdefault(candidate["symbol"], []).append((candidate, due, reference_days if reference_usable else None))
+                by_symbol[candidate["symbol"]].append((candidate, due, candidate_calendar))
         symbols = sorted(by_symbol)
         for offset in range(0, len(symbols), FORWARD_PRICE_FETCH_BATCH_SIZE):
             batch = symbols[offset:offset + FORWARD_PRICE_FETCH_BATCH_SIZE]
             batch_start = min(parse_date(c["record_date"]) for s in batch for c, _, _ in by_symbol[s])
             prices = price_provider.fetch(batch, start_date=batch_start, end_date=as_of_date)
+            required_by_symbol = {}
             for symbol in batch:
-                for candidate, due, reference_calendar in by_symbol[symbol]:
+                required = set()
+                for candidate, due, candidate_calendar in by_symbol[symbol]:
+                    future = [d for d in candidate_calendar if d > parse_date(candidate["record_date"])]
+                    required.update(future[:max(due)])
+                required_by_symbol[symbol] = sorted(required)
+            if callable(repair):
+                prices = repair(prices, required_dates_by_symbol=required_by_symbol, as_of_date=as_of_date)
+            for symbol in batch:
+                for candidate, due, candidate_calendar in by_symbol[symbol]:
                     for window in due:
                         row = evaluate_research_window(
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
                             window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
-                            trading_calendar=reference_calendar)
+                            trading_calendar=candidate_calendar)
                         if row["status"] != "pending":
                             outcomes.append(row)
     summary = upsert_forward_validation_results(session, outcomes)
@@ -177,8 +247,14 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     report = {"validation_version": RESEARCH_VALIDATION_VERSION, "return_basis": "next_open",
               "price_basis": RESEARCH_PRICE_BASIS, "dividends_included": False,
               "windows": windows, "as_of_date": as_of_date.isoformat(),
-              "aggregation_scope": "persisted_fixed_date_cohort",
+              "aggregation_scope": "persisted_fixed_date_cohort", "instrument_scope": "individual_stocks",
               "persisted_count": len(persisted),
+              "resumed_candidate_count": sum(parse_date(c["record_date"]) < start for c in candidates) if start else 0,
+              "current_run_skip_reasons": dict(Counter(r["skip_reason"] for r in outcomes if r["status"] == "skipped")),
+              "current_run_gaps": [{"symbol": r["symbol"], "signal_date": r["signal_date"],
+                  "window_days": r["window_days"], "reason": r["skip_reason"], **r["outcome"]}
+                  for r in outcomes if r["status"] == "skipped" and r["skip_reason"] not in RESEARCH_TERMINAL_REASONS][:50],
+              "source_recovery": getattr(price_provider, "diagnostics", [])[:64],
               "skip_reasons": dict(Counter(r["skip_reason"] for r in persisted if r["status"] == "skipped"))}
     return {"status": "completed", "mode": request.mode, "market": request.market,
             "as_of_date": as_of_date, "candidate_count": len(candidates), **summary, "report": report}
