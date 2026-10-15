@@ -962,7 +962,7 @@ jobs:
           if [[ ! "$evidence_http_status" =~ ^2[0-9][0-9]$ ]]; then
             evidence_repair_completed=false
           else
-            jq '{status, run_date, missing_by_lane, errors}' "$evidence_response_file"
+            jq '{status, run_date, missing_by_lane, errors}' "$evidence_response_file" || evidence_repair_completed=false
             jq -e --arg run_date "$run_date" '.status == "completed" and .run_date == $run_date' "$evidence_response_file" >/dev/null || evidence_repair_completed=false
           fi
           validation_repair_completed=true

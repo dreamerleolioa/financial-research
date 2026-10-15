@@ -20,6 +20,7 @@ def price(day, open_=110, close=115, **extra):
 def evaluate(prices=None, benchmark=None, *, as_of=date(2026, 6, 9)):
     return evaluate_research_window(
         {"candidate_id": 1, "symbol": "2330.TW", "record_date": "2026-06-05",
+         "data_dates": {"ohlcv": "2026-06-05"},
          "input_snapshot": {"ohlcv": {"close": 50}}},
         price_series=prices if prices is not None else [
             price("2026-06-05", 100, 100), price("2026-06-08"), price("2026-06-09", 115, 121)],
@@ -89,7 +90,7 @@ def test_benchmark_requires_real_open_and_matching_price_basis():
 
 def test_reference_calendar_catches_missing_index_session_instead_of_shifting_target():
     row = evaluate_research_window(
-        {"candidate_id": 1, "symbol": "2330.TW", "record_date": "2026-06-05"},
+        {"candidate_id": 1, "symbol": "2330.TW", "record_date": "2026-06-05", "data_dates": {"ohlcv": "2026-06-05"}},
         price_series=[price("2026-06-08"), price("2026-06-09"), price("2026-06-10")],
         benchmark_prices=[price("2026-06-05"), price("2026-06-09"), price("2026-06-10")],
         window_days=2, as_of_date=date(2026, 6, 10), benchmark_symbol="TAIEX",
@@ -133,7 +134,8 @@ def test_medium_term_targets_count_trading_sessions_and_wait_for_maturity(window
     days = [date(2026, 6, 5) + timedelta(days=i) for i in range(110)
             if (date(2026, 6, 5) + timedelta(days=i)).weekday() < 5]
     prices = [price(day.isoformat(), 100, 100 + i / 10) for i, day in enumerate(days)]
-    kwargs = dict(candidate={"candidate_id": 1, "symbol": "2330.TW", "record_date": days[0].isoformat()},
+    kwargs = dict(candidate={"candidate_id": 1, "symbol": "2330.TW", "record_date": days[0].isoformat(),
+                             "data_dates": {"ohlcv": days[0].isoformat()}},
                   price_series=prices, benchmark_prices=prices, window_days=window, benchmark_symbol="TAIEX")
     mature = evaluate_research_window(**kwargs, as_of_date=days[window])
     assert mature["status"] == "validated"

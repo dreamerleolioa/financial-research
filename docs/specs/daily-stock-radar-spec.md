@@ -719,4 +719,4 @@ MVP 不做以下事項：
 
 ETF、權證、特別股不納入候選、分析、raw pool 補抓或兩種 forward validation；歷史樣本保留稽核，但退出目前清單與成效統計。Analyze API／CLI 在快取及 provider 前套用相同個股資格，獨立主動式 ETF 持股追蹤保留，TAIEX 仍作比較基準。
 
-市場法人報表完整度不採所有股票資料日期的交集；優先讀通過完整性驗證的官方 archive。個股短歷史保留 coverage／missing dates，後續 refresh 不可洗掉同日 evidence。next_open v2 排除 stale signal，缺行情時做有界官方 OHLC 補缺，保留企業行動與價格口徑檢查。既有 07:00 repair 追加 AI evidence 及兩種 validation；本次與累積 skip 計數分開，真正未解的來源缺口仍讓 monitor 失敗。細節見 backend API 規格的「個股研究資格與資料恢復」。
+市場法人報表完整度不採所有股票資料日期的交集；優先讀通過完整性驗證的官方 archive。個股短歷史保留 coverage／missing dates，後續 refresh 不可洗掉同日 evidence。next_open v2 要求候選 OHLC 日期等於 signal date；續跑舊版 retryable 視窗並回報剩餘 backlog，未清空不得視為 ready。缺行情時依完整保存交易日曆做有界官方 OHLC 補缺，逐日驗證企業行動證據，保留價格口徑檢查。Radar 月度規則治理亦排除歷史 ETF。既有 07:00 repair 追加 AI evidence 及兩種 validation；本次與累積 skip 計數分開，真正未解的來源缺口仍讓 monitor 失敗。細節見 backend API 規格的「個股研究資格與資料恢復」。

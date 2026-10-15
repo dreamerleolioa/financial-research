@@ -2610,7 +2610,8 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_scoring_and_ma
     ('', ''), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
     ('refresh-avwap', 'http'), ('run-scoring', 'http'),
     ('refresh-ohlcv', 'transport'), ('refresh-managed-raw-data', 'payload'),
-    ('refresh-ai-evidence', 'payload'), ('refresh-ai-evidence', 'http'), ('validation', 'payload'),
+    ('refresh-ai-evidence', 'payload'), ('refresh-ai-evidence', 'http'),
+    ('refresh-ai-evidence', 'malformed'), ('validation', 'payload'),
 ])
 def test_repair_shell_recovers_independent_steps_and_preserves_failure(
     tmp_path, failed_step, failure_kind,
@@ -2642,7 +2643,11 @@ curl() {
             transport) return 7 ;;
         esac
     fi
-    printf '{"status":"%s","run_date":"2026-09-15","missing_record_count":0}' "$status" > "$output"
+    if [[ "$step" == "$FAILED_STEP" && "$FAILURE_KIND" == "malformed" ]]; then
+        printf '{' > "$output"
+    else
+        printf '{"status":"%s","run_date":"2026-09-15","missing_record_count":0}' "$status" > "$output"
+    fi
     printf '%s' "$http"
 }
 '''

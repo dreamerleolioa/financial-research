@@ -21,7 +21,7 @@ def official(url, **kwargs):
 def actions(url, **kwargs):
     return {"chart": {"error": None, "result": [{"meta": {"symbol": "2330.TW",
         "exchangeTimezoneName": "Asia/Taipei", "regularMarketTime": int(datetime(2026, 10, 14, 13, 30, tzinfo=ZoneInfo("Asia/Taipei")).timestamp())},
-        "timestamp": [int(datetime(2026, 10, 13, tzinfo=ZoneInfo("Asia/Taipei")).timestamp())]}]}}
+        "timestamp": [int(datetime(2026, 10, day, tzinfo=ZoneInfo("Asia/Taipei")).timestamp()) for day in (13, 14)]}]}}
 
 
 def recover(provider, prices=None, symbol="2330.TW"):
@@ -105,3 +105,32 @@ def test_actions_for_only_later_dates_cannot_authorize_historical_repair():
         payload["chart"]["result"][0]["timestamp"] = [int(datetime(2026, 10, 15, tzinfo=ZoneInfo("Asia/Taipei")).timestamp())]
         return payload
     assert recover(RecoveringResearchPriceProvider(official_getter=official, actions_getter=wrong_range))["2330.TW"] == []
+
+
+def test_fresh_quote_metadata_cannot_authorize_a_truncated_action_history():
+    def truncated(url, **kwargs):
+        payload = actions(url, **kwargs)
+        payload["chart"]["result"][0]["timestamp"] = [int(datetime(2026, 10, 13, tzinfo=ZoneInfo("Asia/Taipei")).timestamp())]
+        return payload
+    provider = RecoveringResearchPriceProvider(official_getter=official, actions_getter=truncated)
+    assert recover(provider)["2330.TW"] == []
+
+
+def test_action_history_endpoints_cannot_hide_an_unverified_internal_date():
+    def missing_middle(url, **kwargs):
+        payload = actions(url, **kwargs)
+        payload["chart"]["result"][0]["timestamp"] = [
+            int(datetime(2026, 10, day, tzinfo=ZoneInfo("Asia/Taipei")).timestamp()) for day in (12, 14)]
+        return payload
+    provider = RecoveringResearchPriceProvider(official_getter=official, actions_getter=missing_middle)
+    original = {"2330.TW": [{"date": "2026-10-14", "open": 100, "high": 103,
+        "low": 99, "close": 102, "corporate_actions_checked": True}]}
+    def month(url, **kwargs):
+        payload = official(url, **kwargs)
+        payload["data"][0][0] = "115/10/13"
+        return payload
+    provider.official_getter = month
+    rows = provider.repair(original, required_dates_by_symbol={"2330.TW": [date(2026, 10, 12), date(2026, 10, 13), DAY]},
+                           as_of_date=DAY)["2330.TW"]
+    assert [row["date"] for row in rows] == ["2026-10-14"]
+    assert provider.diagnostics[-1]["reason"] == "research_corporate_action_coverage_unverified"

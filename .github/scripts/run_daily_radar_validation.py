@@ -41,12 +41,16 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 response = request(endpoint, token, payload)
                 if not isinstance(response, dict):
                     raise ValueError("validation_response_invalid")
+                report = response.get("report") if isinstance(response.get("report"), dict) else {}
+                remaining = report.get("remaining_retryable_window_count") if basis == "next_open" else 0
                 ready = (response.get("status") == "completed" and response.get("as_of_date") == run_date
                          and type(response.get("retryable_skipped_count")) is int
-                         and response["retryable_skipped_count"] == 0)
+                         and response["retryable_skipped_count"] == 0
+                         and type(remaining) is int and remaining == 0)
                 retryable = (response.get("status") == "completed" and response.get("as_of_date") == run_date
                              and type(response.get("retryable_skipped_count")) is int
-                             and response["retryable_skipped_count"] > 0)
+                             and type(remaining) is int
+                             and (response["retryable_skipped_count"] > 0 or remaining > 0))
             except HTTPError as exc:
                 response = {"error_type": "HTTPError", "http_status": exc.code}
                 retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
@@ -62,6 +66,7 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 "skipped_count", "retryable_skipped_count", "terminal_skipped_count", "error_type", "http_status")}
             summary.update(return_basis=basis, attempt=attempt,
                 current_run_skip_reasons=report.get("current_run_skip_reasons", {}),
+                remaining_retryable_window_count=report.get("remaining_retryable_window_count"),
                 persisted_skip_reasons=report.get("skip_reasons", {}),
                 current_run_gaps=report.get("current_run_gaps", []))
             print(json.dumps(summary, ensure_ascii=False), flush=True)

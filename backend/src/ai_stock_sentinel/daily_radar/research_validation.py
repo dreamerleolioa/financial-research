@@ -2,7 +2,9 @@
 from collections import Counter
 from datetime import date
 from collections import defaultdict
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import aliased
+from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
 from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 from ai_stock_sentinel.daily_radar.observation_validation import canonical_radar_run_ids
@@ -23,7 +25,62 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 RESEARCH_VALIDATION_VERSION = "daily-radar-next-open-price-v2"
 RESEARCH_PRICE_BASIS = "unadjusted_price"
 RESEARCH_COSTS = (0.0, 0.5, 1.0)
-RESEARCH_TERMINAL_REASONS = TERMINAL_FORWARD_VALIDATION_SKIP_REASONS | {"stock_split_in_window"}
+RESEARCH_TERMINAL_REASONS = TERMINAL_FORWARD_VALIDATION_SKIP_REASONS | {
+    "stock_split_in_window", "candidate_price_date_missing", "future_candidate_price",
+}
+RESEARCH_RESUME_BATCH_SIZE = 512
+RESEARCH_RESUME_VERSIONS = ("daily-radar-next-open-price-v1", RESEARCH_VALIDATION_VERSION)
+
+
+def _candidate_price_date_reason(candidate, signal):
+    observed = parse_date((candidate.get("data_dates") or {}).get("ohlcv"))
+    if observed is None:
+        return "candidate_price_date_missing"
+    if observed < signal:
+        return "stale_candidate_price"
+    if observed > signal:
+        return "future_candidate_price"
+    return None
+
+
+def _retryable_windows_query(request, as_of_date):
+    """Retire a legacy hint once v2 owns the same candidate/window identity."""
+    end_date = min(request.end_date or as_of_date, as_of_date)
+    current = aliased(DailyRadarForwardValidationResult)
+    current_exists = select(current.id).where(
+        current.candidate_id == DailyRadarForwardValidationResult.candidate_id,
+        current.window_days == DailyRadarForwardValidationResult.window_days,
+        current.validation_version == RESEARCH_VALIDATION_VERSION,
+        current.signal_date == DailyRadarForwardValidationResult.signal_date,
+        current.benchmark_symbol == DailyRadarForwardValidationResult.benchmark_symbol,
+        or_(and_(current.status == "validated", current.target_date <= as_of_date),
+            and_(current.status == "skipped", or_(current.evaluation_as_of_date.is_(None),
+                                                 current.evaluation_as_of_date <= as_of_date))),
+    ).correlate(DailyRadarForwardValidationResult).exists()
+    query = select(DailyRadarForwardValidationResult.candidate_id,
+                   DailyRadarForwardValidationResult.window_days).join(
+        DailyRadarCandidate, DailyRadarCandidate.id == DailyRadarForwardValidationResult.candidate_id
+    ).join(DailyRadarRun, DailyRadarRun.id == DailyRadarCandidate.run_id).where(
+        DailyRadarForwardValidationResult.validation_version.in_(RESEARCH_RESUME_VERSIONS),
+        or_(DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION,
+            ~current_exists),
+        DailyRadarForwardValidationResult.status == "skipped",
+        DailyRadarForwardValidationResult.skip_reason.not_in(RESEARCH_TERMINAL_REASONS),
+        or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
+            DailyRadarForwardValidationResult.evaluation_as_of_date <= as_of_date),
+        DailyRadarForwardValidationResult.window_days.in_(ordered_positive_values(request.windows)),
+        DailyRadarForwardValidationResult.signal_date <= end_date,
+        DailyRadarRun.market == request.market,
+        DailyRadarRun.id.in_(canonical_radar_run_ids(market=request.market, end_date=end_date)),
+        DailyRadarForwardValidationResult.benchmark_symbol == request.benchmark_symbol,
+        DailyRadarForwardValidationResult.signal_date == DailyRadarRun.run_date,
+        or_(DailyRadarCandidate.selection_status == "selected",
+            (DailyRadarCandidate.selection_status == "shadow") & (DailyRadarCandidate.shadow_cohort == "comparable")),
+        taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if request.market == "TW" else True,
+    )
+    if request.start_date is not None:
+        query = query.where(DailyRadarForwardValidationResult.signal_date >= request.start_date)
+    return query
 
 
 def _index(rows):
@@ -49,9 +106,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
         return skip("signal_date_missing")
     if signal > as_of_date:
         return skip("future_signal_date")
-    ohlcv_date = parse_date((candidate.get("data_dates") or {}).get("ohlcv"))
-    if ohlcv_date is not None and ohlcv_date < signal:
-        return skip("stale_candidate_price")
+    if reason := _candidate_price_date_reason(candidate, signal):
+        return skip(reason)
     benchmark = _index(benchmark_prices)
     calendar = sorted(day for day, row in benchmark.items()
                       if signal < day <= as_of_date and (number(row.get("close")) or 0) > 0)
@@ -117,7 +173,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
         "corporate_action_sources": sorted({prices[d].get("corporate_action_source", prices[d]["price_source"]) for d in days}),
         "recovery_provenance": [{"date": str(d), "price_source": prices[d]["price_source"],
             "corporate_action_source": prices[d]["corporate_action_source"],
-            "corporate_action_coverage": {k: v for k, v in (prices[d].get("corporate_action_coverage") or {}).items() if k != "events"}}
+            "corporate_action_coverage": {k: v for k, v in (prices[d].get("corporate_action_coverage") or {}).items()
+                                          if k not in {"events", "covered_dates"}}}
             for d in days if prices[d].get("corporate_action_source")],
         "cost_model": "assumed_total_cost_percentage_points",
         "cost_scenarios": {format(cost, "g"): {
@@ -134,33 +191,16 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     windows = ordered_positive_values(request.windows)
     start = request.start_date
     resume = defaultdict(set)
+    retryable_query = _retryable_windows_query(request, as_of_date)
     if request.mode == "due":
         if start is None:
             start = default_due_start_date(as_of_date, max(windows))
         # Do not lose unresolved observations as the default date window moves.
         # Explicit caller date bounds remain authoritative.
-        query = select(DailyRadarForwardValidationResult.candidate_id,
-                       DailyRadarForwardValidationResult.window_days).join(
-            DailyRadarCandidate, DailyRadarCandidate.id == DailyRadarForwardValidationResult.candidate_id
-        ).join(DailyRadarRun, DailyRadarRun.id == DailyRadarCandidate.run_id).where(
-            DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION,
-            DailyRadarForwardValidationResult.status == "skipped",
-            DailyRadarForwardValidationResult.skip_reason.not_in(RESEARCH_TERMINAL_REASONS),
-            DailyRadarForwardValidationResult.window_days.in_(windows),
-            DailyRadarForwardValidationResult.signal_date <= (request.end_date or as_of_date),
-            DailyRadarRun.market == request.market,
-            DailyRadarRun.id.in_(canonical_radar_run_ids(market=request.market, end_date=request.end_date or as_of_date)),
-            DailyRadarForwardValidationResult.benchmark_symbol == request.benchmark_symbol,
-            DailyRadarForwardValidationResult.signal_date == DailyRadarRun.run_date,
-            or_(DailyRadarCandidate.selection_status == "selected",
-                (DailyRadarCandidate.selection_status == "shadow") & (DailyRadarCandidate.shadow_cohort == "comparable")),
-            taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if request.market == "TW" else True,
-        ).order_by(DailyRadarForwardValidationResult.updated_at,
+        query = retryable_query.order_by(DailyRadarForwardValidationResult.updated_at,
                    DailyRadarForwardValidationResult.signal_date,
                    DailyRadarForwardValidationResult.candidate_id,
-                   DailyRadarForwardValidationResult.window_days).limit(512)
-        if request.start_date is not None:
-            query = query.where(DailyRadarForwardValidationResult.signal_date >= request.start_date)
+                   DailyRadarForwardValidationResult.window_days).limit(RESEARCH_RESUME_BATCH_SIZE)
         for cid, window in session.execute(query):
             resume[cid].add(window)
     candidates = forward_validation_candidates_from_runs(
@@ -180,8 +220,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     fresh = []
     for candidate in active:
         signal = parse_date(candidate["record_date"])
-        observed = parse_date((candidate.get("data_dates") or {}).get("ohlcv"))
-        if observed and observed < signal:
+        if _candidate_price_date_reason(candidate, signal):
             outcomes.extend(evaluate_research_window(candidate, price_series=[], benchmark_prices=[],
                 window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
                 for w in pending[candidate_key(candidate)])
@@ -195,7 +234,10 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         reference = load_benchmark_prices_from_prepared_market_context(
             session, market=request.market, benchmark_symbol=request.benchmark_symbol,
             as_of_date=as_of_date, required_dates=[parse_date(c["record_date"]) for c in fresh])
-        reference_days = sorted(day for day in _index(reference) if price_start <= day <= as_of_date)
+        reference_days = sorted(set(load_benchmark_calendar_from_prepared_market_context(
+            session, market=request.market, benchmark_symbol=request.benchmark_symbol,
+            start_date=price_start, as_of_date=as_of_date)) |
+            {day for day in _index(reference) if price_start <= day <= as_of_date})
         repair = getattr(price_provider, "repair", None)
         if callable(repair):
             required = sorted(set(reference_days) | {price_start, as_of_date})
@@ -239,6 +281,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                         if row["status"] != "pending":
                             outcomes.append(row)
     summary = upsert_forward_validation_results(session, outcomes)
+    remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
     terminal = sum(r["status"] == "skipped" and r["skip_reason"] in RESEARCH_TERMINAL_REASONS for r in outcomes)
     summary.update(terminal_skipped_count=terminal, retryable_skipped_count=summary["skipped_count"] - terminal)
     persisted = persisted_forward_validation_outcomes(
@@ -249,6 +292,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
               "windows": windows, "as_of_date": as_of_date.isoformat(),
               "aggregation_scope": "persisted_fixed_date_cohort", "instrument_scope": "individual_stocks",
               "persisted_count": len(persisted),
+              "remaining_retryable_window_count": remaining_retryable,
               "resumed_candidate_count": sum(parse_date(c["record_date"]) < start for c in candidates) if start else 0,
               "current_run_skip_reasons": dict(Counter(r["skip_reason"] for r in outcomes if r["status"] == "skipped")),
               "current_run_gaps": [{"symbol": r["symbol"], "signal_date": r["signal_date"],

@@ -128,7 +128,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         observed = datetime.fromtimestamp(meta.get("regularMarketTime", 0), TAIPEI)
         covered_dates = [datetime.fromtimestamp(stamp, TAIPEI).date() for stamp in data.get("timestamp", [])]
         if (meta.get("symbol") != symbol or meta.get("exchangeTimezoneName") != "Asia/Taipei"
-                or not covered_dates or min(covered_dates) > start
+                or not covered_dates or min(covered_dates) > start or max(covered_dates) < end
                 or observed < datetime.combine(end, time(13, 30), TAIPEI)):
             raise ValueError("research_corporate_action_coverage_unverified")
         events = data.get("events", {})
@@ -145,6 +145,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     raise ValueError("research_corporate_action_value_invalid")
                 by_date.setdefault(day, {})[kind] = amount
         result = {"events": by_date, "start_date": str(start), "end_date": str(end),
+                  "covered_dates": sorted({str(day) for day in covered_dates}),
                   "query_start_date": str(query_start),
                   "observed_at": observed.isoformat()}
         self.cache[key] = result
@@ -211,6 +212,9 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                 stage = "corporate_actions"
                 actions = self._actions(symbol, min(required), max(required)) if symbol != "TAIEX" else None
                 if symbol != "TAIEX" and actions is None:
+                    raise ValueError("research_corporate_action_coverage_unverified")
+                if actions and any(str(day) not in actions["covered_dates"]
+                                   for day in missing if _complete(official.get(str(day), {}))):
                     raise ValueError("research_corporate_action_coverage_unverified")
                 for day in missing:
                     row = official.get(str(day))

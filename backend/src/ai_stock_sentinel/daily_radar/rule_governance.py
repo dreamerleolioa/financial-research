@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import Integer, and_, case, cast, extract, func, literal, or_, select, true, union_all
 from sqlalchemy.orm import Session
+from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 
 from ai_stock_sentinel.calibration.governance import (
     DEFAULT_BOOTSTRAP_ITERATIONS,
@@ -373,6 +374,7 @@ def validation_rows_from_results(
             date_predicate,
             DailyRadarRun.id.in_(latest_run_ids),
             DailyRadarCandidate.selection_status == "selected",
+            taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if market.upper() == "TW" else true(),
         )
         .order_by(
             DailyRadarRun.run_date.asc(),
@@ -1141,6 +1143,7 @@ def _daily_radar_completeness_watermarks(
             DailyRadarRun.run_date <= through_date,
             DailyRadarRun.id.in_(latest_run_ids),
             DailyRadarCandidate.selection_status == "selected",
+            taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if market.upper() == "TW" else true(),
         )
         .group_by(year_value, month_value, windows.c.window_days)
         .order_by(
@@ -1541,6 +1544,7 @@ def _daily_radar_replay_workload_preflight(
             select(func.count(DailyRadarCandidate.id)).where(
                 DailyRadarCandidate.run_id.in_(latest_run_ids),
                 DailyRadarCandidate.selection_status == "selected",
+                taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if market.upper() == "TW" else true(),
             )
         )
         or 0

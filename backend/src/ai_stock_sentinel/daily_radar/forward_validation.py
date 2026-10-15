@@ -4,7 +4,7 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -319,7 +319,7 @@ def forward_validation_candidates_from_runs(
                    taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
             .group_by(DailyRadarCandidate.run_id)).all()) if snapshots else {}
         for item in snapshots:
-            item["daily_selected_pool_count"] = counts[item["run_id"]]
+            item["daily_selected_pool_count"] = counts.get(item["run_id"], 0)
     if snapshots:
         through_date = max(_parse_date(candidate["record_date"]) for candidate in snapshots)
         origins = load_observation_origins(session, snapshots, market=market, through_date=through_date)
@@ -511,6 +511,8 @@ def upsert_forward_validation_results(
             existing.evaluation_as_of_date = _parse_date(outcome.get("evaluation_as_of_date"))
             existing.outcome = payload
             existing.skip_reason = outcome.get("skip_reason")
+            # A retry is an attempt even when its error payload is unchanged.
+            existing.updated_at = datetime.now(timezone.utc)
         session.add(existing)
         written += 1
         if outcome.get("status") == "validated":
@@ -604,7 +606,7 @@ def persisted_forward_validation_outcomes(
                 "status": result.status,
                 "target_date": result.target_date.isoformat() if result.target_date else None,
                 "skip_reason": result.skip_reason,
-                "outcome": dict(result.outcome or {}) if result.status == "validated" else {},
+                "outcome": dict(result.outcome or {}),
             }
         )
     return outcomes
