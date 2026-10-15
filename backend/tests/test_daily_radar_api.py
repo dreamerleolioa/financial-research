@@ -2607,22 +2607,62 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_scoring_and_ma
 
 
 @pytest.mark.parametrize('failed_step,failure_kind', [
-    ('', ''), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
+    ('', ''), ('', 'extra_lane_empty'), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
     ('refresh-avwap', 'http'), ('run-scoring', 'http'),
     ('refresh-ohlcv', 'transport'), ('refresh-managed-raw-data', 'payload'),
     ('refresh-ai-evidence', 'payload'), ('refresh-ai-evidence', 'http'),
-    ('refresh-ai-evidence', 'malformed'), ('validation', 'payload'),
+    ('refresh-ai-evidence', 'malformed'),
+    *[('refresh-ai-evidence', f'missing_{lane}')
+      for lane in ('technical', 'institutional', 'margin', 'fundamental')],
+    *[('refresh-ai-evidence', shape) for shape in (
+        'lanes_absent', 'lanes_null', 'lanes_empty_object', 'lanes_array',
+        'lane_null', 'lane_string', 'lane_object', 'wrong_run_date',
+        'extra_lane_missing', 'extra_lane_invalid',
+    )],
+    ('validation', 'payload'),
 ])
 def test_repair_shell_recovers_independent_steps_and_preserves_failure(
     tmp_path, failed_step, failure_kind,
 ):
     import os
+    import json
     import subprocess
     import textwrap
+    from types import SimpleNamespace
     import yaml
+    from ai_stock_sentinel.daily_radar.pipeline_support import _ai_evidence_missing_by_lane
 
     workflow = yaml.safe_load((Path(__file__).parents[2] / '.github/workflows/daily-radar.yml').read_text())
     script = next(step['run'] for step in workflow['jobs']['repair-avwap-and-rescore']['steps'] if 'run' in step)
+    lanes = {lane: [] for lane in ('technical', 'institutional', 'margin', 'fundamental')}
+    evidence_extra = {'missing_by_lane': lanes, 'errors': []}
+    if failure_kind.startswith('missing_'):
+        lane = failure_kind.removeprefix('missing_')
+        if lane == 'institutional':
+            short_history = SimpleNamespace(symbol='2330.TW', record_date=date(2026, 9, 15),
+                technical={}, fundamental={}, institutional={
+                    'history_coverage': {'status': 'insufficient_history'},
+                    'foreign_net_shares': 100, 'investment_trust_net_shares': 200,
+                    'three_party_net_shares': 300,
+                    'data_dates': {'institutional_flow': '2026-09-15'}})
+            lanes[lane] = _ai_evidence_missing_by_lane([short_history])[lane]
+            assert lanes[lane] == ['2330.TW']
+        else:
+            lanes[lane] = ['2330.TW']
+    elif failure_kind == 'lanes_absent':
+        evidence_extra.pop('missing_by_lane')
+    elif failure_kind in ('lanes_null', 'lanes_empty_object', 'lanes_array'):
+        evidence_extra['missing_by_lane'] = {
+            'lanes_null': None, 'lanes_empty_object': {}, 'lanes_array': [],
+        }[failure_kind]
+    elif failure_kind in ('lane_null', 'lane_string', 'lane_object'):
+        lanes['institutional'] = {'lane_null': None, 'lane_string': '', 'lane_object': {}}[failure_kind]
+    elif failure_kind == 'wrong_run_date':
+        evidence_extra['run_date'] = '2026-09-14'
+    elif failure_kind in ('extra_lane_empty', 'extra_lane_missing', 'extra_lane_invalid'):
+        lanes['additional'] = {
+            'extra_lane_empty': [], 'extra_lane_missing': ['2330.TW'], 'extra_lane_invalid': {},
+        }[failure_kind]
     # 執行真正的 workflow shell；所有 HTTP 都在本機替換，無憑證與網路存取。
     mock_curl = r'''
 curl() {
@@ -2645,6 +2685,9 @@ curl() {
     fi
     if [[ "$step" == "$FAILED_STEP" && "$FAILURE_KIND" == "malformed" ]]; then
         printf '{' > "$output"
+    elif [[ "$step" == "refresh-ai-evidence" ]]; then
+        printf '{"status":"%s","run_date":"2026-09-15"}' "$status" |
+            jq --argjson extra "$AI_EVIDENCE_EXTRA" '. + $extra' > "$output"
     else
         printf '{"status":"%s","run_date":"2026-09-15","missing_record_count":0}' "$status" > "$output"
     fi
@@ -2654,6 +2697,7 @@ curl() {
     env = {**os.environ, 'ZEABUR_BACKEND_URL': 'https://backend.invalid',
            'DAILY_RADAR_INTERNAL_TOKEN': 'test-only', 'DAILY_RADAR_RUN_DATE': '2026-09-15',
            'CALL_LOG': str(tmp_path / 'calls'), 'FAILED_STEP': failed_step,
+           'AI_EVIDENCE_EXTRA': json.dumps(evidence_extra),
            'FAILURE_KIND': failure_kind, 'TMPDIR': str(tmp_path), 'RUNNER_TEMP': str(tmp_path)}
     result = subprocess.run(['bash', '-c', textwrap.dedent(mock_curl) + '\npython() { printf \"validation\\n\" >> \"$CALL_LOG\"; [[ "$FAILED_STEP" != "validation" ]]; }\n' + script],
                             env=env, capture_output=True, text=True, timeout=10)

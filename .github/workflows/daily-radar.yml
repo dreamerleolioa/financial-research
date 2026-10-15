@@ -963,7 +963,17 @@ jobs:
             evidence_repair_completed=false
           else
             jq '{status, run_date, missing_by_lane, errors}' "$evidence_response_file" || evidence_repair_completed=false
-            jq -e --arg run_date "$run_date" '.status == "completed" and .run_date == $run_date' "$evidence_response_file" >/dev/null || evidence_repair_completed=false
+            if ! jq -e --arg run_date "$run_date" '
+              .status == "completed" and .run_date == $run_date and
+              (.missing_by_lane | if type == "object" then
+                has("technical") and has("institutional") and
+                has("margin") and has("fundamental") and
+                all(.[]; type == "array" and length == 0)
+              else false end)
+            ' "$evidence_response_file" >/dev/null; then
+              echo "AI evidence recovery incomplete: required evidence lanes are missing or invalid."
+              evidence_repair_completed=false
+            fi
           fi
           validation_repair_completed=true
           python .github/scripts/run_daily_radar_validation.py --run-date "$run_date" --output-dir "$RUNNER_TEMP/radar-validation" || validation_repair_completed=false
