@@ -51,6 +51,7 @@ const DATA_MISSING_REASON_LABEL: Record<string, string> = {
 };
 
 const ANALYSIS_ERROR_MESSAGE: Record<string, string> = {
+  UNSUPPORTED_INSTRUMENT: "目前僅支援台灣上市與上櫃個股，不支援 ETF、權證或特別股分析。",
   ANALYZE_RUNTIME_ERROR: "分析暫時無法完成，請稍後再試。",
   CRAWL_ERROR: "無法取得這檔股票的市場資料，請稍後再試。",
   MISSING_SNAPSHOT: "缺少可用的市場快照，暫時無法完成分析。",

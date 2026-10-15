@@ -316,7 +316,7 @@ def test_empty_read_is_200_without_any_write(storage):
 def test_read_keeps_full_daily_ranks_and_returns_only_aggregate_public_fields(storage):
     session, client, _ = storage
     run = add_run(session, count=6)
-    rows = [add_candidate(session, run, str(i) + ".TW", score=100-i) for i in range(1, 7)]
+    rows = [add_candidate(session, run, str(2300+i) + ".TW", score=100-i) for i in range(1, 7)]
     for row in rows[1:]:
         add_result(session, row)
     add_calendar(session)

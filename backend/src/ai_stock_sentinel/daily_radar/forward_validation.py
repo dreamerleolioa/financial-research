@@ -4,12 +4,13 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 
 from ai_stock_sentinel.calibration import forward_validation as shared_forward_validation
 from ai_stock_sentinel.calibration.forward_validation import (
@@ -271,6 +272,7 @@ def forward_validation_candidates_from_runs(
     start_date: date | None = None,
     end_date: date | None = None,
     statuses: tuple[str, ...] = PUBLIC_RUN_STATUSES,
+    include_candidate_ids: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
     query = (
         select(
@@ -293,10 +295,13 @@ def forward_validation_candidates_from_runs(
             DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
         )
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
-        .where(DailyRadarRun.id.in_(canonical_radar_run_ids(
+        .where(or_(DailyRadarRun.id.in_(canonical_radar_run_ids(
             market=market, start_date=start_date, end_date=end_date, statuses=statuses,
-        )))
+        )), and_(DailyRadarCandidate.id.in_(include_candidate_ids),
+                 DailyRadarRun.id.in_(canonical_radar_run_ids(market=market, end_date=end_date, statuses=statuses)))))
     )
+    if market.upper() == "TW":
+        query = query.where(taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
@@ -307,6 +312,14 @@ def forward_validation_candidates_from_runs(
         ).execution_options(yield_per=128)
     ).mappings()
     snapshots = [_candidate_snapshot(row) for row in rows]
+    if market.upper() == "TW":
+        counts = dict(session.execute(select(DailyRadarCandidate.run_id, func.count())
+            .where(DailyRadarCandidate.run_id.in_({item["run_id"] for item in snapshots}),
+                   DailyRadarCandidate.selection_status == "selected",
+                   taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
+            .group_by(DailyRadarCandidate.run_id)).all()) if snapshots else {}
+        for item in snapshots:
+            item["daily_selected_pool_count"] = counts.get(item["run_id"], 0)
     if snapshots:
         through_date = max(_parse_date(candidate["record_date"]) for candidate in snapshots)
         origins = load_observation_origins(session, snapshots, market=market, through_date=through_date)
@@ -476,7 +489,7 @@ def upsert_forward_validation_results(
         ).scalar_one_or_none()
         payload = dict(_mapping(outcome.get("outcome")))
         if outcome.get("status") == "skipped":
-            payload = {"skip_reason": outcome.get("skip_reason")}
+            payload = dict(outcome.get("outcome") or {}) | {"skip_reason": outcome.get("skip_reason")}
         if existing is None:
             existing = DailyRadarForwardValidationResult(
                 candidate_id=int(candidate_id),
@@ -498,6 +511,8 @@ def upsert_forward_validation_results(
             existing.evaluation_as_of_date = _parse_date(outcome.get("evaluation_as_of_date"))
             existing.outcome = payload
             existing.skip_reason = outcome.get("skip_reason")
+            # A retry is an attempt even when its error payload is unchanged.
+            existing.updated_at = datetime.now(timezone.utc)
         session.add(existing)
         written += 1
         if outcome.get("status") == "validated":
@@ -591,7 +606,7 @@ def persisted_forward_validation_outcomes(
                 "status": result.status,
                 "target_date": result.target_date.isoformat() if result.target_date else None,
                 "skip_reason": result.skip_reason,
-                "outcome": dict(result.outcome or {}) if result.status == "validated" else {},
+                "outcome": dict(result.outcome or {}),
             }
         )
     return outcomes

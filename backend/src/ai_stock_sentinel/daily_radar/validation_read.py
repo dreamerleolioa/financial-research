@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import date, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 from ai_stock_sentinel.calibration.forward_validation import DEFAULT_BENCHMARK_SYMBOL, number, parse_date
 from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
 from ai_stock_sentinel.daily_radar.forward_validation import (
@@ -44,12 +46,14 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     ).join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
       .where(DailyRadarRun.id.in_(canonical_radar_run_ids(
           market=market, start_date=start, end_date=as_of_date)),
+          (taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol) if market.upper() == "TW" else True),
           or_(DailyRadarCandidate.selection_status == "selected",
               (DailyRadarCandidate.selection_status == "shadow") & (DailyRadarCandidate.shadow_cohort == "comparable")))
       .order_by(DailyRadarRun.run_date, DailyRadarCandidate.id)).all()
+    selected_counts = Counter(day for _, _, _, day, _, status, *_ in rows if status == "selected")
     candidates = [{
         "candidate_id": cid, "symbol": symbol, "observation_score": score,
-        "record_date": day.isoformat(), "daily_selected_pool_count": count,
+        "record_date": day.isoformat(), "daily_selected_pool_count": selected_counts[day],
         "selection_status": status, "shadow_cohort": shadow,
         "input_snapshot": {"versions": versions, "selection_version": selection,
                            "replay_input": {"market_context": {"benchmark": {"symbol": benchmark}}}},

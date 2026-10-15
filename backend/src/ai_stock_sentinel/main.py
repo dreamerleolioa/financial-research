@@ -12,6 +12,7 @@ except ImportError:
 from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.data_sources.yfinance_client import YFinanceCrawler
 from ai_stock_sentinel.graph.builder import build_graph
+from ai_stock_sentinel.taiwan_symbols import validate_taiwan_symbol
 
 
 def build_graph_deps():
@@ -20,10 +21,17 @@ def build_graph_deps():
     return YFinanceCrawler()
 
 
+def _stock_symbol(value: str) -> str:
+    try:
+        return validate_taiwan_symbol(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def main() -> None:
     configure_logging()
     parser = argparse.ArgumentParser(description="Stock Sentinel deterministic analyzer")
-    parser.add_argument("--symbol", type=str, default="2330.TW")
+    parser.add_argument("--symbol", type=_stock_symbol, default="2330.TW")
     args = parser.parse_args()
 
     graph = build_graph(crawler=build_graph_deps())

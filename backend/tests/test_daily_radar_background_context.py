@@ -1151,7 +1151,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "/internal/daily-radar/refresh-managed-raw-data" in text
     assert "/internal/daily-radar/refresh-ai-evidence" in text
     assert "/internal/daily-radar/refresh-market-context" in text
-    assert "/internal/daily-radar/forward-validation/run" in text
+    assert "run_daily_radar_validation.py" in text
     assert "/internal/daily-radar/run-scoring" in text
     assert "repair-avwap-and-rescore" in text
     assert "missing_symbol_reasons" in text

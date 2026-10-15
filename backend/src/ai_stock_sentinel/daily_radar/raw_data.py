@@ -422,7 +422,23 @@ def _apply_institutional_payloads(
         )
     ).all()
     for row in rows:
-        row.institutional = dict(institutional_payloads_by_symbol[row.symbol])
+        payload = dict(institutional_payloads_by_symbol[row.symbol])
+        previous = _mapping(row.institutional)
+        coverage = _mapping(previous.get("history_coverage"))
+        history = _mapping(previous.get("institutional_daily_flow"))
+        history_rows = history.get("rows")
+        try:
+            valid_history = isinstance(history_rows, list) and bool(history_rows) and all(
+                isinstance(item, Mapping) and date.fromisoformat(item["source_date"]) <= run_date
+                for item in history_rows)
+        except (KeyError, ValueError, TypeError):
+            valid_history = False
+        if (coverage.get("as_of_date") == run_date.isoformat() and valid_history
+                and not any(field in payload for field in ("institutional_daily_flow", "history_coverage"))):
+            for field in ("institutional_daily_flow", "history_coverage"):
+                if field not in payload and field in previous:
+                    payload[field] = previous[field]
+        row.institutional = payload
 
 
 def _apply_margin_contexts(

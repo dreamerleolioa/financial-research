@@ -106,7 +106,7 @@ make run-api
 ```
 
 - **欄位說明**
-  - `symbol`：股票代碼，必填；目前只接受台灣上市 `.TW` 與上櫃 `.TWO`，輸入會去除前後空白並轉大寫，其他市場回 422。
+  - `symbol`：股票代碼，必填；目前只接受四碼且非零開頭的台灣上市 `.TW` 與上櫃 `.TWO` 個股，輸入去除前後空白並轉大寫；ETF、權證、特別股與其他市場在快取／provider／分析前回 422。CLI 使用相同資格。主動式 ETF 持股追蹤獨立保留。
   - `persist_result`：是否讀寫完整分析快取並在 final 分析時保存一般分析校準樣本，選填，預設為 `true`。設為 `false` 時跳過 full-result cache 與 calibration capture；仍可讀寫共用 raw-data cache，不會新增使用者持股歷史紀錄。
   - `news_text`、`skip_ai`：deprecated 相容欄位；不進入 graph。未提供 `persist_result` 時，舊 `skip_ai: true` 仍映射為不持久化。
 
@@ -576,7 +576,7 @@ Daily Radar 候選探索（2026-10-05）：18:00 prepare 必須具同日 TW/TWO 
 - `GET /daily-radar/latest?market=TW&bucket=&limit=`：讀取指定市場最新可公開 run 的候選標的。
 - `GET /daily-radar/validation?market=TW&lookback_days=90`：唯讀突破前觀察與候選池研究統計；`lookback_days` 為日曆天數，範圍 1–1095，預設 90。
   - 先選同日最新公開 run，再載入完整 selected 名單及已保存的目前 forward-validation-v2 結果，按 scoring／rule／config／selection version 分組，逐 5／10／20／40／60 交易日回傳全部、前 3／5 檔與其餘候選。
-  - 回應包含 `diagnostic_version`、`as_of_date`、`sample_start_date`／`sample_end_date`、`lookback_days`、`last_evaluated_date`、`calendar_through_date`、`default_cohort_id` 與 `cohorts`；各 cohort 含 `id`、`strategy`、`signal_start_date`／`signal_end_date`、`windows`、歷史 `pool_comparison` 及獨立的 `research_pool_comparison`。研究比較依 `daily-radar-next-open-price-v1` 分開讀取，含成本情境、跌幅、尾端報酬、日期區塊可信度與自己的 calendar 截止日；不混入 v2 診斷。`default_cohort_id` 對應最新已公開入選訊號的策略，不依成效選版本。
+  - 回應包含 `diagnostic_version`、`as_of_date`、`sample_start_date`／`sample_end_date`、`lookback_days`、`last_evaluated_date`、`calendar_through_date`、`default_cohort_id` 與 `cohorts`；各 cohort 含 `id`、`strategy`、`signal_start_date`／`signal_end_date`、`windows`、歷史 `pool_comparison` 及獨立的 `research_pool_comparison`。研究比較依 `daily-radar-next-open-price-v2` 分開讀取，含成本情境、跌幅、尾端報酬、日期區塊可信度與自己的 calendar 截止日；不混入 v2 診斷。`default_cohort_id` 對應最新已公開入選訊號的策略，不依成效選版本。
   - Stats 僅暴露樣本數、狀態／缺資料原因計數、比率及限定於有效樣本的平均值，不回傳 candidate ID、原始 snapshot、shadow 身分或完整 outcome。查無候選仍回 `200` 與空 `cohorts`；缺資料的比率為 null。
   - 交易日資料不完整或與已保存成熟窗口不一致時，`calendar_through_date` 為 null，缺結果維持 missing 而非推定等待滿期。此 GET 不呼叫行情 provider、不重新評估、不 upsert 或 commit，也不補算缺診斷的舊結果。
 - `GET /daily-radar/{run_date}?market=TW&bucket=&limit=`：讀取指定日期與市場的候選標的。
@@ -636,7 +636,7 @@ Daily Radar 候選探索（2026-10-05）：18:00 prepare 必須具同日 TW/TWO 
 - `POST /internal/daily-radar/forward-validation/run`：以 `mode = due` 評估最新公開 run 中已成熟的 5 / 10 / 20 / 40 / 60 交易日窗口；同日 rerun 只採最新公開 run。`return_basis` 預設 `signal_close`，另支援 `next_open`；兩種口徑分開保存，排程依序執行兩種口徑。
   - 新 validated outcome 另保存 `observation_diagnostic`（`daily-radar-observation-v1`）；response 的 `report.observation_diagnostics` 按評分／規則／設定／選股版本與 5／10／20 日窗口，提供固定前 3／5 檔和其餘 selected 的首次觀察比較。突破須連續兩日收盤站上入選時固定壓力，先收盤跌破固定支撐則失效；原 v2 報酬與 due 完成條件維持原契約。Raw 載入／合併會保留同日 OHLC 衝突欄位，窗口內的衝突診斷回報 `insufficient_data`／`candidate_history_gap_or_invalid_ohlc`，不得因後續合併變成 confirmed／invalidated。報告揭露未成熟、重複與未計算舊診斷；缺資料不算失敗，缺結果不遞補前順位。既有已保存診斷不因本修正自動重算。詳細定義見 [Daily Radar 規格](daily-stock-radar-spec.md#122-突破前觀察診斷)。
   - `daily-radar-forward-validation-report-v2` 的 production report 會在 upsert 後重新讀取已持久化的固定日期 cohort，避免 due rerun 只回傳本批新到期窗口。`selection_diagnostics` 分成 `selected`、可比較 `shadow` 與 `eligibility_audit`，逐 cohort 揭露驗證／跳過率，並同時輸出 absolute-positive 與 benchmark-outperformance 的 conditional precision、observed-pool recall 與 shadow miss share。這些指標只描述目前 Daily Radar universe 內且可驗證的比較池，不代表全市場召回率；既有 bucket／rule／risk／ablation 報表維持 selected-only。
-  - `next_open` 使用 `daily-radar-next-open-price-v1`，從訊號後第一個交易日真實開盤至第 N 個交易日收盤，股票與基準皆為不含股息的價格報酬；明確請求未自動還原的 OHLC 與 corporate actions，不混入 technical snapshot。開盤缺值不以收盤代替；拆併股窗口 terminal skip，其餘來源、行情或口徑缺漏保留 retryable reason。每批最多 32 symbols，保存後按相同版本重讀，重跑不重寫已完成窗口。
+  - `next_open` 使用 `daily-radar-next-open-price-v2`，從訊號後第一個交易日真實開盤至第 N 個交易日收盤，股票與基準皆為不含股息的價格報酬；明確請求未自動還原的 OHLC 與 corporate actions，不混入 technical snapshot。開盤缺值不以收盤代替；拆併股窗口 terminal skip，其餘來源、行情或口徑缺漏保留 retryable reason。每批最多 32 symbols，保存後按相同版本重讀，重跑不重寫已完成窗口。
 - `POST /internal/analysis-calibration/forward-validation/run`：評估 append-only、final `/analyze` 樣本的 5 / 10 / 20 交易日 outcome。
 - `POST /internal/daily-radar/rule-review/monthly`：輸出 Daily Radar baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
 - `POST /internal/analysis-calibration/monthly`：輸出一般分析 confidence baseline / candidate config、training / holdout 指標、watermark、coverage 與自動修改資格。
@@ -665,7 +665,7 @@ Forward validation due request：
 }
 ```
 
-`as_of_date` 可省略。成功回應包含 `status`、`mode`、`as_of_date`、候選或樣本數、`records_written`、`validated_count`、相容總數 `skipped_count`、`retryable_skipped_count`、`terminal_skipped_count` 與詳細 `report`。Due mode 先以任一價格序列判斷可能成熟窗口並觸發 provider refresh；若 benchmark 需要補資料，必須先更新 benchmark 市場日曆，再依更新後的交易日期重新計算並抓取候選股缺口。兩條 validation route 共用同一個 planning service 執行 benchmark refresh、candidate refresh 與 evaluation-readiness 判斷，不得各自複製 refresh 排序。Refresh 完成後以 benchmark 的交易日期作為市場日曆，候選股必須完整涵蓋相同的前 N 個 benchmark 交易日才可進入 outcome evaluation，且候選股與 benchmark 的 target date 必須相同。候選 provider 額外產生但 benchmark 不存在的休市日資料不得計入窗口、target return、MFE 或 MAE。若距 signal date 已超過窗口兩倍日曆天數仍不完整，才視為 retryable data gap。此交易日語意自 `daily-radar-forward-validation-v2` 與 `general-analysis-forward-validation-v2` 起生效；舊 `v1` 結果保留作歷史稽核，但不得阻擋 `v2` 重算。Due mode 的預設 lookback 會回補範圍內的 `v2`，若需補更早資料必須用明確日期範圍執行 backfill。Daily Radar 月報未指定版本時固定只讀目前的 `v2`，不得以筆數多寡選舊版本或混合不同版本。`stale_candidate_price` 屬於 terminal skip；它會保留診斷紀錄，但不應阻擋 workflow。`missing_benchmark` 等暫時性缺口屬於 retryable skip，後續 due run 仍會重新評估。兩條正式 forward-validation workflows 都會輸出三種 count 與 `report.skip_reasons`，並只要求 `retryable_skipped_count == 0`；因此第一次遇到 terminal skip 不會讓 CI 失敗。Daily Radar 與一般分析的 Re-run 都會排除目前 validation version 已 `validated` 的窗口及既有 terminal skip。GitHub job 的 `skipped` conclusion 不等同任何 response skip count。
+`as_of_date` 可省略。成功回應包含 `status`、`mode`、`as_of_date`、候選或樣本數、`records_written`、`validated_count`、相容總數 `skipped_count`、`retryable_skipped_count`、`terminal_skipped_count` 與詳細 `report`。Due mode 先以任一價格序列判斷可能成熟窗口並觸發 provider refresh；若 benchmark 需要補資料，必須先更新 benchmark 市場日曆，再依更新後的交易日期重新計算並抓取候選股缺口。兩條 validation route 共用同一個 planning service 執行 benchmark refresh、candidate refresh 與 evaluation-readiness 判斷，不得各自複製 refresh 排序。Refresh 完成後以 benchmark 的交易日期作為市場日曆，候選股必須完整涵蓋相同的前 N 個 benchmark 交易日才可進入 outcome evaluation，且候選股與 benchmark 的 target date 必須相同。候選 provider 額外產生但 benchmark 不存在的休市日資料不得計入窗口、target return、MFE 或 MAE。若距 signal date 已超過窗口兩倍日曆天數仍不完整，才視為 retryable data gap。此交易日語意自 `daily-radar-forward-validation-v2` 與 `general-analysis-forward-validation-v2` 起生效；舊 `v1` 結果保留作歷史稽核，但不得阻擋 `v2` 重算。一般分析與 `signal_close` 的 due mode 依預設 lookback 回補目前版本；Daily Radar `next_open` 另續跑既有 v1／v2 retryable 視窗，未曾評估的更早資料仍須用明確日期範圍執行 backfill。Daily Radar 月報未指定版本時固定只讀目前的 `v2`，不得以筆數多寡選舊版本或混合不同版本。`stale_candidate_price` 屬於 terminal skip；它會保留診斷紀錄，但不應阻擋 workflow。`missing_benchmark` 等暫時性缺口屬於 retryable skip，後續 due run 仍會重新評估。兩條正式 forward-validation workflows 都會輸出三種 count 與 `report.skip_reasons`，並要求 `retryable_skipped_count == 0`；Daily Radar `next_open` 另要求 `report.remaining_retryable_window_count == 0`，避免批次上限後仍有未處理缺口卻顯示 ready。因此第一次遇到 terminal skip 不會讓 CI 失敗。Daily Radar 與一般分析的 Re-run 都會排除目前 validation version 已 `validated` 的窗口及既有 terminal skip。GitHub job 的 `skipped` conclusion 不等同任何 response skip count。
 
 Daily Radar monthly request：
 
@@ -798,3 +798,12 @@ MA20 5日斜率為 `(MA20[t] / MA20[t-5] - 1) × 100%`；MA60 10日斜率為 `(M
 測試透過 `dependencies.py` 的同一個 dependency object 覆寫 provider；公開查詢依然只讀已保存的資料。
 
 `GET /history/{symbol}` 的預留趨勢端點已退役並回傳 404。這不影響 `GET /daily-radar/symbol/{symbol}`，也不刪除 `StockAnalysisCache`、分析昨日 context 或 calibration / backtest 資料。
+
+
+### 2026-10-15 個股研究資格與資料恢復
+
+- 所有目前的候選清單、AI raw pool、managed raw data、兩種 Radar validation、一般分析 validation 與月報只讀取合格個股。Radar 月度規則治理的明細、完整度水位與 replay 容量預檢也套用相同個股界線。歷史 ETF 資料保留，但不抓價格、不重算、不進目前成效統計；TAIEX 保留為 benchmark。主動式 ETF 持股追蹤的讀取與排程不受影響。
+- 法人 evidence 優先重用通過 row count、identity 與 payload hash 驗證的 completed 官方歸檔；市場報表日期與個股歷史涵蓋分開。個股短歷史在 `history_coverage` 保存必要／實際天數與缺少日期，並列入 `missing_by_lane.institutional`，不把缺值補零或縮短其他股票的窗口。後續 OHLCV refresh 保留同日 coverage 與 daily flow evidence，canonical universe 欄位仍由 prepare-universe 負責。
+- next_open v2 要求候選 OHLC 來源日期等於 signal date；stale、缺少日期或未來日期在抓行情前列 terminal。v1 保留稽核並與目前研究報告隔離，其 retryable 視窗可作 v2 續跑提示。行情缺漏先查 final、unadjusted 官方歸檔，再按缺少月份讀 TWSE 個股／TAIEX 官方 OHLC；上櫃缺口重用官方市場日報。官方回應須核對代號、日期及重疊 OHLC，衝突保持拒絕。股票企業行動另以 Yahoo chart events 逐日查證，每個補入行情的交易日都須存在於回應 timestamps；最新報價 metadata 不代替歷史涵蓋證據，失敗或涵蓋無法驗證時不得視為零股利／零拆股；不使用 adjusted technical rows 或未來盤中價格補缺。
+- 每輪補缺最多 64 次 request、60 秒額外 deadline，單次 timeout 最多 8 秒；同一月份／日期與企業行動查詢在同輪快取成功或失敗，不無界重試。next_open due 另續跑最多 512 筆既有 v1／v2 retryable candidate/window（包含滑出預設 lookback 的紀錄），仍尊重明確日期範圍與最新 canonical run，排除 requested as_of_date 之後才產生的重試紀錄；同一身分已有該日可用的 v2 狀態後不再由 v1 重複排隊，validated／terminal 不重算。每次實際重試皆更新 attempt 時間，避免相同失敗卡住佇列；`report.remaining_retryable_window_count` 回報批次處理後仍未解決或尚未處理的視窗數，next_open 排程以此值與本輪 retryable count 皆為零作為 ready 條件。交易日曆聯集涵蓋範圍內所有已保存的 prepared benchmark histories，再要求補取對應交易日，避免單一滾動快照遺漏早期交易日而使目標日順延。
+- `report.current_run_skip_reasons`、`current_run_gaps` 與 `source_recovery` 是本輪診斷；`report.skip_reasons` 是持久化 cohort 統計。Skip outcome 保存缺少日期與可判定的目標日，持久化讀取亦保留這些診斷。兩種 return basis 各自執行，來源／資料缺口最多重試一次，再彙整 exit code；排程 validation 與 07:00 repair 共用不取消執行中的 concurrency group，避免不同 run_date 的重疊窗口同時寫入；完整 response 保存為七天 workflow artifact。既有 07:00 repair 在 managed raw data 後補 AI evidence 與兩種 validation。AI evidence recovery ready 除同日 `status == completed`，還要求 `missing_by_lane` 包含 technical／institutional／margin／fundamental 四個 array，且所有回傳 lane arrays 皆為空；欄位缺失、型別錯誤或短歷史等缺口都保留 repair 失敗，API 的 completed 仍只表示 materialization 完成。各段恢復互不阻擋；AI evidence 的 HTTP 200 body 即使是壞 JSON，也記錄該段失敗後繼續兩種 validation，最後彙整失敗。

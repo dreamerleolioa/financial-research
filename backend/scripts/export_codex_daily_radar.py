@@ -50,6 +50,7 @@ INDICATOR_FIELDS = (
     "missing_trading_days_60",
 )
 INSTITUTIONAL_FIELDS = (
+    "history_coverage",
     "foreign_net_shares",
     "investment_trust_net_shares",
     "three_party_net_shares",
@@ -586,7 +587,7 @@ def _analytical_completeness(raw_universe: list[dict[str, Any]]) -> dict[str, An
         if not all(
             _finite_number(institutional.get(field))
             for field in ("foreign_net_shares", "investment_trust_net_shares", "three_party_net_shares")
-        ) or str(
+        ) or _mapping(institutional.get("history_coverage")).get("status") == "insufficient_history" or str(
             _mapping(_mapping(row.get("data_dates")).get("institutional")).get("institutional_flow") or ""
         ) != str(row.get("record_date") or ""):
             missing_by_lane["institutional"].append(symbol)

@@ -6,6 +6,9 @@ from datetime import date, timedelta
 from typing import Any, Protocol
 
 import yfinance as yf
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from ai_stock_sentinel.db.session import get_db
 
 
 BENCHMARK_YFINANCE_SYMBOLS = {
@@ -72,8 +75,9 @@ class YFinanceResearchPriceProvider(YFinanceForwardPriceProvider):
     actions = True
 
 
-def get_research_price_provider() -> ForwardPriceProvider:
-    return YFinanceResearchPriceProvider()
+def get_research_price_provider(db: Session = Depends(get_db)) -> ForwardPriceProvider:
+    from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
+    return RecoveringResearchPriceProvider(session=db if isinstance(db, Session) else None)
 
 
 def get_forward_price_provider() -> ForwardPriceProvider:
