@@ -1,5 +1,10 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -17,6 +22,110 @@ def evidence(day="2026-10-15", missing=None):
     lanes["fundamental"] = missing or []
     return {"status": "completed", "run_date": day, "step": "refresh-ai-evidence",
         "missing_by_lane": lanes, "evidence_ready": not missing, "errors": []}
+
+
+def _manual_refresh(tmp_path, body, *, http_status=200, raw_body=None):
+    """Execute the workflow's real shell with curl replaced before any network I/O."""
+    workflow = (Path(__file__).parents[2] / '.github/workflows/daily-radar.yml').read_text()
+    job = workflow.split('\n  refresh-ai-evidence:\n', 1)[1].split('\n  refresh-market-context:', 1)[0]
+    script = textwrap.dedent(job.split('        run: |\n', 1)[1])
+    (tmp_path / 'response.json').write_text(json.dumps(body) if raw_body is None else raw_body)
+    fake_curl = tmp_path / 'curl'
+    fake_curl.write_text(f'#!{sys.executable}\n' + textwrap.dedent('''
+        import json, os, pathlib, sys
+        root = pathlib.Path(os.environ['STUB_ROOT'])
+        args = sys.argv[1:]
+        response_file = pathlib.Path(args[args.index('-o') + 1])
+        response_file.write_text((root / 'response.json').read_text())
+        (root / 'request.json').write_text(json.dumps({
+            'payload': json.loads(args[args.index('--data') + 1]),
+            'endpoint': args[args.index('-X') + 2], 'response_file': str(response_file),
+        }))
+        print(os.environ['STUB_HTTP_STATUS'], end='')
+    '''))
+    fake_curl.chmod(0o755)
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script],
+        env={**os.environ, 'PATH': f'{tmp_path}:{os.environ["PATH"]}', 'TMPDIR': str(tmp_path),
+            'STUB_ROOT': str(tmp_path), 'STUB_HTTP_STATUS': str(http_status),
+            'ZEABUR_BACKEND_URL': 'https://example.invalid',
+            'DAILY_RADAR_INTERNAL_TOKEN': 'test-only',
+            'DAILY_RADAR_ENDPOINT': '/internal/daily-radar/refresh-ai-evidence',
+            'DAILY_RADAR_RUN_DATE': '2026-10-15'},
+        capture_output=True, text=True, timeout=30)
+    request = json.loads((tmp_path / 'request.json').read_text())
+    return result, request
+
+
+def _manual_readiness_cases():
+    yield pytest.param(evidence(), True, id='complete')
+    value = evidence()
+    value['missing_by_lane']['optional'] = []
+    yield pytest.param(value, True, id='extra-empty-lane')
+    for lane in ('technical', 'institutional', 'margin', 'fundamental'):
+        value = evidence()
+        value['evidence_ready'] = False
+        value['missing_by_lane'][lane] = ['2355.TW']
+        yield pytest.param(value, False, id=f'{lane}-gap')
+        value = evidence()
+        del value['missing_by_lane'][lane]
+        yield pytest.param(value, False, id=f'{lane}-absent')
+        for invalid in (None, {}, 'invalid', 0):
+            value = evidence()
+            value['missing_by_lane'][lane] = invalid
+            yield pytest.param(value, False, id=f'{lane}-type-{type(invalid).__name__}')
+    for field, invalid in (
+        ('evidence_ready', False), ('evidence_ready', None), ('evidence_ready', 'true'), ('evidence_ready', 1),
+        ('errors', [{'code': 'provider_failed'}]), ('errors', None), ('errors', {}),
+        ('run_date', '2026-10-16'), ('step', 'refresh-ohlcv'), ('status', 'failed'),
+        ('missing_by_lane', None), ('missing_by_lane', []),
+    ):
+        value = evidence()
+        value[field] = invalid
+        yield pytest.param(value, False, id=f'{field}-{invalid}')
+    for field in ('evidence_ready', 'errors', 'run_date', 'step', 'status', 'missing_by_lane'):
+        value = evidence()
+        del value[field]
+        yield pytest.param(value, False, id=f'{field}-absent')
+    for invalid in (['2355.TW'], None, 'invalid'):
+        value = evidence()
+        value['missing_by_lane']['extra'] = invalid
+        yield pytest.param(value, False, id=f'extra-lane-{invalid}')
+    value = evidence()
+    value['missing_by_lane']['margin'] = ['2355.TW']
+    yield pytest.param(value, False, id='ready-true-with-gap')
+    for invalid in (None, [], 'completed', 1):
+        yield pytest.param(invalid, False, id=f'body-{invalid}')
+
+
+@pytest.mark.parametrize('body,ready', list(_manual_readiness_cases()))
+def test_manual_refresh_gate_matches_finalize(tmp_path, body, ready):
+    result, request = _manual_refresh(tmp_path, body)
+    assert runner().evidence_is_ready(body, '2026-10-15') is ready
+    assert (result.returncode == 0) is ready, result.stdout + result.stderr
+    assert request['payload'] == {'market': 'TW', 'run_date': '2026-10-15'}
+    assert request['endpoint'] == 'https://example.invalid/internal/daily-radar/refresh-ai-evidence'
+
+
+def test_manual_refresh_keeps_gap_diagnostics_when_rejecting_completed_materialization(tmp_path):
+    body = evidence(missing=['2355.TW'])
+    body['missing_evidence_details'] = {'fundamental': [{'symbol': '2355.TW', 'reason': 'no_eps_history'}]}
+    result, request = _manual_refresh(tmp_path, body)
+    assert result.returncode != 0
+    assert 'evidence_ready: false' in result.stdout
+    assert '2355.TW' in result.stdout and 'no_eps_history' in result.stdout
+    assert json.loads(Path(request['response_file']).read_text()) == body
+
+
+@pytest.mark.parametrize('http_status', [403, 500])
+def test_manual_refresh_http_failure_cannot_pass_even_with_ready_body(tmp_path, http_status):
+    result, _ = _manual_refresh(tmp_path, evidence(), http_status=http_status)
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize('raw_body', ['', '{bad-json', json.dumps(evidence()) + '\n' + json.dumps(evidence())])
+def test_manual_refresh_rejects_empty_malformed_or_multiple_json_responses(tmp_path, raw_body):
+    result, _ = _manual_refresh(tmp_path, None, raw_body=raw_body)
+    assert result.returncode != 0
 
 
 def test_finalization_orders_writes_and_verifies_complete_pool(tmp_path):

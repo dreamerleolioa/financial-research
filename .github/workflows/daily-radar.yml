@@ -716,7 +716,23 @@ jobs:
             | with_entries(select(.value != null))
             | "error: \(. | @json)"
           ' "$response_file"
-          if ! jq -e '.status == "completed"' "$response_file" >/dev/null; then
+          if ! jq -e -s --arg run_date "$run_date" '
+            length == 1 and (
+              .[0]
+              | type == "object"
+                and .status == "completed"
+                and .step == "refresh-ai-evidence"
+                and .run_date == $run_date
+                and .evidence_ready == true
+                and .errors == []
+                and (.missing_by_lane
+                  | type == "object"
+                    and has("technical") and has("institutional")
+                    and has("margin") and has("fundamental")
+                    and all(.[]; type == "array" and length == 0))
+            )
+          ' "$response_file" >/dev/null; then
+            echo "AI evidence is incomplete or invalid; refusing to report readiness." >&2
             exit 1
           fi
 
