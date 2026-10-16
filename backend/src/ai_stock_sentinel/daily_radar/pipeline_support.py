@@ -19,7 +19,7 @@ from ai_stock_sentinel.daily_radar.background_context import (
     update_background_chip_context_cache,
 )
 from ai_stock_sentinel.daily_radar.data_quality import (
-    margin_evidence_is_complete,
+    same_day_margin_evidence_is_complete,
     missing_daily_radar_candidate_technical_fields,
 )
 from ai_stock_sentinel.daily_radar.dependencies import DAILY_RADAR_REQUIRED_REFRESH_STEPS
@@ -526,7 +526,9 @@ def _ai_evidence_missing_by_lane(rows: Iterable[Any]) -> dict[str, list[str]]:
             institutional_date = _mapping(flow.get("data_dates")).get("institutional_flow")
             if str(institutional_date or "") != row.record_date.isoformat():
                 missing["institutional"].append(row.symbol)
-        if not margin_evidence_is_complete(margin, record_date=row.record_date, symbol=row.symbol):
+        if not same_day_margin_evidence_is_complete(margin,
+            source_date=_mapping(fundamental.get("data_dates")).get("margin"),
+            record_date=row.record_date, symbol=row.symbol):
             missing["margin"].append(row.symbol)
         if (
             not _finite_number(fundamental.get("ttm_eps"))

@@ -728,10 +728,18 @@ ETF、權證、特別股不納入候選、分析、raw pool 補抓或兩種 forw
 
 `/internal/fundamentals/backfill` 的 `radar_stage=prepared|raw_pool` 與 `raw_pool_date` 用於這條準備流程。prepared 要求當日 universe 完成；raw_pool 要求同日 OHLCV 與 managed raw step 都完成、股票池非空，不再依賴 AI evidence completed。新建與續頁都驗證 job 日期；若 run_date 已過，僅當完整 pool 的 EPS 已在該日可見時，以 cache_ready_as_of=true、job_id=null 作唯讀完成回應，不建立工作也不呼叫 provider；仍有缺漏則拒絕補抓；續頁仍使用凍結的 symbols 與 server-owned cursor，不重新選股。一般晨間維護與人工歷史 backfill 保留原契約。
 
-每階段最多六次 backfill 請求、每批十檔；與舊 job 衝突時只接續 API 明確返回的 job／cursor，舊 job 完成後仍須建立本日工作。整條腳本有 30 分鐘 deadline，單一 HTTP request 最多 300 秒；超限、錯誤日期、schema 錯誤或 provider 失敗保留診斷且非零結束，evidence 在預算允許時仍會執行以取得最後缺漏。合法資料不足不當成 transport error，最終必須重新核對所有必要 lane。
+每階段最多六次 backfill 請求、每批十檔。新雷達工作只取 `describe_fundamental_gaps()` 回報的 EPS 缺口，不經七季／股利 maintenance selector；執行時只要求截至 run_date 可見、連續四季且有限的 TTM EPS，已滿足即停止，不補股利。MOPS 不足或失敗才走既有 FinMind EPS 備援；合法不足與 provider／parser 失敗分開記錄。
+
+Job 持久化 `purpose=maintenance|radar_ttm_eps` 與 `radar_stage=prepared|raw_pool|null`。舊 job 保留 maintenance 契約、股票快照、cursor 與狀態。雷達只建立／續跑相同日期與階段的工作，不排空維護或其他日期工作；同日期／階段僅允許一個 running 雷達 job。建立／選取工作後釋放 scheduler lock；外部抓取使用記憶體快照，不持有 DB transaction；提交前鎖定並重新載入 job，驗證用途、日期、階段及原 cursor，EPS 寫入與 cursor 推進同一交易。並行失去 cursor 所有權者不得提交。
+
+整條腳本有 30 分鐘 deadline，單一 HTTP request 最多 300 秒；finalize 為最後 AI evidence 預留 300 秒。超限、錯誤日期、用途／階段不符、schema 錯誤或 provider 失敗保留診斷且非零結束。`pagination_completed` 與完整 pool 的 `remaining_gap_count`／`cache_ready_as_of` 分開：cursor 結束後仍重新核對完整 pool；缺口未清空不得宣告準備完成。真實缺口超過預算時保留缺漏及續跑資訊，不能放寬歷史可見性。
 
 `refresh-ai-evidence.status=completed` 表示 materialization 已執行；`evidence_ready` 只在四個必要 lane 齊全且 errors 為空時為 true。`missing_evidence_details.fundamental` 提供 symbol、reason、as_of_date、visible_period_count、latest_observed_date；區分沒有歷史、歷史不足、provider 失敗與 `historical_observation_after_run_date`。後者不應以重抓當前資料嘗試回寫歷史。
 
 完整性 gate 保留全部 lane 的型別／空陣列檢查；AVWAP 為 optional context。匯出端與後端共用融資完整度判準，保留 baseline_zero 的明確原因與不適用證據日期，不以補零放寬缺值。步驟、job 或 cursor 完成均不代表資料齊全；scoring membership、排名及歷史可見性不變。
 
 HTTP 的完整請求（含連線、headers 與 body）以 POSIX wall-clock timer 強制限制，回應返回後再次核對整體 deadline；腳本運行於 GitHub Ubuntu runner 的主執行緒。讀取 job 並驗證續跑游標時持有 row lock，locking read 強制重新載入 ORM identity map，避免接受另一 worker 已前移的舊游標。
+
+AI evidence 只補必要的 full-margin context；借券仍由獨立 `refresh-lending` 更新，scoring required-step gate 不變。融資數值與 baseline_zero 都要求來源日期等於 record_date；官方不適用證據保留自身 symbol／日期驗證。缺少或過期 cache 不會把舊融資投影為當日資料。後端與匯出共用同日 evidence 判準，歷史回放的結構檢查維持原用途。
+
+兩種 validation 均使用完整 HTTP wall-clock deadline，每種最多兩次請求。截斷回應、HTTP 協定／連線錯誤及非 JSON 都留下獨立診斷；第一種失敗不阻止第二種，最後彙整失敗 return bases。token 不進入診斷輸出。

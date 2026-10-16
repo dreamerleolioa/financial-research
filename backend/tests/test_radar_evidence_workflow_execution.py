@@ -26,7 +26,9 @@ def test_finalization_orders_writes_and_verifies_complete_pool(tmp_path):
         calls.append((step, payload.copy()))
         if step == "backfill":
             return {"status": "ok", "job_id": "job", "raw_pool_date": "2026-10-15",
-                "next_after_symbol": None, "errors": [], "data_gaps": []}
+                "next_after_symbol": None, "errors": [], "data_gaps": [],
+                "purpose": "radar_ttm_eps", "radar_stage": payload["radar_stage"],
+                "cache_ready_as_of": True, "remaining_gap_count": 0}
         if step == "refresh-ai-evidence":
             return evidence()
         return {"status": "completed", "step": step, "run_date": "2026-10-15", "missing_record_count": 0, "missing_symbols": []}
@@ -47,7 +49,9 @@ def test_failures_remain_fail_closed_and_still_collect_evidence(tmp_path, fault)
             if fault == "provider":
                 raise TimeoutError("source unavailable")
             return {"status": "ok", "job_id": "job", "raw_pool_date": "2026-10-15",
-                "next_after_symbol": None, "errors": [], "data_gaps": []}
+                "next_after_symbol": None, "errors": [], "data_gaps": [],
+                "purpose": "radar_ttm_eps", "radar_stage": payload["radar_stage"],
+                "cache_ready_as_of": True, "remaining_gap_count": 0}
         if step == "refresh-ai-evidence":
             result = evidence(missing=["2355.TW"] if fault == "missing_eps" else None)
             if fault == "wrong_date": result["run_date"] = "2026-10-16"
@@ -65,7 +69,8 @@ def test_continuation_uses_server_cursor_and_budget_never_claims_readiness(tmp_p
     def post(endpoint, token, payload, timeout):
         calls.append(payload.copy())
         return {"status": "ok", "job_id": "job", "raw_pool_date": "2026-10-15",
-            "next_after_symbol": f"{len(calls):04}.TW", "errors": [], "data_gaps": []}
+            "next_after_symbol": f"{len(calls):04}.TW", "errors": [], "data_gaps": [],
+            "purpose": "radar_ttm_eps", "radar_stage": "prepared", "cache_ready_as_of": False, "remaining_gap_count": 1}
     assert runner().run(base_url="https://example.invalid", token="private", run_date="2026-10-15",
         mode="prewarm", output_dir=tmp_path, request=post) == 1
     assert len(calls) == 6
@@ -86,21 +91,17 @@ def test_cross_day_rejection_has_no_retry_and_keeps_diagnostics(tmp_path):
     assert "radar_fundamental_date_closed" in (tmp_path / "backfill-1.json").read_text()
 
 
-def test_old_job_completion_is_followed_by_a_new_date_bound_preparation(tmp_path):
+def test_unrelated_maintenance_conflict_is_never_drained_by_radar(tmp_path):
     from urllib.error import HTTPError
     from io import BytesIO
     calls = []
     def post(endpoint, token, payload, timeout):
         calls.append(payload.copy())
-        if len(calls) == 1:
-            raise HTTPError(endpoint, 409, "running", {}, BytesIO(b'{"detail":{"code":"fundamental_backfill_job_running","job_id":"old","expected_after_symbol":"2355.TW"}}'))
-        return {"status": "ok", "job_id": "old" if len(calls) == 2 else "new",
-            "raw_pool_date": "2026-10-14" if len(calls) == 2 else "2026-10-15",
-            "next_after_symbol": None, "errors": [], "data_gaps": []}
+        raise HTTPError(endpoint, 409, "running", {}, BytesIO(b'{"detail":{"code":"fundamental_backfill_job_running","job_id":"old","expected_after_symbol":"2355.TW"}}'))
     assert runner().run(base_url="https://example.invalid", token="private", run_date="2026-10-15",
-        mode="prewarm", output_dir=tmp_path, request=post) == 0
-    assert calls[1] == {"scope": "managed", "limit": 10, "job_id": "old", "after_symbol": "2355.TW"}
-    assert calls[2] == calls[0]
+        mode="prewarm", output_dir=tmp_path, request=post) == 1
+    assert len(calls) == 1
+    assert "job_id" not in calls[0]
 
 
 def test_time_budget_stops_requests_and_preserves_unfinished_state(tmp_path):
@@ -115,7 +116,9 @@ def test_response_returning_after_deadline_cannot_complete_preparation(tmp_path)
     def post(endpoint, token, payload, timeout):
         elapsed[0] = 1801
         return {"status": "ok", "cache_ready_as_of": True, "raw_pool_date": "2026-10-15",
-            "job_id": None, "next_after_symbol": None, "errors": [], "data_gaps": []}
+            "job_id": None, "next_after_symbol": None, "errors": [], "data_gaps": [],
+                "purpose": "radar_ttm_eps", "radar_stage": payload["radar_stage"],
+                "cache_ready_as_of": True, "remaining_gap_count": 0}
     assert runner().run(base_url="https://example.invalid", token="private", run_date="2026-10-15",
         mode="prewarm", output_dir=tmp_path, request=post, clock=lambda: elapsed[0]) == 1
 
@@ -131,7 +134,9 @@ def test_redirect_rejects_forwarding_internal_token():
 def test_cache_attestation_can_finish_without_creating_a_job(tmp_path):
     def post(endpoint, token, payload, timeout):
         return {"status": "ok", "cache_ready_as_of": True, "raw_pool_date": "2026-10-15",
-            "job_id": None, "next_after_symbol": None, "errors": [], "data_gaps": []}
+            "job_id": None, "next_after_symbol": None, "errors": [], "data_gaps": [],
+                "purpose": "radar_ttm_eps", "radar_stage": payload["radar_stage"],
+                "cache_ready_as_of": True, "remaining_gap_count": 0}
     assert runner().run(base_url="https://example.invalid", token="private", run_date="2026-10-15",
         mode="prewarm", output_dir=tmp_path, request=post) == 0
 
@@ -155,7 +160,9 @@ def test_incomplete_http_body_does_not_prevent_final_evidence_diagnostics(tmp_pa
         if step == "refresh-ohlcv": raise IncompleteRead(b"partial")
         if step == "refresh-ai-evidence": return evidence()
         if step == "backfill": return {"status": "ok", "cache_ready_as_of": True,
-            "job_id": None, "raw_pool_date": "2026-10-15", "next_after_symbol": None, "errors": [], "data_gaps": []}
+            "job_id": None, "raw_pool_date": "2026-10-15", "next_after_symbol": None, "errors": [], "data_gaps": [],
+                "purpose": "radar_ttm_eps", "radar_stage": payload["radar_stage"],
+                "cache_ready_as_of": True, "remaining_gap_count": 0}
         return {"status": "completed", "step": step, "run_date": "2026-10-15", "missing_record_count": 0}
     assert runner().run(base_url="https://example.invalid", token="private", run_date="2026-10-15",
         mode="finalize", output_dir=tmp_path, request=post) == 1

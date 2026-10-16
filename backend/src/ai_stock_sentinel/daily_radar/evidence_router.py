@@ -17,7 +17,6 @@ from ai_stock_sentinel.daily_radar.background_context import (
     update_background_chip_context_cache,
 )
 from ai_stock_sentinel.daily_radar.dependencies import (
-    DAILY_RUN_REFRESH_CONTEXT_TYPES,
     get_daily_radar_background_chip_context_provider,
     get_daily_radar_fundamental_provider,
     get_daily_radar_institutional_evidence_provider,
@@ -80,6 +79,9 @@ router = APIRouter()
 
 
 logger = logging.getLogger(__name__)
+
+# Lending remains owned by refresh-lending and the scoring prerequisite gate.
+AI_EVIDENCE_CONTEXT_TYPES = ("full_margin",)
 
 
 @router.post(
@@ -246,7 +248,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
         for row in get_shared_background_context_rows(
             db,
             symbols=symbols,
-            context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+            context_types=AI_EVIDENCE_CONTEXT_TYPES,
             reference_date=run_date,
             point_in_time=True,
         )
@@ -284,7 +286,7 @@ def refresh_daily_radar_ai_evidence_endpoint(
     background_payloads, background_fetch_errors = _prefetch_ai_background_evidence(
         background_provider,
         symbols=symbols,
-        context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+        context_types=AI_EVIDENCE_CONTEXT_TYPES,
         fresh_pairs=fresh_background_pairs,
         run_date=run_date,
         market=request.market,
@@ -314,8 +316,9 @@ def refresh_daily_radar_ai_evidence_endpoint(
         market=request.market,
         provider=_PreparedBackgroundContextProvider(background_payloads),
         symbols=symbols,
-        context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
+        context_types=AI_EVIDENCE_CONTEXT_TYPES,
         reuse_same_day_fresh=True,
+        require_same_day_fresh=True,
     )
     rows = ensure_daily_radar_raw_rows(
         db,

@@ -30,16 +30,16 @@ from ai_stock_sentinel.data_sources.fundamental.official_provider import (
     fundamental_period_history_is_sufficient,
 )
 from ai_stock_sentinel.data_sources.fundamental.repository import (
-    load_latest_dividend_events,
     load_latest_dividend_events_for_symbols,
-    load_latest_fundamental_periods,
     load_latest_fundamental_periods_for_symbols,
     store_dividend_events,
+    preview_fundamental_periods,
     store_fundamental_periods,
 )
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.db.models import (
     CompanyFundamentalPeriod,
+    CompanyDividendEvent,
     DailyRadarPreparedRun,
     FundamentalBackfillJob,
     StockRawData,
@@ -150,118 +150,115 @@ def backfill_fundamentals(
     limit: int = 10,
     provider: FinMindFundamentalProvider | None = None,
     historical_provider: MopsHistoricalEpsProvider | None = None,
+    radar_as_of_date: date | None = None,
+    before_persist: Callable[[], None] | None = None,
 ) -> FundamentalBackfillResult:
     bounded_limit = max(1, min(limit, 10))
-    normalized_symbols = sorted(
-        {
-            symbol.strip().upper()
-            for symbol in symbols
-            if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", symbol.strip().upper())
-            and is_daily_radar_supported_symbol(symbol)
-        }
-    )
+    normalized_symbols = sorted({symbol.strip().upper() for symbol in symbols
+        if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", symbol.strip().upper())
+        and is_daily_radar_supported_symbol(symbol)})
     if after_symbol:
         normalized_symbols = [symbol for symbol in normalized_symbols if symbol > after_symbol.upper()]
     selected = normalized_symbols[:bounded_limit]
+    # Detached snapshots let all provider work finish before the cursor/write transaction.
+    period_snapshots = {symbol: [] for symbol in selected}
+    for row in session.scalars(select(CompanyFundamentalPeriod).where(CompanyFundamentalPeriod.symbol.in_(selected))):
+        period_snapshots[row.symbol].append(CompanyFundamentalPeriod(**{
+            column.key: getattr(row, column.key) for column in CompanyFundamentalPeriod.__table__.columns}))
+    dividend_snapshots = {symbol: [] for symbol in selected}
+    if radar_as_of_date is None:
+        for symbol, events in load_latest_dividend_events_for_symbols(session, symbols=selected).items():
+            dividend_snapshots[symbol] = [CompanyDividendEvent(**{
+                column.key: getattr(row, column.key) for column in CompanyDividendEvent.__table__.columns
+            }) for row in events]
+    if before_persist is not None:
+        session.rollback()
+
     fallback = provider or _bounded_fundamental_backfill_provider()
-    # Supplying a FinMind provider is the existing unit-test/custom-injection
-    # seam. Production calls leave both arguments empty and enable MOPS first.
     historical = historical_provider
     if historical is None and provider is None:
         historical = MopsHistoricalEpsProvider()
     errors: list[str] = []
-    provider_attempts = {
-        "mops_historical": 0,
-        "finmind_statement": 0,
-        "finmind_dividend": 0,
-    }
+    provider_attempts = {"mops_historical": 0, "finmind_statement": 0, "finmind_dividend": 0}
     fallback_symbols: list[str] = []
     data_gaps: list[dict[str, Any]] = []
-    records_written = 0
+    pending_periods = []
+    pending_dividends = []
+
+    def sufficient(periods):
+        ttm = _latest_ttm(periods)[0]
+        if radar_as_of_date is not None:
+            return ttm is not None and math.isfinite(ttm)
+        return fundamental_period_history_is_sufficient(periods)
+
     for symbol in selected:
-        periods = load_latest_fundamental_periods(session, symbol=symbol)
-        if not fundamental_period_history_is_sufficient(periods):
-            statement_failures: list[str] = []
-            attempted_sources: list[str] = []
+        additions = []
+        periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=radar_as_of_date)
+        if not sufficient(periods):
+            failures = []
+            attempted = []
             if historical is not None:
-                attempted_sources.append("MOPS")
+                attempted.append("MOPS")
                 provider_attempts["mops_historical"] += 1
                 try:
-                    historical_periods = historical.fetch_periods(symbol)
-                    with session.begin_nested():
-                        dataset_records = store_fundamental_periods(
-                            session,
-                            historical_periods,
-                        )
-                    records_written += dataset_records
+                    additions.extend(historical.fetch_periods(symbol))
+                    periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=radar_as_of_date)
                 except Exception as exc:
-                    statement_failures.append(f"MOPS failed: {exc}")
-                periods = load_latest_fundamental_periods(session, symbol=symbol)
-
-            if not fundamental_period_history_is_sufficient(periods):
-                attempted_sources.append("FinMind")
+                    failures.append(f"MOPS failed: {exc}")
+            if not sufficient(periods):
+                attempted.append("FinMind")
                 provider_attempts["finmind_statement"] += 1
                 if historical is not None:
                     fallback_symbols.append(symbol)
                 try:
                     statement_rows = fallback.fetch_statement_rows(symbol)
-                    normalized_periods = normalize_finmind_statement_rows(
-                        statement_rows,
-                        symbol=symbol,
-                    )
-                    eps_row_count = sum(row.get("type") == "EPS" for row in statement_rows)
-                    if len(normalized_periods) != eps_row_count or any(
-                        period.quarter_eps is None or not period.quarter_eps.is_finite()
-                        for period in normalized_periods
+                    normalized = normalize_finmind_statement_rows(statement_rows, symbol=symbol)
+                    if len(normalized) != sum(row.get("type") == "EPS" for row in statement_rows) or any(
+                        period.quarter_eps is None or not period.quarter_eps.is_finite() for period in normalized
                     ):
                         raise ValueError("FinMind statement response contains invalid EPS rows")
-                    with session.begin_nested():
-                        dataset_records = store_fundamental_periods(
-                            session,
-                            normalized_periods,
-                        )
-                    records_written += dataset_records
+                    additions.extend(normalized)
+                    periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=radar_as_of_date)
                 except Exception as exc:
-                    statement_failures.append(f"FinMind failed: {exc}")
-                periods = load_latest_fundamental_periods(session, symbol=symbol)
-
-            if not fundamental_period_history_is_sufficient(periods):
-                source_label = " and ".join(attempted_sources)
-                detail = f"{source_label} returned no sufficient EPS history"
-                if statement_failures:
-                    detail = f"{detail}; {'; '.join(statement_failures)}"
-                    errors.append(f"{symbol}: statement backfill incomplete: {detail}")
+                    failures.append(f"FinMind failed: {exc}")
+            if not sufficient(periods):
+                if failures:
+                    errors.append(f"{symbol}: statement backfill incomplete: {' and '.join(attempted)} "
+                        f"returned no sufficient EPS history; {'; '.join(failures)}")
                 else:
-                    data_gaps.append({
-                        "symbol": symbol,
-                        "reason": "insufficient_eps_history" if periods else "no_eps_history",
-                        "period_count": len(periods),
-                    })
-        dividends = load_latest_dividend_events(session, symbol=symbol)
-        if not dividend_history_is_sufficient(dividends):
-            provider_attempts["finmind_dividend"] += 1
-            try:
-                dividend_rows = fallback.fetch_dividend_rows(symbol)
-                with session.begin_nested():
-                    dataset_records = store_dividend_events(
-                        session,
-                        normalize_finmind_dividend_rows(dividend_rows, symbol=symbol),
-                    )
-                records_written += dataset_records
-            except Exception as exc:
-                errors.append(f"{symbol}: dividend backfill failed: {exc}")
+                    data_gaps.append({"symbol": symbol, "reason": "insufficient_eps_history" if periods else "no_eps_history",
+                        "period_count": len(periods)})
+        pending_periods.append((symbol, additions))
+        if radar_as_of_date is None:
+            dividends = dividend_snapshots[symbol]
+            if not dividend_history_is_sufficient(dividends):
+                provider_attempts["finmind_dividend"] += 1
+                try:
+                    pending_dividends.append((symbol, normalize_finmind_dividend_rows(fallback.fetch_dividend_rows(symbol), symbol=symbol)))
+                except Exception as exc:
+                    errors.append(f"{symbol}: dividend backfill failed: {exc}")
 
+    if before_persist is not None:
+        before_persist()
+    records_written = 0
+    for symbol, periods in pending_periods:
+        try:
+            with session.begin_nested():
+                written = store_fundamental_periods(session, periods)
+            records_written += written
+        except Exception as exc:
+            errors.append(f"{symbol}: statement persistence failed: {exc}")
+    for symbol, dividends in pending_dividends:
+        try:
+            with session.begin_nested():
+                written = store_dividend_events(session, dividends)
+            records_written += written
+        except Exception as exc:
+            errors.append(f"{symbol}: dividend persistence failed: {exc}")
     has_more = len(normalized_symbols) > len(selected)
-    return FundamentalBackfillResult(
-        status="partial" if errors or data_gaps else "ok",
-        symbols_processed=selected,
-        records_written=records_written,
-        next_after_symbol=selected[-1] if selected and has_more else None,
-        errors=errors,
-        provider_attempts=provider_attempts,
-        fallback_symbols=fallback_symbols,
-        data_gaps=data_gaps,
-    )
+    return FundamentalBackfillResult(status="partial" if errors or data_gaps else "ok", symbols_processed=selected,
+        records_written=records_written, next_after_symbol=selected[-1] if selected and has_more else None,
+        errors=errors, provider_attempts=provider_attempts, fallback_symbols=fallback_symbols, data_gaps=data_gaps)
 
 
 def _bounded_fundamental_backfill_provider() -> FinMindFundamentalProvider:
@@ -463,10 +460,14 @@ def create_fundamental_backfill_job(
     *,
     symbols: Sequence[str],
     raw_pool_date: date | None,
+    purpose: str = "maintenance",
+    radar_stage: str | None = None,
 ) -> FundamentalBackfillJob:
     job = FundamentalBackfillJob(
         id=str(uuid.uuid4()),
         raw_pool_date=raw_pool_date,
+        purpose=purpose,
+        radar_stage=radar_stage,
         symbols=list(symbols),
         next_after_symbol=None,
         status="running",
@@ -492,13 +493,19 @@ def get_oldest_running_fundamental_backfill_job(
     session: Session,
     *,
     for_update: bool = False,
+    purpose: str = "maintenance",
+    raw_pool_date: date | None = None,
+    radar_stage: str | None = None,
 ) -> FundamentalBackfillJob | None:
     statement = (
         select(FundamentalBackfillJob)
-        .where(FundamentalBackfillJob.status == "running")
+        .where(FundamentalBackfillJob.status == "running", FundamentalBackfillJob.purpose == purpose)
         .order_by(FundamentalBackfillJob.created_at.asc(), FundamentalBackfillJob.id.asc())
         .limit(1)
     )
+    if purpose == "radar_ttm_eps":
+        statement = statement.where(FundamentalBackfillJob.raw_pool_date == raw_pool_date,
+            FundamentalBackfillJob.radar_stage == radar_stage)
     if for_update:
         statement = statement.with_for_update().execution_options(populate_existing=True)
     return session.scalar(statement)

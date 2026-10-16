@@ -50,3 +50,13 @@ Q3、Q4 與 Q1 的單季 EPS 來自 `mops_historical`；Q2 依 `official_openapi
 - [原始 repair workflow](https://github.com/dreamerleolioa/financial-research/actions/runs/38833105350)：10/16 上午對 10/15 補修，因四檔基本面缺漏失敗。
 - [基本面更新與回補 workflow](https://github.com/dreamerleolioa/financial-research/actions/runs/38834392752)：10/16 09:18 執行；本文的補齊數值另以唯讀 DB 查核確認。
 - [歷史可見性與 EPS 版本選擇](../backend/src/ai_stock_sentinel/data_sources/fundamental/repository.py)、[TTM 計算](../backend/src/ai_stock_sentinel/data_sources/fundamental/official_provider.py)、[匯出完整度](../backend/scripts/export_codex_daily_radar.py)。
+
+## 後續流程稽核與修正範圍（2026-10-16）
+
+本節為原查核後的補充，不替換上述原始結果、160／164 的當時完整度判讀或四檔事後 EPS 表。此次六項修正為：融資同日來源檢查；job 只納入回報的 TTM EPS 缺口；雷達執行不套用維護的七季／股利要求；AI evidence 不順帶抓取借券；validation HTTP 中斷後仍執行另一 return basis；雷達工作與一般維護依持久化用途／日期／階段隔離預算。
+
+上述缺陷及預算風險已在本機 fixture、workflow runner 或臨時 PostgreSQL 重現／驗證，不能直接推論每項都曾發生於 10/15。新的融資日期門檻尚未用於重新計算 10/15 正式資料；原先的完整度數字仍是原查核規則下的紀錄，不宣稱已通過新版規則。
+
+本次不呼叫 production refresh／backfill／scoring／validation，不更新 10/15 raw rows、run 162、候選、排名、step status、歷史績效或財報首次觀測時間；不將四檔 10/16 才取得的 EPS 加入 10/15 shortlist。migration 僅於臨時本機 PostgreSQL 驗證，不執行正式 migration。推送、部署與正式資料恢復均留待另行授權。
+
+本機驗證：從 `backend/` 執行完整 `uv run pytest tests/ -v`，並啟用隔離的臨時 PostgreSQL 測試目標，結果為 **1756 passed**，僅有一項既有 Starlette 棄用警告。涵蓋 additive migration 對舊 job 的保留與唯一性、實際並行 cursor 提交、六項回歸及測試目標隔離反例。獨立 Codex review 使用既有 `gpt-6.1-sol` 設定；確認並修正一項本機測試 DSN 隔離缺口，針對性補審無新增可行動問題。這些結果不等同正式環境已套用修正或已完成即時供應商覆蓋驗證。

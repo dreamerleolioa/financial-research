@@ -2,60 +2,14 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 from datetime import date
 from http.client import HTTPException
-import json
 import os
-import signal
 from pathlib import Path
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(req.full_url, code, "evidence_redirect_rejected", headers, fp)
-
-
-def post(endpoint, token, payload, timeout):
-    parsed = urlsplit(endpoint)
-    if parsed.scheme != "https" or parsed.username or parsed.password:
-        raise ValueError("evidence_endpoint_requires_https")
-    request = Request(endpoint, data=json.dumps(payload).encode(), method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    with build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
-        return _read_json(response)
-
-
-def _read_json(response):
-    body = response.read(2 * 1024 * 1024 + 1)
-    if len(body) > 2 * 1024 * 1024:
-        raise ValueError("evidence_response_too_large")
-    return json.loads(body)
-
-
-@contextmanager
-def request_deadline(seconds):
-    """Bound the complete request, including DNS, headers and body, in this POSIX CLI."""
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    previous_timer = signal.getitimer(signal.ITIMER_REAL)
-    started = time.monotonic()
-    def expired(signum, frame):
-        raise TimeoutError("evidence_http_wall_clock_timeout")
-    signal.signal(signal.SIGALRM, expired)
-    limit = min(seconds, previous_timer[0]) if previous_timer[0] > 0 else seconds
-    signal.setitimer(signal.ITIMER_REAL, limit)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
-        if previous_timer[0] > 0:
-            remaining = max(0.000001, previous_timer[0] - (time.monotonic() - started))
-            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+from daily_radar_http import post, request_deadline, _read_json, _NoRedirect, diagnostic_json
 
 
 def evidence_is_ready(response, run_date):
@@ -78,9 +32,9 @@ def run(*, base_url, token, run_date, mode, output_dir, request=post, clock=time
     payload = {"market": "TW", "run_date": run_date}
     failures = []
 
-    def call(path, data, name):
+    def call(path, data, name, reserve=0):
         try:
-            remaining = deadline - clock()
+            remaining = deadline - reserve - clock()
             if remaining <= 0:
                 response = {"error_type": "TimeoutError", "code": "evidence_preparation_budget_exhausted"}
             else:
@@ -93,19 +47,17 @@ def run(*, base_url, token, run_date, mode, output_dir, request=post, clock=time
                         except (ValueError, OSError, HTTPException):
                             detail = None
                         response = {"http_status": exc.code, "error_type": "HTTPError", "response": detail}
-                if clock() > deadline:
+                if clock() > deadline - reserve:
                     response = {"error_type": "TimeoutError", "code": "evidence_preparation_budget_exhausted"}
         except (OSError, ValueError, HTTPException) as exc:
             response = {"error_type": type(exc).__name__}
         # The injected test token and a misbehaving upstream must never leak credentials into artifacts.
-        serialized = json.dumps(response, ensure_ascii=False, indent=2)
-        if token:
-            serialized = serialized.replace(token, "[redacted]")
+        serialized = diagnostic_json(response, token)
         (output_dir / f"{name}.json").write_text(serialized)
         return response
 
     def refresh(step):
-        response = call(f"/internal/daily-radar/{step}", payload, step)
+        response = call(f"/internal/daily-radar/{step}", payload, step, reserve=300)
         ready = (isinstance(response, dict) and response.get("status") == "completed"
             and response.get("step") == step and response.get("run_date") == run_date)
         if step == "refresh-managed-raw-data":
@@ -123,66 +75,49 @@ def run(*, base_url, token, run_date, mode, output_dir, request=post, clock=time
     initial = {"scope": "managed", "limit": 10, "raw_pool_date": run_date, "radar_stage": stage}
     next_payload = dict(initial)
     expected_job = None
-    draining_old_job = False
     backfill_completed = False
+    pagination_completed = False
     gap_count = 0
     for attempt in range(1, 7):
-        response = call("/internal/fundamentals/backfill", next_payload, f"backfill-{attempt}")
+        response = call("/internal/fundamentals/backfill", next_payload, f"backfill-{attempt}",
+            reserve=300 if mode == "finalize" else 0)
         if not isinstance(response, dict):
             break
-        if (response.get("cache_ready_as_of") is True and response.get("status") == "ok"
-                and response.get("raw_pool_date") == run_date and response.get("job_id") is None
-                and "next_after_symbol" in response and response["next_after_symbol"] is None
-                and response.get("errors") == [] and response.get("data_gaps") == []):
-            backfill_completed = True
+        if (response.get("purpose") != "radar_ttm_eps" or response.get("radar_stage") != stage
+                or response.get("raw_pool_date") != run_date
+                or response.get("status") not in ("ok", "partial")
+                or not isinstance(response.get("errors"), list) or not isinstance(response.get("data_gaps"), list)
+                or type(response.get("remaining_gap_count")) is not int or response["remaining_gap_count"] < 0
+                or type(response.get("cache_ready_as_of")) is not bool
+                or response["cache_ready_as_of"] != (response["remaining_gap_count"] == 0)
+                or "next_after_symbol" not in response):
             break
-        if response.get("http_status") == 409:
-            body = response.get("response")
-            detail = body.get("detail", {}) if isinstance(body, dict) else {}
-            if not isinstance(detail, dict):
-                break
-            # Only a server-owned running job/cursor can be resumed; never guess from a transport failure.
-            if (detail.get("code") != "fundamental_backfill_job_running" or expected_job
-                    or not isinstance(detail.get("job_id"), str)
-                    or not detail["job_id"] or "expected_after_symbol" not in detail):
-                break
-            cursor = detail["expected_after_symbol"]
-            if cursor is not None and not isinstance(cursor, str):
-                break
-            expected_job = detail["job_id"]
-            draining_old_job = True
-            next_payload = {"scope": "managed", "limit": 10, "job_id": expected_job}
-            if cursor is not None:
-                next_payload["after_symbol"] = cursor
-            continue
         job = response.get("job_id")
-        cursor = response.get("next_after_symbol")
-        if (response.get("status") not in ("ok", "partial") or not isinstance(job, str) or not job
-                or (expected_job is not None and job != expected_job)
-                or not isinstance(response.get("errors"), list)
-                or not isinstance(response.get("data_gaps"), list)
-                or (response.get("status") == "partial" and not response["errors"] and not response["data_gaps"])
-                or "next_after_symbol" not in response
+        cursor = response["next_after_symbol"]
+        if job is None:
+            if (cursor is None and response["status"] == "ok"
+                    and response["cache_ready_as_of"] and not response["errors"] and not response["data_gaps"]):
+                backfill_completed = pagination_completed = True
+            break
+        if (not isinstance(job, str) or not job or (expected_job is not None and job != expected_job)
                 or (cursor is not None and (not isinstance(cursor, str) or not cursor))
-                or (not draining_old_job and response.get("raw_pool_date") != run_date)):
+                or (response["status"] == "partial" and not response["errors"] and not response["data_gaps"])):
             break
         gap_count += len(response["data_gaps"])
         if response["errors"]:
             failures.append("fundamental_provider_failed")
         if cursor is None:
-            if draining_old_job:
-                # Completing unrelated maintenance does not establish today's pool coverage.
-                next_payload, expected_job, draining_old_job = dict(initial), None, False
-                continue
-            backfill_completed = True
+            pagination_completed = True
+            backfill_completed = response["cache_ready_as_of"] and not response["errors"] and not response["data_gaps"]
+            next_payload = dict(initial)  # Completed snapshots cannot be resumed; a future attempt rechecks the pool.
+            if not backfill_completed:
+                failures.append("fundamental_coverage_incomplete")
             break
         previous = next_payload.get("after_symbol")
         if previous is not None and cursor <= previous:
             break
         expected_job = job
-        next_payload = {"scope": "managed", "limit": 10, "job_id": job, "after_symbol": cursor}
-        if not draining_old_job:
-            next_payload.update(raw_pool_date=run_date, radar_stage=stage)
+        next_payload = {**initial, "job_id": job, "after_symbol": cursor}
     if not backfill_completed:
         failures.append("fundamental_preparation_incomplete")
 
@@ -193,10 +128,10 @@ def run(*, base_url, token, run_date, mode, output_dir, request=post, clock=time
         if not ready:
             failures.append("ai_evidence_incomplete")
     summary = {"run_date": run_date, "mode": mode, "backfill_completed": backfill_completed,
-        "evidence_ready": ready, "data_gap_count": gap_count, "failures": failures,
+        "evidence_ready": ready, "pagination_completed": pagination_completed, "data_gap_count": gap_count, "failures": failures,
         "continuation": next_payload if not backfill_completed else None}
-    (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
-    print(json.dumps(summary, ensure_ascii=False))
+    (output_dir / "summary.json").write_text(diagnostic_json(summary, token))
+    print(diagnostic_json(summary, token, indent=None))
     return int(bool(failures))
 
 

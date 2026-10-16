@@ -452,6 +452,7 @@ def _apply_margin_contexts(
         symbol
         for symbol in symbols
         if _is_fresh_full_margin_context(margin_contexts_by_symbol.get(symbol))
+        and str(_mapping(margin_contexts_by_symbol.get(symbol)).get("as_of_date")) == run_date.isoformat()
     ]
     if not context_symbols:
         return

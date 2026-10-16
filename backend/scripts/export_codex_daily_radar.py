@@ -17,7 +17,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
-from ai_stock_sentinel.daily_radar.data_quality import margin_evidence_is_complete
+from ai_stock_sentinel.daily_radar.data_quality import same_day_margin_evidence_is_complete
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -603,7 +603,9 @@ def _analytical_completeness(raw_universe: list[dict[str, Any]]) -> dict[str, An
             reference_date = date.fromisoformat(str(record_date))
         except (ValueError, TypeError):
             reference_date = None
-        if reference_date is None or not margin_evidence_is_complete(margin, record_date=reference_date, symbol=symbol):
+        margin_source_date = _mapping(_mapping(row.get("data_dates")).get("fundamental")).get("margin")
+        if reference_date is None or not same_day_margin_evidence_is_complete(margin,
+            source_date=margin_source_date, record_date=reference_date, symbol=symbol):
             missing_by_lane["margin"].append(symbol)
         if not _finite_number(fundamental.get("ttm_eps")) or str(
             _mapping(_mapping(row.get("data_dates")).get("fundamental")).get("fundamental") or ""

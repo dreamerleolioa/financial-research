@@ -57,7 +57,7 @@ def test_missing_raw_refresh_and_future_date_start_are_rejected(db, monkeypatch)
 
 def test_radar_request_creates_date_bound_snapshot_before_evidence(db, monkeypatch):
     calls = []
-    def fetch(session, *, symbols, after_symbol, limit):
+    def fetch(session, *, symbols, after_symbol, limit, **kwargs):
         calls.append(list(symbols))
         return service.FundamentalBackfillResult("ok", list(symbols), 0, None, [])
     monkeypatch.setattr(router, "backfill_fundamentals", fetch)
@@ -95,10 +95,10 @@ def test_delayed_workflow_reuses_historical_cache_without_fetch_or_new_job(db, m
 
 
 def test_continuation_cannot_cross_date_or_change_frozen_symbols(db, monkeypatch):
-    job = service.create_fundamental_backfill_job(db, symbols=["2355.TW"], raw_pool_date=DAY)
+    job = service.create_fundamental_backfill_job(db, symbols=["2355.TW"], raw_pool_date=DAY, purpose="radar_ttm_eps", radar_stage="prepared")
     db.commit()
     calls = []
-    def fetch(session, *, symbols, after_symbol, limit):
+    def fetch(session, *, symbols, after_symbol, limit, **kwargs):
         calls.append(list(symbols))
         return service.FundamentalBackfillResult("ok", list(symbols), 0, None, [])
     monkeypatch.setattr(router, "backfill_fundamentals", fetch)
@@ -106,7 +106,7 @@ def test_continuation_cannot_cross_date_or_change_frozen_symbols(db, monkeypatch
         raw_pool_date=DAY, radar_stage="prepared", job_id=job.id), db=db)
     assert calls == [["2355.TW"]]  # The current prepared list contains 2330, not 2355.
     assert response["raw_pool_date"] == DAY
-    pending = service.create_fundamental_backfill_job(db, symbols=["2355.TW"], raw_pool_date=DAY)
+    pending = service.create_fundamental_backfill_job(db, symbols=["2355.TW"], raw_pool_date=DAY, purpose="radar_ttm_eps", radar_stage="prepared")
     db.commit()
     monkeypatch.setattr(service, "today_taipei", lambda: date(2026, 10, 16))
     with pytest.raises(HTTPException) as error:
@@ -117,7 +117,7 @@ def test_continuation_cannot_cross_date_or_change_frozen_symbols(db, monkeypatch
 
 
 def test_locking_read_refreshes_a_cached_cursor_and_rejects_stale_continuation(db, monkeypatch):
-    job = service.create_fundamental_backfill_job(db, symbols=["2330.TW", "2355.TW"], raw_pool_date=DAY)
+    job = service.create_fundamental_backfill_job(db, symbols=["2330.TW", "2355.TW"], raw_pool_date=DAY, purpose="radar_ttm_eps", radar_stage="prepared")
     db.commit()
     cached = service.get_fundamental_backfill_job(db, job_id=job.id)
     assert cached.next_after_symbol is None

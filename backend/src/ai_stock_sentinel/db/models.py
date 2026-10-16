@@ -634,10 +634,21 @@ class FundamentalBackfillJob(Base):
             name="ck_fundamental_backfill_job_status",
         ),
         Index("idx_fundamental_backfill_job_created_at", "created_at"),
+        CheckConstraint(
+            "(purpose = 'maintenance' AND radar_stage IS NULL) OR "
+            "(purpose = 'radar_ttm_eps' AND raw_pool_date IS NOT NULL "
+            "AND radar_stage IS NOT NULL AND radar_stage IN ('prepared', 'raw_pool'))",
+            name="ck_fundamental_backfill_job_purpose",
+        ),
+        Index("uq_fundamental_running_radar_job", "raw_pool_date", "radar_stage", unique=True,
+            postgresql_where=text("status = 'running' AND purpose = 'radar_ttm_eps'"),
+            sqlite_where=text("status = 'running' AND purpose = 'radar_ttm_eps'")),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     raw_pool_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False, default="maintenance", server_default="maintenance")
+    radar_stage: Mapped[str | None] = mapped_column(String(8), nullable=True)
     symbols: Mapped[list] = mapped_column(JSONB, nullable=False)
     next_after_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(
