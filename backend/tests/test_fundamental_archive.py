@@ -6,7 +6,7 @@ import importlib.util
 from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from alembic.migration import MigrationContext
@@ -1880,14 +1880,14 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
         raw_pool_date=date(2026, 8, 17),
         symbols=["2330.TW"],
         next_after_symbol=None,
-        status="running",
+        status="running", purpose="maintenance", radar_stage=None,
     )
     resumed_job = SimpleNamespace(
         id=created_job.id,
         raw_pool_date=date(2026, 8, 17),
         symbols=["2330.TW", "2454.TW"],
         next_after_symbol="2330.TW",
-        status="running",
+        status="running", purpose="maintenance", radar_stage=None,
     )
     try:
         with (
@@ -1921,7 +1921,7 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
             ),
             patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.get_fundamental_backfill_job",
-                return_value=resumed_job,
+                side_effect=[created_job, resumed_job, resumed_job],
             ),
             patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.get_oldest_running_fundamental_backfill_job",
@@ -2001,7 +2001,7 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
         assert completed_job.json()["detail"] == {
             "code": "fundamental_backfill_job_completed"
         }
-        assert commit.call_count == 2
+        assert commit.call_count == 3
     finally:
         session.close()
         engine.dispose()
@@ -2047,7 +2047,7 @@ def test_scheduled_fundamental_backfill_resumes_oldest_running_job(monkeypatch) 
             session,
             symbols=["2330.TW", "2454.TW"],
             after_symbol="2330.TW",
-            limit=10,
+            limit=10, radar_as_of_date=None, before_persist=ANY,
         )
         resumed = get_oldest_running_fundamental_backfill_job(session)
         assert resumed is None

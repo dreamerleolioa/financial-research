@@ -310,6 +310,19 @@ def margin_evidence_is_complete(margin: Mapping[str, Any], *, record_date: date 
     return delta_pct_available and _is_finite_number(margin.get("margin_to_volume"))
 
 
+def same_day_margin_evidence_is_complete(
+    margin: Mapping[str, Any], *, source_date: Any, record_date: date, symbol: str,
+) -> bool:
+    """Analytical readiness additionally requires the actual margin source date."""
+    if margin_is_not_applicable(margin, run_date=record_date, symbol=symbol):
+        # Official inapplicability carries its own date/symbol-validated evidence.
+        return source_date in (None, "") or str(source_date) == record_date.isoformat()
+    return (
+        str(source_date or "") == record_date.isoformat()
+        and margin_evidence_is_complete(margin, record_date=record_date, symbol=symbol)
+    )
+
+
 def _missing_required_scoring_value(
     section: str,
     field: str,

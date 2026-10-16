@@ -12,6 +12,7 @@ class FundamentalBackfillRequest(BaseModel):
     after_symbol: str | None = Field(default=None, max_length=20)
     job_id: str | None = Field(default=None, max_length=36)
     raw_pool_date: date | None = None
+    radar_stage: Literal["prepared", "raw_pool"] | None = None
     resume_running_job: bool = False
     limit: int = Field(default=10, ge=1, le=10)
 
@@ -37,7 +38,12 @@ class FundamentalBackfillResponse(BaseModel):
     symbols_processed: list[str] = Field(default_factory=list)
     records_written: int
     next_after_symbol: str | None = None
-    job_id: str
+    job_id: str | None
+    cache_ready_as_of: bool = False
+    purpose: Literal["maintenance", "radar_ttm_eps"] = "maintenance"
+    radar_stage: Literal["prepared", "raw_pool"] | None = None
+    remaining_gap_count: int | None = Field(default=None, ge=0)
+    missing_evidence_details: list[dict] = Field(default_factory=list)
     raw_pool_date: date | None = None
     errors: list[str] = Field(default_factory=list)
     provider_attempts: dict[str, int] = Field(default_factory=dict)

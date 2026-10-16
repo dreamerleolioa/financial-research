@@ -3048,6 +3048,8 @@ def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing
         "margin": [],
         "fundamental": [],
     }
+    assert body["evidence_ready"] is True
+    assert body["missing_evidence_details"] == {"fundamental": []}
     assert fetcher.calls == [(["2454.TW"], run_date)]
     rows = {
         row.symbol: row

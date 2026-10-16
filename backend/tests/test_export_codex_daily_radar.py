@@ -129,7 +129,7 @@ def test_analytical_completeness_distinguishes_missing_evidence_from_finality() 
         },
         "data_dates": {
             "institutional": {"institutional_flow": str(date.today())},
-            "fundamental": {"fundamental": str(date.today())},
+            "fundamental": {"fundamental": str(date.today()), "margin": str(date.today())},
         },
         "record_date": date.today(),
         "fundamental": {
@@ -211,6 +211,23 @@ def test_prepared_anchor_excludes_symbol_membership() -> None:
     assert projected["error_count"] == 1
     assert "symbol_count" not in projected["step_statuses"]["refresh-ohlcv"]
     assert "selected_symbol_count" not in projected["step_statuses"]["refresh-ohlcv"]
+
+
+def test_export_preserves_ai_readiness_and_dated_gap_diagnostics() -> None:
+    detail = {"symbol": "2355.TW", "reason": "historical_observation_after_run_date", "as_of_date": "2026-10-15"}
+    result = exporter._project_step_statuses({"refresh-ai-evidence": {"status": "completed",
+        "evidence_ready": False, "missing_by_lane": {"fundamental": ["2355.TW"]},
+        "missing_evidence_details": {"fundamental": [detail]}}})
+    assert result["refresh-ai-evidence"]["evidence_ready"] is False
+    assert result["refresh-ai-evidence"]["missing_evidence_details"]["fundamental"] == [detail]
+
+
+def test_export_margin_baseline_zero_uses_existing_evidence_contract() -> None:
+    row = {"symbol": "5475.TWO", "record_date": "2026-10-15", "data_dates": {"fundamental": {"margin": "2026-10-15"}}, "fundamental": {"margin": {
+        "margin_delta_pct": None, "margin_delta_pct_unavailable_reason": "baseline_zero", "margin_to_volume": 0.2}}}
+    assert exporter._analytical_completeness([row])["lanes"]["margin"]["missing_symbols"] == []
+    row["fundamental"]["margin"].pop("margin_to_volume")
+    assert exporter._analytical_completeness([row])["lanes"]["margin"]["missing_symbols"] == ["5475.TWO"]
 
 
 def test_validate_export_accepts_a_valid_date_scoped_raw_pool() -> None:

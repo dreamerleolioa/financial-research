@@ -1112,8 +1112,8 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert 'cron: "0 12 * * 1-5"' in text  # 20:00 TWT lending
     assert 'cron: "30 13 * * 1-5"' in text  # 21:30 TWT full margin
     assert 'cron: "30 14 * * 1-5"' in text  # 22:30 TWT OHLCV
-    assert 'cron: "40 14 * * 1-5"' in text  # 22:40 TWT managed raw data
-    assert 'cron: "0 15 * * 1-5"' in text  # 23:00 TWT complete AI evidence
+    assert 'cron: "40 14 * * 1-5"' not in text  # managed raw is part of the ordered chain
+    assert 'cron: "0 15 * * 1-5"' not in text  # evidence follows fundamental preparation
     assert 'cron: "30 15 * * 1-5"' in text  # 23:30 TWT market context
     assert 'cron: "50 15 * * 1-5"' in text  # 23:50 TWT forward validation
     assert 'cron: "30 16 * * 1-5"' in text  # 00:30 TWT next day scoring
@@ -1125,15 +1125,15 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "resolve_daily_radar_run_date.py" in text
     assert "/internal/daily-radar/market-session" in text
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 15
+    assert text.count("needs: resolve-run-context") == 16
     assert "/internal/daily-radar/refresh-institutional-flows" in text
     assert "/internal/daily-radar/refresh-market-bars" in text
     assert "market_bar_start_date" in text
     assert "market_bar_end_date" in text
-    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 13
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 14
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 13
+        == 15
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text
@@ -1185,12 +1185,15 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert avwap_repair.index('if [[ ! "$refresh_http_status"') < avwap_repair.index("jq -r '")
 
 
-def test_daily_radar_workflow_schedules_independent_full_ai_evidence_refresh() -> None:
+def test_daily_radar_workflow_schedules_ordered_full_ai_evidence_refresh() -> None:
     workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
     text = workflow.read_text(encoding="utf-8")
 
     assert "- refresh-ai-evidence" in text
-    assert 'cron: "0 15 * * 1-5"' in text
+    assert 'cron: "0 15 * * 1-5"' not in text
+    chain = text.split("  finalize-ai-evidence:", 1)[1].split("  refresh-ai-evidence:", 1)[0]
+    assert "--mode finalize" in chain
+    assert "prepare_daily_radar_evidence.py" in chain
     assert "/internal/daily-radar/refresh-ai-evidence" in text
     refresh_job = text.split("  refresh-ai-evidence:", 1)[1].split(
         "  refresh-market-context:",
@@ -1207,9 +1210,9 @@ def test_daily_radar_workflow_refreshes_managed_raw_data_without_symbol_logs() -
     text = workflow.read_text(encoding="utf-8")
 
     assert "- refresh-managed-raw-data" in text
-    assert 'cron: "40 14 * * 1-5"' in text
+    assert 'cron: "40 14 * * 1-5"' not in text
     refresh_job = text.split("  refresh-managed-raw-data:", 1)[1].split(
-        "  refresh-ai-evidence:",
+        "  finalize-ai-evidence:",
         1,
     )[0]
     assert "/internal/daily-radar/refresh-managed-raw-data" in refresh_job

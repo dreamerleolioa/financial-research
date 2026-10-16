@@ -1,30 +1,13 @@
 """Run both validation bases independently, retaining bounded failure evidence."""
 import argparse
+from http.client import HTTPException
 from datetime import date
-import json
 import os
 from pathlib import Path
 import time
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.error import HTTPError
 
-
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(req.full_url, code, "validation_redirect_rejected", headers, fp)
-
-
-def post(endpoint, token, payload):
-    if urlsplit(endpoint).scheme != "https":
-        raise ValueError("validation_endpoint_requires_https")
-    request = Request(endpoint, data=json.dumps(payload).encode(), method="POST",
-                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    with build_opener(_NoRedirect()).open(request, timeout=300) as response:
-        body = response.read(2 * 1024 * 1024 + 1)
-        if len(body) > 2 * 1024 * 1024:
-            raise ValueError("validation_response_too_large")
-        return json.loads(body)
+from daily_radar_http import post, request_deadline, _NoRedirect, diagnostic_json
 
 
 def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep, attempts=2):
@@ -38,7 +21,8 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
         for attempt in range(1, attempts + 1):
             retryable = False
             try:
-                response = request(endpoint, token, payload)
+                with request_deadline(300):
+                    response = request(endpoint, token, payload)
                 if not isinstance(response, dict):
                     raise ValueError("validation_response_invalid")
                 report = response.get("report") if isinstance(response.get("report"), dict) else {}
@@ -54,12 +38,12 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
             except HTTPError as exc:
                 response = {"error_type": "HTTPError", "http_status": exc.code}
                 retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
-            except (URLError, TimeoutError, ConnectionError) as exc:
+            except (OSError, HTTPException) as exc:
                 response = {"error_type": type(exc).__name__}
                 retryable = True
             except (ValueError, TypeError) as exc:
                 response = {"error_type": type(exc).__name__}
-            (output_dir / f"{basis}-attempt-{attempt}.json").write_text(json.dumps(response, ensure_ascii=False, indent=2))
+            (output_dir / f"{basis}-attempt-{attempt}.json").write_text(diagnostic_json(response, token))
             report = response.get("report") if isinstance(response.get("report"), dict) else {}
             summary = {key: response.get(key) for key in (
                 "status", "as_of_date", "candidate_count", "records_written", "validated_count",
@@ -69,14 +53,14 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 remaining_retryable_window_count=report.get("remaining_retryable_window_count"),
                 persisted_skip_reasons=report.get("skip_reasons", {}),
                 current_run_gaps=report.get("current_run_gaps", []))
-            print(json.dumps(summary, ensure_ascii=False), flush=True)
+            print(diagnostic_json(summary, token, indent=None), flush=True)
             if ready or not retryable:
                 break
             if attempt < attempts:
                 sleep(5)
         if not ready:
             failed.append(basis)
-    print(json.dumps({"run_date": run_date, "failed_return_bases": failed}), flush=True)
+    print(diagnostic_json({"run_date": run_date, "failed_return_bases": failed}, token, indent=None), flush=True)
     return int(bool(failed))
 
 

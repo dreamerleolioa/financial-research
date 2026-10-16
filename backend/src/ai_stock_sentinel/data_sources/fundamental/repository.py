@@ -100,6 +100,29 @@ def store_fundamental_periods(
     return written
 
 
+def preview_fundamental_periods(
+    rows: Iterable[CompanyFundamentalPeriod], additions: Iterable[NormalizedFundamentalPeriod],
+    *, as_of_date: date | None,
+) -> list[LoadedFundamentalPeriod]:
+    """Preview one symbol's revisions with the persisted read's selection/derivation."""
+    copies = [CompanyFundamentalPeriod(**{
+        column.key: getattr(row, column.key) for column in CompanyFundamentalPeriod.__table__.columns
+    }) for row in rows]
+    by_identity = {(row.fiscal_year, row.fiscal_quarter, row.statement_scope, row.payload_hash): row for row in copies}
+    observed_at = datetime.now(timezone.utc)
+    next_id = max((row.id for row in copies), default=0) + 1
+    for period in additions:
+        key = (period.fiscal_year, period.fiscal_quarter, period.statement_scope, period.payload_hash)
+        if key in by_identity:
+            by_identity[key].last_observed_at = observed_at
+        else:
+            row = CompanyFundamentalPeriod(id=next_id, **_fundamental_period_values(period, observed_at=observed_at))
+            next_id += 1
+            by_identity[key] = row
+            copies.append(row)
+    return _select_latest_fundamental_periods(copies, as_of_date=as_of_date)
+
+
 def store_dividend_events(
     session: Session,
     events: Iterable[NormalizedDividendEvent],
