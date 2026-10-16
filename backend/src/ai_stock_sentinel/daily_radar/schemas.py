@@ -92,6 +92,8 @@ class DailyRadarRefreshStepResponse(BaseModel):
     skipped_symbols: list[str] = Field(default_factory=list)
     skipped_symbol_reasons: dict[str, str] = Field(default_factory=dict)
     missing_by_lane: dict[str, list[str]] = Field(default_factory=dict)
+    evidence_ready: bool | None = None
+    missing_evidence_details: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     provider_counts: dict[str, int] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)
 

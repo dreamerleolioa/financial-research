@@ -349,12 +349,26 @@ def refresh_daily_radar_ai_evidence_endpoint(
         + list(background_result["errors"])
         + fundamental_errors
     )
+    from ai_stock_sentinel.data_sources.fundamental.service import describe_fundamental_gaps
+    fundamental_details = describe_fundamental_gaps(
+        db, symbols=missing_by_lane["fundamental"], as_of_date=run_date)
+    described = {item["symbol"] for item in fundamental_details}
+    for symbol in missing_by_lane["fundamental"]:
+        if symbol not in described:
+            fundamental_details.append({"symbol": symbol, "reason": "fundamental_projection_incomplete",
+                "as_of_date": run_date.isoformat()})
+    for error in fundamental_errors:
+        fundamental_details.append({**error, "reason": "fundamental_provider_failed", "as_of_date": run_date.isoformat()})
+    missing_evidence_details = {"fundamental": fundamental_details}
+    evidence_ready = not errors and not any(missing_by_lane.values())
     status = "failed" if errors else "completed"
     details = {
         "symbol_count": len(symbols),
         "selected_symbol_count": len(selected_symbols.intersection(symbols)),
         "records_written": len(rows),
         "missing_by_lane": missing_by_lane,
+        "evidence_ready": evidence_ready,
+        "missing_evidence_details": missing_evidence_details,
         "provider_counts": {
             "institutional": len(evidence_result.payloads_by_symbol),
             "fundamental": len(refreshed_rows) - len(missing_by_lane["fundamental"]),
@@ -379,6 +393,8 @@ def refresh_daily_radar_ai_evidence_endpoint(
         selected_symbol_count=len(selected_symbols.intersection(symbols)),
         records_written=len(rows),
         missing_by_lane=missing_by_lane,
+        evidence_ready=evidence_ready,
+        missing_evidence_details=missing_evidence_details,
         provider_counts=details["provider_counts"],
         errors=errors,
     )

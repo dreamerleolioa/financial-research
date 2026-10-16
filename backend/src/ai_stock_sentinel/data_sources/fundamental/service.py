@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timezone
+import math
 import re
 from typing import Any
 import uuid
@@ -11,6 +12,7 @@ import uuid
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.clock import today_taipei, TAIPEI_TZ
 from ai_stock_sentinel.daily_radar.universe import is_daily_radar_supported_symbol
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
@@ -23,6 +25,7 @@ from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_twse_dividend_rows,
 )
 from ai_stock_sentinel.data_sources.fundamental.official_provider import (
+    _latest_ttm,
     dividend_history_is_sufficient,
     fundamental_period_history_is_sufficient,
 )
@@ -36,6 +39,7 @@ from ai_stock_sentinel.data_sources.fundamental.repository import (
 )
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.db.models import (
+    CompanyFundamentalPeriod,
     DailyRadarPreparedRun,
     FundamentalBackfillJob,
     StockRawData,
@@ -286,6 +290,68 @@ def resolve_latest_fundamental_raw_pool_date(session: Session) -> date | None:
     return None
 
 
+def resolve_radar_fundamental_symbols(
+    session: Session, *, run_date: date, stage: str,
+) -> list[str]:
+    """Prepare today's evidence without depending on completed AI materialization."""
+    if run_date > today_taipei():
+        raise ValueError("radar_fundamental_date_closed")
+    prepared = session.scalar(select(DailyRadarPreparedRun).where(
+        DailyRadarPreparedRun.run_date == run_date, DailyRadarPreparedRun.market == "TW"))
+    if prepared is None:
+        raise ValueError("radar_prepared_run_not_found")
+    steps = prepared.step_statuses or {}
+    if (steps.get("prepare-universe") or {}).get("status") != "completed":
+        raise ValueError("radar_prepared_universe_not_ready")
+    if stage == "prepared":
+        symbols = prepared.selected_symbols or []
+    elif stage == "raw_pool":
+        if any((steps.get(step) or {}).get("status") != "completed"
+               for step in ("refresh-ohlcv", "refresh-managed-raw-data")):
+            raise ValueError("radar_raw_pool_not_ready")
+        symbols = resolve_fundamental_raw_pool_symbols(session, record_date=run_date)
+    else:
+        raise ValueError("invalid_radar_fundamental_stage")
+    supported = sorted({str(symbol).strip().upper() for symbol in symbols
+        if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
+        and is_daily_radar_supported_symbol(str(symbol).strip().upper())})
+    if not supported:
+        raise ValueError("radar_fundamental_pool_empty")
+    return supported
+
+
+def describe_fundamental_gaps(
+    session: Session, *, symbols: Sequence[str], as_of_date: date,
+) -> list[dict[str, Any]]:
+    """Describe cache coverage; never use late observations as historical values."""
+    if not symbols:
+        return []
+    visible = load_latest_fundamental_periods_for_symbols(session, symbols=symbols, as_of_date=as_of_date)
+    current = load_latest_fundamental_periods_for_symbols(session, symbols=symbols)
+    observed: dict[str, date] = {}
+    for row in session.scalars(select(CompanyFundamentalPeriod).where(
+            CompanyFundamentalPeriod.symbol.in_(symbols))).all():
+        instant = row.first_observed_at
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        observed_date = instant.astimezone(TAIPEI_TZ).date()
+        observed[row.symbol] = max(observed.get(row.symbol, observed_date), observed_date)
+    details = []
+    for symbol in sorted(set(symbols)):
+        periods = visible.get(symbol, [])
+        historical_ttm = _latest_ttm(periods)[0]
+        if historical_ttm is not None and math.isfinite(historical_ttm):
+            continue
+        current_ttm = _latest_ttm(current.get(symbol, []))[0]
+        reason = "no_eps_history" if not current.get(symbol) else "insufficient_eps_history"
+        if current_ttm is not None and math.isfinite(current_ttm):
+            reason = "historical_observation_after_run_date"
+        details.append({"symbol": symbol, "reason": reason, "as_of_date": as_of_date.isoformat(),
+            "visible_period_count": len(periods),
+            "latest_observed_date": observed[symbol].isoformat() if symbol in observed else None})
+    return details
+
+
 def fundamental_raw_pool_date_is_completed(
     session: Session,
     *,
@@ -418,7 +484,7 @@ def get_fundamental_backfill_job(
 ) -> FundamentalBackfillJob | None:
     statement = select(FundamentalBackfillJob).where(FundamentalBackfillJob.id == job_id)
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     return session.scalar(statement)
 
 
@@ -434,7 +500,7 @@ def get_oldest_running_fundamental_backfill_job(
         .limit(1)
     )
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     return session.scalar(statement)
 
 

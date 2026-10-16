@@ -17,6 +17,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
+from ai_stock_sentinel.daily_radar.data_quality import margin_evidence_is_complete
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -486,6 +487,12 @@ def _project_step_statuses(value: Any) -> dict[str, dict[str, Any]]:
             "missing_symbol_count": _list_count(details.get("missing_symbols")),
             "skipped_symbol_count": _list_count(details.get("skipped_symbols")),
         }
+        if step_name == "refresh-ai-evidence":
+            projected[str(step_name)].update({
+                "evidence_ready": details.get("evidence_ready"),
+                "missing_by_lane": details.get("missing_by_lane"),
+                "missing_evidence_details": details.get("missing_evidence_details"),
+            })
     return projected
 
 
@@ -591,13 +598,12 @@ def _analytical_completeness(raw_universe: list[dict[str, Any]]) -> dict[str, An
             _mapping(_mapping(row.get("data_dates")).get("institutional")).get("institutional_flow") or ""
         ) != str(row.get("record_date") or ""):
             missing_by_lane["institutional"].append(symbol)
-        if not (
-            margin_is_not_applicable(margin, symbol=symbol)
-            and _mapping(margin.get("eligibility")).get("evaluated_for") == str(row.get("record_date"))
-        ) and not all(
-            _finite_number(margin.get(field))
-            for field in ("margin_delta_pct", "margin_to_volume")
-        ):
+        record_date = row.get("record_date")
+        try:
+            reference_date = date.fromisoformat(str(record_date))
+        except (ValueError, TypeError):
+            reference_date = None
+        if reference_date is None or not margin_evidence_is_complete(margin, record_date=reference_date, symbol=symbol):
             missing_by_lane["margin"].append(symbol)
         if not _finite_number(fundamental.get("ttm_eps")) or str(
             _mapping(_mapping(row.get("data_dates")).get("fundamental")).get("fundamental") or ""

@@ -20,6 +20,7 @@ on:
           - refresh-ohlcv
           - refresh-managed-raw-data
           - refresh-ai-evidence
+          - finalize-ai-evidence
           - refresh-market-context
           - run-forward-validation
           - run-scoring
@@ -64,12 +65,8 @@ on:
     - cron: "0 12 * * 1-5"
     # 台灣時間週一至週五 21:30，等待 FinMind margin 21:00 更新後刷新 full margin。
     - cron: "30 13 * * 1-5"
-    # 台灣時間週一至週五 22:30，刷新 selected-symbol OHLCV。
+    # 台灣時間週一至週五 22:30，依序更新 OHLCV、managed raw、基本面與 AI evidence。
     - cron: "30 14 * * 1-5"
-    # 台灣時間週一至週五 22:40，刷新持倉與近期分析標的的 final raw data；此步驟不阻擋 scoring。
-    - cron: "40 14 * * 1-5"
-    # 台灣時間週一至週五 23:00，補齊完整 AI raw pool 的獨立分析證據。
-    - cron: "0 15 * * 1-5"
     # 台灣時間週一至週五 23:30，刷新 market context。
     - cron: "30 15 * * 1-5"
     # 台灣時間週一至週五 23:50，評估已成熟的 5 / 10 / 20 交易日窗口。
@@ -321,6 +318,7 @@ jobs:
     needs: resolve-run-context
     if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe'))
     steps:
+      - uses: actions/checkout@v4
       - name: Trigger prepare-universe
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -355,6 +353,20 @@ jobs:
           if ! jq -e '.status == "prepared"' "$response_file" >/dev/null; then
             exit 1
           fi
+
+      - name: Prewarm fundamental history for today's prepared stocks
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: python .github/scripts/prepare_daily_radar_evidence.py --mode prewarm --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-evidence"
+      - name: Preserve prewarm diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/radar-evidence/
+          retention-days: 7
 
   refresh-avwap:
     name: Refresh Daily Radar AVWAP
@@ -535,7 +547,7 @@ jobs:
     name: Refresh Daily Radar OHLCV
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv'))
+    if: needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv'
     steps:
       - name: Trigger refresh-ohlcv
         env:
@@ -578,7 +590,7 @@ jobs:
     name: Refresh managed final raw data
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '40 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-managed-raw-data'))
+    if: needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-managed-raw-data'
     steps:
       - name: Trigger refresh-managed-raw-data
         env:
@@ -621,11 +633,36 @@ jobs:
             exit 1
           fi
 
+  finalize-ai-evidence:
+    name: Prepare complete Daily Radar AI evidence in order
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: resolve-run-context
+    concurrency:
+      group: daily-radar-ai-evidence
+      cancel-in-progress: false
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'finalize-ai-evidence'))
+    steps:
+      - uses: actions/checkout@v4
+      - name: Finalize OHLCV, managed raw, fundamentals and AI evidence
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: python .github/scripts/prepare_daily_radar_evidence.py --mode finalize --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-evidence"
+      - name: Preserve evidence preparation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/radar-evidence/
+          retention-days: 7
+
   refresh-ai-evidence:
     name: Refresh complete Daily Radar AI evidence
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ai-evidence'))
+    if: needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ai-evidence'
     steps:
       - name: Trigger refresh-ai-evidence
         env:
@@ -660,6 +697,8 @@ jobs:
             "institutional_missing: \(.missing_by_lane.institutional | length)",
             "margin_missing: \(.missing_by_lane.margin | length)",
             "fundamental_missing: \(.missing_by_lane.fundamental | length)",
+            "evidence_ready: \(.evidence_ready)",
+            "missing_evidence_details: \(.missing_evidence_details | @json)",
             "errors_count: \(.errors | length)"
           ' "$response_file"
           jq -r '
@@ -962,7 +1001,7 @@ jobs:
           if [[ ! "$evidence_http_status" =~ ^2[0-9][0-9]$ ]]; then
             evidence_repair_completed=false
           else
-            jq '{status, run_date, missing_by_lane, errors}' "$evidence_response_file" || evidence_repair_completed=false
+            jq '{status, run_date, evidence_ready, missing_by_lane, missing_evidence_details, errors}' "$evidence_response_file" || evidence_repair_completed=false
             if ! jq -e --arg run_date "$run_date" '
               .status == "completed" and .run_date == $run_date and
               (.missing_by_lane | if type == "object" then
