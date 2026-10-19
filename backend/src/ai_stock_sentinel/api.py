@@ -18,6 +18,7 @@ from ai_stock_sentinel.calibration.router import router as calibration_router
 from ai_stock_sentinel.config import configure_logging
 from ai_stock_sentinel.daily_radar.router import router as daily_radar_router
 from ai_stock_sentinel.data_sources.fundamental.router import router as fundamental_router
+from ai_stock_sentinel.maintenance import MaintenanceMiddleware
 
 configure_logging()
 
@@ -76,6 +77,7 @@ async def validation_exception_handler(_request, exc: RequestValidationError):
 _cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
 _allowed_origins = [origin.strip() for origin in _cors_origins.split(",") if origin.strip()]
 
+app.add_middleware(MaintenanceMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,

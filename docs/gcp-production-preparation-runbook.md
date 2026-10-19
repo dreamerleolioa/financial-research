@@ -3,6 +3,7 @@
 本階段已獲批准建立正式資源與 CI/CD，並在測試庫演練六類資料作業。
 正式前端、GitHub 排程與 Zeabur 仍照常運作；切換及停用須另行確認。
 測試副本的先前驗收見 [測試遷移紀錄](gcp-test-migration-runbook.md)。
+後續 main CI/CD、正式入口與最終快照／回退工具見 [正式切換操作](gcp-cutover-runbook.md)；下方 CI 表格保留前一階段實際設定。
 測試專用服務、資料庫、身分、secrets、WIF 與 GitHub environment 已依使用者確認清除；
 重建方式與清除後查核也記錄在該文件。正式準備環境及共用 Cloud SQL 保留。
 

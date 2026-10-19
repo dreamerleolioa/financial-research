@@ -70,7 +70,7 @@ def test_wrong_target_or_weakened_service_is_rejected(change):
 
 @pytest.mark.parametrize('event,ref,configured,dispatch,expected', [
     ('push', 'refs/heads/main', 'refs/heads/main', False, True),
-    ('push', 'refs/heads/codex/gcp-test-migration', 'refs/heads/codex/gcp-test-migration', False, True),
+    ('push', 'refs/heads/codex/gcp-test-migration', 'refs/heads/codex/gcp-test-migration', False, False),
     ('push', 'refs/heads/main', 'refs/heads/codex/gcp-test-migration', False, False),
     ('push', 'refs/heads/other', 'refs/heads/other', False, False),
     ('push', 'refs/heads/main', '', False, False),
@@ -132,8 +132,26 @@ def test_production_deploy_checks_existing_target_and_does_not_run_migrations(tm
 args=sys.argv[1:]
 with open(os.environ['CLOUD_LOG'],'a') as f:f.write(json.dumps(args)+'\\n')
 if args[:2]==['auth','list']:print('financial-prod-deploy@financial-research-20261019.iam.gserviceaccount.com')
-elif args[:3]==['run','services','describe']:print(os.environ['SERVICE_JSON'])
+elif args[:3]==['run','services','describe']:
+ from pathlib import Path
+ state=Path(os.environ.get('CLOUD_SERVICE_STATE','/nonexistent-gcp-fixture-state'))
+ print(state.read_text() if state.exists() else os.environ['SERVICE_JSON'])
 elif args[:3]==['run','services','get-iam-policy']:print('{"bindings":[]}')
+elif args[:2]==['run','deploy'] and os.environ.get('CLOUD_SERVICE_STATE'):
+ from pathlib import Path
+ data=json.loads(os.environ['SERVICE_JSON'])
+ values={x['name']:x for x in data['spec']['template']['spec']['containers'][0]['env']}
+ # Operator enters maintenance after CI's initial preflight snapshot.
+ values['APP_MAINTENANCE_MODE']={'name':'APP_MAINTENANCE_MODE','value':'true'}
+ for option in args:
+  if option.startswith('--update-env-vars='):
+   for pair in option.split('=',1)[1].removeprefix('^|^').split('|'):
+    key,value=pair.split('=',1);values[key]={'name':key,'value':value}
+  if option.startswith('--env-vars-file='):
+   import yaml
+   values={key:{'name':key,'value':str(value)} for key,value in yaml.safe_load(Path(option.split('=',1)[1]).read_text()).items()}
+ data['spec']['template']['spec']['containers'][0]['env']=list(values.values())
+ Path(os.environ['CLOUD_SERVICE_STATE']).write_text(json.dumps(data))
 ''')
     executable.chmod(0o700)
     env = {**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
@@ -149,8 +167,19 @@ elif args[:3]==['run','services','get-iam-policy']:print('{"bindings":[]}')
     # Updating the pre-checked private service preserves IAM. The deployer
     # intentionally lacks setIamPolicy; no access-policy mutation is requested.
     assert not any('allow-unauthenticated' in value or 'invoker-iam-check' in value for value in deploy[0])
-    assert '--env-vars-file=scripts/gcp/production-env.yaml' in deploy[0]
+    updates=next(v for v in deploy[0] if v.startswith('--update-env-vars='))
+    assert 'EXPECTED_DATABASE_NAME=financial_research' in updates
+    assert 'APP_MAINTENANCE_MODE' not in updates
+    assert not any(v.startswith('--env-vars-file=') or v.startswith('--set-env-vars=') for v in deploy[0])
     assert not any(call[:2] == ['run', 'jobs'] for call in calls)
+    current['spec']['template']['spec']['containers'][0]['env'].append({'name':'APP_MAINTENANCE_MODE','value':'false'})
+    env['SERVICE_JSON']=json.dumps(current)
+    env['CLOUD_SERVICE_STATE']=str(tmp_path/'latest-service.json')
+    raced=subprocess.run(['bash',str(SCRIPTS/'deploy-production.sh'),IMAGE],cwd=ROOT,env=env,capture_output=True,text=True)
+    assert raced.returncode==0,raced.stderr
+    latest=json.loads(Path(env['CLOUD_SERVICE_STATE']).read_text())
+    assert next(x['value'] for x in latest['spec']['template']['spec']['containers'][0]['env'] if x['name']=='APP_MAINTENANCE_MODE')=='true'
+    env.pop('CLOUD_SERVICE_STATE')
     current['spec']['template']['spec']['containers'][0]['env'][0]['value'] = 'upgrade'
     env['SERVICE_JSON'] = json.dumps(current)
     log.unlink()

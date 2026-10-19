@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 import re
-import sys
 
 PROJECT = 'financial-research-20261019'
 SERVICE = 'financial-research-prod'
@@ -19,12 +18,14 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def verify(service, policy, expected_image=None):
+def verify(service, policy, expected_image=None, *, access_mode='private'):
     require(service['metadata']['name'] == SERVICE, 'Wrong production service')
+    require(access_mode in ('private', 'public'), 'Unknown production access mode')
     require(service['metadata'].get('annotations', {}).get(
-        'run.googleapis.com/invoker-iam-disabled', 'false') == 'false', 'Invoker IAM must remain enabled')
+        'run.googleapis.com/invoker-iam-disabled', 'false') ==
+        ('true' if access_mode == 'public' else 'false'), 'Unexpected Invoker IAM mode')
     require(all(not {'allUsers', 'allAuthenticatedUsers'}.intersection(binding.get('members', []))
-                for binding in policy.get('bindings', [])), 'Production preparation must remain private')
+                for binding in policy.get('bindings', [])), 'Unexpected broad IAM binding')
     template = service['spec']['template']
     require(template['spec']['serviceAccountName'] == f'financial-prod-api@{PROJECT}.iam.gserviceaccount.com', 'Wrong runtime identity')
     require(template['metadata']['annotations']['run.googleapis.com/cloudsql-instances'] ==
@@ -38,6 +39,9 @@ def verify(service, policy, expected_image=None):
     entries = container['env']
     env = {entry['name']: entry for entry in entries}
     require(len(env) == len(entries), 'Duplicate environment entries')
+    maintenance = env.get('APP_MAINTENANCE_MODE', {}).get('value')
+    require(maintenance in ('true', 'false') or (access_mode == 'private' and maintenance is None),
+            'Explicit maintenance state is required for public access')
     for name, value in {'EXPECTED_DATABASE_NAME': 'financial_research', 'DATABASE_MIGRATION_MODE': 'verify',
                         'DB_POOL_SIZE': '5', 'DB_MAX_OVERFLOW': '0'}.items():
         require(env[name].get('value') == value, f'Unsafe production configuration: {name}')
@@ -56,6 +60,32 @@ def verify(service, policy, expected_image=None):
     return url
 
 
+def env_updates():
+    # JSON is also valid YAML. Keep the gcloud baseline readable by the stdlib
+    # verifier without adding a runtime dependency or a second source of values.
+    values = json.loads(Path(__file__).with_name('production-env.yaml').read_text())
+    require('APP_MAINTENANCE_MODE' not in values, 'Maintenance state is operator managed')
+    require(not set(values).intersection(SECRET_SUFFIXES), 'Secrets must use pinned Secret Manager references')
+    require(all(re.fullmatch('[A-Z_]+', key) and isinstance(value, str)
+                and '|' not in value and '\n' not in value for key, value in values.items()),
+            'Invalid deployment environment value')
+    # A non-destructive delta deliberately never contains the maintenance key.
+    # gcloud merges it with its fresh service read, preserving resourceVersion
+    # conflict detection if an operator updates the service concurrently.
+    return '^|^' + '|'.join(key+'='+value for key, value in values.items())
+
+
 if __name__ == '__main__':
-    print(verify(json.loads(Path(sys.argv[1]).read_text()), json.loads(Path(sys.argv[2]).read_text()),
-                 sys.argv[3] if len(sys.argv) > 3 else None))
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('service', type=Path)
+    parser.add_argument('policy', type=Path)
+    parser.add_argument('image', nargs='?')
+    parser.add_argument('--access-mode', choices=('private', 'public'), default='private')
+    parser.add_argument('--write-env-updates', type=Path)
+    args = parser.parse_args()
+    service = json.loads(args.service.read_text())
+    url = verify(service, json.loads(args.policy.read_text()), args.image, access_mode=args.access_mode)
+    if args.write_env_updates:
+        args.write_env_updates.write_text(env_updates())
+    print(url)
