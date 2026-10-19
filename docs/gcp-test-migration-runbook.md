@@ -19,7 +19,7 @@ flowchart LR
     C --> D[Cloud SQL 測試庫]
     D --> E[比對資料、結構及序列]
     E --> F[私有 Cloud Run 測試後端]
-    G[GitHub 手動部署] -->|OIDC 短效憑證| H[建置並驗證固定 digest 映像]
+    G[測試分支 push 與人工核准] -->|OIDC 短效憑證| H[建置並驗證固定 digest 映像]
     H --> F
 ```
 
@@ -140,8 +140,12 @@ debug 密碼獨立安全保存，不給 API、CI 或一般前端。密碼/URL �
 ## GitHub CI/CD
 
 `.github/workflows/deploy.yml` 保留既有 backend pytest、frontend lint/E2E/build 與 Pages gate，
-增加 PG17 真實 round-trip job。GCP 部署只由 workflow_dispatch 的 `deploy_gcp_test=true` 啟動；
-等三組 checks 通過後，建置映像並用同一個 digest 再跑 PG17/實際容器啟動測試。
+增加 PG17 真實 round-trip job。`codex/gcp-test-migration` 的 push 會啟動 CI；
+等三組 checks 通過且使用者核准 `gcp-test` environment 後，才建置並部署 GCP 測試後端。
+同一分支仍可用 workflow_dispatch 的 `deploy_gcp_test=true` 啟動；main、其他分支、tag 與 PR
+都不會進入 GCP 部署。尚未把 workflow_dispatch 設定放進 default branch 時，GitHub 網頁不顯示
+Run workflow 按鈕，因此演練使用測試分支 push，不為了顯示按鈕而先合併 main。
+建置映像後用同一個 digest 再跑 PG17/實際容器啟動測試。
 服務只驗證 Alembic head（DATABASE_MIGRATION_MODE=verify），啟動時不做 DDL。
 部署後由 GitHub auth action 另行產生該服務 audience 的 ID token，再執行 smoke-test.sh。
 不使用 external-account WIF credentials 呼叫 gcloud print-identity-token --audiences；
@@ -157,7 +161,9 @@ GCP_DEPLOY_SERVICE_ACCOUNT=financial-test-deploy@financial-research-20261019.iam
 
 WIF provider 應限制 GitHub immutable repository ID/owner ID、此 repo、核准 ref 與
 `.github/workflows/deploy.yml` 的 `workflow_ref`；不能用只出現在 reusable workflows 的
-`job_workflow_ref` 冒充一般 job 的 claim。環境設保護 gate；核對實際 claims 後才綁定
+`job_workflow_ref` 冒充一般 job 的 claim。環境只允許此測試分支、由帳號擁有者核准，
+並關閉管理員略過保護規則；WIF 的 event_name 只允許 push 與 workflow_dispatch，
+仍須符合相同 repo IDs、ref、workflow_ref 與 gcp-test subject。核對實際 claims 後才綁定
 Workload Identity User 到 deploy SA。不要給整個 pool 或任意 repo impersonation。
 目前 feature branch 需要明確 push 授權；不為測試部署 push main（main 會觸發既有正式流程）。
 
