@@ -14,6 +14,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 
 
+def test_retired_cloud_test_environment_cannot_be_deployed_by_ci():
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    assert 'deploy-gcp-test' not in workflow['jobs']
+    assert 'deploy_gcp_test' not in workflow['on']['workflow_dispatch']['inputs']
+    for job in workflow['jobs'].values():
+        assert job.get('environment') != 'gcp-test'
+        for step in job.get('steps', []):
+            assert 'scripts/gcp/deploy-test.sh' not in step.get('run', '')
+            assert 'scripts/gcp/migrate-test.sh' not in step.get('run', '')
+    for required in ('test-backend', 'test-frontend', 'test-postgres-migration'):
+        assert required in workflow['jobs']
+        assert 'if' not in workflow['jobs'][required]
+
+
 def test_pages_artifact_name_is_unique_per_run_attempt() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     artifact_name = "github-pages-${{ github.run_attempt }}"
@@ -37,21 +51,23 @@ def test_pages_deployment_requires_frontend_verification_on_main_push() -> None:
 
 
 def test_gcp_deployment_waits_for_verification_and_environment_approval():
-    workflow = WORKFLOW.read_text()
-    job = workflow.split("  deploy-gcp-test:\n", 1)[1]
-    assert "needs: [test-backend, test-frontend, test-postgres-migration]" in job
-    assert "environment: gcp-test" in job
-    assert "workload_identity_provider:" in job
-    assert 'token_format: id_token' in job
-    assert 'id_token_audience: ${{ steps.deploy.outputs.service_url }}' in job
-    assert 'bash scripts/gcp/smoke-test.sh' in job
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    job = workflow['jobs']['deploy-gcp-production']
+    assert set(job['needs']) == {'test-backend', 'test-frontend', 'test-postgres-migration'}
+    assert job['environment'] == 'gcp-production'
+    token_steps = [step['with'] for step in job['steps']
+                   if step.get('with', {}).get('token_format') == 'id_token']
+    assert len(token_steps) == 1
+    assert token_steps[0]['workload_identity_provider'] == '${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}'
+    assert token_steps[0]['id_token_audience'] == '${{ steps.deploy.outputs.service_url }}'
+    assert any(step.get('run') == 'bash scripts/gcp/smoke-test.sh' for step in job['steps'])
 
 
 def _job_condition_matches(condition, *, event, ref, deploy):
     """Evaluate the actual gate's small Boolean/equality expression, without eval."""
     values = {'github.event_name': event, 'github.ref': ref,
-              'inputs.deploy_gcp_test': deploy}
-    expression = re.sub(r'github\.event_name|github\.ref|inputs\.deploy_gcp_test',
+              'inputs.deploy_gcp_production': deploy}
+    expression = re.sub(r'github\.event_name|github\.ref|inputs\.deploy_gcp_production',
                         lambda match: repr(values[match[0]]), condition)
     tree = ast.parse(expression.replace('&&', ' and ').replace('||', ' or '), mode='eval')
 
@@ -68,28 +84,27 @@ def _job_condition_matches(condition, *, event, ref, deploy):
     return bool(read(tree.body))
 
 
-@pytest.mark.parametrize(('event', 'ref', 'deploy', 'gcp_allowed', 'pages_allowed'), [
-    ('push', 'refs/heads/codex/gcp-test-migration', False, True, False),
-    ('push', 'refs/heads/main', False, False, True),
-    ('push', 'refs/heads/other', True, False, False),
-    ('push', 'refs/heads/codex/gcp-test-migration-extra', True, False, False),
-    ('push', 'refs/tags/codex/gcp-test-migration', True, False, False),
-    ('workflow_dispatch', 'refs/heads/codex/gcp-test-migration', True, True, False),
-    ('workflow_dispatch', 'refs/heads/codex/gcp-test-migration', False, False, False),
-    ('workflow_dispatch', 'refs/heads/main', True, False, False),
-    ('pull_request', 'refs/heads/codex/gcp-test-migration', True, False, False),
-    ('pull_request', 'refs/pull/123/merge', True, False, False),
-    ('schedule', 'refs/heads/codex/gcp-test-migration', True, False, False),
-    ('repository_dispatch', 'refs/heads/codex/gcp-test-migration', True, False, False),
+@pytest.mark.parametrize(('event', 'ref', 'deploy', 'pages_allowed'), [
+    ('push', 'refs/heads/codex/gcp-test-migration', False, False),
+    ('push', 'refs/heads/main', False, True),
+    ('push', 'refs/heads/other', True, False),
+    ('push', 'refs/heads/codex/gcp-test-migration-extra', True, False),
+    ('push', 'refs/tags/codex/gcp-test-migration', True, False),
+    ('workflow_dispatch', 'refs/heads/codex/gcp-test-migration', True, False),
+    ('workflow_dispatch', 'refs/heads/codex/gcp-test-migration', False, False),
+    ('workflow_dispatch', 'refs/heads/main', True, False),
+    ('pull_request', 'refs/heads/codex/gcp-test-migration', True, False),
+    ('pull_request', 'refs/pull/123/merge', True, False),
+    ('schedule', 'refs/heads/codex/gcp-test-migration', True, False),
+    ('repository_dispatch', 'refs/heads/codex/gcp-test-migration', True, False),
 ])
-def test_deployment_event_and_branch_boundaries(event, ref, deploy, gcp_allowed, pages_allowed):
-    # BaseLoader keeps the GitHub `on` key intact (YAML 1.1 treats it as a Boolean).
+def test_deployment_event_and_branch_boundaries(event, ref, deploy, pages_allowed):
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
     assert set(workflow['on']['push']['branches']) == {'main', 'codex/gcp-test-migration'}
     assert 'tags' not in workflow['on']['push']
-    jobs = workflow['jobs']
-    for name, expected in [('deploy-gcp-test', gcp_allowed), ('deploy-frontend', pages_allowed)]:
-        assert _job_condition_matches(jobs[name]['if'], event=event, ref=ref, deploy=deploy) is expected
+    assert 'deploy-gcp-test' not in workflow['jobs']
+    assert _job_condition_matches(workflow['jobs']['deploy-frontend']['if'],
+                                  event=event, ref=ref, deploy=deploy) is pages_allowed
 
 
 @pytest.fixture

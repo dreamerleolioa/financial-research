@@ -3,6 +3,8 @@
 本階段已獲批准建立正式資源與 CI/CD，並在測試庫演練六類資料作業。
 正式前端、GitHub 排程與 Zeabur 仍照常運作；切換及停用須另行確認。
 測試副本的先前驗收見 [測試遷移紀錄](gcp-test-migration-runbook.md)。
+測試專用服務、資料庫、身分、secrets、WIF 與 GitHub environment 已依使用者確認清除；
+重建方式與清除後查核也記錄在該文件。正式準備環境及共用 Cloud SQL 保留。
 
 ```mermaid
 flowchart LR
@@ -13,13 +15,13 @@ flowchart LR
     F --> G[使用者核准 gcp-production]
     G --> H[短效 WIF 建置並驗證固定映像]
     H --> D
-    I[financial_research_test] --> J[六類作業演練與診斷]
+    I[已退役測試庫的驗收紀錄] --> J[六類作業演練與診斷結果]
     D --> K[等待正式切換確認]
     J --> K
 ```
 
-箭頭表示資料或執行順序。正式準備庫與測試庫共用同一台小型 Cloud SQL，
-資料權限隔離，但 CPU、儲存與故障範圍仍共用。
+箭頭表示資料或執行順序；演練節點表示保留的歷史證據。
+演練時正式準備庫與測試庫曾共用同一台小型 Cloud SQL；測試庫已刪除，正式庫與 health 仍使用該 instance。
 
 ## 固定資源與權限
 
@@ -45,7 +47,7 @@ Repository variables：
 | `GCP_PRODUCTION_DEPLOY_SERVICE_ACCOUNT` | `financial-prod-deploy@financial-research-20261019.iam.gserviceaccount.com` |
 | `GCP_PRODUCTION_WORKLOAD_IDENTITY_PROVIDER` | `projects/918645310958/locations/global/workloadIdentityPools/github-production/providers/financial-research-production` |
 
-四個變數放 repository scope；原有通用 GCP 變數只存在 `gcp-test`，不可依賴它們供正式 job 使用。
+四個變數放 repository scope；原有通用 GCP 變數已隨 `gcp-test` 刪除，正式 job 使用獨立的上述變數。
 `deploy.yml` 的正式 job 同時檢查事件、固定允許的分支、上述 ref 變數及 `gcp-production` approval。
 環境限制 main / 測試分支，reviewer 為帳號持有人，關閉 administrator bypass。
 WIF 額外限定 repo/owner 數字 ID、相同分支、事件、workflow 路徑及 environment subject。

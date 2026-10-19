@@ -81,7 +81,7 @@ def test_wrong_target_or_weakened_service_is_rejected(change):
 def test_production_job_event_gate(event, ref, configured, dispatch, expected):
     from test_deploy_workflow import _job_condition_matches
     job = yaml.load((ROOT / '.github/workflows/deploy.yml').read_text(), Loader=yaml.BaseLoader)['jobs']['deploy-gcp-production']
-    condition = job['if'].replace('vars.GCP_PRODUCTION_DEPLOY_REF', repr(configured)).replace('inputs.deploy_gcp_production', 'inputs.deploy_gcp_test')
+    condition = job['if'].replace('vars.GCP_PRODUCTION_DEPLOY_REF', repr(configured))
     assert _job_condition_matches(condition, event=event, ref=ref, deploy=dispatch) is expected
     assert job['environment'] == 'gcp-production'
     assert set(job['needs']) == {'test-backend', 'test-frontend', 'test-postgres-migration'}

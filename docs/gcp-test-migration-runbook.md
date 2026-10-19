@@ -1,8 +1,44 @@
 # Zeabur → GCP 測試副本
 
+## 2026-10-19 測試環境已退役
+
+副本與六類作業演練完成後，使用者確認清除測試專用資源。本文件下方保留建立與驗收時的紀錄，
+不表示這些資源目前仍存在；正式準備環境見 [正式環境準備](gcp-production-preparation-runbook.md)。
+
+- 已刪除 `financial-research-test`、`financial_research_test`，以及
+  `financial_test_api`、`financial_test_migrator`、`financial_debug_readonly` 三個 DB 帳號。
+- 已刪除三個 `financial-test-*` 服務帳號、測試 IAM 綁定、七個 `financial-test-*` secrets
+  與 `financial-debug-password`，並先停用再刪除 `github-test` WIF pool。
+- 使用者完成 GitHub 重新驗證並刪除 `gcp-test` environment；其三個變數隨環境移除。
+- CI 移除測試部署 job 與 `deploy_gcp_test` input；一般後端／前端／PG17 檢查、正式部署及人工核准 gate 保留。
+  此 workflow 變更目前僅在本機，需使用者自行 push；已刪除的 WIF 與服務身分阻止舊 job 重新建立測試服務。
+- 已確認 registry 中三個測試專用 manifests 消失，正式目前與回復映像的六個 manifests 保留。
+  已移除 Cloud Shell 的測試前端、兩組排程演練目錄及 17 個具名測試檔案，先將五份驗收紀錄複製到私有稽核目錄。
+
+Cloud SQL 管理 API 因測試庫由 migrator 擁有而拒絕刪除；原工具保留停止紀錄，
+改以既有測試 migrator、現成 Cloud SQL Proxy 加密連線，在 `postgres` 確認擁有者及零連線後刪庫，
+只接續未完成步驟，沒有新增權限。最後一個映像刪除回報失敗時，唯讀清單已確認三個測試 digest 全部不存在，
+因此沒有重試刪除，依實際狀態完成核對及暫存清除。
+
+清除後重新核對正式庫 39 張表、778,889 筆資料、schema／內容摘要與 inventory；
+按表名對齊清單後全部一致，29 組 sequence 的 last_value／is_called 也一致。
+正式 revision `financial-research-prod-00002-w4r` 及固定映像保持原狀；私有 IAM、實際 health、
+應用 JWT 拒絕、歷史 Radar、CORS 接受／拒絕與 active revision 的零 ERROR 紀錄均通過唯讀驗證。
+`health-tracking`、共用 Cloud SQL／registry、原始備份、正式帳號與八個正式 secrets 均保留。
+共享 OAuth client 與 FinMind token 沒有撤銷；刪除的只是測試 secret 副本。
+
+稽核與逐步進度留在個人 Cloud Shell 的 `/home/tonyliao1994/fr-gcp-retire-test-20261019/`；
+原始來源備份的 generation `1792378239760345` 保持不變。Zeabur、正式前端與排程 endpoint 沒有切換。
+本機驗證：完整後端 1,875 passed／7 skipped；臨時清理工具 14 項安全測試通過，獨立 review 的有效問題已修正並複查。
+
+未來需要測試時，使用保留的 `scripts/gcp/`、原始快照與本文件重建：先建立隔離 DB／身分／secrets／WIF，
+設定新憑證、匯入並核對資料，再恢復專用 CI job／GitHub environment 及人工核准。
+不要直接執行下方歷史部署步驟，也不要將測試工具改指向正式庫。
+共用 Cloud SQL 仍供正式準備庫與 health 使用，不能因測試退役而刪除整個 instance。
+
 ## 範圍與切換界線
 
-目前只建立隔離測試副本及部署流程。Zeabur 仍是正式資料來源；前端
+本節記錄最初隔離測試副本及部署流程。Zeabur 仍是正式資料來源；前端
 `VITE_API_URL`、GitHub 排程使用的正式 URL/token 與 Zeabur 服務維持現況。
 正式切換、最後一次停寫快照、排程轉移與停用 Zeabur，必須在驗收後另行確認。
 
@@ -138,6 +174,8 @@ debug 密碼獨立安全保存，不給 API、CI 或一般前端。密碼/URL �
 更新 secret 後須更新部署固定版本，不能悄悄改用 latest。
 
 ## GitHub CI/CD
+
+以下為已退役測試部署的歷史設定；目前 workflow 已移除該 job 與 input。
 
 `.github/workflows/deploy.yml` 保留既有 backend pytest、frontend lint/E2E/build 與 Pages gate，
 增加 PG17 真實 round-trip job。`codex/gcp-test-migration` 的 push 會啟動 CI；
