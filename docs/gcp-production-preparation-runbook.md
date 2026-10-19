@@ -74,15 +74,38 @@ API startup 只驗證 Alembic 版本；不會自動 upgrade。
 
 本機後端完整測試 1,874 passed / 7 skipped；另以既有原生 PG17 完成正式 SQL 權限矩陣。
 完整 production diff 與演練工具均完成獨立 review；有效 findings 修正並補回歸後複審無新問題。
-遠端正式 CI 的 GitHub WIF 與 approval 路徑，仍需使用者 push 後完成實際 run。
+使用者自行 push 並核准後，[原生 CI #340](https://github.com/dreamerleolioa/financial-research/actions/runs/39212326100)
+已對 commit `632a7f9` 通過後端、前端、PG17、測試部署與正式部署；Pages 部署依分支規則跳過。
+正式 job 實際走完 WIF、固定映像 PG17 驗證、指定服務更新及 audience-specific health token。
+最終正式 revision `financial-research-prod-00002-w4r`，映像 digest
+`f09f0a4bb09b040f5c2d557a532314ec5a4f2407d0bdee96ae1bdba5cae261bd`。
+部署後再次核對該映像、正式 DB/身分/secret、IAM、100% traffic、歷史讀取、JWT/CORS 及無 ERROR log，均通過。
 
 ## 排程演練與正式切換界線
 
 六類為 fundamental-data、daily-radar、daily-radar-chip-context、active-etf-holdings、
 analysis-forward-validation、monthly-analysis-calibration，共 18 個 job。
 在個人 Cloud Shell 順序執行現有 workflow 的 shell/Python 步驟，使用私有測試服務的 IAM adapter；
-日作業指定 `2026-10-16`，月報指定 `2026-09`。兩個 chip-context payload 及回應也檢查相同日期。
+具備日期參數的 Radar / forward validation 作業指定 `2026-10-16`，月報指定 `2026-09`。
+兩個 chip-context payload 及回應也檢查相同日期；官方基本資料及 ETF registry refresh 沿用各自最新來源，不宣稱全部來源都是歷史 10/16 快照。
 這驗證實際 endpoint、provider 與原本 readiness gate；不等同六條 GitHub scheduler、runner 或 artifact upload 的原生執行。
+
+本次 18 個 job 均完成現有步驟檢查，共 319.943 秒。原始 workflow 雜湊與每個 job 的
+獨立診斷檔保存在個人 Cloud Shell 的 `fr-gcp-rehearsal-20261019/full-schedules-rehearsal/`。
+月報加密後解密，四個檔案的 manifest checksum 全部一致。
+
+| 作業 | 實際證據與限制 |
+| --- | --- |
+| 基本資料 | 官方資料寫入 3,179 筆；maintenance EPS 回補 60 筆、游標結束且無 provider errors/data gaps。游標結束不代表所有分析資料 ready，Radar pool 另有以下檢查。 |
+| Radar evidence | prewarm/finalize 日期皆為 10/16；184 檔 evidence_ready=true，technical/institutional/margin/fundamental lane 全空、errors=0、remaining_gap_count=0。 |
+| Radar forward validation | signal_close / next_open 的 as_of_date 都為 10/16；retryable_skipped_count=0，next_open remaining_retryable_window_count=0。此次新增 validated records 為 0；既有 stale_candidate_price / stock_split_in_window 歷史排除仍保留。 |
+| Radar scoring | 新 run 166、167 各為 184 universe / 100 selected / 184 saved；84 個診斷全為 prefilter_rejected。選中候選的全部來源日期皆為 10/16；原始 run 163/164 主紀錄與候選指紋未變。 |
+| 籌碼 | 日更新 200 筆、週更新 100 筆，日期皆 10/16、errors=0。 |
+| ETF | 32 檔均執行，16 更新、15 重用；31 檔有單一來源快照。00415A 尚未公布，回應維持 partial；不把來源缺值改成成功資料。 |
+| 一般分析 forward validation | 10/16、8 samples、retryable=0，此次新增 validated records 為 0。 |
+| 9 月月報 | 兩類報告及加密流程成功；Radar replay coverage=0，1,424 個 replay inputs 不完整，另有 344 個 validation_result_missing、105 個 stale_candidate_price。一般分析 replay coverage=1，但僅 4 samples。兩類歷史 cohort 均不足所需 6 個月，auto_change_eligible=false，未更新 live scoring。 |
+
+以上通過的是遷移環境的執行與資料契約；月報歷史 coverage 仍不足，不能宣稱已具備策略調參資格。
 
 每個 job 的診斷目錄獨立；失敗保留結果，逾時終止 process group，摘要標示停止且不可自動重試。
 月報用臨時金鑰演練加密及解密後 checksum，不更動正式報告密鑰。
@@ -90,5 +113,7 @@ HTTP 200、job 綠燈與 cursor 結束均不足以證明資料 ready；須另查
 
 正式切換另須安排所有 writer 暫停、最終快照與驗證，再一起協調
 `vars.VITE_API_URL`、`secrets.ZEABUR_BACKEND_URL`、`secrets.DAILY_RADAR_API_BASE_URL` 與 internal token。
+目前私有 IAM 入口只供驗收與部署；正式瀏覽器及既有排程不能只改 URL 就直接使用。
+切換方案須一併確定應用的外部入口與 internal endpoint 保護，以及排程是否需要限定的 IAM/OIDC transport；公開存取權限尚未套用。
 新 JWT key 會要求重新登入。GCP 開始寫入後，回退必須補回新資料，不能只將網址改回舊 DB。
 目前沒有執行上述切換、修改正式排程或停用 Zeabur。
