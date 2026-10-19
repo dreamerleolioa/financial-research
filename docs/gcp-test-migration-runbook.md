@@ -241,7 +241,8 @@ institutional/lending/full-margin/OHLCV/market-context 五個必要 refresh step
 原始備份與本機驗收證據位於私有暫存目錄；不將資料列、憑證或完整 API payload commit。
 臨時 OAuth/CORS 設定已恢復、前端預覽已停止；GCP 測試服務仍保持私有。
 
-下一階段需另行確認正式環境準備及切換方案。現有 GCP job 只部署測試分支；
+本節記錄測試驗收當時的界線；後續已批准的正式資源與 CI/CD 準備見
+[正式環境準備紀錄](gcp-production-preparation-runbook.md)。當時的 GCP job 只部署測試分支；
 合併 main **不會因此得到 GCP 正式後端部署流程**。必須補上正式 backend CI/CD、
 正式 DB/身分/secret 與應用入口，再協調 `vars.VITE_API_URL`、
 `secrets.ZEABUR_BACKEND_URL`、`secrets.DAILY_RADAR_API_BASE_URL` 及 internal token。

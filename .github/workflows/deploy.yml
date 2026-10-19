@@ -13,6 +13,12 @@ on:
         type: boolean
         default: false
 
+      deploy_gcp_production:
+        description: Update the private production preparation service after approval
+        required: true
+        type: boolean
+        default: false
+
 jobs:
   # ── 後端測試 ─────────────────────────────────────────────────
   test-backend:
@@ -226,6 +232,89 @@ jobs:
           GCP_TEST_SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           GCP_TEST_ID_TOKEN: ${{ steps.health-auth.outputs.id_token }}
         run: bash scripts/gcp/smoke-test.sh
+
+  deploy-gcp-production:
+    name: Deploy private GCP production backend
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend, test-postgres-migration]
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/gcp-test-migration') && github.ref == vars.GCP_PRODUCTION_DEPLOY_REF && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_gcp_production))
+    environment: gcp-production
+    concurrency:
+      group: deploy-gcp-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PRODUCTION_PROJECT_ID }}
+      GCP_REGION: asia-east1
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_PRODUCTION_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_PRODUCTION_DEPLOY_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT; do
+            test -n "${!name}" || { echo "Missing $name" >&2; exit 1; }
+          done
+          test "$GCP_PROJECT_ID" = financial-research-20261019
+          test "$GCP_DEPLOY_SERVICE_ACCOUNT" = financial-prod-deploy@financial-research-20261019.iam.gserviceaccount.com
+          test "$GCP_WORKLOAD_IDENTITY_PROVIDER" = projects/918645310958/locations/global/workloadIdentityPools/github-production/providers/financial-research-production
+      - name: Authenticate with short-lived GitHub OIDC credentials
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+      - uses: astral-sh/setup-uv@v5
+      - name: Set up Python for image verification
+        run: uv python install 3.14
+      - name: Install locked image verification dependencies
+        working-directory: backend
+        run: uv sync --locked
+      - uses: docker/setup-buildx-action@v3
+      - name: Build immutable backend image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: asia-east1-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/financial-research/backend:${{ github.sha }}
+      - name: Verify the exact image against PostgreSQL 17
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
+          docker pull "$image"
+          GCP_MIGRATION_IMAGE="$image" bash scripts/gcp/test-migration.sh
+      - name: Update pre-created private production service
+        id: deploy
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          bash scripts/gcp/deploy-production.sh "asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
+      - name: Mint audience-specific health-check token through WIF
+        id: health-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: id_token
+          id_token_audience: ${{ steps.deploy.outputs.service_url }}
+          id_token_include_email: true
+      - name: Verify private service health
+        env:
+          GCP_TEST_SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
+          GCP_TEST_ID_TOKEN: ${{ steps.health-auth.outputs.id_token }}
+        run: bash scripts/gcp/smoke-test.sh
+
 
   test-postgres-migration:
     name: PostgreSQL 17 migration rehearsal
