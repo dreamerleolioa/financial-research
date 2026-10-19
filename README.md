@@ -29,6 +29,8 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - 規格導覽與維護規則：`docs/specs/README.md`
 - 開發執行手冊：`docs/development-execution-playbook.md`
 - 後端自學導覽：`docs/backend-self-study-guide.md`
+- GCP 正式入口、main CI/CD 與最終切換／回退：[切換操作](docs/gcp-cutover-runbook.md)（正式切換另行確認）
+- GCP 測試副本驗收與重建參考：[搬遷手冊](docs/gcp-test-migration-runbook.md)（測試資源已清除，正式切換另行確認）
 
 ## 目前架構摘要
 
