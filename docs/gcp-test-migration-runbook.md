@@ -194,6 +194,59 @@ OAuth callback `http://localhost:5173/login/callback` 必須在既有 OAuth clie
 重做最終快照及驗證，再更改前端與排程 endpoint；一旦 GCP 開始寫入，
 回退不能直接改回舊庫，必須先處理 GCP 新增資料。該階段另行提出具體切換與復原方案。
 
+## 2026-10-19 實際驗收紀錄
+
+測試分支 commit `338ecbab23ae00a6af928adaa64716a92a99313b` 的
+[GitHub Actions #339](https://github.com/dreamerleolioa/financial-research/actions/runs/39197542361)
+已完成人工核准、建置、PG17 映像驗證及私有 Cloud Run 部署。
+目前驗收映像 digest 為
+`sha256:b9e3a02dbce395fc93e6dac2defaf7d8e55c0c4171b0f6cf4b06b8cee4634e34`，
+驗收後 revision 為 `financial-research-test-00004-2zf`。
+
+| 實際驗收 | 結果與界線 |
+| --- | --- |
+| 完整財務副本 | 初始 39 表、778,889 筆；資料、結構與 29 個序列符合來源清單；之後的測試寫入另外保留 |
+| health-tracking | 6 表結構、enum、extension、函式與 triggers 符合；0 筆資料 |
+| 權限與啟動 | API/debug 權限及 health 隔離檢查通過；verify-only 啟動及私有 IAM/應用驗證通過 |
+| Google 登入 | 真實登入、重新整理後 auth/me、登出與私有路由檢查通過；只經個人 Cloud Shell 私有預覽 |
+| 前端讀取與寫入 | ETF 日期/區間/股票/基金明細通過；2330.TW 分析寫入測試庫，再次讀取維持相同 cache/raw IDs 與時間 |
+| 即時行情時間 | 尚無可驗證的 quote trade date/time；使用者同意此項暫不阻擋遷移 |
+| ETF 實際更新 | 全 registry 32 檔；31 檔成功更新既有 single_source snapshot，00415A 回報 active_etf_holdings_not_published；無 parser/transport 例外 |
+| 交易日判斷 | 2026-10-16 open、2026-10-17 closed；兩者成功 |
+| Radar 完整重算 | requested/effective run_date 均為 2026-10-16；run 165 completed，184 母體、100 入選、84 正常 prefilter_rejected；實際存入 184 筆含 shadow 紀錄 |
+| Radar 讀回 | 日期 API 回傳 100 個候選，來源日期均為 2026-10-16；原 run 163/164 的業務內容摘要不變 |
+
+Radar 重算前已核對該日 prepared run：184 個 selected symbols、完整 final raw，
+institutional/lending/full-margin/OHLCV/market-context 五個必要 refresh steps 均完成。
+這次只對已準備的歷史資料重算，**沒有在 GCP 重跑完整的六條正式排程**，
+也沒有驗證 2026-10-19 的完整 Radar ingestion。
+
+重算後日期 API 的結果與原快取不同，不能宣稱業務回應完全相同。已分開驗證：
+
+- GCP 的 2026-10-16 原始 technical/institutional/fundamental 各 184 筆，
+  依 symbol 排序的內容摘要全部與原始 Zeabur 匯出檔一致。部分法人欄位在來源快取中
+  已比舊 run 的凍結輸入完整，並非搬到 GCP 才改變。
+- 原 run 164 保存的 184 份 replay_input，以相同 scoring/rule/config 版本離線重播；
+  observation_score、primary/secondary buckets、bucket_scores、risk_labels 與 matched rule codes 全部相同。
+- 舊 run 163/164 業務內容摘要分別仍為 `87af5c5594ece374ae459da11159cf37`、
+  `156539b8f74546ea7e347b976a99b8ca`。run 165 是新增的測試重算，正式庫須取最終來源快照，
+  不直接將目前測試庫升格。
+
+臨時驗收工具最初把 `errors` 非空全部視為失敗，誤將 84 個正常 prefilter exclusions
+當成執行錯誤；原失敗紀錄已保留。修正工具只接受格式正確、代碼已知且數量守恆的正常排除，
+仍拒絕 candidate_processing_error、重複 symbol、未知代碼及數量不符。
+相關臨時驗證器 17 個測試通過，並以只讀 API/SQL 補驗，沒有重跑 ETF/scoring POST。
+日期 API 未提供 run ID；其回應只作日期層級讀回，不能單憑候選數與日期歸屬到 run 165。
+
+原始備份與本機驗收證據位於私有暫存目錄；不將資料列、憑證或完整 API payload commit。
+臨時 OAuth/CORS 設定已恢復、前端預覽已停止；GCP 測試服務仍保持私有。
+
+下一階段需另行確認正式環境準備及切換方案。現有 GCP job 只部署測試分支；
+合併 main **不會因此得到 GCP 正式後端部署流程**。必須補上正式 backend CI/CD、
+正式 DB/身分/secret 與應用入口，再協調 `vars.VITE_API_URL`、
+`secrets.ZEABUR_BACKEND_URL`、`secrets.DAILY_RADAR_API_BASE_URL` 及 internal token。
+最終停寫、匯出/傳輸/還原/驗證與新 writer 啟用的順序、時間窗及回退方式，均尚未執行。
+
 ## 本機驗證
 
 ```bash
