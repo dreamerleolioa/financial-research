@@ -118,6 +118,64 @@ def test_health_endpoint() -> None:
     assert response.json() == {"status": "ok"}
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_verify_startup_never_runs_migrations(monkeypatch, fails) -> None:
+    from alembic import command
+
+    monkeypatch.setenv("DATABASE_MIGRATION_MODE", "verify")
+    upgrade = MagicMock()
+    current = MagicMock(side_effect=RuntimeError("database is behind") if fails else None)
+    monkeypatch.setattr(command, "upgrade", upgrade)
+    monkeypatch.setattr(command, "current", current)
+
+    async def start_app():
+        async with api.lifespan(api.app):
+            assert not fails
+
+    if fails:
+        with pytest.raises(RuntimeError, match="database is behind"):
+            asyncio.run(start_app())
+    else:
+        asyncio.run(start_app())
+    upgrade.assert_not_called()
+    assert current.call_args.kwargs["check_heads"] is True
+
+
+def test_invalid_migration_mode_refuses_startup(monkeypatch) -> None:
+    from alembic import command
+
+    monkeypatch.setenv("DATABASE_MIGRATION_MODE", "verfy")
+    upgrade = MagicMock()
+    monkeypatch.setattr(command, "upgrade", upgrade)
+
+    async def start_app():
+        async with api.lifespan(api.app):
+            pytest.fail("invalid mode started application")
+
+    with pytest.raises(ValueError, match="DATABASE_MIGRATION_MODE"):
+        asyncio.run(start_app())
+    upgrade.assert_not_called()
+
+
+def test_startup_checks_database_target_before_migration(monkeypatch) -> None:
+    from alembic import command
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://app:unused@localhost/zeabur")
+    monkeypatch.setenv("EXPECTED_DATABASE_NAME", "financial_research_test")
+    upgrade, current = MagicMock(), MagicMock()
+    monkeypatch.setattr(command, "upgrade", upgrade)
+    monkeypatch.setattr(command, "current", current)
+
+    async def start_app():
+        async with api.lifespan(api.app):
+            pytest.fail("application started against source database")
+
+    with pytest.raises(RuntimeError, match="EXPECTED_DATABASE_NAME"):
+        asyncio.run(start_app())
+    upgrade.assert_not_called()
+    current.assert_not_called()
+
+
 def test_legacy_fetch_raw_data_endpoint_is_not_registered() -> None:
     client = TestClient(api.app)
     response = client.post("/internal/fetch-raw-data", json={"symbol": "2330.TW"})

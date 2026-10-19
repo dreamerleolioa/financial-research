@@ -30,8 +30,18 @@ async def lifespan(app: FastAPI):
     from alembic.config import Config
 
     try:
+        if os.environ.get("EXPECTED_DATABASE_NAME"):
+            from ai_stock_sentinel.db.session import get_database_url
+
+            get_database_url()
         alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
+        mode = os.environ.get("DATABASE_MIGRATION_MODE", "upgrade")
+        if mode == "upgrade":
+            command.upgrade(alembic_cfg, "head")
+        elif mode == "verify":
+            command.current(alembic_cfg, check_heads=True)
+        else:
+            raise ValueError("DATABASE_MIGRATION_MODE must be upgrade or verify")
     except Exception:
         logging.getLogger(__name__).exception("Alembic migration failed")
         raise

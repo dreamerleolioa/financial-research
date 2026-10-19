@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_gcp_test:
+        description: Deploy the isolated GCP test service after all checks
+        required: true
+        type: boolean
+        default: false
 
 jobs:
   # ── 後端測試 ─────────────────────────────────────────────────
@@ -139,3 +146,97 @@ jobs:
         uses: actions/deploy-pages@v4
         with:
           artifact_name: github-pages-${{ github.run_attempt }}
+
+  deploy-gcp-test:
+    name: Deploy GCP test backend
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend, test-postgres-migration]
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_gcp_test
+    environment: gcp-test
+    concurrency:
+      group: deploy-gcp-test
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: asia-east1
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate test deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT; do
+            test -n "${!name}" || { echo "Missing $name" >&2; exit 1; }
+          done
+          test "$GCP_PROJECT_ID" = financial-research-20261019
+      - name: Authenticate with short-lived GitHub OIDC credentials
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+      - uses: astral-sh/setup-uv@v5
+      - name: Set up Python for image verification
+        run: uv python install 3.14
+      - name: Install locked image verification dependencies
+        working-directory: backend
+        run: uv sync --locked
+      - uses: docker/setup-buildx-action@v3
+      - name: Build immutable backend image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: asia-east1-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/financial-research/backend:${{ github.sha }}
+      - name: Verify the exact image against PostgreSQL 17
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
+          docker pull "$image"
+          GCP_MIGRATION_IMAGE="$image" bash scripts/gcp/test-migration.sh
+      - name: Deploy private test service
+        id: deploy
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          bash scripts/gcp/deploy-test.sh "asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
+      - name: Mint audience-specific health-check token through WIF
+        id: health-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: id_token
+          id_token_audience: ${{ steps.deploy.outputs.service_url }}
+          id_token_include_email: true
+      - name: Verify private service health
+        env:
+          GCP_TEST_SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
+          GCP_TEST_ID_TOKEN: ${{ steps.health-auth.outputs.id_token }}
+        run: bash scripts/gcp/smoke-test.sh
+
+  test-postgres-migration:
+    name: PostgreSQL 17 migration rehearsal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install locked backend dependencies
+        working-directory: backend
+        run: uv sync --locked
+      - name: Verify PostgreSQL 17 snapshot and restore
+        run: bash scripts/gcp/test-migration.sh
