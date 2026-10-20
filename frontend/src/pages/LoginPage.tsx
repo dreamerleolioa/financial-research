@@ -30,7 +30,7 @@ function GoogleIcon() {
 }
 
 export default function LoginPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, accessDenied } = useAuth();
   const [oauthState] = useState(createGoogleOAuthState);
 
   const login = useGoogleLogin({
@@ -48,6 +48,11 @@ export default function LoginPage() {
       title="回到你的個股研究工作區"
       description="使用 Google 帳號登入，繼續整理關注標的、持股風險與每日盤後觀察。"
     >
+      {accessDenied && (
+        <p role="alert" className="mb-4 text-sm text-red-700 dark:text-red-300">
+          此帳號尚未取得使用權限，請聯絡管理者。
+        </p>
+      )}
       <button
         type="button"
         onClick={() => {

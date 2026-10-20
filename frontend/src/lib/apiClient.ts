@@ -1,4 +1,4 @@
-import { getToken } from "./auth";
+import { AUTH_ACCESS_DENIED_EVENT, getToken } from "./auth";
 import { API_BASE_URL } from "./config";
 
 export class ApiError extends Error {
@@ -13,6 +13,15 @@ export class ApiError extends Error {
     this.detail = detail;
     this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+export function isAccountNotAllowlisted(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false;
+  const body = error.detail;
+  if (!body || typeof body !== "object" || !("detail" in body)) return false;
+  const detail = body.detail;
+  return !!detail && typeof detail === "object" && "code" in detail
+    && detail.code === "ACCOUNT_NOT_ALLOWLISTED";
 }
 
 interface ApiRequestOptions extends Omit<RequestInit, "body"> {
@@ -34,14 +43,22 @@ export function apiUrl(pathname: string, query?: ApiRequestOptions["query"]): st
 
 export async function requestJson<T>(pathname: string, options: ApiRequestOptions = {}): Promise<T> {
   const { auth = true, body, headers, query, ...init } = options;
+  const requestHeaders = new Headers(buildHeaders(headers, auth, body !== undefined));
+  const requestAuthorization = requestHeaders.get("Authorization");
   const response = await fetch(apiUrl(pathname, query), {
     ...init,
-    headers: buildHeaders(headers, auth, body !== undefined),
+    headers: requestHeaders,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw await apiErrorFromResponse(response);
+    const error = await apiErrorFromResponse(response);
+    // A late response from a previous account must not log out the current one.
+    const currentToken = getToken();
+    if (auth && currentToken && requestAuthorization === `Bearer ${currentToken}` && isAccountNotAllowlisted(error)) {
+      window.dispatchEvent(new Event(AUTH_ACCESS_DENIED_EVENT));
+    }
+    throw error;
   }
 
   if (response.status === 204) {

@@ -30,6 +30,7 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - 開發執行手冊：`docs/development-execution-playbook.md`
 - 後端自學導覽：`docs/backend-self-study-guide.md`
 - GCP 正式入口、main CI/CD、驗收與歷史補跑狀態：[切換操作](docs/gcp-cutover-runbook.md)（已切至 GCP；Zeabur 資源退役另行確認）
+- Google 帳號白名單、無須發版的名單維護與基本監測：[存取操作](docs/auth-access-runbook.md)（首次發布須先 migration、初始化名單，再部署）
 - GCP 測試副本驗收與重建參考：[搬遷手冊](docs/gcp-test-migration-runbook.md)（測試專用資源已清除）
 
 ## 目前架構摘要
