@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Refresh official snapshots or backfill managed/latest AI-pool symbols from MOPS/FinMind
+        description: Refresh official snapshots or backfill Radar and recent-analysis symbols from MOPS/FinMind
         required: true
         default: refresh
         type: choice
@@ -21,11 +21,6 @@ on:
         type: string
       backfill_job_id:
         description: Immutable job id returned with the cursor; required when resuming
-        required: false
-        default: ""
-        type: string
-      backfill_raw_pool_date:
-        description: Optional completed refresh-ai-evidence date (YYYY-MM-DD) for a new backfill job
         required: false
         default: ""
         type: string
@@ -69,29 +64,26 @@ jobs:
           fi
           jq -e '.status == "ok"' "$response_file" >/dev/null
 
-      - name: Backfill managed and latest AI-pool symbols in bounded batches
+      - name: Backfill Radar and recent-analysis symbols in bounded batches
         if: ${{ !cancelled() && steps.validate_configuration.outcome == 'success' && (github.event_name == 'schedule' || inputs.mode == 'backfill') }}
         env:
           BACKFILL_AFTER_SYMBOL: ${{ inputs.backfill_after_symbol }}
           BACKFILL_JOB_ID: ${{ inputs.backfill_job_id }}
-          BACKFILL_RAW_POOL_DATE: ${{ inputs.backfill_raw_pool_date }}
         run: |
           after_symbol="${BACKFILL_AFTER_SYMBOL}"
           job_id="${BACKFILL_JOB_ID}"
-          raw_pool_date="${BACKFILL_RAW_POOL_DATE}"
           resume_running_job=false
-          if [ -z "$job_id" ] && [ -z "$after_symbol" ] && [ -z "$raw_pool_date" ]; then
+          if [ -z "$job_id" ] && [ -z "$after_symbol" ]; then
             resume_running_job=true
           fi
           had_errors=false
           gap_count=0
           for batch in 1 2 3 4 5 6; do
-            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" --arg raw_pool_date "$raw_pool_date" --argjson resume "$resume_running_job" \
+            payload=$(jq -nc --arg after "$after_symbol" --arg job "$job_id" --argjson resume "$resume_running_job" \
               '{scope:"managed", limit:10}
               + (if $after == "" then {} else {after_symbol:$after} end)
               + (if $job == "" then {} else {job_id:$job} end)
-              + (if $job == "" and $resume then {resume_running_job:true} else {} end)
-              + (if $job != "" or $raw_pool_date == "" then {} else {raw_pool_date:$raw_pool_date} end)')
+              + (if $job == "" and $resume then {resume_running_job:true} else {} end)')
             response_file=$(mktemp)
             http_status=$(curl --silent --show-error \
               --connect-timeout 15 \

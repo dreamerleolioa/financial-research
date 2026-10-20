@@ -153,8 +153,11 @@ def test_concurrent_page_fetches_have_no_open_transaction_and_only_one_cursor_co
     with Session(pg_engine) as session:
         session.add(DailyRadarPreparedRun(run_date=day, market='TW', selected_symbols=['2330.TW', '2454.TW'],
             universe=[], symbol_count=2, step_statuses={'prepare-universe': {'status': 'completed'}}))
-        # A large older maintenance snapshot must not occupy the Radar queue.
-        service.create_fundamental_backfill_job(session, symbols=[f'{number}.TW' for number in range(1100, 1200)], raw_pool_date=date(2026, 10, 14))
+        # Retained report jobs must not enter the maintenance queue.
+        session.add(FundamentalBackfillJob(id=str(uuid4()), symbols=['3008.TW'],
+            raw_pool_date=date(2026, 10, 14), purpose='radar_ttm_eps', radar_stage='prepared'))
+        job = service.create_fundamental_backfill_job(session, symbols=['2330.TW', '2454.TW'], raw_pool_date=None)
+        job_id = job.id
         session.commit()
     barrier = Barrier(2, timeout=15)
     state = local()
@@ -164,15 +167,22 @@ def test_concurrent_page_fetches_have_no_open_transaction_and_only_one_cursor_co
             barrier.wait()
             return normalize_finmind_statement_rows([
                 {'date': d, 'type': 'EPS', 'value': 1}
-                for d in ['2025-09-30', '2025-12-31', '2026-03-31', '2026-06-30']
+                for d in ['2024-12-31', '2025-03-31', '2025-06-30', '2025-09-30', '2025-12-31', '2026-03-31', '2026-06-30']
             ], symbol=symbol)
     monkeypatch.setattr(service, 'MopsHistoricalEpsProvider', Historical)
+    class Dividends:
+        def fetch_dividend_rows(self, symbol):
+            assert not state.session.in_transaction()
+            return []
+        def fetch_statement_rows(self, symbol):
+            pytest.fail('Seven MOPS quarters already satisfy maintenance')
+    monkeypatch.setattr(service, '_bounded_fundamental_backfill_provider', Dividends)
     def worker():
         with Session(pg_engine) as session:
             state.session = session
             try:
                 return router.backfill_fundamentals_endpoint(
-                    FundamentalBackfillRequest(raw_pool_date=day, radar_stage='prepared', limit=1), db=session)
+                    FundamentalBackfillRequest(job_id=job_id, limit=1), db=session)
             except HTTPException as exc:
                 return exc.detail
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -180,6 +190,6 @@ def test_concurrent_page_fetches_have_no_open_transaction_and_only_one_cursor_co
     assert sum(result.get('status') == 'ok' for result in results) == 1, results
     assert sum(result.get('code') == 'fundamental_backfill_cursor_mismatch' for result in results) == 1, results
     with Session(pg_engine) as session:
-        jobs = session.scalars(select(FundamentalBackfillJob).where(FundamentalBackfillJob.purpose == 'radar_ttm_eps')).all()
+        jobs = session.scalars(select(FundamentalBackfillJob).where(FundamentalBackfillJob.purpose == 'maintenance')).all()
         assert len(jobs) == 1 and jobs[0].next_after_symbol == '2330.TW'
-        assert len(session.scalars(select(CompanyFundamentalPeriod)).all()) == 4
+        assert len(session.scalars(select(CompanyFundamentalPeriod)).all()) == 7

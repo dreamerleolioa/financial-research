@@ -47,7 +47,6 @@ from ai_stock_sentinel.data_sources.fundamental.service import (
     acquire_fundamental_backfill_scheduler_lock,
     backfill_fundamentals,
     create_fundamental_backfill_job,
-    fundamental_raw_pool_date_is_completed,
     get_fundamental_backfill_job,
     get_oldest_running_fundamental_backfill_job,
     refresh_official_fundamentals,
@@ -1380,111 +1379,6 @@ class _HistoricalEpsProvider:
         )
 
 
-def test_managed_backfill_symbols_include_latest_final_ai_raw_pool() -> None:
-    session, engine = _managed_symbol_db_session()
-    try:
-        user = User(google_sub="fixture", email="fixture@example.com")
-        session.add(user)
-        session.flush()
-        session.add_all(
-            [
-                UserPortfolio(
-                    user_id=user.id,
-                    symbol="2330.TW",
-                    entry_price=100,
-                    quantity=1,
-                    entry_date=date(2026, 8, 1),
-                ),
-                UserWatchlist(user_id=user.id, symbol="2454.TW"),
-                UserWatchlist(user_id=user.id, symbol="9105.TW"),
-                DailyRadarPreparedRun(
-                    run_date=date(2026, 8, 17),
-                    market="TW",
-                    selected_symbols=["3008.TW", "SPY"],
-                    universe=[],
-                    symbol_count=2,
-                    step_statuses={"refresh-ai-evidence": {"status": "completed"}},
-                ),
-                StockRawData(
-                    symbol="1304.TW",
-                    record_date=date(2026, 8, 17),
-                    technical={},
-                    raw_data_is_final=True,
-                ),
-                StockRawData(
-                    symbol="1319.TW",
-                    record_date=date(2026, 8, 16),
-                    technical={},
-                    raw_data_is_final=True,
-                ),
-                StockRawData(
-                    symbol="1440.TW",
-                    record_date=date(2026, 8, 17),
-                    technical={},
-                    raw_data_is_final=False,
-                ),
-                StockRawData(
-                    symbol="AAPL",
-                    record_date=date(2026, 8, 18),
-                    technical={},
-                    raw_data_is_final=True,
-                ),
-            ]
-        )
-        session.commit()
-
-        symbols = resolve_managed_fundamental_symbols(session)
-
-        assert symbols == ["1304.TW", "3008.TW"]
-
-        session.add(
-            StockRawData(
-                symbol="1504.TW",
-                record_date=date(2026, 8, 18),
-                technical={},
-                raw_data_is_final=True,
-            )
-        )
-        session.commit()
-
-        assert resolve_managed_fundamental_symbols(session) == [
-            "1304.TW",
-            "3008.TW",
-        ]
-        assert resolve_managed_fundamental_symbols(
-            session,
-            raw_pool_date=date(2026, 8, 17),
-        ) == ["1304.TW", "3008.TW"]
-        assert fundamental_raw_pool_date_is_completed(
-            session,
-            record_date=date(2026, 8, 17),
-        )
-        assert not fundamental_raw_pool_date_is_completed(
-            session,
-            record_date=date(2026, 8, 18),
-        )
-
-        session.add(
-            DailyRadarPreparedRun(
-                run_date=date(2026, 8, 18),
-                market="TW",
-                selected_symbols=["3008.TW"],
-                universe=[],
-                symbol_count=1,
-                step_statuses={"refresh-ai-evidence": {"status": "completed"}},
-            )
-        )
-        session.commit()
-
-        assert resolve_managed_fundamental_symbols(session) == [
-            "1504.TW",
-            "3008.TW",
-        ]
-    finally:
-        session.close()
-        engine.dispose()
-
-
 def test_finmind_backfill_limits_symbols_and_returns_cursor() -> None:
     session, engine = _db_session()
     provider = _BackfillProvider()
@@ -1841,11 +1735,8 @@ def test_fundamental_workflow_has_daily_refresh_and_scheduled_bounded_backfill()
     assert "for batch in 1 2 3 4 5 6" in text
     assert "backfill_after_symbol:" in text
     assert "backfill_job_id:" in text
-    assert "backfill_raw_pool_date:" in text
     assert 'after_symbol="${BACKFILL_AFTER_SYMBOL}"' in text
     assert 'job_id="${BACKFILL_JOB_ID}"' in text
-    assert 'raw_pool_date="${BACKFILL_RAW_POOL_DATE}"' in text
-    assert "{raw_pool_date:$raw_pool_date}" in text
     assert "BACKFILL_NEXT_AFTER_SYMBOL" in text
     assert "BACKFILL_JOB_ID" in text
     assert "data_gaps" in text
@@ -1896,18 +1787,6 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
                 return_value=refresh_result,
             ),
             patch(
-                "ai_stock_sentinel.data_sources.fundamental.router.resolve_latest_fundamental_raw_pool_date",
-                return_value=date(2026, 8, 17),
-            ),
-            patch(
-                "ai_stock_sentinel.data_sources.fundamental.router.resolve_fundamental_raw_pool_symbols",
-                return_value=["2330.TW"],
-            ),
-            patch(
-                "ai_stock_sentinel.data_sources.fundamental.router.fundamental_raw_pool_date_is_completed",
-                return_value=True,
-            ) as completed_pool,
-            patch(
                 "ai_stock_sentinel.data_sources.fundamental.router.resolve_managed_fundamental_symbols",
                 return_value=["2330.TW"],
             ),
@@ -1950,7 +1829,6 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
                 headers={"X-Internal-Token": "test-token"},
                 json={"scope": "managed", "limit": 10},
             )
-            completed_pool.return_value = False
             incomplete_pool = client.post(
                 "/internal/fundamentals/backfill",
                 headers={"X-Internal-Token": "test-token"},
@@ -1987,11 +1865,7 @@ def test_internal_fundamental_endpoints_require_auth_and_commit(monkeypatch) -> 
         assert created_job.status == "completed"
         assert backfilled.json()["job_id"]
         assert backfilled.json()["raw_pool_date"] == "2026-08-17"
-        assert incomplete_pool.status_code == 409
-        assert incomplete_pool.json()["detail"] == {
-            "code": "fundamental_backfill_raw_pool_not_completed",
-            "raw_pool_date": "2026-08-16",
-        }
+        assert incomplete_pool.status_code == 422
         assert mismatched_cursor.status_code == 409
         assert mismatched_cursor.json()["detail"] == {
             "code": "fundamental_backfill_cursor_mismatch",
@@ -2047,7 +1921,7 @@ def test_scheduled_fundamental_backfill_resumes_oldest_running_job(monkeypatch) 
             session,
             symbols=["2330.TW", "2454.TW"],
             after_symbol="2330.TW",
-            limit=10, radar_as_of_date=None, before_persist=ANY,
+            limit=10, before_persist=ANY,
         )
         resumed = get_oldest_running_fundamental_backfill_job(session)
         assert resumed is None

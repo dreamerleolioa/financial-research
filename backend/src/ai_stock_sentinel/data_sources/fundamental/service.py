@@ -3,16 +3,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, timezone
-import math
+from datetime import date
 import re
 from typing import Any
 import uuid
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.clock import today_taipei, TAIPEI_TZ
+from ai_stock_sentinel.clock import today_taipei
 from ai_stock_sentinel.daily_radar.universe import is_daily_radar_supported_symbol
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
 from ai_stock_sentinel.data_sources.fundamental.finmind_provider import FinMindFundamentalProvider
@@ -25,7 +24,6 @@ from ai_stock_sentinel.data_sources.fundamental.normalizers import (
     normalize_twse_dividend_rows,
 )
 from ai_stock_sentinel.data_sources.fundamental.official_provider import (
-    _latest_ttm,
     dividend_history_is_sufficient,
     fundamental_period_history_is_sufficient,
 )
@@ -42,7 +40,6 @@ from ai_stock_sentinel.db.models import (
     CompanyDividendEvent,
     DailyRadarPreparedRun,
     FundamentalBackfillJob,
-    StockRawData,
 )
 
 
@@ -150,7 +147,6 @@ def backfill_fundamentals(
     limit: int = 10,
     provider: FinMindFundamentalProvider | None = None,
     historical_provider: MopsHistoricalEpsProvider | None = None,
-    radar_as_of_date: date | None = None,
     before_persist: Callable[[], None] | None = None,
 ) -> FundamentalBackfillResult:
     bounded_limit = max(1, min(limit, 10))
@@ -166,11 +162,10 @@ def backfill_fundamentals(
         period_snapshots[row.symbol].append(CompanyFundamentalPeriod(**{
             column.key: getattr(row, column.key) for column in CompanyFundamentalPeriod.__table__.columns}))
     dividend_snapshots = {symbol: [] for symbol in selected}
-    if radar_as_of_date is None:
-        for symbol, events in load_latest_dividend_events_for_symbols(session, symbols=selected).items():
-            dividend_snapshots[symbol] = [CompanyDividendEvent(**{
-                column.key: getattr(row, column.key) for column in CompanyDividendEvent.__table__.columns
-            }) for row in events]
+    for symbol, events in load_latest_dividend_events_for_symbols(session, symbols=selected).items():
+        dividend_snapshots[symbol] = [CompanyDividendEvent(**{
+            column.key: getattr(row, column.key) for column in CompanyDividendEvent.__table__.columns
+        }) for row in events]
     if before_persist is not None:
         session.rollback()
 
@@ -186,14 +181,11 @@ def backfill_fundamentals(
     pending_dividends = []
 
     def sufficient(periods):
-        ttm = _latest_ttm(periods)[0]
-        if radar_as_of_date is not None:
-            return ttm is not None and math.isfinite(ttm)
         return fundamental_period_history_is_sufficient(periods)
 
     for symbol in selected:
         additions = []
-        periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=radar_as_of_date)
+        periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=None)
         if not sufficient(periods):
             failures = []
             attempted = []
@@ -202,7 +194,7 @@ def backfill_fundamentals(
                 provider_attempts["mops_historical"] += 1
                 try:
                     additions.extend(historical.fetch_periods(symbol))
-                    periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=radar_as_of_date)
+                    periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=None)
                 except Exception as exc:
                     failures.append(f"MOPS failed: {exc}")
             if not sufficient(periods):
@@ -218,7 +210,7 @@ def backfill_fundamentals(
                     ):
                         raise ValueError("FinMind statement response contains invalid EPS rows")
                     additions.extend(normalized)
-                    periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=radar_as_of_date)
+                    periods = preview_fundamental_periods(period_snapshots[symbol], additions, as_of_date=None)
                 except Exception as exc:
                     failures.append(f"FinMind failed: {exc}")
             if not sufficient(periods):
@@ -229,14 +221,13 @@ def backfill_fundamentals(
                     data_gaps.append({"symbol": symbol, "reason": "insufficient_eps_history" if periods else "no_eps_history",
                         "period_count": len(periods)})
         pending_periods.append((symbol, additions))
-        if radar_as_of_date is None:
-            dividends = dividend_snapshots[symbol]
-            if not dividend_history_is_sufficient(dividends):
-                provider_attempts["finmind_dividend"] += 1
-                try:
-                    pending_dividends.append((symbol, normalize_finmind_dividend_rows(fallback.fetch_dividend_rows(symbol), symbol=symbol)))
-                except Exception as exc:
-                    errors.append(f"{symbol}: dividend backfill failed: {exc}")
+        dividends = dividend_snapshots[symbol]
+        if not dividend_history_is_sufficient(dividends):
+            provider_attempts["finmind_dividend"] += 1
+            try:
+                pending_dividends.append((symbol, normalize_finmind_dividend_rows(fallback.fetch_dividend_rows(symbol), symbol=symbol)))
+            except Exception as exc:
+                errors.append(f"{symbol}: dividend backfill failed: {exc}")
 
     if before_persist is not None:
         before_persist()
@@ -273,153 +264,20 @@ def _bounded_fundamental_backfill_provider() -> FinMindFundamentalProvider:
     )
 
 
-def resolve_latest_fundamental_raw_pool_date(session: Session) -> date | None:
-    prepared_runs = session.scalars(
-        select(DailyRadarPreparedRun).order_by(
-            DailyRadarPreparedRun.run_date.desc(),
-            DailyRadarPreparedRun.id.desc(),
-        )
-    ).all()
-    for prepared in prepared_runs:
-        ai_evidence = dict(prepared.step_statuses or {}).get("refresh-ai-evidence") or {}
-        if ai_evidence.get("status") == "completed":
-            return prepared.run_date
-    return None
+def resolve_managed_fundamental_symbols(session: Session) -> list[str]:
+    """Select current Radar and recent general-analysis targets without an AI pool."""
+    from ai_stock_sentinel.daily_radar.managed_raw_data import select_managed_raw_data_symbols
 
-
-def resolve_radar_fundamental_symbols(
-    session: Session, *, run_date: date, stage: str,
-) -> list[str]:
-    """Prepare today's evidence without depending on completed AI materialization."""
-    if run_date > today_taipei():
-        raise ValueError("radar_fundamental_date_closed")
+    reference_date = today_taipei()
     prepared = session.scalar(select(DailyRadarPreparedRun).where(
-        DailyRadarPreparedRun.run_date == run_date, DailyRadarPreparedRun.market == "TW"))
-    if prepared is None:
-        raise ValueError("radar_prepared_run_not_found")
-    steps = prepared.step_statuses or {}
-    if (steps.get("prepare-universe") or {}).get("status") != "completed":
-        raise ValueError("radar_prepared_universe_not_ready")
-    if stage == "prepared":
-        symbols = prepared.selected_symbols or []
-    elif stage == "raw_pool":
-        if any((steps.get(step) or {}).get("status") != "completed"
-               for step in ("refresh-ohlcv", "refresh-managed-raw-data")):
-            raise ValueError("radar_raw_pool_not_ready")
-        symbols = resolve_fundamental_raw_pool_symbols(session, record_date=run_date)
-    else:
-        raise ValueError("invalid_radar_fundamental_stage")
-    supported = sorted({str(symbol).strip().upper() for symbol in symbols
+        DailyRadarPreparedRun.market == "TW",
+        DailyRadarPreparedRun.run_date <= reference_date,
+    ).order_by(DailyRadarPreparedRun.run_date.desc(), DailyRadarPreparedRun.id.desc()).limit(1))
+    symbols = {str(symbol) for symbol in (prepared.selected_symbols or [])} if prepared is not None else set()
+    symbols.update(select_managed_raw_data_symbols(session, run_date=reference_date).recent_analysis_symbols)
+    return sorted(symbol.strip().upper() for symbol in symbols
         if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
-        and is_daily_radar_supported_symbol(str(symbol).strip().upper())})
-    if not supported:
-        raise ValueError("radar_fundamental_pool_empty")
-    return supported
-
-
-def describe_fundamental_gaps(
-    session: Session, *, symbols: Sequence[str], as_of_date: date,
-) -> list[dict[str, Any]]:
-    """Describe cache coverage; never use late observations as historical values."""
-    if not symbols:
-        return []
-    visible = load_latest_fundamental_periods_for_symbols(session, symbols=symbols, as_of_date=as_of_date)
-    current = load_latest_fundamental_periods_for_symbols(session, symbols=symbols)
-    observed: dict[str, date] = {}
-    for row in session.scalars(select(CompanyFundamentalPeriod).where(
-            CompanyFundamentalPeriod.symbol.in_(symbols))).all():
-        instant = row.first_observed_at
-        if instant.tzinfo is None:
-            instant = instant.replace(tzinfo=timezone.utc)
-        observed_date = instant.astimezone(TAIPEI_TZ).date()
-        observed[row.symbol] = max(observed.get(row.symbol, observed_date), observed_date)
-    details = []
-    for symbol in sorted(set(symbols)):
-        periods = visible.get(symbol, [])
-        historical_ttm = _latest_ttm(periods)[0]
-        if historical_ttm is not None and math.isfinite(historical_ttm):
-            continue
-        current_ttm = _latest_ttm(current.get(symbol, []))[0]
-        reason = "no_eps_history" if not current.get(symbol) else "insufficient_eps_history"
-        if current_ttm is not None and math.isfinite(current_ttm):
-            reason = "historical_observation_after_run_date"
-        details.append({"symbol": symbol, "reason": reason, "as_of_date": as_of_date.isoformat(),
-            "visible_period_count": len(periods),
-            "latest_observed_date": observed[symbol].isoformat() if symbol in observed else None})
-    return details
-
-
-def fundamental_raw_pool_date_is_completed(
-    session: Session,
-    *,
-    record_date: date,
-) -> bool:
-    prepared_runs = session.scalars(
-        select(DailyRadarPreparedRun).where(
-            DailyRadarPreparedRun.run_date == record_date,
-        )
-    ).all()
-    return any(
-        (dict(prepared.step_statuses or {}).get("refresh-ai-evidence") or {}).get(
-            "status"
-        )
-        == "completed"
-        for prepared in prepared_runs
-    )
-
-
-def resolve_fundamental_raw_pool_symbols(
-    session: Session,
-    *,
-    record_date: date,
-) -> list[str]:
-    supported_raw_symbol = or_(
-        StockRawData.symbol.like("%.TW"),
-        StockRawData.symbol.like("%.TWO"),
-    )
-    return list(
-        session.scalars(
-            select(StockRawData.symbol).where(
-                StockRawData.record_date == record_date,
-                StockRawData.raw_data_is_final.is_(True),
-                supported_raw_symbol,
-            )
-        ).all()
-    )
-
-
-def resolve_managed_fundamental_symbols(
-    session: Session,
-    *,
-    raw_pool_date: date | None = None,
-) -> list[str]:
-    symbols: set[str] = set()
-    prepared = session.scalars(
-        select(DailyRadarPreparedRun).order_by(
-            DailyRadarPreparedRun.run_date.desc(),
-            DailyRadarPreparedRun.id.desc(),
-        ).limit(1)
-    ).first()
-    if prepared is not None:
-        symbols.update(str(symbol) for symbol in prepared.selected_symbols)
-    effective_raw_pool_date = (
-        raw_pool_date
-        if raw_pool_date is not None
-        else resolve_latest_fundamental_raw_pool_date(session)
-    )
-    if effective_raw_pool_date is not None:
-        symbols.update(
-            resolve_fundamental_raw_pool_symbols(
-                session,
-                record_date=effective_raw_pool_date,
-            )
-        )
-    return sorted(
-        symbol.strip().upper()
-        for symbol in symbols
-        if re.fullmatch(r"[1-9]\d{3}\.(?:TW|TWO)", str(symbol).strip().upper())
-        and is_daily_radar_supported_symbol(symbol)
-    )
+        and is_daily_radar_supported_symbol(str(symbol).strip().upper()))
 
 
 def resolve_pending_fundamental_backfill_symbols(
@@ -460,14 +318,10 @@ def create_fundamental_backfill_job(
     *,
     symbols: Sequence[str],
     raw_pool_date: date | None,
-    purpose: str = "maintenance",
-    radar_stage: str | None = None,
 ) -> FundamentalBackfillJob:
     job = FundamentalBackfillJob(
         id=str(uuid.uuid4()),
         raw_pool_date=raw_pool_date,
-        purpose=purpose,
-        radar_stage=radar_stage,
         symbols=list(symbols),
         next_after_symbol=None,
         status="running",
@@ -493,19 +347,13 @@ def get_oldest_running_fundamental_backfill_job(
     session: Session,
     *,
     for_update: bool = False,
-    purpose: str = "maintenance",
-    raw_pool_date: date | None = None,
-    radar_stage: str | None = None,
 ) -> FundamentalBackfillJob | None:
     statement = (
         select(FundamentalBackfillJob)
-        .where(FundamentalBackfillJob.status == "running", FundamentalBackfillJob.purpose == purpose)
+        .where(FundamentalBackfillJob.status == "running", FundamentalBackfillJob.purpose == "maintenance")
         .order_by(FundamentalBackfillJob.created_at.asc(), FundamentalBackfillJob.id.asc())
         .limit(1)
     )
-    if purpose == "radar_ttm_eps":
-        statement = statement.where(FundamentalBackfillJob.raw_pool_date == raw_pool_date,
-            FundamentalBackfillJob.radar_stage == radar_stage)
     if for_update:
         statement = statement.with_for_update().execution_options(populate_existing=True)
     return session.scalar(statement)
@@ -631,12 +479,9 @@ __all__ = [
     "backfill_fundamentals",
     "acquire_fundamental_backfill_scheduler_lock",
     "create_fundamental_backfill_job",
-    "fundamental_raw_pool_date_is_completed",
     "get_fundamental_backfill_job",
     "get_oldest_running_fundamental_backfill_job",
     "refresh_official_fundamentals",
-    "resolve_fundamental_raw_pool_symbols",
-    "resolve_latest_fundamental_raw_pool_date",
     "resolve_managed_fundamental_symbols",
     "resolve_pending_fundamental_backfill_symbols",
 ]

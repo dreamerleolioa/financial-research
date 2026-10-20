@@ -19,8 +19,7 @@ on:
           - refresh-full-margin
           - refresh-ohlcv
           - refresh-managed-raw-data
-          - refresh-ai-evidence
-          - finalize-ai-evidence
+          - refresh-raw-data
           - refresh-market-context
           - run-forward-validation
           - run-scoring
@@ -65,7 +64,7 @@ on:
     - cron: "0 12 * * 1-5"
     # 台灣時間週一至週五 21:30，等待 FinMind margin 21:00 更新後刷新 full margin。
     - cron: "30 13 * * 1-5"
-    # 台灣時間週一至週五 22:30，依序更新 OHLCV、managed raw、基本面與 AI evidence。
+    # 台灣時間週一至週五 22:30，依序更新 OHLCV 與近期分析標的的 managed raw data。
     - cron: "30 14 * * 1-5"
     # 台灣時間週一至週五 23:30，刷新 market context。
     - cron: "30 15 * * 1-5"
@@ -354,19 +353,6 @@ jobs:
             exit 1
           fi
 
-      - name: Prewarm fundamental history for today's prepared stocks
-        env:
-          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
-          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
-          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
-        run: python .github/scripts/prepare_daily_radar_evidence.py --mode prewarm --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-evidence"
-      - name: Preserve prewarm diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: radar-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/radar-evidence/
-          retention-days: 7
 
   refresh-avwap:
     name: Refresh Daily Radar AVWAP
@@ -633,108 +619,30 @@ jobs:
             exit 1
           fi
 
-  finalize-ai-evidence:
-    name: Prepare complete Daily Radar AI evidence in order
+  refresh-raw-data:
+    name: Refresh Daily Radar and recent-analysis raw data in order
     runs-on: ubuntu-latest
     timeout-minutes: 35
     needs: resolve-run-context
     concurrency:
-      group: daily-radar-ai-evidence
+      group: daily-radar-raw-data
       cancel-in-progress: false
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'finalize-ai-evidence'))
+    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-raw-data'))
     steps:
       - uses: actions/checkout@v4
-      - name: Finalize OHLCV, managed raw, fundamentals and AI evidence
+      - name: Refresh OHLCV and managed raw data
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
-        run: python .github/scripts/prepare_daily_radar_evidence.py --mode finalize --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-evidence"
-      - name: Preserve evidence preparation diagnostics
+        run: python .github/scripts/refresh_daily_radar_raw_data.py --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-raw-data"
+      - name: Preserve raw-data refresh diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: radar-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/radar-evidence/
+          name: radar-raw-data-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/radar-raw-data/
           retention-days: 7
-
-  refresh-ai-evidence:
-    name: Refresh complete Daily Radar AI evidence
-    runs-on: ubuntu-latest
-    needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ai-evidence'
-    steps:
-      - name: Trigger refresh-ai-evidence
-        env:
-          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
-          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
-          DAILY_RADAR_ENDPOINT: /internal/daily-radar/refresh-ai-evidence
-          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
-        run: |
-          set -euo pipefail
-          endpoint="${ZEABUR_BACKEND_URL%/}${DAILY_RADAR_ENDPOINT}"
-          response_file="$(mktemp)"
-          run_date="${DAILY_RADAR_RUN_DATE}"
-          daily_radar_payload="{\"market\":\"TW\",\"run_date\":\"${run_date}\"}"
-          echo "Daily Radar refresh-ai-evidence run_date: ${run_date}"
-          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
-            -X POST "$endpoint" \
-            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "${daily_radar_payload}")"
-          echo "HTTP status: ${http_status}"
-          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
-            cat "$response_file"
-            exit 1
-          fi
-          jq -r '
-            "status: \(.status // "n/a")",
-            "step: \(.step // "n/a")",
-            "run_date: \(.run_date // "n/a")",
-            "symbol_count: \(.symbol_count // "n/a")",
-            "selected_symbol_count: \(.selected_symbol_count // "n/a")",
-            "technical_missing: \(.missing_by_lane.technical | length)",
-            "institutional_missing: \(.missing_by_lane.institutional | length)",
-            "margin_missing: \(.missing_by_lane.margin | length)",
-            "fundamental_missing: \(.missing_by_lane.fundamental | length)",
-            "evidence_ready: \(.evidence_ready)",
-            "missing_evidence_details: \(.missing_evidence_details | @json)",
-            "errors_count: \(.errors | length)"
-          ' "$response_file"
-          jq -r '
-            .errors[]?
-            | {
-                code: .code,
-                lane: .lane,
-                symbol: .symbol,
-                market: .market,
-                query_date: .query_date,
-                error_type: .error_type,
-                market_day_count: .market_day_count,
-                required_market_day_count: .required_market_day_count
-              }
-            | with_entries(select(.value != null))
-            | "error: \(. | @json)"
-          ' "$response_file"
-          if ! jq -e -s --arg run_date "$run_date" '
-            length == 1 and (
-              .[0]
-              | type == "object"
-                and .status == "completed"
-                and .step == "refresh-ai-evidence"
-                and .run_date == $run_date
-                and .evidence_ready == true
-                and .errors == []
-                and (.missing_by_lane
-                  | type == "object"
-                    and has("technical") and has("institutional")
-                    and has("margin") and has("fundamental")
-                    and all(.[]; type == "array" and length == 0))
-            )
-          ' "$response_file" >/dev/null; then
-            echo "AI evidence is incomplete or invalid; refusing to report readiness." >&2
-            exit 1
-          fi
 
   refresh-market-context:
     name: Refresh Daily Radar market context
@@ -1008,32 +916,10 @@ jobs:
               managed_repair_completed=false
             fi
           fi
-          evidence_repair_completed=true
-          evidence_response_file="$(mktemp)"
-          evidence_http_status="$(curl -sS -o "$evidence_response_file" -w "%{http_code}" \
-            -X POST "${ZEABUR_BACKEND_URL%/}/internal/daily-radar/refresh-ai-evidence" \
-            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
-            -H "Content-Type: application/json" --data "$daily_radar_payload")" || evidence_http_status=000
-          if [[ ! "$evidence_http_status" =~ ^2[0-9][0-9]$ ]]; then
-            evidence_repair_completed=false
-          else
-            jq '{status, run_date, evidence_ready, missing_by_lane, missing_evidence_details, errors}' "$evidence_response_file" || evidence_repair_completed=false
-            if ! jq -e --arg run_date "$run_date" '
-              .status == "completed" and .run_date == $run_date and
-              (.missing_by_lane | if type == "object" then
-                has("technical") and has("institutional") and
-                has("margin") and has("fundamental") and
-                all(.[]; type == "array" and length == 0)
-              else false end)
-            ' "$evidence_response_file" >/dev/null; then
-              echo "AI evidence recovery incomplete: required evidence lanes are missing or invalid."
-              evidence_repair_completed=false
-            fi
-          fi
           validation_repair_completed=true
           python .github/scripts/run_daily_radar_validation.py --run-date "$run_date" --output-dir "$RUNNER_TEMP/radar-validation" || validation_repair_completed=false
-          if [[ "$evidence_repair_completed" != "true" || "$validation_repair_completed" != "true" ]]; then
-            echo "AI evidence or validation recovery incomplete; retain diagnostics and fail repair monitor."
+          if [[ "$validation_repair_completed" != "true" ]]; then
+            echo "Validation recovery incomplete; retain diagnostics and fail repair monitor."
             exit 1
           fi
           if [[ "$scoring_repair_completed" != "true" ]]; then

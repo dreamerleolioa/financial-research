@@ -15,15 +15,12 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalData
+
 from ai_stock_sentinel import api
 from ai_stock_sentinel.daily_radar import dependencies, pipeline_support, run_router
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
-from ai_stock_sentinel.daily_radar.institutional_evidence import (
-    InstitutionalEvidenceResult,
-    OfficialInstitutionalEvidenceProvider,
-    cached_daily_rows_from_raw_rows,
-)
 from ai_stock_sentinel.daily_radar.institutional_archive_universe import (
     ArchivedInstitutionalUniverseProvider,
 )
@@ -65,7 +62,6 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.db.session import Base, get_db
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
-from ai_stock_sentinel.data_sources.fundamental.interface import FundamentalData
 
 
 @compiles(JSONB, "sqlite")
@@ -387,27 +383,6 @@ class BaselineZeroBackgroundChipContextProvider(FakeBackgroundChipContextProvide
         return payloads
 
 
-class FakeInstitutionalEvidenceProvider:
-    def __init__(self) -> None:
-        self.calls: list[tuple[list[str], date]] = []
-
-    def fetch(self, symbols: list[str], *, run_date: date) -> InstitutionalEvidenceResult:
-        self.calls.append((list(symbols), run_date))
-        payloads: dict[str, dict[str, Any]] = {}
-        for symbol in symbols:
-            flat = {
-                "foreign_net_shares": 1000.0,
-                "investment_trust_net_shares": 200.0,
-                "three_party_net_shares": 1300.0,
-                "consecutive_positive_days": 2,
-                "flow_state": "consistent_accumulation",
-                "data_dates": {"institutional_flow": run_date.isoformat()},
-                "source_provider": "official_fixture",
-            }
-            payloads[symbol] = flat | {"institutional_flow": dict(flat)}
-        return InstitutionalEvidenceResult(payloads_by_symbol=payloads)
-
-
 class FakeInstitutionalFlowProvider:
     def __init__(
         self,
@@ -443,61 +418,6 @@ class FakeInstitutionalFlowProvider:
                     total_net_shares=1300,
                 ),
             ),
-        )
-
-
-class RaisingInstitutionalEvidenceProvider(FakeInstitutionalEvidenceProvider):
-    def fetch(self, symbols: list[str], *, run_date: date) -> InstitutionalEvidenceResult:
-        self.calls.append((list(symbols), run_date))
-        raise TypeError("'NoneType' object is not iterable")
-
-
-class FakeFundamentalProvider:
-    name = "FakeFundamentalProvider"
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, float]] = []
-
-    def fetch(self, symbol: str, current_price: float) -> FundamentalData:
-        self.calls.append((symbol, current_price))
-        return FundamentalData(
-            symbol=symbol,
-            ttm_eps=10.0,
-            pe_current=current_price / 10.0,
-            pe_mean=15.0,
-            pe_std=2.0,
-            pe_band="fair",
-            pe_percentile=55.0,
-            annual_cash_dividend=4.0,
-            dividend_yield=4.0,
-            yield_signal="mid_yield",
-            source_provider="official_fixture",
-        )
-
-    def fetch_as_of(
-        self,
-        symbol: str,
-        current_price: float,
-        *,
-        as_of_date: date,
-    ) -> FundamentalData:
-        assert as_of_date == date(2026, 6, 1)
-        return self.fetch(symbol, current_price)
-
-
-class MissingPointInTimeFundamentalProvider(FakeFundamentalProvider):
-    def fetch_as_of(
-        self,
-        symbol: str,
-        current_price: float,
-        *,
-        as_of_date: date,
-    ) -> FundamentalData:
-        self.calls.append((symbol, current_price))
-        return FundamentalData(
-            symbol=symbol,
-            source_provider="official_fixture",
-            warnings=[f"missing as of {as_of_date.isoformat()}"],
         )
 
 
@@ -542,9 +462,7 @@ def _clear_daily_radar_api_overrides() -> None:
         dependencies.get_daily_radar_market_context_provider,
         dependencies.get_daily_radar_market_session_provider,
         dependencies.get_daily_radar_background_chip_context_provider,
-        dependencies.get_daily_radar_institutional_evidence_provider,
         dependencies.get_taiwan_institutional_report_provider,
-        dependencies.get_daily_radar_fundamental_provider,
         dependencies.get_phase1_avwap_daily_price_provider,
         get_daily_radar_symbol_name_resolver,
     ):
@@ -561,14 +479,7 @@ def _api_client(
     market_context_provider: FakeMarketIndexContextProvider | None = None,
     market_session_provider: FakeMarketSessionProvider | RaisingMarketSessionProvider | None = None,
     background_context_provider: FakeBackgroundChipContextProvider | RaisingBackgroundChipContextProvider | None = None,
-    institutional_evidence_provider: (
-        FakeInstitutionalEvidenceProvider
-        | RaisingInstitutionalEvidenceProvider
-        | OfficialInstitutionalEvidenceProvider
-        | None
-    ) = None,
     institutional_flow_provider: FakeInstitutionalFlowProvider | None = None,
-    fundamental_provider: FakeFundamentalProvider | None = None,
     phase1_avwap_provider: (
         FakePhase1AvwapDailyPriceProvider
         | RaisingPhase1AvwapDailyPriceProvider
@@ -586,9 +497,7 @@ def _api_client(
     context_provider = market_context_provider or FakeMarketIndexContextProvider()
     session_provider = market_session_provider or FakeMarketSessionProvider()
     chip_context_provider = background_context_provider or FakeBackgroundChipContextProvider()
-    institutional_provider = institutional_evidence_provider or FakeInstitutionalEvidenceProvider()
     institutional_archive_provider = institutional_flow_provider or FakeInstitutionalFlowProvider()
-    business_provider = fundamental_provider or FakeFundamentalProvider()
     phase1_provider = phase1_avwap_provider or FakePhase1AvwapDailyPriceProvider()
 
     def fake_run_daily_radar(run_date: date, market: str, **kwargs: Any) -> SimpleNamespace:
@@ -615,12 +524,8 @@ def _api_client(
         dependencies.get_daily_radar_background_chip_context_provider
     ] = lambda: chip_context_provider
     api.app.dependency_overrides[
-        dependencies.get_daily_radar_institutional_evidence_provider
-    ] = lambda: institutional_provider
-    api.app.dependency_overrides[
         dependencies.get_taiwan_institutional_report_provider
     ] = lambda: institutional_archive_provider
-    api.app.dependency_overrides[dependencies.get_daily_radar_fundamental_provider] = lambda: business_provider
     api.app.dependency_overrides[dependencies.get_phase1_avwap_daily_price_provider] = lambda: phase1_provider
     client = TestClient(api.app, raise_server_exceptions=raise_server_exceptions)
     client.captured_daily_radar_call = captured  # type: ignore[attr-defined]
@@ -629,9 +534,7 @@ def _api_client(
     client.fake_market_context_provider = context_provider  # type: ignore[attr-defined]
     client.fake_market_session_provider = session_provider  # type: ignore[attr-defined]
     client.fake_background_context_provider = chip_context_provider  # type: ignore[attr-defined]
-    client.fake_institutional_evidence_provider = institutional_provider  # type: ignore[attr-defined]
     client.fake_institutional_flow_provider = institutional_archive_provider  # type: ignore[attr-defined]
-    client.fake_fundamental_provider = business_provider  # type: ignore[attr-defined]
     client.fake_phase1_avwap_provider = phase1_provider  # type: ignore[attr-defined]
     return client
 
@@ -2607,18 +2510,9 @@ def test_daily_radar_repair_workflow_refreshes_ohlcv_before_avwap_scoring_and_ma
 
 
 @pytest.mark.parametrize('failed_step,failure_kind', [
-    ('', ''), ('', 'extra_lane_empty'), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
+    ('', ''), ('refresh-full-margin', 'payload'), ('refresh-ohlcv', 'payload'),
     ('refresh-avwap', 'http'), ('run-scoring', 'http'),
     ('refresh-ohlcv', 'transport'), ('refresh-managed-raw-data', 'payload'),
-    ('refresh-ai-evidence', 'payload'), ('refresh-ai-evidence', 'http'),
-    ('refresh-ai-evidence', 'malformed'),
-    *[('refresh-ai-evidence', f'missing_{lane}')
-      for lane in ('technical', 'institutional', 'margin', 'fundamental')],
-    *[('refresh-ai-evidence', shape) for shape in (
-        'lanes_absent', 'lanes_null', 'lanes_empty_object', 'lanes_array',
-        'lane_null', 'lane_string', 'lane_object', 'wrong_run_date',
-        'extra_lane_missing', 'extra_lane_invalid',
-    )],
     ('validation', 'payload'),
 ])
 def test_repair_shell_recovers_independent_steps_and_preserves_failure(
@@ -2630,39 +2524,8 @@ def test_repair_shell_recovers_independent_steps_and_preserves_failure(
     import textwrap
     from types import SimpleNamespace
     import yaml
-    from ai_stock_sentinel.daily_radar.pipeline_support import _ai_evidence_missing_by_lane
-
     workflow = yaml.safe_load((Path(__file__).parents[2] / '.github/workflows/daily-radar.yml').read_text())
     script = next(step['run'] for step in workflow['jobs']['repair-avwap-and-rescore']['steps'] if 'run' in step)
-    lanes = {lane: [] for lane in ('technical', 'institutional', 'margin', 'fundamental')}
-    evidence_extra = {'missing_by_lane': lanes, 'errors': []}
-    if failure_kind.startswith('missing_'):
-        lane = failure_kind.removeprefix('missing_')
-        if lane == 'institutional':
-            short_history = SimpleNamespace(symbol='2330.TW', record_date=date(2026, 9, 15),
-                technical={}, fundamental={}, institutional={
-                    'history_coverage': {'status': 'insufficient_history'},
-                    'foreign_net_shares': 100, 'investment_trust_net_shares': 200,
-                    'three_party_net_shares': 300,
-                    'data_dates': {'institutional_flow': '2026-09-15'}})
-            lanes[lane] = _ai_evidence_missing_by_lane([short_history])[lane]
-            assert lanes[lane] == ['2330.TW']
-        else:
-            lanes[lane] = ['2330.TW']
-    elif failure_kind == 'lanes_absent':
-        evidence_extra.pop('missing_by_lane')
-    elif failure_kind in ('lanes_null', 'lanes_empty_object', 'lanes_array'):
-        evidence_extra['missing_by_lane'] = {
-            'lanes_null': None, 'lanes_empty_object': {}, 'lanes_array': [],
-        }[failure_kind]
-    elif failure_kind in ('lane_null', 'lane_string', 'lane_object'):
-        lanes['institutional'] = {'lane_null': None, 'lane_string': '', 'lane_object': {}}[failure_kind]
-    elif failure_kind == 'wrong_run_date':
-        evidence_extra['run_date'] = '2026-09-14'
-    elif failure_kind in ('extra_lane_empty', 'extra_lane_missing', 'extra_lane_invalid'):
-        lanes['additional'] = {
-            'extra_lane_empty': [], 'extra_lane_missing': ['2330.TW'], 'extra_lane_invalid': {},
-        }[failure_kind]
     # 執行真正的 workflow shell；所有 HTTP 都在本機替換，無憑證與網路存取。
     mock_curl = r'''
 curl() {
@@ -2683,21 +2546,13 @@ curl() {
             transport) return 7 ;;
         esac
     fi
-    if [[ "$step" == "$FAILED_STEP" && "$FAILURE_KIND" == "malformed" ]]; then
-        printf '{' > "$output"
-    elif [[ "$step" == "refresh-ai-evidence" ]]; then
-        printf '{"status":"%s","run_date":"2026-09-15"}' "$status" |
-            jq --argjson extra "$AI_EVIDENCE_EXTRA" '. + $extra' > "$output"
-    else
-        printf '{"status":"%s","run_date":"2026-09-15","missing_record_count":0}' "$status" > "$output"
-    fi
+    printf '{"status":"%s","run_date":"2026-09-15","missing_record_count":0}' "$status" > "$output"
     printf '%s' "$http"
 }
 '''
     env = {**os.environ, 'ZEABUR_BACKEND_URL': 'https://backend.invalid',
            'DAILY_RADAR_INTERNAL_TOKEN': 'test-only', 'DAILY_RADAR_RUN_DATE': '2026-09-15',
            'CALL_LOG': str(tmp_path / 'calls'), 'FAILED_STEP': failed_step,
-           'AI_EVIDENCE_EXTRA': json.dumps(evidence_extra),
            'FAILURE_KIND': failure_kind, 'TMPDIR': str(tmp_path), 'RUNNER_TEMP': str(tmp_path)}
     result = subprocess.run(['bash', '-c', textwrap.dedent(mock_curl) + '\npython() { printf \"validation\\n\" >> \"$CALL_LOG\"; [[ "$FAILED_STEP" != "validation" ]]; }\n' + script],
                             env=env, capture_output=True, text=True, timeout=10)
@@ -2705,7 +2560,7 @@ curl() {
     expected = ['refresh-full-margin', 'refresh-ohlcv', 'refresh-avwap']
     if failed_step not in {'refresh-full-margin', 'refresh-ohlcv'}:
         expected.append('run-scoring')
-    expected.extend(['refresh-managed-raw-data', 'refresh-ai-evidence', 'validation'])
+    expected.extend(['refresh-managed-raw-data', 'validation'])
     assert calls == expected, result.stdout + result.stderr
     assert result.returncode == (1 if failed_step else 0), result.stdout + result.stderr
 
@@ -2952,321 +2807,6 @@ def test_daily_radar_refresh_ohlcv_preserves_margin_without_fresh_full_margin_co
     assert row.fundamental == {
         "margin": {"margin_delta_pct": 1.0, "margin_to_volume": 0.2},
         "data_dates": {"margin": run_date.isoformat()},
-    }
-
-
-def test_daily_radar_refresh_ai_evidence_uses_complete_raw_pool_without_changing_scoring_membership(
-    monkeypatch,
-    daily_radar_db_session: Session,
-) -> None:
-    run_date = date(2026, 6, 1)
-    prepared = DailyRadarPreparedRun(
-        run_date=run_date,
-        market="TW",
-        selected_symbols=["2330.TW"],
-        universe=[
-            {
-                "symbol": "2330.TW",
-                "rank": 1,
-                "primary_track": "same_day_institutional",
-                "tracks": ["same_day_institutional"],
-                "same_day_rank": 1,
-                "same_day_score": 91.0,
-                "track_metrics": {
-                    "same_day_institutional": {
-                        "actor": "foreign",
-                        "net_buy": 5000.0,
-                        "source_dates": [run_date.isoformat()],
-                    }
-                },
-            }
-        ],
-        symbol_count=1,
-    )
-    daily_radar_db_session.add(prepared)
-    _persist_raw_data(
-        daily_radar_db_session,
-        symbol="2330.TW",
-        record_date=run_date,
-        technical=_technical_payload("2330.TW", run_date),
-    )
-    _persist_raw_data(
-        daily_radar_db_session,
-        symbol="2454.TW",
-        record_date=run_date,
-        technical={"name": "2454 fixture", "ohlcv": {}, "indicators": {}},
-    )
-    for symbol in ("2330.TW", "2454.TW"):
-        margin_payload = {
-            "latest_margin_balance": 1200,
-            "margin_balance_delta_pct": 2.0,
-        }
-        if symbol == "2454.TW":
-            margin_payload = {
-                "latest_margin_balance": 1200,
-                "margin_balance_delta": 1200,
-                "margin_balance_delta_pct": None,
-            }
-        upsert_shared_background_context(
-            daily_radar_db_session,
-            symbol=symbol,
-            context_type="full_margin",
-            applicable_consumers=("daily_radar",),
-            source={"domain": "background_context", "provider": "fixture_provider"},
-            as_of_date=run_date,
-            freshness="fresh",
-            payload=margin_payload,
-            replay_key=f"background_context:{symbol}:full_margin:{run_date.isoformat()}",
-        )
-    daily_radar_db_session.commit()
-    fetcher = FakeBatchTechnicalFetcher()
-    background_provider = BaselineZeroBackgroundChipContextProvider()
-    client = _api_client(
-        monkeypatch,
-        daily_radar_db_session,
-        technical_fetcher=fetcher,
-        background_context_provider=background_provider,
-    )
-
-    try:
-        response = client.post(
-            "/internal/daily-radar/refresh-ai-evidence",
-            json={"run_date": run_date.isoformat(), "market": "TW"},
-            headers={"Authorization": "Bearer test-token"},
-        )
-    finally:
-        _clear_daily_radar_api_overrides()
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "completed"
-    assert body["symbol_count"] == 2
-    assert body["selected_symbol_count"] == 1
-    assert body["missing_by_lane"] == {
-        "technical": [],
-        "institutional": [],
-        "margin": [],
-        "fundamental": [],
-    }
-    assert body["evidence_ready"] is True
-    assert body["missing_evidence_details"] == {"fundamental": []}
-    assert fetcher.calls == [(["2454.TW"], run_date)]
-    rows = {
-        row.symbol: row
-        for row in daily_radar_db_session.query(StockRawData).filter_by(record_date=run_date).all()
-    }
-    assert rows["2454.TW"].technical["indicators"]["obv"] == 12_000_000
-    assert rows["2454.TW"].institutional["source_provider"] == "official_fixture"
-    assert rows["2454.TW"].fundamental["ttm_eps"] == 10.0
-    assert rows["2454.TW"].fundamental["margin"]["margin_delta_pct_unavailable_reason"] == (
-        "baseline_zero"
-    )
-    assert any(
-        call["symbols"] == ["2454.TW"] and call["context_types"] == ["full_margin"]
-        for call in background_provider.calls
-    )
-    assert rows["2330.TW"].institutional["source_provider"] == "daily_radar_universe"
-    daily_radar_db_session.refresh(prepared)
-    assert prepared.selected_symbols == ["2330.TW"]
-    assert "refresh-ai-evidence" not in dependencies.DAILY_RADAR_REQUIRED_REFRESH_STEPS
-
-
-def test_daily_radar_refresh_ai_evidence_reuses_official_raw_history(
-    monkeypatch,
-    daily_radar_db_session: Session,
-) -> None:
-    run_date = date(2026, 6, 1)
-    prepared = DailyRadarPreparedRun(
-        run_date=run_date,
-        market="TW",
-        selected_symbols=["2454.TW"],
-        universe=[
-            {
-                "symbol": "2454.TW",
-                "rank": 1,
-                "primary_track": "same_day_institutional",
-                "tracks": ["same_day_institutional"],
-                "same_day_rank": 1,
-                "same_day_score": 91.0,
-                "track_metrics": {
-                    "same_day_institutional": {
-                        "actor": "foreign",
-                        "net_buy": 5000.0,
-                        "source_dates": [run_date.isoformat()],
-                    }
-                },
-            }
-        ],
-        symbol_count=1,
-    )
-    daily_radar_db_session.add(prepared)
-    source_dates = [
-        run_date,
-        date(2026, 5, 29),
-        date(2026, 5, 28),
-        date(2026, 5, 27),
-        date(2026, 5, 26),
-    ]
-    for source_date in source_dates:
-        row = _persist_raw_data(
-            daily_radar_db_session,
-            symbol="2454.TW",
-            record_date=source_date,
-            technical=_technical_payload("2454.TW", source_date),
-        )
-        flat = {
-            "foreign_net_shares": 1000.0,
-            "investment_trust_net_shares": 200.0,
-            "dealer_net_shares": 100.0,
-            "three_party_net_shares": 1300.0,
-            "source_provider": "official_twse_tpex",
-            "data_dates": {"institutional_flow": source_date.isoformat()},
-        }
-        row.institutional = flat | {"institutional_flow": dict(flat)}
-    daily_radar_db_session.commit()
-
-    provider_calls: list[str] = []
-
-    def request_get(*_args: Any, **_kwargs: Any) -> Any:
-        provider_calls.append("unexpected")
-        raise AssertionError("complete raw-data history must avoid TWSE requests")
-
-    provider = OfficialInstitutionalEvidenceProvider(request_get=request_get)
-    client = _api_client(
-        monkeypatch,
-        daily_radar_db_session,
-        institutional_evidence_provider=provider,
-    )
-
-    try:
-        response = client.post(
-            "/internal/daily-radar/refresh-ai-evidence",
-            json={"run_date": run_date.isoformat(), "market": "TW"},
-            headers={"Authorization": "Bearer test-token"},
-        )
-    finally:
-        _clear_daily_radar_api_overrides()
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "completed"
-    assert body["missing_by_lane"]["institutional"] == []
-    assert body["errors"] == []
-    assert provider_calls == []
-    current_row = daily_radar_db_session.query(StockRawData).filter_by(
-        symbol="2454.TW",
-        record_date=run_date,
-    ).one()
-    assert current_row.institutional["recent_source_dates"] == [
-        item.isoformat() for item in reversed(source_dates)
-    ]
-    assert current_row.institutional["source_provider"] == "daily_radar_universe"
-    assert current_row.institutional["institutional_daily_flow"]["source_providers"] == [
-        "official_twse_tpex"
-    ]
-    round_trip_cache = cached_daily_rows_from_raw_rows([current_row])
-    assert set(round_trip_cache["2454.TW"]) == set(source_dates)
-    assert {
-        values["source_provider"]
-        for values in round_trip_cache["2454.TW"].values()
-    } == {"official_twse_tpex"}
-    second_result = provider.fetch(
-        ["2454.TW"],
-        run_date=run_date,
-        cached_daily_rows=round_trip_cache,
-    )
-    assert second_result.errors == []
-    assert provider_calls == []
-
-
-def test_daily_radar_default_institutional_provider_enables_bounded_finmind_fallback(
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("FINMIND_API_TOKEN", raising=False)
-    provider = dependencies.get_daily_radar_institutional_evidence_provider()
-
-    assert isinstance(provider, OfficialInstitutionalEvidenceProvider)
-    assert provider._finmind_client is not None
-    assert provider._finmind_client._request_retries == 0
-    assert provider._finmind_client._token_getter() == ""
-
-
-def test_daily_radar_refresh_ai_evidence_records_unexpected_institutional_provider_error(
-    monkeypatch,
-    daily_radar_db_session: Session,
-) -> None:
-    run_date = date(2026, 6, 1)
-    prepared = DailyRadarPreparedRun(
-        run_date=run_date,
-        market="TW",
-        selected_symbols=["2330.TW"],
-        universe=[],
-        symbol_count=1,
-    )
-    daily_radar_db_session.add(prepared)
-    _persist_raw_data(
-        daily_radar_db_session,
-        symbol="2330.TW",
-        record_date=run_date,
-        technical=_technical_payload("2330.TW", run_date),
-    )
-    provider = RaisingInstitutionalEvidenceProvider()
-    client = _api_client(
-        monkeypatch,
-        daily_radar_db_session,
-        institutional_evidence_provider=provider,
-        raise_server_exceptions=False,
-    )
-
-    try:
-        response = client.post(
-            "/internal/daily-radar/refresh-ai-evidence",
-            json={"run_date": run_date.isoformat(), "market": "TW"},
-            headers={"Authorization": "Bearer test-token"},
-        )
-    finally:
-        _clear_daily_radar_api_overrides()
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert body["errors"][0] == {
-        "code": "institutional_evidence_provider_failed",
-        "message": "'NoneType' object is not iterable",
-        "error_type": "TypeError",
-    }
-    assert provider.calls == [(["2330.TW"], run_date)]
-    daily_radar_db_session.refresh(prepared)
-    assert prepared.step_statuses["refresh-ai-evidence"]["status"] == "failed"
-
-
-def test_ai_fundamental_materialization_clears_future_values_for_historical_as_of() -> None:
-    row = SimpleNamespace(
-        symbol="2454.TW",
-        technical={"ohlcv": {"close": 100.0}},
-        fundamental={
-            "ttm_eps": 99.0,
-            "pe_current": 1.0,
-            "margin": {"margin_delta_pct": 2.0, "margin_to_volume": 0.3},
-            "data_dates": {"margin": "2026-06-01", "fundamental": "2026-06-02"},
-        },
-    )
-
-    errors = pipeline_support._materialize_ai_business_fundamentals(
-        [row],
-        provider=MissingPointInTimeFundamentalProvider(),
-        as_of_date=date(2026, 6, 1),
-        industry_resolver=lambda _symbol: "半導體業",
-    )
-
-    assert errors == []
-    assert row.fundamental["ttm_eps"] is None
-    assert row.fundamental["pe_current"] is None
-    assert row.fundamental["industry"] == "半導體業"
-    assert row.fundamental["margin"] == {"margin_delta_pct": 2.0, "margin_to_volume": 0.3}
-    assert row.fundamental["data_dates"] == {
-        "margin": "2026-06-01",
-        "fundamental": "2026-06-01",
     }
 
 
