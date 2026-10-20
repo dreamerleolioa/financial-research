@@ -6,6 +6,7 @@
   "CORS_ORIGINS": "https://dreamerleolioa.github.io",
   "GOOGLE_OAUTH_REDIRECT_URIS": "https://dreamerleolioa.github.io/financial-research/login/callback",
   "DAILY_RADAR_BACKGROUND_PROVIDER_MODE": "finmind_only",
+  "DAILY_RADAR_LENDING_PROVIDER_MODE": "official_first",
   "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE": "yfinance_only",
   "FUNDAMENTAL_PROVIDER_MODE": "finmind_only"
 }

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
+import json
+import logging
 import os
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
+from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
 
@@ -19,7 +23,9 @@ DEFAULT_ADJUSTMENT_MODE = "unadjusted"
 FINMIND_TAIWAN_STOCK_PRICE_DATASET = "TaiwanStockPrice"
 TWSE_STOCK_DAY_DATASET = "TWSE_STOCK_DAY"
 TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
-DEFAULT_TWSE_MONTH_FETCH_WORKERS = 4
+DEFAULT_TWSE_MONTH_FETCH_WORKERS = 2
+TWSE_REQUEST_MAX_ATTEMPTS = 2
+logger = logging.getLogger(__name__)
 
 RequestGetter = Callable[..., Any]
 
@@ -67,6 +73,8 @@ class TwseDailyPriceProvider:
         self._fallback_provider = fallback_provider or FinMindDailyPriceProvider()
         self._timeout = timeout
         self._month_fetch_workers = max(1, month_fetch_workers)
+        # Request-scoped only; a new as-of date must fetch the month again.
+        self._monthly_rows: dict[tuple[str, date, date], tuple[DailyPriceBar, ...]] = {}
 
     def source_provider(self, symbol: str) -> str:
         if _is_tpex_symbol(symbol):
@@ -86,19 +94,34 @@ class TwseDailyPriceProvider:
     def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
         if _is_tpex_symbol(symbol):
             return self._fallback_provider.fetch_history(symbol, start_date=start_date, end_date=end_date)
-        request_get = self._request_get or _import_requests_get()
+        request_get = self._request_get or partial(official_request_get, max_attempts=TWSE_REQUEST_MAX_ATTEMPTS)
         months = _month_starts(start_date, end_date)
-        with ThreadPoolExecutor(max_workers=min(self._month_fetch_workers, len(months))) as executor:
-            monthly_rows = executor.map(
-                lambda month: _fetch_twse_month(
-                    request_get,
-                    symbol=symbol,
-                    month=month,
-                    timeout=self._timeout,
-                ),
-                months,
-            )
-            rows = [bar for month_rows in monthly_rows for bar in month_rows]
+        monthly_rows = {
+            month: self._monthly_rows[(symbol, month, end_date)]
+            for month in months if (symbol, month, end_date) in self._monthly_rows
+        }
+        pending = [month for month in months if month not in monthly_rows]
+        failures: dict[date, DailyPriceProviderError] = {}
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(self._month_fetch_workers, len(pending))) as executor:
+                futures = {
+                    executor.submit(_fetch_twse_month, request_get, symbol=symbol, month=month, timeout=self._timeout): month
+                    for month in pending
+                }
+                for future in as_completed(futures):
+                    month = futures[future]
+                    try:
+                        fetched = tuple(future.result())
+                    except DailyPriceProviderError as exc:
+                        failures[month] = exc
+                        continue
+                    monthly_rows[month] = fetched
+                    if fetched:
+                        self._monthly_rows[(symbol, month, end_date)] = fetched
+        if failures:
+            # Retain other successful months, but never return partial history.
+            raise failures[min(failures)]
+        rows = [bar for month in months for bar in monthly_rows[month]]
         return [
             bar
             for bar in sorted(rows, key=lambda item: item.trade_date)
@@ -238,6 +261,8 @@ def _fetch_twse_month(
     month: date,
     timeout: int,
 ) -> list[DailyPriceBar]:
+    response = None
+    stage = "request"
     try:
         response = request_get(
             TWSE_STOCK_DAY_URL,
@@ -248,15 +273,36 @@ def _fetch_twse_month(
             },
             timeout=timeout,
         )
+        stage = "http_status"
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
+        stage = "json"
         payload = response.json() if hasattr(response, "json") else response
     except Exception as exc:
+        _log_twse_failure(symbol, month, stage, response, exc)
         raise DailyPriceProviderError("twse_stock_day_request_failed") from exc
     try:
-        return normalize_twse_stock_day_payload(payload)
+        rows = normalize_twse_stock_day_payload(payload)
+        if any((bar.trade_date.year, bar.trade_date.month) != (month.year, month.month) for bar in rows):
+            raise ValueError("TWSE returned rows outside the requested month")
+        return rows
     except ValueError as exc:
+        _log_twse_failure(symbol, month, "payload_schema", response, exc)
         raise DailyPriceProviderError("twse_stock_day_parser_error") from exc
+
+
+def _log_twse_failure(symbol: str, month: date, stage: str, response: Any, exc: Exception) -> None:
+    headers = getattr(response, "headers", {}) or {}
+    # Allowlisted response metadata only; no bodies, exception text or credentials.
+    detail = {
+        "symbol": symbol,
+        "month": month.isoformat(),
+        "stage": stage,
+        "error_type": type(exc).__name__,
+        "http_status": getattr(response, "status_code", None),
+        "content_type": str(headers.get("Content-Type", ""))[:80] or None,
+    }
+    logger.warning("twse_stock_day_fetch_failed %s", json.dumps(detail, sort_keys=True))
 
 
 def normalize_finmind_daily_price_rows(rows: list[Mapping[str, Any]]) -> list[DailyPriceBar]:
@@ -391,14 +437,6 @@ def _provider_metadata(provider: object, name: str, symbol: str, *, default: str
     if value:
         return str(value)
     return default
-
-
-def _import_requests_get() -> RequestGetter:
-    try:
-        import requests
-    except ImportError as exc:
-        raise RuntimeError("requests package is required for TWSE AVWAP requests") from exc
-    return requests.get
 
 
 def _number(row: Mapping[str, Any], *keys: str) -> float:

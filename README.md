@@ -233,6 +233,7 @@ JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 DAILY_RADAR_BACKGROUND_PROVIDER_MODE="finmind_only" # finmind_only | official_first | official_only
+DAILY_RADAR_LENDING_PROVIDER_MODE="official_first" # 借券單獨覆寫；未設定時沿用背景來源模式
 DAILY_RADAR_TW_OHLCV_PROVIDER_MODE="yfinance_only"  # yfinance_only | official_first | official_only
 FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_cache_first | official_cache_only
 ```
@@ -267,8 +268,16 @@ FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_c
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
 | `DAILY_RADAR_BACKGROUND_PROVIDER_MODE` | 籌碼背景來源模式；部署初始值 `finmind_only` |
+| `DAILY_RADAR_LENDING_PROVIDER_MODE` | 借券來源覆寫；正式部署範本為 `official_first`，融資融券仍沿用背景模式 |
 | `DAILY_RADAR_TW_OHLCV_PROVIDER_MODE` | 台股日線來源模式；部署初始值 `yfinance_only` |
 | `FUNDAMENTAL_PROVIDER_MODE` | 基本面來源模式；部署初始值 `finmind_only` |
+
+借券只有在官方市場報表成功解析且包含資料日證據時，才將未出現的個股記為零成交；
+解析不完整或報表取得失敗會保留缺口／退回 FinMind，不以零代替來源失敗。
+AVWAP 官方日 K 使用驗證 TLS 的既有 HTTP 工具，每次月份請求最多兩次嘗試、預設兩個月份併發；
+失敗會記錄股票、月份、階段、例外類別與 HTTP 狀態，不記錄回應本文。
+同一 provider 與資料截止日可重用成功月份，空回應及新截止日會重新抓取；此快取不跨程序重啟。
+EPS 歷史回補仍保存實際觀測時間，後取得的值不會回填為較早 Radar 日期已知。
 
 #### Data migration 部署門檻
 

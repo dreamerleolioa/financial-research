@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, timedelta
+import math
 import re
 from typing import Any
 
@@ -609,17 +610,19 @@ def _parse_lending_payload(payload: Mapping[str, Any]) -> list[tuple[date, str, 
     normalized: list[tuple[date, str, float]] = []
     for row in data:
         if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
-            continue
+            raise OfficialBackgroundContextError("official_lending_row_invalid", dataset="TWSE_t13sa710")
         if max(indexes[field] for field in required) >= len(row):
-            continue
+            raise OfficialBackgroundContextError("official_lending_row_invalid", dataset="TWSE_t13sa710")
         try:
             row_date = _roc_text_date(str(row[indexes["成交日期"]]))
             stock_id = str(row[indexes["證券代號名稱"]]).strip().split(maxsplit=1)[0]
-            volume = _required_float(row[indexes["成交數量(交易單位)"]])
+            volume = float(str(row[indexes["成交數量(交易單位)"]]).replace(",", "").strip())
+            if not re.fullmatch(r"[0-9][0-9A-Z]{3,7}", stock_id) or not math.isfinite(volume) or volume < 0:
+                raise ValueError("invalid lending identity or volume")
         except (ValueError, IndexError):
-            continue
-        if stock_id:
-            normalized.append((row_date, stock_id, volume))
+            # Dropping one malformed trade would make zero activity unverifiable.
+            raise OfficialBackgroundContextError("official_lending_row_invalid", dataset="TWSE_t13sa710") from None
+        normalized.append((row_date, stock_id, volume))
     return normalized
 
 
