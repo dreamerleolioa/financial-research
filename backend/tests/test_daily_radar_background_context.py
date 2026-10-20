@@ -1125,15 +1125,15 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "resolve_daily_radar_run_date.py" in text
     assert "/internal/daily-radar/market-session" in text
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 16
+    assert text.count("needs: resolve-run-context") == 15
     assert "/internal/daily-radar/refresh-institutional-flows" in text
     assert "/internal/daily-radar/refresh-market-bars" in text
     assert "market_bar_start_date" in text
     assert "market_bar_end_date" in text
-    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 14
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 13
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 15
+        == 13
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text
@@ -1149,7 +1149,6 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "/internal/daily-radar/refresh-full-margin" in text
     assert "/internal/daily-radar/refresh-ohlcv" in text
     assert "/internal/daily-radar/refresh-managed-raw-data" in text
-    assert "/internal/daily-radar/refresh-ai-evidence" in text
     assert "/internal/daily-radar/refresh-market-context" in text
     assert "run_daily_radar_validation.py" in text
     assert "/internal/daily-radar/run-scoring" in text
@@ -1185,26 +1184,6 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert avwap_repair.index('if [[ ! "$refresh_http_status"') < avwap_repair.index("jq -r '")
 
 
-def test_daily_radar_workflow_schedules_ordered_full_ai_evidence_refresh() -> None:
-    workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
-    text = workflow.read_text(encoding="utf-8")
-
-    assert "- refresh-ai-evidence" in text
-    assert 'cron: "0 15 * * 1-5"' not in text
-    chain = text.split("  finalize-ai-evidence:", 1)[1].split("  refresh-ai-evidence:", 1)[0]
-    assert "--mode finalize" in chain
-    assert "prepare_daily_radar_evidence.py" in chain
-    assert "/internal/daily-radar/refresh-ai-evidence" in text
-    refresh_job = text.split("  refresh-ai-evidence:", 1)[1].split(
-        "  refresh-market-context:",
-        1,
-    )[0]
-    assert ".errors[]?" in refresh_job
-    assert '"error: \\(. | @json)"' in refresh_job
-    assert "query_date: .query_date" in refresh_job
-    assert "error_type: .error_type" in refresh_job
-
-
 def test_daily_radar_workflow_refreshes_managed_raw_data_without_symbol_logs() -> None:
     workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
     text = workflow.read_text(encoding="utf-8")
@@ -1212,7 +1191,7 @@ def test_daily_radar_workflow_refreshes_managed_raw_data_without_symbol_logs() -
     assert "- refresh-managed-raw-data" in text
     assert 'cron: "40 14 * * 1-5"' not in text
     refresh_job = text.split("  refresh-managed-raw-data:", 1)[1].split(
-        "  finalize-ai-evidence:",
+        "  refresh-raw-data:",
         1,
     )[0]
     assert "/internal/daily-radar/refresh-managed-raw-data" in refresh_job

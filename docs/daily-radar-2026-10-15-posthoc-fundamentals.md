@@ -49,7 +49,7 @@ Q3、Q4 與 Q1 的單季 EPS 來自 `mops_historical`；Q2 依 `official_openapi
 
 - [原始 repair workflow](https://github.com/dreamerleolioa/financial-research/actions/runs/38833105350)：10/16 上午對 10/15 補修，因四檔基本面缺漏失敗。
 - [基本面更新與回補 workflow](https://github.com/dreamerleolioa/financial-research/actions/runs/38834392752)：10/16 09:18 執行；本文的補齊數值另以唯讀 DB 查核確認。
-- [歷史可見性與 EPS 版本選擇](../backend/src/ai_stock_sentinel/data_sources/fundamental/repository.py)、[TTM 計算](../backend/src/ai_stock_sentinel/data_sources/fundamental/official_provider.py)、[匯出完整度](../backend/scripts/export_codex_daily_radar.py)。
+- [歷史可見性與 EPS 版本選擇](../backend/src/ai_stock_sentinel/data_sources/fundamental/repository.py)、[TTM 計算](../backend/src/ai_stock_sentinel/data_sources/fundamental/official_provider.py)、當時的 `export_codex_daily_radar.py` 匯出完整度（已於 2026-10-20 隨晨間 AI 報告退役）。
 
 ## 後續流程稽核與修正範圍（2026-10-16）
 

@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from ai_stock_sentinel.daily_radar import (
-    evidence_router,
+    managed_raw_data_router,
     maintenance_router,
     read_router,
     refresh_router,
@@ -12,7 +12,7 @@ from ai_stock_sentinel.daily_radar import (
 
 router = APIRouter(tags=["daily-radar"])
 router.include_router(refresh_router.router)
-router.include_router(evidence_router.router)
+router.include_router(managed_raw_data_router.router)
 router.include_router(maintenance_router.router)
 router.include_router(run_router.router)
 router.include_router(read_router.router)

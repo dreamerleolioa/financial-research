@@ -82,7 +82,6 @@ class DailyRadarRefreshStepResponse(BaseModel):
     run_date: date
     market: str
     symbol_count: int = 0
-    selected_symbol_count: int = 0
     records_written: int = 0
     reused_symbols: list[str] = Field(default_factory=list)
     fetched_symbols: list[str] = Field(default_factory=list)
@@ -91,10 +90,6 @@ class DailyRadarRefreshStepResponse(BaseModel):
     missing_symbol_reasons: dict[str, str] = Field(default_factory=dict)
     skipped_symbols: list[str] = Field(default_factory=list)
     skipped_symbol_reasons: dict[str, str] = Field(default_factory=dict)
-    missing_by_lane: dict[str, list[str]] = Field(default_factory=dict)
-    evidence_ready: bool | None = None
-    missing_evidence_details: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    provider_counts: dict[str, int] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 

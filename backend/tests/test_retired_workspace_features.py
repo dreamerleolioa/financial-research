@@ -33,7 +33,8 @@ def test_retired_endpoints_are_unavailable(method, path):
     assert response.status_code == 404
 
 
-def test_retained_records_do_not_drive_research_refreshes():
+def test_retained_records_do_not_drive_research_refreshes(monkeypatch):
+    monkeypatch.setattr("ai_stock_sentinel.data_sources.fundamental.service.today_taipei", lambda: date(2026, 10, 1))
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
@@ -49,7 +50,7 @@ def test_retained_records_do_not_drive_research_refreshes():
         event.listen(engine, "before_cursor_execute", lambda conn, cursor, statement, parameters, context, executemany: statements.append(statement))
         assert resolve_phase1_refresh_symbol_set(session, seed_symbols=["0050.TW"]).symbols == ["0050.TW"]
         assert resolve_phase1_managed_universe(session, user_id=1) == []
-        assert resolve_managed_fundamental_symbols(session, raw_pool_date=date(2026, 10, 1)) == []
+        assert resolve_managed_fundamental_symbols(session) == ["6488.TWO"]
         assert select_managed_raw_data_symbols(session, run_date=date(2026, 10, 1)).symbols == ("6488.TWO",)
         assert not any("user_portfolio" in sql or "user_watchlist" in sql for sql in statements)
         assert session.query(UserPortfolio).count() == 1

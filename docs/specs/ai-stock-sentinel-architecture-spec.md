@@ -57,7 +57,7 @@
 | 區域 | 目前邊界 |
 | ---- | -------- |
 | Analysis | `analysis/router.py` 承接 `/analyze` 與 context attachment；schemas 保存契約，application 拆出 initial state、cache/raw-data helper 與 response assembly，adapters 包裝 Graph runner。昨日 context 仍使用 `services/history_loader.py`。 |
-| Daily Radar | `router.py` 只組裝子路由；`refresh_router.py`、`evidence_router.py`、`maintenance_router.py`、`run_router.py`、`read_router.py` 分別處理刷新、研究證據、維護、評分與讀取。`dependencies.py` 管 provider factories，`pipeline_support.py` 管 prepared-run 驗證與資料彙整，`institutional_payloads.py` 管純資料轉換；既有 service / repository / presenter 邊界保留。 |
+| Daily Radar | `router.py` 只組裝子路由；`refresh_router.py`、`managed_raw_data_router.py`、`maintenance_router.py`、`run_router.py`、`read_router.py` 分別處理雷達刷新、近期分析 raw data、維護、評分與讀取。`dependencies.py` 管 provider factories，`pipeline_support.py` 管 prepared-run 驗證與資料彙整，`institutional_payloads.py` 管純資料轉換；既有 service / repository / presenter 邊界保留。 |
 | Phase 1 AVWAP | `universe.py` 的 managed universe 只讀 latest Daily Radar candidates；refresh symbol set 只使用本次明確指定的 seed symbols；provider 保留 TWSE/FinMind 及 local-first archive，snapshot 只存市場資料。`projection.py` 供 Analyze 與 Daily Radar 唯讀使用；Analyze 仍以七天窗口判定過期，缺漏不觸發回填或改變評分。 |
 | Architecture guard | `backend/tests/test_backend_architecture_boundaries.py` 以 AST 檢查純計算 modules 不引入 FastAPI/SQLAlchemy/external provider/DB；已重構 HTTP boundaries 不重新定義 Pydantic schema；Daily Radar router 不重新吸收 public response presenter helpers。Auth router 尚未納入此 guard，因為它尚未經過同一輪重構。 |
 
@@ -92,7 +92,7 @@
 | Workflow | 責任 |
 | -------- | ---- |
 | `deploy.yml` | PR/main 執行 backend tests 與 frontend lint/E2E/build；main push 的 GitHub Pages deploy 必須等待兩個驗證 job 成功 |
-| `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時 scheduled pipeline 與一般手動 step skip，provider 異常時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是明確歷史日期的 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`；各 backfill 仍受 endpoint 日期範圍與未來日期驗證約束。開市後 17:30 先呼叫 `refresh-institutional-flows` 歸檔 TWSE/TPEX 市場級法人日報，18:00 `prepare-universe` 只從完整 archive 建立四條分法人軌道，再分段執行 `refresh-market-bars`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-ai-evidence`、`refresh-market-context`、`run-scoring`；每段共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期。晚間基本面回補後的 AI evidence step 補同日完整 final 台股 raw pool 並留下 lane 缺漏，但不改 prepared universe 或 scoring required steps；scoring 只讀已落庫 cache/snapshot，對 institutional-flow archive/lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT repair-and-rescore 補修排程，依序補修 full margin、OHLCV 與 AVWAP，full margin 與 OHLCV 完成後才重跑 scoring；無論前段是否成功都繼續補齊 managed raw data，任何補修未完成均讓 repair monitor 失敗，Re-run 仍保留原本 run date |
+| `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時 scheduled pipeline 與一般手動 step skip，provider 異常時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是明確歷史日期的 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`；各 backfill 仍受 endpoint 日期範圍與未來日期驗證約束。開市後 17:30 先呼叫 `refresh-institutional-flows` 歸檔 TWSE/TPEX 市場級法人日報，18:00 `prepare-universe` 只從完整 archive 建立四條分法人軌道，再分段執行 `refresh-market-bars`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期。22:30 raw refresh 只更新 OHLCV 與近期分析 raw data；scoring 只讀已落庫 cache/snapshot，對 institutional-flow archive/lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT repair-and-rescore 補修排程，依序補修 full margin、OHLCV 與 AVWAP，full margin 與 OHLCV 完成後才重跑 scoring；無論前段是否成功都繼續補齊 managed raw data，任何補修未完成均讓 repair monitor 失敗，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `active-etf-holdings.yml` | 台灣時間平日 08:00、19:00 呼叫 MoneyDJ-only internal refresh；19:00 取得較完整的當日持股，08:00 保留補抓。逐基金成功快照會保留，只有明確尚未公布可作允許的 partial，其餘 error 或快照／基金計數缺口都讓 workflow fail |
 | `fundamental-data.yml` | 07:15 TWT 先以官方 OpenAPI 更新財報/股利版本庫，再以六批 × 十檔上限執行 MOPS 歷史季 EPS 優先、FinMind fallback 的 bounded 回填；未完成 job 由後續排程接續，手動模式亦可建立或續跑指定 job |
@@ -1184,6 +1184,6 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 - 指標定義需版本化，避免不同批次結論不可比
 
 
-### 2026-10-16：基本面準備依賴修正
+### Codex 晨間 AI 報告退役（2026-10-20）
 
-傍晚 prepare-universe 後執行基本面預補；22:30 起由同一個 finalize-ai-evidence job 串接 OHLCV、managed raw、完整 raw pool 基本面補查與 AI evidence 驗證，取代獨立的 22:40／23:00 jobs。晨間 fundamental-data 維護保留，與晚間共用既有 job／cursor／鎖機制。無資料庫 schema migration，也不修改 scoring 或首次觀測時間。詳細契約見 Daily Radar 規格的「當日基本面準備與完整性」。
+晨間 Codex 個人分析需求已移除，專用 AI evidence API、資料補查、完整度 gate、匯出 CLI 與 skill 已退役。22:30 保留 OHLCV → 近期 general 分析 raw data；07:00 repair 保留評分與兩種 validation。07:15 基本面維護改由最新 TW 雷達及近期 general 分析標的建立工作，不再依賴舊 AI pool。歷史資料、job 與 migration 保留；舊 report job 不進 maintenance queue。完整介面與交易契約見 [後端 API 規格](backend-api-technical-spec.md#codex-晨間-ai-報告退役2026-10-20)。

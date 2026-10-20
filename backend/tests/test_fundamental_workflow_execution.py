@@ -19,9 +19,9 @@ def _page(*, cursor=None, errors=None, gaps=None):
     }
 
 
-def _run_workflow(tmp_path, pages, *, event="workflow_dispatch", raw_pool_date="", http_status=200):
+def _run_workflow(tmp_path, pages, *, event="workflow_dispatch", http_status=200):
     workflow = (Path(__file__).parents[2] / ".github/workflows/fundamental-data.yml").read_text()
-    section = workflow.split("      - name: Backfill managed", 1)[1]
+    section = workflow.split("      - name: Backfill Radar", 1)[1]
     script = textwrap.dedent(section.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
     (tmp_path / "pages.json").write_text(json.dumps(pages))
     fake_curl = tmp_path / "curl"
@@ -46,7 +46,7 @@ def _run_workflow(tmp_path, pages, *, event="workflow_dispatch", raw_pool_date="
             "TMPDIR": str(tmp_path),
             "STUB_ROOT": str(tmp_path), "STUB_HTTP_STATUS": str(http_status),
             "BACKFILL_AFTER_SYMBOL": "", "BACKFILL_JOB_ID": "",
-            "BACKFILL_RAW_POOL_DATE": raw_pool_date, "GITHUB_EVENT_NAME": event,
+            "GITHUB_EVENT_NAME": event,
             "GITHUB_STEP_SUMMARY": str(summary), "API_BASE_URL": "https://example.invalid",
             "DAILY_RADAR_INTERNAL_TOKEN": "test-only",
         }, capture_output=True, text=True, timeout=30,
@@ -87,13 +87,6 @@ def test_budget_exhaustion_is_automatic_progress_for_both_entrypoints(tmp_path, 
     assert result.returncode == 0, result.stderr
     assert len(requests) == 6
     assert "will resume automatically" in summary
-
-
-def test_explicit_raw_pool_date_does_not_request_conflicting_resume(tmp_path):
-    result, requests, _ = _run_workflow(tmp_path, [_page()], raw_pool_date="2026-09-15")
-    assert result.returncode == 0
-    assert requests[0]["raw_pool_date"] == "2026-09-15"
-    assert "resume_running_job" not in requests[0]
 
 
 def test_unexplained_partial_is_not_silently_successful(tmp_path):

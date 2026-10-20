@@ -216,28 +216,6 @@ def test_new_raw_row_roundtrip_retains_applicability_without_old_margin_values(e
         assert 'margin_delta_pct' not in record['margin']
 
 
-def test_export_keeps_inapplicability_and_does_not_count_it_as_missing():
-    from tests.test_export_codex_daily_radar import exporter
-    margin = dict(_fetch(_provider()).payload)
-    result = exporter._analytical_completeness([
-        {'symbol': '7827.TW', 'record_date': '2026-09-09', 'fundamental': {'margin': margin}}
-    ])
-    assert result['lanes']['margin']['missing_symbols'] == []
-
-
-def test_export_script_still_starts_directly_without_pythonpath():
-    import os
-    from pathlib import Path
-    import subprocess
-    import sys
-
-    script = Path(__file__).parents[1] / 'scripts' / 'export_codex_daily_radar.py'
-    env = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
-    result = subprocess.run([sys.executable, str(script), '--help'], env=env,
-                            capture_output=True, text=True, timeout=15)
-    assert result.returncode == 0, result.stderr
-
-
 def test_refresh_endpoint_retains_not_applicable_in_response_and_step_status(monkeypatch):
     from types import SimpleNamespace
     from ai_stock_sentinel.daily_radar import pipeline_support as router
@@ -369,41 +347,6 @@ def _tpex_credit_provider(report=None, *, include_margin=False, margin_date=None
 
     return OfficialBackgroundChipContextProvider(request_get=get,
         lookback_trading_days=1, max_lookback_calendar_days=1)
-
-
-def test_tpex_credit_ineligibility_survives_cache_projection_and_export():
-    evaluated = date(2026, 10, 5)
-    engine = create_engine('sqlite://')
-    SharedBackgroundContext.__table__.create(engine)
-    calls = []
-    with Session(engine) as session:
-        for attempt in range(2):
-            result = update_background_chip_context_cache(session, run_date=evaluated,
-                market='TW', provider=_tpex_credit_provider(calls=calls),
-                symbols=['8084.TWO'], context_types=['full_margin'],
-                require_same_day_fresh=True, reuse_same_day_fresh=True)
-            session.flush()
-            assert result['status'] == 'completed'
-            assert result['missing_symbols'] == []
-            assert result['not_applicable_symbols'] == ['8084.TWO']
-            assert result['records_written'] == (1 if attempt == 0 else 0)
-        context = session.query(SharedBackgroundContext).one()
-        assert context.source['dataset'] == 'TPEX_margin_sbl'
-        projected = _project_margin_context(vars(context), technical={})
-        assert margin_evidence_is_complete(projected, record_date=evaluated, symbol='8084.TWO')
-        assert projected['eligibility']['source_url'] == TPEX_CREDIT_URL
-        assert projected['eligibility']['report_date'] == '2026-10-05'
-        assert projected['eligibility']['credit_status'] == 'Y'
-        assert not margin_evidence_is_complete(projected, symbol='8084.TW')
-        assert not margin_evidence_is_complete(projected, record_date=date(2026, 10, 6))
-        assert 'margin_balance' not in projected
-        assert 'margin_delta_pct' not in projected
-        from tests.test_export_codex_daily_radar import exporter
-        completeness = exporter._analytical_completeness([{'symbol': '8084.TWO',
-            'record_date': '2026-10-05', 'fundamental': {'margin': projected}}])
-        assert completeness['lanes']['margin']['missing_symbols'] == []
-    assert [params for url, params in calls if url == TPEX_CREDIT_URL] == [
-        {'response': 'json', 'date': '2026/10/05'}]
 
 
 @pytest.mark.parametrize('case', ['stale', 'future', 'date_missing', 'error', 'tables_missing',
