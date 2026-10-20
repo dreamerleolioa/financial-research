@@ -5,6 +5,7 @@ import { ACTIVE_ETF_ACTION_LABEL } from "../../features/active-etf/presentation"
 import type { ActiveEtfRangeResponse } from "../../lib/activeEtfSchemas";
 import { DetailDrawer } from "../app-shell/DetailDrawer";
 import { WorkspaceEmptyState } from "../app-shell/WorkspaceEmptyState";
+import { StockSearchInput } from "./StockSearchInput";
 
 const number = (value: number | null, signed = false) =>
   value === null
@@ -148,12 +149,9 @@ export function ActiveEtfRangeView() {
         )}
         <label className="block sm:max-w-xs">
           <span className="mb-1.5 block text-xs text-text-muted">搜尋個股</span>
-          <input
-            type="search"
-            className="ui-input"
-            placeholder="輸入股號或名稱"
+          <StockSearchInput
             value={search}
-            onChange={(event) => update({ q: event.target.value || null, stock: null }, true)}
+            onValueChange={(value) => update({ q: value || null, stock: null }, true)}
           />
         </label>
       </section>

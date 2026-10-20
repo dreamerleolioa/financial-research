@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActiveEtfRangeView } from "../components/active-etf/ActiveEtfRangeView";
+import { StockSearchInput } from "../components/active-etf/StockSearchInput";
 import { useSearchParams } from "react-router-dom";
 import { ActiveEtfChangeDrawer } from "../components/active-etf/ActiveEtfChangeDrawer";
 import { ActiveEtfConsensusDrawer } from "../components/active-etf/ActiveEtfConsensusDrawer";
@@ -831,12 +832,9 @@ function ActiveEtfDailyView() {
             </div>
             <label className="mb-3 block sm:max-w-xs">
               <span className="mb-1.5 block text-xs font-medium text-text-muted">搜尋個股</span>
-              <input
-                className="ui-input"
+              <StockSearchInput
                 value={consensusSearch}
-                onChange={(event) => setConsensusSearch(event.target.value)}
-                placeholder="輸入股號或名稱"
-                type="search"
+                onValueChange={setConsensusSearch}
               />
             </label>
             <ConsensusList
