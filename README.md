@@ -29,8 +29,8 @@ AI Stock Sentinel 是一套個股研究與投資紀律輔助系統。後端以 P
 - 規格導覽與維護規則：`docs/specs/README.md`
 - 開發執行手冊：`docs/development-execution-playbook.md`
 - 後端自學導覽：`docs/backend-self-study-guide.md`
-- GCP 正式入口、main CI/CD 與最終切換／回退：[切換操作](docs/gcp-cutover-runbook.md)（正式切換另行確認）
-- GCP 測試副本驗收與重建參考：[搬遷手冊](docs/gcp-test-migration-runbook.md)（測試資源已清除，正式切換另行確認）
+- GCP 正式入口、main CI/CD、驗收與歷史補跑狀態：[切換操作](docs/gcp-cutover-runbook.md)（已切至 GCP；Zeabur 資源退役另行確認）
+- GCP 測試副本驗收與重建參考：[搬遷手冊](docs/gcp-test-migration-runbook.md)（測試專用資源已清除）
 
 ## 目前架構摘要
 
@@ -177,7 +177,7 @@ docs/
 
 ## 部署
 
-Push to `main` 自動觸發：後端跑測試 → 前端 build 並部署到 GitHub Pages。後端正式執行環境由 Zeabur URL 提供給前端與 internal workflows。
+Push to `main` 觸發測試、前端 build 與 GitHub Pages 部署；後端映像經 PostgreSQL 17 驗證與 `gcp-production` 人工核准後部署到 GCP Cloud Run，資料庫使用 Cloud SQL。前端與 internal workflows 都使用 GCP 正式入口；既有 secret 名稱 `ZEABUR_BACKEND_URL` 保留，但其值已是 GCP URL。正式 API 啟動只驗證 migration head，資料庫升版另外操作。
 
 Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。正式 workflow 會分段 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/*`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，且每個 step 都由 workflow 明確帶入 `run_date`。Scheduled run 會用 GitHub Actions run API 讀取該次 workflow run 不變的原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；因此 runner 延遲、跨過台灣午夜或對舊 run 按 Re-run 都會保留原本 intended trading date。手動執行可指定 `run_date`，未指定時則固定使用該 workflow run 首次建立當下的台北日期，Re-run 不會改日。一般下游 job 啟動前，workflow 先呼叫 `POST /internal/daily-radar/market-session`，以 TWSE `MI_INDEX` 確認該 `run_date` 是否開市；週末、國定假日或颱風停市會讓 scheduled pipeline 正常 skip，provider 失敗或回應無法判斷則 fail closed，不會被誤當成休市。明確日期範圍的 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是手動 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`。台灣時間 17:30 `refresh-institutional-flows` 歸檔 TWSE/TPEX 全市場法人日報；17:45 `refresh-market-bars` 寫入 TWSE/TPEX 官方整表 OHLCV；18:00 `prepare-universe` 從 archive 分開建立外資當日、投信當日、外資近期累積、投信近期累積四條軌道並保存 capped 250 selected symbols；19:00 `refresh-avwap`；20:00 `refresh-lending`；21:30 `refresh-full-margin`；22:30 `refresh-ohlcv`；接續 `refresh-managed-raw-data` 補齊 active positions 與近期分析標的的 final raw rows；基本面有界回補後的 `refresh-ai-evidence` 針對同日全部 final 支援台股 raw rows 補齊技術、官方法人、融資與官方快取基本面，並記錄各 evidence lane 的剩餘缺漏；23:30 `refresh-market-context`；隔日 00:30 `run-scoring` 仍對同一個 intended trading date 做 scoring，只讀 DB cache/snapshot 並持久化 Daily Radar candidates。`refresh-managed-raw-data` 與 `refresh-ai-evidence` 都不改 prepared selected symbols、universe tracks 或 canonical candidates，也不屬於 scoring required steps；`run-scoring` 要求 `refresh-institutional-flows`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context` 完成。`refresh-avwap` 是 optional evidence step，失敗時 candidate detail 仍保留 `phase1_avwap_context.freshness` 與 `missing_reason`，不阻塞雷達發佈。另有台灣時間週二至週六 07:00 的補修排程，會對前一個 intended trading date 依序補修 `refresh-full-margin`、`refresh-ohlcv` 與 `refresh-avwap`，full margin 與 OHLCV 完成後才重跑 `run-scoring`；無論前段是否成功都繼續補齊 `refresh-managed-raw-data`、`refresh-ai-evidence` 及兩種 forward validation，再彙整補修結果。任何補修仍不完整都會讓 repair monitor 失敗，避免持倉與近期分析的缺口被靜默忽略。
 
@@ -233,6 +233,7 @@ JWT_SECRET="your_jwt_secret"
 DATABASE_URL="postgresql://..."             # 本機可用 SQLite
 DAILY_RADAR_INTERNAL_TOKEN="..."            # Daily Radar 內部執行 API 用
 DAILY_RADAR_BACKGROUND_PROVIDER_MODE="finmind_only" # finmind_only | official_first | official_only
+DAILY_RADAR_LENDING_PROVIDER_MODE="official_first" # 借券單獨覆寫；未設定時沿用背景來源模式
 DAILY_RADAR_TW_OHLCV_PROVIDER_MODE="yfinance_only"  # yfinance_only | official_first | official_only
 FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_cache_first | official_cache_only
 ```
@@ -243,14 +244,16 @@ FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_c
 
 | 類型     | 名稱                         | 用途                                              |
 | -------- | ---------------------------- | ------------------------------------------------- |
-| Secret   | `ZEABUR_BACKEND_URL`         | Daily Radar workflow 呼叫的 Zeabur 後端 URL       |
+| Secret   | `ZEABUR_BACKEND_URL`         | Daily Radar／ETF／基本面 workflow 呼叫的 GCP 後端 URL（保留既有名稱） |
 | Secret   | `DAILY_RADAR_API_BASE_URL`   | 一般分析 forward validation 與月度 calibration workflow 呼叫的後端 URL |
 | Secret   | `DAILY_RADAR_INTERNAL_TOKEN` | Daily Radar workflow 呼叫內部 API 的 Bearer token |
 | Secret   | `CALIBRATION_REPORT_PASSPHRASE` | 月度 production calibration artifact 的 AES-256 對稱加密密碼 |
 | Variable | `VITE_API_URL`               | 前端 build 時注入後端 URL                         |
 | Variable | `VITE_GOOGLE_CLIENT_ID`      | 前端 Google OAuth client ID                       |
 
-### 生產環境（Zeabur Environment Variables）
+### 生產環境（Cloud Run 設定與 Secret Manager）
+
+正式部署基準見 `scripts/gcp/production-env.yaml`；敏感值由 Secret Manager 注入，詳細權限及人工 migration gate 見 [正式準備手冊](docs/gcp-production-preparation-runbook.md)。
 
 | 名稱                | 值                                                   |
 | ------------------- | ---------------------------------------------------- |
@@ -265,8 +268,16 @@ FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_c
 | `DATABASE_URL`      | PostgreSQL 連線字串                                  |
 | `DAILY_RADAR_INTERNAL_TOKEN` | 與 GitHub Actions secret 同一組 token |
 | `DAILY_RADAR_BACKGROUND_PROVIDER_MODE` | 籌碼背景來源模式；部署初始值 `finmind_only` |
+| `DAILY_RADAR_LENDING_PROVIDER_MODE` | 借券來源覆寫；正式部署範本為 `official_first`，融資融券仍沿用背景模式 |
 | `DAILY_RADAR_TW_OHLCV_PROVIDER_MODE` | 台股日線來源模式；部署初始值 `yfinance_only` |
 | `FUNDAMENTAL_PROVIDER_MODE` | 基本面來源模式；部署初始值 `finmind_only` |
+
+借券只有在官方市場報表成功解析且包含資料日證據時，才將未出現的個股記為零成交；
+解析不完整或報表取得失敗會保留缺口／退回 FinMind，不以零代替來源失敗。
+AVWAP 官方日 K 使用驗證 TLS 的既有 HTTP 工具，每次月份請求最多兩次嘗試、預設兩個月份併發；
+失敗會記錄股票、月份、階段、例外類別與 HTTP 狀態，不記錄回應本文。
+同一 provider 與資料截止日可重用成功月份，空回應及新截止日會重新抓取；此快取不跨程序重啟。
+EPS 歷史回補仍保存實際觀測時間，後取得的值不會回填為較早 Radar 日期已知。
 
 #### Data migration 部署門檻
 

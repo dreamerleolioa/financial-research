@@ -31,6 +31,7 @@ class DefaultBackgroundChipContextProvider:
         official_provider: OfficialBackgroundChipContextProvider | None = None,
         tdcc_provider: TdccWeeklyMajorHoldersProvider | None = None,
         provider_mode: str | None = None,
+        lending_provider_mode: str | None = None,
     ) -> None:
         self._finmind_provider = finmind_provider or FinMindBackgroundChipContextProvider()
         self._official_provider = official_provider or OfficialBackgroundChipContextProvider()
@@ -41,6 +42,11 @@ class DefaultBackgroundChipContextProvider:
         )
         if self._provider_mode not in _BACKGROUND_PROVIDER_MODES:
             raise ValueError("invalid DAILY_RADAR_BACKGROUND_PROVIDER_MODE")
+        self._lending_provider_mode = lending_provider_mode or os.getenv(
+            "DAILY_RADAR_LENDING_PROVIDER_MODE", self._provider_mode,
+        )
+        if self._lending_provider_mode not in _BACKGROUND_PROVIDER_MODES:
+            raise ValueError("invalid DAILY_RADAR_LENDING_PROVIDER_MODE")
 
     def fetch(
         self,
@@ -55,7 +61,8 @@ class DefaultBackgroundChipContextProvider:
 
         payloads: dict[tuple[str, str], BackgroundContextPayload] = {}
         for context_type in finmind_types:
-            if self._provider_mode == "finmind_only":
+            mode = self._lending_provider_mode if context_type == "lending" else self._provider_mode
+            if mode == "finmind_only":
                 for payload in self._finmind_provider.fetch(
                     symbols=symbols,
                     context_types=[context_type],
@@ -67,7 +74,7 @@ class DefaultBackgroundChipContextProvider:
 
             official_symbols = symbols
             fallback_symbols: list[str] = []
-            if self._provider_mode == "official_first":
+            if mode == "official_first":
                 official_symbols = [
                     symbol for symbol in symbols if is_official_background_supported_symbol(symbol)
                 ]
@@ -82,7 +89,7 @@ class DefaultBackgroundChipContextProvider:
                     ):
                         payloads[(payload.symbol, payload.context_type)] = payload
             except OfficialBackgroundContextError:
-                if self._provider_mode != "official_first":
+                if mode != "official_first":
                     raise
                 fallback_symbols = list(symbols)
             if fallback_symbols:

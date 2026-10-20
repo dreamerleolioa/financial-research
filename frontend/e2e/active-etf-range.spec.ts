@@ -55,6 +55,78 @@ const rangeData = {
   })),
 };
 
+for (const mode of ["range", "daily"] as const) {
+  test(`ETF ${mode} search preserves Zhuyin composition until text is committed`, async ({ page }, testInfo) => {
+    await authenticate(page);
+    await installApiMocks(page, { activeEtfDaily });
+    await page.route("**/active-etf-holdings/range**", (route) => route.fulfill({ json: rangeData }));
+    await page.goto(`/active-etf?mode=${mode}&view=consensus&date=2026-08-28&q=2330`);
+    const search = page.getByRole("searchbox", { name: "搜尋個股" });
+    await expect(search).toHaveValue("2330");
+    await search.fill("");
+    await expect(page).not.toHaveURL(/[?&]q=/);
+    await search.focus();
+
+    // Chromium's IME protocol exercises the browser's composition lifecycle;
+    // fill("台積電") alone never enters the preedit state reported by the user.
+    const ime = await page.context().newCDPSession(page);
+    await ime.send("Input.imeSetComposition", { text: "ㄊ", selectionStart: 1, selectionEnd: 1 });
+    await expect(search).toHaveValue("ㄊ");
+    await ime.send("Input.imeSetComposition", { text: "ㄊㄞˊ", selectionStart: 3, selectionEnd: 3 });
+    await expect(search).toHaveValue("ㄊㄞˊ");
+    await expect(page).not.toHaveURL(/[?&]q=/);
+    await page.screenshot({ path: testInfo.outputPath(`${mode}-zhuyin-preedit.png`) });
+    await expect(
+      page.getByRole("button", {
+        name: mode === "range" ? "查看 2330.TW 台積電 區間明細" : "查看 2330.TW 台積電 的 2 檔 ETF 變化",
+      }),
+    ).toBeVisible();
+
+    await ime.send("Input.insertText", { text: "台" });
+    await expect(search).toHaveValue("台");
+    await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("台");
+    await ime.send("Input.imeSetComposition", { text: "ㄐㄧ", selectionStart: 2, selectionEnd: 2 });
+    await expect(search).toHaveValue("台ㄐㄧ");
+    await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("台");
+    await ime.send("Input.insertText", { text: "積電" });
+    await expect(search).toHaveValue("台積電");
+    await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("台積電");
+    await page.screenshot({ path: testInfo.outputPath(`${mode}-zhuyin-committed.png`) });
+
+    await search.press("Backspace");
+    await expect(search).toHaveValue("台積");
+    await search.press("ControlOrMeta+A");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.evaluate(() => navigator.clipboard.writeText("台積電"));
+    await search.press("ControlOrMeta+V");
+    await expect(search).toHaveValue("台積電");
+    await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("台積電");
+    await search.fill("2330.TW");
+    await search.pressSequentially("1234567890");
+    await expect(search).toHaveValue("2330.TW1234567890");
+    await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("2330.TW1234567890");
+    await search.fill("");
+    await expect(page).not.toHaveURL(/[?&]q=/);
+    await ime.send("Input.imeSetComposition", { text: "ㄓ", selectionStart: 1, selectionEnd: 1 });
+    await ime.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
+    await expect(search).toHaveValue("");
+    await expect(page).not.toHaveURL(/[?&]q=/);
+    await ime.detach();
+
+    if (mode === "range") {
+      await search.fill("台積電");
+      await page.getByLabel("開始日期").fill("2026-08-26");
+      await page.getByRole("button", { name: "套用區間" }).click();
+      await expect(page.getByLabel("開始日期")).toHaveValue("2026-08-26");
+      await search.fill("2330");
+      await page.goBack();
+      await expect(search).toHaveValue("台積電");
+      await page.goForward();
+      await expect(search).toHaveValue("2330");
+    }
+  });
+}
+
 test("ETF interval keeps shared stock search, independent dates, and drilldown return", async ({ page }, testInfo) => {
   await authenticate(page);
   await installApiMocks(page, { activeEtfDaily });

@@ -1,19 +1,73 @@
 # Financial Research 正式切換操作
 
-本階段只準備入口、main CI/CD、最終還原與回退保護。Zeabur 仍是正式來源；
-未取得切換確認前，不更新 Pages／排程 URL、不提交最終匯入、不解除維護、不停止 Zeabur。
-既有測試服務已退役，不為這階段重建常駐測試環境。
+GCP 已於 2026-10-19 完成正式資料還原與入口切換，2026-10-20 完成 Google 登入、
+ETF、分析與寫入讀回驗收。歷史排程補跑的資料完整性另列下方，不以功能驗收代替資料 ready。
+既有測試服務已退役；Zeabur 財務 API 保留暫停狀態及回復資料，共用 PostgreSQL／health 等其他服務保留。
 
-## 2026-10-19 準備狀態
+## 2026-10-19 正式切換紀錄
 
 - 已套用 main 限制：GitHub `gcp-production` 只允許 main，保留人工核准及禁止 admin bypass；
-  `GCP_PRODUCTION_DEPLOY_REF=refs/heads/main`、`GCP_PRODUCTION_ACCESS_MODE=private`，WIF 也只接受 main。
+  `GCP_PRODUCTION_DEPLOY_REF=refs/heads/main`，WIF 也只接受 main；正式入口開放後，
+  `GCP_PRODUCTION_ACCESS_MODE` 已改為 `public`。
 - 經另外確認，已解除 Zeabur `financial-research-hae` 的 GitHub 部署來源綁定。
-  原部署、網域與資料庫保留；解除後舊 `/health` 實測為 200 / `{"status":"ok"}`。
-- GCP 仍為 `financial-research-prod-00002-w4r`，未部署本次新映像；
-  invoker IAM check 開啟，無 `allUsers`／`allAuthenticatedUsers`，外部未驗證 `/health` 為 403。
-- 本次工具尚待使用者 push／merge main 及核准原生部署；之後才能實測新維護 gate 並確認開放入口。
-  最終資料匯入、前端／排程端點切換及停用 Zeabur 都尚未執行。
+  原部署、網域與資料庫保留；最終停寫時已暫停財務 API，未刪除服務或共用資料庫。
+- main `af9f4f0db0f3cdfcc5b9b0ab3c8f8a0ef3d3bd81` 經使用者合併與核准，
+  [CI/CD #343](https://github.com/dreamerleolioa/financial-research/actions/runs/39224107843) 完成正式部署。
+  固定映像為 `sha256:de15f51cd68f3176a3f3553a62ec6a8977b2777ae932c515392730c7d3e5013b`。
+- 最終還原 journal `production/final-restore-20261019.json` 為 `committed_verified`；
+  交易提交前核對 39 表、778,889 筆、29 個序列、結構／內容／權限與 Alembic head `ab2c3d4e5f6a`。
+  最終來源快照及 GCP 回復快照均保留，禁止重跑已提交的還原。
+- 正式 API 為 `https://financial-research-prod-nwnvm3jsoq-de.a.run.app`。
+  公開 HTTPS 使用應用 Google／JWT 與 internal token 驗證，維護模式已解除；Cloud SQL 權限未放寬。
+  Pages 與兩個排程 URL 設定均已切至此入口；Pages build log 已核對實際注入的 GCP URL。
+- **GCP 已有切換後的新寫入。** 回退前須先凍結 writer、匯出 GCP 新資料並對帳；不能直接恢復舊 Zeabur URL。
+
+## 2026-10-20 功能驗收
+
+| 項目 | 實際結果與界線 |
+| --- | --- |
+| Google 登入 | Pages 使用既有個人 Google 帳號完成登入；重新整理後 `/auth/me` 仍為 200，Cloud Run log 確認請求進入 GCP |
+| ETF 單日／區間 | 10/16 快照、個股明細及 9/17–10/16 區間正常；來源日期、持股數、權重差與缺口均可讀回 |
+| 2330.TW 分析 | 前端取得分析與技術指標；完整日 K／指標日期為 10/19，盤中狀態有標示 |
+| 寫入與讀回 | GCP 10/20 分析 cache ID 166、raw ID 13061；第二次前端分析後 ID、時間與內容雜湊不變，確認持久化與快取讀回 |
+| 應用存取 | 無 JWT 的 `/auth/me`、`/analyze` 為 401；internal 缺 token 為 401、錯 token 為 403；正確既有 token 可查 10/19 開市狀態 |
+| CORS | Pages origin 預檢 200 且回傳指定 origin；未允許 origin 預檢 400 且沒有 allow-origin |
+| DB 除錯權限 | `financial_prod_debug_readonly` 實際以 readonly 連線；無 DML 授權，API/debug 都無 health-tracking CONNECT 權限 |
+
+寫入驗收使用目前仍提供的分析持久化；已下線的關注／持股 UI 沒有重新啟用。
+本次未另建第二個 Google 測試帳號；DB 隔離驗證不等同實際雙帳號 UI 驗收。
+即時行情 trade date/time 尚無可驗證來源，沿用使用者先前同意不阻擋遷移的範圍。
+
+## 2026-10-20 歷史排程補跑
+
+功能驗收完成後，六類既有工作流程均恢復啟用。10/19 已成功執行的基本面早間刷新不重跑；
+週頻 chip context 與月度 calibration 在 10/19 沒有到期作業，只恢復原排程。
+歷史 Radar 手動作業固定指定 `run_date=2026-10-19`，不採用補跑當天的預設日期。
+
+| 作業 | 實際結果 |
+| --- | --- |
+| 法人歸檔 | [Radar #966](https://github.com/dreamerleolioa/financial-research/actions/runs/39351006365) 完成；TW 1,079／TWO 768 筆，錯誤 0 |
+| 市場日 K 歸檔 | [Radar #967](https://github.com/dreamerleolioa/financial-research/actions/runs/39351156736) 完成；唯讀 SQL 核對 10/19 TW 1,082／TWO 870 筆 |
+| 候選母體／基本面預熱 | [Radar #968](https://github.com/dreamerleolioa/financial-research/actions/runs/39351322681) 建立 prepared run 83、185 檔；後續基本面預熱失敗 |
+| ETF 更新 | [ETF #72](https://github.com/dreamerleolioa/financial-research/actions/runs/39351229464) 完成；前端最新資料日 10/19，23/32 檔有資料，9 檔來源未提供，172 筆持股變化 |
+| 一般分析前瞻驗證 | [Validation #60](https://github.com/dreamerleolioa/financial-research/actions/runs/39351365180) 完成；as_of_date 10/19、sample_count 8、records_written 0、retryable_skipped_count 0 |
+| 借券 | [Radar #969](https://github.com/dreamerleolioa/financial-research/actions/runs/39351664262) 未通過資料 gate；185 筆已保存，46 檔 source_stale／finmind_no_data，errors 0 |
+| 完整融資融券 | [Radar #970](https://github.com/dreamerleolioa/financial-research/actions/runs/39351784125) 執行成功；其餘 readiness 以後續資料核對為準 |
+| Selected OHLCV | [Radar #971](https://github.com/dreamerleolioa/financial-research/actions/runs/39351845389) 完成；10/19 共 185 筆 final raw，missing_symbols 0 |
+| Managed raw data | [Radar #972](https://github.com/dreamerleolioa/financial-research/actions/runs/39351982346) 完成，本次新增 0 筆 |
+| 市場背景 | [Radar #973](https://github.com/dreamerleolioa/financial-research/actions/runs/39352055795) 完成，1 筆市場背景；prepared run 狀態為 market_context_ready |
+| AVWAP | [Radar #974](https://github.com/dreamerleolioa/financial-research/actions/runs/39352088082) workflow 綠燈；DB step 實際 failed，185 筆保存、38 檔 twse_stock_day_request_failed；此為來源請求失敗，尚未確認 HTTP／TLS／timeout 根因，不能當成有效無資料或完整覆蓋。此步為 optional evidence |
+| Radar 前瞻驗證 | [Radar #975](https://github.com/dreamerleolioa/financial-research/actions/runs/39352106438) 雙口徑均完成；signal_close 寫入／驗證 446 筆，next_open 寫入 314、驗證 310、4 筆 stock_split_in_window 終止跳過；兩者本次 retryable_skipped_count 均為 0，next_open 剩餘 retryable window 為 0 |
+| AI 證據 | [Radar #976](https://github.com/dreamerleolioa/financial-research/actions/runs/39352339519) API completed、185 筆保存；technical／institutional／margin 缺口均為 0，fundamental 缺口 12、evidence_ready=false；workflow 依資料 gate 失敗 |
+| AVWAP 有界重試 | 單次 Cloud Shell TWSE 公開查詢正常後，以 [Radar #977](https://github.com/dreamerleolioa/financial-research/actions/runs/39352799323) 重用既有完成快照、只更新未完成的 38 檔；恢復 7 檔，最後仍有 31 檔 twse_stock_day_request_failed。Cloud Shell 探測不等同 Cloud Run 全面可達，保留兩次結果，未繼續重試或改動 provider |
+
+最終唯讀 SQL 核對 185/185 筆 10/19 raw 為 final；required lending 仍 failed，故未觸發
+`run-scoring`，10/19 沒有新增正式 Radar run／候選結果。07:00 複合補修中已完成的子步驟不再重複執行，
+保留目前逐步作業及診斷紀錄。前瞻驗證的既存歷史 skip reasons 仍保留，零本次 retryable 不代表歷史資料沒有缺口。
+
+基本面預熱的 Cloud Run request 為 409；唯讀呼叫現行 coverage 邏輯確認 12/185 檔
+`insufficient_eps_history`。`radar_fundamental_date_closed` 保護會拒絕隔日補寫成歷史已知證據，
+不能把 10/20 首次取得的值回填為 10/19 當時可見。保留失敗與缺口，不放寬 gate，也不因其他作業綠燈宣稱 10/19 完整 ready。
 
 ```mermaid
 flowchart TD
@@ -144,7 +198,7 @@ Google OAuth 沿用 Pages 的 origin／callback，不需要加入 Cloud Run call
 - 手動啟動原生六類 Actions，再恢復排程並觀察完整日週期。
   查同一 run_date、required steps、來源日期、missing lanes、scoring、retry/backlog 與 artifact；
   不能用 HTTP 200 或 workflow 綠燈代替資料有效性，也不放寬既有資料不足條件。
-- 通過後另行確認停用 Zeabur 財務後端。共享 PostgreSQL 只有在確認 health 等其他服務無依賴時才可停用。
+- 通過後另行確認退役／刪除已暫停的 Zeabur 財務後端。共享 PostgreSQL 只有在確認 health 等其他服務無依賴時才可停用。
 
 GCP 尚未新增資料時，先恢復維護、暫停排程，再用以下唯讀檢查對齊最終 source bundle：
 
@@ -166,4 +220,5 @@ uv run python ../scripts/gcp/restore-production.py verify-rollback \
   最新快照完整性／還原／回退測試另確認 3 passed，包含匯入後內容不符時交易回復及新資料阻止直接回退。
 - 部署 shell 的維護狀態競爭回歸、Python 3.9 verifier CLI、shell／Python 語法及文件引用檢查完成。
 - 一次完整獨立 review 的三項可行動問題已修正；針對修正與備份完整性保護的後續 review 無新 finding。
-- 上述是本機及唯讀線上準備驗證；尚未驗證本次新映像的原生 Actions 部署、公開入口或正式切換後登入／寫入／六類排程。
+- 上述是切換前的本機及準備驗證；原生正式部署與 10/20 功能驗收結果見本文前段。
+  六類 workflow 已恢復，10/19 歷史補跑仍有已列明的資料缺口；尚未觀察切換後完整例行日週期。
