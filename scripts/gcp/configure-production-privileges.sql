@@ -18,6 +18,13 @@ GRANT USAGE ON SCHEMA public TO financial_prod_api, financial_prod_debug_readonl
 GRANT USAGE ON SCHEMA maintenance_backup TO financial_prod_debug_readonly;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO financial_prod_api;
 REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM financial_prod_api;
+DO $$ BEGIN
+  IF to_regclass('public.auth_allowed_accounts') IS NOT NULL THEN
+    REVOKE ALL ON public.auth_allowed_accounts FROM PUBLIC;
+    REVOKE ALL ON public.auth_allowed_accounts FROM financial_prod_api;
+    GRANT SELECT ON public.auth_allowed_accounts TO financial_prod_api;
+  END IF;
+END $$;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO financial_prod_api;
 GRANT SELECT ON ALL TABLES IN SCHEMA public, maintenance_backup TO financial_prod_debug_readonly;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA public, maintenance_backup TO financial_prod_debug_readonly;

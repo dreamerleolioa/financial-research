@@ -1,5 +1,71 @@
 import { expect, test } from "@playwright/test";
-import { installApiMocks } from "./fixtures";
+import { authenticate, installApiMocks } from "./fixtures";
+
+const deniedAccount = {
+  detail: { code: "ACCOUNT_NOT_ALLOWLISTED", message: "此帳號尚未取得使用權限，請聯絡管理者。" },
+};
+
+test("unapproved Google account receives a clear denial without a login loop", async ({ page }) => {
+  const requestLog: string[] = [];
+  await installApiMocks(page, { requestLog });
+  await page.route("**/auth/google/code", route => route.fulfill({ status: 403, json: deniedAccount }));
+  await page.addInitScript(() => sessionStorage.setItem("google_oauth_state", "allowed-state"));
+  await page.goto("/login/callback?code=code&state=allowed-state");
+  await expect(page.getByRole("alert")).toContainText("此帳號尚未取得使用權限");
+  await expect(page).toHaveURL(/\/login\/callback\?/);
+  await expect(page.evaluate(() => localStorage.getItem("auth_token"))).resolves.toBeNull();
+  expect(requestLog.filter(r => r === "POST /auth/google/code").length).toBeLessThanOrEqual(1);
+});
+
+test("revoked existing session clears token and explains denial on login page", async ({ page }) => {
+  await installApiMocks(page);
+  await page.route("**/auth/me", route => route.fulfill({ status: 403, json: deniedAccount }));
+  await page.addInitScript(() => localStorage.setItem("auth_token", "previously-valid-token"));
+  await page.goto("/analyze");
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("alert")).toContainText("此帳號尚未取得使用權限");
+  await expect(page.evaluate(() => localStorage.getItem("auth_token"))).resolves.toBeNull();
+});
+
+test("membership revoked during analysis returns the user to a clear login denial", async ({ page }) => {
+  await authenticate(page);
+  await installApiMocks(page);
+  await page.goto("/analyze");
+  await page.route("http://127.0.0.1:8001/analyze", route => route.fulfill({ status: 403, json: deniedAccount }));
+  await page.getByLabel("股票代碼").fill("2330.TW");
+  await page.getByLabel("股票代碼").press("Enter");
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("alert")).toContainText("此帳號尚未取得使用權限");
+  await expect(page.evaluate(() => localStorage.getItem("auth_token"))).resolves.toBeNull();
+});
+
+test("late denial from an old session cannot clear a newly selected account", async ({ context, page }) => {
+  const alice = { id: 1, email: "alice@example.com", name: "Alice", avatar_url: null };
+  const bob = { id: 2, email: "bob@example.com", name: "Bob", avatar_url: null };
+  const usersByToken = { "alice-token": alice, "bob-token": bob };
+  let releaseOldResponse: (() => void) | undefined;
+  let oldRequests = 0;
+  const oldResponseGate = new Promise<void>(resolve => { releaseOldResponse = resolve; });
+  await page.addInitScript(() => localStorage.setItem("auth_token", "alice-token"));
+  await installApiMocks(page, { usersByToken });
+  await page.route("**/auth/me", async route => {
+    if (route.request().headers().authorization !== "Bearer alice-token") return route.fallback();
+    oldRequests += 1;
+    await oldResponseGate;
+    return route.fulfill({ status: 403, json: deniedAccount });
+  });
+  await page.goto("/analyze");
+  await expect.poll(() => oldRequests).toBeGreaterThan(0);
+  const switcher = await context.newPage();
+  await installApiMocks(switcher, { usersByToken });
+  await switcher.goto("/login");
+  await switcher.evaluate(() => localStorage.setItem("auth_token", "bob-token"));
+  await expect(page.getByText("bob@example.com", { exact: true })).toBeVisible();
+  releaseOldResponse?.();
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByText("bob@example.com", { exact: true })).toBeVisible();
+  await expect(page.evaluate(() => localStorage.getItem("auth_token"))).resolves.toBe("bob-token");
+});
 
 test("protected routes redirect to the branded login screen and persist theme choice", async ({ page }) => {
   await installApiMocks(page);

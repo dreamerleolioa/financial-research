@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.auth.allowlist import require_allowed_account
 from ai_stock_sentinel.auth.jwt_handler import decode_access_token
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.user_models.user import User
@@ -34,4 +35,5 @@ def get_current_user(
             detail="User not found or inactive",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    require_allowed_account(db, user.google_sub, stage="session")
     return user

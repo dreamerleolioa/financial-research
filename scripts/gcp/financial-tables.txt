@@ -4,6 +4,7 @@ public.active_etf_holdings
 public.active_etf_source_holdings
 public.active_etf_source_observations
 public.alembic_version
+public.auth_allowed_accounts
 public.analysis_calibration_samples
 public.analysis_forward_validation_results
 public.backtest_result

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.auth.dependencies import get_current_user
+from ai_stock_sentinel.auth.allowlist import require_allowed_account
 from ai_stock_sentinel.auth.google_verifier import exchange_google_auth_code, verify_google_id_token
 from ai_stock_sentinel.auth.jwt_handler import create_access_token
 from ai_stock_sentinel.db.session import get_db
@@ -44,7 +45,10 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)) -> 
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
 
+    require_allowed_account(db, google_info.sub, stage="google_token")
     user = db.query(User).filter(User.google_sub == google_info.sub).first()
+    if user is not None and (not user.is_active or user.deleted_at is not None):
+        raise HTTPException(status_code=401, detail="User not found or inactive")
     if user is None:
         user = User(
             google_sub=google_info.sub,
@@ -72,7 +76,10 @@ def google_login_with_code(payload: GoogleCodeRequest, db: Session = Depends(get
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
 
+    require_allowed_account(db, google_info.sub, stage="google_code")
     user = db.query(User).filter(User.google_sub == google_info.sub).first()
+    if user is not None and (not user.is_active or user.deleted_at is not None):
+        raise HTTPException(status_code=401, detail="User not found or inactive")
     if user is None:
         user = User(
             google_sub=google_info.sub,

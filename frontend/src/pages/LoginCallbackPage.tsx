@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthenticationShell } from "../components/auth/AuthenticationShell";
+import { isAccountNotAllowlisted } from "../lib/apiClient";
 import { appPath } from "../lib/config";
 import { consumeGoogleOAuthState } from "../lib/googleOAuthState";
 import { useAuth } from "../stores/auth";
@@ -30,7 +31,9 @@ export default function LoginCallbackPage() {
 
     loginWithGoogleCode(code, `${window.location.origin}${appPath("login/callback")}`)
       .then(() => navigate("/", { replace: true }))
-      .catch(() => setError("目前無法完成登入，請返回登入頁後再試一次。"));
+      .catch((error: unknown) => setError(isAccountNotAllowlisted(error)
+        ? "此帳號尚未取得使用權限，請聯絡管理者。"
+        : "目前無法完成登入，請返回登入頁後再試一次。"));
   }, [loginWithGoogleCode, navigate]);
 
   if (error) {

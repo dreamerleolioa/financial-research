@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { requestJson } from "../lib/apiClient";
-import { AUTH_TOKEN_STORAGE_KEY, clearToken, getToken, setToken } from "../lib/auth";
+import { isAccountNotAllowlisted, requestJson } from "../lib/apiClient";
+import { AUTH_ACCESS_DENIED_EVENT, AUTH_TOKEN_STORAGE_KEY, clearToken, getToken, setToken } from "../lib/auth";
 
 interface User {
   id: number;
@@ -17,6 +17,7 @@ interface AuthState {
 }
 
 interface AuthContextValue extends AuthState {
+  accessDenied: boolean;
   loginWithGoogleToken: (idToken: string) => Promise<void>;
   loginWithGoogleCode: (code: string, redirectUri: string) => Promise<void>;
   logout: () => void;
@@ -27,6 +28,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const verificationSequenceRef = useRef(0);
+  const [accessDenied, setAccessDenied] = useState(false);
   const [state, setState] = useState<AuthState>({
     user: null,
     token: getToken(),
@@ -51,7 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         setState({ user, token, isLoading: false });
-      } catch {
+      } catch (error) {
         if (
           verificationSequenceRef.current !== verificationSequence ||
           getToken() !== token
@@ -60,6 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         clearUserScopedCache();
         clearToken();
+        setAccessDenied(isAccountNotAllowlisted(error));
         setState({ user: null, token: null, isLoading: false });
       }
     },
@@ -77,6 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const handleStorage = (event: StorageEvent) => {
       if (event.key !== AUTH_TOKEN_STORAGE_KEY) return;
       clearUserScopedCache();
+      setAccessDenied(false);
       if (event.newValue) {
         void verifyStoredToken(event.newValue);
       } else {
@@ -84,8 +88,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setState({ user: null, token: null, isLoading: false });
       }
     };
+    const handleAccessDenied = () => {
+      verificationSequenceRef.current += 1;
+      clearUserScopedCache();
+      clearToken();
+      setAccessDenied(true);
+      setState({ user: null, token: null, isLoading: false });
+    };
     window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
+    window.addEventListener(AUTH_ACCESS_DENIED_EVENT, handleAccessDenied);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(AUTH_ACCESS_DENIED_EVENT, handleAccessDenied);
+    };
   }, [clearUserScopedCache, verifyStoredToken]);
 
   const loginWithGoogleToken = useCallback(
@@ -101,6 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       clearUserScopedCache();
       setToken(data.access_token);
+      setAccessDenied(false);
       setState({ user: data.user, token: data.access_token, isLoading: false });
     },
     [clearUserScopedCache],
@@ -119,6 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       clearUserScopedCache();
       setToken(data.access_token);
+      setAccessDenied(false);
       setState({ user: data.user, token: data.access_token, isLoading: false });
     },
     [clearUserScopedCache],
@@ -128,11 +145,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     verificationSequenceRef.current += 1;
     clearUserScopedCache();
     clearToken();
+    setAccessDenied(false);
     setState({ user: null, token: null, isLoading: false });
   }, [clearUserScopedCache]);
 
   return (
-    <AuthContext.Provider value={{ ...state, loginWithGoogleToken, loginWithGoogleCode, logout }}>
+    <AuthContext.Provider value={{ ...state, accessDenied, loginWithGoogleToken, loginWithGoogleCode, logout }}>
       {children}
     </AuthContext.Provider>
   );
