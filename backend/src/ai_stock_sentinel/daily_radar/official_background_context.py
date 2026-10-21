@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, timedelta
 import math
+import logging
 import re
 from typing import Any
 
@@ -30,6 +31,7 @@ _HISTORICAL_MARGIN_TIMEOUT_SECONDS = 10
 _MAX_HISTORICAL_MARGIN_REQUEST_FAILURES = 2
 
 RequestGetter = Callable[..., Any]
+logger = logging.getLogger(__name__)
 
 
 class OfficialBackgroundContextError(RuntimeError):
@@ -111,6 +113,64 @@ class OfficialBackgroundChipContextProvider:
                     market=market,
                 )
 
+    def fetch_margin_inapplicability(
+        self, *, symbols: list[str], run_date: date, market: str,
+    ) -> dict[str, BackgroundContextPayload]:
+        """Resolve only explicit official eligibility, independently of balance fetching."""
+        request_get = self._request_get or _import_requests_get()
+        by_market = {
+            code: [symbol for symbol in symbols if symbol.endswith(f".{code}")]
+            for code in ("TW", "TWO")
+        }
+        evidence: dict[str, dict[str, Any]] = {}
+
+        def report(url: str, params: dict[str, str], dataset: str) -> Mapping[str, Any]:
+            try:
+                return _request_json(request_get, url, params=params,
+                    timeout=min(self._timeout, 15), dataset=dataset)
+            except OfficialBackgroundContextError as exc:
+                logger.warning("margin_eligibility_unavailable dataset=%s reason=%s run_date=%s",
+                               dataset, exc.code, run_date)
+                return {}
+
+        # Dated credit status takes precedence over listing-age evidence.
+        if by_market["TW"]:
+            evidence.update(credit_trading_inapplicability(report(
+                TWSE_CREDIT_STATUS_URL, {"response": "json", "date": run_date.strftime("%Y%m%d")},
+                "TWSE_TWT93U"), symbols=by_market["TW"], run_date=run_date))
+        if by_market["TWO"]:
+            evidence.update(tpex_credit_trading_inapplicability(report(
+                TPEX_CREDIT_STATUS_URL, {"response": "json", "date": run_date.strftime("%Y/%m/%d")},
+                "TPEX_margin_sbl"), symbols=by_market["TWO"], run_date=run_date))
+        missing_tw = [symbol for symbol in by_market["TW"] if symbol not in evidence]
+        if missing_tw:
+            evidence.update(initial_listing_inapplicability(report(
+                TWSE_NEW_LISTING_URL, {"response": "json"}, "TWSE_newlisting"),
+                symbols=missing_tw, run_date=run_date))
+        unresolved = {code: [symbol for symbol in selected if symbol not in evidence]
+                      for code, selected in by_market.items()}
+        years = [run_date.year] + ([run_date.year - 1] if run_date.month <= 6 else [])
+        for year in years:
+            if not any(unresolved.values()):
+                break
+            offering = report(TWSE_PUBLIC_OFFERING_URL,
+                              {"response": "json", "yy": str(year)}, "TWSE_publicForm")
+            for code, selected in unresolved.items():
+                evidence.update(initial_listing_inapplicability(
+                    offering, symbols=selected, run_date=run_date, market_code=code,
+                    source_url=TWSE_PUBLIC_OFFERING_URL))
+                unresolved[code] = [symbol for symbol in selected if symbol not in evidence]
+        datasets = {TWSE_PUBLIC_OFFERING_URL: "TWSE_publicForm", TWSE_NEW_LISTING_URL: "TWSE_newlisting",
+                    TWSE_CREDIT_STATUS_URL: "TWSE_TWT93U", TPEX_CREDIT_STATUS_URL: "TPEX_margin_sbl"}
+        return {symbol: BackgroundContextPayload(
+            symbol=symbol, context_type="full_margin",
+            applicable_consumers=OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS,
+            source=self._source(market=_symbol_market(symbol),
+                                dataset=datasets[payload["eligibility"]["source_url"]]),
+            as_of_date=run_date, freshness="fresh", payload=payload, missing_reason=None,
+            replay_key=f"background_context:{symbol}:full_margin:{run_date}:not_applicable",
+        ) for symbol, payload in evidence.items()}
+
     def _fetch_full_margin(
         self,
         *,
@@ -184,98 +244,17 @@ class OfficialBackgroundChipContextProvider:
                     dataset=_margin_dataset(market_code),
                 )
 
-        inapplicable = {}
-        missing_tw_symbols = [symbol for symbol in by_market["TW"] if not observations.get(symbol)]
-        # 全市場當日報表成功後才判斷個股資格，避免用資格資料掩蓋來源故障。
-        if missing_tw_symbols and run_date in market_dates["TW"]:
-            try:
-                listing_report = _request_json(
-                    request_get, TWSE_NEW_LISTING_URL, params={"response": "json"},
-                    timeout=self._timeout, dataset="TWSE_newlisting",
-                )
-                inapplicable = initial_listing_inapplicability(
-                    listing_report, symbols=missing_tw_symbols, run_date=run_date,
-                )
-            except OfficialBackgroundContextError:
-                # 資格查不到時保留原本的缺資料判定，不推定為不適用。
-                pass
-
-        offering_symbols = {
-            market_code: [symbol for symbol in market_symbols
-                          if not observations.get(symbol) and symbol not in inapplicable]
-            for market_code, market_symbols in by_market.items()
-            if run_date in market_dates[market_code]
-        }
-        if any(offering_symbols.values()):
-            # 新上市表可能僅標「科技事業」；改以申購公告明列的初上市／初上櫃驗證。
-            # 仍排除轉板與增資，且年初須查前一年。
-            years = [run_date.year]
-            if run_date.month <= 6:
-                years.append(run_date.year - 1)
-            for year in years:
-                try:
-                    listing_report = _request_json(
-                        request_get, TWSE_PUBLIC_OFFERING_URL,
-                        params={"response": "json", "yy": str(year)},
-                        timeout=self._timeout, dataset="TWSE_publicForm",
-                    )
-                    if str(listing_report.get("date")) == str(year):
-                        for market_code, missing_symbols in offering_symbols.items():
-                            inapplicable.update(initial_listing_inapplicability(
-                                listing_report, symbols=missing_symbols,
-                                run_date=run_date, market_code=market_code,
-                                source_url=TWSE_PUBLIC_OFFERING_URL,
-                            ))
-                except OfficialBackgroundContextError:
-                    pass
-
-        missing_credit_symbols = [symbol for symbol in missing_tw_symbols if symbol not in inapplicable]
-        if missing_credit_symbols and run_date in market_dates["TW"]:
-            try:
-                credit_report = _request_json(
-                    request_get, TWSE_CREDIT_STATUS_URL,
-                    params={"response": "json", "date": run_date.strftime("%Y%m%d")},
-                    timeout=self._timeout, dataset="TWSE_TWT93U",
-                )
-                inapplicable.update(credit_trading_inapplicability(
-                    credit_report, symbols=missing_credit_symbols, run_date=run_date,
-                ))
-            except OfficialBackgroundContextError:
-                pass
-
-        missing_tpex_credit_symbols = [symbol for symbol in by_market["TWO"]
-                                      if not observations.get(symbol) and symbol not in inapplicable]
-        if missing_tpex_credit_symbols and run_date in market_dates["TWO"]:
-            try:
-                credit_report = _request_json(
-                    request_get, TPEX_CREDIT_STATUS_URL,
-                    params={"response": "json", "date": run_date.strftime("%Y/%m/%d")},
-                    timeout=self._timeout, dataset="TPEX_margin_sbl",
-                )
-                inapplicable.update(tpex_credit_trading_inapplicability(
-                    credit_report, symbols=missing_tpex_credit_symbols, run_date=run_date,
-                ))
-            except OfficialBackgroundContextError:
-                pass
-
+        # Balance-report success is still required before qualifying missing rows
+        # on this path. The FinMind empty-response path uses the same resolver.
+        missing_symbols = [symbol for code, selected in by_market.items()
+                           if run_date in market_dates[code]
+                           for symbol in selected if not observations.get(symbol)]
+        inapplicable = self.fetch_margin_inapplicability(
+            symbols=missing_symbols, run_date=run_date, market=market,
+        )
         for symbol in symbols:
             if symbol in inapplicable:
-                yield BackgroundContextPayload(
-                    symbol=symbol, context_type="full_margin",
-                    applicable_consumers=OFFICIAL_BACKGROUND_CONTEXT_CONSUMERS,
-                    source=self._source(
-                        market=_symbol_market(symbol),
-                        dataset={
-                            TWSE_PUBLIC_OFFERING_URL: "TWSE_publicForm",
-                            TWSE_NEW_LISTING_URL: "TWSE_newlisting",
-                            TWSE_CREDIT_STATUS_URL: "TWSE_TWT93U",
-                            TPEX_CREDIT_STATUS_URL: "TPEX_margin_sbl",
-                        }[inapplicable[symbol]["eligibility"]["source_url"]],
-                    ),
-                    as_of_date=run_date, freshness="fresh", payload=inapplicable[symbol],
-                    missing_reason=None,
-                    replay_key=f"background_context:{symbol}:full_margin:{run_date}:not_applicable",
-                )
+                yield inapplicable[symbol]
                 continue
             rows = sorted(observations.get(symbol, []), key=lambda item: item[0])
             if not rows:

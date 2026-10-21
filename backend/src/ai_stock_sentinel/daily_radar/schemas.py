@@ -88,6 +88,7 @@ class DailyRadarRefreshStepResponse(BaseModel):
     not_applicable_symbols: list[str] = Field(default_factory=list)
     missing_symbols: list[str] = Field(default_factory=list)
     missing_symbol_reasons: dict[str, str] = Field(default_factory=dict)
+    symbol_diagnostics: dict[str, dict[str, Any]] = Field(default_factory=dict)
     skipped_symbols: list[str] = Field(default_factory=list)
     skipped_symbol_reasons: dict[str, str] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)

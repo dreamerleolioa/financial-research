@@ -51,9 +51,14 @@ class YFinanceBatchTechnicalFetcher:
     ) -> None:
         self._name_resolver = name_resolver
         self._official_bar_loader = official_bar_loader
+        self.diagnostics: dict[str, dict[str, Any]] = {}
 
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
+        self.diagnostics = {
+            symbol: {"requested_run_date": run_date.isoformat(), "attempts": []}
+            for symbol in ordered_symbols
+        }
         if not ordered_symbols:
             return {}
 
@@ -76,6 +81,10 @@ class YFinanceBatchTechnicalFetcher:
                 )
             ) for symbol in ordered_symbols
         }
+        for symbol, frame in frames.items():
+            self.diagnostics[symbol]["attempts"].append({
+                "stage": "initial_download", "actual_data_date": _last_index_date(frame),
+            })
         stale_symbols = [symbol for symbol, frame in frames.items()
                          if _last_index_date(frame) != run_date.isoformat()]
         if stale_symbols:
@@ -94,12 +103,20 @@ class YFinanceBatchTechnicalFetcher:
                     )
                     if (_last_index_date(frame) or "") > (_last_index_date(frames[symbol]) or ""):
                         frames[symbol] = frame
-            except Exception:
+                    self.diagnostics[symbol]["attempts"].append({
+                        "stage": "fresh_retry", "actual_data_date": _last_index_date(frame),
+                    })
+            except Exception as exc:
                 # 保留首次回應的日期證據，讓完整性檢查維持失敗，不偽造當日資料。
-                pass
+                for symbol in stale_symbols:
+                    self._record_attempt(symbol, "fresh_retry", "yahoo_refresh_unavailable", exc)
         provenance_by_symbol = self._repair_stale_frames(frames, run_date=run_date, start_date=start_date)
         payloads: dict[str, Mapping[str, Any]] = {}
         for symbol in ordered_symbols:
+            self.diagnostics[symbol].update({
+                "actual_data_date": _last_index_date(frames[symbol]),
+                "is_final": _last_index_date(frames[symbol]) == run_date.isoformat(),
+            })
             payload = _build_technical_payload(
                 symbol,
                 frames[symbol],
@@ -107,10 +124,18 @@ class YFinanceBatchTechnicalFetcher:
                 name=self._safe_resolve_name(symbol),
             )
             if payload is not None:
+                payload["refresh_diagnostics"] = self.diagnostics[symbol]
                 if symbol in provenance_by_symbol:
                     payload["source_provenance"] = provenance_by_symbol[symbol]
                 payloads[symbol] = payload
         return payloads
+
+    def _record_attempt(self, symbol: str, stage: str, reason: str, exc: Exception | None = None) -> None:
+        detail = {"stage": stage, "reason": reason}
+        if exc is not None:
+            detail["error_type"] = type(exc).__name__
+        self.diagnostics[symbol]["attempts"].append(detail)
+        logger.info("Daily Radar technical recovery symbol=%s stage=%s reason=%s", symbol, stage, reason)
 
     def _repair_stale_frames(
         self, frames: dict[str, Any], *, run_date: date, start_date: date,
@@ -123,20 +148,61 @@ class YFinanceBatchTechnicalFetcher:
         provenance: dict[str, dict[str, Any]] = {}
         try:
             official_by_symbol = self._official_bar_loader(stale, run_date=run_date)
-            repair_symbols = [symbol for symbol in stale if symbol in official_by_symbol]
-            if not repair_symbols:
-                return {}
-            # Fetch through now so Yahoo's live row cannot overwrite yesterday's
-            # missing row. Repair supplies the adjustment basis; after history
-            # and price-unit checks, the official bar supplies final OHLCV.
-            # Clip all future rows before accepting either source.
+        except Exception as exc:
+            for symbol in stale:
+                self._record_attempt(symbol, "official_bar", "official_bar_lookup_failed", exc)
+            return provenance
+        repair_symbols = [symbol for symbol in stale if symbol in official_by_symbol]
+        for symbol in stale:
+            if symbol not in official_by_symbol:
+                self._record_attempt(symbol, "official_bar", "official_bar_unavailable")
+        if not repair_symbols:
+            return provenance
+
+        # One independent raw batch supplies adjustment evidence and, when
+        # needed later, historical validation. Never fetch it a second time.
+        raw_frames: dict[str, Any] = {}
+        try:
             history = yf.download(
                 repair_symbols, group_by="ticker", start=start_date, interval="1d",
+                auto_adjust=False, repair=False, keepna=True, actions=True,
+                threads=True, progress=False,
+            )
+            for symbol in repair_symbols:
+                raw = _frame_on_or_before_run_date(
+                    _symbol_frame(history, symbol), run_date=run_date, start_date=start_date,
+                )
+                raw_frames[symbol] = raw
+                try:
+                    frame, source = verified_repaired_frame(
+                        frames[symbol], raw, official_by_symbol[symbol], symbol=symbol,
+                        run_date=run_date, adjustment_from_repaired_data=False,
+                    )
+                except TechnicalRepairRejected as exc:
+                    self._record_attempt(symbol, "raw_adjustment", str(exc))
+                    continue
+                frames[symbol], provenance[symbol] = frame, source
+                self._record_attempt(symbol, "raw_adjustment", "accepted")
+        except Exception as exc:
+            for symbol in repair_symbols:
+                if symbol not in provenance:
+                    self._record_attempt(symbol, "raw_adjustment", "yahoo_raw_adjustment_unavailable", exc)
+
+        pending = [symbol for symbol in repair_symbols if symbol not in provenance]
+        if not pending:
+            return provenance
+        try:
+            history = yf.download(
+                pending, group_by="ticker", start=start_date, interval="1d",
                 auto_adjust=False, repair=True, keepna=True, actions=True,
                 threads=True, progress=False,
             )
-            missing_history: dict[str, Any] = {}
-            for symbol in repair_symbols:
+        except Exception as exc:
+            for symbol in pending:
+                self._record_attempt(symbol, "repaired_adjustment", "yahoo_repair_unavailable", exc)
+            return provenance
+        for symbol in pending:
+            try:
                 repaired = _frame_on_or_before_run_date(
                     _symbol_frame(history, symbol), run_date=run_date, start_date=start_date,
                 )
@@ -146,48 +212,20 @@ class YFinanceBatchTechnicalFetcher:
                         symbol=symbol, run_date=run_date,
                     )
                 except TechnicalRepairRejected as exc:
-                    if str(exc) == "repair_history_values_missing":
-                        missing_history[symbol] = repaired
-                        continue
-                    logger.warning("Daily Radar technical repair rejected reason=%s", str(exc))
-                    continue
-                frames[symbol] = frame
-                provenance[symbol] = source
-            if missing_history:
-                # Repair can erase valid historical prices on a split-event
-                # row. Fetch one independent raw batch only for those symbols;
-                # the verifier still checks every accepted historical value.
-                try:
-                    unrepaired_history = yf.download(
-                        list(missing_history), group_by="ticker", start=start_date, interval="1d",
-                        auto_adjust=False, repair=False, keepna=True, actions=True,
-                        threads=True, progress=False,
+                    if str(exc) != "repair_history_values_missing" or symbol not in raw_frames:
+                        raise
+                    frame, source = verified_repaired_frame(
+                        frames[symbol], repaired, official_by_symbol[symbol],
+                        symbol=symbol, run_date=run_date, unrepaired_history=raw_frames[symbol],
                     )
-                except Exception as exc:
-                    logger.warning(
-                        "Daily Radar history validation unavailable symbol_count=%d error_type=%s",
-                        len(missing_history), type(exc).__name__,
-                    )
-                    return provenance
-                for symbol, repaired in missing_history.items():
-                    unrepaired = _frame_on_or_before_run_date(
-                        _symbol_frame(unrepaired_history, symbol), run_date=run_date, start_date=start_date,
-                    )
-                    try:
-                        frame, source = verified_repaired_frame(
-                            frames[symbol], repaired, official_by_symbol[symbol],
-                            symbol=symbol, run_date=run_date, unrepaired_history=unrepaired,
-                        )
-                    except TechnicalRepairRejected as exc:
-                        logger.warning("Daily Radar history validation rejected reason=%s", str(exc))
-                        continue
-                    frames[symbol] = frame
-                    provenance[symbol] = source
-        except Exception as exc:
-            logger.warning(
-                "Daily Radar technical repair unavailable symbol_count=%d error_type=%s",
-                len(stale), type(exc).__name__,
-            )
+            except TechnicalRepairRejected as exc:
+                self._record_attempt(symbol, "repaired_adjustment", str(exc))
+                continue
+            except Exception as exc:
+                self._record_attempt(symbol, "repaired_adjustment", "yahoo_repair_validation_unavailable", exc)
+                continue
+            frames[symbol], provenance[symbol] = frame, source
+            self._record_attempt(symbol, "repaired_adjustment", "accepted")
         return provenance
 
     def _safe_resolve_name(self, symbol: str) -> str | None:
@@ -223,6 +261,10 @@ class LocalFirstBatchTechnicalFetcher:
             raise ValueError("invalid DAILY_RADAR_TW_OHLCV_PROVIDER_MODE")
         self._min_trading_bars = max(1, min_trading_bars)
         self._name_resolver = name_resolver
+
+    @property
+    def diagnostics(self) -> Mapping[str, Any]:
+        return getattr(self._fallback_fetcher, "diagnostics", {})
 
     def _load_official_bars(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, TaiwanDailyBar]:
         return {row.symbol: row for row in get_taiwan_daily_bars(

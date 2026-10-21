@@ -2311,6 +2311,41 @@ def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "completed"
 
 
+@pytest.mark.parametrize("diagnostic_source", ["fetcher", "stored"])
+def test_refresh_ohlcv_preserves_successful_recovery_diagnostics(
+    monkeypatch, daily_radar_db_session: Session, diagnostic_source,
+) -> None:
+    run_date = date(2026, 10, 20)
+    prepared = DailyRadarPreparedRun(run_date=run_date, market="TW", selected_symbols=["2330.TW"],
+                                     universe=[], symbol_count=1)
+    daily_radar_db_session.add(prepared)
+    daily_radar_db_session.commit()
+    diagnostic = {"requested_run_date": run_date.isoformat(), "actual_data_date": run_date.isoformat(),
+                  "attempts": [{"stage": "raw_adjustment", "reason": "accepted"}]}
+    payload = _technical_payload("2330.TW", run_date)
+    payload["refresh_diagnostics"] = diagnostic
+    fetcher = FakeBatchTechnicalFetcher({"2330.TW": payload})
+    if diagnostic_source == "fetcher":
+        fetcher.diagnostics = {"2330.TW": diagnostic}
+    client = _api_client(monkeypatch, daily_radar_db_session, technical_fetcher=fetcher)
+    try:
+        response = client.post("/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": run_date.isoformat(), "market": "TW"},
+            headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["missing_symbols"] == []
+    detail = response.json()["symbol_diagnostics"]["2330.TW"]
+    assert detail["attempts"] == diagnostic["attempts"]
+    assert detail["actual_data_date"] == run_date.isoformat()
+    assert detail["is_final"] is True
+    assert detail["missing_fields"] == []
+    daily_radar_db_session.refresh(prepared)
+    assert prepared.step_statuses["refresh-ohlcv"]["symbol_diagnostics"] == response.json()["symbol_diagnostics"]
+
+
 def test_daily_radar_refresh_ohlcv_fails_when_provider_data_still_lags_run_date(
     monkeypatch,
     daily_radar_db_session: Session,
@@ -2344,8 +2379,13 @@ def test_daily_radar_refresh_ohlcv_fails_when_provider_data_still_lags_run_date(
     assert response.json()["missing_symbol_reasons"] == {
         "2330.TW": "technical_data_dates_not_run_date"
     }
+    diagnostic = response.json()["symbol_diagnostics"]["2330.TW"]
+    assert diagnostic["requested_run_date"] == run_date.isoformat()
+    assert diagnostic["data_dates"]["ohlcv"] == (run_date-timedelta(days=1)).isoformat()
+    assert diagnostic["is_final"] is False
     daily_radar_db_session.refresh(prepared)
     assert prepared.step_statuses["refresh-ohlcv"]["status"] == "failed"
+    assert prepared.step_statuses["refresh-ohlcv"]["symbol_diagnostics"] == response.json()["symbol_diagnostics"]
 
 
 def test_current_short_history_reaches_prefilter_without_blocking_healthy_symbols(

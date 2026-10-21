@@ -35,6 +35,7 @@ def verified_repaired_frame(
     symbol: str,
     run_date: date,
     unrepaired_history: Any | None = None,
+    adjustment_from_repaired_data: bool = True,
 ) -> tuple[Any, dict[str, Any]]:
     market, provider = ("TWO", "tpex") if symbol.endswith(".TWO") else ("TW", "twse")
     if (
@@ -195,10 +196,11 @@ def verified_repaired_frame(
         "adjustment_provider": "yfinance",
         "price_basis": "adjusted",
         "repair": {
-            "method": "official_final_bar_with_yahoo_adjustment",
-            # The factor comes from the repair=True response. Repaired? can
-            # remain false when yfinance repairs only dividend adjustments.
-            "adjustment_from_repaired_data": True,
+            "method": ("official_final_bar_with_yahoo_adjustment" if adjustment_from_repaired_data
+                       else "official_final_bar_with_yahoo_raw_adjustment"),
+            # Identify the response supplying the factor; Repaired? can remain
+            # false even when repair=True adjusts dividend factors.
+            "adjustment_from_repaired_data": adjustment_from_repaired_data,
             "data_date": run_date.isoformat(),
             "official_price_provider": provider,
             "official_price_dataset": official.source_dataset,

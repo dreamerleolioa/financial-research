@@ -8,5 +8,6 @@
   "DAILY_RADAR_BACKGROUND_PROVIDER_MODE": "finmind_only",
   "DAILY_RADAR_LENDING_PROVIDER_MODE": "official_first",
   "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE": "yfinance_only",
+  "DAILY_RADAR_AVWAP_PROVIDER_MODE": "archive_first",
   "FUNDAMENTAL_PROVIDER_MODE": "finmind_only"
 }

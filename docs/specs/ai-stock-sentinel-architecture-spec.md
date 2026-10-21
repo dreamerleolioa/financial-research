@@ -38,7 +38,7 @@
 | `analysis/` | Analysis router、schemas、Graph initial-state builders、cache/raw-data helpers、response assembly、graph runner adapter、confidence/risk scoring、technical metrics |
 | `data_sources/` | yfinance、FinMind token/client、institutional flow provider router、fundamental official cache/provider/router/service |
 | `daily_radar/` | schemas、presenter、universe、batch raw data、prefilter、scoring、market context、relative strength、background context、forward validation、rule governance、service、repository、router |
-| `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、TWSE-first daily price provider（`.TW` 走 TWSE `STOCK_DAY`，`.TWO` 保留 FinMind `TaiwanStockPrice` fallback）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Daily Radar read-only projections |
+| `phase1_avwap/` | Phase 1 Daily AVWAP：managed-universe resolver、archive-first daily price provider（獨立 AVWAP 設定讀官方未還原歸檔；`.TW` 遠端 403 有界切換 FinMind，`.TWO` 保留 FinMind 路徑）、deterministic daily AVWAP calculation、snapshot repository/service、Daily Radar evidence refresh、Analyze/Daily Radar read-only projections |
 | `active_etf_holdings/` | TWSE 股票型主動式 ETF 登錄、MoneyDJ-only 持股 adapter、原始 payload 封存、逐基金 transaction、相鄰快照差異與個股聚合；有資料即發布，不阻斷或修改 Daily Radar |
 | `shared_context.py` | 以 consumer-neutral vocabulary 讀取 `shared_background_contexts`；處理 freshness、applicability、point-in-time caveat |
 | `db/models.py` | SQLAlchemy models，包含 portfolio、events、reviews、analysis cache、raw data、Daily Radar、forward validation、shared background context |

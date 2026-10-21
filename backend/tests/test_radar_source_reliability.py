@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,115 @@ from ai_stock_sentinel.daily_radar.official_background_context import (
 )
 from ai_stock_sentinel.data_sources import official_http
 from ai_stock_sentinel.phase1_avwap.provider import DailyPriceProviderError, TwseDailyPriceProvider
+
+
+@pytest.mark.parametrize("evidence", ["valid", "wrong_date", "wrong_symbol", "eligible", "unavailable"])
+def test_finmind_empty_margin_requires_dated_official_ineligibility(evidence):
+    class EmptyMargin(FinMindStub):
+        def fetch(self, **kwargs):
+            for item in super().fetch(**kwargs):
+                yield replace(item, as_of_date=None, freshness="missing", payload={},
+                              missing_reason="finmind_no_data")
+
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        if evidence == "unavailable":
+            raise TimeoutError("private source failure")
+        if url.endswith("/margin/sbl"):
+            return Response({"stat": "ok", "date": "20261019" if evidence == "wrong_date" else "20261020",
+                "tables": [{"title": "信用額度總量管制餘額表", "fields": ["股票代號", "股票名稱", "備註"],
+                            "data": [["9999" if evidence == "wrong_symbol" else "7856", "漢測",
+                                      "" if evidence == "eligible" else "Y"]]}]})
+        return Response({"stat": "unavailable"})
+
+    [result] = list(DefaultBackgroundChipContextProvider(
+        finmind_provider=EmptyMargin(), provider_mode="finmind_only",
+        official_provider=OfficialBackgroundChipContextProvider(request_get=get),
+    ).fetch(symbols=["7856.TWO"], context_types=["full_margin"], run_date=date(2026, 10, 20), market="TW"))
+    assert (result.payload.get("applicability") == "not_applicable") == (evidence == "valid")
+    if evidence == "valid":
+        assert same_day_background_context_is_reusable(result, run_date=date(2026, 10, 20))
+        assert result.payload["eligibility"]["report_date"] == "2026-10-20"
+        assert len(calls) == 1
+    else:
+        assert result.missing_reason == "finmind_no_data"
+
+
+@pytest.mark.parametrize("reason", [None, "finmind_request_error", "source_stale"])
+def test_margin_eligibility_does_not_mask_real_rows_or_provider_failures(reason):
+    class Margin(FinMindStub):
+        def fetch(self, **kwargs):
+            for item in super().fetch(**kwargs):
+                yield replace(item, payload={"latest_margin_balance": 123} if reason is None else {},
+                              missing_reason=reason, freshness="fresh" if reason is None else "missing")
+    def forbidden(*args, **kwargs):
+        pytest.fail("eligibility lookup must only classify an empty margin response")
+    [result] = list(DefaultBackgroundChipContextProvider(
+        finmind_provider=Margin(), provider_mode="finmind_only",
+        official_provider=OfficialBackgroundChipContextProvider(request_get=forbidden),
+    ).fetch(symbols=["7856.TWO"], context_types=["full_margin"], run_date=date(2026, 10, 20), market="TW"))
+    assert result.missing_reason == reason
+
+
+def test_avwap_403_switches_whole_window_and_opens_request_scoped_circuit():
+    calls = []
+    class Fallback:
+        source_provider = "finmind"
+        source_dataset = "TaiwanStockPrice"
+        def fetch_history(self, symbol, **kwargs):
+            calls.append((symbol, kwargs))
+            return []
+    official_calls = []
+    def get(*args, **kwargs):
+        official_calls.append(kwargs)
+        return Response({}, 403)
+    provider = TwseDailyPriceProvider(request_get=get, fallback_provider=Fallback(), month_fetch_workers=1)
+    for symbol in ["2323.TW", "2330.TW"]:
+        result = provider.fetch_history_result(symbol, start_date=date(2026, 6, 1), end_date=date(2026, 10, 20))
+        assert result.source_provider == "finmind"
+        assert result.source_trace["fallback_reason"] == "twse_stock_day_http_403"
+    assert len(official_calls) == 1
+    assert [symbol for symbol, _ in calls] == ["2323.TW", "2330.TW"]
+    assert all(params == {"start_date": date(2026, 6, 1), "end_date": date(2026, 10, 20)} for _, params in calls)
+    provider.begin_refresh()
+    provider.fetch_history("2323.TW", start_date=date(2026, 6, 1), end_date=date(2026, 10, 20))
+    assert len(official_calls) == 2
+
+
+@pytest.mark.parametrize("invalid", ["json", "schema", "duplicate", "nan"])
+def test_parallel_403_cannot_hide_another_month_payload_error(invalid):
+    from threading import Barrier
+    barrier = Barrier(2)
+    fallback_calls, official_calls = [], []
+    class Fallback:
+        def fetch_history(self, *args, **kwargs):
+            fallback_calls.append((args, kwargs))
+            return []
+    def get(url, *, params, **kwargs):
+        official_calls.append(params)
+        barrier.wait(timeout=3)
+        if params["date"] == "20260601":
+            if invalid in {"json", "schema"}:
+                return Response({"stat": "OK", "fields": None, "data": []}, invalid_json=invalid == "json")
+            payload = prices("06")
+            if invalid == "duplicate":
+                payload["data"].append(list(payload["data"][0]))
+            else:
+                payload["data"][0][-1] = "NaN"
+            return Response(payload)
+        return Response({}, 403)
+    provider = TwseDailyPriceProvider(request_get=get, fallback_provider=Fallback(), month_fetch_workers=2)
+    reason = {"json": "twse_stock_day_request_failed", "schema": "twse_stock_day_parser_error",
+              "duplicate": "daily_price_duplicate_dates", "nan": "daily_price_values_invalid"}[invalid]
+    with pytest.raises(DailyPriceProviderError, match=reason):
+        provider.fetch_history("2323.TW", start_date=date(2026, 6, 1), end_date=date(2026, 7, 20))
+    assert fallback_calls == []
+    # Preserve this symbol's payload error while honoring the observed 403
+    # for all subsequent symbols in the same refresh.
+    provider.fetch_history("2330.TW", start_date=date(2026, 6, 1), end_date=date(2026, 7, 20))
+    assert len(official_calls) == 2
+    assert len(fallback_calls) == 1
 
 
 class Response:
@@ -201,8 +311,13 @@ def test_avwap_records_http_or_json_failure_without_retrying_invalid_responses(m
         return Response({}, status, invalid_json=invalid_json)
     monkeypatch.setattr(requests, "get", get)
     monkeypatch.setattr(official_http.curl_requests, "get", get)
-    with pytest.raises(DailyPriceProviderError, match="twse_stock_day_request_failed"):
-        TwseDailyPriceProvider().fetch_history("4564.TW", start_date=date(2026, 10, 1), end_date=date(2026, 10, 19))
+    class UnavailableFallback:
+        def fetch_history(self, *args, **kwargs):
+            raise DailyPriceProviderError("fallback_unavailable")
+    with pytest.raises(DailyPriceProviderError, match=("fallback_unavailable" if status == 403
+                                                     else "twse_stock_day_request_failed")):
+        TwseDailyPriceProvider(fallback_provider=UnavailableFallback()).fetch_history(
+            "4564.TW", start_date=date(2026, 10, 1), end_date=date(2026, 10, 19))
     assert calls == 1
     detail = json.loads(next(r.message for r in caplog.records if r.message.startswith("twse_stock_day_fetch_failed ")).split(" ", 1)[1])
     assert detail["stage"] == stage
@@ -262,3 +377,18 @@ def test_avwap_successful_month_cache_is_isolated_by_symbol():
     for symbol in ["4564.TW", "2330.TW", "4564.TW"]:
         provider.fetch_history(symbol, start_date=date(2026, 10, 1), end_date=date(2026, 10, 19))
     assert calls == ["4564", "2330"]
+
+
+def test_avwap_month_cache_preserves_rows_for_an_earlier_requested_start():
+    calls = []
+    def get(_url, **kwargs):
+        calls.append(kwargs)
+        payload = prices("10")
+        payload["data"].append(["115/10/17", "100", "1000", "10", "11", "9", "10"])
+        return Response(payload)
+    provider = TwseDailyPriceProvider(request_get=get)
+    recent = provider.fetch_history("2330.TW", start_date=date(2026, 10, 17), end_date=date(2026, 10, 20))
+    earlier = provider.fetch_history("2330.TW", start_date=date(2026, 10, 1), end_date=date(2026, 10, 20))
+    assert [bar.trade_date for bar in recent] == [date(2026, 10, 17)]
+    assert [bar.trade_date for bar in earlier] == [date(2026, 10, 15), date(2026, 10, 17)]
+    assert len(calls) == 1

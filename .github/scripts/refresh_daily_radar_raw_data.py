@@ -49,6 +49,9 @@ def run(*, base_url, token, run_date, output_dir, request=post, clock=time.monot
                      and response["missing_record_count"] == 0 and response.get("error_codes") == [])
         if not ready:
             failures.append(step)
+            if isinstance(response, dict) and response.get("symbol_diagnostics"):
+                print(diagnostic_json({"step": step, "symbol_diagnostics": response["symbol_diagnostics"]},
+                                      token, indent=None))
     summary = {"run_date": run_date, "failures": failures}
     (output_dir / "summary.json").write_text(diagnostic_json(summary, token))
     print(diagnostic_json(summary, token, indent=None))

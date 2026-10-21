@@ -1,6 +1,7 @@
 """Retiring the personal AI report must preserve product data refreshes."""
 from datetime import date
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -150,3 +151,26 @@ def test_nightly_budget_exhaustion_stops_further_network_requests(tmp_path):
     assert runner().run(base_url="https://example.invalid", token="private",
         run_date=str(DAY), output_dir=tmp_path, request=request, clock=lambda: elapsed[0]) == 1
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+def test_raw_refresh_preserves_symbol_diagnostics_without_leaking_token(tmp_path, capsys, recovered):
+    actual_date = "2026-10-20" if recovered else "2026-10-19"
+    diagnostic = {"2323.TW": {"requested_run_date": "2026-10-20", "actual_data_date": actual_date,
+                              "attempts": [{"stage": "raw_adjustment", "reason": "private-token"}]}}
+    def request(endpoint, token, payload, timeout):
+        step = endpoint.rsplit("/", 1)[1]
+        if step == "refresh-ohlcv":
+            return {"status": "completed" if recovered else "failed", "step": step, "run_date": "2026-10-20",
+                    "missing_symbols": [] if recovered else ["2323.TW"], "errors": [],
+                    "symbol_diagnostics": diagnostic}
+        return {"status": "completed", "step": step, "run_date": "2026-10-20",
+                "missing_record_count": 0, "error_codes": []}
+    assert runner().run(base_url="https://example.invalid", token="private-token", run_date="2026-10-20",
+                        output_dir=tmp_path, request=request) == int(not recovered)
+    output = capsys.readouterr().out
+    saved = (tmp_path/"refresh-ohlcv.json").read_text()
+    assert "private-token" not in output + saved
+    assert json.loads(saved)["symbol_diagnostics"]["2323.TW"]["actual_data_date"] == actual_date
+    if not recovered:
+        assert "2323.TW" in output

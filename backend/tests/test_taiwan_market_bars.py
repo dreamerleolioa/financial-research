@@ -446,6 +446,42 @@ def test_phase1_avwap_provider_reads_shared_archive_before_legacy_provider() -> 
         engine.dispose()
 
 
+def test_avwap_default_is_independent_of_adjusted_ohlcv_mode(monkeypatch):
+    monkeypatch.setenv("DAILY_RADAR_TW_OHLCV_PROVIDER_MODE", "yfinance_only")
+    monkeypatch.delenv("DAILY_RADAR_AVWAP_PROVIDER_MODE", raising=False)
+    session, engine = _db_session()
+    try:
+        start = date(2026, 3, 1)
+        upsert_taiwan_daily_bars(session, [_bar("2330.TW", start + timedelta(days=i), 100+i) for i in range(70)])
+        session.commit()
+        fallback = _FallbackDailyPriceProvider()
+        result = ArchiveFirstDailyPriceProvider(session, fallback_provider=fallback).fetch_history_result(
+            "2330.TW", start_date=start, end_date=start+timedelta(days=69))
+        assert len(result.bars) == 70
+        assert fallback.calls == 0
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_avwap_archive_count_cannot_hide_a_known_recent_session_gap():
+    session, engine = _db_session()
+    try:
+        start = date(2026, 3, 1)
+        calendar = [_bar("2330.TW", start+timedelta(days=i), 100+i) for i in range(70)]
+        candidate = [_bar("2323.TW", start+timedelta(days=i), 100+i) for i in range(70) if i != 60]
+        upsert_taiwan_daily_bars(session, [*calendar, *candidate])
+        session.commit()
+        fallback = _FallbackDailyPriceProvider()
+        result = ArchiveFirstDailyPriceProvider(session, fallback_provider=fallback).fetch_history_result(
+            "2323.TW", start_date=start, end_date=start+timedelta(days=69))
+        assert result.bars == []
+        assert fallback.calls == 1
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_phase1_avwap_provider_reports_actual_fallback_source() -> None:
     session, engine = _db_session()
     try:

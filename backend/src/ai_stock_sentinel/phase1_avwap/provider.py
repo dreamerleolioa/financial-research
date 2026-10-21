@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import date
 from functools import partial
 import json
 import logging
+import math
 import os
+from threading import Event
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.data_sources.finmind_client import FinMindClient
+from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
 from ai_stock_sentinel.data_sources.official_http import official_request_get
-from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
+from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars, get_taiwan_archive_session_dates
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
 
 
@@ -35,12 +37,19 @@ class DailyPriceHistoryResult:
     bars: list[DailyPriceBar]
     source_provider: str
     source_dataset: str
+    source_trace: dict[str, Any] = field(default_factory=dict)
 
 
 class DailyPriceProviderError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, http_status: int | None = None,
+                 source_trace: dict[str, Any] | None = None,
+                 source_provider: str | None = None, source_dataset: str | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.http_status = http_status
+        self.source_trace = source_trace or {}
+        self.source_provider = source_provider
+        self.source_dataset = source_dataset
 
 
 class FinMindDailyPriceProvider:
@@ -75,14 +84,21 @@ class TwseDailyPriceProvider:
         self._month_fetch_workers = max(1, month_fetch_workers)
         # Request-scoped only; a new as-of date must fetch the month again.
         self._monthly_rows: dict[tuple[str, date, date], tuple[DailyPriceBar, ...]] = {}
+        self._blocked_dates: set[date] = set()
+        self._fallback_symbols: set[str] = set()
+
+    def begin_refresh(self) -> None:
+        self._blocked_dates.clear()
+        self._fallback_symbols.clear()
+        self._monthly_rows.clear()
 
     def source_provider(self, symbol: str) -> str:
-        if _is_tpex_symbol(symbol):
+        if _is_tpex_symbol(symbol) or symbol in self._fallback_symbols:
             return _provider_metadata(self._fallback_provider, "source_provider", symbol, default="finmind")
         return "twse"
 
     def source_dataset(self, symbol: str) -> str:
-        if _is_tpex_symbol(symbol):
+        if _is_tpex_symbol(symbol) or symbol in self._fallback_symbols:
             return _provider_metadata(
                 self._fallback_provider,
                 "source_dataset",
@@ -92,8 +108,38 @@ class TwseDailyPriceProvider:
         return TWSE_STOCK_DAY_DATASET
 
     def fetch_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
-        if _is_tpex_symbol(symbol):
-            return self._fallback_provider.fetch_history(symbol, start_date=start_date, end_date=end_date)
+        return self.fetch_history_result(symbol, start_date=start_date, end_date=end_date).bars
+
+    def fetch_history_result(self, symbol: str, *, start_date: date, end_date: date) -> DailyPriceHistoryResult:
+        trace = {}
+        if not _is_tpex_symbol(symbol):
+            try:
+                if end_date not in self._blocked_dates:
+                    bars = self._fetch_twse_history(symbol, start_date=start_date, end_date=end_date)
+                    return DailyPriceHistoryResult(_validated_history(bars, start_date, end_date),
+                                                   "twse", TWSE_STOCK_DAY_DATASET)
+            except DailyPriceProviderError as exc:
+                if exc.http_status != 403:
+                    raise
+                self._blocked_dates.add(end_date)
+            trace = {"fallback_reason": "twse_stock_day_http_403", "http_status": 403,
+                     "primary_provider": "twse", "requested_start_date": start_date.isoformat(),
+                     "requested_end_date": end_date.isoformat()}
+        self._fallback_symbols.add(symbol)
+        provider, dataset = self.source_provider(symbol), self.source_dataset(symbol)
+        try:
+            bars = self._fallback_provider.fetch_history(symbol, start_date=start_date, end_date=end_date)
+            accepted = _validated_history(bars, start_date, end_date)
+            if trace:
+                trace.update({"rows_used": len(accepted),
+                              "actual_start_date": accepted[0].trade_date.isoformat() if accepted else None,
+                              "actual_end_date": accepted[-1].trade_date.isoformat() if accepted else None})
+            return DailyPriceHistoryResult(accepted, provider, dataset, trace)
+        except (FinMindClientError, DailyPriceProviderError, KeyError, ValueError) as exc:
+            raise DailyPriceProviderError(getattr(exc, "code", "daily_price_history_unavailable"),
+                source_trace=trace, source_provider=provider, source_dataset=dataset) from exc
+
+    def _fetch_twse_history(self, symbol: str, *, start_date: date, end_date: date) -> list[DailyPriceBar]:
         request_get = self._request_get or partial(official_request_get, max_attempts=TWSE_REQUEST_MAX_ATTEMPTS)
         months = _month_starts(start_date, end_date)
         monthly_rows = {
@@ -103,23 +149,54 @@ class TwseDailyPriceProvider:
         pending = [month for month in months if month not in monthly_rows]
         failures: dict[date, DailyPriceProviderError] = {}
         if pending:
+            forbidden = Event()
+            def fetch_month(month: date) -> list[DailyPriceBar]:
+                if forbidden.is_set():
+                    raise DailyPriceProviderError("twse_stock_day_request_failed", http_status=403)
+                try:
+                    return _fetch_twse_month(request_get, symbol=symbol, month=month, timeout=self._timeout)
+                except DailyPriceProviderError as exc:
+                    if exc.http_status == 403:
+                        forbidden.set()
+                    raise
             with ThreadPoolExecutor(max_workers=min(self._month_fetch_workers, len(pending))) as executor:
                 futures = {
-                    executor.submit(_fetch_twse_month, request_get, symbol=symbol, month=month, timeout=self._timeout): month
+                    executor.submit(fetch_month, month): month
                     for month in pending
                 }
                 for future in as_completed(futures):
                     month = futures[future]
                     try:
                         fetched = tuple(future.result())
+                    except CancelledError:
+                        continue
                     except DailyPriceProviderError as exc:
                         failures[month] = exc
+                        if exc.http_status == 403:
+                            self._blocked_dates.add(end_date)
+                            for queued in futures:
+                                queued.cancel()
                         continue
                     monthly_rows[month] = fetched
                     if fetched:
                         self._monthly_rows[(symbol, month, end_date)] = fetched
+        # Check every available month before failure precedence, including cached
+        # months. Keep the full monthly cache when validating a clipped window.
+        for month, bars in monthly_rows.items():
+            try:
+                _validated_history(bars, start_date, end_date)
+            except DailyPriceProviderError as exc:
+                failures[month] = exc
         if failures:
             # Retain other successful months, but never return partial history.
+            invalid_payloads = [error for error in failures.values()
+                                if error.code in {"twse_stock_day_parser_error", "daily_price_duplicate_dates",
+                                                  "daily_price_values_invalid"}
+                                or (error.http_status is not None and 200 <= error.http_status < 300)]
+            if invalid_payloads:
+                raise invalid_payloads[0]
+            if any(error.http_status == 403 for error in failures.values()):
+                raise next(error for error in failures.values() if error.http_status == 403)
             raise failures[min(failures)]
         rows = [bar for month in months for bar in monthly_rows[month]]
         return [
@@ -130,7 +207,7 @@ class TwseDailyPriceProvider:
 
 
 class ArchiveFirstDailyPriceProvider:
-    _MODES = {"yfinance_only", "official_first", "official_only"}
+    _MODES = {"archive_first", "remote_only", "yfinance_only", "official_first", "official_only"}
 
     def __init__(
         self,
@@ -143,15 +220,22 @@ class ArchiveFirstDailyPriceProvider:
         self._session = session
         self._fallback_provider = fallback_provider or TwseDailyPriceProvider()
         self._provider_mode = provider_mode or os.getenv(
-            "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
-            "yfinance_only",
+            "DAILY_RADAR_AVWAP_PROVIDER_MODE",
+            "archive_first",
         )
         if self._provider_mode not in self._MODES:
-            raise ValueError("invalid DAILY_RADAR_TW_OHLCV_PROVIDER_MODE")
+            raise ValueError("invalid DAILY_RADAR_AVWAP_PROVIDER_MODE")
         self._min_trading_bars = max(1, min_trading_bars)
+        self._archive_dates: dict[tuple[str, date, date], list[date]] = {}
+
+    def begin_refresh(self) -> None:
+        self._archive_dates.clear()
+        reset = getattr(self._fallback_provider, "begin_refresh", None)
+        if callable(reset):
+            reset()
 
     def source_provider(self, symbol: str) -> str:
-        if self._provider_mode == "yfinance_only":
+        if self._provider_mode in {"yfinance_only", "remote_only"}:
             return _provider_metadata(
                 self._fallback_provider,
                 "source_provider",
@@ -161,7 +245,7 @@ class ArchiveFirstDailyPriceProvider:
         return "taiwan_daily_bars_local_first"
 
     def source_dataset(self, symbol: str) -> str:
-        if self._provider_mode == "yfinance_only":
+        if self._provider_mode in {"yfinance_only", "remote_only"}:
             return _provider_metadata(
                 self._fallback_provider,
                 "source_dataset",
@@ -184,7 +268,7 @@ class ArchiveFirstDailyPriceProvider:
         start_date: date,
         end_date: date,
     ) -> DailyPriceHistoryResult:
-        if self._provider_mode == "yfinance_only":
+        if self._provider_mode in {"yfinance_only", "remote_only"}:
             return self._fallback_result(
                 symbol,
                 start_date=start_date,
@@ -196,9 +280,17 @@ class ArchiveFirstDailyPriceProvider:
             start_date=start_date,
             end_date=end_date,
         )
-        if len(rows) >= self._min_trading_bars and rows[-1].trade_date == end_date:
-            return DailyPriceHistoryResult(
-                bars=[
+        market = "TWO" if _is_tpex_symbol(symbol) else "TW"
+        key = (market, start_date, end_date)
+        if key not in self._archive_dates:
+            self._archive_dates[key] = get_taiwan_archive_session_dates(
+                self._session, market=market, start_date=start_date, end_date=end_date,
+            )
+        recent_dates = self._archive_dates[key][-self._min_trading_bars:]
+        if (len(rows) >= self._min_trading_bars and rows[-1].trade_date == end_date
+                and set(recent_dates).issubset({row.trade_date for row in rows})):
+            try:
+                bars = _validated_history([
                     DailyPriceBar(
                         trade_date=row.trade_date,
                         open=float(row.open),
@@ -206,15 +298,24 @@ class ArchiveFirstDailyPriceProvider:
                         low=float(row.low),
                         close=float(row.close),
                         volume=float(row.volume),
-                        amount=float(row.amount) if row.amount is not None else None,
+                        amount=(float(row.amount) if row.amount is not None else
+                                (float(row.high) + float(row.low) + float(row.close)) / 3 * float(row.volume)),
                         estimated_amount=row.amount is None,
                     )
                     for row in rows
-                ],
-                source_provider=rows[-1].source_provider,
-                source_dataset=rows[-1].source_dataset,
-            )
-        if self._provider_mode == "official_first":
+                ], start_date, end_date)
+            except DailyPriceProviderError:
+                bars = []
+            if bars:
+                return DailyPriceHistoryResult(
+                    bars=bars,
+                    source_provider=rows[-1].source_provider,
+                    source_dataset=rows[-1].source_dataset,
+                    source_trace={"route": "archive_first", "rows_used": len(bars),
+                                  "actual_start_date": bars[0].trade_date.isoformat(),
+                                  "actual_end_date": bars[-1].trade_date.isoformat()},
+                )
+        if self._provider_mode in {"official_first", "archive_first"}:
             return self._fallback_result(
                 symbol,
                 start_date=start_date,
@@ -233,6 +334,9 @@ class ArchiveFirstDailyPriceProvider:
         start_date: date,
         end_date: date,
     ) -> DailyPriceHistoryResult:
+        fetch_result = getattr(self._fallback_provider, "fetch_history_result", None)
+        if callable(fetch_result):
+            return fetch_result(symbol, start_date=start_date, end_date=end_date)
         return DailyPriceHistoryResult(
             bars=self._fallback_provider.fetch_history(
                 symbol,
@@ -280,7 +384,8 @@ def _fetch_twse_month(
         payload = response.json() if hasattr(response, "json") else response
     except Exception as exc:
         _log_twse_failure(symbol, month, stage, response, exc)
-        raise DailyPriceProviderError("twse_stock_day_request_failed") from exc
+        raise DailyPriceProviderError("twse_stock_day_request_failed",
+                                      http_status=getattr(response, "status_code", None)) from exc
     try:
         rows = normalize_twse_stock_day_payload(payload)
         if any((bar.trade_date.year, bar.trade_date.month) != (month.year, month.month) for bar in rows):
@@ -303,6 +408,21 @@ def _log_twse_failure(symbol: str, month: date, stage: str, response: Any, exc: 
         "content_type": str(headers.get("Content-Type", ""))[:80] or None,
     }
     logger.warning("twse_stock_day_fetch_failed %s", json.dumps(detail, sort_keys=True))
+
+
+def _validated_history(bars: Sequence[DailyPriceBar], start_date: date, end_date: date) -> list[DailyPriceBar]:
+    accepted = sorted((bar for bar in bars if start_date <= bar.trade_date <= end_date),
+                      key=lambda bar: bar.trade_date)
+    if len({bar.trade_date for bar in accepted}) != len(accepted):
+        raise DailyPriceProviderError("daily_price_duplicate_dates")
+    for bar in accepted:
+        prices = (bar.open, bar.high, bar.low, bar.close)
+        if (not all(math.isfinite(value) and value > 0 for value in prices)
+                or bar.low > min(bar.open, bar.close) or bar.high < max(bar.open, bar.close)
+                or not math.isfinite(bar.volume) or bar.volume < 0
+                or bar.amount is None or not math.isfinite(bar.amount) or bar.amount < 0):
+            raise DailyPriceProviderError("daily_price_values_invalid")
+    return accepted
 
 
 def normalize_finmind_daily_price_rows(rows: list[Mapping[str, Any]]) -> list[DailyPriceBar]:
