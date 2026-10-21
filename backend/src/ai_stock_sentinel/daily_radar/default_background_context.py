@@ -5,6 +5,7 @@ from datetime import date
 import os
 
 from ai_stock_sentinel.daily_radar.background_context import BackgroundContextPayload
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
 from ai_stock_sentinel.daily_radar.finmind_background_context import FinMindBackgroundChipContextProvider
 from ai_stock_sentinel.daily_radar.official_background_context import (
     OfficialBackgroundChipContextProvider,
@@ -100,6 +101,23 @@ class DefaultBackgroundChipContextProvider:
                     market=market,
                 ):
                     payloads[(payload.symbol, payload.context_type)] = payload
+        # Only a successful empty FinMind response may consult eligibility.
+        # Quota/transport failures, stale rows and actual balances retain ownership.
+        empty_margin_symbols = [
+            symbol for symbol in symbols
+            if (item := payloads.get((symbol, "full_margin"))) is not None
+            and item.missing_reason == "finmind_no_data" and not item.payload
+            and is_official_background_supported_symbol(symbol)
+        ]
+        if empty_margin_symbols:
+            eligibility = self._official_provider.fetch_margin_inapplicability(
+                symbols=empty_margin_symbols, run_date=run_date, market=market,
+            )
+            for symbol, item in eligibility.items():
+                if symbol in empty_margin_symbols and margin_is_not_applicable(
+                    item.payload, run_date=run_date, symbol=symbol,
+                ):
+                    payloads[(symbol, "full_margin")] = item
         if tdcc_types:
             for payload in self._tdcc_provider.fetch(
                 symbols=symbols,

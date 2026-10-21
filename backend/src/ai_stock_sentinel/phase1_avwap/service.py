@@ -117,6 +117,9 @@ def _refresh_phase1_avwap_snapshots_for_universe(
     missing_symbols: list[str] = []
     missing_symbol_reasons: dict[str, str] = {}
     active_provider = provider or TwseDailyPriceProvider()
+    reset = getattr(active_provider, "begin_refresh", None)
+    if callable(reset):
+        reset()
 
     for item in universe:
         existing_snapshot = existing.get(item.symbol)
@@ -128,6 +131,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
         start_date = _history_start_date(item, data_date=data_date, lookback_days=lookback_days)
         source_provider = _provider_metadata(active_provider, "source_provider", item.symbol, default="twse")
         source_dataset = _provider_metadata(active_provider, "source_dataset", item.symbol, default=TWSE_STOCK_DAY_DATASET)
+        source_trace = {}
         try:
             fetch_history_result = getattr(active_provider, "fetch_history_result", None)
             if callable(fetch_history_result):
@@ -139,6 +143,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
                 bars = history_result.bars
                 source_provider = history_result.source_provider
                 source_dataset = history_result.source_dataset
+                source_trace = getattr(history_result, "source_trace", {})
             else:
                 bars = active_provider.fetch_history(
                     item.symbol,
@@ -154,8 +159,13 @@ def _refresh_phase1_avwap_snapshots_for_universe(
                 source_provider=source_provider,
                 source_dataset=source_dataset,
             )
+            if source_trace:
+                payload["source"]["trace"] = source_trace
         except (DailyPriceProviderError, FinMindClientError, KeyError, ValueError) as exc:
             reason = _missing_reason(exc)
+            source_provider = getattr(exc, "source_provider", None) or source_provider
+            source_dataset = getattr(exc, "source_dataset", None) or source_dataset
+            source_trace = getattr(exc, "source_trace", None) or source_trace
             payload = build_missing_phase1_avwap_payload(
                 symbol=item.symbol,
                 data_date=data_date,
@@ -165,6 +175,8 @@ def _refresh_phase1_avwap_snapshots_for_universe(
                 source_dataset=source_dataset,
                 missing_reason=reason,
             )
+            if source_trace:
+                payload["source"]["trace"] = source_trace
             snapshot = upsert_phase1_avwap_snapshot(
                 session,
                 symbol=item.symbol,

@@ -172,10 +172,25 @@ def market_bar_count_for_date(
     )
 
 
+def get_taiwan_archive_session_dates(
+    session: Session, *, market: str, start_date: date, end_date: date,
+) -> list[date]:
+    """Known market sessions in the final archive, not proof of a complete calendar."""
+    return list(session.scalars(select(TaiwanDailyBar.trade_date).where(
+        TaiwanDailyBar.market == market,
+        TaiwanDailyBar.trade_date >= start_date,
+        TaiwanDailyBar.trade_date <= end_date,
+        TaiwanDailyBar.dataset == DEFAULT_MARKET_BAR_DATASET,
+        TaiwanDailyBar.adjustment_mode == DEFAULT_ADJUSTMENT_MODE,
+        TaiwanDailyBar.is_final.is_(True),
+    ).distinct().order_by(TaiwanDailyBar.trade_date)).all())
+
+
 __all__ = [
     "DEFAULT_ADJUSTMENT_MODE",
     "DEFAULT_MARKET_BAR_DATASET",
     "get_taiwan_daily_bars",
+    "get_taiwan_archive_session_dates",
     "market_bar_count_for_date",
     "upsert_taiwan_daily_bars",
 ]

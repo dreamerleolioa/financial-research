@@ -383,6 +383,43 @@ def test_refresh_phase1_avwap_snapshots_persists_routed_source_metadata(
     assert snapshot.payload["source"]["dataset"] == "fixture_fallback_dataset"
 
 
+@pytest.mark.parametrize("fallback_state", ["fresh", "stale", "quota", "duplicate", "invalid_price"])
+def test_403_fallback_persists_true_source_and_failure_trace(db_session, fallback_state):
+    from ai_stock_sentinel.data_sources.finmind_client import FinMindClientError
+    from dataclasses import replace
+    class Forbidden:
+        status_code = 403
+        headers = {"Content-Type": "text/html"}
+        def raise_for_status(self):
+            raise RuntimeError("not authorized")
+    class Fallback:
+        source_provider = "finmind"
+        source_dataset = "TaiwanStockPrice"
+        def fetch_history(self, symbol, *, start_date, end_date):
+            if fallback_state == "quota":
+                raise FinMindClientError("quota_exceeded", "private token", "TaiwanStockPrice")
+            target = end_date if fallback_state != "stale" else end_date-timedelta(days=1)
+            bars = [replace(bar, trade_date=bar.trade_date+(target-date(2026, 6, 5)))
+                    for bar in _bars(date(2026, 6, 5))]
+            if fallback_state == "duplicate":
+                bars.append(bars[-1])
+            elif fallback_state == "invalid_price":
+                bars[-1] = replace(bars[-1], close=float("nan"))
+            return bars
+    provider = TwseDailyPriceProvider(request_get=lambda *a, **kw: Forbidden(),
+                                     fallback_provider=Fallback(), month_fetch_workers=1)
+    result = refresh_phase1_avwap_snapshots_for_symbols(db_session, symbols=["2323.TW"],
+                data_date=date(2026, 10, 20), provider=provider)
+    snapshot = result.snapshots[0]
+    assert (snapshot.freshness == "fresh") is (fallback_state == "fresh")
+    assert snapshot.source_provider == "finmind"
+    assert snapshot.payload["source"]["trace"]["http_status"] == 403
+    assert snapshot.payload["source"]["trace"]["fallback_reason"] == "twse_stock_day_http_403"
+    if fallback_state != "fresh":
+        assert result.missing_symbols == ["2323.TW"]
+        assert "private token" not in str(snapshot.payload)
+
+
 def test_refresh_phase1_avwap_snapshots_for_symbols_refreshes_daily_radar_selection(
     db_session: Session,
 ) -> None:

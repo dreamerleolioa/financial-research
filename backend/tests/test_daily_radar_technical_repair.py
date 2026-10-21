@@ -20,6 +20,58 @@ from ai_stock_sentinel.db.session import Base
 RUN_DATE = date(2026, 9, 15)
 
 
+@pytest.mark.parametrize("factor", [0.05, 0.5, 0.95, 1.0])
+def test_independent_raw_adjustment_preserves_history_without_repair_heuristics(monkeypatch, factor):
+    original, raw, official = _repair_fixture(factor=factor)
+    before = original.copy(deep=True)
+    calls = []
+    def download(symbols, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("repair"):
+            pytest.fail("verified raw adjustment must not depend on repair=True")
+        return pd.concat({"2330.TW": raw if kwargs.get("auto_adjust") is False else original}, axis=1)
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
+    result = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None,
+        official_bar_loader=lambda *args, **kwargs: {"2330.TW": official}).fetch(["2330.TW"], run_date=RUN_DATE)
+    technical = result["2330.TW"]
+    assert technical["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
+    assert technical["source_provenance"]["repair"]["adjustment_from_repaired_data"] is False
+    assert technical["source_provenance"]["repair"]["adjustment_factor"] == pytest.approx(factor)
+    assert technical["price_history"][:-1] == [{"date": index.date().isoformat(), "close": row.Close}
+                                              for index, row in before.iloc[-79:].iterrows()]
+    pd.testing.assert_frame_equal(original, before)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("invalid", ["history_changed", "factor_jump", "nan", "wrong_date",
+                                    "wrong_units", "duplicate", "future_gap", "not_final"])
+def test_independent_raw_adjustment_retains_strict_validation(invalid):
+    from ai_stock_sentinel.daily_radar.technical_repair import verified_repaired_frame, TechnicalRepairRejected
+    original, raw, official = _repair_fixture()
+    raw = raw.loc[raw.index <= pd.Timestamp(RUN_DATE)]
+    if invalid == "history_changed":
+        raw.loc[original.index[0], "Adj Close"] *= 1.1
+    elif invalid == "factor_jump":
+        raw.loc[pd.Timestamp(RUN_DATE), "Adj Close"] *= 1.1
+    elif invalid == "nan":
+        raw.loc[pd.Timestamp(RUN_DATE), "Adj Close"] = float("nan")
+    elif invalid == "wrong_date":
+        official.trade_date = date(2026, 9, 14)
+    elif invalid == "wrong_units":
+        official.open *= 100
+    elif invalid == "duplicate":
+        raw = pd.concat([raw, raw.iloc[[-1]]])
+    elif invalid == "future_gap":
+        original = original.iloc[:-1]
+    elif invalid == "not_final":
+        official.is_final = False
+    before = original.copy(deep=True)
+    with pytest.raises(TechnicalRepairRejected):
+        verified_repaired_frame(original, raw, official, symbol="2330.TW", run_date=RUN_DATE,
+                                adjustment_from_repaired_data=False)
+    pd.testing.assert_frame_equal(original, before)
+
+
 def _frame(end="2026-09-14", periods=80):
     return pd.DataFrame(
         {
@@ -75,7 +127,9 @@ def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_d
         elif kwargs.get("auto_adjust") is False and unrepaired is not None:
             if isinstance(unrepaired, Exception):
                 raise unrepaired
-            frame = unrepaired
+            # This fixture exercises repair-only recovery: Yahoo raw history
+            # has no target-day adjustment, but can validate existing dates.
+            frame = unrepaired.drop(pd.Timestamp(run_date), errors="ignore")
         return pd.concat({symbol: frame}, axis=1)
 
     def load_official(symbols, *, run_date):
@@ -137,11 +191,11 @@ def test_missing_repair_history_uses_verified_unrepaired_prices_without_replacin
         "data_dates": [gap_date.date().isoformat()],
     }
     assert len(calls) == 4
-    assert calls[-1][0] == ["5904.TWO"]
-    assert calls[-1][1]["repair"] is False
-    assert calls[-1][1]["auto_adjust"] is False
-    assert calls[-1][1]["actions"] is True
-    assert "end" not in calls[-1][1]
+    assert calls[2][0] == ["5904.TWO"]
+    assert calls[2][1]["repair"] is False
+    assert calls[2][1]["auto_adjust"] is False
+    assert calls[2][1]["actions"] is True
+    assert "end" not in calls[2][1]
 
 
 @pytest.mark.parametrize("invalid", [
@@ -229,7 +283,7 @@ def test_unverified_history_recovery_preserves_stale_data(monkeypatch, invalid):
     assert "source_provenance" not in result["5904.TWO"]
     assert len(calls) <= 4
     if invalid == "target_adjustment_nan":
-        assert len(calls) == 3
+        assert len(calls) == 4
 
 
 @pytest.mark.parametrize("raw_available", [True, False])
@@ -250,7 +304,7 @@ def test_history_recovery_fetches_only_affected_symbols_and_keeps_other_verified
         elif kwargs.get("auto_adjust") is False:
             if not raw_available:
                 raise RuntimeError("source unavailable")
-            frames = {"5904.TWO": gap_raw}
+            frames = {**originals, "5904.TWO": gap_raw.drop(pd.Timestamp(RUN_DATE))}
         return pd.concat({symbol: frames[symbol] for symbol in symbols}, axis=1)
 
     monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
@@ -262,7 +316,7 @@ def test_history_recovery_fetches_only_affected_symbols_and_keeps_other_verified
     ).fetch(["5904.TWO", "2330.TW"], run_date=RUN_DATE)
     assert result["2330.TW"]["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
     assert (result["5904.TWO"]["data_dates"]["ohlcv"] == RUN_DATE.isoformat()) is raw_available
-    assert calls == [["5904.TWO", "2330.TW"]] * 3 + [["5904.TWO"]]
+    assert calls == [["5904.TWO", "2330.TW"]] * 4
 
 
 @pytest.mark.parametrize("symbol", ["2330.TW", "3264.TWO"])
@@ -290,7 +344,7 @@ def test_repair_verifies_official_prices_keeps_adjustment_and_uses_official_volu
     assert provenance["repair"]["volume_provider"] == official.source_provider
     assert provenance["repair"]["data_date"] == RUN_DATE.isoformat()
     assert official_calls == [([symbol], RUN_DATE)]
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert calls[-1][1]["repair"] is True
     assert calls[-1][1]["auto_adjust"] is False
     assert calls[-1][1]["keepna"] is True
@@ -368,7 +422,7 @@ def test_unverified_repair_preserves_stale_dates(monkeypatch, invalid):
     result, calls, _ = _fetch(monkeypatch, original, repaired, official)
     assert result["2330.TW"]["data_dates"]["ohlcv"] == original.index[-1].date().isoformat()
     assert "source_provenance" not in result["2330.TW"]
-    assert len(calls) <= 3
+    assert len(calls) <= 4
 
 
 def test_healthy_data_does_not_call_repair_or_official_loader(monkeypatch):
@@ -405,7 +459,23 @@ def test_repair_exception_preserves_evidence_and_is_bounded(monkeypatch):
         official_bar_loader=lambda *args, **kwargs: {"2330.TW": official},
     ).fetch(["2330.TW"], run_date=RUN_DATE)
     assert result["2330.TW"]["data_dates"]["ohlcv"] == "2026-09-14"
-    assert len(calls) == 3
+    assert len(calls) == 4
+
+
+def test_malformed_recovery_response_retains_stale_evidence_and_diagnostic(monkeypatch):
+    original, _, official = _repair_fixture()
+    calls = []
+    def download(symbols, **kwargs):
+        calls.append(kwargs)
+        return None if kwargs.get("auto_adjust") is False else pd.concat({"2330.TW": original}, axis=1)
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
+    fetcher = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None,
+        official_bar_loader=lambda *a, **kw: {"2330.TW": official})
+    technical = fetcher.fetch(["2330.TW"], run_date=RUN_DATE)["2330.TW"]
+    assert technical["data_dates"]["ohlcv"] == "2026-09-14"
+    assert "source_provenance" not in technical
+    assert len(calls) == 4
+    assert fetcher.diagnostics["2330.TW"]["attempts"][-1]["reason"] == "yahoo_repair_validation_unavailable"
 
 
 def test_repair_only_fetches_stale_symbols_and_preserves_healthy_payload(monkeypatch):
@@ -425,7 +495,7 @@ def test_repair_only_fetches_stale_symbols_and_preserves_healthy_payload(monkeyp
         official_bar_loader=lambda *args, **kwargs: {"3264.TWO": official},
     )
     result = fetcher.fetch(["2330.TW", "3264.TWO"], run_date=RUN_DATE)
-    assert calls == [["2330.TW", "3264.TWO"], ["3264.TWO"], ["3264.TWO"]]
+    assert calls == [["2330.TW", "3264.TWO"], ["3264.TWO"], ["3264.TWO"], ["3264.TWO"]]
     assert result["2330.TW"]["ohlcv"]["volume"] == healthy.iloc[-1]["Volume"]
     assert "source_provenance" not in result["2330.TW"]
     assert result["3264.TWO"]["data_dates"]["ohlcv"] == RUN_DATE.isoformat()
@@ -477,10 +547,11 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
                 session.expire_all()
                 persisted = session.query(StockRawData).one().technical["source_provenance"]["repair"]
                 assert persisted["data_date"] == RUN_DATE.isoformat()
-                assert persisted["adjustment_from_repaired_data"] is True
+                assert persisted["adjustment_from_repaired_data"] is (not raw_history_complete)
                 assert persisted["adjustment_factor"] == pytest.approx(0.95)
-                if history_gap:
-                    assert persisted["history_validation_fallback"]["data_dates"] == [gap_date.date().isoformat()]
+                if raw_history_complete:
+                    assert "history_validation_fallback" not in persisted
+                    assert persisted["method"] == "official_final_bar_with_yahoo_raw_adjustment"
             else:
                 assert stored.technical["data_dates"]["ohlcv"] == "2026-09-14"
     finally:
@@ -501,7 +572,7 @@ def test_official_final_bar_supplies_close_missing_from_intraday_reconstruction(
     assert technical["ohlcv"]["volume"] == official.volume
     assert [bar["close"] for bar in technical["price_history"][:-1]] == original["Close"].tolist()[-79:]
     assert technical["source_provenance"]["repair"]["method"] == "official_final_bar_with_yahoo_adjustment"
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_official_final_bar_supplies_full_price_range_with_verified_adjustment(monkeypatch):

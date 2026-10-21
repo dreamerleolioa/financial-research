@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundChipContextProvider
+from ai_stock_sentinel.daily_radar.data_quality import missing_daily_radar_candidate_technical_fields
 from ai_stock_sentinel.daily_radar.dependencies import (
     get_daily_radar_background_chip_context_provider,
     get_daily_radar_market_context_provider,
@@ -463,6 +464,23 @@ def refresh_daily_radar_ohlcv_endpoint(
         for symbol in missing_symbols
     }
     status = "failed" if missing_symbols else "completed"
+    rows_by_symbol = {row.symbol: row for row in stored_rows}
+    attempts_by_symbol = getattr(technical_fetcher, "diagnostics", {})
+    symbol_diagnostics = {}
+    symbols_requiring_diagnostics = set(missing_symbols) | short_history_symbols
+    for symbol in selected_symbols:
+        row = rows_by_symbol.get(symbol)
+        technical = (row.technical or {}) if row is not None else {}
+        diagnostic = dict(attempts_by_symbol.get(symbol) or technical.get("refresh_diagnostics") or {})
+        if not diagnostic and symbol not in symbols_requiring_diagnostics:
+            continue
+        diagnostic.update({
+            "requested_run_date": run_date.isoformat(),
+            "data_dates": technical.get("data_dates", {}),
+            "is_final": bool(row is not None and row.raw_data_is_final),
+            "missing_fields": missing_daily_radar_candidate_technical_fields(technical, record_date=run_date),
+        })
+        symbol_diagnostics[symbol] = diagnostic
     update_daily_radar_prepared_step_status(
         db,
         prepared,
@@ -473,6 +491,7 @@ def refresh_daily_radar_ohlcv_endpoint(
             "records_written": len(rows),
             "missing_symbols": missing_symbols,
             "missing_symbol_reasons": missing_symbol_reasons,
+            "symbol_diagnostics": symbol_diagnostics,
             "skipped_symbols": list(skipped_symbol_reasons),
             "skipped_symbol_reasons": skipped_symbol_reasons,
         },
@@ -487,6 +506,7 @@ def refresh_daily_radar_ohlcv_endpoint(
         records_written=len(rows),
         missing_symbols=missing_symbols,
         missing_symbol_reasons=missing_symbol_reasons,
+        symbol_diagnostics=symbol_diagnostics,
         skipped_symbols=list(skipped_symbol_reasons),
         skipped_symbol_reasons=skipped_symbol_reasons,
     )
