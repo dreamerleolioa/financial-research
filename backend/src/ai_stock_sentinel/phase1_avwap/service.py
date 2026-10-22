@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Protocol
 
@@ -16,6 +16,7 @@ from ai_stock_sentinel.phase1_avwap.calculator import (
 )
 from ai_stock_sentinel.phase1_avwap.provider import (
     DailyPriceProviderError,
+    InsufficientListedHistory,
     DEFAULT_ADJUSTMENT_MODE,
     DEFAULT_PHASE1_DATASET,
     TWSE_STOCK_DAY_DATASET,
@@ -41,6 +42,7 @@ class Phase1AvwapRefreshResult:
     missing_symbols: list[str]
     missing_symbol_reasons: dict[str, str]
     universe: list[ManagedUniverseSymbol]
+    skipped_symbol_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def refresh_phase1_avwap_snapshots(
@@ -116,6 +118,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
     fetched_symbols: list[str] = []
     missing_symbols: list[str] = []
     missing_symbol_reasons: dict[str, str] = {}
+    skipped_symbol_reasons: dict[str, str] = {}
     active_provider = provider or TwseDailyPriceProvider()
     reset = getattr(active_provider, "begin_refresh", None)
     if callable(reset):
@@ -190,8 +193,11 @@ def _refresh_phase1_avwap_snapshots_for_universe(
             )
             snapshots.append(snapshot)
             fetched_symbols.append(item.symbol)
-            missing_symbols.append(item.symbol)
-            missing_symbol_reasons[item.symbol] = reason
+            if isinstance(exc, InsufficientListedHistory):
+                skipped_symbol_reasons[item.symbol] = reason
+            else:
+                missing_symbols.append(item.symbol)
+                missing_symbol_reasons[item.symbol] = reason
             continue
 
         snapshot = upsert_phase1_avwap_snapshot(
@@ -215,6 +221,7 @@ def _refresh_phase1_avwap_snapshots_for_universe(
         missing_symbols=missing_symbols,
         missing_symbol_reasons=missing_symbol_reasons,
         universe=universe,
+        skipped_symbol_reasons=skipped_symbol_reasons,
     )
 
 

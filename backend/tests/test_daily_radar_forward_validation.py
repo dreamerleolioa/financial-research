@@ -1795,6 +1795,116 @@ def _forward_validation_sqlite_engine():
     return engine
 
 
+def test_due_api_persists_proven_terminal_but_keeps_unknown_gaps_retryable(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__,
+        DailyRadarForwardValidationResult.__table__, StockRawData.__table__])
+    days = ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-29", "2026-09-30"]
+    with Session(engine) as session:
+        run = _add_run(session, run_date=date(2026, 9, 21))
+        known = _add_candidate(session, run, symbol="8183.TWO")
+        unknown = _add_candidate(session, run, symbol="9999.TWO")
+        known_id, unknown_id = known.id, unknown.id
+        for day in days:
+            _add_raw(session, "TAIEX", date.fromisoformat(day), 1000)
+        for symbol in ("8183.TWO", "9999.TWO"):
+            for day in days[:2]:
+                _add_raw(session, symbol, date.fromisoformat(day), 100)
+        session.commit()
+    calls = []
+
+    class Prices:
+        def fetch(self, symbols, *, start_date, end_date):
+            calls.append(set(symbols))
+            return {symbol: [_price(d, 100, 102, 98, 100) for d in days[:2]] for symbol in symbols}
+
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    api.app.dependency_overrides[get_forward_price_provider] = lambda: Prices()
+    try:
+        client = TestClient(api.app)
+        request = {"mode": "due", "as_of_date": "2026-10-21", "windows": [5]}
+        first = client.post("/internal/daily-radar/forward-validation/run", json=request,
+                            headers={"Authorization": "Bearer test-token"})
+        second = client.post("/internal/daily-radar/forward-validation/run", json=request,
+                             headers={"Authorization": "Bearer test-token"})
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+        api.app.dependency_overrides.pop(get_forward_price_provider, None)
+    assert first.status_code == second.status_code == 200
+    assert first.json()["terminal_skipped_count"] == 1
+    assert first.json()["retryable_skipped_count"] == 1
+    assert first.json()["report"]["current_run_skip_reasons"] == {
+        "trading_terminated_in_window": 1, "missing_future_price": 1}
+    gap = next(g for g in first.json()["report"]["current_run_gaps"] if g["candidate_id"] == unknown_id)
+    assert gap["missing_dates"] == days[2:]
+    assert second.json()["records_written"] == 1
+    assert second.json()["report"]["current_run_skip_reasons"] == {"missing_future_price": 1}
+    assert second.json()["report"]["skip_reasons"] == {"trading_terminated_in_window": 1, "missing_future_price": 1}
+    assert calls == [{"8183.TWO", "9999.TWO"}, {"9999.TWO"}]
+    with Session(engine) as session:
+        pending = {f"id:{known_id}": [5]}
+        assert exclude_persisted_daily_radar_windows(session, pending, as_of_date=date(2026, 9, 30)) == pending
+        row = session.scalar(select(DailyRadarForwardValidationResult).where(
+            DailyRadarForwardValidationResult.candidate_id == known_id))
+        row.outcome = {}
+        session.flush()
+        assert exclude_persisted_daily_radar_windows(session, pending, as_of_date=date(2026, 10, 21)) == pending
+    engine.dispose()
+
+
+def test_backdated_due_run_preserves_completed_window_evaluated_later(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine, tables=[DailyRadarRun.__table__, DailyRadarCandidate.__table__,
+        DailyRadarForwardValidationResult.__table__, StockRawData.__table__])
+    days = ["2026-09-11", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"]
+    with Session(engine) as session:
+        run = _add_run(session, run_date=date(2026, 9, 11))
+        candidate = _add_candidate(session, run, symbol="8183.TWO")
+        candidate_id = candidate.id
+        snapshot = {**_candidate_snapshot(), "candidate_id": candidate_id, "symbol": "8183.TWO",
+                    "record_date": "2026-09-11", "data_dates": {"ohlcv": "2026-09-11"}}
+        outcome = evaluate_forward_window(snapshot,
+            price_series=[_price(day, 100, 102, 98, 100) for day in days],
+            benchmark_prices=[_price(day, 1000, 1002, 998, 1000) for day in days],
+            window_days=5, as_of_date=date(2026, 10, 21), benchmark_symbol="TAIEX",
+            validation_version=FORWARD_VALIDATION_VERSION, hit_threshold_pct=0,
+        )
+        assert outcome["status"] == "validated"
+        upsert_forward_validation_results(session, [outcome])
+        for day in days:
+            _add_raw(session, "TAIEX", date.fromisoformat(day), 1000)
+        session.commit()
+    calls = []
+
+    class EmptyPrices:
+        def fetch(self, symbols, *, start_date, end_date):
+            calls.append(symbols)
+            return {}
+
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-token")
+    api.app.dependency_overrides[get_db] = lambda: Session(engine)
+    api.app.dependency_overrides[get_forward_price_provider] = lambda: EmptyPrices()
+    try:
+        response = TestClient(api.app).post("/internal/daily-radar/forward-validation/run",
+            json={"mode": "due", "as_of_date": "2026-10-14", "windows": [5]},
+            headers={"Authorization": "Bearer test-token"})
+    finally:
+        api.app.dependency_overrides.pop(get_db, None)
+        api.app.dependency_overrides.pop(get_forward_price_provider, None)
+    assert response.status_code == 200
+    assert response.json()["records_written"] == 0
+    assert calls == []
+    with Session(engine) as session:
+        stored = session.scalar(select(DailyRadarForwardValidationResult).where(
+            DailyRadarForwardValidationResult.candidate_id == candidate_id))
+        assert stored.status == "validated"
+        assert stored.target_date == date(2026, 9, 18)
+        assert stored.evaluation_as_of_date == date(2026, 10, 21)
+        assert stored.outcome == outcome["outcome"]
+    engine.dispose()
+
+
 def _candidate_snapshot(*, data_dates: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "candidate_id": 1,

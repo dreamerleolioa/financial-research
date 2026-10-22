@@ -404,6 +404,7 @@ def run_daily_radar_forward_validation_endpoint(
                 db,
                 windows_by_candidate,
                 benchmark_symbol=request.benchmark_symbol,
+                as_of_date=as_of_date,
             )
         with metrics.stage("prepare_prices"):
             preparation = prepare_due_forward_validation(
@@ -455,6 +456,7 @@ def run_daily_radar_forward_validation_endpoint(
             aggregation_scope="persisted_fixed_date_cohort",
             benchmark_prices=benchmark_prices,
         )
+        report.update({key: evaluation.report[key] for key in ("current_run_skip_reasons", "current_run_gaps")})
     with metrics.stage("commit"):
         db.commit()
     return DailyRadarForwardValidationRunResponse(
