@@ -734,3 +734,13 @@ scoring required steps、候選範圍與排名規則保留；單股分析、AVWA
 ### 同日 OHLCV 有界恢復
 
 一般 adjusted batch 後僅對落後標的補抓一次；仍落後且有同日官方 final bar 時，先獨立驗證一次 Yahoo 原始還原依據，失敗才嘗試一次 repair。全部歷史、當日單位與因子連續性通過後只追加官方當日資料，原始歷史不變；歷史 fallback 共用同次原始回應。短歷史只在同日 final 證據完整時交給 prefilter 排除。`symbol_diagnostics` 同步保存至 refresh 回應及 prepared step，保留逐檔日期、final、缺欄位、恢復階段與拒絕原因，成功恢復亦保留診斷。未知缺口仍阻擋 scoring。
+
+### 有官方證據的市場生命週期例外
+
+`data_sources/reviewed_market_lifecycle.py` 保存有版本與來源日期的官方事件證據，屬有界人工核實紀錄，不是完整或自動更新的證券主檔。新增事件必須保留官方來源、標的、事件日期及可見日期；未知標的或截止日尚不可見的事件維持原缺資料判定。目前保存精星（8183.TWO）的永久停止／終止上櫃公告，以及漢測（7856.TWO）於 2026-10-21 官方公司資料中的 2026-09-22 上櫃日期；後者不得提前用於 2026-10-20 或更早的查詢。
+
+`signal_close` 只有在完整基準窗口已成熟、官方永久終止已生效，且窗口終點跨越停止交易日時，才將原本的 `missing_future_price` 分類成 `trading_terminated_in_window` terminal skip。保存公告與目標日期，不補造價格、不計入報酬樣本；已完成窗口不重寫。續跑只排除日期與事件證據均有效的 terminal 結果。這項判定不由一般停牌或 Yahoo 缺值推導。
+
+AVWAP 只在官方上櫃證據已可見、掛牌日起至截止日的已保存基準交易日曆與官方 final 個股行情完整對齊，且所有價格檢查通過時，將不足 60 根的歷史記為 `insufficient_listed_history` skip。Snapshot 保留 `missing`、實際／所需根數、來源與事件證據，不產生 20／60 日錨點，也不以興櫃歷史補足根數。已知上櫃日期亦限制遠端 fallback 的請求與回傳範圍；若只有不足根數的遠端資料，無法證實完整官方歷史，仍記為 `daily_price_history_incomplete` 失敗。未知上櫃日期、交易日缺口或無效價格保留失敗判定。
+
+兩種 validation 的本次 skip 與累積 skip 分開。`signal_close` 的 `current_run_gaps` 保存 candidate、標的、訊號日、窗口、目標日、缺少日期及 retryable 分類；workflow 遇舊版未提供這些欄位時顯示 `null` 並標記診斷不可用，不把缺少診斷解讀為空缺口。

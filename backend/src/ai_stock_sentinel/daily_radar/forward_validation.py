@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
+from ai_stock_sentinel.data_sources.reviewed_market_lifecycle import termination_evidence
 
 from ai_stock_sentinel.calibration import forward_validation as shared_forward_validation
 from ai_stock_sentinel.calibration.forward_validation import (
@@ -77,8 +78,12 @@ def build_forward_validation_report(
         hit_threshold_pct=hit_threshold_pct,
         windows_by_candidate=windows_by_candidate,
     )
+    diagnosed_outcomes = _with_market_lifecycle_diagnostics(
+        evaluation.outcomes, price_series_by_symbol=price_series_by_symbol,
+        benchmark_prices=benchmark_prices, as_of_date=as_of_date,
+    )
     outcomes = _with_observation_diagnostics(
-        candidate_list, evaluation.outcomes, price_series_by_symbol=price_series_by_symbol,
+        candidate_list, diagnosed_outcomes, price_series_by_symbol=price_series_by_symbol,
         benchmark_prices=benchmark_prices, as_of_date=as_of_date,
     )
 
@@ -95,6 +100,7 @@ def build_forward_validation_report(
         aggregation_scope=aggregation_scope,
         benchmark_prices=benchmark_prices,
     )
+    report.update(current_run_validation_diagnostics(outcomes))
     return ForwardValidationEvaluation(report=report, outcomes=outcomes)
 
 
@@ -238,10 +244,70 @@ def evaluate_forward_window(
         validation_version=validation_version,
         hit_threshold_pct=hit_threshold_pct,
     )
+    prices = {str(candidate.get("symbol")): price_series}
+    results = _with_market_lifecycle_diagnostics(
+        [result], price_series_by_symbol=prices, benchmark_prices=benchmark_prices, as_of_date=as_of_date,
+    )
     return _with_observation_diagnostics(
-        [candidate], [result], price_series_by_symbol={str(candidate.get("symbol")): price_series},
+        [candidate], results, price_series_by_symbol=prices,
         benchmark_prices=benchmark_prices, as_of_date=as_of_date,
     )[0]
+
+
+def _with_market_lifecycle_diagnostics(outcomes, *, price_series_by_symbol, benchmark_prices, as_of_date):
+    calendar = shared_forward_validation.normalize_price_series(benchmark_prices)
+    normalized = {}
+    diagnosed = []
+    for original in outcomes:
+        if original["status"] != "skipped":
+            diagnosed.append(original)
+            continue
+        row = dict(original)
+        signal = _parse_date(row.get("signal_date"))
+        symbol = str(row.get("symbol") or "")
+        expected = [day for day, _ in shared_forward_validation.future_price_rows(
+            calendar, signal, as_of_date,
+        )][:int(row["window_days"])] if signal else []
+        if symbol not in normalized:
+            normalized[symbol] = shared_forward_validation.normalize_price_series(price_series_by_symbol.get(symbol, []))
+        missing = [day.isoformat() for day in expected if day not in normalized[symbol]]
+        target = expected[-1] if len(expected) == int(row["window_days"]) else None
+        evidence = termination_evidence(symbol, as_of_date=as_of_date) if as_of_date else None
+        payload = dict(row.get("outcome") or {})
+        if (row.get("skip_reason") == "missing_future_price" and evidence and signal in calendar
+                and signal < evidence.trading_stop_date and target is not None
+                and target >= evidence.trading_stop_date):
+            row["skip_reason"] = "trading_terminated_in_window"
+            row["target_date"] = target.isoformat()
+            payload["market_lifecycle"] = evidence.payload()
+        payload.update(missing_dates=missing, expected_target_date=target.isoformat() if target else None)
+        row["outcome"] = payload
+        diagnosed.append(row)
+    return diagnosed
+
+
+def current_run_validation_diagnostics(outcomes):
+    skipped = [row for row in outcomes if row["status"] == "skipped"]
+    gaps = []
+    for row in skipped:
+        payload = row.get("outcome") or {}
+        gaps.append({
+            "candidate_id": row.get("candidate_id"), "symbol": row.get("symbol"),
+            "signal_date": row.get("signal_date"), "window_days": row["window_days"],
+            "target_date": row.get("target_date") or payload.get("expected_target_date"),
+            "skip_reason": row.get("skip_reason"), "missing_dates": payload.get("missing_dates", []),
+            "retryable": not is_terminal_forward_validation_skip_reason(row.get("skip_reason")),
+            **({"market_lifecycle": payload["market_lifecycle"]} if payload.get("market_lifecycle") else {}),
+        })
+    return {"current_run_skip_reasons": dict(Counter(row["skip_reason"] for row in skipped)),
+            "current_run_gaps": gaps}
+
+
+def _proven_termination(*, symbol, signal_date, target_date, evaluation_date, payload):
+    evidence = termination_evidence(symbol, as_of_date=evaluation_date) if evaluation_date else None
+    return (evidence is not None and signal_date is not None and target_date is not None
+            and signal_date < evidence.trading_stop_date <= target_date
+            and _mapping(payload).get("market_lifecycle") == evidence.payload())
 
 
 def _with_observation_diagnostics(candidates, outcomes, *, price_series_by_symbol,
@@ -641,6 +707,7 @@ def exclude_persisted_daily_radar_windows(
     validation_version: str = FORWARD_VALIDATION_VERSION,
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
+    as_of_date: date | None = None,
 ) -> dict[str, list[int]]:
     candidate_ids = [
         int(key.removeprefix("id:"))
@@ -664,6 +731,9 @@ def exclude_persisted_daily_radar_windows(
                 DailyRadarForwardValidationResult.status,
                 DailyRadarForwardValidationResult.evaluation_as_of_date,
                 DailyRadarForwardValidationResult.skip_reason,
+                DailyRadarForwardValidationResult.target_date,
+                DailyRadarForwardValidationResult.outcome,
+                DailyRadarCandidate.symbol,
                 DailyRadarRun.run_date,
                 _candidate_benchmark_column().label("candidate_benchmark"),
             )
@@ -679,6 +749,15 @@ def exclude_persisted_daily_radar_windows(
             row["signal_date"] == row["run_date"]
             and row["benchmark_symbol"] == benchmark_symbol
             and row["benchmark_symbol"] == str(row["candidate_benchmark"] or DEFAULT_BENCHMARK_SYMBOL)
+            and (as_of_date is None
+                 or (row["status"] == "validated" and row["target_date"] is not None
+                     and row["target_date"] <= as_of_date)
+                 or (row["status"] == "skipped" and row["evaluation_as_of_date"] is not None
+                     and row["evaluation_as_of_date"] <= as_of_date))
+            and (row["skip_reason"] != "trading_terminated_in_window" or _proven_termination(
+                symbol=row["symbol"], signal_date=row["signal_date"], target_date=row["target_date"],
+                evaluation_date=row["evaluation_as_of_date"], payload=row["outcome"],
+            ))
             and (
                 row["status"] == "validated"
                 or (
