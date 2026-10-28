@@ -6,6 +6,9 @@ React + TypeScript + Tailwind 的前端儀表板專案。
 
 此專案使用 **pnpm**（非 npm）。
 
+Node.js 使用 `.node-version` 指定的 22.23.4；本機與前端 CI 共用此版本檔。
+pnpm 使用 `package.json` 的 `packageManager` 指定的 10.30.3。
+
 ## 安裝與執行
 
 ```bash

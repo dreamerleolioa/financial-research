@@ -1,0 +1,5 @@
+# Keep indirect tooling dependencies on security-patched versions.
+overrides:
+  brace-expansion: 5.0.12
+  source-map-js: 1.2.2
+  tinypool: 2.1.2

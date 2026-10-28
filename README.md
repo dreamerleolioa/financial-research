@@ -202,7 +202,7 @@ CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-
 
 - Python 3.14
 - 後端依賴使用 `uv` 管理
-- Node.js 22+（CI 使用 Node 22；前端用 pnpm 10）
+- Node.js 22.23.4（本機與前端 CI 共用 `frontend/.node-version`；前端使用 pnpm 10.30.3）
 
 ## 安裝與啟動
 
