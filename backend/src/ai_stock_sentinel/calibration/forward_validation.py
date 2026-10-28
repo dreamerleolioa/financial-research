@@ -13,7 +13,7 @@ DEFAULT_HIT_THRESHOLD_PCT = 0.0
 DEFAULT_DUE_LOOKBACK_MULTIPLIER = 10
 OHLC_PRICE_FIELDS = ("open", "high", "low", "close")
 PRICE_CONFLICT_FIELDS_KEY = "ohlc_conflict_fields"
-TERMINAL_FORWARD_VALIDATION_SKIP_REASONS = frozenset({"stale_candidate_price"})
+TERMINAL_FORWARD_VALIDATION_SKIP_REASONS = frozenset({"stale_candidate_price", "trading_terminated_in_window"})
 
 
 def is_terminal_forward_validation_skip_reason(reason: Any) -> bool:

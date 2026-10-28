@@ -49,10 +49,12 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 "status", "as_of_date", "candidate_count", "records_written", "validated_count",
                 "skipped_count", "retryable_skipped_count", "terminal_skipped_count", "error_type", "http_status")}
             summary.update(return_basis=basis, attempt=attempt,
-                current_run_skip_reasons=report.get("current_run_skip_reasons", {}),
+                current_run_skip_reasons=report.get("current_run_skip_reasons"),
                 remaining_retryable_window_count=report.get("remaining_retryable_window_count"),
                 persisted_skip_reasons=report.get("skip_reasons", {}),
-                current_run_gaps=report.get("current_run_gaps", []))
+                current_run_gaps=report.get("current_run_gaps"),
+                current_run_diagnostics_available=(isinstance(report.get("current_run_skip_reasons"), dict)
+                                                   and isinstance(report.get("current_run_gaps"), list)))
             print(diagnostic_json(summary, token, indent=None), flush=True)
             if ready or not retryable:
                 break

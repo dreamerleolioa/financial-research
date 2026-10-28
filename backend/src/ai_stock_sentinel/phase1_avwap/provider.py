@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.data_sources.finmind_client import FinMindClient, FinMindClientError
 from ai_stock_sentinel.data_sources.official_http import official_request_get
+from ai_stock_sentinel.data_sources.reviewed_market_lifecycle import listing_evidence
+from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars, get_taiwan_archive_session_dates
 from ai_stock_sentinel.phase1_avwap.calculator import DailyPriceBar
 
@@ -50,6 +52,10 @@ class DailyPriceProviderError(RuntimeError):
         self.source_trace = source_trace or {}
         self.source_provider = source_provider
         self.source_dataset = source_dataset
+
+
+class InsufficientListedHistory(DailyPriceProviderError):
+    """Complete official history since a proven listing, shorter than the anchors."""
 
 
 class FinMindDailyPriceProvider:
@@ -280,6 +286,9 @@ class ArchiveFirstDailyPriceProvider:
             start_date=start_date,
             end_date=end_date,
         )
+        evidence = listing_evidence(symbol, as_of_date=end_date)
+        if evidence is not None:
+            rows = [row for row in rows if row.trade_date >= evidence.listing_date]
         market = "TWO" if _is_tpex_symbol(symbol) else "TW"
         key = (market, start_date, end_date)
         if key not in self._archive_dates:
@@ -315,6 +324,7 @@ class ArchiveFirstDailyPriceProvider:
                                   "actual_start_date": bars[0].trade_date.isoformat(),
                                   "actual_end_date": bars[-1].trade_date.isoformat()},
                 )
+        self._check_short_listed_history(symbol, rows=rows, start_date=start_date, end_date=end_date)
         if self._provider_mode in {"official_first", "archive_first"}:
             return self._fallback_result(
                 symbol,
@@ -327,6 +337,44 @@ class ArchiveFirstDailyPriceProvider:
             source_dataset="taiwan_market_daily_ohlcv",
         )
 
+    def _check_short_listed_history(self, symbol, *, rows, start_date, end_date):
+        evidence = listing_evidence(symbol, as_of_date=end_date)
+        if (evidence is None or evidence.listing_date < start_date
+                or not rows or len(rows) >= self._min_trading_bars):
+            return
+        listed_rows = [row for row in rows if row.trade_date >= evidence.listing_date]
+        calendar = load_benchmark_calendar_from_prepared_market_context(
+            self._session, market="TW", benchmark_symbol="TAIEX",
+            start_date=evidence.listing_date, as_of_date=end_date,
+        )
+        # The union of individual stock bars alone cannot establish a calendar.
+        market = "TWO" if _is_tpex_symbol(symbol) else "TW"
+        archive_dates = self._archive_dates[(market, start_date, end_date)]
+        if (not calendar or calendar[0] != evidence.listing_date or calendar[-1] != end_date
+                or set(calendar) != {row.trade_date for row in listed_rows}
+                or set(calendar) != {day for day in archive_dates if day >= evidence.listing_date}
+                or any(row.source_provider != ("tpex" if market == "TWO" else "twse") for row in listed_rows)):
+            return
+        try:
+            bars = _validated_history([
+                DailyPriceBar(trade_date=row.trade_date, open=float(row.open), high=float(row.high),
+                              low=float(row.low), close=float(row.close), volume=float(row.volume),
+                              amount=float(row.amount) if row.amount is not None else
+                              (float(row.high) + float(row.low) + float(row.close)) / 3 * float(row.volume),
+                              estimated_amount=row.amount is None)
+                for row in listed_rows
+            ], evidence.listing_date, end_date)
+        except DailyPriceProviderError:
+            return
+        raise InsufficientListedHistory(
+            "insufficient_listed_history", source_provider=listed_rows[-1].source_provider,
+            source_dataset=listed_rows[-1].source_dataset,
+            source_trace={"route": "archive_first", "market_lifecycle": evidence.payload(),
+                          "rows_used": len(bars), "required_trading_bars": self._min_trading_bars,
+                          "actual_start_date": bars[0].trade_date.isoformat(),
+                          "actual_end_date": bars[-1].trade_date.isoformat()},
+        )
+
     def _fallback_result(
         self,
         symbol: str,
@@ -334,28 +382,33 @@ class ArchiveFirstDailyPriceProvider:
         start_date: date,
         end_date: date,
     ) -> DailyPriceHistoryResult:
+        evidence = listing_evidence(symbol, as_of_date=end_date)
+        if evidence is not None:
+            start_date = max(start_date, evidence.listing_date)
         fetch_result = getattr(self._fallback_provider, "fetch_history_result", None)
         if callable(fetch_result):
-            return fetch_result(symbol, start_date=start_date, end_date=end_date)
-        return DailyPriceHistoryResult(
-            bars=self._fallback_provider.fetch_history(
-                symbol,
-                start_date=start_date,
-                end_date=end_date,
-            ),
-            source_provider=_provider_metadata(
-                self._fallback_provider,
-                "source_provider",
-                symbol,
-                default="legacy_daily_price_provider",
-            ),
-            source_dataset=_provider_metadata(
-                self._fallback_provider,
-                "source_dataset",
-                symbol,
-                default=FINMIND_TAIWAN_STOCK_PRICE_DATASET,
-            ),
-        )
+            result = fetch_result(symbol, start_date=start_date, end_date=end_date)
+        else:
+            result = DailyPriceHistoryResult(
+                bars=self._fallback_provider.fetch_history(symbol, start_date=start_date, end_date=end_date),
+                source_provider=_provider_metadata(self._fallback_provider, "source_provider", symbol,
+                                                  default="legacy_daily_price_provider"),
+                source_dataset=_provider_metadata(self._fallback_provider, "source_dataset", symbol,
+                                                 default=FINMIND_TAIWAN_STOCK_PRICE_DATASET),
+            )
+        if evidence is None:
+            return result
+        trace = {**result.source_trace, "market_lifecycle": evidence.payload()}
+        try:
+            bars = _validated_history(result.bars, start_date, end_date)
+            trace.update(rows_used=len(bars), required_trading_bars=self._min_trading_bars)
+            if len(bars) < self._min_trading_bars:
+                # Short remote coverage does not prove the complete official listed history.
+                raise DailyPriceProviderError("daily_price_history_incomplete")
+        except DailyPriceProviderError as exc:
+            raise DailyPriceProviderError(exc.code, source_trace=trace,
+                source_provider=result.source_provider, source_dataset=result.source_dataset) from exc
+        return DailyPriceHistoryResult(bars, result.source_provider, result.source_dataset, trace)
 
 
 def _fetch_twse_month(

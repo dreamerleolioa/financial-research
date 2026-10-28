@@ -223,6 +223,7 @@ def refresh_daily_radar_avwap_endpoint(
     )
     status = "failed" if result.missing_symbols else "completed"
     missing_symbol_reasons = dict(result.missing_symbol_reasons)
+    skipped_symbol_reasons = {**refresh_symbol_set.skipped_symbol_reasons, **result.skipped_symbol_reasons}
     update_daily_radar_prepared_step_status(
         db,
         prepared,
@@ -236,8 +237,8 @@ def refresh_daily_radar_avwap_endpoint(
             "fetched_symbols": list(result.fetched_symbols),
             "missing_symbols": list(result.missing_symbols),
             "missing_symbol_reasons": missing_symbol_reasons,
-            "skipped_symbols": list(refresh_symbol_set.skipped_symbol_reasons),
-            "skipped_symbol_reasons": dict(refresh_symbol_set.skipped_symbol_reasons),
+            "skipped_symbols": list(skipped_symbol_reasons),
+            "skipped_symbol_reasons": skipped_symbol_reasons,
         },
     )
     db.commit()
@@ -252,8 +253,8 @@ def refresh_daily_radar_avwap_endpoint(
         fetched_symbols=result.fetched_symbols,
         missing_symbols=result.missing_symbols,
         missing_symbol_reasons=missing_symbol_reasons,
-        skipped_symbols=list(refresh_symbol_set.skipped_symbol_reasons),
-        skipped_symbol_reasons=dict(refresh_symbol_set.skipped_symbol_reasons),
+        skipped_symbols=list(skipped_symbol_reasons),
+        skipped_symbol_reasons=skipped_symbol_reasons,
     )
 
 

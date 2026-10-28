@@ -69,3 +69,16 @@ def test_zero_current_skips_do_not_hide_an_unprocessed_resume_backlog(tmp_path):
     assert runner().run(endpoint="test", token="private", run_date="2026-10-14",
         output_dir=tmp_path, request=post, sleep=lambda _: None) == 1
     assert calls == ["signal_close", "next_open", "next_open"]
+
+
+def test_legacy_response_does_not_print_missing_diagnostics_as_an_empty_gap_list(tmp_path, capsys):
+    import json
+    def post(endpoint, token, payload):
+        return {"status": "completed", "as_of_date": "2026-10-21", "retryable_skipped_count": 0,
+                "report": {"remaining_retryable_window_count": 0}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-10-21",
+        output_dir=tmp_path, request=post, sleep=lambda _: None) == 0
+    summary = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert summary["current_run_gaps"] is None
+    assert summary["current_run_skip_reasons"] is None
+    assert summary["current_run_diagnostics_available"] is False
