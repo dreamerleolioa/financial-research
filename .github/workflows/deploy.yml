@@ -62,7 +62,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: frontend/.node-version
           cache: "pnpm"
           cache-dependency-path: frontend/pnpm-lock.yaml
 
@@ -115,7 +115,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: frontend/.node-version
           cache: "pnpm"
           cache-dependency-path: frontend/pnpm-lock.yaml
 
