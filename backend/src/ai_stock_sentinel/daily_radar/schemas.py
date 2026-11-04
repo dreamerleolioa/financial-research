@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.daily_radar.constants import (
@@ -17,7 +17,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
 )
 from ai_stock_sentinel.daily_radar.rule_governance import DEFAULT_MIN_SAMPLE_COUNT
-from ai_stock_sentinel.daily_radar import reviewed_next_open_rights as reviewed_rights
+from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 from ai_stock_sentinel.daily_radar.types import (
     DailyRadarBucket,
     DailyRadarRepeatStatus,
@@ -223,6 +223,8 @@ class DailyRadarChipContextUpdateResponse(BaseModel):
 
 
 class DailyRadarForwardValidationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     mode: Literal["due", "range"] = "due"
     market: str = Field(default="TW", min_length=1, max_length=20)
     as_of_date: date | None = None
@@ -231,18 +233,20 @@ class DailyRadarForwardValidationRunRequest(BaseModel):
     windows: list[int] = Field(default_factory=lambda: list(DAILY_RADAR_VALIDATION_WINDOWS), min_length=1)
     benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
     return_basis: Literal["signal_close", "next_open"] = "signal_close"
-    reviewed_rights_recovery: StrictBool = False
+    conflict_recovery_symbols: list[str] | None = Field(default=None, min_length=1, max_length=32)
 
     @model_validator(mode="after")
-    def validate_reviewed_rights_scope(self):
-        if self.reviewed_rights_recovery and (
+    def validate_conflict_recovery_scope(self):
+        symbols = self.conflict_recovery_symbols
+        if symbols is not None and (
             self.mode != "due" or self.return_basis != "next_open" or self.market != "TW"
-            or self.as_of_date != reviewed_rights.TARGET_DATE or self.benchmark_symbol != reviewed_rights.BENCHMARK
-            or self.windows != [reviewed_rights.WINDOW_DAYS]
-            or self.start_date not in (None, reviewed_rights.SIGNAL_DATE)
-            or self.end_date not in (None, reviewed_rights.SIGNAL_DATE)
+            or self.as_of_date is None or self.benchmark_symbol != "TAIEX"
+            or self.start_date is None or self.end_date != self.start_date or self.start_date >= self.as_of_date
+            or len(self.windows) != 1 or not 1 <= self.windows[0] <= max(DAILY_RADAR_VALIDATION_WINDOWS)
+            or len(symbols) != len(set(symbols))
+            or any(not s.endswith(".TW") or not is_supported_taiwan_symbol(s) for s in symbols)
         ):
-            raise ValueError("reviewed_rights_recovery_out_of_scope")
+            raise ValueError("conflict_recovery_requires_exact_window_scope")
         return self
 
 

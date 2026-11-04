@@ -14,6 +14,7 @@ from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 from ai_stock_sentinel.data_sources.reviewed_market_lifecycle import termination_evidence
 
 from ai_stock_sentinel.calibration import forward_validation as shared_forward_validation
+from ai_stock_sentinel.calibration import twse_rights_recovery as rights
 from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
@@ -26,7 +27,6 @@ from ai_stock_sentinel.calibration.repository import (
     load_price_series_from_raw_data as load_shared_price_series,
 )
 from ai_stock_sentinel.daily_radar.calibration import calibration_candidates_from_fixture
-from ai_stock_sentinel.daily_radar import reviewed_next_open_rights as reviewed_rights
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
 from ai_stock_sentinel.daily_radar.observation_validation import (
     canonical_radar_run_ids, evaluate_observation, load_observation_origins, observation_report, strategy_cohort,
@@ -340,6 +340,7 @@ def forward_validation_candidates_from_runs(
     end_date: date | None = None,
     statuses: tuple[str, ...] = PUBLIC_RUN_STATUSES,
     include_candidate_ids: Sequence[int] = (),
+    symbols: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     query = (
         select(
@@ -369,6 +370,8 @@ def forward_validation_candidates_from_runs(
     )
     if market.upper() == "TW":
         query = query.where(taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
+    if symbols is not None:
+        query = query.where(DailyRadarCandidate.symbol.in_(symbols))
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
@@ -498,8 +501,12 @@ def upsert_forward_validation_results(
     outcomes: Iterable[Mapping[str, Any]],
     *,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
+    require_existing_conflict: bool = False,
 ) -> dict[str, int]:
-    outcome_rows = list(outcomes)
+    outcome_rows = sorted(
+        (row for row in outcomes if row.get("candidate_id") is not None),
+        key=lambda row: (int(row["candidate_id"]), int(row["window_days"]), str(row["validation_version"])),
+    )
     candidate_ids = {
         int(outcome["candidate_id"])
         for outcome in outcome_rows
@@ -510,13 +517,15 @@ def upsert_forward_validation_results(
             run_date,
             str(benchmark_symbol or DEFAULT_BENCHMARK_SYMBOL),
             symbol,
+            market,
         )
-        for candidate_id, run_date, benchmark_symbol, symbol in session.execute(
+        for candidate_id, run_date, benchmark_symbol, symbol, market in session.execute(
             select(
                 DailyRadarCandidate.id,
                 DailyRadarRun.run_date,
                 _candidate_benchmark_column(),
                 DailyRadarCandidate.symbol,
+                DailyRadarRun.market,
             )
             .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
             .where(DailyRadarCandidate.id.in_(candidate_ids))
@@ -530,8 +539,6 @@ def upsert_forward_validation_results(
     terminal_skipped = 0
     for outcome in outcome_rows:
         candidate_id = outcome.get("candidate_id")
-        if candidate_id is None:
-            continue
         signal_date = _parse_date(outcome.get("signal_date"))
         if signal_date is None:
             raise ValueError(
@@ -543,7 +550,7 @@ def upsert_forward_validation_results(
             raise ValueError(
                 f"Daily Radar validation candidate {candidate_id} does not exist"
             )
-        expected_signal_date, expected_benchmark_symbol, candidate_symbol = candidate_identity
+        expected_signal_date, expected_benchmark_symbol, candidate_symbol, candidate_market = candidate_identity
         if (
             signal_date != expected_signal_date
             or benchmark_symbol != expected_benchmark_symbol
@@ -551,32 +558,47 @@ def upsert_forward_validation_results(
             raise ValueError(
                 "Daily Radar validation identity must match its scoring candidate"
             )
-        reviewed_window = reviewed_rights.matches_window(
-            candidate_symbol, signal_date, int(outcome["window_days"]), outcome["validation_version"],
-        )
+        research_window = outcome["validation_version"] == rights.RESEARCH_VERSION
         statement = select(DailyRadarForwardValidationResult).where(
             DailyRadarForwardValidationResult.candidate_id == int(candidate_id),
             DailyRadarForwardValidationResult.window_days == int(outcome["window_days"]),
             DailyRadarForwardValidationResult.validation_version == str(outcome["validation_version"]),
         )
-        if reviewed_window:
-            # Lock only at persistence, after all external price reads.
+        if research_window:
+            # Shared lock order protects recovered evidence from stale concurrent evaluations.
             statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
         payload = dict(_mapping(outcome.get("outcome")))
-        if (reviewed_window and existing is not None and existing.status == "validated"
-                and reviewed_rights.PROVENANCE_KEY in existing.outcome):
+        if (research_window and existing is not None and existing.status == "validated"
+                and (rights.PROVENANCE_KEY in existing.outcome or "reviewed_rights_recovery" in existing.outcome)):
             continue
-        if reviewed_rights.PROVENANCE_KEY in payload and (
-            not reviewed_window or existing is None or existing.status != "skipped"
-            or existing.skip_reason != reviewed_rights.CONFLICT_REASON
-            or existing.signal_date != reviewed_rights.SIGNAL_DATE or existing.benchmark_symbol != reviewed_rights.BENCHMARK
-            or existing.outcome.get("expected_target_date") != reviewed_rights.TARGET_DATE.isoformat()
-            or existing.evaluation_as_of_date is None or existing.evaluation_as_of_date < reviewed_rights.TARGET_DATE
-            or outcome.get("status") != "validated" or _parse_date(outcome.get("target_date")) != reviewed_rights.TARGET_DATE
-            or _parse_date(outcome.get("evaluation_as_of_date")) != reviewed_rights.TARGET_DATE
-        ):
+        if require_existing_conflict and rights.PROVENANCE_KEY not in payload:
             continue
+        if rights.PROVENANCE_KEY in payload:
+            target = _parse_date(outcome.get("target_date"))
+            cutoff = _parse_date(outcome.get("evaluation_as_of_date"))
+            event = _mapping(_mapping(payload[rights.PROVENANCE_KEY]).get("event"))
+            if (not research_window or candidate_market != "TW" or not candidate_symbol.endswith(".TW")
+                    or event.get("symbol") != candidate_symbol or benchmark_symbol != "TAIEX"
+                    or outcome.get("status") != "validated" or not target or not cutoff or not signal_date < target <= cutoff
+                    or (existing is not None and
+                        (existing.status != "skipped" or existing.skip_reason in terminal_skip_reasons))):
+                continue
+            if require_existing_conflict and (
+                target != cutoff or existing is None or existing.skip_reason != rights.CONFLICT_REASON
+                or existing.signal_date != signal_date or existing.benchmark_symbol != benchmark_symbol
+                or existing.outcome.get("expected_target_date") != target.isoformat()
+                or existing.evaluation_as_of_date is None or existing.evaluation_as_of_date < target
+            ):
+                continue
+            # Recheck the canonical scoring run after external reads, while saving only the selected identity.
+            if session.scalar(select(DailyRadarCandidate.id).where(
+                DailyRadarCandidate.id == int(candidate_id),
+                DailyRadarCandidate.run_id.in_(canonical_radar_run_ids(
+                    market=candidate_market, start_date=signal_date, end_date=signal_date,
+                )),
+            )) is None:
+                continue
         if outcome.get("status") == "skipped":
             payload = dict(outcome.get("outcome") or {}) | {"skip_reason": outcome.get("skip_reason")}
         if existing is None:
