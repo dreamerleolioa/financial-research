@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.daily_radar.constants import (
@@ -17,6 +17,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
 )
 from ai_stock_sentinel.daily_radar.rule_governance import DEFAULT_MIN_SAMPLE_COUNT
+from ai_stock_sentinel.daily_radar import reviewed_next_open_rights as reviewed_rights
 from ai_stock_sentinel.daily_radar.types import (
     DailyRadarBucket,
     DailyRadarRepeatStatus,
@@ -230,6 +231,19 @@ class DailyRadarForwardValidationRunRequest(BaseModel):
     windows: list[int] = Field(default_factory=lambda: list(DAILY_RADAR_VALIDATION_WINDOWS), min_length=1)
     benchmark_symbol: str = Field(default=DEFAULT_BENCHMARK_SYMBOL, min_length=1, max_length=40)
     return_basis: Literal["signal_close", "next_open"] = "signal_close"
+    reviewed_rights_recovery: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_reviewed_rights_scope(self):
+        if self.reviewed_rights_recovery and (
+            self.mode != "due" or self.return_basis != "next_open" or self.market != "TW"
+            or self.as_of_date != reviewed_rights.TARGET_DATE or self.benchmark_symbol != reviewed_rights.BENCHMARK
+            or self.windows != [reviewed_rights.WINDOW_DAYS]
+            or self.start_date not in (None, reviewed_rights.SIGNAL_DATE)
+            or self.end_date not in (None, reviewed_rights.SIGNAL_DATE)
+        ):
+            raise ValueError("reviewed_rights_recovery_out_of_scope")
+        return self
 
 
 class DailyRadarObservationStats(BaseModel):

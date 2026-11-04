@@ -132,6 +132,16 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.cache[key] = rows
         return rows
 
+    def official_research_history(self, symbol, *, start_date, end_date):
+        """Read a complete caller-selected window from TWSE using the shared budget."""
+        month = start_date.replace(day=1)
+        rows = []
+        while month <= end_date:
+            rows.extend(row for row in self._official_month(symbol, month)
+                        if start_date.isoformat() <= row["date"] <= end_date.isoformat())
+            month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return rows
+
     def _actions(self, symbol, start, end):
         key = ("actions", symbol, start, end)
         if key in self.cache:
